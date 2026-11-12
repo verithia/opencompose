@@ -26,6 +26,10 @@ impl Binding {
         }
     }
 
+    pub(super) fn id(&self) -> &str {
+        &self.id
+    }
+
     pub(super) fn caller(&self, app: &AppHandle) -> Result<String, String> {
         self.validate_project(app.state::<AppState>().lock_inner().file_path.as_deref())?;
         self.validate_session(&sessions::Store::config())?;
@@ -69,23 +73,21 @@ pub(super) struct SavedTurn {
 }
 
 impl SavedTurn {
-    pub(super) fn prepare(
+    pub(super) async fn prepare(
         app: &AppHandle,
         binding: &Binding,
         provider: &AiProviderEntry,
         messages: &Value,
         stats: &crate::ai::timing::TurnStatsHandle,
+        request_id: &str,
     ) -> Result<Self, AiError> {
         binding
             .validate_project(app.state::<AppState>().lock_inner().file_path.as_deref())
             .map_err(|error| AiError::new("session_save", error))?;
-        let token = access_token::make_token()
-            .map_err(|_| AiError::config("Request identity unavailable"))?;
-        let request_id = format!("headless-{token}");
         let lease = session_usage::SessionLease::admit(
             sessions::Store::config(),
             &binding.id,
-            &request_id,
+            request_id,
             session_usage::Purpose::Chat,
         )
         .map_err(|error| AiError::new(error.code.as_str(), error.message))?;
@@ -93,14 +95,29 @@ impl SavedTurn {
         stats.set_accounting(lease);
         let prepared =
             commands::prepare_turn_for(app, provider, messages, &binding.id, &incarnation)
-                .map_err(|error| AiError::new("session_save", error))?
-                .ok_or_else(|| {
-                    AiError::new("session_save", "The saved conversation cannot be replayed")
-                })?;
+                .map_err(|error| AiError::new("session_save", error))
+                .and_then(|prepared| {
+                    prepared.ok_or_else(|| {
+                        AiError::new("session_save", "The saved conversation cannot be replayed")
+                    })
+                });
+        let prepared = match prepared {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                session_usage::checkpoint_final(
+                    stats,
+                    app,
+                    request_id,
+                    session_usage::Purpose::Chat,
+                )
+                .await;
+                return Err(error);
+            }
+        };
         Ok(Self {
             app: app.clone(),
             id: binding.id.clone(),
-            request_id,
+            request_id: request_id.to_owned(),
             incarnation,
             messages: prepared.messages,
         })
@@ -110,8 +127,8 @@ impl SavedTurn {
         self,
         provider: &AiProviderEntry,
         stats: &crate::ai::timing::TurnStatsHandle,
-        reply: Option<&Value>,
-    ) -> Result<(), AiError> {
+        reply: Option<&mut Value>,
+    ) {
         session_usage::checkpoint_final(
             stats,
             &self.app,
@@ -120,16 +137,16 @@ impl SavedTurn {
         )
         .await;
         if let Some(reply) = reply {
-            commands::record_reply_for(
+            let saved = commands::record_reply_for(
                 &self.app,
                 &self.id,
                 reply,
                 provider,
                 Some(&self.incarnation),
             )
-            .map_err(|error| AiError::new("session_save", error))?;
+            .map(|_| ());
+            crate::ai_service::save_reply(&self.id, reply, || saved);
         }
-        Ok(())
     }
 }
 
@@ -193,5 +210,26 @@ mod tests {
         assert!(binding.validate_session(&store).is_err());
         binding.id = "missing".into();
         assert!(binding.validate_session(&store).is_err());
+    }
+    #[test]
+    fn a_headless_reply_save_failure_keeps_the_provider_answer() {
+        let answer = json!({
+            "role":"assistant", "content":"Arrangement complete",
+            "tool_calls":[{"id":"call-1","type":"function","function":{"name":"project_get","arguments":"{}"}}],
+            "provider_state":{"signature":"fixture-signature"},
+        });
+        let mut reply = answer.clone();
+        crate::ai_service::save_reply("fixture-session", &mut reply, || {
+            Err("fixture write failure".into())
+        });
+        assert!(
+            reply["session_warning"]
+                .as_str()
+                .unwrap()
+                .contains("could not be saved")
+        );
+        for key in ["role", "content", "tool_calls", "provider_state"] {
+            assert_eq!(reply[key], answer[key]);
+        }
     }
 }

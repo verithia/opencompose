@@ -50,6 +50,10 @@ incoming tool results, audition media and the provider reply through the same
 conversation store as the AI panel. Keep saving the same project path; copies
 for checkpoints do not change the session's working file. Omitting both fields
 keeps the request ephemeral.
+Malformed messages are refused before the conversation is changed. If a
+provider reply arrives but cannot be saved, the response still contains that
+reply and a `session_warning`; do not repeat a paid request merely to recover
+from a transcript write failure.
 
 The store belongs to `OPENCOMPOSE_CONFIG_DIR`. A private profile's sessions do
 not appear in the default desktop profile. Use the intended profile when you

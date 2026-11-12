@@ -528,7 +528,7 @@ fn complete_status(kind: &str) -> u16 {
         "permission" => 403,
         "rate_limit" => 429,
         // Another turn already holds the slot, on either surface.
-        "busy" => 409,
+        "busy" | "cancelled" => 409,
         // The saved endpoint or provider has to change before a retry can work.
         "config" | "redirect" => 409,
         "timeout" | "network" | "server" => 503,
@@ -572,6 +572,8 @@ fn complete_request(body: &[u8]) -> Result<CompleteRequest, String> {
         .filter(|messages| messages.is_array())
         .cloned()
         .ok_or("missing 'messages'")?;
+    crate::ai_service::validate_chat_messages(&messages).map_err(|error| error.message)?;
+    crate::ai::turns_from_wire(&messages).map_err(|error| error.message)?;
     let tools = match value.get("tools") {
         None | Some(Value::Null) => false,
         Some(Value::Bool(tools)) => *tools,
@@ -603,20 +605,37 @@ async fn complete_turn(
     let entry = crate::ai_service::provider(&request.provider).map_err(AiError::config)?;
     crate::ai::endpoint(&entry.endpoint).map_err(AiError::config)?;
     let stats = crate::ai::timing::TurnStatsHandle::new(&entry.id, &entry.model, entry.wire());
-    let saved = match request.saved.as_ref() {
-        Some(binding) => Some(saved_completion::SavedTurn::prepare(
-            app.ok_or_else(|| AiError::config("Saved turns require an application host"))?,
-            binding,
-            &entry,
-            &request.messages,
-            &stats,
-        )?),
-        None => None,
-    };
-    let outbound = saved
+    let token =
+        access_token::make_token().map_err(|_| AiError::config("Request identity unavailable"))?;
+    let request_id = format!("headless-{token}");
+    let requests = app.map(|app| app.state::<crate::ai_service::Requests>());
+    let mut guard = requests
         .as_ref()
-        .map_or(&request.messages, |saved| &saved.messages);
-    let result = async {
+        .map(|requests| {
+            requests.claim_headless(
+                &request_id,
+                request.saved.as_ref().map(saved_completion::Binding::id),
+            )
+        })
+        .transpose()?;
+    let mut saved = None;
+    let operation = async {
+        if let Some(binding) = request.saved.as_ref() {
+            saved = Some(
+                saved_completion::SavedTurn::prepare(
+                    app.ok_or_else(|| AiError::config("Saved turns require an application host"))?,
+                    binding,
+                    &entry,
+                    &request.messages,
+                    &stats,
+                    &request_id,
+                )
+                .await?,
+            );
+        }
+        let outbound = saved
+            .as_ref()
+            .map_or(&request.messages, |saved| &saved.messages);
         let credential = crate::ai_service::resolve_credential(&entry).await?;
         let (mut turn, _notices) =
             crate::ai::request_from_wire(&entry, outbound.clone(), request.tools, None)
@@ -629,10 +648,21 @@ async fn complete_turn(
         crate::ai::run(provider.as_ref(), &turn, &None, &mut emitted, &stats)
             .await
             .map_err(AiError::from)
-    }
-    .await;
+    };
+    let mut result = match guard.as_mut() {
+        Some(guard) => guard.run(operation).await,
+        None => operation.await,
+    };
     if let Some(saved) = saved {
-        saved.finish(&entry, &stats, result.as_ref().ok()).await?;
+        saved.finish(&entry, &stats, result.as_mut().ok()).await;
+    } else if let Some(app) = app {
+        crate::ai::session_usage::checkpoint_final(
+            &stats,
+            app,
+            &request_id,
+            crate::ai::session_usage::Purpose::Chat,
+        )
+        .await;
     }
     let mut message = result?;
     // Our canonical turn keeps no raw finish string, so the outcome we decoded
@@ -3780,12 +3810,37 @@ providers:
         );
     }
 
+    #[test]
+    fn saved_http_requests_validate_messages_before_session_admission() {
+        let absolute = std::env::temp_dir().join("song.ocp");
+        for messages in [
+            json!([]),
+            json!([{"role":"invalid","content":"bad role"}]),
+            json!([{"role":"user","content":"", "input_audio":{"format":"wav","data":"not-base64!"}}]),
+            json!([{"role":"user","content":"x".repeat(crate::ai::LIMIT + 1)}]),
+            json!(vec![
+                json!({"role":"user","content":"hi"});
+                crate::ai::MAX_WIRE_MESSAGES + 1
+            ]),
+        ] {
+            let (status, body) = complete(json!({
+                "provider":"not-configured",
+                "session_id":"missing-session",
+                "project_path":absolute,
+                "messages":messages,
+            }));
+            assert_eq!(status, 400, "{body}");
+            assert_eq!(body["kind"], "request");
+        }
+    }
+
     /// Every class the provider layer can produce maps to one of the six
     /// statuses; the two kinds a fake provider cannot stage quickly are here.
     #[test]
     fn every_error_class_has_a_status_and_reports_its_verdict() {
         for (kind, status) in [
             ("request", 400),
+            ("cancelled", 409),
             ("auth", 401),
             ("auth_expired", 401),
             ("permission", 403),

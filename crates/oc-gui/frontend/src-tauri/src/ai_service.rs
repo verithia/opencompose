@@ -122,7 +122,61 @@ pub struct ActiveTurn {
     pub session_id: Option<String>,
 }
 
+/// Owns the shared provider slot through headless persistence and cleanup.
+pub(crate) struct HeadlessRequest<'a> {
+    requests: &'a Requests,
+    id: String,
+    owner: Arc<()>,
+    cancel: Option<oneshot::Receiver<()>>,
+}
+
+impl HeadlessRequest<'_> {
+    pub(crate) async fn run<T>(
+        &mut self,
+        operation: impl Future<Output = Result<T, AiError>>,
+    ) -> Result<T, AiError> {
+        let cancel = self
+            .cancel
+            .take()
+            .ok_or_else(|| AiError::config("Request already started"))?;
+        tokio::select! {
+            biased;
+            _ = cancel => Err(AiError::new("cancelled", "Request cancelled")),
+            result = operation => result,
+        }
+    }
+}
+
+impl Drop for HeadlessRequest<'_> {
+    fn drop(&mut self) {
+        let _ = self.requests.release_owned(&self.id, &self.owner);
+    }
+}
+
 impl Requests {
+    pub(crate) fn claim_headless(
+        &self,
+        id: &str,
+        session: Option<&str>,
+    ) -> Result<HeadlessRequest<'_>, AiError> {
+        let Some(RequestClaim {
+            cancel_rx,
+            identity,
+        }) = self.claim(id).map_err(AiError::config)?
+        else {
+            return Err(AiError::new("busy", "Another AI request is active"));
+        };
+        if let Some(session) = session {
+            self.set_session_owned(id, &identity, session);
+        }
+        Ok(HeadlessRequest {
+            requests: self,
+            id: id.into(),
+            owner: identity,
+            cancel: Some(cancel_rx),
+        })
+    }
+
     /// Claims the one slot. `Ok(None)` means another request is already running,
     /// so the caller must refuse with `busy` and claim nothing.
     fn claim(&self, request_id: &str) -> Result<Option<RequestClaim>, String> {
@@ -1039,7 +1093,7 @@ async fn run_once(
 
 /// The text budget excludes validated listening payloads, which have their own
 /// bounded media budget. Audio remains structured media, never prompt text.
-fn validate_chat_messages(messages: &Value) -> Result<(), AiError> {
+pub(crate) fn validate_chat_messages(messages: &Value) -> Result<(), AiError> {
     let rows = messages
         .as_array()
         .filter(|rows| !rows.is_empty() && rows.len() <= MAX_WIRE_MESSAGES)
@@ -1549,7 +1603,11 @@ providers:
 ///
 /// The reply stays in the returned turn, so the live transcript keeps the
 /// answer; only a later request sees that the conversation lacks it.
-fn save_reply(session_id: &str, reply: &mut Value, save: impl FnOnce() -> Result<(), String>) {
+pub(crate) fn save_reply(
+    session_id: &str,
+    reply: &mut Value,
+    save: impl FnOnce() -> Result<(), String>,
+) {
     let Err(error) = save() else { return };
     log::error!("[ai] session {session_id}: the reply could not be saved: {error}");
     if let Some(message) = reply.as_object_mut() {
@@ -3132,5 +3190,59 @@ mod wire_budget_tests {
             wire = Value::Array(next);
         }
         assert!(folds > 0, "the fixture never needed a fold");
+    }
+}
+
+#[cfg(test)]
+mod headless_request_tests {
+    use super::*;
+
+    #[test]
+    fn a_headless_request_owns_the_shared_slot_until_its_finalizer_drops() {
+        let requests = Requests::default();
+        let mut guard = requests
+            .claim_headless("http", Some("conversation"))
+            .unwrap();
+        assert_eq!(
+            requests.active().unwrap().unwrap().session_id.as_deref(),
+            Some("conversation")
+        );
+        assert!(requests.claim("panel").unwrap().is_none());
+        tauri::async_runtime::block_on(guard.run(async { Ok::<_, AiError>(()) })).unwrap();
+        assert!(
+            requests.claim("panel").unwrap().is_none(),
+            "reply persistence still owns the slot"
+        );
+        drop(guard);
+        assert!(requests.active().unwrap().is_none());
+    }
+
+    #[test]
+    fn cancelling_a_headless_request_does_not_release_its_replacement() {
+        let requests = Requests::default();
+        let mut guard = requests
+            .claim_headless("same-id", Some("conversation"))
+            .unwrap();
+        requests
+            .release("same-id")
+            .unwrap()
+            .unwrap()
+            .send(())
+            .unwrap();
+        let replacement = requests
+            .claim_headless("same-id", Some("next-conversation"))
+            .unwrap();
+        let error = tauri::async_runtime::block_on(
+            guard.run(std::future::pending::<Result<(), AiError>>()),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind, "cancelled");
+        drop(guard);
+        assert_eq!(
+            requests.active().unwrap().unwrap().session_id.as_deref(),
+            Some("next-conversation")
+        );
+        drop(replacement);
+        assert!(requests.active().unwrap().is_none());
     }
 }
