@@ -1664,6 +1664,7 @@ impl IPlugFrameTrait for ConformancePlugFrame {
         if !view.is_null() {
             // SAFETY: the caller passes its own live view and rect.
             let view = unsafe { ComRef::<IPlugView>::from_raw_unchecked(view) };
+            // SAFETY: `view` wraps the caller's live view, and `new_size` is the caller's rect.
             let _ = unsafe { view.onSize(new_size) };
         }
         kResultOk
@@ -1867,6 +1868,7 @@ fn pump_run_loop(state: &FrameState, millis: u64) {
             let handler = unsafe {
                 ComRef::<ITimerHandler>::from_raw_unchecked(handler as *mut ITimerHandler)
             };
+            // SAFETY: `handler` is live (see above) and the run loop calls it on the UI thread.
             unsafe { handler.onTimer() };
         }
         if fds.is_empty() {
@@ -1902,6 +1904,7 @@ fn pump_run_loop(state: &FrameState, millis: u64) {
             let handler = unsafe {
                 ComRef::<IEventHandler>::from_raw_unchecked(handler as *mut IEventHandler)
             };
+            // SAFETY: `handler` is live (see above), and `fd` is the descriptor it registered.
             unsafe { handler.onFDIsSet(fd) };
         }
     }
@@ -2198,7 +2201,9 @@ fn run_editor_step(instance: &Vst3Instance) -> StepOutcome {
     let Some(controller) = controller_ref(instance) else {
         return StepOutcome::skipped("no edit controller");
     };
+    // SAFETY: the controller is live and this thread owns the view it creates.
     let raw_view = unsafe { controller.createView(c"editor".as_ptr()) };
+    // SAFETY: `createView` returns an owned reference or null; `from_raw` takes it over.
     let Some(view) = (unsafe { ComPtr::<IPlugView>::from_raw(raw_view) }) else {
         // A null view is how a plugin without an editor answers; that is a
         // capability the plugin lacks, not a host-contract violation.
@@ -2206,6 +2211,7 @@ fn run_editor_step(instance: &Vst3Instance) -> StepOutcome {
     };
     // The editor must claim the X11 embedding platform before a host can
     // attach it; a Wayland-only editor reports the other platform type.
+    // SAFETY: `view` is a live IPlugView owned by this thread.
     if unsafe { view.isPlatformTypeSupported(kPlatformTypeX11EmbedWindowID) } != kResultOk {
         return StepOutcome::fail("the editor does not support the X11EmbedWindowID platform");
     }
@@ -2225,13 +2231,16 @@ fn run_editor_step(instance: &Vst3Instance) -> StepOutcome {
     let Some(frame) = wrapper.to_com_ptr::<IPlugFrame>() else {
         return StepOutcome::fail("could not create the host IPlugFrame");
     };
+    // SAFETY: `view` is a live IPlugView owned by this thread, and `frame` outlives the attachment.
     if unsafe { view.setFrame(frame.as_ptr()) } != kResultOk {
         return StepOutcome::fail("the editor rejected the host plug frame");
     }
+    // SAFETY: `view` is a live IPlugView owned by this thread.
     let can_resize_before = unsafe { view.canResize() } == kResultOk;
     state.window.store(window.xid() as usize, Ordering::Release);
     state.attaching.store(true, Ordering::Release);
     let attached =
+        // SAFETY: `view` is a live IPlugView owned by this thread, and `window` is a mapped X11 window that outlives the attachment.
         unsafe { view.attached(window.xid() as *mut c_void, kPlatformTypeX11EmbedWindowID) };
     state.attaching.store(false, Ordering::Release);
     if attached != kResultOk {
@@ -2251,12 +2260,14 @@ fn run_editor_step(instance: &Vst3Instance) -> StepOutcome {
             right: pending_width,
             bottom: pending_height,
         };
+        // SAFETY: `view` is a live IPlugView owned by this thread, and `pending` lives for the call.
         let _ = unsafe { view.onSize(&mut pending) };
     }
     pump_run_loop(&state, 50);
     let size_after = view_size(&view);
     let Some((after_width, after_height)) = size_after else {
         state.window.store(0, Ordering::Release);
+        // SAFETY: `view` is a live IPlugView owned by this thread; it is detached before it drops.
         let _ = unsafe { view.removed() };
         drop(view);
         return StepOutcome::fail("getSize returned no size after attach");
@@ -2270,10 +2281,14 @@ fn run_editor_step(instance: &Vst3Instance) -> StepOutcome {
         bottom: target_height,
     };
     let calls_before = state.calls.load(Ordering::Acquire);
+    // SAFETY: `frame` and `view` are live, and `target` lives for the call.
     let resize_result = unsafe { frame.resizeView(view.as_ptr(), &mut target) };
     let calls_after = state.calls.load(Ordering::Acquire);
+    // SAFETY: `view` is a live IPlugView owned by this thread.
     let can_resize_after = unsafe { view.canResize() } == kResultOk;
+    // SAFETY: `view` is a live IPlugView owned by this thread; detaching ends the attachment made above.
     let removed = unsafe { view.removed() };
+    // SAFETY: `view` is a live IPlugView owned by this thread; a null frame clears the host frame it holds.
     let _ = unsafe { view.setFrame(ptr::null_mut()) };
     state.window.store(0, Ordering::Release);
     drop(view);

@@ -63,6 +63,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use objc2::MainThreadOnly;
 
 use serde::{Deserialize, Serialize};
+// The editor path (macOS) and the test fixtures are the only users of these.
+#[cfg(any(target_os = "macos", test, feature = "test-support"))]
+use vst3::ComRef;
 #[cfg(any(test, feature = "test-support"))]
 use vst3::Steinberg::IPluginBaseTrait;
 use vst3::Steinberg::Vst::{
@@ -82,15 +85,17 @@ use vst3::Steinberg::Vst::{
 #[cfg(any(test, feature = "test-support"))]
 use vst3::Steinberg::Vst::{IComponentTrait, IConnectionPointTrait};
 use vst3::Steinberg::{
-    IBStream, IBStream_::IStreamSeekMode_, IBStreamTrait, IPlugView, IPluginFactory,
-    IPluginFactory2, char16, int32, int64, kNotImplemented, kResultFalse, kResultOk, tresult,
+    IBStream, IBStream_::IStreamSeekMode_, IBStreamTrait, IPluginFactory, IPluginFactory2, char16,
+    int32, int64, kNotImplemented, kResultOk, tresult,
 };
 #[cfg(target_os = "macos")]
 use vst3::Steinberg::{
     IPlugFrame, IPlugFrameTrait, IPlugViewContentScaleSupport, IPlugViewContentScaleSupportTrait,
     IPlugViewTrait, ViewRect, kInvalidArgument, kPlatformTypeNSView,
 };
-use vst3::{Class, ComPtr, ComRef, ComWrapper, Interface};
+#[cfg(any(target_os = "macos", test, feature = "test-support"))]
+use vst3::Steinberg::{IPlugView, kResultFalse};
+use vst3::{Class, ComPtr, ComWrapper, Interface};
 
 use crate::PluginTransport;
 use crate::host_app::Vst3Host;

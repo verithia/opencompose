@@ -192,6 +192,8 @@ impl EditorWindow {
         static THREADS: Once = Once::new();
         // Xlib is not thread-safe until this runs, and a plugin may call back
         // from its own thread.
+        // SAFETY: `XInitThreads` takes no arguments and the `Once` runs it before this
+        // process makes any other Xlib call through this path.
         THREADS.call_once(|| unsafe {
             XInitThreads();
         });
@@ -218,12 +220,15 @@ impl EditorWindow {
             )
         };
         if window == 0 {
+            // SAFETY: `display` is the live connection opened above and nothing else uses it.
             unsafe { XCloseDisplay(display) };
             return Err("XCreateSimpleWindow returned 0".to_string());
         }
         if let Ok(name) = CString::new(title) {
+            // SAFETY: `display` and `window` are live, and `name` outlives the call.
             unsafe { XStoreName(display, window, name.as_ptr()) };
         }
+        // SAFETY: `display` and `window` are live connection and window handles.
         unsafe {
             XMapWindow(display, window);
             XSync(display, 0);
@@ -244,6 +249,8 @@ impl EditorWindow {
         static THREADS: Once = Once::new();
         // Xlib is not thread-safe until this runs, and a plugin may call back
         // from its own thread.
+        // SAFETY: `XInitThreads` takes no arguments and the `Once` runs it before this
+        // process makes any other Xlib call through this path.
         THREADS.call_once(|| unsafe {
             XInitThreads();
         });
@@ -270,10 +277,12 @@ impl EditorWindow {
             )
         };
         if window == 0 {
+            // SAFETY: `display` is the live connection opened above and nothing else uses it.
             unsafe { XCloseDisplay(display) };
             return Err("XCreateSimpleWindow returned 0".to_string());
         }
         if let Ok(name) = CString::new(title) {
+            // SAFETY: `display` and `window` are live, and `name` outlives the call.
             unsafe { XStoreName(display, window, name.as_ptr()) };
         }
         // SAFETY: `display` and `window` are live for the whole block.
@@ -348,6 +357,8 @@ impl Drop for EditorWindow {
 /// reports the capability as absent instead of failing each plugin.
 pub fn display_available() -> bool {
     static THREADS: Once = Once::new();
+    // SAFETY: `XInitThreads` takes no arguments and the `Once` runs it before this
+    // process makes any other Xlib call through this path.
     THREADS.call_once(|| unsafe {
         XInitThreads();
     });
@@ -356,6 +367,7 @@ pub fn display_available() -> bool {
     if display.is_null() {
         return false;
     }
+    // SAFETY: `display` is the connection opened above, closed exactly once here.
     unsafe { XCloseDisplay(display) };
     true
 }
