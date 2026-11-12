@@ -3489,6 +3489,7 @@ providers:
         );
         crate::private_fs::write_atomic(&path, yaml.as_bytes()).unwrap();
         let guard = crate::ai_service::test_config_path(path.clone());
+        crate::ai_service::assume_no_stored_key_for_test(id);
         (path, guard)
     }
 

@@ -1437,6 +1437,16 @@ pub(crate) fn test_config_path(path: std::path::PathBuf) -> TestConfigPathGuard 
     TestConfigPathGuard { _lock: lock }
 }
 
+/// Records "no key stored" for a provider of the test config, so a request
+/// test does not depend on what this machine's OS credential store answers (a
+/// headless Linux runner has none and refuses the read).
+#[cfg(test)]
+pub(crate) fn assume_no_stored_key_for_test(provider_id: &str) {
+    if let Ok(entry) = provider(provider_id) {
+        remember_verdict(&auth::api_key_account(&entry), KeyVerdict::Absent);
+    }
+}
+
 #[cfg(test)]
 pub(crate) struct TestConfigPathGuard {
     _lock: std::sync::MutexGuard<'static, ()>,
