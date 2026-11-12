@@ -123,7 +123,8 @@ jobs:
           cargo check -p oc-sample --bin oc-sample-provider --features local-provider-runner --locked
 
       - name: First-block latency (serial)
-        run: cargo test -p oc-gui --lib first_block_tests:: -- --ignored --test-threads=1 --skip review_
+        run: |
+          cargo test -p oc-gui --lib first_block_tests:: -- --ignored --test-threads=1 --skip review_
 
       - name: DSP dependencies stay device-free
         run: |

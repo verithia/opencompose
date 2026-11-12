@@ -64,7 +64,7 @@ isolation.
 | Type | Role |
 |---|---|
 | [`PluginInfo`](../api/oc_host/struct.PluginInfo.html) | One discovered plugin: format, id, name, vendor, path, category. |
-| [`ClapInstance`](../api/oc_host/clap_instance/struct.ClapInstance.html), [`Vst3Instance`](../api/oc_host/vst3_instance/struct.Vst3Instance.html), `Vst2Instance`, [`AuInstance`](../api/oc_host/au_instance/struct.AuInstance.html), `Lv2Instance` | One loaded plugin per format, each usable as an effect or an instrument. |
+| [`ClapInstance`](../api/oc_host/clap_instance/struct.ClapInstance.html), [`Vst3Instance`](../api/oc_host/vst3_instance/struct.Vst3Instance.html), `Vst2Instance`, `AuInstance` (macOS), `Lv2Instance` | One loaded plugin per format, each usable as an effect or an instrument. |
 | [`ParamSurface`](../api/oc_host/params/enum.ParamSurface.html) | The parameters a plugin exposes, with units, ranges and edit handling. |
 | [`ProgramEnumeration`](../api/oc_host/programs/enum.ProgramEnumeration.html) | Program list and selection capability for one format. |
 | `PluginStateContext`, `encode_plugin_state`, `decode_plugin_state` | Storing a plugin's state in a project, with the format and version it was written for. |
