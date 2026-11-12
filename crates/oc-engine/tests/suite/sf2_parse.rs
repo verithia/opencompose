@@ -385,26 +385,6 @@ fn shared_loading_parses_a_bank_once() {
 }
 
 #[test]
-fn a_held_bank_is_reused_after_other_banks_evict_it() {
-    let mut font = Font::new("Held");
-    font.single_preset(Sample::sine("tone", 44_100, 60, 441.0, 64), 0, 127);
-    let path = font.write_temp();
-    let first = SoundFont::load_shared(&path).unwrap();
-    // More banks than stay resident push the first one out of the cache.
-    let others: Vec<_> = (0..12)
-        .map(|index| {
-            let mut other = Font::new(&format!("Other {index}"));
-            other.single_preset(Sample::sine("tone", 44_100, 60, 441.0, 64), 0, 127);
-            let path = other.write_temp();
-            SoundFont::load_shared(&path).unwrap()
-        })
-        .collect();
-    let second = SoundFont::load_shared(&path).unwrap();
-    assert!(Arc::ptr_eq(&first, &second));
-    drop(others);
-}
-
-#[test]
 fn a_foreign_file_is_rejected_with_a_useful_message() {
     let error = SoundFont::parse(b"not a soundfont at all").unwrap_err();
     assert!(error.to_string().contains("RIFF"), "{error}");

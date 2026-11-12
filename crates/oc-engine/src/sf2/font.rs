@@ -1808,19 +1808,48 @@ mod tests {
             .iter()
             .map(|path| SoundFont::load_shared(path).expect("the bank parses"))
             .collect();
+        // Only the cache holds the banks from here on, except the first.
+        let first = Arc::clone(&loaded[0]);
+        let second = Arc::downgrade(&loaded[1]);
+        drop(loaded);
         // Reloading the first bank makes it the most recently used, so the
         // second bank is the one the next distinct load evicts.
         assert!(Arc::ptr_eq(
-            &loaded[0],
+            &first,
             &SoundFont::load_shared(&paths[0]).expect("the first bank is cached")
         ));
 
         SoundFont::load_shared(&paths[SHARED_BANKS_RESIDENT]).expect("the extra bank parses");
-        let evicted = SoundFont::load_shared(&paths[1]).expect("the evicted bank parses again");
-        assert!(!Arc::ptr_eq(&loaded[1], &evicted));
+        assert!(
+            second.upgrade().is_none(),
+            "an evicted bank nobody holds is released"
+        );
+        SoundFont::load_shared(&paths[1]).expect("the evicted bank parses again");
         assert!(Arc::ptr_eq(
-            &loaded[0],
+            &first,
             &SoundFont::load_shared(&paths[0]).expect("the recent bank is cached")
+        ));
+    }
+
+    #[test]
+    fn an_evicted_bank_still_held_is_reused_not_parsed_again() {
+        let _guard = take_cache_for_test();
+        let dir = TempDir::new("held");
+        let bytes = fixture_bytes();
+        let paths: Vec<PathBuf> = (0..=SHARED_BANKS_RESIDENT)
+            .map(|index| {
+                let path = dir.0.join(format!("bank-{index}.sf2"));
+                write_fixture(&path, &bytes);
+                path
+            })
+            .collect();
+        let held = SoundFont::load_shared(&paths[0]).expect("the bank parses");
+        for path in &paths[1..] {
+            SoundFont::load_shared(path).expect("the bank parses");
+        }
+        assert!(Arc::ptr_eq(
+            &held,
+            &SoundFont::load_shared(&paths[0]).expect("the held bank is found")
         ));
     }
 
