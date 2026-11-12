@@ -526,6 +526,13 @@ impl IAudioProcessorTrait for FakePlugin {
             let events = data.inputEvents;
             // SAFETY: The process caller retains this non-null IEventList and its matching vtable for the complete processing call.
             let count = unsafe { ((*(*events).vtbl).getEventCount)(events) };
+            // VST3 enum constants are `c_int` on Windows and `c_uint` elsewhere, while the
+            // SDK's flag and event-type fields are `int32`: the casts are no-ops on
+            // Windows only.
+            #[allow(clippy::unnecessary_cast)]
+            const NOTE_ON_EVENT: i32 = EventTypes_::kNoteOnEvent as i32;
+            #[allow(clippy::unnecessary_cast)]
+            const NOTE_OFF_EVENT: i32 = EventTypes_::kNoteOffEvent as i32;
             for index in 0..count {
                 // SAFETY: Event is a C ABI scalar/union record with a valid zero representation; getEvent initializes the active payload before use.
                 let mut event: Event = unsafe { std::mem::zeroed() };
@@ -535,14 +542,14 @@ impl IAudioProcessorTrait for FakePlugin {
                 if unsafe { get_event(events, index, &mut event) } != kResultOk {
                     continue;
                 }
-                if event.r#type as i32 == EventTypes_::kNoteOnEvent as i32 {
+                if event.r#type as i32 == NOTE_ON_EVENT {
                     self.control.last_note_channel.store(
                         // SAFETY: The event type was checked as kNoteOnEvent, so noteOn is the active union payload.
                         unsafe { event.__field0.noteOn.channel } as i32,
                         Ordering::Relaxed,
                     );
                     self.control.active_notes.fetch_add(1, Ordering::Relaxed);
-                } else if event.r#type as i32 == EventTypes_::kNoteOffEvent as i32
+                } else if event.r#type as i32 == NOTE_OFF_EVENT
                     && self.control.active_notes.load(Ordering::Relaxed) > 0
                 {
                     self.control.active_notes.fetch_sub(1, Ordering::Relaxed);
@@ -938,6 +945,13 @@ impl INoteExpressionControllerTrait for FakeEditController {
         }
         // SAFETY: The unsafe COM caller supplies writable NoteExpressionTypeInfo storage; the null pointer was rejected.
         let info = unsafe { &mut *info };
+        // VST3 enum constants are `c_int` on Windows and `c_uint` elsewhere, while the
+        // SDK's flag and event-type fields are `int32`: the casts are no-ops on
+        // Windows only.
+        #[allow(clippy::unnecessary_cast)]
+        const NOTE_EXPRESSION_BIPOLAR: i32 = NoteExpressionTypeFlags_::kIsBipolar as i32;
+        #[allow(clippy::unnecessary_cast)]
+        const NOTE_EXPRESSION_ABSOLUTE: i32 = NoteExpressionTypeFlags_::kIsAbsolute as i32;
         match index {
             0 => {
                 info.typeId = 1;
@@ -950,7 +964,7 @@ impl INoteExpressionControllerTrait for FakeEditController {
                     stepCount: 0,
                 };
                 info.associatedParameterId = FAKE_PARAM_ID;
-                info.flags = NoteExpressionTypeFlags_::kIsBipolar as i32;
+                info.flags = NOTE_EXPRESSION_BIPOLAR;
                 kResultOk
             }
             1 => {
@@ -964,7 +978,7 @@ impl INoteExpressionControllerTrait for FakeEditController {
                     maximum: 1.0,
                     stepCount: 0,
                 };
-                info.flags = NoteExpressionTypeFlags_::kIsAbsolute as i32;
+                info.flags = NOTE_EXPRESSION_ABSOLUTE;
                 kResultOk
             }
             _ => kResultFalse,

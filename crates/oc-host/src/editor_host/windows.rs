@@ -112,6 +112,7 @@ impl FrameState {
         };
         // SAFETY: the instance keeps the view alive while the window is open.
         let view = unsafe { ComRef::<IPlugView>::from_raw_unchecked(view) };
+        // SAFETY: `view` wraps the instance's live view and `rect` is a local that outlives the call.
         let _ = unsafe { view.onSize(&mut rect) };
     }
 
@@ -121,6 +122,7 @@ impl FrameState {
         if !view.is_null() {
             // SAFETY: the instance keeps the view alive until the process exits.
             let view = unsafe { ComRef::<IPlugView>::from_raw_unchecked(view) };
+            // SAFETY: `view` wraps the instance's live view, which is still attached to `window`.
             let _ = unsafe { view.removed() };
         }
         self.removed.store(true, Ordering::Release);
@@ -187,12 +189,12 @@ impl IPlugFrameTrait for PlugFrame {
             }
             client = client_size(window).unwrap_or(client);
         }
-        if self.state.replace_size(client) != client {
-            if !view.is_null() {
-                // SAFETY: the caller passes its own live view and rect.
-                let view = unsafe { ComRef::<IPlugView>::from_raw_unchecked(view) };
-                let _ = unsafe { view.onSize(new_size) };
-            }
+        // `replace_size` runs first and always records the new size.
+        if self.state.replace_size(client) != client && !view.is_null() {
+            // SAFETY: the caller passes its own live view and rect.
+            let view = unsafe { ComRef::<IPlugView>::from_raw_unchecked(view) };
+            // SAFETY: `view` wraps the caller's live view and `new_size` is the caller's rect for this call.
+            let _ = unsafe { view.onSize(new_size) };
         }
         kResultOk
     }
@@ -222,6 +224,7 @@ fn outer_size(client: (i32, i32)) -> (i32, i32) {
 }
 
 fn client_size(window: HWND) -> Option<(i32, i32)> {
+    // SAFETY: `RECT` is plain integers, so all zeroes is a valid value.
     let mut rect: RECT = unsafe { std::mem::zeroed() };
     // SAFETY: `window` is a live editor window and `rect` outlives the call.
     if unsafe { GetClientRect(window, &mut rect) } == 0 {
@@ -306,6 +309,7 @@ pub fn run() {
     eprintln!("oc-vst3-editor-host: creating editor");
     // SAFETY: the controller is live and this is the thread that will own the view.
     let raw_view = unsafe { controller.createView(c"editor".as_ptr()) };
+    // SAFETY: `raw_view` is the owned reference `createView` returned, or null, which `from_raw` maps to `None`.
     let Some(view) = (unsafe { ComPtr::<IPlugView>::from_raw(raw_view) }) else {
         super::fail("the plugin did not create an editor view");
     };
@@ -440,6 +444,7 @@ pub fn run() {
     // process leaves through `exit_process`, so the instance is never dropped.
     std::mem::forget(instance);
 
+    // SAFETY: `MSG` is plain data, so all zeroes is a valid value.
     let mut message: MSG = unsafe { std::mem::zeroed() };
     loop {
         // SAFETY: `message` is valid and the queue belongs to this thread.

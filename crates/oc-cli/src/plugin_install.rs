@@ -1570,7 +1570,9 @@ mod tests {
             catalog: None,
             index: None,
             public_key: None,
-            platform: Some(host_platform()),
+            // The macOS build is the disk-image hand-off under test; a dry run
+            // plans any platform, so the answer is the same on every host.
+            platform: Some("macos-aarch64".into()),
             format: None,
             into: Some(target.0.clone()),
             dry_run: true,

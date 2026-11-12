@@ -134,7 +134,8 @@ jobs:
           fi
 
       - name: Cargo test
-        run: cargo test --workspace
+        # Every failing test binary is reported, not only the first.
+        run: cargo test --workspace --no-fail-fast
 
       - name: Owned VST3 lifecycle (CPU-only native fixture)
         timeout-minutes: 10
@@ -231,7 +232,9 @@ jobs:
 
   frontend:
     name: Frontend (TypeScript + Vitest + Vite)
-    runs-on: ubuntu-latest
+    # Playwright publishes no Chromium build for Ubuntu 26.04 yet, and the
+    # layout checks need one; move to ubuntu-latest once it does.
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: crates/oc-gui/frontend

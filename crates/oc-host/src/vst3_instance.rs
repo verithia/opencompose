@@ -2298,6 +2298,13 @@ impl Vst3Instance {
         if result != Ok(kResultOk) {
             return None;
         }
+        // VST3 enum constants are `c_int` on Windows and `c_uint` elsewhere, while the
+        // SDK's flag and event-type fields are `int32`: the casts are no-ops on
+        // Windows only.
+        #[allow(clippy::unnecessary_cast)]
+        const NOTE_EXPRESSION_BIPOLAR: i32 = NoteExpressionTypeFlags_::kIsBipolar as i32;
+        #[allow(clippy::unnecessary_cast)]
+        const NOTE_EXPRESSION_ONE_SHOT: i32 = NoteExpressionTypeFlags_::kIsOneShot as i32;
         Some(Vst3NoteExpression {
             type_id: info.typeId,
             name: char16_to_string(&info.title),
@@ -2309,8 +2316,8 @@ impl Vst3Instance {
             maximum: info.valueDesc.maximum,
             step_count: info.valueDesc.stepCount,
             associated_parameter: info.associatedParameterId,
-            bipolar: info.flags & NoteExpressionTypeFlags_::kIsBipolar as i32 != 0,
-            one_shot: info.flags & NoteExpressionTypeFlags_::kIsOneShot as i32 != 0,
+            bipolar: info.flags & NOTE_EXPRESSION_BIPOLAR != 0,
+            one_shot: info.flags & NOTE_EXPRESSION_ONE_SHOT != 0,
         })
     }
 

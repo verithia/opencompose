@@ -6,12 +6,14 @@
 //! project with no path are left unsaved, and a failed write leaves the file
 //! and its directory as they were.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::commands::ai::apply_edit_to_project;
 use crate::commands::preview::{accept_inner, begin_inner, cancel_inner};
 use crate::commands::shared::resync_with_undo;
-use crate::project_persist::{after_tool, backup_path, flush_exit, flush_state, logged};
+#[cfg(unix)]
+use crate::project_persist::flush_exit;
+use crate::project_persist::{after_tool, backup_path, flush_state, logged};
 use crate::state::{AppState, UndoEdit, UndoScope};
 use serde_json::json;
 
@@ -112,7 +114,8 @@ fn set_mute(state: &AppState, mute: bool) -> String {
     inner.dsl_source.clone()
 }
 
-fn names(dir: &Path) -> Vec<String> {
+#[cfg(unix)]
+fn names(dir: &std::path::Path) -> Vec<String> {
     std::fs::read_dir(dir)
         .unwrap()
         .filter_map(Result::ok)

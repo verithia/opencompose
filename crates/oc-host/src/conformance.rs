@@ -1792,6 +1792,7 @@ impl IPlugFrameTrait for ConformancePlugFrame {
         if !view.is_null() {
             // SAFETY: the caller passes its own live view and rect.
             let view = unsafe { ComRef::<IPlugView>::from_raw_unchecked(view) };
+            // SAFETY: `view` wraps the caller's live view and `new_size` is the caller's rect for this call.
             let _ = unsafe { view.onSize(new_size) };
         }
         kResultOk
@@ -1922,6 +1923,7 @@ fn pump_run_loop(millis: u64) {
         let mut message: MSG = unsafe { std::mem::zeroed() };
         // SAFETY: the queue belongs to the calling thread and `message` is live.
         while unsafe { PeekMessageW(&mut message, ptr::null_mut(), 0, 0, PM_REMOVE) } != 0 {
+            // SAFETY: `message` was filled by `PeekMessageW` for this thread's queue.
             unsafe {
                 TranslateMessage(&message);
                 DispatchMessageW(&message);
@@ -1948,17 +1950,21 @@ fn run_editor_step(instance: &Vst3Instance) -> StepOutcome {
     // A plugin view may create OLE controls of its own; OLE initialises COM in
     // apartment-threaded mode, and a second call on the same thread is a no-op
     // that returns `S_FALSE`.
+    // SAFETY: the reserved argument is null; a repeated call on this thread is a counted no-op.
     unsafe { OleInitialize(ptr::null()) };
 
     let Some(controller) = controller_ref(instance) else {
         return StepOutcome::skipped("no edit controller");
     };
+    // SAFETY: `controller` is the instance's live edit controller and the name is a NUL-terminated literal.
     let raw_view = unsafe { controller.createView(c"editor".as_ptr()) };
+    // SAFETY: `raw_view` is the owned reference `createView` returned, or null, which `from_raw` maps to `None`.
     let Some(view) = (unsafe { ComPtr::<IPlugView>::from_raw(raw_view) }) else {
         // A null view is how a plugin without an editor answers; that is a
         // capability the plugin lacks, not a host-contract violation.
         return StepOutcome::skipped("createView returned null: the plugin has no editor");
     };
+    // SAFETY: `view` is a live `IPlugView` owned by this function.
     if unsafe { view.isPlatformTypeSupported(kPlatformTypeHWND) } != kResultOk {
         return StepOutcome::fail("the editor does not support the HWND platform");
     }
@@ -1996,6 +2002,7 @@ fn run_editor_step(instance: &Vst3Instance) -> StepOutcome {
     }
     // The window is never shown: no `WS_VISIBLE`, and it opens offscreen. Some
     // editors refuse a zero-size parent, so it starts at the view's own size.
+    // SAFETY: the class was registered above with `module`, and both name buffers are NUL-terminated and outlive the call.
     let window = unsafe {
         CreateWindowExW(
             0,
@@ -2014,6 +2021,7 @@ fn run_editor_step(instance: &Vst3Instance) -> StepOutcome {
     };
     if window.is_null() {
         let error = std::io::Error::last_os_error();
+        // SAFETY: the class was registered above with this name and module, and no window was created from it.
         unsafe { UnregisterClassW(class_name.as_ptr(), module) };
         return StepOutcome::fail(format!(
             "CreateWindowExW failed, so this session cannot host an editor: {error}"
@@ -2025,26 +2033,32 @@ fn run_editor_step(instance: &Vst3Instance) -> StepOutcome {
         state: Arc::clone(&state),
     });
     let Some(frame) = wrapper.to_com_ptr::<IPlugFrame>() else {
+        // SAFETY: `window` was created above on this thread and no view is attached to it, and the class was registered here with this name and module.
         unsafe {
             DestroyWindow(window);
             UnregisterClassW(class_name.as_ptr(), module);
         }
         return StepOutcome::fail("could not create the host IPlugFrame");
     };
+    // SAFETY: `view` is live and `frame` stays alive until the frame is cleared below.
     if unsafe { view.setFrame(frame.as_ptr()) } != kResultOk {
+        // SAFETY: `window` was created above on this thread and no view is attached to it, and the class was registered here with this name and module.
         unsafe {
             DestroyWindow(window);
             UnregisterClassW(class_name.as_ptr(), module);
         }
         return StepOutcome::fail("the editor rejected the host plug frame");
     }
+    // SAFETY: `view` is a live `IPlugView` owned by this function.
     let can_resize_before = unsafe { view.canResize() } == kResultOk;
     state.window.store(window as usize, Ordering::Release);
     state.attaching.store(true, Ordering::Release);
+    // SAFETY: `window` is a live HWND created by this thread, and the host frame is set.
     let attached = unsafe { view.attached(window, kPlatformTypeHWND) };
     state.attaching.store(false, Ordering::Release);
     if attached != kResultOk {
         state.window.store(0, Ordering::Release);
+        // SAFETY: `window` was created above on this thread and no view is attached to it, and the class was registered here with this name and module.
         unsafe {
             DestroyWindow(window);
             UnregisterClassW(class_name.as_ptr(), module);
@@ -2057,6 +2071,7 @@ fn run_editor_step(instance: &Vst3Instance) -> StepOutcome {
         .unwrap_or_else(|error| error.into_inner())
         .take()
     {
+        // SAFETY: `window` is the live HWND created above on this thread.
         unsafe {
             windows_sys::Win32::UI::WindowsAndMessaging::SetWindowPos(
                 window,
@@ -2076,14 +2091,17 @@ fn run_editor_step(instance: &Vst3Instance) -> StepOutcome {
             right: pending_width,
             bottom: pending_height,
         };
+        // SAFETY: `view` is attached and `pending` is a local rect that outlives the call.
         let _ = unsafe { view.onSize(&mut pending) };
     }
     pump_run_loop(250);
     let size_after = view_size(&view);
     let Some((after_width, after_height)) = size_after else {
         state.window.store(0, Ordering::Release);
+        // SAFETY: `view` is attached to `window`, which is still alive.
         let _ = unsafe { view.removed() };
         drop(view);
+        // SAFETY: `window` was created above on this thread and no view is attached to it, and the class was registered here with this name and module.
         unsafe {
             DestroyWindow(window);
             UnregisterClassW(class_name.as_ptr(), module);
@@ -2099,17 +2117,24 @@ fn run_editor_step(instance: &Vst3Instance) -> StepOutcome {
         bottom: target_height,
     };
     let calls_before = state.calls.load(Ordering::Acquire);
+    // SAFETY: `frame` and `view` are live, and `target` is a local rect that outlives the call.
     let resize_result = unsafe { frame.resizeView(view.as_ptr(), &mut target) };
     let calls_after = state.calls.load(Ordering::Acquire);
     // Read the window back so the report says whether the host frame actually
     // moved it, not only that the plugin called back.
+    // SAFETY: `RECT` is plain integers, so all zeroes is a valid value.
     let mut client: RECT = unsafe { std::mem::zeroed() };
+    // SAFETY: `window` is the live HWND created above and `client` is a writable local.
     let client_ok = unsafe { GetClientRect(window, &mut client) } != 0;
+    // SAFETY: `view` is a live `IPlugView` owned by this function.
     let can_resize_after = unsafe { view.canResize() } == kResultOk;
+    // SAFETY: `view` is attached to `window`, which is still alive.
     let removed = unsafe { view.removed() };
+    // SAFETY: `view` is live and detached; a null frame clears its host reference.
     let _ = unsafe { view.setFrame(ptr::null_mut()) };
     state.window.store(0, Ordering::Release);
     drop(view);
+    // SAFETY: `window` was created above on this thread and no view is attached to it, and the class was registered here with this name and module.
     unsafe {
         DestroyWindow(window);
         UnregisterClassW(class_name.as_ptr(), module);
