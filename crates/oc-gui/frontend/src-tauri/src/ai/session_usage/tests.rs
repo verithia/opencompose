@@ -65,6 +65,7 @@ fn accounting_queued_preparation_cannot_mutate_a_replaced_session_incarnation() 
                     &[serde_json::json!({"role":"user", "content":"Old queued request"})],
                     Some(Path::new("old-project.ocp")),
                     PrepareContext {
+                        snapshot: None,
                         overhead: 0,
                         context_length: 1,
                         facts: &ProjectFacts::default(),
@@ -111,6 +112,7 @@ fn accounting_queued_preparation_cannot_mutate_a_replaced_session_incarnation() 
             &[serde_json::json!({"role":"user", "content":"Current request"})],
             None,
             PrepareContext {
+                snapshot: None,
                 overhead: 0,
                 context_length: 100_000,
                 facts: &ProjectFacts::default(),

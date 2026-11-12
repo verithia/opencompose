@@ -1307,7 +1307,16 @@ pub async fn ai_chat(
                 .update()
                 .incarnation;
             move || {
-                crate::commands::prepare_turn_for(&app, &p, &messages, &session_id, &incarnation)
+                crate::commands::prepare_turn_for(
+                    &app,
+                    &p,
+                    &messages,
+                    crate::commands::SavedTurnBinding {
+                        id: &session_id,
+                        incarnation: &incarnation,
+                        project: None,
+                    },
+                )
             }
         })
         .await

@@ -4145,6 +4145,7 @@ providers:
                 &incoming,
                 None,
                 crate::ai::sessions::PrepareContext {
+                    snapshot: None,
                     overhead: 0,
                     context_length: 1_000_000,
                     facts: &crate::ai::sessions::ProjectFacts::default(),
@@ -4212,6 +4213,7 @@ providers:
                 std::slice::from_ref(&row),
                 None,
                 crate::ai::sessions::PrepareContext {
+                    snapshot: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &facts,
@@ -4226,6 +4228,7 @@ providers:
                 &[json!({"role":"user", "source_render": path})],
                 None,
                 crate::ai::sessions::PrepareContext {
+                    snapshot: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &facts,

@@ -45,18 +45,7 @@ impl Binding {
     }
 
     fn validate_project(&self, actual: Option<&Path>) -> Result<(), String> {
-        let expected = self
-            .project
-            .canonicalize()
-            .map_err(|error| error.to_string())?;
-        let actual = actual
-            .ok_or("No project is open")?
-            .canonicalize()
-            .map_err(|error| error.to_string())?;
-        if expected != actual {
-            return Err("The saved turn belongs to another project".into());
-        }
-        Ok(())
+        commands::validate_saved_project(&self.project, actual)
     }
 }
 
@@ -94,14 +83,22 @@ impl SavedTurn {
         .map_err(|error| AiError::new(error.code.as_str(), error.message))?;
         let incarnation = lease.update().incarnation;
         stats.set_accounting(lease);
-        let prepared =
-            commands::prepare_turn_for(app, provider, messages, &binding.id, &incarnation)
-                .map_err(|error| AiError::new("session_save", error))
-                .and_then(|prepared| {
-                    prepared.ok_or_else(|| {
-                        AiError::new("session_save", "The saved conversation cannot be replayed")
-                    })
-                });
+        let prepared = commands::prepare_turn_for(
+            app,
+            provider,
+            messages,
+            commands::SavedTurnBinding {
+                id: &binding.id,
+                incarnation: &incarnation,
+                project: Some(&binding.project),
+            },
+        )
+        .map_err(|error| AiError::new("session_save", error))
+        .and_then(|prepared| {
+            prepared.ok_or_else(|| {
+                AiError::new("session_save", "The saved conversation cannot be replayed")
+            })
+        });
         let prepared = match prepared {
             Ok(prepared) => prepared,
             Err(error) => {

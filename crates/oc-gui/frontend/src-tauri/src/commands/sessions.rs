@@ -273,6 +273,25 @@ pub struct PreparedTurn {
     pub saved_auditions: Vec<Value>,
 }
 
+/// Identity captured by the request owner, not the active panel selection.
+pub struct SavedTurnBinding<'a> {
+    pub id: &'a str,
+    pub incarnation: &'a str,
+    pub project: Option<&'a Path>,
+}
+
+pub(crate) fn validate_saved_project(expected: &Path, actual: Option<&Path>) -> Result<(), String> {
+    let expected = expected.canonicalize().map_err(|error| error.to_string())?;
+    let actual = actual
+        .ok_or("No project is open")?
+        .canonicalize()
+        .map_err(|error| error.to_string())?;
+    if expected != actual {
+        return Err("The saved turn belongs to another project".into());
+    }
+    Ok(())
+}
+
 /// Resolves the active session for the open workspace (creating one on the first
 /// turn), appends what the request adds, and returns what to send.
 ///
@@ -282,16 +301,19 @@ pub fn prepare_turn_for(
     app: &tauri::AppHandle,
     provider: &AiProviderEntry,
     messages: &Value,
-    session_id: &str,
-    incarnation: &str,
+    binding: SavedTurnBinding<'_>,
 ) -> Result<Option<PreparedTurn>, String> {
     let state = app.state::<AppState>();
-    let (project, place, facts) = {
+    let (project, place, facts, source) = {
         let inner = state.lock_inner();
+        if let Some(expected) = binding.project {
+            validate_saved_project(expected, inner.file_path.as_deref())?;
+        }
         let project = project_of(None, &inner);
         let place = crate::commands::workspace::scoped_workspace(&inner, None);
-        (project, place, facts(&inner))
+        (project, place, facts(&inner), inner.dsl_source.clone())
     };
+    let session_id = binding.id;
     let store = store();
     let key = store.workspace_key(place.as_deref());
     let (_, meta) = store.find(session_id)?;
@@ -315,13 +337,14 @@ pub fn prepare_turn_for(
         incoming,
         project.as_deref(),
         crate::ai::sessions::PrepareContext {
+            snapshot: Some(&source),
             overhead,
             context_length: context,
             facts: &facts,
             provider: &provider.id,
             model: &provider.model,
         },
-        Some(incarnation),
+        Some(binding.incarnation),
     )?;
     let saved = match prepared.live {
         Some(live) => live,

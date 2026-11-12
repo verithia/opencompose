@@ -25,6 +25,8 @@ mod artifacts;
 pub(super) mod lookup;
 #[path = "session_message.rs"]
 mod message_protocol;
+#[path = "session_versions.rs"]
+mod versions;
 use crate::private_fs;
 use message_protocol::{MessageKind, MessageMeta};
 use serde::{Deserialize, Serialize};
@@ -247,6 +249,8 @@ pub struct Compaction {
 
 /// Shared context for saving and compacting one model turn.
 pub struct PrepareContext<'a> {
+    /// The current document, captured with the request's project identity.
+    pub snapshot: Option<&'a str>,
     pub overhead: u64,
     pub context_length: u64,
     pub facts: &'a ProjectFacts,
@@ -578,11 +582,21 @@ impl Store {
         };
         let dir = self.root.join(&key).join(&meta.id);
         private_fs::ensure_dir(&dir).map_err(|error| format!("sessions: {error}"))?;
-        if let Some(inherited) = inherited.filter(|messages| !messages.is_empty()) {
-            write_records(&dir, &[turn_record(&at, inherited)])?;
+        let created = (|| {
+            if let Some(inherited) = inherited.filter(|messages| !messages.is_empty()) {
+                if let Some(parent) = &parent {
+                    let (parent_dir, _) = self.find(&parent.id)?;
+                    versions::copy_references(&parent_dir, &dir, &inherited)?;
+                }
+                write_records(&dir, &[turn_record(&at, inherited)])?;
+            }
+            super::session_usage::initialize(&dir).map_err(|error| error.message)?;
+            write_meta(&dir, &meta)
+        })();
+        if let Err(error) = created {
+            let _ = std::fs::remove_dir_all(&dir);
+            return Err(error);
         }
-        super::session_usage::initialize(&dir).map_err(|error| error.message)?;
-        write_meta(&dir, &meta)?;
         self.prune(&key, &meta.id)?;
         Ok(meta)
     }
@@ -845,34 +859,15 @@ impl Store {
     /// document costs one file however many messages carry it.
     pub fn snapshot_dsl(&self, id: &str, dsl: &str) -> Result<String, String> {
         let _lock = self.mutation_lock()?;
-        use sha2::{Digest, Sha256};
         let (dir, _) = self.find(id)?;
-        let hash = format!("{:x}", Sha256::digest(dsl.as_bytes()));
-        let versions = dir.join("versions");
-        std::fs::create_dir_all(&versions).map_err(|error| format!("sessions: {error}"))?;
-        let path = versions.join(format!("{hash}.ocp"));
-        if !path.is_file() {
-            private_fs::write_atomic(&path, dsl.as_bytes())
-                .map_err(|error| format!("sessions: {error}"))?;
-        }
-        Ok(hash)
+        versions::save(&dir, dsl)
     }
 
     /// The DSL a snapshot holds. The hash is validated as hex before it is used
     /// as a file name, so a caller cannot address another file.
     pub fn dsl_version(&self, id: &str, hash: &str) -> Result<String, String> {
-        use sha2::{Digest, Sha256};
         let (dir, _) = self.find(id)?;
-        if hash.len() != 64 || !hash.chars().all(|c| c.is_ascii_hexdigit()) {
-            return Err("Not a DSL snapshot id".into());
-        }
-        let path = dir.join("versions").join(format!("{hash}.ocp"));
-        let text = std::fs::read_to_string(&path).map_err(|error| format!("sessions: {error}"))?;
-        let actual = format!("{:x}", Sha256::digest(text.as_bytes()));
-        if actual != hash {
-            return Err("The saved DSL version does not match its id".into());
-        }
-        Ok(text)
+        versions::read(&dir, hash)
     }
 
     /// The history before compaction, for the panel's original view.
@@ -913,6 +908,7 @@ impl Store {
         incarnation: Option<&str>,
     ) -> Result<Prepared, String> {
         let PrepareContext {
+            snapshot,
             overhead,
             context_length,
             facts,
@@ -940,16 +936,18 @@ impl Store {
             .filter_map(|message| message["tool_call_id"].as_str())
             .collect();
         let closed = close_unanswered_round(&mut pending, &answered);
-        if !closed.is_empty() {
-            append_records(&dir, &[turn_record(&now(), closed)])?;
-        }
         let start = pending.len();
         let (appended, absorbed) = absorb(&mut pending, &filtered);
+        // A version and its first transcript reference share the store lock,
+        // so collection cannot remove the version between the two writes.
+        versions::attach(&dir, &mut pending[start..], snapshot)?;
         let inline_audio = filtered
             .iter()
             .any(|message| message.get("input_audio").is_some());
-        if appended > 0 {
-            append_records(&dir, &[turn_record(&now(), pending[start..].to_vec())])?;
+        if appended > 0 || !closed.is_empty() {
+            let mut added = closed;
+            added.extend_from_slice(&pending[start..]);
+            append_records(&dir, &[turn_record(&now(), added)])?;
         }
         let saved_auditions = pending[start..]
             .iter()
@@ -3465,6 +3463,7 @@ mod tests {
                 &history,
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
+                    snapshot: None,
                     overhead: 0,
                     context_length: 1_000_000,
                     facts: &current,
@@ -3492,6 +3491,7 @@ mod tests {
                 &[user("Continue")],
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
+                    snapshot: None,
                     overhead: 0,
                     context_length: 1_000_000,
                     facts: &current,
@@ -3557,6 +3557,7 @@ mod tests {
                 &history,
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
+                    snapshot: None,
                     overhead: 0,
                     context_length: 1_000_000,
                     facts: &current,
@@ -3579,6 +3580,7 @@ mod tests {
                 &stale,
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
+                    snapshot: None,
                     overhead: 0,
                     context_length: 1_000_000,
                     facts: &current,
@@ -3702,6 +3704,7 @@ mod tests {
                     &[user(text)],
                     Some(&project),
                     crate::ai::sessions::PrepareContext {
+                        snapshot: None,
                         overhead: 0,
                         context_length: 0,
                         facts: &context,
@@ -3799,6 +3802,7 @@ mod tests {
                 std::slice::from_ref(&question),
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
+                    snapshot: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &context,
@@ -3822,6 +3826,7 @@ mod tests {
                 &[question, call, fonts.clone(), project_result.clone()],
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
+                    snapshot: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &context,
@@ -3863,6 +3868,7 @@ mod tests {
                 turn.as_array().unwrap(),
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
+                    snapshot: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &context,
@@ -3898,6 +3904,7 @@ mod tests {
                 round.as_array().unwrap(),
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
+                    snapshot: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &context,
@@ -3933,6 +3940,7 @@ mod tests {
                 next.as_array().unwrap(),
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
+                    snapshot: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &context,
@@ -3955,6 +3963,7 @@ mod tests {
                 next.as_array().unwrap(),
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
+                    snapshot: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &context,
@@ -3996,6 +4005,7 @@ mod tests {
                 &view,
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
+                    snapshot: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &context,
@@ -4649,6 +4659,7 @@ mod tests {
                 &history,
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
+                    snapshot: None,
                     overhead: 0,
                     context_length: 1_000_000,
                     facts: &facts(&project),
@@ -4867,6 +4878,7 @@ mod tests {
                 &messages,
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
+                    snapshot: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &context,
@@ -5227,6 +5239,7 @@ mod tests {
                 &incoming,
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
+                    snapshot: None,
                     overhead: 0,
                     context_length: 1_000_000,
                     facts: &facts(&project),
@@ -5370,6 +5383,7 @@ mod tests {
                 &incoming,
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
+                    snapshot: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &facts(&project),
@@ -5411,6 +5425,7 @@ mod tests {
                     &[audition(sample)],
                     None,
                     crate::ai::sessions::PrepareContext {
+                        snapshot: None,
                         overhead: 0,
                         context_length: 0,
                         facts: &context,
@@ -5564,6 +5579,7 @@ mod tests {
                 &messages,
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
+                    snapshot: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &facts(&project),
@@ -5716,6 +5732,7 @@ mod tests {
                 &view,
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
+                    snapshot: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &context,
@@ -5840,6 +5857,7 @@ mod tests {
                 &view,
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
+                    snapshot: None,
                     overhead: 0,
                     context_length: window,
                     facts: &context,
@@ -5875,6 +5893,7 @@ mod tests {
                 &[user("hello")],
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
+                    snapshot: None,
                     overhead: 0,
                     context_length: 1_000_000,
                     facts: &context,
@@ -5980,6 +5999,7 @@ mod tests {
                 &[user("first")],
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
+                    snapshot: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &context,
@@ -6012,6 +6032,7 @@ mod tests {
                 &[user("second")],
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
+                    snapshot: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &context,
@@ -6060,6 +6081,7 @@ mod tests {
                     &[user(question)],
                     Some(&project),
                     crate::ai::sessions::PrepareContext {
+                        snapshot: None,
                         overhead: 0,
                         context_length: 0,
                         facts: &context,
@@ -6149,6 +6171,7 @@ mod tests {
                 &view,
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
+                    snapshot: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &context,
@@ -6187,6 +6210,7 @@ mod tests {
                     messages,
                     Some(&project),
                     crate::ai::sessions::PrepareContext {
+                        snapshot: None,
                         overhead: 0,
                         context_length: 0,
                         facts: &context,
@@ -6290,6 +6314,7 @@ mod tests {
                 &turn,
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
+                    snapshot: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &context,
@@ -6332,6 +6357,7 @@ mod tests {
                 &[user("what did you hear?")],
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
+                    snapshot: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &context,
@@ -6418,6 +6444,7 @@ mod tests {
                 std::slice::from_ref(&first),
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
+                    snapshot: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &context,
@@ -6460,6 +6487,7 @@ mod tests {
                 &[user("and now?")],
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
+                    snapshot: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &context,
@@ -6530,6 +6558,7 @@ mod tests {
                 &[first],
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
+                    snapshot: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &context,
@@ -6550,6 +6579,7 @@ mod tests {
                 &[user("and now?")],
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
+                    snapshot: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &context,
@@ -6630,6 +6660,7 @@ mod tests {
                 &[user("and now?")],
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
+                    snapshot: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &facts(&project),
@@ -6667,6 +6698,7 @@ mod tests {
                 turn.as_array().unwrap(),
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
+                    snapshot: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &context,
@@ -6695,6 +6727,7 @@ mod tests {
                 next.as_array().unwrap(),
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
+                    snapshot: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &context,
@@ -6732,6 +6765,7 @@ mod tests {
                 again.as_array().unwrap(),
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
+                    snapshot: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &context,
@@ -6769,6 +6803,7 @@ mod tests {
                 turn.as_array().unwrap(),
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
+                    snapshot: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &context,
@@ -6799,6 +6834,7 @@ mod tests {
                 round.as_array().unwrap(),
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
+                    snapshot: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &context,
@@ -6816,6 +6852,7 @@ mod tests {
                 next.as_array().unwrap(),
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
+                    snapshot: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &context,
@@ -6949,6 +6986,7 @@ mod tests {
                 &[user(text)],
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
+                    snapshot: None,
                     overhead: 0,
                     context_length: 1_000_000,
                     facts: &facts(&project),
@@ -7077,6 +7115,7 @@ mod tests {
                 &[raw],
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
+                    snapshot: None,
                     overhead: 0,
                     context_length: 1_000_000,
                     facts: &facts(&project),

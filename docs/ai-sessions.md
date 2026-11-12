@@ -114,6 +114,26 @@ read live. Opening another `.ocp` from the File menu therefore moves the
 conversation list at once, while opening a file outside a chosen workspace does
 not.
 
+## Project versions
+
+Before a saved provider request is sent, the native session layer attaches a
+content-addressed project version (`dsl_sha`) to each newly admitted human
+message. This applies to the panel and explicitly bound headless requests.
+The project path, source and summary facts are captured together; a headless
+request for a different open project is refused.
+
+Replayed human turns retain their original version. Tool results, assistant
+replies and typed host deliveries do not acquire a human-turn snapshot. The
+version file and its first transcript reference are written under the same
+store lock, so collection cannot remove a checkpoint between those writes.
+A snapshot that cannot be saved prevents the new turn from reaching the
+provider. Version reads are bounded by the DSL document limit and verify the
+content hash before returning text.
+
+A fork copies the versions its retained messages reference, so deleting the
+parent cannot remove the fork's project checkpoints. A missing or corrupt
+referenced version refuses the fork and leaves no partial child session.
+
 ## Project instructions
 
 A project can carry a short note — "always print stems at -14 LUFS", "this song is
