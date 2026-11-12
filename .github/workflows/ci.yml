@@ -9,6 +9,11 @@ on:
 permissions:
   contents: read
 
+# A new push to a pull request replaces its running checks; runs on main finish.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
@@ -77,17 +82,11 @@ jobs:
           rustup show active-toolchain
           rustup target list --installed
 
-      - name: Cache cargo
-        uses: actions/cache@v4
+      - name: Cache dependencies
+        # Saved even when a later step fails, so a red run still warms the next.
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-${{ runner.arch }}-rust-1.95.0-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-${{ runner.arch }}-rust-1.95.0-cargo-
+          cache-on-failure: true
 
       - name: Install system dependencies (Linux)
         if: runner.os == 'Linux'
@@ -102,8 +101,10 @@ jobs:
             libsoup-3.0-dev \
             pkg-config
 
-      - name: Cargo check (all targets)
-        run: cargo check --workspace --all-targets --locked
+      - name: Cargo clippy
+        # Clippy type-checks every target, so it also stands in for
+        # `cargo check --workspace --all-targets`.
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings -D clippy::undocumented_unsafe_blocks
 
       - name: Cargo check without plugin hosting
         run: cargo check -p oc-engine --lib --no-default-features --locked
@@ -121,10 +122,6 @@ jobs:
           cargo check -p oc-engine --lib --no-default-features --features plugin-host --locked
           cargo check -p oc-engine --lib --no-default-features --features mp3 --locked
           cargo check -p oc-sample --bin oc-sample-provider --features local-provider-runner --locked
-
-      - name: First-block latency (serial)
-        run: |
-          cargo test -p oc-gui --lib first_block_tests:: -- --ignored --test-threads=1 --skip review_
 
       - name: DSP dependencies stay device-free
         run: |
@@ -165,10 +162,47 @@ jobs:
           rustup target add x86_64-apple-darwin
           cargo check --target x86_64-apple-darwin -p oc-dsp -p oc-engine -p oc-cli --locked
 
-      - name: Cargo clippy
-        # Unsafe boundary documentation is reported by a forced warning while
-        # other warnings remain errors. Force-warn also prevents local suppression.
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings -D clippy::undocumented_unsafe_blocks
+  first-block:
+    # The timed first-block contract runs serially for minutes, so it gets its
+    # own job: the rest of the Rust checks no longer wait behind it, and no
+    # other cargo work shares the runner while it measures.
+    name: First-block latency (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.95.0
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Install system dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libdbus-1-dev \
+            libasound2-dev \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev \
+            libjavascriptcoregtk-4.1-dev \
+            libsoup-3.0-dev \
+            pkg-config
+
+      - name: Build the first-block tests
+        # Compiled first so the timed step below measures playback, not rustc.
+        run: cargo test -p oc-gui --lib --locked --no-run
+
+      - name: First-block latency (serial)
+        run: |
+          cargo test -p oc-gui --lib --locked first_block_tests:: -- --ignored --test-threads=1 --skip review_
 
   windows:
     name: Rust check and clip cache tests (Windows)
@@ -188,10 +222,15 @@ jobs:
           rustup show active-toolchain
           rustup target list --installed
 
-      - uses: Swatinem/rust-cache@v2
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
 
-      - name: Cargo check
-        run: cargo check --workspace --all-targets --locked
+      - name: Cargo clippy (including Windows-only unsafe boundaries)
+        # Clippy type-checks every target, so it also stands in for
+        # `cargo check --workspace --all-targets`.
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings -D clippy::undocumented_unsafe_blocks
 
       - name: Cargo check without plugin hosting
         run: cargo check -p oc-engine --lib --no-default-features --locked
@@ -205,9 +244,6 @@ jobs:
           cargo check -p oc-engine --lib --no-default-features --features plugin-host --locked
           cargo check -p oc-engine --lib --no-default-features --features mp3 --locked
           cargo check -p oc-sample --bin oc-sample-provider --features local-provider-runner --locked
-
-      - name: Cargo clippy (including Windows-only unsafe boundaries)
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings -D clippy::undocumented_unsafe_blocks
 
       - name: Owned VST3 lifecycle (CPU-only native fixture)
         timeout-minutes: 10
@@ -285,6 +321,11 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@1.95.0
 
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
       - name: Install system dependencies
         run: |
           sudo apt-get update
@@ -313,7 +354,10 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@1.95.0
 
-      - uses: Swatinem/rust-cache@v2
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
 
       - name: Install system dependencies
         # The site documents every crate, so `cargo doc --workspace` builds the
