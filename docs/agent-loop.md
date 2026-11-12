@@ -42,7 +42,9 @@ automatically inherit another profile's provider settings or credentials.
 `OPENCOMPOSE_AGENT_PORT=0` requests an available port, recorded in that endpoint.
 For a saved headless conversation, create a project file and call
 `sessions_new` with that file and a title. Send both `session_id` and the
-absolute `project_path` on each `POST /ai/complete` request. The file must be
+absolute `project_path` on each `POST /ai/complete` request and each `/call`
+envelope. Tool calls then use that conversation's ownership, including access
+to its attached audio references and saved renders. The file must be
 open in that host and the session must belong to its workspace. Requests save
 incoming tool results, audition media and the provider reply through the same
 conversation store as the AI panel. Keep saving the same project path; copies

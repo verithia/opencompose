@@ -723,7 +723,18 @@ fn handle_call(app: &AppHandle, body: &[u8]) -> (u16, String) {
         .or_else(|| value.get("arguments"))
         .cloned()
         .unwrap_or_else(|| json!({}));
-    match dispatch(app, tool, &args, HTTP_BATCH_OWNER) {
+    let binding = match saved_completion::Binding::parse(&value) {
+        Ok(binding) => binding,
+        Err(error) => return (400, error_body(error)),
+    };
+    let caller = match binding {
+        Some(binding) => match binding.caller(app) {
+            Ok(caller) => caller,
+            Err(error) => return (400, error_body(error)),
+        },
+        None => HTTP_BATCH_OWNER.to_owned(),
+    };
+    match dispatch(app, tool, &args, &caller) {
         Ok(result) => (200, ok_body(result)),
         Err(error) => (400, error_body(error)),
     }

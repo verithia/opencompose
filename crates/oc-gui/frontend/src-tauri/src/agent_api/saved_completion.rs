@@ -26,6 +26,24 @@ impl Binding {
         }
     }
 
+    pub(super) fn caller(&self, app: &AppHandle) -> Result<String, String> {
+        self.validate_project(app.state::<AppState>().lock_inner().file_path.as_deref())?;
+        self.validate_session(&sessions::Store::config())?;
+        Ok(format!(
+            "{}{}",
+            crate::state::PANEL_BATCH_OWNER_PREFIX,
+            self.id
+        ))
+    }
+
+    fn validate_session(&self, store: &sessions::Store) -> Result<(), String> {
+        let (_, meta) = store.find(&self.id)?;
+        if meta.workspace_key != store.workspace_key(self.project.parent()) {
+            return Err("The saved turn belongs to another workspace".into());
+        }
+        Ok(())
+    }
+
     fn validate_project(&self, actual: Option<&Path>) -> Result<(), String> {
         let expected = self
             .project
@@ -152,5 +170,28 @@ mod tests {
         assert!(binding.validate_project(Some(&first)).is_ok());
         assert!(binding.validate_project(Some(&second)).is_err());
         assert!(binding.validate_project(None).is_err());
+    }
+    #[test]
+    fn saved_tool_caller_requires_a_session_in_the_project_workspace() {
+        let root = tempfile::tempdir().unwrap();
+        let store = sessions::Store::new(root.path().join("sessions"));
+        let first = root.path().join("first");
+        let other = root.path().join("other");
+        std::fs::create_dir_all(&first).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        let project = first.join("song.ocp");
+        std::fs::write(&project, "project").unwrap();
+        let meta = store
+            .create(Some(&first), Some(&project), Some("Fixture"), None)
+            .unwrap();
+        let mut binding = Binding {
+            id: meta.id,
+            project,
+        };
+        assert!(binding.validate_session(&store).is_ok());
+        binding.project = other.join("song.ocp");
+        assert!(binding.validate_session(&store).is_err());
+        binding.id = "missing".into();
+        assert!(binding.validate_session(&store).is_err());
     }
 }
