@@ -262,10 +262,49 @@ fn response_table_file_is_current() {
             path.display()
         )
     });
-    assert_eq!(
-        existing,
-        generated,
-        "{} is stale; regenerate with OC_EQ_RESPONSE_FIXTURE=write",
-        path.display()
-    );
+    // Platform math libraries round differently, and near-zero responses carry
+    // that rounding forward, so numbers compare within a rounding tolerance;
+    // any other difference is a stale file.
+    let existing: serde_json::Value = serde_json::from_str(&existing).unwrap();
+    let generated: serde_json::Value = serde_json::from_str(&generated).unwrap();
+    if let Err(at) = same_within_rounding(&existing, &generated, "$") {
+        panic!(
+            "{} is stale at {at}; regenerate with OC_EQ_RESPONSE_FIXTURE=write",
+            path.display()
+        );
+    }
+}
+
+/// Structural equality where numbers may differ by rounding only.
+fn same_within_rounding(
+    existing: &serde_json::Value,
+    generated: &serde_json::Value,
+    at: &str,
+) -> Result<(), String> {
+    use serde_json::Value;
+    match (existing, generated) {
+        (Value::Number(a), Value::Number(b)) => {
+            let (a, b) = (a.as_f64().unwrap(), b.as_f64().unwrap());
+            let scale = a.abs().max(b.abs()).max(f64::MIN_POSITIVE);
+            // Every field is dB, Hz or Q, where 1e-9 absolute is far below meaning.
+            if (a - b).abs() <= (scale * 1e-12).max(1e-9) {
+                Ok(())
+            } else {
+                Err(format!("{at}: {a} != {b}"))
+            }
+        }
+        (Value::Array(a), Value::Array(b)) if a.len() == b.len() => {
+            a.iter().zip(b).enumerate().try_for_each(|(index, (a, b))| {
+                same_within_rounding(a, b, &format!("{at}[{index}]"))
+            })
+        }
+        (Value::Object(a), Value::Object(b)) if a.len() == b.len() => {
+            a.iter().try_for_each(|(key, value)| {
+                let other = b.get(key).ok_or_else(|| format!("{at}.{key} is missing"))?;
+                same_within_rounding(value, other, &format!("{at}.{key}"))
+            })
+        }
+        _ if existing == generated => Ok(()),
+        _ => Err(format!("{at} differs")),
+    }
 }
