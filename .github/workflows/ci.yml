@@ -219,7 +219,7 @@ jobs:
 
   first-block:
     # The timed first-block contract runs serially for minutes, so it gets its
-    # own job: the rest of the Rust checks no longer wait behind it, and no
+    # own job: the rest of the Rust checks do not wait behind it, and no
     # other cargo work shares the runner while it measures.
     name: First-block latency (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

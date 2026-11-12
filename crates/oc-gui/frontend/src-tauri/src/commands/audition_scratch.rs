@@ -57,13 +57,16 @@ impl ScratchRender {
     pub(super) fn reserve(bytes: u64) -> Result<Self, String> {
         #[cfg(test)]
         let turn = test_turn::Turn::take();
-        #[allow(unused_mut)]
-        let mut render = Self::reserve_in(&scratch_dir()?, BUDGET, bytes)?;
+        let render = Self::reserve_in(&scratch_dir()?, BUDGET, bytes)?;
         #[cfg(test)]
-        {
-            render._turn = Some(turn);
-        }
+        let render = render.holding(turn);
         Ok(render)
+    }
+
+    #[cfg(test)]
+    fn holding(mut self, turn: test_turn::Turn) -> Self {
+        self._turn = Some(turn);
+        self
     }
 
     fn reserve_in(dir: &Path, cap: u64, bytes: u64) -> Result<Self, String> {
