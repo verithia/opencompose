@@ -1573,6 +1573,9 @@ fn plugin_param_named(id: u32, name: &str) -> oc_host::clap_instance::PluginPara
 
 /// The close button in the editor's own title bar is the same close as the
 /// app's button: the keep-alive is released and the panel is told once.
+// The VST3 editor keep-alive runs only on macOS; elsewhere editors run in the
+// out-of-process helper.
+#[cfg(target_os = "macos")]
 #[test]
 fn keepalive_poll_reports_a_title_bar_close_and_releases_the_editor() {
     let state = keepalive_state();
