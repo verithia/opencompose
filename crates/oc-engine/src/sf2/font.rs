@@ -9,7 +9,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::SystemTime;
 
 use super::generator::{GenSet, Generator};
@@ -475,7 +475,8 @@ pub struct SoundFont {
 ///
 /// A project normally names one to four banks; the cap only bounds a session
 /// that auditions many. A bank a player still holds keeps playing from its own
-/// [`Arc`] after its cache entry goes, and the next load parses it again.
+/// [`Arc`] after its cache entry goes, and the next load reuses that parse
+/// instead of reading the file again; only a bank nobody holds is parsed anew.
 const SHARED_BANKS_RESIDENT: usize = 8;
 
 /// The file a cached parse was read from. Replacing the file at the same path
@@ -500,12 +501,23 @@ impl BankIdentity {
 struct SharedBanks {
     entries: HashMap<PathBuf, (BankIdentity, Arc<SoundFont>)>,
     order: VecDeque<PathBuf>,
+    /// Every parse handed out, resident or not. An evicted bank that a player
+    /// still holds is found here, so two players never hold two copies.
+    held: HashMap<PathBuf, (BankIdentity, Weak<SoundFont>)>,
 }
 
 impl SharedBanks {
-    fn get(&self, key: &Path, identity: &BankIdentity) -> Option<Arc<SoundFont>> {
-        let (cached, font) = self.entries.get(key)?;
-        (cached == identity).then(|| Arc::clone(font))
+    fn get(&mut self, key: &Path, identity: &BankIdentity) -> Option<Arc<SoundFont>> {
+        if let Some((cached, font)) = self.entries.get(key) {
+            return (cached == identity).then(|| Arc::clone(font));
+        }
+        let (cached, weak) = self.held.get(key)?;
+        if cached != identity {
+            return None;
+        }
+        let font = weak.upgrade()?;
+        self.insert(key.to_path_buf(), identity.clone(), Arc::clone(&font));
+        Some(font)
     }
 
     fn touch(&mut self, key: &Path) {
@@ -516,6 +528,9 @@ impl SharedBanks {
     }
 
     fn insert(&mut self, key: PathBuf, identity: BankIdentity, font: Arc<SoundFont>) {
+        self.held.retain(|_, (_, weak)| weak.strong_count() > 0);
+        self.held
+            .insert(key.clone(), (identity.clone(), Arc::downgrade(&font)));
         self.entries.insert(key.clone(), (identity, font));
         self.touch(&key);
         while self.entries.len() > SHARED_BANKS_RESIDENT {
@@ -528,6 +543,7 @@ impl SharedBanks {
 
     fn remove(&mut self, key: &Path) {
         self.entries.remove(key);
+        self.held.remove(key);
         if let Some(index) = self.order.iter().position(|entry| entry == key) {
             self.order.remove(index);
         }
