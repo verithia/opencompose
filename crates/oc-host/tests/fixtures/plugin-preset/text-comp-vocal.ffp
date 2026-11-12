@@ -1,0 +1,16 @@
+[Preset]
+Signature=FC3p
+Version=2
+Name=Vocal
+Author=OpenCompose
+Description="Vocal compression"
+Tags=Basic
+
+[Parameters]
+Style=10
+Threshold=-14
+Ratio=0.580194473266602
+Knee=4.90366697311401
+Attack=0.116499997675419
+Release=0.471833318471909
+Auto Gain=1

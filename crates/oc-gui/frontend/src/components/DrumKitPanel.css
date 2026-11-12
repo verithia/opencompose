@@ -1,0 +1,164 @@
+.drumkit-panel {
+  display: flex;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg-primary, #111);
+}
+
+.drumkit-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 8px;
+  gap: 8px;
+  overflow: auto;
+}
+
+.drumkit-header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: var(--font-size-sm);
+}
+
+.drumkit-muted {
+  color: var(--text-muted, #888);
+  font-size: var(--font-size-xs);
+}
+
+.drumkit-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(92px, 1fr));
+  gap: 6px;
+}
+
+.drum-pad {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-height: 68px;
+  padding: 7px 8px;
+  border: 1px solid var(--border, #333);
+  border-radius: 6px;
+  background: var(--bg-secondary, #1a1a1a);
+  color: var(--text-primary, #eee);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 80ms linear, background 80ms linear;
+}
+
+.drum-pad.empty {
+  opacity: 0.45;
+  border-style: dashed;
+  cursor: default;
+}
+
+.drum-pad.selected {
+  border-color: var(--accent, #7c3aed);
+}
+
+.drum-pad.drag-target {
+  border-color: var(--success, #65b96e);
+  background: rgba(101, 185, 110, 0.12);
+}
+
+.drum-pad.flashing {
+  background: var(--accent, #7c3aed);
+  color: #fff;
+}
+
+.drum-pad-name {
+  font-weight: 600;
+  font-size: var(--font-size-sm);
+}
+
+.drum-pad-sample {
+  font-size: var(--font-size-xs);
+  color: var(--text-muted, #999);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.drum-pad.flashing .drum-pad-sample,
+.drum-pad.flashing .drum-pad-meta {
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.drum-pad-meta {
+  font-family: var(--font-mono, monospace);
+  font-size: 9px;
+  color: var(--text-muted, #777);
+}
+
+.drumkit-status {
+  font-size: var(--font-size-xs);
+  color: var(--text-muted, #888);
+}
+
+.drumkit-inspector {
+  width: 220px;
+  flex-shrink: 0;
+  border-left: 1px solid var(--border, #333);
+  padding: 8px;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: var(--font-size-sm);
+}
+
+.drumkit-inspector-title {
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+
+.drum-field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.drum-field input[type="number"] {
+  width: 76px;
+  background: var(--bg-secondary, #1a1a1a);
+  color: var(--text-primary, #eee);
+  border: 1px solid var(--border, #333);
+  border-radius: 4px;
+  padding: 2px 4px;
+}
+
+.drum-field select {
+  width: 100px;
+  background: var(--bg-secondary, #1a1a1a);
+  color: var(--text-primary, #eee);
+  border: 1px solid var(--border, #333);
+  border-radius: 4px;
+  padding: 2px 4px;
+}
+
+.drum-field-check {
+  justify-content: flex-start;
+}
+
+.drumkit-layers {
+  margin-top: 6px;
+  border-top: 1px solid var(--border, #333);
+  padding-top: 6px;
+}
+
+.drumkit-layers-title {
+  font-weight: 600;
+  margin-bottom: 3px;
+}
+
+.drumkit-layer-row {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin-bottom: 3px;
+}

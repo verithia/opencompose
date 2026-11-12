@@ -1,0 +1,1272 @@
+[
+  {
+    "name": "system_capabilities",
+    "area": "system",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "excluded": "host details are not a musical action"
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "project_get",
+    "area": "project",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "audio_clips_list",
+    "area": "project",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "audio_clip_transients",
+    "area": "project",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "import_aligned_stems",
+    "area": "project",
+    "mutation": true,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "audio_clip_edit_range",
+    "area": "project",
+    "mutation": true,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "audio_clip_set_placement",
+    "area": "project",
+    "mutation": true,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "audio_clip_set_playback",
+    "area": "project",
+    "mutation": true,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "project_dsl",
+    "area": "project",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "project_new",
+    "area": "project",
+    "mutation": true,
+    "approval": "confirm",
+    "panel": {
+      "excluded": "replaces the current session"
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "project_open",
+    "area": "project",
+    "mutation": true,
+    "approval": "confirm",
+    "panel": {
+      "excluded": "reads an arbitrary file path"
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "project_save",
+    "area": "project",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "excluded": "writes an arbitrary file path"
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "project_set_tempo",
+    "area": "project",
+    "mutation": true,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "project_set_name",
+    "area": "project",
+    "mutation": true,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "picture_timecode",
+    "area": "project",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "picture_clock_set",
+    "area": "project",
+    "mutation": true,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "tempo_map_set",
+    "area": "project",
+    "mutation": true,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "time_signature_set",
+    "area": "project",
+    "mutation": true,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "midi_import_handoff",
+    "area": "midi",
+    "mutation": true,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "midi_export_handoff",
+    "area": "midi",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "midi_import_preview",
+    "area": "midi",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "excluded": "reads an arbitrary MIDI file"
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "midi_import_apply",
+    "area": "midi",
+    "mutation": true,
+    "approval": "automatic",
+    "panel": {
+      "excluded": "reads an arbitrary MIDI file"
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "midi_export",
+    "area": "midi",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "excluded": "writes an arbitrary file path"
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "project_context",
+    "area": "project",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "project_generate_context",
+    "area": "project",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "project_validate",
+    "area": "project",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "project_edit",
+    "area": "project",
+    "mutation": true,
+    "approval": "automatic",
+    "panel": {
+      "excluded": "whole-subtree replacement goes through the edit_subtree proposal"
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "project_extract",
+    "area": "project",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "project_diff",
+    "area": "project",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "tracks_list",
+    "area": "tracks",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "tracks_add",
+    "area": "tracks",
+    "mutation": true,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "tracks_create",
+    "area": "tracks",
+    "mutation": true,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "tracks_remove",
+    "area": "tracks",
+    "mutation": true,
+    "approval": "confirm",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "tracks_duplicate",
+    "area": "tracks",
+    "mutation": true,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "tracks_rename",
+    "area": "tracks",
+    "mutation": true,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "tracks_mix",
+    "area": "tracks",
+    "mutation": true,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "tracks_mute",
+    "area": "tracks",
+    "mutation": true,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "tracks_solo",
+    "area": "tracks",
+    "mutation": true,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "tracks_preset",
+    "area": "tracks",
+    "mutation": true,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "tracks_output",
+    "area": "tracks",
+    "mutation": true,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "tracks_send_add",
+    "area": "tracks",
+    "mutation": true,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "tracks_send_remove",
+    "area": "tracks",
+    "mutation": true,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "sections_list",
+    "area": "project",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "sections_add",
+    "area": "project",
+    "mutation": true,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "sections_set",
+    "area": "project",
+    "mutation": true,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "sections_remove",
+    "area": "project",
+    "mutation": true,
+    "approval": "confirm",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "content_libraries",
+    "area": "content",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "content_library_register",
+    "area": "content",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "excluded": "writes the app content catalogue"
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "content_library_remove",
+    "area": "content",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "excluded": "writes the app content catalogue"
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "content_library_rescan",
+    "area": "content",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "excluded": "writes the app content catalogue"
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "presets_list",
+    "area": "presets",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "preset_bundle_export",
+    "area": "presets",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "preset_bundle_import",
+    "area": "presets",
+    "mutation": true,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "presets_add",
+    "area": "presets",
+    "mutation": true,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "presets_remove",
+    "area": "presets",
+    "mutation": true,
+    "approval": "confirm",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "presets_rename",
+    "area": "presets",
+    "mutation": true,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "presets_duplicate",
+    "area": "presets",
+    "mutation": true,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "presets_set_param",
+    "area": "presets",
+    "mutation": true,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "presets_set_params",
+    "area": "presets",
+    "mutation": true,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "plugin_search",
+    "area": "plugin",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "plugin_pull",
+    "area": "plugin",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "plugin_index_refresh",
+    "area": "plugin_index",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "excluded": "network catalog refresh"
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "soundfonts_list",
+    "area": "soundfont",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "soundfont_install",
+    "area": "soundfont",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "excluded": "downloads a large instrument pack into the user's soundfont folder"
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "soundfonts_remove",
+    "area": "soundfont",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "excluded": "deletes a file from the user's soundfont folder"
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "sample_search",
+    "area": "sample",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "sample_pull",
+    "area": "sample",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "plugins_scan",
+    "area": "plugin",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "excluded": "process-level plugin scan"
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "plugins_load",
+    "area": "plugin",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "excluded": "creates a process-level plugin instance"
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "plugins_params",
+    "area": "plugin",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "plugins_open_gui",
+    "area": "plugin",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "excluded": "opens a native window outside the panel"
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "plugins_close_gui",
+    "area": "plugin",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "excluded": "closes a native window outside the panel"
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "plugins_has_gui",
+    "area": "plugin",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "excluded": "UI plumbing, not a musical action"
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "plugins_save_state",
+    "area": "plugin",
+    "mutation": true,
+    "approval": "automatic",
+    "panel": {
+      "excluded": "writes plugin state to an arbitrary file path"
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "plugins_program_capabilities",
+    "area": "plugin",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "plugins_programs",
+    "area": "plugin",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "plugins_select_program",
+    "area": "plugin",
+    "mutation": true,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "plugins_read_state",
+    "area": "plugin",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "plugins_apply_state",
+    "area": "plugin",
+    "mutation": true,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "transport_play",
+    "area": "transport",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "transport_pause",
+    "area": "transport",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "transport_stop",
+    "area": "transport",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "transport_seek",
+    "area": "transport",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "transport_state",
+    "area": "transport",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "transport_mute",
+    "area": "transport",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "excluded": "device-level mute is not a musical edit"
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "transport_unmute",
+    "area": "transport",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "excluded": "device-level mute is not a musical edit"
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "render_offline",
+    "area": "render",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "excluded": "unbounded full-song render is too slow for the panel; use render_range"
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "render_range",
+    "area": "render",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "render_compat_report",
+    "area": "render",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "render_stems",
+    "area": "render",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "excluded": "renders the mix and every stem of the whole song, the same unbounded cost the panel refuses for render_offline; render_range with stems covers a window"
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "audition_range",
+    "area": "render",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "audition_clip_source",
+    "area": "render",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "audio_analyze",
+    "area": "analysis",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "analyze_notes",
+    "area": "analysis",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "separate_stems",
+    "area": "analysis",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "audio_compare",
+    "area": "analysis",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "audio_devices",
+    "area": "audio",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "excluded": "host audio configuration"
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "audio_config",
+    "area": "audio",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "excluded": "host audio configuration"
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "undo",
+    "area": "undo",
+    "mutation": true,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "redo",
+    "area": "undo",
+    "mutation": true,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "undo_state",
+    "area": "undo",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "undo_history",
+    "area": "undo",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "sampler_assets",
+    "area": "devices",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "excluded": "lists filesystem paths"
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "meter_snapshot",
+    "area": "analysis",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "devices_catalog",
+    "area": "devices",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "device_presets_list",
+    "area": "devices",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "device_preset_apply",
+    "area": "devices",
+    "mutation": true,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "effects_add",
+    "area": "effects",
+    "mutation": true,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "effects_remove",
+    "area": "effects",
+    "mutation": true,
+    "approval": "confirm",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "effects_set_bypass",
+    "area": "effects",
+    "mutation": true,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "effects_set_param",
+    "area": "effects",
+    "mutation": true,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "buses_add",
+    "area": "buses",
+    "mutation": true,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "buses_routes",
+    "area": "buses",
+    "mutation": true,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "buses_mix",
+    "area": "buses",
+    "mutation": true,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "buses_remove",
+    "area": "buses",
+    "mutation": true,
+    "approval": "confirm",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "transaction_begin",
+    "area": "transaction",
+    "mutation": true,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "transaction_commit",
+    "area": "transaction",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "transaction_rollback",
+    "area": "transaction",
+    "mutation": false,
+    "approval": "confirm",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "list_skills",
+    "area": "skills",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "read_skill",
+    "area": "skills",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "sessions_list",
+    "area": "sessions",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "sessions_new",
+    "area": "sessions",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "sessions_load",
+    "area": "sessions",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "sessions_rename",
+    "area": "sessions",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "sessions_delete",
+    "area": "sessions",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "excluded": "removes a saved conversation"
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "sessions_compact",
+    "area": "sessions",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
+    "name": "edit_subtree",
+    "area": "project",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "panel_local"
+  }
+]

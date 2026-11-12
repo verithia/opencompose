@@ -1,0 +1,47 @@
+{
+  "headers": {
+    "status": "success",
+    "code": 0,
+    "error_message": "",
+    "warnings": "",
+    "results_count": 2
+  },
+  "results": [
+    {
+      "id": "123456",
+      "name": "Night Drive",
+      "duration": 214,
+      "artist_name": "The Frozenauts",
+      "album_name": "Neon Roads",
+      "license_ccurl": "https://creativecommons.org/licenses/by/4.0/",
+      "audio": "https://prod-1.storage.jamendo.com/?trackid=123456&format=mp32",
+      "audiodownload": "https://prod-1.storage.jamendo.com/dl/123456",
+      "audiodownload_allowed": true,
+      "shareurl": "https://www.jamendo.com/track/123456",
+      "musicinfo": {
+        "tags": {
+          "genres": ["electronic"],
+          "instruments": ["guitar", "synthesizer"]
+        }
+      }
+    },
+    {
+      "id": "654321",
+      "name": "Slow Motion",
+      "duration": 183,
+      "artist_name": "Someone Else",
+      "album_name": "Night Sessions",
+      "license_ccurl": "http://creativecommons.org/licenses/by-nc/3.0/",
+      "audio": "https://prod-1.storage.jamendo.com/?trackid=654321&format=mp32",
+      "audiodownload": "",
+      "audiodownload_allowed": false,
+      "shareurl": "https://www.jamendo.com/track/654321",
+      "musicinfo": {
+        "tags": {
+          "genres": ["ambient"],
+          "instruments": []
+        }
+      }
+    }
+  ]
+}

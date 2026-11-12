@@ -1,0 +1,17 @@
+# Ruff configuration for OpenCompose Python code
+# https://docs.astral.sh/ruff/configuration/
+
+target-version = "py310"
+line-length = 120
+
+[format]
+quote-style = "double"
+indent-style = "space"
+docstring-code-format = true
+
+[lint]
+select = ["E", "F", "I", "W"]
+ignore = ["E501"]  # line length handled by formatter
+
+[lint.isort]
+known-first-party = ["model"]

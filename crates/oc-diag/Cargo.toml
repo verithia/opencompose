@@ -1,0 +1,19 @@
+[package]
+repository.workspace = true
+name = "oc-diag"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Opt-in debug logging and performance counters for OpenCompose"
+
+[features]
+default = []
+# Compile in the debug call sites; the runtime --debug flag decides whether they fire.
+debug-log = []
+# Compile in the perf counters and the periodic reporter; --perf decides whether
+# they are registered and printed.
+perf-log = []
+
+[dependencies]
+log.workspace = true

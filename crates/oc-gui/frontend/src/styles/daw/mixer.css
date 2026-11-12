@@ -1,0 +1,319 @@
+/* ── Mixer: routing graph, routing editor and inspector ────────────────────
+   The mixer layout and the routing editor share a surface here. The routing
+   editor is split by level: the toolbar above the graph is project-level
+   (create a bus), node-level actions live in the inspector next to the
+   channel controls, and connection editing is its own inspector card. */
+
+.mixer-panel { grid-template-columns: 320px minmax(0, 1fr); }
+.mixer-routing-workspace { background: var(--bg-primary); }
+
+/* Below this width the inspector takes the full width and the graph keeps
+   the remaining height, so the toolbar never has to squeeze into a zero-width
+   column at a small window or a large UI scale. */
+@media (max-width: 640px) {
+  .mixer-panel {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 45vh) minmax(0, 1fr);
+  }
+  .mixer-inspector { border-right: 0; border-bottom: 1px solid var(--border); }
+}
+
+/* Project-level toolbar: it only ever holds the create-a-bus action, so its
+   content never changes meaning when a node or an edge is selected. It wraps,
+   so a narrow panel or a large UI scale never pushes the graph out of its
+   column. */
+.routing-toolbar {
+  flex: 0 0 auto; display: flex; flex-wrap: wrap; align-items: center;
+  gap: 6px 10px; padding: 6px 10px;
+  border-bottom: 1px solid var(--border); background: var(--bg-secondary);
+  font: var(--font-size-xs)/1.35 var(--font-ui); color: var(--text-secondary);
+}
+.routing-section { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.routing-section > label { display: flex; align-items: center; gap: 4px; }
+.routing-toolbar input,
+.routing-toolbar select,
+.connection-detail input,
+.connection-detail select {
+  min-width: 0; max-width: 140px; background: var(--bg-input); color: var(--text-primary);
+  border: 1px solid var(--border); border-radius: 3px; padding: 3px 4px;
+  font: var(--font-size-xs)/1.3 var(--font-ui);
+}
+.routing-toolbar input[type="number"],
+.connection-detail input[type="number"] { max-width: 64px; }
+.routing-section-title { color: var(--text-muted); }
+.routing-hint { color: var(--text-muted); }
+
+/* Routing actions get their own control: the 20 × 18 track header icon button
+   (`.track-btn`) clips every label longer than one glyph. This one is sized
+   for text, wraps never inside the label, and stays a comfortable 22px tall. */
+.routing-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 28px; height: 22px; padding: 2px 8px;
+  border: 1px solid var(--border-light); border-radius: 3px;
+  background: var(--bg-primary); color: var(--text-primary);
+  font: 600 var(--font-size-xs)/1 var(--font-ui);
+  white-space: nowrap; cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
+}
+.routing-btn:hover:not(:disabled) {
+  border-color: var(--text-muted); background: var(--bg-secondary);
+}
+.routing-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.routing-btn:disabled { opacity: 0.45; cursor: default; }
+.routing-btn.tap-pre { background: var(--accent); border-color: var(--accent); color: var(--bg-void); }
+.routing-btn.routing-danger { color: var(--meter-red); border-color: color-mix(in srgb, var(--meter-red) 55%, var(--border)); }
+.routing-btn.routing-danger:hover:not(:disabled) { background: color-mix(in srgb, var(--meter-red) 16%, var(--bg-secondary)); }
+.routing-btn.routing-primary { background: var(--accent); border-color: var(--accent); color: var(--bg-void); }
+
+/* Connection inspector: the card that owns every edge-level edit. It sits in
+   the inspector column, under the selected source node's controls. */
+.connection-detail {
+  display: grid; gap: 6px; min-width: 0;
+  padding: 8px 12px 12px; border-top: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg-surface) 86%, var(--accent) 14%);
+  font: var(--font-size-xs)/1.35 var(--font-ui); color: var(--text-secondary);
+}
+.connection-detail-header { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }
+.connection-detail-title { color: var(--text-primary); font-weight: 600; }
+.connection-detail-route {
+  min-width: 0; color: var(--text-primary);
+  font-family: var(--font-mono); overflow-wrap: anywhere;
+}
+.connection-detail-field {
+  display: grid; grid-template-columns: 58px minmax(0, 1fr);
+  align-items: center; gap: 6px; min-width: 0;
+}
+.connection-detail-field > input,
+.connection-detail-field > select { width: 100%; max-width: none; }
+.connection-detail-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.connection-detail-hint { color: var(--text-muted); }
+
+.routing-edge-kind {
+  padding: 1px 4px; border-radius: 2px; text-transform: uppercase;
+  font-size: 9px; letter-spacing: 0.04em; color: var(--bg-void);
+  background: var(--accent-cool);
+}
+
+/* Node-level bus actions (delete). The confirmation is a modal card, not a
+   full-width row inside the toolbar. */
+.routing-node-actions {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+  padding: 8px 12px; border-top: 1px solid var(--border);
+}
+.routing-dialog-backdrop {
+  position: fixed; inset: 0; z-index: 60;
+  display: flex; align-items: center; justify-content: center; padding: 16px;
+  background: color-mix(in srgb, var(--bg-void) 55%, transparent);
+}
+.routing-dialog {
+  display: grid; gap: 10px; width: min(440px, calc(100vw - 32px)); max-height: calc(100vh - 32px);
+  overflow: auto; padding: 14px 16px;
+  border: 1px solid var(--border); border-radius: 6px;
+  background: var(--bg-surface); color: var(--text-primary);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 45%);
+  font: var(--font-size-xs)/1.45 var(--font-ui);
+}
+.routing-dialog-title { font-size: var(--font-size-md); font-weight: 600; color: var(--text-primary); }
+.routing-dialog-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+
+/* Natural scale: the SVG is sized to the graph, so nodes keep their 172 × 30
+   size however much room the panel has. The background is grabbable (drag to
+   pan) and the wheel scrolls both ways when the panel is small. */
+.mixer-graph-area { display: flex; min-height: 0; flex: 1 1 auto; overflow: hidden; background: var(--bg-primary); }
+.bus-graph {
+  flex: 1 1 auto; min-width: 0; min-height: 0; overflow: auto;
+  padding: 6px 10px; background: var(--bg-primary); overscroll-behavior: contain;
+  cursor: grab; -webkit-user-select: none; user-select: none;
+}
+.bus-graph:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.bus-graph.panning { cursor: grabbing; }
+.bus-graph-svg { display: block; }
+.bus-graph-node { outline: none; }
+.bus-graph-node:focus-visible rect:first-child {
+  stroke: var(--accent);
+  stroke-width: 2;
+}
+.bus-graph-edge { transition: stroke-opacity var(--transition-fast); }
+.bus-graph-edge-hit { outline: none; }
+.bus-graph-edge-hit:focus-visible { stroke: color-mix(in srgb, var(--accent) 45%, transparent); }
+
+/* A control output socket lights up when it is armed for a keyboard connect. */
+.bus-graph-control-socket { outline: none; cursor: crosshair; }
+.bus-graph-control-socket rect { transition: fill var(--transition-fast); }
+.bus-graph-control-socket:hover rect,
+.bus-graph-control-socket:focus-visible rect { fill: var(--accent-cool); }
+.bus-graph-control-socket.armed rect { fill: var(--accent-cool); }
+
+/* Inline refusal/confirmation for a control cable; never a dialog and never
+   outside the graph panel. */
+.bus-graph-status {
+  display: block;
+  margin: 0 0 6px;
+  padding: 4px 8px;
+  font-size: 10.5px;
+  line-height: 1.35;
+  color: var(--text-primary);
+  background: var(--bg-elevated);
+  border-left: 2px solid var(--accent-cool);
+  border-radius: 3px;
+  cursor: default;
+  -webkit-user-select: text;
+  user-select: text;
+}
+.bus-graph-status.error { border-left-color: var(--meter-red); }
+
+/* The selected channel's strip, shown under NodeMixer in the inspector:
+   flat, full-width, no card chrome, no click target. */
+.channel-detail { padding: 8px 12px 12px; border-top: 1px solid var(--border); }
+.channel-detail:empty { display: none; }
+.channel-detail .channel-strip {
+  flex: none;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  box-shadow: none;
+  cursor: default;
+}
+.channel-detail .channel-strip.muted > :not(.channel-strip-buttons) { opacity: 1; }
+.channel-detail .channel-send { grid-template-columns: minmax(0, 1fr) 56px 48px 40px 20px; }
+.channel-detail .channel-strip-buttons .track-btn { height: 22px; font-size: 10px; }
+.channel-detail .channel-strip-fader { font-size: 11px; }
+.channel-detail .channel-strip-fader input,
+.channel-detail .channel-strip-fader select,
+.channel-detail .channel-send input,
+.channel-detail .channel-send-add select { font-size: 11px; padding: 2px 4px; min-height: 22px; }
+
+/* ---- Meters on a channel strip ---- */
+
+.channel-meter {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.channel-meter-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 2px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+}
+
+.channel-meter-bar {
+  display: block;
+  height: 5px;
+  width: 0;
+  border-radius: 2px;
+  transition: width 80ms linear;
+}
+
+.channel-meter-peak { background: linear-gradient(90deg, var(--meter-green), var(--meter-yellow) 78%, var(--meter-red)); }
+.channel-meter-rms { background: var(--accent-cool); opacity: 0.75; }
+
+.channel-meter-readout {
+  display: flex;
+  justify-content: space-between;
+  gap: 4px;
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+}
+
+.channel-meter-readout [data-meter-rms] { color: var(--text-muted); }
+
+.channel-meter-actions { display: flex; }
+
+.channel-meter-clip {
+  flex: 1;
+  font-size: 8px;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  border-color: var(--border);
+}
+
+.channel-meter-clip.clip-held {
+  color: var(--bg-primary);
+  background: var(--meter-red);
+  border-color: var(--meter-red);
+}
+
+.channel-meter-note {
+  font-size: 8px;
+  line-height: 1.25;
+  color: var(--text-muted);
+}
+
+/* ---- Master monitoring: loudness, stereo image, mono check, history ---- */
+
+.master-monitor {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.master-monitor-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px;
+}
+
+.master-monitor-value {
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+}
+
+.master-goniometer,
+.master-history {
+  display: block;
+  width: 100%;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+}
+
+.master-goniometer { height: 56px; }
+.master-history { height: 28px; }
+
+.master-goniometer-frame {
+  stroke: var(--border);
+  stroke-width: 0.02;
+}
+
+.master-goniometer-dot { fill: var(--accent-cool); opacity: 0.8; }
+
+.master-history-floor {
+  stroke: var(--border);
+  stroke-width: 0.5;
+}
+
+.master-history-trace {
+  fill: none;
+  stroke: var(--meter-green);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.master-monitor-actions { display: flex; gap: 4px; }
+
+.master-mono {
+  flex: 1;
+  font-size: 9px;
+  letter-spacing: 0.06em;
+}
+
+.master-mono.mono-active {
+  color: var(--bg-primary);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .channel-meter-bar { transition: none; }
+}

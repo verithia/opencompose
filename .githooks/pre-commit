@@ -1,0 +1,63 @@
+#!/bin/sh
+# Format fully staged sources; check partial files without changing their index.
+set -e
+
+format_file() {
+    file=$1
+    mode=$(git ls-files --stage -- "$file")
+    case "$mode" in
+        '100644 '*|'100755 '*) ;;
+        *) return ;;
+    esac
+    case "$file" in
+        *.rs)
+            if ! command -v rustfmt >/dev/null 2>&1; then
+                echo "[pre-commit] rustfmt unavailable; CI must check Rust formatting."
+                return
+            fi
+            if git diff --quiet -- "$file"; then
+                rustfmt --edition 2024 --config skip_children=true -- "$file"
+                git add -- "$file"
+            else
+                echo "[pre-commit] Checking staged Rust content: $file"
+                scratch=$(mktemp -d)
+                trap 'rm -rf -- "$scratch"' EXIT HUP INT TERM
+                git show ":$file" > "$scratch/staged"
+                rustfmt --edition 2024 --config skip_children=true --emit stdout \
+                    < "$scratch/staged" > "$scratch/formatted"
+                if ! cmp -s "$scratch/staged" "$scratch/formatted"; then
+                    echo "[pre-commit] Format staged Rust content before committing: $file"
+                    exit 1
+                fi
+                rm -rf -- "$scratch"
+                trap - EXIT HUP INT TERM
+            fi
+            ;;
+        *.py)
+            if ! command -v ruff >/dev/null 2>&1; then
+                echo "[pre-commit] Ruff unavailable; CI must check Python formatting."
+                return
+            fi
+            if git diff --quiet -- "$file"; then
+                ruff check --fix --select I -- "$file"
+                ruff format -- "$file"
+                git add -- "$file"
+            else
+                echo "[pre-commit] Checking staged Python content: $file"
+                git show ":$file" | ruff check --select I --stdin-filename "$file" -
+                git show ":$file" | ruff format --check --stdin-filename "$file" -
+            fi
+            ;;
+    esac
+}
+
+if [ "${1-}" = "--files" ]; then
+    shift
+    for path in "$@"; do
+        format_file "$path"
+    done
+    exit 0
+fi
+
+# NUL-separated arguments preserve spaces, Unicode, and newlines in paths.
+git diff --cached --name-only --diff-filter=ACM -z | xargs -0 "$0" --files

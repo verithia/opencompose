@@ -1,0 +1,118 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/oc-audio",
+    "crates/oc-audio-types",
+    "crates/oc-build-parity",
+    "crates/oc-test-support",
+    "crates/oc-diag",
+    "crates/oc-dsp",
+    "crates/oc-device-schema",
+    "crates/oc-synth",
+    "crates/oc-synth-core",
+    "crates/oc-synth-fx",
+    "crates/oc-synth-import",
+    "crates/oc-host",
+    "crates/oc-dsl",
+    "crates/oc-engine",
+    "crates/oc-data",
+    "crates/oc-cli",
+    "crates/oc-sample",
+    "crates/oc-lsp",
+    "crates/oc-gui/frontend/src-tauri",
+    "crates/oc-market",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95.0"
+license = "AGPL-3.0-or-later"
+repository = "https://github.com/verithia/opencompose"
+description = "A universal music description language bridging AI, humans, and audio engines"
+
+[workspace.dependencies]
+log = "0.4"
+objc2 = "0.6"
+rustfft = "6.4"
+windows-sys = "0.61"
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+ring = "0.17"
+rtrb = "0.3"
+sha2 = "0.10"
+serde_json = "1"
+schemars = "0.8.22"
+tempfile = "3"
+flate2 = "1"
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+semver = "1"
+fs4 = { version = "1.1", default-features = false, features = ["sync"] }
+zstd = "0.13"
+
+# Line tables keep file:line in a panic backtrace without the full DWARF that
+# tripled the cold build (measured: 299 s -> 103 s for `oc-gui`, 5.1 -> 3.4 GB).
+[profile.dev]
+debug = "line-tables-only"
+
+# Release bundles ship both macOS architectures. The symbol table costs about
+# 11 MB of the universal executable and no runtime path reads it, so strip it
+# to keep the installed app inside the 100 MB packaging budget.
+[profile.release]
+strip = true
+
+# The DAW and the performance tests have real-time deadlines, so they get an
+# optimised profile of their own. Plain `dev` (builds and the default test
+# suite) optimises nothing, which is what keeps it fast.
+[profile.perf]
+inherits = "dev"
+
+[profile.perf.package.oc-engine]
+opt-level = 2
+
+# Opening a project parses the whole document, and the parser is a pest grammar
+# where an unoptimised build is eleven times slower: 230 ms for a 20 KB project
+# against 20 ms when optimised. The app opens files constantly, so the document
+# layer is built like the audio layer.
+[profile.perf.package.oc-dsl]
+opt-level = 3
+
+[profile.perf.package.oc-gui]
+opt-level = 2
+
+# MP3 export runs the psychoacoustic model and the two-loop quantiser over the
+# whole mix; unoptimised it encodes at a third of the speed the app ships with.
+[profile.perf.package.rusty_mp3]
+opt-level = 2
+
+# The perf tests measure oc-dsp directly (and through oc-engine), so its
+# budgeting tests need the same optimisation the app gets.
+[profile.perf.package.oc-dsp]
+opt-level = 2
+
+# The synth harnesses measure the voice path in oc-synth-core (through the
+# oc-synth facade); without this they run at dev speed and miss their realtime
+# assertion by 4x. oc-synth-fx is part of that voice path.
+[profile.perf.package.oc-synth-core]
+opt-level = 2
+
+[profile.perf.package.oc-synth-fx]
+opt-level = 2
+
+# Compressed SoundFont and clip preparation runs on the playback startup path.
+# Optimise the codec and transform owners as well as the callers; optimising
+# only oc-engine leaves Vorbis/MP3 decoding at debug speed.
+[profile.perf.package.symphonia-core]
+opt-level = 3
+
+[profile.perf.package.symphonia-codec-vorbis]
+opt-level = 3
+
+[profile.perf.package.symphonia-bundle-mp3]
+opt-level = 3
+
+[profile.perf.package.symphonia-format-ogg]
+opt-level = 3
+
+[profile.perf.package.symphonia-utils-xiph]
+opt-level = 3

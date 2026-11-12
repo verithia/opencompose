@@ -1,0 +1,1027 @@
+/* ============================================================================
+   Preset Editor
+   ============================================================================ */
+
+.preset-editor {
+  display: grid;
+  grid-template-columns: 200px 1fr;
+  height: 100%;
+  background: var(--bg-primary);
+}
+
+.preset-list-pane {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-secondary);
+  border-right: 1px solid var(--border);
+}
+
+.preset-list-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.preset-list-title {
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.preset-list-items {
+  flex: 1;
+  overflow-y: auto;
+}
+
+.preset-list-item {
+  display: flex;
+  flex-direction: column;
+  padding: 6px 8px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--border);
+  transition: background var(--transition-fast);
+}
+
+.preset-list-item:hover {
+  background: var(--bg-elevated);
+}
+
+.preset-list-item.selected {
+  background: var(--bg-track-selected);
+  border-left: 3px solid var(--accent);
+}
+
+.preset-list-item-name {
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.preset-list-item-info {
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.preset-usage-badge {
+  background: var(--accent-dim);
+  color: var(--accent);
+  font-size: 8px;
+  font-weight: 700;
+  padding: 0 4px;
+  border-radius: 6px;
+  line-height: 14px;
+}
+
+.preset-add-track-btn {
+  width: 20px;
+  height: 16px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 8px;
+  font-weight: 700;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: auto;
+  flex-shrink: 0;
+  transition: background var(--transition-fast);
+}
+
+.preset-add-track-btn:hover {
+  background: var(--accent-dim);
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.preset-detail-pane {
+  overflow-y: auto;
+  padding: 8px;
+}
+
+.preset-detail {
+  display: grid;
+  grid-template-columns: minmax(150px, 200px) minmax(0, 1fr);
+  height: 100%;
+  min-height: 0;
+  gap: 12px;
+}
+
+.preset-identity, .preset-workspace {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.preset-identity { border-right: 1px solid var(--border); padding-right: 10px; }
+.preset-metadata summary { cursor: pointer; color: var(--text-secondary); }
+.preset-metadata[open] { display: grid; gap: 6px; }
+.preset-detail:has(.synth-workbench) { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); gap: 4px; }
+.preset-detail:has(.synth-workbench) .preset-identity { flex-direction: row; align-items: start; border: 0; padding: 0; overflow: visible; }
+.preset-detail:has(.synth-workbench) .preset-detail-header { gap: 10px; }
+.preset-detail:has(.synth-workbench) .preset-metadata { font-size: 11px; padding: 4px 8px; }
+.preset-identity .preset-detail-header { flex-wrap: wrap; gap: 8px; }
+.preset-identity .preset-detail-value, .preset-detail-name { overflow-wrap: anywhere; }
+.preset-workspace > * { flex-shrink: 0; min-width: 0; }
+.preset-workspace { container-type: inline-size; }
+.preset-profile-grid > .profile-group { min-width: 0; }
+@container (min-width: 800px) {
+  .preset-workspace .preset-profile-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 8px; }
+  .preset-profile-grid > :not(.profile-group) { grid-column: 1 / -1; }
+}
+.preset-detail-pane { min-width: 0; min-height: 0; overflow: hidden; }
+.preset-editor { min-height: 0; grid-template-columns: 180px minmax(0, 1fr); }
+
+/* Both columns are clipped to the panel: the graph scrolls inside its cell.
+   flex-start from the old flex layout would let them grow past the row. */
+.mixer-panel {
+  display: grid; grid-template-columns: 300px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr);
+  align-items: stretch;
+  height: 100%; min-height: 0; overflow: hidden;
+}
+.mixer-inspector { min-height: 0; min-width: 0; overflow: auto; border-right: 1px solid var(--border); }
+.mixer-routing-workspace { min-width: 0; min-height: 0; overflow: hidden; display: flex; flex-direction: column; }
+.mixer-channel-strips {
+  flex: 0 0 auto; display: flex; gap: 8px; align-items: stretch;
+  padding: 8px 12px; overflow-x: auto; overflow-y: hidden;
+  border-bottom: 1px solid var(--border); background: var(--bg-secondary);
+}
+.channel-strip {
+  --strip-color: var(--border-light);
+  flex: 0 0 148px; min-width: 148px; display: flex; flex-direction: column; gap: 6px;
+  padding: 6px 8px 6px 10px; border: 1px solid var(--border); border-radius: 4px;
+  /* Track colour as a data rail on the left edge, as in the timeline. */
+  box-shadow: inset 3px 0 0 var(--strip-color);
+  background: var(--bg-surface); cursor: pointer;
+}
+.channel-strip.selected {
+  border-color: var(--accent);
+  background: var(--bg-track-selected);
+  box-shadow: inset 3px 0 0 var(--strip-color), 0 0 0 1px var(--accent);
+}
+/* Muted: dim the strip's content but keep the M button readable so it can be undone. */
+.channel-strip.muted > :not(.channel-strip-buttons) { opacity: 0.5; }
+.channel-strip.muted .channel-strip-buttons .track-btn:not(.mute-active) { opacity: 0.5; }
+.channel-strip-header { display: flex; align-items: center; gap: 4px; }
+.channel-color { width: 18px; height: 18px; padding: 0; border: 1px solid var(--border); border-radius: 3px; background: none; cursor: pointer; }
+.channel-name {
+  min-width: 0; flex: 1; font: inherit; font-size: 11px; font-weight: 600;
+  background: var(--bg-input); color: var(--text-primary);
+  border: 1px solid transparent; border-radius: 3px; padding: 2px 4px;
+}
+.channel-name:hover, .channel-name:focus { border-color: var(--border); }
+.channel-name.static { border: 0; background: none; padding-left: 0; }
+.channel-badge { font-size: 8px; font-weight: 700; letter-spacing: 0.06em; color: var(--text-muted); }
+.channel-strip-buttons { display: flex; gap: 2px; }
+.channel-strip-buttons .track-btn { font-size: 9px; padding: 1px 4px; flex: 1; }
+.channel-strip-buttons .solo-safe-active { background: var(--accent); color: var(--bg-primary); }
+.channel-strip-buttons .polarity-active { border-color: var(--accent); color: var(--accent); }
+.channel-strip-fader { display: grid; gap: 3px; font-size: 10px; color: var(--text-secondary); }
+.channel-strip-fader label { display: grid; grid-template-columns: 34px minmax(0, 1fr); align-items: center; gap: 4px; }
+.channel-strip-fader input,
+.channel-strip-fader select {
+  min-width: 0; width: 100%; font: inherit; font-size: 10px; padding: 1px 3px;
+  background: var(--bg-input); color: var(--text-primary);
+  border: 1px solid var(--border); border-radius: 3px;
+}
+.channel-strip-sends { display: grid; gap: 2px; }
+.channel-strip-section { font-size: 9px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-secondary); }
+.channel-strip-hint { font-size: 10px; color: var(--text-muted); font-style: italic; }
+.channel-send { display: grid; grid-template-columns: minmax(0, 1fr) 44px 36px 34px 16px; gap: 2px; align-items: center; }
+.channel-send-target { font-size: 9px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.channel-send input {
+  min-width: 0; width: 100%; font: inherit; font-size: 9px; padding: 1px 2px;
+  background: var(--bg-input); color: var(--text-primary);
+  border: 1px solid var(--border); border-radius: 3px;
+}
+.channel-send-tap { font-size: 8px; padding: 1px 2px; }
+.channel-send-tap.tap-pre { background: var(--accent); color: var(--bg-primary); }
+.channel-send-tap.aux { color: var(--text-muted); }
+.channel-send-remove { font-size: 9px; padding: 0 2px; }
+.channel-send-aux { font-size: 8px; padding: 1px 3px; }
+.channel-send-add { display: flex; gap: 2px; margin-top: 2px; flex-wrap: wrap; }
+.channel-send-add select {
+  min-width: 0; flex: 1; font: inherit; font-size: 9px; padding: 1px 2px;
+  background: var(--bg-input); color: var(--text-primary);
+  border: 1px solid var(--border); border-radius: 3px;
+}
+.bus-strip { --strip-color: var(--accent-cool); background: color-mix(in srgb, var(--bg-surface) 88%, var(--accent-cool) 12%); }
+.bus-strip.soloed { border-color: var(--accent-cool); }
+.master-strip { --strip-color: var(--accent); background: color-mix(in srgb, var(--bg-surface) 86%, var(--accent) 14%); border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
+.bus-return { font-size: 9px; color: var(--text-secondary); }
+.mixer-channel-controls { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; padding: 8px 12px; border-bottom: 1px solid var(--border); }
+.mixer-channel-controls > label { grid-column: 1 / -1; display: grid; gap: 4px; }
+.mixer-channel-controls input, .mixer-channel-controls select { min-width: 0; width: 100%; }
+.mixer-channel-controls input, .mixer-channel-controls select, .node-mixer select {
+  background: var(--bg-input); color: var(--text-primary); border: 1px solid var(--border);
+  border-radius: 3px; padding: 4px; font: inherit;
+}
+.mixer-channel-select {
+  grid-column: 1 / -1;
+  min-width: 0;
+  gap: 4px;
+  color: var(--text-secondary);
+  font: var(--font-size-xs)/1.35 var(--font-ui);
+}
+.mixer-channel-select .oc-dropdown-trigger {
+  width: 100%;
+  min-height: 24px;
+  padding: 4px;
+  border-radius: 3px;
+  color: var(--text-primary);
+  font: inherit;
+}
+.mixer-inspector .node-mixer > div { min-width: 0; }
+@media (max-width: 900px) {
+  .mixer-panel { grid-template-columns: 250px minmax(0, 1fr); }
+  .preset-editor { grid-template-columns: 145px minmax(0, 1fr); }
+  .preset-detail { grid-template-columns: 150px minmax(0, 1fr); gap: 8px; }
+}
+
+.preset-detail-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.preset-detail-name {
+  font-size: var(--font-size-lg);
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.preset-detail .toolbar-btn, .preset-identity .preset-preview-btn {
+  border: 1px solid var(--border-strong, var(--border));
+  border-radius: 3px;
+  background: var(--bg-input);
+  min-height: 26px;
+  cursor: pointer;
+}
+.preset-detail .toolbar-btn:hover { background: var(--bg-hover); }
+.preset-detail .toolbar-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.preset-detail .preset-delete-button { border: 1px solid var(--stop-red); }
+.preset-detail input:not([type="range"]):not([type="checkbox"]), .preset-detail select {
+  min-width: 0;
+  max-width: 100%;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  border: 1px solid var(--border-strong, var(--border));
+  border-radius: 3px;
+}
+
+.preset-detail-section {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.preset-detail-label {
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.preset-detail-value {
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+}
+
+/* Preset metadata is read-only prose; the draggable preset rows stay locked. */
+.preset-detail-name,
+.preset-detail-value {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.profile-group {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px;
+  background: var(--bg-secondary);
+}
+
+.profile-group summary {
+  cursor: pointer;
+  color: var(--text-secondary);
+  font-size: var(--font-size-xs);
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  list-style-position: inside;
+  margin: -2px 0 6px;
+  text-transform: uppercase;
+}
+
+.profile-group:not([open]) summary {
+  margin-bottom: -2px;
+}
+
+.preset-program-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.preset-program-btn {
+  padding: 3px 6px;
+  font-size: 9px;
+  color: var(--text-secondary);
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  cursor: pointer;
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+}
+
+.preset-program-btn:hover {
+  background: var(--bg-elevated);
+}
+
+.preset-program-btn.active {
+  background: var(--accent-dim);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* The click prepares a SoundFont program, which reopens the device and can take
+   seconds; the pressed tile pulses so the grid never looks inert. */
+.preset-program-btn:disabled {
+  cursor: progress;
+}
+
+.preset-program-btn.loading {
+  border-color: var(--accent);
+  color: var(--accent);
+  animation: preset-program-pulse 900ms ease-in-out infinite;
+}
+
+@keyframes preset-program-pulse {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 1; }
+}
+
+.preset-program-pending {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  font-size: var(--font-size-xs);
+  color: var(--text-secondary);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .preset-program-btn.loading {
+    animation: none;
+    opacity: 0.8;
+  }
+}
+
+/* ============================================================================
+   Preset Picker — pad grid
+   ============================================================================ */
+
+.preset-picker {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--bg-primary);
+}
+
+.preset-picker-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+}
+
+.preset-picker-back {
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 4px;
+  background: var(--bg-input);
+  color: var(--text-secondary);
+  font-size: 14px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.preset-picker-back:hover {
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+}
+
+.preset-picker-title {
+  font-size: var(--font-size-sm);
+  font-weight: 700;
+  color: var(--text-primary);
+  flex: 1;
+}
+
+.preset-picker-search {
+  width: 140px;
+  padding: 4px 8px;
+  font-size: var(--font-size-xs);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  outline: none;
+}
+
+.preset-picker-search:focus {
+  border-color: var(--accent);
+}
+
+.preset-picker-search::placeholder {
+  color: var(--text-muted);
+}
+
+.preset-picker-section-label {
+  font-size: 9px;
+  font-weight: 700;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 10px 12px 4px;
+}
+
+/* Category tiles (layer 1) — responsive square grid */
+.preset-picker-categories {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 10px;
+  padding: 10px 16px;
+  overflow-y: auto;
+  flex: 1;
+  align-content: start;
+}
+
+.preset-picker-category {
+  min-height: 44px;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background var(--transition-fast), border-color var(--transition-fast), transform 0.1s;
+}
+
+.preset-picker-category:hover {
+  background: var(--bg-elevated);
+  border-color: var(--accent);
+  transform: translateY(-1px);
+}
+
+.preset-picker-category:active {
+  transform: scale(0.95);
+}
+
+.preset-picker-category-icon {
+  font-size: 20px;
+  line-height: 1;
+}
+
+.preset-picker-category-name {
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  color: var(--text-primary);
+  text-align: center;
+  line-height: 1.2;
+}
+
+.preset-picker-category-count {
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  background: var(--bg-input);
+  padding: 1px 6px;
+  border-radius: 8px;
+  line-height: 16px;
+}
+
+/* Instrument grid (layer 2) + search results — responsive square tiles */
+.preset-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 8px;
+  padding: 10px 16px;
+  overflow-y: auto;
+  flex: 1;
+  align-content: start;
+}
+
+.preset-picker-grid.compact {
+  grid-template-columns: repeat(auto-fill, minmax(90px, 1fr));
+  gap: 6px;
+  padding: 6px 16px;
+  flex: none;
+}
+
+.preset-picker-item {
+  min-height: 48px;
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background var(--transition-fast), border-color var(--transition-fast), transform 0.1s;
+  text-align: left;
+  padding: 6px;
+  overflow: hidden;
+}
+
+.preset-picker-item:hover {
+  background: var(--bg-elevated);
+  border-color: var(--accent);
+  transform: translateY(-1px);
+}
+
+.preset-picker-item:active {
+  transform: scale(0.95);
+}
+
+.preset-picker-item.compact {
+  gap: 2px;
+}
+
+.preset-picker-item-icon {
+  grid-row: 1 / 3;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.preset-picker-item.compact .preset-picker-item-icon {
+  font-size: 24px;
+}
+
+.preset-picker-item-name {
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+  line-height: 1.3;
+}
+
+.preset-picker-item-meta {
+  grid-column: 2;
+  font-size: 10px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+  line-height: 1.2;
+}
+
+.preset-picker-empty {
+  grid-column: 1 / -1;
+  text-align: center;
+  padding: 24px;
+  color: var(--text-muted);
+  font-size: var(--font-size-sm);
+}
+
+.preset-program-btn-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 120px;
+  display: inline-block;
+}
+
+.preset-preview-btn.loading {
+  color: var(--text-muted);
+  animation: preset-audition-pulse 0.9s ease-in-out infinite;
+}
+
+.preset-audition-status {
+  margin-left: 8px;
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+  white-space: nowrap;
+}
+
+.preset-reload-params {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-input);
+  color: var(--text-secondary);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.preset-reload-params:hover:not(:disabled) {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.preset-reload-params:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* The parameter table is replaced by this while the plugin's state loads. */
+.preset-params-loading {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 2px;
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.preset-params-spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: preset-params-spin 0.8s linear infinite;
+}
+
+@keyframes preset-params-spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes preset-audition-pulse {
+  50% { opacity: 0.3; }
+}
+
+/* Preview button (play triangle) */
+.preset-preview-btn {
+  width: 18px;
+  height: 18px;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--play-green);
+  font-size: 10px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background var(--transition-fast);
+  flex-shrink: 0;
+  padding: 0;
+}
+
+.preset-preview-btn:hover {
+  background: rgba(76, 175, 80, 0.2);
+}
+
+/* ============================================================================
+   CLAP Plugin Params & GUI
+   ============================================================================ */
+
+.clap-btn-row {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.clap-gui-btn {
+  padding: 4px 12px;
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  color: white;
+  background: var(--accent);
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: opacity var(--transition-fast);
+}
+
+.clap-gui-btn:hover { opacity: 0.85; }
+
+.plugin-params-grouped {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.plugin-param-category {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.plugin-param-category-name {
+  font-size: 9px;
+  font-weight: 700;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 2px 0;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 2px;
+}
+
+.plugin-param-module {
+  display: flex;
+  flex-direction: column;
+}
+
+.plugin-param-module-header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 4px;
+  cursor: pointer;
+  border-radius: 3px;
+  transition: background var(--transition-fast);
+}
+
+.plugin-param-module-header:hover {
+  background: var(--bg-elevated);
+}
+
+.plugin-param-module-arrow {
+  font-size: 9px;
+  color: var(--text-muted);
+  width: 10px;
+}
+
+.plugin-param-module-name {
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  color: var(--text-secondary);
+  flex: 1;
+}
+
+.plugin-param-module-count {
+  font-size: 9px;
+  color: var(--text-muted);
+  background: var(--bg-input);
+  padding: 0 4px;
+  border-radius: 6px;
+  min-width: 16px;
+  text-align: center;
+}
+
+.plugin-param-module-params {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding-left: 14px;
+}
+
+.plugin-param-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 4px;
+  border-radius: 2px;
+}
+
+.plugin-param-row:hover {
+  background: var(--bg-input);
+}
+
+.plugin-param-name {
+  font-size: 10px;
+  color: var(--text-secondary);
+  min-width: 90px;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.plugin-param-slider-track {
+  flex: 1;
+  height: 4px;
+  background: var(--bg-input);
+  border-radius: 2px;
+  overflow: hidden;
+  min-width: 40px;
+}
+
+.plugin-param-slider-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 2px;
+  transition: width 0.1s;
+}
+
+.plugin-param-display {
+  font-size: 9px;
+  color: var(--text-muted);
+  min-width: 50px;
+  text-align: right;
+  font-family: var(--font-mono);
+  white-space: nowrap;
+}
+
+/* ── Rendering Profile: compact field grid ────────────────────────────────
+   The profile used to stack a label + row per field with 10px gaps and 26px
+   inputs, which made it twice the height of the panel. Fields are now tight:
+   3px label gap, 24px controls, and the two-column container from the
+   @container rule above does the rest. */
+.profile-field { display: grid; gap: 3px; margin-bottom: 6px; }
+.profile-field-first { margin-top: 0; }
+.profile-field:last-child { margin-bottom: 2px; }
+.profile-row { display: grid; align-items: center; gap: 4px; }
+.profile-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text-secondary);
+}
+.preset-profile-grid input:not([type="range"]):not([type="checkbox"]),
+.preset-profile-grid select,
+.preset-profile-grid .oc-dropdown-trigger {
+  min-height: 24px;
+  padding: 1px 6px;
+  font: inherit;
+  font-size: 11px;
+}
+.preset-expression-type {
+  min-width: 0;
+}
+.preset-profile-grid .profile-action {
+  min-height: 24px;
+  padding: 0 7px;
+  font-size: 10px;
+  white-space: nowrap;
+}
+/* Nested disclosure headers inside the profile stay one size, one rhythm. */
+.preset-profile-grid .profile-group { padding: 4px 6px; }
+.preset-profile-grid .profile-group > summary { margin-bottom: 4px; }
+
+/* Generated parameter panel: formats without an in-app editor. */
+.plugin-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 420px;
+  overflow-y: auto;
+}
+
+.plugin-panel-header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.plugin-panel-title {
+  font-size: 9px;
+  font-weight: 700;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.plugin-panel-count {
+  font-size: 9px;
+  color: var(--text-muted);
+}
+
+.plugin-panel-group {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.plugin-panel-group-name {
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 2px;
+  margin-bottom: 2px;
+}
+
+.plugin-panel-row {
+  display: grid;
+  grid-template-columns: 104px minmax(40px, 1fr) 76px auto;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 4px;
+  border-radius: 2px;
+}
+
+.plugin-panel-row:hover {
+  background: var(--bg-input);
+}
+
+.plugin-panel-row.bypassing {
+  opacity: 0.55;
+}
+
+.plugin-panel-name {
+  font-size: 10px;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.plugin-panel-slider {
+  width: 100%;
+  height: 4px;
+  accent-color: var(--accent);
+}
+
+.plugin-panel-value {
+  font-size: 10px;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.plugin-panel-bypass {
+  font-size: 8px;
+  font-weight: 700;
+  color: var(--stop-red);
+  border: 1px solid var(--stop-red);
+  border-radius: 3px;
+  padding: 0 3px;
+}
+
+.plugin-panel-status {
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+}
+
+.plugin-panel-unavailable {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px;
+  border: 1px dashed var(--border);
+  border-radius: 4px;
+}
+
+.plugin-panel-unavailable-format {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+}
+
+.plugin-panel-unavailable-text {
+  font-size: var(--font-size-xs);
+  color: var(--text-secondary);
+}
+
+.plugin-panel-error {
+  font-size: 9px;
+  color: var(--stop-red);
+}
+
+/* A lane drives this parameter: a dashed ring and a badge, both gone as soon
+   as the lane stops driving or a drag takes over. */
+.plugin-panel-row.driven {
+  outline: 1px dashed color-mix(in srgb, var(--accent) 70%, transparent);
+  outline-offset: 1px;
+}
+
+.plugin-panel-driven-badge {
+  display: inline-grid;
+  place-items: center;
+  min-width: 9px;
+  height: 9px;
+  margin-right: 3px;
+  padding: 0 2px;
+  border: 1px solid var(--accent);
+  border-radius: 5px;
+  color: var(--accent);
+  font: 700 7px/1 var(--font-ui);
+  vertical-align: middle;
+}

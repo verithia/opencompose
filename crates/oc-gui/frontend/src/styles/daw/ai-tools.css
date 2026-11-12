@@ -1,0 +1,620 @@
+/* Rich tool-result views in the AI transcript. The raw JSON stays available
+   behind one toggle, so these rules only shape the readable layer. */
+
+.ai-tool-rich {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  min-width: 0;
+}
+
+.ai-tool-section {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+.ai-tool-section-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  color: var(--text-muted);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.ai-tool-section-count {
+  color: var(--text-faint, var(--text-muted));
+  font-variant-numeric: tabular-nums;
+}
+
+.ai-tool-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
+  gap: 4px;
+}
+
+.ai-tool-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  padding: 5px 7px;
+  background: var(--bg-input, var(--bg-secondary));
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.ai-tool-stat-label {
+  color: var(--text-muted);
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.ai-tool-stat-value {
+  color: var(--text-primary);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-tool-path {
+  padding: 4px 6px;
+  background: var(--bg-input, var(--bg-secondary));
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-secondary);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+
+.ai-tool-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 5px 7px;
+  background: var(--bg-input, var(--bg-secondary));
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-secondary);
+  font-size: 10px;
+}
+
+.ai-tool-status-dot {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--text-muted);
+}
+
+.ai-tool-status.ok .ai-tool-status-dot { background: var(--play-green, #6cc06c); }
+.ai-tool-status.error { border-color: color-mix(in srgb, var(--stop-red) 45%, var(--border)); }
+.ai-tool-status.error .ai-tool-status-dot { background: var(--stop-red); }
+.ai-tool-status-note {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-muted);
+}
+
+.ai-tool-table-wrap {
+  min-width: 0;
+  max-height: 320px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.ai-tool-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.ai-tool-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 4px 6px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+  color: var(--text-muted);
+  font-weight: 500;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.ai-tool-table td {
+  max-width: 180px;
+  padding: 3px 6px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-tool-table tr:last-child td { border-bottom: 0; }
+.ai-tool-table tr:hover td { background: var(--bg-hover, color-mix(in srgb, var(--accent) 6%, transparent)); }
+.ai-tool-table th.numeric,
+.ai-tool-table td.numeric { text-align: right; }
+
+.ai-tool-table-note {
+  padding: 4px 6px;
+  border-top: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 9px;
+}
+
+.ai-tool-empty {
+  padding: 8px;
+  color: var(--text-muted);
+  font-size: 10px;
+  text-align: center;
+}
+
+.ai-tool-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+}
+
+.ai-tool-chip {
+  max-width: 100%;
+  padding: 1px 5px;
+  background: var(--bg-input, var(--bg-secondary));
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--text-secondary);
+  font-size: 9px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-tool-timeline {
+  position: relative;
+  height: 34px;
+  min-width: 0;
+  overflow: hidden;
+  background: var(--bg-input, var(--bg-secondary));
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.ai-tool-timeline-span {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  min-width: 3px;
+  padding: 0 4px;
+  box-sizing: border-box;
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
+  border-radius: 3px;
+  color: var(--text-primary);
+  font-size: 9px;
+  overflow: hidden;
+}
+
+.ai-tool-timeline-span span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-tool-timeline-span small { color: var(--text-muted); font-size: 8px; }
+.ai-tool-timeline-span.audio {
+  background: color-mix(in srgb, var(--waveform, var(--accent)) 18%, transparent);
+  border-color: color-mix(in srgb, var(--waveform, var(--accent)) 40%, var(--border));
+}
+
+.ai-tool-beat-candidate + .ai-tool-beat-candidate {
+  margin-block-start: 6px;
+}
+
+.ai-tool-beat-anchors {
+  display: block;
+  width: 100%;
+  height: 12px;
+  background: var(--bg-input, var(--bg-secondary));
+}
+
+.ai-tool-beat-anchors line {
+  stroke: var(--accent);
+  stroke-width: 1px;
+  vector-effect: non-scaling-stroke;
+}
+
+.ai-tool-waveform {
+  display: block;
+  width: 100%;
+  height: 58px;
+  background:
+    linear-gradient(to bottom, transparent calc(50% - 0.5px), color-mix(in srgb, var(--text-muted) 55%, transparent) 50%, transparent calc(50% + 0.5px)),
+    var(--bg-input, var(--bg-secondary));
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.ai-tool-audio {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.ai-tool-audio-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.ai-tool-audio-toggle {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 22px;
+  padding: 0;
+  color: var(--text-primary);
+  font-size: 9px;
+  line-height: 1;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.ai-tool-audio-toggle:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.ai-tool-audio-seek {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 16px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.ai-tool-audio-seek:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.ai-tool-audio-clock {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+}
+
+.ai-tool-audio-volume {
+  flex: 0 1 3.5rem;
+  min-width: 1.5rem;
+  accent-color: var(--accent);
+}
+
+.ai-tool-audio-element { display: none; }
+
+.ai-tool-audio-note {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.ai-tool-audio-request {
+  flex-wrap: wrap;
+}
+
+.ai-tool-audio-offset {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.ai-tool-audio-offset input {
+  width: 4.5rem;
+  min-width: 0;
+  color: var(--text-primary);
+  background: var(--bg-input, var(--bg-secondary));
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font: inherit;
+}
+
+.ai-tool-audio-source + .ai-tool-audio-source {
+  margin-block-start: 6px;
+}
+
+.ai-tool-audio-loading {
+  width: 8px;
+  height: 8px;
+  border: 1px solid var(--accent);
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: ai-tool-spin 0.8s linear infinite;
+}
+
+@keyframes ai-tool-spin { to { transform: rotate(360deg); } }
+
+.ai-tool-spectrum {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 74px;
+  padding: 4px;
+  box-sizing: border-box;
+  background: var(--bg-input, var(--bg-secondary));
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.ai-tool-spectrum-bar {
+  display: flex;
+  align-items: flex-end;
+  flex: 1 1 0;
+  height: 100%;
+  min-width: 0;
+}
+
+.ai-tool-spectrum-bar span {
+  display: block;
+  width: 100%;
+  min-height: 2px;
+  background: color-mix(in srgb, var(--accent) 70%, var(--text-primary));
+  border-radius: 1px 1px 0 0;
+}
+
+.ai-tool-spectrum-scale {
+  display: flex;
+  justify-content: space-between;
+  gap: 2px;
+  color: var(--text-muted);
+  font-size: 8px;
+}
+
+.ai-tool-spectrum-scale span {
+  flex: 1 1 0;
+  overflow: hidden;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-tool-roll {
+  display: block;
+  width: 100%;
+  height: 150px;
+  background:
+    repeating-linear-gradient(to bottom, transparent 0 calc(100% / 12 - 1px), color-mix(in srgb, var(--text-muted) 18%, transparent) calc(100% / 12 - 1px) calc(100% / 12)),
+    var(--bg-input, var(--bg-secondary));
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.ai-tool-roll-note {
+  fill: color-mix(in srgb, var(--accent) 75%, var(--text-primary));
+  stroke: var(--bg-void, var(--bg-primary));
+  stroke-width: 0.2;
+}
+
+.ai-tool-roll-caption {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+  color: var(--text-muted);
+  font-size: 9px;
+}
+
+.ai-tool-score {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ai-tool-score-value {
+  color: var(--text-primary);
+  font-size: 22px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.ai-tool-score-track {
+  height: 4px;
+  overflow: hidden;
+  background: var(--bg-input, var(--bg-secondary));
+  border-radius: 2px;
+}
+
+.ai-tool-score-track span {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent), var(--play-green, var(--accent)));
+}
+
+.ai-tool-score-label {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.ai-tool-warnings,
+.ai-tool-warning {
+  color: var(--warn-amber, var(--text-muted));
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.ai-tool-warnings div + div { margin-top: 2px; }
+
+.ai-tool-errors {
+  margin: 0;
+  padding-left: 16px;
+  color: var(--stop-red);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.ai-tool-diff {
+  max-height: 280px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10px;
+}
+
+.ai-tool-nested {
+  border-top: 1px solid var(--border);
+  padding-top: 4px;
+}
+
+.ai-tool-nested > summary {
+  padding: 2px 0;
+  color: var(--text-muted);
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  list-style: none;
+}
+
+.ai-tool-nested > summary::-webkit-details-marker { display: none; }
+.ai-tool-nested > summary::before { content: "▸ "; }
+.ai-tool-nested[open] > summary::before { content: "▾ "; }
+
+.ai-tool-json {
+  max-height: 240px;
+  overflow: auto;
+}
+
+.ai-tool-raw-toggle {
+  align-self: flex-end;
+  padding: 2px 6px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--text-muted);
+  font-size: 9px;
+  cursor: pointer;
+}
+
+.ai-tool-raw-toggle:hover {
+  border-color: var(--border-light, var(--accent));
+  color: var(--text-primary);
+}
+
+/* The panel is narrow; wide readouts still keep their numbers visible. */
+.ai-panel .ai-tool-stats { grid-template-columns: repeat(auto-fit, minmax(86px, 1fr)); }
+
+/* Argument chips: one row per key, before the disclosure's result view. */
+.ai-tool-args {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 6px;
+  background: var(--bg-input, var(--bg-secondary));
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.ai-tool-arg {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  font-size: 10px;
+}
+
+.ai-tool-arg-key {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+}
+
+.ai-tool-arg-value {
+  min-width: 0;
+  color: var(--text-primary);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-tool-table tr.clickable { cursor: pointer; }
+.ai-tool-table tr.clickable:focus-within td { outline: 1px solid var(--accent); outline-offset: -1px; }
+
+/* One run of tool work between assistant messages. The disclosure stays open
+   while the turn works, then folds to its duration and call count. */
+.ai-step-group {
+  /* The transcript is a flex column; without this every group shrinks to a
+     clipped header when the conversation is taller than the panel. */
+  flex: 0 0 auto;
+  margin: 4px 0;
+  background: color-mix(in srgb, var(--bg-secondary) 55%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.ai-step-group > summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 4px 7px;
+  color: var(--text-muted);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  list-style: none;
+}
+
+.ai-step-group > summary::-webkit-details-marker { display: none; }
+.ai-step-group > summary::before {
+  content: "▸";
+  flex: 0 0 auto;
+  color: var(--text-muted);
+}
+.ai-step-group[open] > summary::before { content: "▾"; }
+.ai-step-group > summary:hover { color: var(--text-secondary); }
+.ai-step-group[open] > summary {
+  border-bottom: 1px solid var(--border);
+  color: var(--text-secondary);
+}
+
+.ai-step-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-step-group > .ai-message {
+  padding-left: 7px;
+  padding-right: 7px;
+}
+
+.ai-step-group > .ai-message.tool {
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 45%, transparent);
+}
+
+.ai-step-group > .ai-message:last-child { border-bottom: 0; }

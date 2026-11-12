@@ -1,0 +1,2812 @@
+.synth-panel {
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
+  border-radius: 4px;
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--accent) 8%, transparent), transparent 42%),
+    var(--bg-secondary);
+  box-shadow: inset 0 1px color-mix(in srgb, white 5%, transparent);
+}
+
+.synth-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.synth-panel-title {
+  color: var(--text-primary);
+  font-size: var(--font-size-lg);
+  font-weight: 720;
+  letter-spacing: -0.02em;
+}
+
+.synth-panel-subtitle,
+.synth-version {
+  color: var(--text-muted);
+  font: 600 var(--font-size-xs) var(--font-mono);
+}
+
+.synth-version {
+  padding: 3px 5px;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  letter-spacing: 0.08em;
+}
+
+.synth-module {
+  display: grid;
+  grid-template-columns: minmax(90px, 1fr) 2fr;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.synth-control-label,
+.synth-control-row {
+  color: var(--text-secondary);
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+}
+
+.synth-select {
+  min-height: 28px;
+  border: 1px solid var(--border-strong);
+  border-radius: 2px;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  padding: 0 8px;
+}
+
+.synth-control-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 14px 18px;
+  padding: 14px;
+}
+
+.synth-control {
+  display: grid;
+  gap: 7px;
+}
+
+.synth-control-row {
+  display: flex;
+  justify-content: space-between;
+}
+
+.synth-control-row output {
+  color: var(--accent);
+  font: 600 var(--font-size-xs) var(--font-mono);
+}
+
+.synth-control input[type="range"] {
+  width: 100%;
+  accent-color: var(--accent);
+}
+
+.synth-workbench {
+  --border-strong: color-mix(in srgb, var(--text-secondary) 45%, var(--border));
+  --synth-line: color-mix(in srgb, var(--accent) 76%, var(--text-primary));
+  overflow: hidden;
+  min-width: 0;
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border-strong));
+  border-radius: 3px;
+  background: var(--bg-primary);
+  box-shadow: none;
+  container-type: inline-size;
+}
+
+.synth-workbench-header {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: stretch;
+  min-height: 28px;
+  border-bottom: 1px solid var(--border-strong);
+  background: var(--bg-secondary);
+}
+
+.synth-patch-browser {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 5px;
+  min-width: 0;
+  flex-wrap: nowrap;
+  border-left: 1px solid var(--border);
+}
+
+.synth-patch-browser button {
+  height: 24px;
+  border: 1px solid var(--border-strong);
+  border-radius: 1px;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font: 650 10px/1 var(--font-mono);
+  cursor: pointer;
+}
+
+.synth-patch-browser .synth-load-button {
+  padding: 0 8px;
+  color: var(--accent);
+}
+
+.synth-patch-browser .synth-randomize-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  padding: 0 5px;
+  color: var(--accent);
+  line-height: 1;
+}
+
+.synth-patch-browser .synth-randomize-button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+/* The patch field reads as an input, not as a command button. */
+.synth-patch-field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 190px;
+  padding: 0 6px;
+  text-align: left;
+}
+
+.synth-patch-field[aria-expanded="true"] {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.synth-patch-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.synth-patch-caret {
+  color: var(--text-muted);
+  font-size: 8px;
+}
+
+/* Factory patch browser: portalled, so panel scroll containers cannot clip it. */
+.factory-patch-layer {
+  position: fixed;
+  z-index: 1300;
+  display: flex;
+  flex-direction: column;
+  width: 300px;
+  max-height: min(392px, calc(100vh - 16px));
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-md);
+  background: var(--bg-float);
+  box-shadow: var(--shadow-elevated);
+  color: var(--text-primary);
+}
+
+.factory-patch-search-row {
+  padding: 7px;
+  border-bottom: 1px solid var(--border);
+}
+
+.factory-patch-search {
+  width: 100%;
+  height: 24px;
+  padding: 0 7px;
+  border: 1px solid var(--border-strong);
+  border-radius: 2px;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font: 500 var(--font-size-xs) var(--font-mono);
+}
+
+.factory-patch-search:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.factory-patch-list {
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px;
+}
+
+.synth-patch-origin {
+  flex: 0 1 auto;
+  max-width: 90px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-muted);
+  font-size: 8px;
+  font-weight: 500;
+}
+
+.synth-patch-actions {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.synth-patch-menu-button {
+  min-width: 24px;
+  padding: 0 6px;
+}
+
+/* Portalled under the trigger: the workbench clips its own overflow and its
+   inline-size containment would trap a fixed child, so the menu cannot live
+   in the flex row. */
+.synth-patch-menu {
+  position: fixed;
+  z-index: 1100;
+  display: grid;
+  min-width: 156px;
+  max-width: calc(100vw - 16px);
+  padding: 4px;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  background: var(--bg-float);
+  box-shadow: var(--shadow-elevated);
+  color: var(--text-primary);
+}
+
+.synth-patch-menu:focus {
+  outline: none;
+}
+
+.synth-patch-menu button {
+  height: 24px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text-primary);
+  font: 600 10px/1 var(--font-mono);
+  text-align: left;
+  cursor: pointer;
+}
+
+.synth-patch-menu button.active,
+.synth-patch-menu button:hover,
+.synth-patch-menu button:focus-visible {
+  background: var(--accent-dim);
+  color: var(--accent);
+}
+
+/* Sibling of the menu bug: this dialog was unanchored and transparent too. */
+.patch-action-dialog {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 7px;
+  z-index: 1100;
+  display: grid;
+  gap: 8px;
+  width: 240px;
+  max-width: calc(100vw - 16px);
+  padding: 10px;
+  border: 1px solid var(--accent);
+  border-radius: 2px;
+  background: var(--bg-float);
+  box-shadow: 0 10px 28px rgb(0 0 0 / 50%);
+}
+
+.patch-action-field {
+  display: grid;
+  gap: 5px;
+  color: var(--text-secondary);
+  font: 650 9px/1 var(--font-mono);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.patch-action-field input {
+  height: 24px;
+  padding: 0 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: 1px;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font: 500 11px/1 var(--font-mono);
+}
+
+.patch-action-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.patch-action-buttons button {
+  height: 24px;
+  padding: 0 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 1px;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font: 650 9px/1 var(--font-mono);
+  cursor: pointer;
+}
+
+.patch-action-buttons button.primary {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.patch-action-error {
+  margin: 0;
+  color: var(--danger, #e2695f);
+  font: 500 10px/1.3 var(--font-mono);
+}
+
+.synth-library-warning {
+  margin: 0;
+  padding: 3px 8px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-muted);
+  font: 500 9px/1.3 var(--font-mono);
+}
+
+.factory-patch-group-section {
+  padding: 6px 7px 2px;
+  color: var(--accent);
+  font: 700 8px/1 var(--font-mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.factory-patch-group-label {
+  padding: 5px 7px 3px;
+  color: var(--text-muted);
+  font: 650 8px/1 var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.factory-patch-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 7px;
+  border-radius: 2px;
+  cursor: pointer;
+  font: 600 10px/1.4 var(--font-mono);
+}
+
+.factory-patch-row.active {
+  background: var(--bg-hover);
+}
+
+.factory-patch-row.current .factory-patch-name {
+  color: var(--accent);
+}
+
+/* The chosen row paints before its load resolves. */
+.factory-patch-row.chosen {
+  background: var(--bg-hover);
+}
+
+.factory-patch-row.chosen .factory-patch-name {
+  color: var(--accent);
+}
+
+.factory-patch-current-mark.pending {
+  color: var(--text-muted);
+}
+
+.factory-patch-row .factory-patch-name {
+  flex: 1;
+}
+
+.factory-patch-current-mark {
+  color: var(--accent);
+  font-size: 7px;
+}
+
+/* Always reserved, so the row never reflows when the glyph changes. */
+.factory-patch-audition {
+  display: inline-flex;
+  flex: 0 0 18px;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 2px;
+  background: transparent;
+  color: var(--text-muted);
+  font: 700 8px/1 var(--font-mono);
+  cursor: pointer;
+  opacity: 0.6;
+}
+
+.factory-patch-audition:hover,
+.factory-patch-audition:focus-visible,
+.factory-patch-row.active .factory-patch-audition,
+.factory-patch-audition.playing {
+  opacity: 1;
+}
+
+.factory-patch-audition:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.factory-patch-audition.playing {
+  border-color: var(--border-strong);
+  color: var(--accent);
+}
+
+.factory-patch-audition.busy {
+  color: var(--text-secondary);
+}
+
+.factory-patch-audition:disabled {
+  cursor: default;
+  opacity: 0.3;
+}
+
+.factory-patch-empty {
+  margin: 0;
+  padding: 14px 10px;
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+  text-align: center;
+}
+
+/* A/B footer: one 24px control row and its measured readout, never a card. */
+.factory-patch-compare {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+  min-height: 24px;
+  padding: 2px 7px;
+  border-top: 1px solid var(--border);
+}
+
+.factory-patch-compare-sides {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+}
+
+.factory-patch-compare-badge {
+  flex: 0 0 auto;
+  padding: 0 2px;
+  border: 1px solid transparent;
+  color: var(--text-muted);
+  font: 700 8px/1 var(--font-mono);
+}
+
+.factory-patch-compare-badge.active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.factory-patch-compare-name {
+  max-width: 62px;
+  overflow: hidden;
+  color: var(--text-secondary);
+  font: 600 9px/1 var(--font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.factory-patch-compare-action {
+  flex: 0 0 auto;
+  height: 18px;
+  padding: 0 5px;
+  border: 1px solid var(--border-strong);
+  border-radius: 2px;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font: 700 8px/1 var(--font-mono);
+  cursor: pointer;
+}
+
+.factory-patch-compare-action.switch {
+  width: 20px;
+  padding: 0;
+}
+
+.factory-patch-compare-action:hover:not(:disabled),
+.factory-patch-compare-action:focus-visible {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.factory-patch-compare-action:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.factory-patch-compare-action:disabled {
+  cursor: default;
+  opacity: 0.35;
+}
+
+.factory-patch-compare-readout {
+  margin: 0;
+  padding: 0 7px 5px;
+  color: var(--text-muted);
+  font: 500 9px/1.3 var(--font-mono);
+}
+
+.factory-patch-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.factory-patch-text .factory-patch-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.factory-patch-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+}
+
+.factory-patch-tag {
+  padding: 0 4px;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  background: transparent;
+  color: var(--text-muted);
+  font: 600 8px/1.4 var(--font-mono);
+  cursor: pointer;
+}
+
+.factory-patch-tag:hover {
+  border-color: var(--border-strong);
+  color: var(--text-secondary);
+}
+
+.factory-patch-favorite {
+  display: inline-flex;
+  flex: 0 0 16px;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 2px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.55;
+}
+
+.factory-patch-favorite:hover,
+.factory-patch-favorite:focus-visible,
+.factory-patch-favorite.on {
+  opacity: 1;
+}
+
+.factory-patch-favorite.on {
+  color: var(--accent);
+}
+
+.factory-patch-favorite:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.synth-toggle-control {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 25px;
+  color: var(--text-secondary);
+  font: 650 9px/1 var(--font-mono);
+}
+
+.synth-toggle-control input {
+  accent-color: var(--accent);
+}
+
+.synth-inline-options {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.synth-file-control {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 5px;
+}
+
+.synth-file-control button {
+  min-height: 23px;
+  border: 1px solid var(--border-strong);
+  border-radius: 1px;
+  background: var(--bg-input);
+  color: var(--accent);
+  padding-inline: 6px;
+  font: 650 8px/1 var(--font-mono);
+  cursor: pointer;
+}
+
+.synth-file-control span {
+  overflow: hidden;
+  color: var(--text-muted);
+  font: 550 8px/1 var(--font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.synth-patch-error {
+  margin: 0;
+  padding: 5px 11px;
+  border-bottom: 1px solid var(--danger, #e07171);
+  color: var(--danger, #e07171);
+  font: 550 9px/1.35 var(--font-mono);
+  overflow-wrap: anywhere;
+}
+
+.synth-import-error {
+  color: var(--danger, #e07171);
+  font: 550 8px/1.35 var(--font-mono);
+  overflow-wrap: anywhere;
+}
+
+.synth-brand-block {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px;
+}
+
+.synth-brand-mark {
+  display: none;
+  width: 29px;
+  height: 29px;
+  place-items: center;
+  border: 1px solid var(--accent);
+  background: var(--accent-dim);
+  color: var(--accent);
+  font: 800 11px/1 var(--font-mono);
+  letter-spacing: -0.08em;
+}
+
+.synth-brand-block div {
+  display: grid;
+  gap: 1px;
+}
+
+.synth-brand-block strong {
+  color: var(--text-primary);
+  font-size: var(--font-size-md);
+  letter-spacing: -0.02em;
+}
+
+.synth-brand-block small,
+.synth-compact-strip small,
+.synth-voice-readout small {
+  color: var(--text-muted);
+  font: 500 9px/1.2 var(--font-mono);
+}
+
+.synth-view-tabs {
+  min-height: 26px;
+  display: flex;
+  align-items: stretch;
+  border-inline: 1px solid var(--border);
+}
+
+.synth-view-tabs button,
+.synth-expand-button {
+  position: relative;
+  border: 0;
+  border-right: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-muted);
+  padding: 0 7px;
+  font: 700 10px/1 var(--font-mono);
+  letter-spacing: 0.08em;
+  cursor: pointer;
+}
+
+.synth-view-tabs button:hover,
+.synth-expand-button:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.synth-view-tabs button.active {
+  background: var(--bg-primary);
+  color: var(--accent);
+}
+
+.synth-view-tabs button.active::after {
+  position: absolute;
+  inset: auto 8px 0;
+  height: 2px;
+  background: var(--accent);
+  content: "";
+}
+
+.synth-expand-button {
+  justify-self: end;
+  border-right: 0;
+  border-left: 1px solid var(--border);
+}
+
+.synth-sound-grid {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 1px;
+  background: var(--border);
+}
+
+.synth-module-card {
+  display: grid;
+  align-content: start;
+  gap: 9px;
+  min-width: 0;
+  padding: 10px;
+  background: var(--bg-secondary);
+}
+
+.synth-module-card > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 17px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-secondary);
+  font: 750 9px/1 var(--font-mono);
+  letter-spacing: 0.07em;
+}
+
+.synth-module-card > header i {
+  color: var(--text-muted);
+  font-size: 8px;
+  font-style: normal;
+  font-weight: 500;
+}
+
+.oscillator-a,
+.oscillator-b,
+.oscillator-c {
+  grid-column: span 4;
+}
+
+.synth-mixer-card {
+  grid-column: span 4;
+}
+
+.synth-filter-card {
+  grid-column: span 5;
+}
+
+.synth-envelope-card {
+  grid-column: span 3;
+}
+
+.synth-lfo-card {
+  grid-column: span 4;
+}
+
+/* Filter 2 remains editable while bypassed: dim the display and faders, not the controls. */
+.synth-filter2-card[data-enabled="off"] > :not(header):not(.synth-inline-options) {
+  opacity: 0.45;
+}
+
+.synth-audition {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: 112px 1fr;
+  align-items: center;
+  gap: 12px;
+  min-height: 76px;
+  padding: 9px 12px;
+  background: var(--bg-secondary);
+}
+
+.synth-audition > header {
+  display: grid;
+  gap: 5px;
+  color: var(--text-primary);
+  font: 750 9px/1 var(--font-mono);
+  letter-spacing: 0.08em;
+}
+
+.synth-audition > header small {
+  color: var(--text-muted);
+  font: 500 8px/1.25 var(--font-mono);
+  letter-spacing: 0;
+}
+
+.synth-keyboard {
+  display: grid;
+  grid-template-columns: repeat(13, minmax(24px, 1fr));
+  align-items: start;
+  height: 58px;
+  border: 1px solid var(--border-strong);
+  background: var(--border-strong);
+}
+
+.synth-keyboard button {
+  position: relative;
+  height: 56px;
+  border: 0;
+  border-right: 1px solid var(--border-strong);
+  background: color-mix(in srgb, #f6f7f9 92%, var(--accent));
+  color: #20242c;
+  cursor: pointer;
+}
+
+.synth-keyboard button.black {
+  z-index: 1;
+  height: 36px;
+  background: color-mix(in srgb, #20242c 92%, var(--accent));
+  color: #f6f7f9;
+}
+
+.synth-keyboard button.active,
+.synth-keyboard button[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--bg-primary);
+  transform: translateY(2px);
+}
+
+.synth-keyboard button:hover,
+.synth-keyboard button:focus-visible {
+  background: var(--accent);
+  color: var(--accent-contrast);
+}
+
+.synth-keyboard button span {
+  position: absolute;
+  inset: auto 2px 4px;
+  font: 650 7px/1 var(--font-mono);
+}
+
+.synth-wave-display,
+.synth-envelope-display,
+.synth-filter-display,
+.synth-lfo-display {
+  width: 100%;
+  height: 84px;
+  min-height: 0;
+  border: 1px solid var(--border);
+  background: var(--bg-input);
+}
+
+.synth-graph-grid {
+  fill: none;
+  stroke: color-mix(in srgb, var(--border) 72%, transparent);
+  stroke-width: 0.55;
+}
+
+.synth-graph-line {
+  fill: none;
+  stroke: var(--synth-line);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+  vector-effect: non-scaling-stroke;
+}
+
+.synth-graph-fill {
+  fill: color-mix(in srgb, var(--accent) 16%, transparent);
+  stroke: none;
+}
+
+.synth-select-control {
+  display: grid;
+  grid-template-columns: minmax(55px, auto) 1fr;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-secondary);
+  font: 600 9px/1 var(--font-mono);
+}
+
+.synth-select-control .oc-dropdown-trigger {
+  min-width: 0;
+  height: 23px;
+  border: 1px solid var(--border-strong);
+  border-radius: 1px;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font: 600 10px/1 var(--font-mono);
+}
+
+.synth-workbench .synth-control {
+  gap: 5px;
+}
+
+.synth-workbench .synth-control-row {
+  font: 500 11px/1.3 var(--font-ui);
+}
+
+.synth-workbench .synth-control-row output {
+  color: var(--text-primary);
+  font: 500 10px/1.3 var(--font-mono);
+}
+
+.synth-workbench input[type="range"] {
+  appearance: none;
+  height: 20px;
+  margin: 0;
+  background: transparent;
+  cursor: ew-resize;
+}
+
+/* Recessed slot with an accent fill up to the value; the thumb is a precision
+   rectangle, not a browser-default pill. */
+.synth-workbench input[type="range"]::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 2px;
+  background: linear-gradient(
+    to right,
+    var(--accent) var(--slider-fill, 0%),
+    color-mix(in srgb, var(--text-secondary) 34%, var(--bg-input)) var(--slider-fill, 0%)
+  );
+}
+
+.synth-workbench input[type="range"]::-webkit-slider-thumb {
+  appearance: none;
+  width: 11px;
+  height: 11px;
+  margin-top: -3.5px;
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  background: var(--bg-elevated);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
+  transition: background var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.synth-workbench input[type="range"]:hover::-webkit-slider-thumb {
+  background: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-dim);
+}
+
+.synth-control-row output {
+  font-variant-numeric: tabular-nums;
+}
+
+.synth-workbench :is(button, input, select):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.synth-route-error {
+  padding: 10px;
+  border-left: 3px solid var(--accent);
+  color: var(--text-primary);
+  font-size: 12px;
+}
+
+.synth-quality-badges { display: none; }
+
+.synth-mini-controls {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.synth-mini-controls .synth-control-row {
+  display: grid;
+  gap: 2px;
+}
+
+.synth-source-meter {
+  overflow: hidden;
+  height: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg-input);
+}
+
+.synth-source-meter span {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent), var(--accent-secondary));
+}
+
+.synth-compact-strip {
+  display: grid;
+  grid-template-columns: 110px repeat(3, minmax(90px, 1fr));
+  align-items: center;
+  gap: 12px;
+  padding: 8px 11px;
+  background: var(--bg-secondary);
+}
+
+.synth-compact-strip .synth-wave-display {
+  min-height: 42px;
+  height: 42px;
+}
+
+.synth-compact-strip div {
+  display: grid;
+  gap: 3px;
+}
+
+.synth-compact-strip b {
+  color: var(--text-primary);
+  font: 700 11px/1 var(--font-mono);
+}
+
+.synth-mod-view,
+.synth-fx-view,
+.synth-voice-view {
+  min-height: 420px;
+  padding: 12px;
+  background: var(--bg-primary);
+}
+
+.synth-direct-routing {
+  display: grid;
+  grid-template-columns: 1fr 30px 1fr;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 10px;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-secondary);
+}
+
+.synth-direct-routing section {
+  display: grid;
+  gap: 7px;
+}
+
+.synth-direct-routing header {
+  color: var(--text-muted);
+  font: 700 8px/1 var(--font-mono);
+  letter-spacing: 0.08em;
+}
+
+.synth-routing-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.synth-routing-options button {
+  min-height: 25px;
+  border: 1px solid var(--border-strong);
+  border-radius: 1px;
+  background: var(--bg-input);
+  color: var(--text-secondary);
+  padding: 4px 7px;
+  font: 650 8px/1 var(--font-mono);
+  cursor: grab;
+}
+
+.synth-routing-options button.active,
+.synth-routing-options.targets button:not(:disabled):hover {
+  border-color: var(--accent);
+  background: var(--accent-dim);
+  color: var(--accent);
+}
+
+.synth-routing-options.targets button:disabled {
+  cursor: default;
+  opacity: 0.48;
+}
+
+.synth-route-arrow {
+  color: var(--accent);
+  font: 300 22px/1 var(--font-mono);
+  text-align: center;
+}
+
+.synth-macro-bank {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1px;
+  margin-bottom: 12px;
+  background: var(--border);
+  border: 1px solid var(--border);
+}
+
+.synth-macro {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+  min-width: 0;
+  padding: 6px;
+  background: var(--bg-secondary);
+}
+
+.synth-step-sequencer {
+  margin-bottom: 12px;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-secondary);
+}
+
+.synth-step-sequencer > header {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 9px 11px;
+  border-bottom: 1px solid var(--border-strong);
+  background: var(--bg-elevated);
+}
+
+.synth-step-sequencer > header > div:first-child {
+  display: grid;
+  gap: 3px;
+}
+
+.synth-step-sequencer header b {
+  color: var(--text-primary);
+  font: 750 9px/1 var(--font-mono);
+  letter-spacing: 0.08em;
+}
+
+.synth-step-sequencer header span {
+  color: var(--text-muted);
+  font-size: 9px;
+}
+
+.synth-step-options {
+  display: flex;
+  align-items: end;
+  gap: 10px;
+}
+
+.synth-step-options .synth-control {
+  width: 120px;
+}
+
+.synth-step-grid {
+  display: grid;
+  grid-template-columns: repeat(16, minmax(28px, 1fr));
+  height: 144px;
+  gap: 1px;
+  padding: 8px;
+  background: var(--border);
+}
+
+.synth-step {
+  display: grid;
+  grid-template-rows: 18px 1fr 16px;
+  place-items: center;
+  min-width: 0;
+  background: var(--bg-secondary);
+}
+
+.synth-step:nth-child(4n + 1) {
+  border-left: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
+.synth-step output,
+.synth-step span {
+  color: var(--text-muted);
+  font: 650 7px/1 var(--font-mono);
+}
+
+.synth-step input {
+  width: 96px;
+  transform: rotate(-90deg);
+  accent-color: var(--accent);
+}
+
+.synth-matrix {
+  border: 1px solid var(--border-strong);
+  background: var(--bg-secondary);
+}
+
+.synth-matrix-header,
+.synth-matrix-row {
+  display: grid;
+  grid-template-columns: 42px minmax(130px, 0.8fr) minmax(150px, 1fr) minmax(200px, 1.6fr);
+  align-items: center;
+  gap: 9px;
+  padding: 6px 9px;
+}
+
+.synth-matrix-header {
+  border-bottom: 1px solid var(--border-strong);
+  background: var(--bg-elevated);
+  color: var(--text-muted);
+  font: 700 8px/1 var(--font-mono);
+  letter-spacing: 0.08em;
+}
+
+.synth-matrix-row {
+  min-height: 34px;
+  border-bottom: 1px solid var(--border);
+}
+
+.synth-matrix-row:last-child {
+  border-bottom: 0;
+}
+
+.synth-matrix-row:hover {
+  background: var(--bg-hover);
+}
+
+.synth-matrix-row > b {
+  color: var(--accent);
+  font: 700 9px/1 var(--font-mono);
+}
+
+.synth-matrix-row .synth-select-control {
+  display: block;
+}
+
+.synth-matrix-row .synth-select-control > span {
+  position: absolute;
+  overflow: hidden;
+  width: 1px;
+  height: 1px;
+  clip: rect(0 0 0 0);
+}
+
+.synth-matrix-row .oc-dropdown-trigger {
+  width: 100%;
+}
+
+.synth-view-intro {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 12px;
+  padding: 10px;
+  border-left: 2px solid var(--accent);
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-size: var(--font-size-xs);
+}
+
+.synth-view-intro b {
+  color: var(--text-primary);
+  font: 750 10px/1 var(--font-mono);
+}
+
+.synth-voice-view {
+  display: grid;
+  grid-template-columns: 180px 1fr;
+  align-content: start;
+  gap: 18px;
+}
+
+.synth-voice-readout {
+  display: grid;
+  align-content: center;
+  min-height: 170px;
+  padding: 18px;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-secondary);
+}
+
+.synth-voice-readout strong {
+  color: var(--accent);
+  font: 300 64px/0.9 var(--font-mono);
+}
+
+.synth-voice-readout span {
+  margin: 10px 0 5px;
+  color: var(--text-primary);
+  font: 750 9px/1 var(--font-mono);
+  letter-spacing: 0.08em;
+}
+
+.synth-voice-controls {
+  display: grid;
+  align-content: start;
+  grid-template-columns: repeat(2, minmax(150px, 1fr));
+  gap: 18px;
+  padding: 18px;
+  border: 1px solid var(--border);
+  background: var(--bg-secondary);
+}
+
+.synth-quality-badges {
+  display: flex;
+  grid-column: 1 / -1;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.synth-quality-badges span {
+  padding: 5px 7px;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-secondary);
+  color: var(--text-muted);
+  font: 650 8px/1 var(--font-mono);
+  letter-spacing: 0.06em;
+}
+
+@media (max-width: 980px) {
+  .synth-workbench { min-width: 0; }
+  .oscillator-a, .oscillator-b, .oscillator-c, .synth-filter-card { grid-column: span 6; }
+  .synth-mixer-card, .synth-envelope-card, .synth-lfo-card { grid-column: span 4; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .synth-workbench * { transition: none !important; }
+}
+
+/* Compact fader banks: native vertical inputs keep pointer and keyboard semantics. */
+.synth-workbench { min-width: 0; }
+.synth-module-card {
+  grid-template-columns: repeat(auto-fit, minmax(52px, 1fr));
+  gap: 8px 6px;
+  padding: 8px;
+}
+
+/* Device-dock chrome. Sound modules remain simultaneous in a compact rack. */
+.synth-brand-block small { display: none; }
+.synth-module-tabs { display: flex; flex-wrap: wrap; gap: 4px; padding: 3px 6px; background: var(--bg-secondary); }
+.synth-module-tabs button {
+  padding: 4px 10px; border: 1px solid var(--border-strong);
+  background: var(--bg-input); color: var(--text-secondary); font: 600 10px var(--font-mono); cursor: pointer;
+}
+.synth-module-tabs button[aria-pressed="true"] { color: var(--accent); border-color: var(--accent); background: var(--accent-dim); }
+.synth-mod-view[data-page]:not([data-page="routing"]) .synth-direct-routing,
+.synth-mod-view[data-page]:not([data-page="macros"]) .synth-macro-bank,
+.synth-mod-view[data-page]:not([data-page="steps"]) .synth-step-sequencer,
+.synth-mod-view[data-page]:not([data-page="matrix"]) .synth-matrix { display: none; }
+.synth-mod-view[data-page] { max-height: 250px; overflow: auto; padding: 6px; }
+.synth-sound-grid .synth-wave-display, .synth-sound-grid .synth-envelope-display,
+.synth-sound-grid .synth-filter-display, .synth-sound-grid .synth-lfo-display { height: 30px; }
+.synth-workbench .synth-sound-grid .synth-control input[type="range"] { height: 52px; }
+.synth-workbench .synth-sound-grid .synth-control-row { min-height: 32px; }
+.synth-sound-grid .synth-audition { min-height: 42px; padding: 4px 8px; gap: 8px; }
+.synth-sound-grid .synth-keyboard { height: 36px; }
+.synth-sound-grid .synth-keyboard button { height: 34px; }
+.synth-sound-grid .synth-keyboard button.black { height: 24px; }
+.synth-sound-grid .synth-inline-options { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; }
+.synth-sound-grid .synth-inline-options .synth-select-control { grid-template-columns: auto 1fr; gap: 3px; }
+.synth-sound-grid .synth-control-row label { font-size: 10px; overflow-wrap: normal; }
+@container (max-width: 760px) {
+  .synth-workbench-header { grid-template-columns: auto 1fr auto; }
+  .synth-brand-block { display: none; }
+  .synth-patch-browser { grid-row: auto; grid-column: auto; }
+  .synth-view-tabs { grid-row: auto; grid-column: auto; }
+  .synth-expand-button { grid-row: auto; grid-column: auto; }
+}
+.synth-module-card > :not(.synth-control) { grid-column: 1 / -1; }
+.synth-module-card, .synth-filter-card, .synth-envelope-card, .synth-lfo-card {
+  grid-column: span 4;
+}
+.synth-workbench .synth-control {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+}
+.synth-workbench .synth-control-row {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  text-align: center;
+  min-height: 42px;
+  width: 100%;
+}
+.synth-control-row label { overflow-wrap: anywhere; }
+.synth-workbench .synth-control input[type="range"] {
+  writing-mode: vertical-lr;
+  direction: rtl;
+  width: 22px;
+  height: 78px;
+  cursor: ns-resize;
+  touch-action: none;
+}
+.synth-workbench .synth-control input[type="range"]::-webkit-slider-runnable-track {
+  width: 4px;
+  height: 100%;
+  background: linear-gradient(
+    to top,
+    var(--accent) var(--slider-fill, 0%),
+    color-mix(in srgb, var(--text-secondary) 34%, var(--bg-input)) var(--slider-fill, 0%)
+  );
+}
+.synth-workbench .synth-control input[type="range"]::-webkit-slider-thumb {
+  width: 12px;
+  height: 10px;
+  margin: 0 0 0 -4px;
+  border-radius: 3px;
+}
+.synth-mini-controls { gap: 4px; }
+.synth-wave-display, .synth-envelope-display, .synth-filter-display, .synth-lfo-display { height: 52px; }
+.synth-patch-browser .oc-dropdown-trigger { min-width: 0; max-width: 100%; height: 24px; font-size: 10px; padding: 0 6px; }
+.synth-file-control button {
+  min-height: 28px;
+  font-size: 10px;
+  padding: 4px 8px;
+}
+.synth-patch-browser .synth-load-button { background: var(--accent-dim); border-color: var(--accent); }
+.synth-workbench button:hover:not(:disabled) { border-color: var(--text-secondary); }
+.synth-voice-controls { display: flex; flex-wrap: wrap; gap: 10px; padding: 10px; }
+.synth-voice-controls > :not(.synth-control) { flex: 1 0 45%; min-width: 0; }
+.synth-voice-controls::before { content: ""; order: 1; flex-basis: 100%; }
+.synth-voice-controls > .synth-control { order: 2; flex: 1 0 65px; }
+.synth-voice-view { grid-template-columns: 110px minmax(0, 1fr); gap: 10px; min-height: 0; }
+.synth-mod-view, .synth-fx-view { min-height: 0; }
+/* Routing rows retain horizontal amounts to keep the matrix scannable. */
+.synth-matrix-row .synth-control { align-items: stretch; }
+.synth-matrix-row .synth-control-row { flex-direction: row; justify-content: space-between; min-height: 0; }
+.synth-matrix-row .synth-control input[type="range"] { writing-mode: horizontal-tb; direction: ltr; width: 100%; height: 20px; cursor: ew-resize; }
+.synth-matrix-row .synth-control input[type="range"]::-webkit-slider-runnable-track {
+  width: 100%;
+  height: 4px;
+  background: linear-gradient(
+    to right,
+    var(--accent) var(--slider-fill, 0%),
+    color-mix(in srgb, var(--text-secondary) 34%, var(--bg-input)) var(--slider-fill, 0%)
+  );
+}
+.synth-matrix-row .synth-control input[type="range"]::-webkit-slider-thumb { width: 11px; height: 11px; margin: -3.5px 0 0; }
+@container (max-width: 700px) {
+  .synth-module-card { grid-column: span 6; }
+  .synth-mod-view, .synth-fx-view, .synth-voice-view { min-width: 0; }
+  .synth-step-sequencer { overflow-x: auto; }
+  .synth-step-grid { min-width: 480px; }
+  .synth-macro-bank { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .synth-direct-routing { grid-template-columns: minmax(0, 1fr) 20px minmax(0, 1fr); }
+  .synth-step-options { flex-wrap: wrap; }
+  .synth-step-sequencer > header { display: grid; gap: 10px; }
+  .synth-step-options { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); align-items: center; }
+  .synth-step-options .synth-select-control { display: grid; grid-template-columns: 1fr; }
+  .synth-step-options .synth-control { width: 65px; }
+  .synth-matrix { overflow-x: auto; }
+  .synth-matrix-header, .synth-matrix-row { min-width: 570px; }
+}
+
+/* Responsive sound rack: cards wrap with the dock width instead of forcing a
+   fixed four-column strip that clips inside narrow inspectors. */
+.synth-packed-rack {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 288px), 1fr));
+  overflow: visible;
+  align-items: stretch;
+}
+.synth-packed-rack > .synth-module-card {
+  grid-column: auto;
+  grid-template-columns: repeat(auto-fit, minmax(52px, 1fr));
+  grid-template-rows: none;
+  gap: 6px;
+  padding: 6px;
+}
+.synth-packed-rack > .synth-module-card > header { min-height: 17px; }
+.synth-packed-rack > .synth-module-card > svg { height: 36px; }
+.synth-workbench .synth-packed-rack .synth-control input[type="range"] { height: 40px; width: 24px; }
+.synth-workbench .synth-packed-rack .synth-control-row { min-height: 30px; gap: 1px; }
+.synth-workbench .synth-packed-rack .synth-control { gap: 3px; }
+.synth-workbench .synth-packed-rack .synth-control-row output { font-size: 9px; }
+.synth-packed-rack .synth-audition {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: 112px minmax(0, 1fr);
+  min-width: 0;
+  padding: 6px;
+}
+.synth-packed-rack .synth-keyboard { width: 100%; grid-template-columns: repeat(13, minmax(0, 1fr)); }
+
+/* Two columns below a wide dock, a single stacked column in narrow inspectors. */
+@container (max-width: 1100px) {
+  .synth-packed-rack { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@container (max-width: 540px) {
+  .synth-packed-rack { grid-template-columns: minmax(0, 1fr); }
+  .synth-packed-rack .synth-audition { grid-template-columns: minmax(0, 1fr); }
+  .synth-compact-strip { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .synth-compact-strip .synth-wave-display { grid-column: 1 / -1; }
+}
+
+/* 10-slot LFO bank and Env 3/4 editors live on their own MOD pages so the
+   sound rack keeps its ten-tile (5 × 2 at 1400px) layout untouched. */
+.synth-mod-view[data-page]:not([data-page="envelopes"]) .synth-env-bank,
+.synth-mod-view[data-page]:not([data-page="lfos"]) .synth-lfo-bank,
+.synth-mod-view[data-page]:not([data-page="matrix"]) .synth-matrix-toolbar {
+  display: none;
+}
+
+.synth-env-bank,
+.synth-lfo-bank {
+  margin-bottom: 10px;
+  border: 1px solid var(--border);
+  background: var(--border);
+}
+
+.synth-env-bank {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+}
+
+.synth-env-bank > .synth-env-card,
+.synth-lfo-bank > .synth-lfo-card {
+  grid-column: auto;
+}
+
+.synth-lfo-bank {
+  display: grid;
+  grid-template-columns: 190px minmax(0, 1fr);
+  gap: 1px;
+}
+
+.synth-lfo-picker {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  padding: 9px;
+  background: var(--bg-secondary);
+}
+
+.synth-lfo-picker > header {
+  color: var(--text-muted);
+  font: 700 8px/1 var(--font-mono);
+  letter-spacing: 0.08em;
+}
+
+.synth-lfo-picker p {
+  margin: 0;
+  color: var(--text-muted);
+  font: 550 8px/1.45 var(--font-mono);
+}
+
+.synth-lfo-picker .synth-select-control {
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 6px;
+}
+
+.synth-lfo-bank > .synth-lfo-card > .synth-control {
+  grid-column: 1 / -1;
+}
+
+.synth-matrix-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  margin-bottom: 6px;
+}
+
+.synth-matrix-pages {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 3px;
+}
+
+.synth-matrix-pages button {
+  min-height: 23px;
+  border: 1px solid var(--border-strong);
+  border-radius: 1px;
+  background: var(--bg-input);
+  color: var(--text-secondary);
+  padding: 3px 7px;
+  font: 650 8px/1 var(--font-mono);
+  cursor: pointer;
+}
+
+.synth-matrix-pages button[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: var(--accent-dim);
+  color: var(--accent);
+}
+
+.synth-matrix-pages button:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+
+/* ---- Synth FX rack (patch-level, separate from track inserts) ---- */
+.synth-fx-rack {
+  margin-bottom: 14px;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-secondary);
+}
+
+.synth-fx-rack-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.synth-fx-rack-title {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.synth-fx-rack-title b {
+  color: var(--text-primary);
+  font: 750 10px/1 var(--font-mono);
+  letter-spacing: 0.06em;
+}
+
+.synth-fx-rack-title span {
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.synth-fx-add {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.synth-fx-add .oc-dropdown-trigger,
+.synth-fx-add-button,
+.synth-fx-type .oc-dropdown-trigger,
+.synth-fx-module-actions button {
+  height: 24px;
+  border: 1px solid var(--border-strong);
+  border-radius: 1px;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font: 650 9px/1 var(--font-mono);
+}
+
+.synth-fx-add .oc-dropdown-trigger,
+.synth-fx-type .oc-dropdown-trigger {
+  padding: 0 4px;
+}
+
+.synth-fx-add-button {
+  padding: 0 8px;
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.synth-fx-add-button:hover,
+.synth-fx-module-actions button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.synth-fx-chain {
+  display: grid;
+  gap: 1px;
+  background: var(--border);
+}
+
+.synth-fx-module {
+  display: grid;
+  background: var(--bg-primary);
+}
+
+.synth-fx-module.bypassed {
+  opacity: 0.55;
+}
+
+.synth-fx-module > header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 9px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-secondary);
+}
+
+.synth-fx-module-index {
+  min-width: 18px;
+  color: var(--text-muted);
+  font: 700 9px/1 var(--font-mono);
+}
+
+.synth-fx-type {
+  min-width: 104px;
+}
+
+.synth-fx-enable {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-secondary);
+  font: 650 8px/1 var(--font-mono);
+  letter-spacing: 0.05em;
+  cursor: pointer;
+}
+
+.synth-fx-enable input {
+  accent-color: var(--accent);
+}
+
+.synth-fx-module-actions {
+  display: flex;
+  gap: 3px;
+  margin-left: auto;
+}
+
+.synth-fx-module-actions button {
+  width: 23px;
+  cursor: pointer;
+}
+
+.synth-fx-module-actions button:disabled {
+  color: var(--text-muted);
+  cursor: default;
+  opacity: 0.4;
+}
+
+.synth-matrix-count {
+  color: var(--text-muted);
+  font: 650 8px/1 var(--font-mono);
+  letter-spacing: 0.06em;
+}
+
+.synth-matrix-count:last-child {
+  margin-left: auto;
+}
+
+@container (max-width: 700px) {
+  .synth-env-bank,
+  .synth-lfo-bank {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .synth-matrix-count:last-child {
+    margin-left: 0;
+  }
+}
+
+.synth-fx-params {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(118px, 1fr));
+  gap: 6px 12px;
+  padding: 8px 10px 10px;
+}
+
+.synth-fx-param {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.synth-fx-param > span {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+  color: var(--text-secondary);
+  font: 600 9px/1 var(--font-mono);
+}
+
+.synth-fx-param em {
+  font-style: normal;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.synth-fx-param output {
+  color: var(--text-primary);
+  font-size: 9px;
+}
+
+.synth-fx-param input[type="range"] {
+  width: 100%;
+  height: 16px;
+  accent-color: var(--accent);
+}
+
+.synth-fx-param .oc-dropdown-trigger {
+  width: 100%;
+  height: 18px;
+  padding: 0 4px;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font: 600 9px var(--font-mono);
+}
+
+.synth-fx-empty {
+  padding: 16px 12px;
+  color: var(--text-muted);
+  font: 600 10px/1.4 var(--font-mono);
+}
+
+/* ---- Compact SOUND inspector -------------------------------------------
+   A single-screen tabbed rack: OSC / FILTER / AMP share one 24px sub-tab
+   strip inside the SOUND view, and the audition keyboard stays in a slim
+   footer. Modules are dense device tiles, not free-standing cards. */
+.synth-subtabs {
+  display: flex;
+  align-items: stretch;
+  height: 24px;
+  border-bottom: 1px solid var(--border-strong);
+  background: transparent;
+}
+
+.synth-subtabs button {
+  border: 0;
+  border-right: 0;
+  background: transparent;
+  color: var(--text-muted);
+  padding: 0 10px;
+  font: 600 10px/1 var(--font-mono);
+  letter-spacing: 0.1em;
+  cursor: pointer;
+}
+
+.synth-subtabs button:hover {
+  background: transparent;
+  color: var(--text-primary);
+}
+
+.synth-subtabs button[aria-pressed="true"] {
+  background: transparent;
+  color: var(--accent);
+  box-shadow: inset 0 -2px var(--accent);
+}
+
+.synth-subtabs .synth-subtab-link {
+  margin-left: 6px;
+  font-weight: 500;
+  border-left: 1px solid var(--border);
+  color: var(--text-secondary);
+}
+
+.synth-subtab-readout {
+  display: flex;
+  align-items: center;
+  margin-left: auto;
+  padding: 0 9px;
+  border-left: 1px solid var(--border);
+  color: var(--text-muted);
+  font: 600 9px/1 var(--font-mono);
+  letter-spacing: 0.08em;
+  white-space: nowrap;
+}
+
+.synth-sound-page {
+  min-width: 0;
+  padding: 4px;
+  background: var(--bg-primary);
+}
+
+.synth-osc-grid,
+.synth-filter-grid,
+.synth-amp-grid {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+  border: 1px solid var(--border-strong);
+  background: var(--border);
+}
+
+.synth-osc-grid { grid-template-columns: minmax(0, 1fr); }
+.synth-filter-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.synth-amp-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+
+.synth-osc-module,
+.synth-filter-module,
+.synth-amp-module {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  padding: 4px;
+  background: var(--bg-secondary);
+}
+
+.synth-osc-module > header,
+.synth-filter-module > header,
+.synth-amp-module > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  min-height: 16px;
+  padding-bottom: 2px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-secondary);
+  font: 700 10px/1 var(--font-mono);
+  letter-spacing: 0.08em;
+}
+
+.synth-osc-module > header i,
+.synth-filter-module > header i,
+.synth-amp-module > header i {
+  overflow: hidden;
+  color: var(--text-muted);
+  font: 500 9px/1 var(--font-mono);
+  font-style: normal;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Each oscillator shares one continuous control bank, with a bounded identity
+   column. Cell widths never expand to fill unused rack space. */
+.synth-osc-module {
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  align-items: start;
+  gap: 2px 6px;
+}
+
+.synth-osc-module > header {
+  grid-column: 1;
+  grid-row: 1;
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+
+.synth-osc-top {
+  grid-column: 1;
+  grid-row: 2;
+  display: grid;
+  grid-template-columns: 128px minmax(0, 1fr);
+  align-items: center;
+  gap: 2px 3px;
+  min-width: 0;
+}
+
+.synth-osc-top .synth-wave-display {
+  grid-column: 1;
+  grid-row: 1 / span 2;
+  width: 128px;
+  height: 44px;
+  min-height: 44px;
+}
+
+.synth-osc-top .synth-select-control {
+  grid-column: 2;
+  grid-template-columns: minmax(0, 0.85fr) minmax(0, 1fr);
+  gap: 2px;
+  min-width: 0;
+}
+
+.synth-osc-top .synth-select-control > span {
+  min-width: 0;
+  font: 600 10px/1.2 var(--font-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  overflow-wrap: anywhere;
+  hyphens: auto;
+}
+
+.synth-osc-top .synth-select-control .oc-dropdown-trigger {
+  height: 22px;
+  min-width: 0;
+  padding: 0 2px;
+  font-size: 11px;
+}
+
+.synth-param-row,
+.synth-osc-controls {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 4.25rem), 4.25rem));
+  justify-content: start;
+  align-items: start;
+  gap: 4px;
+  min-width: 0;
+}
+
+.synth-osc-controls {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+}
+
+.synth-osc-controls > .synth-param-row {
+  display: contents;
+}
+
+/* Rotary controls retain native range editing in an owned floating panel. */
+.synth-param-dial { min-width: 0; width: 100%; }
+.synth-param-button {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  min-width: 0;
+  min-height: 58px;
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: ns-resize;
+  touch-action: none;
+  user-select: none;
+}
+.synth-param-dial-face {
+  position: relative;
+  display: block;
+  flex: 0 0 32px;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: conic-gradient(from 225deg, var(--accent) 0deg calc(var(--dial-position) * 270deg), var(--border-strong) calc(var(--dial-position) * 270deg) 270deg, transparent 270deg);
+}
+.synth-param-dial-face::before {
+  position: absolute;
+  inset: 3px;
+  border: 1px solid var(--border-strong);
+  border-radius: 50%;
+  background: var(--bg-input);
+  content: "";
+}
+.synth-param-dial-marker {
+  position: absolute;
+  inset: 5px;
+  transform: rotate(calc(-135deg + var(--dial-position) * 270deg));
+}
+.synth-param-dial-marker::before {
+  position: absolute;
+  top: 0;
+  left: calc(50% - 1px);
+  width: 2px;
+  height: 7px;
+  border-radius: 1px;
+  background: var(--text-primary);
+  content: "";
+}
+.synth-param-row label,
+.synth-param-row .oc-dropdown-label {
+  min-width: 0;
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.synth-param-caption {
+  display: block;
+  width: 100%;
+  overflow: hidden;
+  letter-spacing: normal;
+  word-break: normal;
+  min-width: 0;
+  max-width: 100%;
+  font: 600 10px/1.2 var(--font-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
+  text-align: center;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  hyphens: auto;
+}
+.synth-param-button:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
+.synth-param-button:hover .synth-param-dial-face::before,
+.synth-param-button[aria-expanded="true"] .synth-param-dial-face::before { border-color: var(--accent); }
+.synth-param-button:disabled { opacity: 0.45; cursor: default; }
+.synth-param-value {
+  position: absolute;
+  z-index: 2;
+  left: 50%;
+  bottom: calc(100% + 2px);
+  transform: translateX(-50%);
+  display: none;
+  padding: 3px 5px;
+  border: 1px solid var(--border-strong);
+  border-radius: 2px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font: 500 10px/1.2 var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.synth-param-button:hover .synth-param-value,
+.synth-param-button:focus-visible .synth-param-value { display: block; }
+.synth-param-popover {
+  --border-strong: color-mix(in srgb, var(--text-secondary) 45%, var(--border));
+  position: fixed;
+  z-index: 1100;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  box-sizing: border-box;
+  width: 64px;
+  height: 132px;
+  padding: 8px 4px;
+  border: 1px solid var(--border-strong);
+  border-radius: 3px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  box-shadow: 0 3px 10px color-mix(in srgb, var(--text-primary) 18%, transparent);
+}
+.synth-param-popover[hidden] { display: none; }
+.synth-param-popover[data-dragging="true"] { pointer-events: none; }
+.synth-param-popover input[type="range"] {
+  appearance: none;
+  writing-mode: vertical-lr;
+  direction: rtl;
+  width: 24px;
+  height: 88px;
+  margin: 0;
+  background: transparent;
+  cursor: ns-resize;
+  touch-action: none;
+}
+.synth-param-popover input[type="range"]::-webkit-slider-runnable-track {
+  width: 4px;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--border-strong);
+}
+.synth-param-popover input[type="range"]::-webkit-slider-thumb {
+  appearance: none;
+  width: 14px;
+  height: 8px;
+  margin-left: -5px;
+  border: 1px solid var(--accent);
+  border-radius: 2px;
+  background: var(--bg-primary);
+}
+.synth-param-popup-value {
+  font: 500 10px/1.2 var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  white-space: nowrap;
+}
+
+/* Every page uses the same dial owner; legacy fader banks must not reserve
+   separate caption, slider and readout rows around a single rotary control. */
+.synth-workbench .synth-control:has(> .synth-param-dial) {
+  display: block;
+  min-width: 0;
+  width: 100%;
+  gap: 0;
+}
+
+.synth-sound-page .oc-dropdown-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: center;
+  gap: 2px;
+  min-height: 58px;
+  min-width: 0;
+}
+
+.synth-sound-page .oc-dropdown-stack > .oc-dropdown-label {
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  min-height: 24px;
+  color: var(--text-secondary);
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  overflow-wrap: anywhere;
+  hyphens: auto;
+  font: 600 10px/1.2 var(--font-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
+  text-align: center;
+}
+
+.synth-sound-page .oc-dropdown-stack .oc-dropdown-trigger {
+  width: 100%;
+  height: 22px;
+  padding: 0 2px;
+  font-size: 11px;
+}
+
+.synth-sound-page .synth-toggle-control {
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 3px;
+  min-height: 52px;
+  width: 100%;
+  font: 600 10px/1.05 var(--font-mono);
+  text-align: center;
+}
+
+.synth-compact-selects {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.synth-compact-selects .synth-select-control {
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 3px;
+}
+
+.synth-compact-selects .synth-select-control > span {
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.synth-compact-selects .oc-dropdown-trigger {
+  height: 20px;
+  padding: 0 2px;
+  font-size: 11px;
+}
+
+.synth-filter-module .synth-filter-display,
+.synth-amp-module .synth-envelope-display,
+.synth-amp-module .synth-lfo-display {
+  height: 34px;
+  min-height: 34px;
+}
+
+.synth-filter-module .synth-filter-display { height: 36px; }
+.synth-amp-module .synth-lfo-display { height: 30px; min-height: 30px; }
+
+.synth-filter-module[data-enabled="off"] > :not(header) {
+  opacity: 0.45;
+}
+
+.synth-sample-strip {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+  margin-top: 4px;
+  padding: 3px 5px;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-secondary);
+}
+
+.synth-sample-strip .synth-file-control {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 4px;
+}
+
+.synth-sample-strip .synth-file-control button {
+  min-height: 22px;
+  padding: 0 5px;
+  font-size: 10px;
+}
+
+.synth-sample-strip .synth-file-control span { font-size: 10px; }
+.synth-sample-strip .synth-import-error { grid-column: 1 / -1; }
+
+.synth-toggle-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+  min-width: 0;
+}
+
+.synth-toggle-row .synth-toggle-control {
+  min-height: 16px;
+  flex-direction: row;
+  justify-content: flex-start;
+  gap: 5px;
+  font-size: 10px;
+  text-align: left;
+}
+
+.synth-audition.synth-audition-footer {
+  display: grid;
+  grid-column: auto;
+  grid-template-columns: 190px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  padding: 2px 6px;
+  border-top: 1px solid var(--border-strong);
+  background: var(--bg-secondary);
+}
+
+.synth-audition.synth-audition-footer > header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.synth-audition-footer > header small {
+  overflow: hidden;
+  font-size: 8px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.synth-audition-footer .synth-keyboard {
+  height: 26px;
+}
+
+.synth-audition-footer .synth-keyboard button { height: 24px; }
+.synth-audition-footer .synth-keyboard button.black { height: 17px; }
+.synth-audition-footer .synth-keyboard button span { inset: auto 2px 2px; font-size: 6px; }
+
+@container (max-width: 1100px) {
+  .synth-amp-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@container (max-width: 540px) {
+  .synth-workbench-header { grid-template-columns: minmax(0, 1fr) auto; }
+  .synth-patch-browser { grid-column: 1; grid-row: 1; }
+  .synth-view-tabs { grid-column: 1; grid-row: 2; }
+  .synth-view-tabs button { flex: 1; }
+  .synth-expand-button { grid-column: 2; grid-row: 1 / span 2; }
+  .synth-osc-module { grid-template-columns: minmax(0, 1fr); }
+  .synth-osc-module > header { grid-column: 1; grid-row: auto; }
+  .synth-osc-top {
+    grid-column: 1;
+    grid-row: auto;
+    grid-template-columns: 128px minmax(0, 1fr) minmax(0, 1fr);
+  }
+  .synth-osc-top .synth-wave-display { grid-row: 1; }
+  .synth-osc-top .synth-select-control { grid-column: auto; }
+  .synth-osc-controls { grid-column: 1; grid-row: auto; }
+  .synth-osc-grid,
+  .synth-filter-grid,
+  .synth-amp-grid { grid-template-columns: minmax(0, 1fr); }
+  .synth-sample-strip { grid-template-columns: minmax(0, 1fr); }
+  .synth-subtab-readout { display: none; }
+  .synth-audition.synth-audition-footer { grid-template-columns: 54px minmax(0, 1fr); }
+  .synth-audition-footer > header small { display: none; }
+}
+
+@container (max-width: 360px) {
+  .synth-osc-top { grid-template-columns: 128px minmax(0, 1fr); }
+  .synth-osc-top .synth-wave-display { grid-row: 1 / span 2; }
+  .synth-osc-top .synth-select-control { grid-column: 2; }
+}
+
+/* Audition footer: hint wraps to two lines instead of being cut off. */
+.synth-audition.synth-audition-footer { grid-template-columns: 220px minmax(0, 1fr); min-height: 48px; }
+.synth-audition-footer > header small {
+  white-space: normal;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  font-size: 9px;
+  line-height: 1.3;
+}
+
+/* A real piano: 8 white keys (C4–C5) across the width, black keys narrower
+   and shorter, sitting on the boundaries between whites. Uses the existing
+   button order (C, C#, D, …) through explicit grid placement on a 16-column
+   track: each white spans 2 columns; each black spans the 2 columns straddling
+   a white-key boundary and is layered above it. */
+.synth-audition-footer .synth-keyboard {
+  grid-template-columns: repeat(16, minmax(0, 1fr));
+  grid-template-rows: 40px;
+  height: 42px;
+  gap: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: 3px;
+  overflow: hidden;
+  background: var(--border-strong);
+}
+.synth-audition-footer .synth-keyboard button {
+  grid-row: 1;
+  height: 40px;
+  border-right: 1px solid var(--border-strong);
+  background: color-mix(in srgb, #fbfbfa 94%, var(--accent));
+  color: #3a3a3a;
+}
+.synth-audition-footer .synth-keyboard button.black {
+  height: 25px;
+  z-index: 2;
+  margin: 0 22%;
+  border: 0;
+  border-radius: 0 0 3px 3px;
+  background: color-mix(in srgb, #1d1d1f 94%, var(--accent));
+  color: #e9e9e9;
+}
+.synth-audition-footer .synth-keyboard button:nth-child(1)  { grid-column: 1 / 3; }   /* C4  */
+.synth-audition-footer .synth-keyboard button:nth-child(2)  { grid-column: 2 / 4; }   /* C#4 */
+.synth-audition-footer .synth-keyboard button:nth-child(3)  { grid-column: 3 / 5; }   /* D4  */
+.synth-audition-footer .synth-keyboard button:nth-child(4)  { grid-column: 4 / 6; }   /* D#4 */
+.synth-audition-footer .synth-keyboard button:nth-child(5)  { grid-column: 5 / 7; }   /* E4  */
+.synth-audition-footer .synth-keyboard button:nth-child(6)  { grid-column: 7 / 9; }   /* F4  */
+.synth-audition-footer .synth-keyboard button:nth-child(7)  { grid-column: 8 / 10; }  /* F#4 */
+.synth-audition-footer .synth-keyboard button:nth-child(8)  { grid-column: 9 / 11; }  /* G4  */
+.synth-audition-footer .synth-keyboard button:nth-child(9)  { grid-column: 10 / 12; } /* G#4 */
+.synth-audition-footer .synth-keyboard button:nth-child(10) { grid-column: 11 / 13; } /* A4  */
+.synth-audition-footer .synth-keyboard button:nth-child(11) { grid-column: 12 / 14; } /* A#4 */
+.synth-audition-footer .synth-keyboard button:nth-child(12) { grid-column: 13 / 15; } /* B4  */
+.synth-audition-footer .synth-keyboard button:nth-child(13) { grid-column: 15 / 17; } /* C5  */
+/* Only C keys are labelled, as on hardware; every key keeps its aria-label. */
+.synth-audition-footer .synth-keyboard button span { display: none; }
+.synth-audition-footer .synth-keyboard button:nth-child(1) span,
+.synth-audition-footer .synth-keyboard button:nth-child(13) span {
+  display: block;
+  inset: auto 0 3px;
+  font-size: 9px;
+  text-align: center;
+}
+.synth-audition-footer .synth-keyboard button:hover:not(.black),
+.synth-audition-footer .synth-keyboard button:focus-visible:not(.black) {
+  background: color-mix(in srgb, #fbfbfa 70%, var(--accent));
+  color: #3a3a3a;
+}
+.synth-audition-footer .synth-keyboard button.black:hover,
+.synth-audition-footer .synth-keyboard button.black:focus-visible {
+  background: color-mix(in srgb, #1d1d1f 70%, var(--accent));
+}
+.synth-audition-footer .synth-keyboard button.active,
+.synth-audition-footer .synth-keyboard button[aria-pressed="true"] {
+  background: var(--accent);
+  color: var(--bg-primary);
+  transform: none;
+}
+
+/* ── Preset page around the synth ── */
+
+/* Delete is destructive and rare: quiet until hovered, and set apart from
+   the name + preview group. */
+.preset-detail .preset-delete-button,
+.preset-detail .toolbar-btn.preset-delete-button {
+  margin-left: 12px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+.preset-detail .preset-delete-button:hover,
+.preset-detail .preset-delete-button:focus-visible {
+  border-color: var(--stop-red);
+  background: color-mix(in srgb, var(--stop-red) 10%, transparent);
+  color: var(--stop-red);
+}
+
+/* Rendering Profile / Details disclosures share one header style. */
+.preset-advanced > summary,
+.preset-metadata > summary,
+.profile-group > summary {
+  cursor: pointer;
+  color: var(--text-secondary);
+  font: 700 var(--font-size-xs)/1.4 var(--font-ui);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.preset-advanced > summary { margin-bottom: 6px; }
+.profile-group-empty {
+  padding: 4px 2px;
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+  font-style: italic;
+}
+
+/* Text inputs had zero inline padding, so values touched the border. */
+.preset-detail input:not([type="range"]):not([type="checkbox"]):not([type="color"]),
+.preset-detail select {
+  min-height: 26px;
+  padding: 2px 8px;
+}
+
+/* Narrow workbench: keep the earlier collapse behaviour for the footer. */
+@container (max-width: 540px) {
+  .synth-audition.synth-audition-footer { grid-template-columns: 54px minmax(0, 1fr); }
+  .synth-audition-footer > header small { display: none; }
+}
+
+/* Preset list: long names ellipsize instead of widening the 180 px column
+   (which made the list scroll sideways). */
+.preset-list-pane { min-width: 0; overflow: hidden; }
+.preset-list-items { overflow-x: hidden; }
+.preset-list-item > div:first-child { min-width: 0; }
+.preset-list-item-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ── MOD › MATRIX: mini route graph ───────────────────────────────────────
+   Sources (left) → destinations (right), one curve per active slot. Width
+   and opacity encode |amount|; positive is solid accent, negative dashed
+   cool. The slot inspector below edits the selected route. */
+.synth-mod-view[data-page]:not([data-page="matrix"]) .synth-route-graph,
+.synth-mod-view[data-page]:not([data-page="matrix"]) .synth-route-inspector,
+.synth-mod-view[data-page]:not([data-page="matrix"]) .synth-slot-list { display: none; }
+
+.synth-route-graph {
+  position: relative;
+  border: 1px solid var(--border-strong);
+  border-radius: 3px;
+  background: var(--bg-secondary);
+  padding: 2px 4px;
+}
+.synth-route-graph svg { display: block; width: 100%; height: auto; max-width: 1040px; margin: 0 auto; }
+.synth-route-node rect { fill: var(--bg-surface); stroke: var(--border-light); stroke-width: 1; }
+.synth-route-node text { fill: var(--text-primary); font: 600 10px/1 var(--font-mono); pointer-events: none; }
+/* Source kinds get a coloured outline so LFOs / envelopes / macros read apart. */
+.synth-route-node.source[data-kind="lfo"] rect { stroke: var(--accent); }
+.synth-route-node.source[data-kind="env"] rect { stroke: var(--accent-cool); }
+.synth-route-node.source[data-kind="macro"] rect { stroke: var(--text-secondary); stroke-dasharray: 3 2; }
+.synth-route-node.destination { cursor: pointer; outline: none; }
+.synth-route-node.destination[data-kind="filter"] rect { fill: color-mix(in srgb, var(--bg-surface) 88%, var(--accent-cool) 12%); }
+.synth-route-node.destination[data-kind="mix"] rect { fill: color-mix(in srgb, var(--bg-surface) 88%, var(--accent) 12%); }
+.synth-route-node.destination:hover rect,
+.synth-route-node.destination:focus-visible rect { stroke: var(--accent); }
+.synth-route-node.destination.selected rect { stroke: var(--accent); stroke-width: 2; }
+.synth-route-amount { fill: var(--accent) !important; font-weight: 700 !important; font-variant-numeric: tabular-nums; }
+.synth-route-amount.negative { fill: var(--accent-cool) !important; }
+.synth-route-edge { cursor: pointer; outline: none; }
+.synth-route-edge:hover .synth-route-line,
+.synth-route-edge:focus-visible .synth-route-line { stroke-opacity: 1; }
+.synth-slot-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 6px;
+}
+.synth-slot-row > .synth-slot-list { flex: 0 1 auto; min-width: 0; }
+.synth-route-add {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--bg-input);
+  color: var(--text-secondary);
+  font: 600 9px/1.4 var(--font-mono);
+  cursor: pointer;
+}
+.synth-route-add:hover { color: var(--accent); border-color: var(--accent); }
+.synth-route-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 52px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+.synth-route-empty button {
+  padding: 3px 8px;
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  background: var(--accent-dim);
+  color: var(--accent);
+  font: 600 10px/1 var(--font-mono);
+  cursor: pointer;
+}
+
+.synth-route-inspector {
+  display: grid;
+  grid-template-columns: 26px minmax(110px, 0.8fr) 14px minmax(130px, 1fr) minmax(140px, 1.2fr) 22px;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  padding: 4px 6px;
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  background: var(--bg-elevated);
+}
+.synth-route-inspector > b { color: var(--accent); font: 700 10px/1 var(--font-mono); }
+.synth-route-inspector .synth-route-arrow { color: var(--text-muted); text-align: center; }
+.synth-route-inspector .synth-select-control { display: block; }
+.synth-route-inspector .synth-select-control > span {
+  position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0);
+}
+.synth-route-inspector .oc-dropdown-trigger { width: 100%; height: 22px; font-size: 11px; }
+/* Bipolar amount: horizontal, value readout to the left. */
+.synth-route-inspector .synth-control { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 6px; }
+.synth-route-inspector .synth-control-row { flex-direction: row; min-height: 0; gap: 4px; }
+.synth-route-inspector .synth-control-row label {
+  position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0);
+}
+.synth-route-inspector .synth-control-row output { min-width: 36px; text-align: right; font: 600 10px/1 var(--font-mono); color: var(--text-primary); }
+.synth-workbench .synth-route-inspector .synth-control input[type="range"] {
+  writing-mode: horizontal-tb; direction: ltr; width: 100%; height: 18px; cursor: ew-resize;
+}
+.synth-route-remove {
+  width: 22px; height: 22px; padding: 0;
+  border: 1px solid transparent; border-radius: 3px;
+  background: transparent; color: var(--text-muted); cursor: pointer;
+}
+.synth-route-remove:hover { border-color: var(--stop-red); color: var(--stop-red); }
+
+/* All 64 slots stay reachable, collapsed under the graph. */
+.synth-slot-list { margin-top: 6px; }
+.synth-slot-list > summary {
+  cursor: pointer;
+  color: var(--text-secondary);
+  font: 700 var(--font-size-xs)/1.6 var(--font-ui);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.synth-slot-list > summary .synth-matrix-count { margin-left: 6px; text-transform: none; }
+.synth-slot-list[open] > summary { margin-bottom: 4px; }
+
+/* ── MOD › MATRIX: macro learn + inbound-route markers ────────────────────
+   Learn is one 24 px bar. The attribute row lives under the selected route's
+   source/amount line, so per-route controls never open a second panel. */
+.synth-learn-bar {
+  display: flex;
+  align-items: center;
+  flex: 1 1 24rem;
+  min-width: 0;
+  gap: 6px;
+  min-height: 22px;
+  margin: 0;
+  padding: 0;
+}
+.synth-learn-toggle {
+  flex: 0 0 auto;
+  height: 20px;
+  padding: 0 8px;
+  border: 1px solid var(--border-light);
+  border-radius: 2px;
+  background: var(--bg-input);
+  color: var(--text-secondary);
+  font: 700 9px/1 var(--font-mono);
+  letter-spacing: 0.06em;
+  cursor: pointer;
+}
+.synth-learn-toggle[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--bg-primary);
+}
+.synth-learn-target { flex: 0 0 100px; }
+.synth-learn-target .oc-dropdown-trigger { width: 100%; height: 20px; font-size: 10px; }
+.synth-learn-status {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-secondary);
+  font: 500 10px/1.3 var(--font-ui);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* While armed, every control advertises that a click learns instead of edits. */
+.synth-learn-armed [data-param],
+.synth-learn-armed [data-param] :is(input, button, label) { cursor: crosshair; }
+
+/* One 4 px dot marks a control an active route pushes; the tooltip names it. */
+.synth-modulated-dot {
+  display: inline-block;
+  width: 4px;
+  height: 4px;
+  margin-right: 4px;
+  border-radius: 50%;
+  background: var(--accent);
+  vertical-align: middle;
+}
+.synth-toggle-control.is-disabled { opacity: 0.55; cursor: default; }
+.synth-toggle-control.is-disabled:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 2px;
+}
+.synth-toggle-reason {
+  margin-left: 3px;
+  color: var(--text-muted);
+  font: 700 8px/1 var(--font-mono);
+}
+/* Hovering a modulated control lights every edge into its destination. */
+.synth-route-edge.highlighted .synth-route-line {
+  stroke-opacity: 1;
+  stroke-width: 3;
+}
+
+.synth-route-attrs {
+  display: flex;
+  flex-wrap: wrap;
+  grid-column: 1 / -1;
+  align-items: center;
+  gap: 3px 12px;
+  min-height: 24px;
+  padding-top: 3px;
+  border-top: 1px dashed var(--border);
+}
+.synth-route-attrs .synth-control {
+  display: grid;
+  flex: 1 1 150px;
+  grid-template-columns: auto minmax(44px, 1fr);
+  align-items: center;
+  gap: 4px;
+}
+.synth-route-attrs .synth-control-row {
+  flex-direction: row;
+  min-height: 0;
+  gap: 3px;
+}
+.synth-route-attrs .synth-control-row label {
+  position: static;
+  width: auto;
+  height: auto;
+  overflow: visible;
+  clip: auto;
+  color: var(--text-muted);
+  font: 700 8px/1 var(--font-mono);
+  letter-spacing: 0.04em;
+}
+.synth-route-attrs .synth-control-row output {
+  min-width: 30px;
+  font-size: 9px;
+}
+.synth-workbench .synth-route-inspector .synth-route-attrs .synth-control input[type="range"] {
+  height: 16px;
+}
+.synth-route-attrs .synth-toggle-control { flex: 0 0 auto; }
+.synth-route-attrs .synth-select-control { display: block; flex: 0 0 118px; }
+.synth-route-attrs .oc-dropdown-trigger { width: 100%; height: 20px; font-size: 10px; }
+
+/* Single-view layout: the matrix page owns the route graph, so hovering a
+   modulated control elsewhere shows the same graph filtered to its edges,
+   with the edge lit. It is display-only (pointer-events: none). */
+.synth-workbench { position: relative; }
+.synth-mod-preview {
+  position: absolute;
+  top: 110px;
+  right: 10px;
+  z-index: 40;
+  width: min(440px, calc(100% - 20px));
+  padding: 4px;
+  border: 1px solid var(--accent);
+  background: var(--bg-primary);
+  box-shadow: 0 10px 28px rgb(0 0 0 / 35%);
+  pointer-events: none;
+}
+.synth-mod-preview .synth-route-graph { border: 0; background: transparent; }
+
+/* A lane drives the control: the ring and the badge say so without relying on
+   a colour change, and both disappear when the lane stops driving. */
+.synth-control.driven {
+  outline: 1px dashed color-mix(in srgb, var(--accent) 70%, transparent);
+  outline-offset: 3px;
+  border-radius: 3px;
+}
+
+.synth-driven-badge {
+  display: inline-grid;
+  place-items: center;
+  min-width: 11px;
+  height: 11px;
+  margin-left: 4px;
+  padding: 0 2px;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  color: var(--accent);
+  font: 700 8px/1 var(--font-ui);
+  vertical-align: middle;
+}
+
+/* Utility controls share a wrapping row; only an expanded link editor needs
+   another row, instead of permanently reserving three full-width bars. */
+.synth-performance-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 3px 10px;
+  min-width: 0;
+  padding: 2px 6px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-secondary);
+}
+.synth-performance-toolbar > .control-link-editor {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  border-top: 0;
+}
+.synth-performance-toolbar .control-link-bar { min-height: 22px; padding: 0; }
+.synth-performance-toolbar > .control-link-editor:has([aria-expanded="true"]) { flex-basis: 100%; }
+.synth-performance-toolbar .control-link-last { max-width: 12rem; }
+.synth-automation-bar {
+  display: flex; align-items: center; gap: 4px; min-height: 22px; padding: 0;
+  color: var(--text-secondary); font: 650 9px/1.2 var(--font-mono);
+}
+.synth-write-arm {
+  width: 22px; height: 18px; padding: 0; border: 1px solid var(--border-strong);
+  background: var(--bg-input); color: var(--text-primary); cursor: pointer;
+  font: 700 10px/1 var(--font-mono);
+}
+.synth-write-arm[aria-pressed="true"] { background: var(--accent); color: var(--bg-primary); border-color: var(--accent); }
+.synth-automation-mode { color: var(--accent); }
+.synth-automation-targets { display: flex; flex-wrap: wrap; gap: 4px; margin-left: auto; }
+.synth-automation-target {
+  padding: 1px 5px; border: 1px solid var(--border-strong); border-radius: 2px;
+  background: var(--bg-input); color: var(--text-primary);
+}
+.synth-automate-affordance {
+  position: fixed; z-index: 60; width: 18px; height: 18px; padding: 0;
+  border: 1px solid var(--border-strong); border-radius: 50%;
+  background: var(--bg-input); color: var(--accent); cursor: pointer;
+  font: 700 9px/1 var(--font-mono);
+}
+.synth-automate-affordance:hover, .synth-automate-affordance:focus-visible {
+  background: var(--accent); color: var(--bg-primary); border-color: var(--accent);
+}
+.synth-write-armed .synth-control, .synth-write-armed .synth-step { cursor: crosshair; }

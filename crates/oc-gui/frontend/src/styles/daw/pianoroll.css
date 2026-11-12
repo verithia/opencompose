@@ -1,0 +1,1287 @@
+/* ============================================================================
+   Piano Roll toolbar + notes
+   ============================================================================ */
+
+.pianoroll-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border);
+  /* The bar carries a whole tool set; a narrow window scrolls it instead of
+     squeezing labels into two lines. */
+  overflow-x: auto;
+  white-space: nowrap;
+  scrollbar-width: thin;
+}
+
+.pianoroll-keys {
+  width: 48px;
+  min-width: 48px;
+  flex-shrink: 0;
+  background: var(--bg-secondary);
+  border-right: 1px solid var(--border);
+  position: relative;
+}
+
+.piano-key {
+  position: absolute;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding-right: 4px;
+  font-size: 8px;
+  color: var(--text-muted);
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.piano-key.black {
+  background: var(--bg-input);
+}
+
+.piano-key.c-note {
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+/* Drum lane: one row per kit pad, labelled in the left gutter. The width
+   itself comes from DRUM_LANE_KEYS_WIDTH; this only stops it being squeezed. */
+.pianoroll-keys.drum-lane {
+  min-width: 132px;
+}
+
+.piano-key.drum-lane-key {
+  justify-content: flex-start;
+  padding-left: 5px;
+  padding-right: 5px;
+  font-size: 9px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.piano-key.drum-lane-key.kit-pad {
+  color: var(--text-secondary);
+}
+
+.piano-key.drum-lane-key:not(.kit-pad) {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.pianoroll-row-bg.drum-lane-row {
+  background: color-mix(in srgb, var(--text-primary) 4%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--grid-bar) 45%, transparent);
+}
+
+.pianoroll-row-bg.drum-lane-row.other-row {
+  background: color-mix(in srgb, var(--danger, #e2695f) 8%, transparent);
+}
+
+.pianoroll-kit-name {
+  font-size: var(--font-size-xs);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 1px 6px;
+  margin-right: 12px;
+  white-space: nowrap;
+}
+
+.pianoroll-kit-name-empty {
+  color: var(--text-muted);
+}
+
+.pianoroll-drum-hit.hit-selected {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* Right-drag erases notes; the pointer carries an eraser, not the note cursor. */
+.pianoroll-erasing,
+.pianoroll-erasing .pianoroll-note,
+.pianoroll-erasing .pianoroll-drum-hit {
+  cursor: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 20 20"><path d="M3 16l8-8 5 5-6 6H5z" fill="%23f0a6b8" stroke="%23222" stroke-width="1.2"/><path d="M11 8l3-3 5 5-3 3z" fill="%239dc6e8" stroke="%23222" stroke-width="1.2"/></svg>') 5 16, crosshair;
+}
+
+.pianoroll-note {
+  position: absolute;
+  background: var(--note-fill);
+  border-radius: 3px;
+  font-size: 8px;
+  color: rgba(255, 255, 255, 0.92);
+  display: flex;
+  align-items: center;
+  padding-left: 3px;
+  overflow: hidden;
+  cursor: pointer;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+  z-index: 1;
+}
+
+/* Edit preview: a note the proposal wrote or moved. The class is the only
+   addition; the note still paints the document the backend installed. */
+.pianoroll-note.preview-changed {
+  border: 1px solid var(--accent);
+  box-shadow: 0 0 0 1px var(--accent), 0 1px 6px var(--accent-glow);
+  z-index: 4;
+}
+
+.pianoroll-note:hover {
+  border-color: rgba(255, 255, 255, 0.35);
+  box-shadow: 0 1px 6px var(--accent-glow);
+  z-index: 5;
+}
+
+.pianoroll-note-label {
+  font-weight: 600;
+  white-space: nowrap;
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.4);
+  pointer-events: none;
+}
+
+.pianoroll-note-vel {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  height: 2px;
+  background: rgba(255, 255, 255, 0.6);
+  border-radius: 0 0 1px 1px;
+  pointer-events: none;
+}
+
+/* An exact velocity overrides a written dynamics token: show that it is one. */
+.pianoroll-note-vel.vel-explicit {
+  height: 3px;
+  background: var(--accent);
+}
+
+.pianoroll-note.note-velocity-explicit {
+  border-left: 2px solid var(--accent);
+}
+
+/* Tuplet superscript: the ratio's count over the note's head, not in the lane. */
+.pianoroll-note-tuplet {
+  position: absolute;
+  left: 2px;
+  top: 0;
+  z-index: 2;
+  font-family: var(--font-mono);
+  font-size: 6px;
+  line-height: 7px;
+  font-weight: 700;
+  color: var(--text-primary);
+  opacity: 0.85;
+  pointer-events: none;
+}
+
+/* Keep the pitch label clear of the superscript. */
+.pianoroll-note.note-tuplet {
+  padding-left: 8px;
+}
+
+/* Glissando diagonal: the note slides into the next one. */
+.pianoroll-note-gliss {
+  position: absolute;
+  right: 0;
+  top: 0;
+  z-index: 1;
+  color: var(--text-primary);
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+.pianoroll-note-gliss path {
+  stroke: currentColor;
+  stroke-width: 1.2;
+  fill: none;
+}
+
+/* Articulation tag: two letters at the note's right end, clipped by the row. */
+.pianoroll-note-tag {
+  position: absolute;
+  right: 2px;
+  top: 0;
+  bottom: 1px;
+  display: flex;
+  align-items: center;
+  font-family: var(--font-mono);
+  font-size: 7px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: rgba(255, 255, 255, 0.72);
+  text-transform: uppercase;
+  pointer-events: none;
+}
+
+/* ============================================================================
+   Score-mark strip — hairpins and pedal holds under the ruler
+   ============================================================================ */
+
+.pianoroll-score-marks {
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+  overflow: hidden;
+  /* The strip stays visible while the notes scroll under it. */
+  flex-shrink: 0;
+}
+
+.pianoroll-hairpin {
+  position: absolute;
+  top: 0;
+  overflow: visible;
+  pointer-events: auto;
+}
+
+.pianoroll-hairpin polygon {
+  fill: color-mix(in srgb, var(--accent) 55%, transparent);
+  stroke: var(--accent);
+  stroke-width: 1;
+}
+
+.pianoroll-hairpin[data-hairpin="diminuendo"] polygon {
+  fill: color-mix(in srgb, var(--text-primary) 35%, transparent);
+  stroke: var(--text-secondary);
+}
+
+.pianoroll-pedal {
+  position: absolute;
+  bottom: 3px;
+  height: 5px;
+  border-bottom: 1px solid var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 7px;
+  line-height: 5px;
+  color: var(--text-secondary);
+  pointer-events: auto;
+}
+
+.pianoroll-pedal-label {
+  position: absolute;
+  left: 1px;
+  bottom: 1px;
+  white-space: nowrap;
+}
+
+.pianoroll-pedal-lift {
+  position: absolute;
+  right: 0;
+  bottom: 1px;
+}
+
+/* ============================================================================
+   Velocity lane — last rows of the note scroll content, pinned to the bottom
+   ============================================================================ */
+
+.pianoroll-velocity-lane {
+  position: sticky;
+  /* Sits above the articulation lane, which owns the bottom edge. */
+  bottom: 24px;
+  z-index: 6;
+  display: flex;
+  flex-shrink: 0;
+  width: 100%;
+  background: var(--bg-surface);
+  border-top: 1px solid var(--border);
+  box-shadow: 0 -2px 6px rgba(0, 0, 0, 0.25);
+}
+
+.pianoroll-velocity-gutter {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  height: 100%;
+  flex-shrink: 0;
+  background: var(--bg-secondary);
+  border-right: 1px solid var(--border);
+}
+
+.pianoroll-velocity-tick-label {
+  position: absolute;
+  right: 2px;
+  font-family: var(--font-mono);
+  font-size: 7px;
+  line-height: 7px;
+  color: var(--text-muted);
+  /* Centre the label on the guide line it names. */
+  transform: translateY(50%);
+  pointer-events: none;
+}
+
+.pianoroll-velocity-entry {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 1px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+}
+
+.pianoroll-velocity-gutter-label {
+  font-size: 7px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.pianoroll-velocity-input {
+  width: 26px;
+  height: 11px;
+  padding: 0 1px;
+  font-family: var(--font-mono);
+  font-size: 8px;
+  text-align: center;
+  color: var(--text-primary);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+}
+
+.pianoroll-velocity-input:disabled {
+  color: var(--text-muted);
+  opacity: 0.7;
+}
+
+/* The value comes from a written dynamic, not from an exact velocity. */
+.pianoroll-velocity-input.velocity-input-written {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.pianoroll-velocity-body {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.pianoroll-velocity-guide {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: color-mix(in srgb, var(--text-primary) 12%, transparent);
+  pointer-events: none;
+}
+
+.pianoroll-velocity-bar {
+  position: absolute;
+  /* `bottom` comes from VELOCITY_LANE_INSET so the bar math has one source. */
+  background: rgba(255, 255, 255, 0.7);
+  border-radius: 1px 1px 0 0;
+  cursor: ns-resize;
+}
+
+.pianoroll-velocity-bar:hover {
+  background: #fff;
+}
+
+.pianoroll-velocity-bar.velocity-bar-explicit {
+  background: var(--accent);
+}
+
+.pianoroll-velocity-bar.velocity-bar-muted {
+  opacity: 0.35;
+}
+
+/* A hairpin moves the note, so its written value is an outline. */
+.pianoroll-velocity-bar.velocity-bar-hollow {
+  background: transparent;
+  border: 1px dashed color-mix(in srgb, var(--text-primary) 75%, transparent);
+  border-radius: 1px 1px 0 0;
+}
+
+/* The level the ramp puts the note at; the bar above stays the written value. */
+.pianoroll-velocity-ghost {
+  position: absolute;
+  height: 2px;
+  background: var(--accent);
+  opacity: 0.65;
+  border-radius: 1px;
+  pointer-events: none;
+}
+
+/* A hit's bar remains editable when this placement excludes the hit. */
+.pianoroll-velocity-bar.velocity-bar-hit {
+  cursor: ns-resize;
+  border-radius: 1px;
+}
+
+.pianoroll-velocity-bar.velocity-bar-hit.hit-out-of-range {
+  background: transparent;
+  border: 1px dashed var(--danger);
+}
+
+/* ============================================================================
+   Articulation lane — one chip per note start, under the velocity lane
+   ============================================================================ */
+
+.pianoroll-articulation-lane {
+  position: sticky;
+  bottom: 0;
+  z-index: 7;
+  display: flex;
+  flex-shrink: 0;
+  width: 100%;
+  background: var(--bg-surface);
+  border-top: 1px solid var(--border);
+}
+
+.pianoroll-articulation-gutter {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  background: var(--bg-secondary);
+  border-right: 1px solid var(--border);
+}
+
+.pianoroll-articulation-body {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.pianoroll-articulation-chip {
+  position: absolute;
+  top: 3px;
+  height: 18px;
+  padding: 0 3px;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: 8px;
+  line-height: 16px;
+  text-align: center;
+  color: var(--bg-surface);
+  background: var(--accent);
+  border: 1px solid transparent;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.pianoroll-articulation-chip.articulation-chip-empty {
+  color: var(--text-muted);
+  background: transparent;
+  border-color: color-mix(in srgb, var(--text-primary) 25%, transparent);
+}
+
+.pianoroll-articulation-chip.articulation-chip-muted {
+  opacity: 0.35;
+}
+
+/* A write is in flight: the chip stays visible but reads as not-yet-applied. */
+.pianoroll-articulation-chip.lane-pending,
+.pianoroll-velocity-entry.lane-pending {
+  opacity: 0.55;
+}
+
+/* The one place a lane states a failure or a disabled reason. */
+.pianoroll-lane-notice {
+  position: absolute;
+  left: 6px;
+  top: 2px;
+  z-index: 4;
+  padding: 0 3px;
+  font-size: 8px;
+  line-height: 10px;
+  color: var(--text-muted);
+  background: var(--bg-surface);
+  pointer-events: none;
+}
+
+.pianoroll-lane-notice.lane-notice-danger {
+  color: var(--danger);
+}
+
+/* The toolbar states a failed batch edit in the lane notice's own language. */
+.pianoroll-toolbar-notice {
+  padding: 2px 12px;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.pianoroll-toolbar-notice .pianoroll-lane-notice {
+  position: static;
+  padding: 0;
+  font-size: var(--font-size-xs);
+  line-height: 1.4;
+}
+
+/* A tool is a labelled button and the amount it uses, read as one control. */
+/* Names the velocity gestures, which are otherwise one word each. */
+.pianoroll-tool-label {
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+
+.pianoroll-tool {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.pianoroll-tool .toolbar-btn {
+  width: auto;
+  height: 22px;
+  padding: 0 6px;
+  font-size: var(--font-size-xs);
+  white-space: nowrap;
+}
+
+.note-resize-handle {
+  position: absolute;
+  right: -2px;
+  top: 0;
+  bottom: 0;
+  width: 8px;
+  cursor: ew-resize;
+  opacity: 0;
+  background: rgba(255, 255, 255, 0.25);
+  border-radius: 0 2px 2px 0;
+  transition: opacity var(--transition-fast);
+  z-index: 2;
+}
+
+.pianoroll-note:hover .note-resize-handle {
+  opacity: 1;
+}
+
+.pianoroll-note.note-dragging {
+  opacity: 0.7;
+  z-index: 10;
+  box-shadow: 0 2px 8px var(--accent-glow);
+}
+
+.pianoroll-note.note-selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent), 0 1px 4px rgba(0, 0, 0, 0.5);
+}
+
+.pianoroll-note.note-muted {
+  opacity: 0.35;
+}
+
+/* A note a shortened pattern no longer covers keeps its place and says so. */
+.pianoroll-note.note-out-of-range {
+  border: 1px dashed var(--danger);
+  background-image: repeating-linear-gradient(
+    45deg,
+    transparent 0,
+    transparent 3px,
+    color-mix(in srgb, var(--danger) 35%, transparent) 3px,
+    color-mix(in srgb, var(--danger) 35%, transparent) 5px
+  );
+}
+
+/* Drag animation — disable transition during drag for instant response */
+.pianoroll-note.note-dragging {
+  opacity: 0.7;
+  z-index: 50;
+  box-shadow: 0 4px 16px var(--accent-glow), 0 0 0 2px var(--accent);
+  transition: none;
+}
+
+/* Ghost note — original position shadow during drag */
+.pianoroll-note.note-ghost {
+  opacity: 0.2;
+  z-index: 0;
+  pointer-events: none;
+  border-style: dashed;
+  box-shadow: none;
+  transition: none;
+}
+
+/* Draw preview — translucent cursor-following note in draw mode */
+.pianoroll-note.note-preview {
+  opacity: 0.4;
+  z-index: 45;
+  pointer-events: none;
+  border-style: dashed;
+  box-shadow: none;
+  transition: none;
+}
+
+/* Row stripes and grid lines sit behind the notes. Without absolute
+   positioning the grid layer flowed below the canvas and no bar/beat lines
+   were visible. */
+.pianoroll-row-bg {
+  position: absolute;
+  left: 0;
+  right: 0;
+  pointer-events: none;
+}
+
+.pianoroll-grid-bg {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 0;
+  pointer-events: none;
+}
+
+/* Alignment snap guide — vertical line across full height during drag */
+.pianoroll-snap-guide {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--accent);
+  z-index: 49;
+  pointer-events: none;
+  box-shadow: 0 0 8px var(--accent), 0 0 2px var(--accent);
+  transition: opacity 100ms ease;
+}
+
+.pianoroll-marquee {
+  position: absolute;
+  border: 1px solid var(--accent);
+  background: rgba(100, 160, 255, 0.1);
+  z-index: 48;
+  pointer-events: none;
+}
+
+/* ============================================================================
+   Piano Roll Context Menu
+   ============================================================================ */
+
+.pianoroll-context-menu {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-md);
+  padding: 4px;
+  min-width: 180px;
+  /* Note menus carry every dynamics, velocity and articulation choice. */
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
+  box-shadow: var(--shadow-elevated);
+  z-index: 1000;
+}
+
+.context-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  width: 100%;
+  padding: 6px 12px;
+  border: 0;
+  background: transparent;
+  font-family: var(--font-ui);
+  text-align: left;
+  font-size: var(--font-size-xs);
+  color: var(--text-primary);
+  cursor: pointer;
+  border-radius: 3px;
+}
+
+.context-menu-item:hover,
+.context-menu-item.context-menu-active {
+  background: var(--bg-hover);
+}
+
+.context-menu-item[aria-disabled="true"] {
+  opacity: 0.42;
+  cursor: default;
+}
+
+.context-menu-item[aria-disabled="true"]:hover {
+  background: transparent;
+}
+
+.context-menu-label {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+/* A group expands in place, so a long note menu can stay one column: the
+   caret names the group, and its children sit under it. */
+.context-menu-group {
+  gap: 4px;
+  color: var(--text-secondary);
+}
+
+.context-menu-group-caret {
+  width: 10px;
+  margin-left: -8px;
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.context-menu-item.context-menu-subitem {
+  padding-left: 28px;
+}
+
+/* The colour row: named chips on the right of its label, then a picker. */
+.context-menu-palette { padding: 6px 10px 8px; }
+.context-menu-palette-row { display: flex; align-items: center; gap: 10px; }
+.context-menu-palette-label { color: var(--text-muted); font-size: 12px; flex: 0 0 auto; }
+.context-menu-palette-chips { display: flex; gap: 4px; margin-left: auto; }
+.context-menu-chip {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid var(--border-light);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.context-menu-chip:hover { transform: scale(1.08); }
+.context-menu-chip.current { outline: 2px solid var(--accent); outline-offset: 1px; }
+.context-menu-palette-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.context-menu-palette-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 auto;
+  white-space: nowrap;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface-raised);
+  color: var(--text-primary);
+  font-size: 12px;
+  cursor: pointer;
+}
+.context-menu-palette-button:disabled { color: var(--text-muted); cursor: default; }
+.context-menu-palette-preview { width: 12px; height: 12px; border-radius: 2px; border: 1px solid var(--border-light); }
+/* The platform picker lives off-screen: its button is the visible control. */
+.context-menu-palette-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.context-menu-check {
+  width: 10px;
+  margin-left: -8px;
+  color: var(--accent);
+  font-size: var(--font-size-xs);
+}
+
+/* Target name at the top of a menu, so the menu says what it acts on. */
+.context-menu-heading {
+  padding: 4px 12px 6px;
+  color: var(--text-accent);
+  font-family: var(--font-ui);
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.context-menu-shortcut {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.02em;
+}
+
+/* Why a disabled row cannot run; the menu stays open on it. */
+.context-menu-hint {
+  color: var(--text-muted);
+  font-size: 10px;
+  font-style: italic;
+  white-space: nowrap;
+}
+
+.context-menu-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 4px 8px;
+}
+
+.context-menu-danger:hover,
+.context-menu-danger.context-menu-active {
+  background: rgba(255, 68, 68, 0.2);
+  color: #ff4444;
+}
+
+/* ============================================================================
+   Dropdown (button trigger + portalled listbox)
+   ============================================================================ */
+
+.oc-dropdown {
+  display: grid;
+  grid-template-columns: minmax(55px, auto) minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--text-secondary);
+  font: 600 9px/1 var(--font-mono);
+}
+
+.oc-dropdown-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+}
+
+/* No visible label: the trigger owns the whole row. */
+.oc-dropdown-bare {
+  display: block;
+}
+
+.oc-dropdown-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.oc-dropdown-trigger {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  height: 23px;
+  padding: 0 6px;
+  border: 1px solid var(--border-light);
+  border-radius: 2px;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font: 600 10px/1 var(--font-mono);
+  text-align: left;
+  cursor: pointer;
+}
+
+.oc-dropdown-bare .oc-dropdown-trigger {
+  width: 100%;
+}
+
+.oc-dropdown-trigger:hover:not(:disabled) {
+  border-color: var(--text-muted);
+}
+
+.oc-dropdown-trigger:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.oc-dropdown-trigger:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.oc-dropdown-value {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.oc-dropdown-chevron {
+  flex: none;
+  color: var(--text-muted);
+  font-size: 8px;
+}
+
+.oc-dropdown-menu {
+  /* The list is portalled to the body. Without its own layer it paints under
+     a later fixed overlay (Preferences uses 10000), so the trigger looks dead. */
+  z-index: 13000;
+  max-height: min(320px, 60vh);
+  padding: 3px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-elevated);
+}
+
+.oc-dropdown-option {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 5px 9px;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text-primary);
+  font: 500 11px/1.3 var(--font-ui);
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.oc-dropdown-option.oc-dropdown-active {
+  background: var(--bg-hover);
+}
+
+.oc-dropdown-option[aria-selected="true"] {
+  color: var(--text-accent);
+}
+
+.oc-dropdown-check {
+  flex: none;
+  width: 10px;
+  font-size: 10px;
+  color: var(--accent);
+}
+
+.oc-dropdown-option-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* A row that carries a quiet second line wraps instead of clipping it. */
+.oc-dropdown-option.oc-dropdown-has-note {
+  flex-wrap: wrap;
+  white-space: normal;
+  align-items: baseline;
+}
+
+.oc-dropdown-badge {
+  flex: none;
+  padding: 0 4px;
+  border: 1px solid var(--border-light);
+  border-radius: 3px;
+  color: var(--text-muted);
+  font-size: 9px;
+  line-height: 1.4;
+  letter-spacing: 0.02em;
+}
+
+.oc-dropdown-option-note {
+  flex-basis: 100%;
+  min-width: 0;
+  padding-left: 16px;
+  color: var(--text-muted);
+  font-size: 9px;
+  line-height: 1.4;
+}
+
+.oc-dropdown-notice {
+  padding: 5px 9px;
+  border-bottom: 1px solid var(--border-light);
+  color: var(--text-secondary);
+  font-size: 10px;
+  line-height: 1.4;
+  white-space: normal;
+}
+
+/* ============================================================================
+   Tooltip layer
+   ============================================================================ */
+
+.oc-tooltip {
+  position: fixed;
+  z-index: 1200;
+  max-width: 340px;
+  padding: 9px 11px 8px;
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-elevated);
+  font-family: var(--font-ui);
+  font-size: var(--font-size-xs);
+  line-height: 1.45;
+  pointer-events: none;
+  overflow-wrap: break-word;
+}
+
+.oc-tooltip-title {
+  color: var(--text-primary);
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  line-height: 1.25;
+  letter-spacing: 0.01em;
+}
+
+.oc-tooltip-subtitle {
+  margin-top: 2px;
+  color: var(--text-secondary);
+  font-size: 10px;
+  letter-spacing: 0.02em;
+}
+
+.oc-tooltip-rows {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  column-gap: 12px;
+  row-gap: 3px;
+  margin-top: 6px;
+}
+
+.oc-tooltip-row {
+  display: contents;
+}
+
+.oc-tooltip-label {
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.oc-tooltip-value {
+  color: var(--text-primary);
+  overflow-wrap: break-word;
+}
+
+.oc-tooltip-value.mono {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.oc-tooltip-value.hint {
+  grid-column: 1 / -1;
+  margin-top: 3px;
+  padding-top: 5px;
+  border-top: 1px solid var(--border-light);
+  color: var(--text-secondary);
+  font-size: 10px;
+}
+
+.oc-tooltip-text {
+  white-space: normal;
+}
+
+/* ============================================================================
+   Cursor head (triangle on ruler)
+   ============================================================================ */
+
+.cursor-head {
+  position: absolute;
+  top: 6px;
+  width: 0;
+  height: 0;
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  border-top: 9px solid var(--accent);
+  z-index: 60;
+  cursor: grab;
+  pointer-events: auto;
+  filter: drop-shadow(0 0 3px var(--accent-glow));
+  transition: filter var(--transition-fast), transform 60ms var(--ease-spring);
+}
+
+.cursor-head:hover {
+  filter: drop-shadow(0 0 6px var(--accent-glow));
+  transform: scaleX(1.2);
+}
+
+/* Dragging the head seeks; a resize cursor read as "scale the arrangement". */
+.cursor-head:active {
+  cursor: grabbing;
+}
+
+/* ============================================================================
+   Piano Roll ruler (time bar at top of note grid)
+   ============================================================================ */
+
+.pianoroll-ruler {
+  height: 24px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+  position: relative;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.pianoroll-ruler-mark {
+  position: absolute;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-muted);
+  opacity: 0.7;
+  padding: 3px 4px;
+  pointer-events: none;
+}
+
+/* Clip start/end: the roll has no time outside these two lines. */
+/* The block's end is a handle: the roll is where the writing happens. */
+.pianoroll-clip-end-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 12px;
+  z-index: 5;
+  cursor: ew-resize;
+}
+.pianoroll-clip-end-handle::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 5px;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--accent);
+  opacity: 0.3;
+  transition: opacity var(--transition-fast);
+}
+.pianoroll-clip-end-handle:hover::after,
+.pianoroll-clip-end-handle:active::after {
+  opacity: 0.9;
+}
+
+.pianoroll-clip-edge {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--accent);
+  opacity: 0.45;
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* Where a pattern's own length ends inside the wider editing view. */
+.pianoroll-length-edge {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--danger);
+  opacity: 0.6;
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* ============================================================================
+   Mixer sound label (preset/instrument display)
+   ============================================================================ */
+
+.mixer-sound-label {
+  font-size: 9px;
+  color: var(--accent);
+  text-align: center;
+  padding: 2px 4px;
+  border-radius: 3px;
+  background: var(--bg-input);
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  width: 100%;
+  transition: background var(--transition-fast);
+}
+
+.mixer-sound-label:hover {
+  background: var(--bg-elevated);
+}
+
+/* Range control inside a clip menu: one value, one commit on release. */
+.context-menu-slider {
+  display: grid;
+  gap: 5px;
+  min-width: 210px;
+  padding: 7px 10px 8px;
+}
+
+.context-menu-slider-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.context-menu-slider-head output {
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.context-menu-slider input[type="range"] {
+  appearance: none;
+  width: 100%;
+  height: 20px;
+  margin: 0;
+  background: transparent;
+  cursor: ew-resize;
+}
+
+.context-menu-slider input[type="range"]::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 2px;
+  background: linear-gradient(
+    to right,
+    var(--accent) var(--slider-fill, 0%),
+    color-mix(in srgb, var(--text-secondary) 34%, var(--bg-input)) var(--slider-fill, 0%)
+  );
+}
+
+.context-menu-slider input[type="range"]::-webkit-slider-thumb {
+  appearance: none;
+  width: 11px;
+  height: 11px;
+  margin-top: -3.5px;
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  background: var(--bg-elevated);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+}
+
+.context-menu-slider input[type="range"]:hover::-webkit-slider-thumb {
+  background: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-dim);
+}
+
+/* Clip menus stay compact; long refusal hints wrap under the action instead of
+   widening the whole menu. */
+.clip-context-menu {
+  width: 260px;
+  max-width: min(260px, calc(100vw - 16px));
+}
+
+.clip-context-menu .context-menu-item {
+  flex-wrap: wrap;
+  gap: 2px 8px;
+  padding: 6px 10px;
+}
+
+.clip-context-menu .context-menu-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.clip-context-menu .context-menu-hint {
+  flex: 1 0 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.35;
+}
+
+.clip-context-menu .context-menu-slider {
+  min-width: 0;
+}
+
+.context-menu { max-height: calc(100vh - 16px); overflow-y: auto; }
+.context-menu-info { margin: 4px 8px 8px; max-width: min(410px, calc(100vw - 64px)); font-size: 11px; }
+.context-menu-info > div { display: grid; grid-template-columns: minmax(76px, 0.38fr) minmax(0, 1fr); gap: 12px; padding: 3px 0; }
+.context-menu-info dt { color: var(--text-muted); }
+.context-menu-info dd { margin: 0; color: var(--text-primary); user-select: text; overflow-wrap: anywhere; white-space: normal; }
+.context-menu-path { font-family: var(--font-mono); }
+.clip-inspector { overflow: auto; padding: 12px; min-width: 0; height: 100%; box-sizing: border-box; }
+.clip-inspector h2 { margin: 0 0 12px; font-size: 14px; overflow-wrap: anywhere; }
+.clip-inspector .context-menu-info { margin: 0; max-width: none; }
+.clip-detail-view { display: flex; height: 100%; overflow: hidden; }
+.clip-detail-view.with-notes > .clip-inspector { width: 340px; min-width: 220px; flex-shrink: 0; border-inline-end: 1px solid var(--border); }
+.clip-detail-notes { flex: 1; min-width: 0; overflow: hidden; }
+
+@media (max-width: 800px) {
+  .clip-detail-view.with-notes > .clip-inspector { width: 31%; min-width: 165px; }
+  .clip-inspector .context-menu-info > div { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+}

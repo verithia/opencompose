@@ -1,0 +1,15 @@
+/**
+ * Minimal global reset — daw.css defines all DAW-specific theming.
+ * The Tauri boilerplate CSS variables are overridden by daw.css :root.
+ */
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+#root {
+  height: 100%;
+}

@@ -1,0 +1,91 @@
+{
+  "version": 1,
+  "note": "Corpus acceptance gate. Audio and annotations live outside the repository, under $OCP_VOCAL_CORPUS_DIR/gate; see docs/vocal-corpus.md. Thresholds are derived from the measured values on these clips plus margin, not from the synthetic suite.",
+  "clips": [
+    {
+      "id": "vocadito_20",
+      "corpus": "vocadito",
+      "audio": "audio/vocadito_20.wav",
+      "f0": "f0/vocadito_20_f0.csv",
+      "notes": "notes/vocadito_20_notesA1.csv"
+    },
+    {
+      "id": "vocadito_10",
+      "corpus": "vocadito",
+      "audio": "audio/vocadito_10.wav",
+      "f0": "f0/vocadito_10_f0.csv",
+      "notes": "notes/vocadito_10_notesA1.csv"
+    },
+    {
+      "id": "vocadito_14",
+      "corpus": "vocadito",
+      "audio": "audio/vocadito_14.wav",
+      "f0": "f0/vocadito_14_f0.csv",
+      "notes": "notes/vocadito_14_notesA1.csv"
+    },
+    {
+      "id": "vocadito_26",
+      "corpus": "vocadito",
+      "audio": "audio/vocadito_26.wav",
+      "f0": "f0/vocadito_26_f0.csv",
+      "notes": "notes/vocadito_26_notesA1.csv"
+    },
+    {
+      "id": "vocadito_11",
+      "corpus": "vocadito",
+      "audio": "audio/vocadito_11.wav",
+      "f0": "f0/vocadito_11_f0.csv",
+      "notes": "notes/vocadito_11_notesA1.csv"
+    },
+    {
+      "id": "vocadito_35",
+      "corpus": "vocadito",
+      "audio": "audio/vocadito_35.wav",
+      "f0": "f0/vocadito_35_f0.csv",
+      "notes": "notes/vocadito_35_notesA1.csv"
+    },
+    {
+      "id": "vocadito_25",
+      "corpus": "vocadito",
+      "audio": "audio/vocadito_25.wav",
+      "f0": "f0/vocadito_25_f0.csv",
+      "notes": "notes/vocadito_25_notesA1.csv"
+    },
+    {
+      "id": "vocadito_12",
+      "corpus": "vocadito",
+      "audio": "audio/vocadito_12.wav",
+      "f0": "f0/vocadito_12_f0.csv",
+      "notes": "notes/vocadito_12_notesA1.csv"
+    },
+    {
+      "id": "vocadito_8",
+      "corpus": "vocadito",
+      "audio": "audio/vocadito_8.wav",
+      "f0": "f0/vocadito_8_f0.csv",
+      "notes": "notes/vocadito_8_notesA1.csv"
+    },
+    {
+      "id": "vocadito_16",
+      "corpus": "vocadito",
+      "audio": "audio/vocadito_16.wav",
+      "f0": "f0/vocadito_16_f0.csv",
+      "notes": "notes/vocadito_16_notesA1.csv"
+    }
+  ],
+  "thresholds": {
+    "f0_median_abs_c_max": 6.0,
+    "f0_p95_abs_c_max": 45.0,
+    "per_clip_f0_p95_abs_c_max": 75.0,
+    "octave_rate_max": 0.02,
+    "per_clip_octave_rate_max": 0.06,
+    "boundary_p90_ms_max": 100.0,
+    "boundary_hit_rate_min": 0.65,
+    "missed_rate_max": 0.03,
+    "split_rate_max": 0.15,
+    "false_voiced_rate_max": 0.5,
+    "voiced_recall_min": 0.97,
+    "note_ratio_min": 0.8,
+    "note_ratio_max": 1.3
+  }
+}

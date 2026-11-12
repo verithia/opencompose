@@ -1,0 +1,1647 @@
+/* ============================================================================
+   Track list (Timeline / Arranger)
+   ============================================================================ */
+
+.timeline-panel {
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  min-width: 0;
+  overflow: hidden;
+  height: 100%;
+  /* Footer band that owns the zoom and grid pills, so they never cover the
+     last lane. The lanes scroller ends above it. */
+  padding-bottom: 26px;
+  outline: none;
+}
+
+/* Surface for the footer band; sits under the pills (z-index 6). */
+.timeline-panel::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 26px;
+  background: var(--bg-secondary);
+  border-top: 1px solid var(--border);
+  pointer-events: none;
+}
+
+.timeline-scroll-content {
+  display: flex;
+  align-items: stretch;
+  width: max-content;
+  min-width: 100%;
+  min-height: 100%;
+  padding-bottom: 8px;
+}
+
+.track-headers {
+  /* Sticky inside the lanes scroller: headers scroll vertically with the
+     lanes by sharing the same scroll container, and never move horizontally. */
+  position: sticky;
+  left: 0;
+  z-index: 60;
+  flex: 0 0 var(--track-header-width);
+  width: var(--track-header-width);
+  background: var(--track-header-bg);
+  border-right: 1px solid var(--border-light);
+}
+
+.timeline-lane-column {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.track-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: var(--track-row-height);
+  padding: 0 8px 0 0;
+  border-bottom: 1px solid var(--border);
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.025), transparent 55%);
+  cursor: pointer;
+  transition: background var(--transition-fast);
+}
+
+.track-header:hover {
+  background: var(--bg-elevated);
+}
+
+.track-header.selected {
+  background: color-mix(in srgb, var(--bg-track-selected) 86%, var(--track-color, var(--accent)) 14%);
+  box-shadow: inset 3px 0 0 var(--track-color, var(--accent));
+}
+
+.track-header.selected .track-name {
+  color: var(--text-primary);
+}
+
+.track-header.selected .track-instrument {
+  color: var(--text-secondary);
+  opacity: 0.9;
+}
+
+/* The selected rail already carries the track colour; hide the inner bar so
+   the header shows one marker, not two stripes. */
+.track-header.selected .track-color-bar {
+  opacity: 0;
+}
+
+.track-color-bar {
+  width: 3px;
+  height: calc(100% - 16px);
+  border-radius: 2px;
+  flex-shrink: 0;
+  margin-left: 6px;
+  opacity: 0.8;
+}
+
+.track-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.track-name {
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: default;
+  letter-spacing: -0.1px;
+}
+
+.track-name-input {
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  width: 100%;
+  background: var(--bg-input);
+  border: 1px solid var(--border-focus);
+  border-radius: 3px;
+  color: var(--text-primary);
+  padding: 1px 4px;
+  outline: none;
+}
+
+.track-instrument {
+  font-size: 10px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0.7;
+  margin-top: 1px;
+}
+
+.track-controls {
+  display: flex;
+  gap: 2px;
+}
+
+.track-btn {
+  width: 20px;
+  height: 18px;
+  border: 1px solid var(--border-light);
+  border-radius: 3px;
+  background: var(--bg-primary);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  transition: background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast), transform 60ms var(--ease-spring);
+}
+
+.track-btn:hover {
+  border-color: var(--text-muted);
+  color: var(--text-primary);
+  background: var(--bg-secondary);
+}
+
+.track-btn:active {
+  transform: scale(0.88);
+}
+
+/* Engaged M/S are solid fills, not tints, so they read at a glance; solo uses
+   the cool accent so it can't be confused with mute in warm themes. */
+.track-btn.mute-active {
+  background: var(--meter-yellow);
+  color: var(--bg-void);
+  border-color: var(--meter-yellow);
+}
+
+.track-btn.solo-active {
+  background: var(--accent-cool);
+  color: var(--bg-void);
+  border-color: var(--accent-cool);
+}
+
+/* Muted track: dim the name and the lane's clips, keep controls at full strength. */
+.track-header.track-muted .track-info {
+  opacity: 0.5;
+}
+
+.track-lane.track-muted .phrase-block {
+  opacity: 0.4;
+  filter: saturate(0.3);
+}
+
+.track-preview-btn {
+  font-size: 10px;
+  color: var(--play-green);
+  border-color: rgba(92, 184, 133, 0.25);
+}
+
+.track-preview-btn:hover {
+  background: rgba(92, 184, 133, 0.1);
+  border-color: var(--play-green);
+}
+
+/* Timeline lanes — the single vertical scroll container for headers + lanes */
+.timeline-lanes {
+  flex: 1;
+  min-height: 0;
+  background: var(--timeline-bg);
+  /* Layer 1 is the bar-line grid (tiled horizontally), layer 2 is the surface
+     gradient and must span the full height: tiling it 96px tall drew stripes
+     across the empty area under the tracks. */
+  background-size: 96px 100%, 100% 100%;
+  overflow: auto;
+  overscroll-behavior: none;
+  overflow-anchor: none;
+  position: relative;
+}
+
+.track-lane {
+  height: var(--track-row-height);
+  border-bottom: 1px solid var(--border);
+  position: relative;
+  background: var(--track-lane-bg);
+}
+
+/* The stripe follows the track, not its DOM position: an automation area sits
+   between two track lanes and would otherwise flip every stripe below it. */
+.track-lane.track-lane-alt {
+  background: var(--track-lane-alt-bg);
+}
+
+/* Edit preview: the subtrees the proposal rewrites. One class, painted over
+   the document the backend installed; the preview never renders separately. */
+.track-lane.preview-changed {
+  box-shadow: inset 3px 0 0 var(--accent);
+  background: color-mix(in srgb, var(--track-lane-bg) 88%, var(--accent) 12%);
+}
+.phrase-block.preview-changed,
+.audio-clip-block.preview-changed {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  opacity: 1;
+}
+
+/* Take lanes: one comp row above one row per recorded pass. Both columns keep
+   the same fixed heights so the headers and blocks cannot drift apart. */
+.take-lanes {
+  border-bottom: 1px solid var(--border);
+  background: var(--track-lane-alt-bg);
+}
+
+.take-comp-row,
+.take-row,
+.take-comp-header,
+.take-header-row {
+  height: 20px;
+}
+
+.take-comp-row,
+.take-row {
+  position: relative;
+  font-family: var(--font-mono);
+  font-size: 9px;
+}
+
+.take-row {
+  border-top: 1px solid var(--border-light);
+  cursor: crosshair;
+  background: var(--track-lane-bg);
+}
+
+.take-row.dragging {
+  background: var(--bg-elevated);
+}
+
+.take-row.muted {
+  opacity: 0.55;
+}
+
+.take-row-block,
+.take-comp-segment {
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  border-radius: 2px;
+  min-width: 2px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.take-row-block {
+  background: var(--accent);
+  opacity: 0.35;
+}
+
+.take-row-block.muted {
+  opacity: 0.12;
+  filter: saturate(0.2);
+}
+
+.take-comp-segment {
+  background: var(--accent-cool);
+  color: var(--bg-void);
+  opacity: 0.85;
+  display: flex;
+  align-items: center;
+  padding: 0 4px;
+}
+
+.take-comp-marquee {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  border: 1px solid var(--accent-cool);
+  background: color-mix(in srgb, var(--accent-cool) 25%, transparent);
+  border-radius: 2px;
+  pointer-events: none;
+}
+
+.take-headers {
+  background: var(--track-header-bg);
+  border-bottom: 1px solid var(--border);
+}
+
+.take-comp-header,
+.take-header-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 6px 0 9px;
+  border-top: 1px solid var(--border-light);
+  font-size: 10px;
+}
+
+.take-header-row.muted .take-header-name {
+  opacity: 0.5;
+}
+
+.take-header-row.solo .take-header-name {
+  color: var(--accent-cool);
+}
+
+.take-header-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 9px;
+}
+
+.take-header-buttons {
+  display: flex;
+  gap: 2px;
+}
+
+.take-disclosure {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 0 4px;
+  height: 16px;
+}
+
+.take-disclosure:hover,
+.take-disclosure.active {
+  color: var(--text-primary);
+  border-color: var(--border-light);
+  background: var(--bg-elevated);
+}
+
+.phrase-block {
+  position: absolute;
+  top: 5px;
+  bottom: 5px;
+  border-radius: var(--radius-sm);
+  opacity: 0.8;
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+  font-size: var(--font-size-xs);
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.9);
+  cursor: pointer;
+  transition: opacity var(--transition-fast), box-shadow var(--transition-fast);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.phrase-block:hover {
+  opacity: 1;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.15);
+}
+
+.phrase-block-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+
+.pattern-block {
+  border: 1px dashed rgba(255, 255, 255, 0.25);
+}
+
+.clip-block,
+.pattern-block,
+.phrase-note-block,
+.audio-clip-block {
+  --clip-accent: var(--accent);
+  /* Derived on the clip itself: custom properties on :root cannot see this
+     element's inline --clip-accent, so a root definition bakes in the theme
+     accent and every clip renders the same colour. */
+  --clip-bg: color-mix(in srgb, var(--bg-track) 84%, var(--clip-accent) 16%);
+  --clip-bg-hover: color-mix(in srgb, var(--bg-track-selected) 78%, var(--clip-accent) 22%);
+  --clip-bg-selected: color-mix(in srgb, var(--bg-track-selected) 68%, var(--clip-accent) 32%);
+  --clip-header-bg: color-mix(in srgb, var(--clip-accent) 26%, var(--bg-elevated) 74%);
+  --clip-header-border: color-mix(in srgb, var(--clip-accent) 40%, transparent);
+  --clip-note-thumb: color-mix(in srgb, var(--clip-accent) 72%, var(--text-primary) 28%);
+  --clip-hit-thumb: color-mix(in srgb, var(--clip-accent) 78%, var(--text-primary) 22%);
+  /* Gain line and fade ramps sit over the waveform, so they read brighter than it. */
+  --clip-envelope: color-mix(in srgb, var(--text-primary) 82%, var(--clip-accent) 18%);
+  display: block;
+  overflow: hidden;
+  opacity: 1;
+  padding: 0;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--clip-border);
+  box-sizing: border-box;
+  background:
+    var(--clip-overlay),
+    var(--clip-bg);
+  background-blend-mode: overlay, normal;
+  color: var(--clip-text);
+  text-shadow: none;
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--text-primary) 10%, transparent), inset 0 -1px 0 color-mix(in srgb, var(--bg-void) 28%, transparent), var(--shadow-panel);
+}
+
+/* Clip header strip: a tinted band that owns the name, so labels never sit on
+   top of the note or waveform material. */
+.clip-block::before,
+.pattern-block::before,
+.phrase-note-block::before,
+.audio-clip-block::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 16px;
+  background: var(--clip-header-bg);
+  border-bottom: 1px solid var(--clip-header-border);
+  pointer-events: none;
+  z-index: 0;
+}
+
+.clip-block:hover,
+.phrase-note-block:hover {
+  opacity: 1;
+  background:
+    var(--clip-overlay),
+    var(--clip-bg-hover);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--text-primary) 12%, transparent), inset 0 -1px 0 color-mix(in srgb, var(--bg-void) 32%, transparent), 0 0 0 1px color-mix(in srgb, var(--clip-accent) 32%, transparent);
+}
+
+/* One selection frame for every lane block: neutral outer ring, never the clip accent. */
+.clip-block.selected,
+.phrase-note-block.selected,
+.pattern-block.selected {
+  opacity: 1;
+  box-shadow: var(--clip-selected-ring), var(--shadow-panel);
+}
+
+.clip-block.selected,
+.pattern-block.selected,
+.phrase-note-block.selected {
+  background:
+    var(--clip-overlay),
+    var(--clip-bg-selected);
+}
+
+.phrase-note-block {
+  border: 1px solid var(--clip-border);
+}
+
+.clip-block.clip-overlap {
+  border-color: var(--stop-red);
+  animation: pulse-overlap 1.2s ease-in-out infinite alternate;
+}
+
+/* Track identity as a left rail, not a corner triangle: no collision with the
+   clip name and no sawtooth pattern across short clips. */
+.clip-accent-flag {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 3px;
+  background: var(--clip-accent);
+  z-index: 5;
+  pointer-events: none;
+}
+
+.clip-thumbnail {
+  position: absolute;
+  inset: 16px 0 0 0;
+  overflow: hidden;
+  opacity: 0.85;
+  background: color-mix(in srgb, var(--clip-accent) 6%, transparent);
+  z-index: 1;
+}
+
+.clip-note-thumb {
+  position: absolute;
+  /* The renderer supplies a pitch-gap-relative height; never expand across rows. */
+  max-height: 4px;
+  min-height: 2px;
+  min-width: 3px;
+  border-radius: 1.5px;
+  background: var(--clip-note-thumb);
+  opacity: 1;
+}
+
+.clip-hit-thumb {
+  position: absolute;
+  width: 3px;
+  height: 14px;
+  border-radius: 999px;
+  background: var(--clip-hit-thumb);
+  opacity: 0.58;
+}
+
+/* Plain text over the clip's own background: no chip, border, or pill. */
+.clip-label-chip {
+  position: absolute;
+  top: 0;
+  left: 7px;
+  z-index: 3;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: calc(100% - 10px);
+  height: 16px;
+  padding: 0;
+  box-sizing: border-box;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  color: var(--clip-text);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 16px;
+  letter-spacing: 0.1px;
+  text-shadow: none;
+  pointer-events: none;
+}
+
+/* Group badge: a grouped clip moves with its set. The tooltip names the count. */
+.clip-group-badge {
+  position: absolute;
+  top: 2px;
+  right: 6px;
+  z-index: 4;
+  color: var(--clip-text);
+  font-size: 9px;
+  line-height: 10px;
+  opacity: 0.85;
+  text-shadow: 0 1px 2px color-mix(in srgb, var(--bg-void) 72%, transparent);
+  pointer-events: none;
+}
+
+.audio-clip-block {
+  --clip-accent: var(--accent);
+}
+
+.audio-clip-waveform {
+  position: absolute;
+  inset: 16px 0 0 0;
+  width: 100%;
+  height: calc(100% - 16px);
+  color: var(--clip-text);
+  pointer-events: none;
+  z-index: 1;
+  opacity: 1;
+}
+
+.audio-clip-block .clip-label-chip {
+  z-index: 4;
+}
+
+.audio-clip-trim {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 7px;
+  cursor: ew-resize;
+  z-index: 6;
+  opacity: 0;
+  transition: opacity var(--transition-fast);
+}
+
+.audio-clip-trim.left {
+  left: 0;
+  border-left: 2px solid color-mix(in srgb, var(--clip-accent) 70%, transparent);
+}
+
+.audio-clip-trim.right {
+  right: 0;
+  border-right: 2px solid color-mix(in srgb, var(--clip-accent) 70%, transparent);
+}
+
+.audio-clip-block:hover .audio-clip-trim,
+.audio-clip-block.selected .audio-clip-trim {
+  opacity: 1;
+}
+
+/* The gain line: a wide, thin strip whose centre sits on the drawn envelope. */
+.audio-clip-gain {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 9px;
+  margin-top: -4px;
+  cursor: ns-resize;
+  z-index: 5;
+}
+
+/* Fade corners: one square per top corner, dragged sideways. */
+.audio-clip-fade {
+  position: absolute;
+  top: 15px;
+  width: 12px;
+  height: 12px;
+  z-index: 7;
+  cursor: ew-resize;
+  opacity: 0;
+  transition: opacity var(--transition-fast);
+}
+
+.audio-clip-fade.in {
+  left: 0;
+  border-left: 2px solid var(--clip-envelope);
+  border-top: 2px solid var(--clip-envelope);
+}
+
+.audio-clip-fade.out {
+  right: 0;
+  border-right: 2px solid var(--clip-envelope);
+  border-top: 2px solid var(--clip-envelope);
+}
+
+.audio-clip-block:hover .audio-clip-fade,
+.audio-clip-block.selected .audio-clip-fade {
+  opacity: 1;
+}
+
+.audio-clip-gain.disabled,
+.audio-clip-fade.disabled {
+  cursor: default;
+  opacity: 0.3;
+}
+
+/* Drag readout: the hover card stands down while a gesture owns the pointer. */
+.clip-envelope-readout {
+  position: absolute;
+  top: 16px;
+  z-index: 9;
+  display: inline-flex;
+  gap: 4px;
+  padding: 1px 5px;
+  border: 1px solid var(--clip-border);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--bg-void) 88%, transparent);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  line-height: 12px;
+  white-space: nowrap;
+  pointer-events: none;
+  transform: translateX(-50%);
+}
+
+.clip-envelope-limit {
+  color: var(--text-secondary);
+}
+
+.audio-clip-stretch-handle {
+  position: absolute;
+  bottom: 1px;
+  right: 3px;
+  z-index: 5;
+  width: 15px;
+  height: 15px;
+  padding: 0;
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  line-height: 1;
+  cursor: ew-resize;
+  touch-action: none;
+}
+
+/* Warp anchors mark the target and provide a drag hit area. */
+.audio-clip-warp-marker {
+  position: absolute;
+  top: 15px;
+  bottom: 0;
+  width: 9px;
+  margin-left: -4px;
+  cursor: ew-resize;
+  /* Markers follow the gain strip in DOM order and own their intersection. */
+  z-index: 5;
+}
+
+.audio-clip-warp-marker::after {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 0;
+  bottom: 0;
+  border-left: 1px dashed var(--accent);
+  pointer-events: none;
+}
+
+/* Loop seams: one dashed line per repeat inside the block. */
+.audio-clip-loop-seam,
+.clip-loop-seam {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-left: 1px dashed color-mix(in srgb, var(--clip-accent) 70%, transparent);
+  pointer-events: none;
+  z-index: 2;
+}
+
+.clip-loop-seam {
+  top: 15px;
+  bottom: 0;
+}
+
+.audio-clip-loop-handle {
+  position: absolute;
+  top: 15px;
+  width: 10px;
+  height: calc(100% - 15px);
+  margin-left: -5px;
+  z-index: 7;
+  cursor: ew-resize;
+  border-left: 2px dashed color-mix(in srgb, var(--clip-accent) 85%, transparent);
+  opacity: 0;
+  transition: opacity var(--transition-fast);
+}
+
+.audio-clip-block:hover .audio-clip-loop-handle,
+.audio-clip-block.selected .audio-clip-loop-handle {
+  opacity: 1;
+}
+
+/* Slip readout on a pattern clip: content offset while the drag runs. */
+.clip-slip-readout {
+  position: absolute;
+  top: 16px;
+  z-index: 9;
+  padding: 1px 5px;
+  border: 1px solid var(--clip-border);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--bg-void) 88%, transparent);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  line-height: 12px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.audio-clip-block.dragging {
+  opacity: 0.8;
+}
+
+.audio-clip-block.audio-clip-retarget {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.clip-block .phrase-block-name,
+.phrase-note-block .phrase-block-name {
+  min-width: 0;
+  color: var(--clip-text);
+  font-weight: 700;
+}
+
+.clip-meta {
+  flex: 0 0 auto;
+  color: var(--clip-text-muted);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  opacity: 0.85;
+}
+
+.clip-empty .clip-thumbnail::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  border-top: 1px dashed color-mix(in srgb, var(--clip-accent) 36%, transparent);
+}
+
+@keyframes pulse-overlap {
+  from { box-shadow: 0 0 3px rgba(255, 68, 68, 0.3); }
+  to   { box-shadow: 0 0 10px rgba(255, 68, 68, 0.6); }
+}
+
+.phrase-resize-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  cursor: ew-resize;
+  /* Above the thumbnail and label, or the handle is only reachable in the top band. */
+  z-index: 4;
+  opacity: 0;
+  transition: opacity var(--transition-fast);
+}
+
+.phrase-resize-handle.right {
+  right: 0;
+  border-right: 2px solid rgba(255,255,255,0.5);
+}
+
+.phrase-block:hover .phrase-resize-handle,
+.phrase-block.resizing .phrase-resize-handle {
+  opacity: 1;
+}
+
+.phrase-block.resizing {
+  z-index: 4;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--clip-accent) 70%, transparent);
+}
+
+/* ============================================================================
+   Playback cursor
+   ============================================================================ */
+
+.playback-cursor {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1.5px;
+  background: var(--accent);
+  z-index: 55;
+  pointer-events: none;
+  box-shadow: 0 0 6px var(--accent-glow), 0 0 2px var(--accent);
+}
+
+/* Audition-only playhead: visible while a preview plays, then gone. The tint
+   comes from the theme accent: --clip-note-thumb only exists on clip elements,
+   so a var() of it here would resolve to nothing and hide the line. */
+.playback-cursor.preview-cursor {
+  width: 1px;
+  background: repeating-linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--accent) 70%, var(--text-primary) 30%) 0 4px,
+    transparent 4px 8px
+  );
+  box-shadow: none;
+}
+
+.cursor-head.preview-cursor-head {
+  pointer-events: none;
+  opacity: 0.7;
+}
+
+/* ============================================================================
+   Timeline ruler & zoom
+   ============================================================================ */
+
+.timeline-ruler {
+  height: var(--ruler-height);
+  position: sticky;
+  top: 0;
+  background: var(--ruler-bg);
+  border-bottom: 1px solid var(--border-light);
+  box-shadow: var(--shadow-panel);
+  z-index: 5;
+}
+
+.timeline-ruler-mark {
+  position: absolute;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-muted);
+  padding: 4px 4px;
+  opacity: 0.7;
+}
+
+/* Session loop region: a tinted band over the ruler. */
+.timeline-loop-band {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-left: 1px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  border-right: 1px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  pointer-events: none;
+  z-index: 1;
+}
+
+.timeline-loop-band.loop-armed {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+/* Punch range: a second band over the ruler, drawn independently of Loop. */
+.timeline-punch-band {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: color-mix(in srgb, var(--warning, #d9a441) 10%, transparent);
+  border-left: 1px dashed color-mix(in srgb, var(--warning, #d9a441) 60%, transparent);
+  border-right: 1px dashed color-mix(in srgb, var(--warning, #d9a441) 60%, transparent);
+  pointer-events: none;
+  z-index: 1;
+}
+
+.timeline-punch-band.punch-armed {
+  background: color-mix(in srgb, var(--warning, #d9a441) 22%, transparent);
+}
+
+/* Loop strip: the drag target under the ruler; the ruler itself still seeks. */
+.timeline-loop-strip {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 7px;
+  cursor: crosshair;
+  border-top: 1px solid var(--border-light);
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+  z-index: 8;
+}
+
+/* Marker flags on the ruler. */
+.timeline-marker {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  display: flex;
+  align-items: flex-start;
+  cursor: grab;
+  z-index: 6;
+}
+
+.timeline-marker.dragging { cursor: grabbing; }
+
+.timeline-marker-flag {
+  width: 2px;
+  height: 100%;
+  background: var(--accent);
+  opacity: 0.75;
+}
+
+.timeline-marker-name {
+  position: absolute;
+  top: 2px;
+  left: 4px;
+  padding: 0 2px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  line-height: 12px;
+  color: var(--accent);
+  background: var(--ruler-bg);
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.timeline-marker.dragging .timeline-marker-name { opacity: 0.6; }
+
+/* One status line for marker and loop edits, never a modal. */
+.timeline-marker-status {
+  position: absolute;
+  top: 2px;
+  right: 8px;
+  z-index: 9;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--bg-panel);
+  color: var(--text-muted);
+  font-size: 10px;
+  pointer-events: none;
+}
+
+.timeline-ruler-spacer {
+  height: var(--ruler-height);
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  border-bottom: 1px solid var(--border-light);
+  background: var(--ruler-bg);
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  padding-left: 10px;
+}
+
+/* ============================================================================
+   Tempo & meter lane
+   ============================================================================ */
+
+.tempo-lane-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 18px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--bg-input);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.tempo-lane-toggle:hover {
+  color: var(--text-primary);
+  border-color: var(--border-light);
+}
+
+.tempo-lane-toggle.active {
+  color: var(--text-accent);
+  border-color: var(--accent);
+  background: var(--accent-dim);
+}
+
+.tempo-lane-toggle-caret {
+  font-size: 8px;
+  line-height: 1;
+}
+
+.tempo-lane-headers {
+  display: flex;
+  flex-direction: column;
+  background: var(--track-header-bg);
+  border-bottom: 1px solid var(--border);
+}
+
+.tempo-lane-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 17px;
+  padding: 0 8px 0 10px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--text-muted);
+}
+
+.tempo-lane-head + .tempo-lane-head {
+  border-top: 1px solid var(--border);
+}
+
+.tempo-lane-head-label {
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  opacity: 0.7;
+}
+
+.tempo-lane-head-value {
+  color: var(--text-primary);
+}
+
+.tempo-lane-head-unit {
+  font-size: 8px;
+}
+
+.tempo-lane {
+  position: relative;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+  overflow: hidden;
+  user-select: none;
+}
+
+.tempo-lane-row {
+  position: relative;
+  height: 17px;
+  outline: none;
+}
+
+.tempo-lane-row + .tempo-lane-row {
+  border-top: 1px solid var(--border);
+}
+
+.tempo-lane-row:focus-visible {
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.tempo-point {
+  position: absolute;
+  top: 1px;
+  height: 15px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 3px;
+  border: 1px solid var(--border-light);
+  border-radius: 2px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: ew-resize;
+}
+
+button.tempo-point {
+  color: var(--text-accent);
+  background: var(--accent-dim);
+}
+
+.tempo-point-meter {
+  color: var(--accent-cool);
+  background: var(--accent-cool-dim);
+}
+
+.tempo-point.selected {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.tempo-point-base {
+  color: var(--text-muted);
+  background: var(--bg-elevated);
+  border-style: dashed;
+  cursor: default;
+  pointer-events: none;
+}
+
+.tempo-point-input {
+  background: var(--bg-input);
+  border: 1px solid var(--accent);
+  border-radius: 2px;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  padding: 0 2px;
+  outline: none;
+}
+
+.tempo-bpm-input {
+  position: absolute;
+  top: 1px;
+  width: 54px;
+  height: 15px;
+  z-index: 4;
+}
+
+.meter-editor {
+  position: absolute;
+  top: 2px;
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  height: 16px;
+  padding: 0 2px;
+  background: var(--bg-input);
+  border: 1px solid var(--accent);
+  border-radius: 2px;
+  z-index: 4;
+}
+
+.meter-editor .tempo-point-input {
+  border: none;
+  border-radius: 0;
+  height: 14px;
+}
+
+.meter-numerator-input {
+  width: 24px;
+}
+
+.meter-editor-slash {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 9px;
+}
+
+.meter-denominator-input {
+  height: 14px;
+  border: none;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  outline: none;
+}
+
+.tempo-lane-error {
+  position: absolute;
+  left: 8px;
+  top: 1px;
+  display: flex;
+  align-items: center;
+  height: 15px;
+  padding: 0 4px;
+  background: var(--bg-float);
+  border: 1px solid var(--meter-red);
+  border-radius: 2px;
+  color: var(--meter-red);
+  font-size: 9px;
+  white-space: nowrap;
+  z-index: 6;
+}
+
+.zoom-step {
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  background: var(--bg-input);
+  color: var(--text-muted);
+  font-size: 9px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.zoom-step:hover {
+  color: var(--text-primary);
+  border-color: var(--border-light);
+}
+
+.timeline-zoom-center {
+  position: absolute;
+  bottom: 2px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 9px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  z-index: 6;
+  opacity: 0.7;
+  transition: opacity var(--transition-fast);
+}
+
+.timeline-zoom-center:hover {
+  opacity: 1;
+}
+
+.timeline-zoom-center .zoom-step {
+  width: 16px;
+  height: 16px;
+  font-size: 11px;
+}
+
+.timeline-zoom-bar {
+  position: absolute;
+  bottom: 2px;
+  right: 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  z-index: 6;
+  opacity: 0.7;
+  transition: opacity var(--transition-fast);
+}
+
+.timeline-zoom-bar:hover {
+  opacity: 1;
+}
+
+.zoom-label {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--text-muted);
+  min-width: 58px;
+  text-align: right;
+}
+
+.timeline-grid-label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* The block-position floor is stated, not hidden: the note sits above the pill
+   while the chosen grid is finer than the 16th a clip range can hold. */
+.timeline-grid-floor {
+  position: absolute;
+  bottom: 30px;
+  right: 12px;
+  max-width: 320px;
+  padding: 2px 8px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font-size: 9px;
+  line-height: 14px;
+  z-index: 6;
+  pointer-events: none;
+}
+
+.timeline-grid-busy {
+  color: var(--text-muted);
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.timeline-grid-select {
+  background: var(--bg-input);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  font-size: var(--font-size-xs);
+  padding: 2px 4px;
+}
+
+/* Clip drag: the grabbed block follows the pointer inside its own lane. Once the
+   pointer leaves that lane the source dims and a ghost shows the target lane.
+   `user-select: none` keeps a drag from selecting the label text. */
+.phrase-block {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.clip-block.dragging,
+.phrase-note-block.dragging,
+.pattern-block.dragging {
+  opacity: 0.35;
+}
+
+.clip-block.dragging.drag-follow,
+.phrase-note-block.dragging.drag-follow,
+.pattern-block.dragging.drag-follow {
+  opacity: 1;
+  z-index: 4;
+  cursor: grabbing;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--clip-accent) 70%, transparent), var(--shadow-panel);
+}
+
+.clip-drag-ghost {
+  pointer-events: none;
+  opacity: 0.9;
+  outline: 1px dashed var(--accent);
+  outline-offset: -1px;
+  z-index: 4;
+}
+
+.clip-drag-ghost.clip-drag-copy {
+  outline-style: double;
+}
+
+.track-lane.clip-drop-target {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+/* Rubber-band selection. A solid frame touches blocks; the dashed frame only
+   takes blocks it fully contains (right-to-left). */
+.timeline-marquee {
+  position: absolute;
+  z-index: 6;
+  pointer-events: none;
+  border: 1px solid var(--accent);
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.timeline-marquee.enclosing {
+  border-style: dashed;
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+}
+
+/* ---- Automation rows ----
+   One row per lane, under its track lane. The header column repeats the lane
+   name and mute button at the same height, so the two columns stay aligned
+   without a second scroll container. */
+
+.track-automation-headers {
+  display: flex;
+  flex-direction: column;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg-secondary) 92%, var(--bg-void));
+}
+
+.track-automation-lanes {
+  position: relative;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg-secondary) 88%, var(--bg-void));
+}
+
+.automation-owner-strip {
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-secondary);
+}
+
+.automation-lane-header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 38px;
+  padding: 0 6px 0 10px;
+  border-bottom: 1px solid var(--border);
+  min-width: 0;
+}
+
+.automation-lane-header.muted .automation-lane-name {
+  opacity: 0.45;
+}
+
+.automation-lane-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 9px;
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.automation-lane-kind {
+  font-size: 8px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.2px;
+}
+
+.automation-mute-btn {
+  flex: 0 0 auto;
+}
+
+.automation-empty-header {
+  display: flex;
+  align-items: center;
+  padding: 0 10px;
+  font-size: 9px;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+}
+
+.automation-empty-lane {
+  display: flex;
+  align-items: center;
+  padding: 0 10px;
+  font-size: 10px;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.automation-lane {
+  position: relative;
+  overflow: hidden;
+  border-bottom: 1px solid var(--border);
+  cursor: crosshair;
+}
+
+.automation-lane.muted {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* A whole-timeline lane writes from its first point on, so it has no block:
+   a dashed leading edge stands in for the missing clip head. */
+.automation-lane.whole-timeline::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--accent-cool) 8%, transparent) 0 6px,
+    transparent 6px 12px
+  );
+  opacity: 0.5;
+}
+
+.automation-span {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--accent-cool) 14%, transparent);
+  border-left: 2px solid color-mix(in srgb, var(--accent-cool) 55%, transparent);
+  border-right: 2px solid color-mix(in srgb, var(--accent-cool) 35%, transparent);
+  /* The block owns its press: drag to move, drag an edge to resize. */
+  cursor: grab;
+}
+
+.automation-span.selected {
+  background: color-mix(in srgb, var(--accent-cool) 24%, transparent);
+  outline: 1px solid color-mix(in srgb, var(--accent-cool) 70%, transparent);
+}
+
+.automation-span.dragging {
+  cursor: grabbing;
+}
+
+/* A resize handle is a wide, invisible strip inside each block edge. */
+.automation-resize-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  cursor: ew-resize;
+}
+
+.automation-resize-handle.start {
+  left: -2px;
+}
+
+.automation-resize-handle.end {
+  right: -2px;
+}
+
+/* Ghost of a block being dragged or resized; the commit happens on release. */
+.automation-block-ghost {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  border-radius: 2px;
+  border: 1px dashed color-mix(in srgb, var(--accent-cool) 70%, transparent);
+  background: color-mix(in srgb, var(--accent-cool) 12%, transparent);
+  pointer-events: none;
+}
+
+.automation-block-ghost.copy {
+  border-style: dotted;
+  border-color: var(--accent);
+  background: var(--accent-dim);
+}
+
+.automation-curve {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.automation-polyline {
+  fill: none;
+  stroke: var(--accent-cool);
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+
+.automation-row-name {
+  position: absolute;
+  top: 1px;
+  left: 6px;
+  font-size: 8px;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  pointer-events: none;
+  opacity: 0.75;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.automation-muted-note {
+  position: absolute;
+  top: 2px;
+  right: 6px;
+  font-size: 9px;
+  color: var(--meter-yellow);
+  pointer-events: none;
+}
+
+.automation-point {
+  position: absolute;
+  width: 9px;
+  height: 9px;
+  padding: 0;
+  margin: -4.5px 0 0 -4.5px;
+  border-radius: 50%;
+  border: 1px solid var(--accent-cool);
+  background: var(--bg-primary);
+  cursor: grab;
+  z-index: 2;
+}
+
+.automation-point:hover {
+  background: var(--accent-cool);
+}
+
+.automation-point.selected {
+  background: var(--accent);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+.automation-lane.muted .automation-point {
+  cursor: not-allowed;
+}
+
+.automation-ghost {
+  position: absolute;
+  width: 11px;
+  height: 11px;
+  margin: -5.5px 0 0 -5.5px;
+  border-radius: 50%;
+  border: 1px dashed var(--accent);
+  background: color-mix(in srgb, var(--accent) 25%, transparent);
+  pointer-events: none;
+  z-index: 3;
+}
+
+.track-btn.track-automation-btn {
+  font-size: 8px;
+}
+
+.track-btn.track-automation-btn.active {
+  background: var(--accent-cool);
+  color: var(--bg-void);
+  border-color: var(--accent-cool);
+}

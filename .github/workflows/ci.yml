@@ -1,0 +1,345 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  source-quality:
+    name: Source formatting and Python lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust formatter
+        uses: dtolnay/rust-toolchain@1.95.0
+        with:
+          components: rustfmt
+
+      - name: Rust formatting
+        run: cargo fmt --all -- --check
+
+      - name: Generated frontend catalogs
+        run: ./scripts/check-generated-catalogs.sh
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Ruff
+        run: python -m pip install ruff==0.15.12
+
+      - name: Python formatting
+        # Include the brand tooling and host test fixture generator as well as scripts/.
+        run: ruff format --check .
+
+      - name: Python lint
+        run: ruff check .
+
+      - name: Integration test binary budget
+        run: python3 scripts/check-test-binaries.py
+
+      - name: License boundary
+        run: python3 scripts/check-licenses.py
+
+      - name: Repository check regressions
+        run: python -m unittest discover -s scripts/tests -p 'test_*.py'
+
+  rust:
+    name: Rust (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.95.0
+        with:
+          components: clippy
+
+      - name: Compiler and host identity
+        run: |
+          rustc --version --verbose
+          cargo --version
+          rustup show active-toolchain
+          rustup target list --installed
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-${{ runner.arch }}-rust-1.95.0-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-${{ runner.arch }}-rust-1.95.0-cargo-
+
+      - name: Install system dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libdbus-1-dev \
+            libasound2-dev \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev \
+            libjavascriptcoregtk-4.1-dev \
+            libsoup-3.0-dev \
+            pkg-config
+
+      - name: Cargo check (all targets)
+        run: cargo check --workspace --all-targets --locked
+
+      - name: Cargo check without plugin hosting
+        run: cargo check -p oc-engine --lib --no-default-features --locked
+
+      - name: Production feature variants (check only)
+        # Separate package roots keep workspace/dev feature unification from
+        # re-enabling MP3 or plugin hosting in the disabled configurations.
+        run: |
+          cargo check -p oc-audio --lib --no-default-features --locked
+          cargo check -p oc-dsp --lib --no-default-features --locked
+          cargo check -p oc-synth --lib --no-default-features --locked
+          cargo check -p oc-synth-core --lib --no-default-features --locked
+          cargo check -p oc-gui --lib --bins --no-default-features --locked
+          cargo check -p oc-cli --bin ocp --no-default-features --locked
+          cargo check -p oc-engine --lib --no-default-features --features plugin-host --locked
+          cargo check -p oc-engine --lib --no-default-features --features mp3 --locked
+          cargo check -p oc-sample --bin oc-sample-provider --features local-provider-runner --locked
+
+      - name: First-block latency (serial)
+        run: cargo test -p oc-gui --lib first_block_tests:: -- --ignored --test-threads=1 --skip review_
+
+      - name: DSP dependencies stay device-free
+        run: |
+          if cargo tree -p oc-dsp -e normal -i oc-audio >/dev/null 2>&1; then
+            echo "oc-dsp must not depend on oc-audio" >&2
+            exit 1
+          fi
+
+      - name: Cargo test
+        run: cargo test --workspace
+
+      - name: Owned VST3 lifecycle (CPU-only native fixture)
+        timeout-minutes: 10
+        run: cargo test -p oc-host --test vst3_rt_alloc --features test-support --locked -- --owned-lifecycle
+
+      - name: Credential store round trip (skip reason stays visible)
+        # The Linux runner has no Secret Service, so this test prints
+        # "SKIP …: OS credential store unavailable" instead of passing as if it
+        # had stored a key. --nocapture keeps that reason in the job log; macOS
+        # exercises the real login keychain here.
+        run: |
+          cargo test -p oc-gui --lib \
+            a_saved_key_is_reported_as_present_and_never_returned -- --nocapture
+
+      - name: SIMD backends and bit identity
+        # Pins the kernel tests and prints the backend this CPU selected, so an
+        # x86 runner exercises SSE2 (and AVX2 when the CPU advertises it).
+        run: |
+          cargo test -p oc-dsp --lib simd:: -- --nocapture
+          cargo test -p oc-dsp --test all devices::dispatch:: -- --nocapture
+          cargo test -p oc-engine --test all simd_bit_identity:: -- --nocapture
+          cargo test -p oc-cli --test all simd_identity:: -- --nocapture
+
+      - name: Cross-check Intel macOS target
+        if: runner.os == 'macOS'
+        run: |
+          rustup target add x86_64-apple-darwin
+          cargo check --target x86_64-apple-darwin -p oc-dsp -p oc-engine -p oc-cli --locked
+
+      - name: Cargo clippy
+        # Unsafe boundary documentation is reported by a forced warning while
+        # other warnings remain errors. Force-warn also prevents local suppression.
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings -D clippy::undocumented_unsafe_blocks
+
+  windows:
+    name: Rust check and clip cache tests (Windows)
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.95.0
+        with:
+          components: clippy
+
+      - name: Compiler and host identity
+        run: |
+          rustc --version --verbose
+          cargo --version
+          rustup show active-toolchain
+          rustup target list --installed
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Cargo check
+        run: cargo check --workspace --all-targets --locked
+
+      - name: Cargo check without plugin hosting
+        run: cargo check -p oc-engine --lib --no-default-features --locked
+
+      - name: Production feature variants (check only)
+        # Separate package roots keep workspace/dev feature unification from
+        # re-enabling MP3 or plugin hosting in the disabled configurations.
+        run: |
+          cargo check -p oc-gui --lib --bins --no-default-features --locked
+          cargo check -p oc-cli --bin ocp --no-default-features --locked
+          cargo check -p oc-engine --lib --no-default-features --features plugin-host --locked
+          cargo check -p oc-engine --lib --no-default-features --features mp3 --locked
+          cargo check -p oc-sample --bin oc-sample-provider --features local-provider-runner --locked
+
+      - name: Cargo clippy (including Windows-only unsafe boundaries)
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings -D clippy::undocumented_unsafe_blocks
+
+      - name: Owned VST3 lifecycle (CPU-only native fixture)
+        timeout-minutes: 10
+        run: cargo test -p oc-host --test vst3_rt_alloc --features test-support --locked -- --owned-lifecycle
+
+      - name: Clip cache lifecycle
+        run: >-
+          cargo test -p oc-engine --lib --locked --
+          clip_pcm::tests::
+          derived_cache::tests::cooperating_processes
+          derived_cache::tests::a_clear_from_another_process
+
+      - name: Separator runtime, process containment and preset paths
+        run: >-
+          cargo test -p oc-gui --lib --locked --
+          separator_process::windows::tests windows_separator_path separator_runtime download_retry
+          commands::tests::patch::library_patch_reuses
+
+      - name: Clip scratch on a low-space NTFS volume
+        shell: powershell
+        run: .\scripts\test-windows-low-volume.ps1
+
+  frontend:
+    name: Frontend (TypeScript + Vitest + Vite)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: crates/oc-gui/frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: crates/oc-gui/frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Rust toolchain (license metadata)
+        uses: dtolnay/rust-toolchain@1.95.0
+
+      - name: Third-party license policy and notices
+        # Needs the crate sources (fetched by cargo metadata) and node_modules.
+        run: python3 ../../../scripts/third-party-licenses.py --check
+
+      - name: Install layout fonts and browser
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y fonts-noto-cjk
+          npx playwright install --with-deps chromium
+
+      - name: Layout checks
+        run: npm run layout-check
+
+      - name: TypeScript check
+        run: npm run typecheck
+
+      - name: Frontend tests with coverage
+        run: npm run test:coverage
+
+      - name: Vite build
+        run: npx vite build
+
+  lsp:
+    name: LSP + VS Code Extension
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.95.0
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config
+
+      - name: Build LSP binary
+        run: cargo build --package oc-lsp
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Check VS Code extension
+        working-directory: editors/vscode-ocp
+        run: |
+          npm ci
+          npm test
+
+  docs:
+    name: Documentation site
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.95.0
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install system dependencies
+        # The site documents every crate, so `cargo doc --workspace` builds the
+        # same dependency graph as `cargo check --workspace`.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libdbus-1-dev \
+            libasound2-dev \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev \
+            libjavascriptcoregtk-4.1-dev \
+            libsoup-3.0-dev \
+            pkg-config
+
+      - name: Install mdBook
+        run: |
+          version=0.5.4
+          curl -sSL "https://github.com/rust-lang/mdBook/releases/download/v${version}/mdbook-v${version}-x86_64-unknown-linux-gnu.tar.gz" \
+            | tar -xz -C /usr/local/bin
+
+      - name: Build the book and the API reference
+        # Writes the book to book/ and rustdoc to book/api/; a broken intra-doc
+        # link fails here because scripts/docs.sh sets RUSTDOCFLAGS=-D warnings.
+        run: ./scripts/docs.sh build
+
+      - name: Check the documentation
+        # Summary coverage, links, tool names, non-English text, api/ targets and
+        # the parsing of every ocp fence.
+        run: ./scripts/check-docs.sh
+
+      - name: Unresolved conflict markers
+        run: ./scripts/check-conflict-markers.sh

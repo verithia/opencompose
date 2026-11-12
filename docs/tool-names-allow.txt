@@ -1,0 +1,89 @@
+# Identifiers that look like tool names but are not tools.
+# scripts/check-docs.sh scans all book chapters for snake_case code spans and
+# requires each one to be a tool in the identity table or listed here with a reason.
+# One identifier per line; text after the identifier is a comment.
+
+# DSL and mixer identifiers that share a tool area prefix.
+plugin_output_pair   a plugin auxiliary output pair, not a tool
+sample_rate          the audio-frame rate of a sample or render, not a tool
+sample_format        the encoded sample format of a WAV, not a tool
+audio_input          the catalogue's audio-input capability block, not a tool
+
+# Source identifiers used in architecture and component chapters.
+audio_clip                               Rust module, not an agent tool
+audio_clip_perf                          Integration-test module, not an agent tool
+audio_in                                 Audio or model result field, not an agent tool
+audio_io                                 Rust module, not an agent tool
+audio_region                             Rust module, not an agent tool
+audition_figure                          Rust module, not an agent tool
+audition_render                          Audio or model result field, not an agent tool
+content_library                          Rust module, not an agent tool
+device_buffer_frames                     Audio or model result field, not an agent tool
+device_cpu                               Integration-test module, not an agent tool
+effects_ceiling_margin_db                Audio or model result field, not an agent tool
+effects_max_gain_reduction_db            Audio or model result field, not an agent tool
+import_summary                           Audio or model result field, not an agent tool
+list_content_libraries                   Tauri command, not a published agent tool
+list_midi_ports                          Tauri command, not a published agent tool
+midi_bridge                              Rust module, not an agent tool
+midi_bytes_limit                         Shared MIDI input refusal code, not an agent tool
+midi_bytes_to_import                     Data conversion API, not an agent tool
+midi_centered                            DSL or serialized project field, not an agent tool
+midi_commands                            Rust module, not an agent tool
+midi_events_limit                        Shared MIDI input refusal code, not an agent tool
+midi_extent_limit                        Shared MIDI input refusal code, not an agent tool
+midi_input_io                            Shared MIDI input refusal code, not an agent tool
+midi_io                                  Rust module, not an agent tool
+midi_live                                Rust module, not an agent tool
+midi_nonregular_input                    Shared MIDI input refusal code, not an agent tool
+midi_note                                DSL or serialized project field, not an agent tool
+midi_payload_limit                       Shared MIDI input refusal code, not an agent tool
+midi_to_import                           Data conversion API, not an agent tool
+midi_to_project                          Data conversion API, not an agent tool
+midi_unit                                DSL or serialized project field, not an agent tool
+plugin_catalog                           Tauri command, not a published agent tool
+plugin_id                                Catalog install field, not an agent tool
+plugin_index                             Rust module, not an agent tool
+plugin_index_status                      Tauri command and hidden legacy status endpoint, not a published agent tool
+plugin_inventory_updated                 GUI event identifier, not an agent tool
+plugin_keepalive                         Rust module, not an agent tool
+plugin_manual_page                       Tauri command, not a published agent tool
+plugin_preset_render_error               Host validation helper, not an agent tool
+plugin_program_capabilities              Tauri command, not a published agent tool
+plugin_state                             Rust module, not an agent tool
+plugin_state_file                        DSL or serialized project field, not an agent tool
+plugin_state_hex                         DSL or serialized project field, not an agent tool
+plugin_store                             Rust module, not an agent tool
+plugin_store_install                     Tauri command, not a published agent tool
+preset_output_pairs                      Tauri command, not a published agent tool
+preset_output_ports                      Tauri command, not a published agent tool
+project_extent                           Rust module, not an agent tool
+project_instrument_tail_samples          Internal rendering helper, not an agent tool
+project_resources                        Rust module, not an agent tool
+project_unsaved                          Sample download refusal code, not an agent tool
+read_plugin_state                        Tauri command, not a published agent tool
+render_builtin_project                   Internal rendering helper, not an agent tool
+render_builtin_tracks_parallel           Internal rendering helper, not an agent tool
+render_cache                             Rust module, not an agent tool
+render_candidate                         Internal rendering helper, not an agent tool
+render_count_in_chunk                    Internal rendering helper, not an agent tool
+render_grid                              Rust module, not an agent tool
+render_into                              Internal rendering helper, not an agent tool
+render_parallel                          Rust module, not an agent tool
+render_patterns                          Internal rendering helper, not an agent tool
+render_prepared_audition                 Internal rendering helper, not an agent tool
+render_program_audition                  Internal rendering helper, not an agent tool
+render_samples                           Internal rendering helper, not an agent tool
+render_synth                             Internal rendering helper, not an agent tool
+render_thread                            Rust module, not an agent tool
+render_to_buffer                         Internal rendering helper, not an agent tool
+render_to_buffer_per_track               Internal rendering helper, not an agent tool
+tempo_follow                             DSL or serialized project field, not an agent tool
+tempo_map                                DSL or serialized project field, not an agent tool
+time_l                                   Delay parameter identifier, not an agent tool
+time_r                                   Delay parameter identifier, not an agent tool
+time_range                               DSL or serialized project field, not an agent tool
+time_s                                   Audio or model result field, not an agent tool
+time_sig_map                             DSL or serialized project field, not an agent tool
+time_signature                           DSL or serialized project field, not an agent tool
+transport_snapshot                       Internal rendering helper, not an agent tool

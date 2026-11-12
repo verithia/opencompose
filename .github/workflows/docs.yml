@@ -1,0 +1,89 @@
+name: Documentation site
+
+# Publishes the book and the API reference as one GitHub Pages artifact:
+# the book at the site root, rustdoc at /api/.
+#
+# Deployment is automatic on a push to main that touches documentation or Rust
+# sources. Unlike the plugin index, a documentation site is not a signed or
+# immutable artifact: an out-of-date copy of a page costs a reader a wrong
+# answer, not a compromised install, so no manual confirmation is needed. The
+# workflow still refuses to publish when the documentation checks fail.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/**'
+      - 'crates/**/src/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'book.toml'
+      - 'scripts/docs.sh'
+      - 'scripts/check-docs.sh'
+      - '.github/workflows/docs.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: docs-pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.95.0
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libdbus-1-dev \
+            libasound2-dev \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev \
+            libjavascriptcoregtk-4.1-dev \
+            libsoup-3.0-dev \
+            pkg-config
+
+      - name: Install mdBook
+        run: |
+          version=0.5.4
+          curl -sSL "https://github.com/rust-lang/mdBook/releases/download/v${version}/mdbook-v${version}-x86_64-unknown-linux-gnu.tar.gz" \
+            | tar -xz -C /usr/local/bin
+
+      - name: Build the book and the API reference
+        run: ./scripts/docs.sh build
+
+      - name: Check the documentation
+        run: ./scripts/check-docs.sh
+
+      - name: Unresolved conflict markers
+        run: ./scripts/check-conflict-markers.sh
+
+      - uses: actions/configure-pages@v5
+
+      - name: Upload the combined site
+        # book/ is the artifact root: index.html and the chapters at the top
+        # level, the rustdoc for the same commit under api/.
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: book
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,36 @@
+[package]
+autotests = false
+repository.workspace = true
+name = "oc-dsl"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+# The language components stay permissive so editors and other tools can
+# read `.ocp` projects; see README.md.
+license = "MIT OR Apache-2.0"
+description = "OpenCompose DSL parser, AST, serializer, and validator"
+
+[dependencies]
+oc-device-schema = { path = "../oc-device-schema" }
+pest = "2"
+pest_derive = "2"
+thiserror.workspace = true
+serde.workspace = true
+serde_json = { workspace = true, features = ["float_roundtrip"] }
+flate2.workspace = true
+schemars = { version = "0.8.22", optional = true }
+
+[features]
+json-schema = ["dep:schemars"]
+
+[[example]]
+name = "pgen_project_schema"
+required-features = ["json-schema"]
+
+[dev-dependencies]
+oc-test-support = { path = "../oc-test-support" }
+pretty_assertions = "1"
+
+[[test]]
+name = "all"
+path = "tests/all.rs"

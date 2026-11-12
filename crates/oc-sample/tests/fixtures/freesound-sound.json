@@ -1,0 +1,16 @@
+{
+  "id": 14854,
+  "name": "snare_01.wav",
+  "tags": ["snare", "drum", "one-shot", "acoustic"],
+  "license": "Creative Commons 0",
+  "duration": 0.42,
+  "samplerate": 44100,
+  "channels": 1,
+  "filesize": 37044,
+  "previews": {
+    "preview-hq-mp3": "https://cdn.freesound.org/previews/14/14854_100-hq.mp3",
+    "preview-lq-mp3": "https://cdn.freesound.org/previews/14/14854_100-lq.mp3"
+  },
+  "type": "wav",
+  "username": "bassmosphere"
+}

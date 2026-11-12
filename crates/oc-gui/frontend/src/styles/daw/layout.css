@@ -1,0 +1,612 @@
+/* ============================================================================
+   Layout — Split View Architecture
+   Top:    Timeline (always visible)
+   Bottom: PianoRoll / Mixer / Patterns (switchable, collapsible)
+   Right:  Sidebar (DSL, Plugins, Presets, Store, AI)
+   ============================================================================ */
+
+.daw-root {
+  position: relative;
+  display: grid;
+  /* The toolbar row grows when its controls wrap at a large interface scale. */
+  grid-template-rows: minmax(var(--toolbar-height), auto) 1fr;
+  height: 100vh;
+  min-width: 0;
+  overflow: hidden;
+  background: var(--bg-void);
+}
+
+.daw-body {
+  display: flex;
+  min-width: 0;
+  overflow: hidden;
+  position: relative;
+  /* Every panel inside the body stays below the toolbar, so a narrow window
+     that turns the sidebar into an overlay cannot paint over its buttons. */
+  isolation: isolate;
+}
+
+.daw-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-width: 0;
+  background: var(--panel-bg);
+}
+
+/* ── Split top / bottom ── */
+
+.split-top {
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  transition: height 200ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.split-bottom {
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  transition: height 200ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Dragging writes the pointer position itself: animating it would restart a
+   200ms transition on every frame and leave the panel chasing the pointer.
+   Programmatic open / close / collapse keep the transition above. */
+.daw-main.resizing .split-top,
+.daw-main.resizing .split-bottom {
+  transition: none;
+}
+
+/* Divider between top and bottom — thin drag handle only */
+/* Space targets the region the last pointer-down hit; mark the active one. */
+.split-top.region-active > .timeline-panel {
+  box-shadow: inset 0 2px 0 var(--accent), var(--shadow-panel);
+}
+
+.split-bottom.region-active > .bottom-panel-tabs {
+  box-shadow: inset 0 2px 0 var(--accent), var(--shadow-panel);
+}
+
+.split-divider {
+  height: 4px;
+  flex-shrink: 0;
+  cursor: ns-resize;
+  position: relative;
+  z-index: 5;
+  -webkit-user-select: none;
+  user-select: none;
+  background: var(--border);
+  transition: background var(--transition-fast);
+}
+
+.split-divider:hover,
+.split-divider.dragging {
+  background: var(--accent);
+}
+
+/* Bottom panel tab strip (header bar inside bottom panel) */
+.bottom-panel-tabs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 8px;
+  height: 30px;
+  flex-shrink: 0;
+  background: var(--tab-strip-bg);
+  border-bottom: 1px solid var(--border-light);
+  box-shadow: var(--shadow-panel);
+}
+
+.bottom-tab {
+  padding: 4px 10px;
+  /* Space plays while a tab keeps focus; its label must not become a text
+     selection when the transport takes the key. */
+  user-select: none;
+  -webkit-user-select: none;
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--text-muted);
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: color var(--transition-fast), background var(--transition-fast);
+}
+
+.bottom-tab:hover {
+  color: var(--text-secondary);
+  background: var(--bg-hover);
+}
+
+.bottom-tab.active {
+  color: var(--text-primary);
+  background: var(--bg-elevated);
+  box-shadow: var(--active-ring);
+}
+
+/* Shortcut hint: a footnote to the label, not a badge — readable at 10px and
+   quiet enough that it never competes with the tab name. */
+.bottom-tab-key {
+  margin-left: 5px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 400;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+.bottom-tab:hover .bottom-tab-key {
+  color: var(--text-secondary);
+}
+
+.bottom-tab.active .bottom-tab-key {
+  color: var(--accent);
+}
+
+.bottom-tab-close {
+  color: var(--text-muted);
+  font-size: 11px;
+  padding: 4px 8px;
+  border-radius: 4px;
+}
+
+.bottom-tab-close:hover {
+  color: var(--stop-red);
+  background: rgba(199, 92, 92, 0.1);
+}
+
+/* ── Right sidebar ── */
+
+.sidebar-resize-handle {
+  width: 4px;
+  flex-shrink: 0;
+  cursor: ew-resize;
+  background: var(--border);
+  transition: background var(--transition-fast);
+  z-index: 5;
+}
+
+.sidebar-resize-handle:hover,
+.sidebar-resize-handle:active {
+  background: var(--accent);
+}
+
+.right-sidebar {
+  min-width: 220px;
+  max-width: 600px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  flex-shrink: 0;
+  background: var(--sidebar-bg);
+  border-left: 1px solid var(--border-light);
+}
+
+/* Leave room to read a conversation while retaining a resizable sidebar. */
+.right-sidebar:has(.ai-panel) {
+  min-width: min(360px, 55vw);
+  max-width: min(600px, 80vw);
+}
+
+/* The panel switcher: one row of tabs, the open panel's name, the collapse
+   control. It replaces the full-height column, so the panel gains that width. */
+.sidebar-topbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 30px;
+  flex-shrink: 0;
+  padding: 0 4px;
+  background: var(--tab-strip-bg);
+  border-bottom: 1px solid var(--border-light);
+  box-shadow: var(--shadow-panel);
+}
+
+.sidebar-tabs {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 2px;
+}
+
+.sidebar-tab {
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-muted);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: color var(--transition-fast), background var(--transition-fast);
+}
+
+/* Line icons are vector, so they stay sharp under the webview's zoom and keep
+   an even 5px inset in the 26px tab and the 20px collapsed strip. */
+.sidebar-tab svg {
+  width: 16px;
+  height: 16px;
+  display: block;
+}
+
+.sidebar-tab:hover {
+  color: var(--text-secondary);
+  background: var(--bg-hover);
+}
+
+.sidebar-tab.active {
+  color: var(--accent);
+  background: var(--accent-dim);
+  box-shadow: var(--active-ring);
+}
+
+/* The open panel, named next to its icon. It truncates before the collapse
+   control, so a 220 px sidebar keeps the row one line. */
+.sidebar-tab-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding-left: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.sidebar-collapse {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  font-size: 10px;
+  color: var(--text-muted);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: color var(--transition-fast), background var(--transition-fast);
+}
+
+.sidebar-collapse:hover {
+  color: var(--text-secondary);
+  background: var(--bg-hover);
+}
+
+.sidebar-content {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  background: var(--sidebar-bg);
+}
+
+/* Sidebar toggle strip (collapsed state) */
+.sidebar-toggle-strip {
+  width: 20px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-secondary);
+  border-left: 1px solid var(--border);
+  cursor: pointer;
+  transition: background var(--transition-fast);
+}
+
+.sidebar-toggle-strip:hover {
+  background: var(--bg-elevated);
+}
+
+.sidebar-toggle-icon {
+  font-size: 10px;
+  color: var(--text-muted);
+  transform: rotate(180deg);
+}
+
+/* ── Legacy compat: keep for existing components referencing .ai-sidebar ── */
+
+.ai-sidebar {
+  width: 340px;
+  min-width: 280px;
+  max-width: 480px;
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  flex-shrink: 0;
+  background: var(--bg-secondary);
+}
+
+.daw-toolbar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  min-height: var(--toolbar-height);
+  padding: 0 10px;
+  background: var(--chrome-bg);
+  border-bottom: 1px solid var(--border-light);
+  /* Above the sticky track headers/playhead (60) and every body panel, so
+     popovers escape the bar and a narrow sidebar cannot cover its buttons. */
+  z-index: 90;
+  box-shadow: var(--shadow-panel);
+}
+
+.preferences-popover {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 80;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 260px;
+  max-height: min(70vh, 620px);
+  padding: 10px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-elevated);
+  overflow: auto;
+}
+
+.preferences-popover::before {
+  content: "";
+  position: absolute;
+  top: -5px;
+  right: 18px;
+  width: 8px;
+  height: 8px;
+  background: var(--bg-elevated);
+  border-left: 1px solid var(--border-light);
+  border-top: 1px solid var(--border-light);
+  transform: rotate(45deg);
+}
+
+.theme-select-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  height: 28px;
+  width: 100%;
+  padding: 0;
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.theme-select {
+  height: 24px;
+  min-width: 92px;
+  padding: 0 24px 0 8px;
+  color: var(--text-secondary);
+  background: var(--bg-input);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  font: inherit;
+  font-size: var(--font-size-xs);
+}
+
+.theme-select:focus {
+  outline: none;
+  border-color: var(--border-focus);
+}
+
+.theme-preview-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+  margin: 2px 0;
+}
+
+.theme-preview-card {
+  display: grid;
+  grid-template-columns: 52px 1fr;
+  align-items: center;
+  gap: 7px;
+  min-height: 38px;
+  padding: 5px;
+  color: var(--text-secondary);
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color var(--transition-fast), background var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.theme-preview-card:hover {
+  background: var(--bg-hover);
+  border-color: var(--border-light);
+}
+
+.theme-preview-card.active {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent), 0 0 0 1px var(--accent-dim);
+}
+
+.theme-preview-mini {
+  position: relative;
+  display: block;
+  width: 52px;
+  height: 28px;
+  overflow: hidden;
+  background: var(--preview-bg);
+  border: 1px solid color-mix(in srgb, var(--preview-accent) 45%, transparent);
+  border-radius: max(2px, calc(var(--radius-sm) - 1px));
+}
+
+.theme-preview-toolbar {
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 6px;
+  background: var(--preview-surface);
+  border-bottom: 1px solid color-mix(in srgb, var(--preview-accent) 22%, transparent);
+}
+
+.theme-preview-lane {
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  height: 7px;
+  background: color-mix(in srgb, var(--preview-surface) 82%, var(--preview-bg) 18%);
+}
+
+.theme-preview-lane.lane-a { top: 9px; }
+.theme-preview-lane.lane-b { top: 18px; }
+
+.theme-preview-lane span {
+  position: absolute;
+  top: 1px;
+  height: 5px;
+  background: color-mix(in srgb, var(--preview-rail) 24%, var(--preview-surface) 76%);
+  border-left: 2px solid var(--preview-accent);
+}
+
+.theme-preview-lane span:first-child {
+  left: 4px;
+  width: 18px;
+}
+
+.theme-preview-lane span:last-child {
+  right: 3px;
+  width: 15px;
+  border-left-color: var(--preview-rail);
+}
+
+.theme-preview-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.preferences-divider {
+  height: 1px;
+  margin: 2px 0;
+  background: var(--border);
+}
+
+.keymap-title {
+  color: var(--text-secondary);
+  font-size: var(--font-size-xs);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+/* Legacy panel tabs — kept for backward compat, hidden in new layout */
+.panel-content-area {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+}
+
+.panel-content-wrapper {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  display: none;
+}
+
+.panel-content-wrapper.active {
+  display: flex;
+  flex-direction: column;
+}
+
+.panel-tabs {
+  display: flex;
+  gap: 0;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+  padding: 0 4px;
+}
+
+.panel-tab {
+  padding: 8px 14px;
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--text-muted);
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  position: relative;
+  transition: color var(--transition-normal), border-color var(--transition-normal), background var(--transition-normal);
+}
+
+.panel-tab:hover {
+  color: var(--text-secondary);
+  background: var(--bg-hover);
+}
+
+.panel-tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+  background: var(--accent-dim);
+}
+
+.panel-tab .panel-tab-key {
+  display: inline-block;
+  font-size: 9px;
+  font-weight: 400;
+  color: var(--text-muted);
+  opacity: 0.6;
+  margin-left: 4px;
+  vertical-align: super;
+}
+
+/* ── Narrow shell ───────────────────────────────────────────────────────────
+   A 1.5 interface scale on a 1147 px window is a ~764 CSS px viewport. Below
+   900 px the shell stops sharing width so nothing is clipped at either edge. */
+@media (max-width: 900px) {
+  :root {
+    --track-header-width: 176px;
+  }
+
+  /* Out of flow: the timeline keeps the full width, and the panel stops above
+     the status bar so its readouts stay visible. */
+  .right-sidebar {
+    position: absolute;
+    inset: 0 0 24px auto;
+    z-index: 60;
+    min-width: min(320px, 100%);
+    max-width: min(420px, 86vw);
+    box-shadow: var(--shadow-elevated);
+  }
+
+  .right-sidebar:has(.ai-panel) {
+    min-width: min(320px, 100%);
+    max-width: min(420px, 86vw);
+  }
+
+  .sidebar-resize-handle {
+    display: none;
+  }
+
+  /* One fixed row: the toolbar scrolls instead of growing taller. */
+  .daw-root {
+    grid-template-rows: var(--toolbar-height) 1fr;
+  }
+}

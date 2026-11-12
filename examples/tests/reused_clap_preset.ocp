@@ -1,0 +1,13 @@
+@project "Independent tracks reuse one CLAP preset"
+  tempo: 120
+@preset piano
+  source: clap
+  plugin: "com.digital-suburban.dexed"
+@track left | preset: piano, instrument: synth/lead
+  mix: vol=-12dB, pan=-0.5
+  @phrase phrase [1:1 - 3:1]
+    @0 C4 h mf
+@track right | preset: piano, instrument: synth/lead
+  mix: vol=-18dB, pan=0.5
+  @phrase phrase [1:1 - 3:1]
+    @1 E5 q mp

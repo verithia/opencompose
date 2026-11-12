@@ -1,0 +1,203 @@
+// OpenCompose Example: Orchestral Arrangement
+// Demonstrates: multiple instrument families, sections, complex articulations
+
+@ocp "0.2.0"
+
+@project "Dawn"
+  tempo: 88
+  time_signature: 3/4
+  key: D major
+
+@section intro [1:1:0 - 9:1:0]
+  label: "Strings alone, building"
+
+@section main_theme [9:1:0 - 25:1:0]
+  label: "Full orchestra statement"
+
+// --- STRINGS ---
+
+@track violins | instrument: strings/violin_section
+  mix: vol=-4dB, pan=-0.3, send(concert_hall=45%)
+
+  @phrase intro [1:1:0 - 9:1:0]
+    D5  h.  pp  articulation=sul_tasto
+    |
+    E5  h.  pp  articulation=legato
+    |
+    F#5 h   pp  articulation=legato
+    G5  q   p   expression={dynamics: pp->p}
+    |
+    A5  h.  p   vibrato={rate: 5Hz, depth: 20ct, delay: 0.4s}
+    |
+    F#5 h.  mp  expression={dynamics: p->mp} articulation=legato
+    |
+    D5  h.  mp  vibrato={rate: 5.5Hz, depth: 25ct}
+    |
+    E5  q   mp  articulation=legato
+    F#5 q   mf
+    G5  q   mf  expression={dynamics: mp->mf}
+    |
+    A5  h.  mf  articulation=sustained
+
+  @phrase main_theme [9:1:0 - 17:1:0]
+    D5  q   f   articulation=marcato
+    F#5 q   f   articulation=legato
+    A5  q   f
+    |
+    B5  h.  ff  vibrato={rate: 6Hz, depth: 30ct}
+    |
+    A5  q   f   articulation=legato
+    G5  q   f
+    F#5 q   mf
+    |
+    E5  h.  mf  expression={dynamics: f->mf}
+    |
+    D5  h   mf  articulation=legato
+    E5  q   mf
+    |
+    F#5 h.  f   vibrato={rate: 5.5Hz, depth: 25ct, delay: 0.2s}
+    |
+    G5  q   f   articulation=legato
+    A5  q   ff
+    B5  q   ff  articulation=accent
+    |
+    A5  h.  ff  articulation=sustained expression={dynamics: ff->f}
+
+@track violas | instrument: strings/viola_section
+  mix: vol=-6dB, pan=-0.1, send(concert_hall=45%)
+
+  @phrase intro [1:1:0 - 9:1:0]
+    A3  h.  pp  articulation=sustained
+    |
+    A3  h.  pp  articulation=tremolo
+    |
+    B3  h.  pp  articulation=tremolo
+    |
+    C#4 h.  p   expression={dynamics: pp->p}
+    |
+    D4  h.  p   articulation=legato
+    |
+    A3  h.  mp
+    |
+    B3  h.  mp  articulation=legato
+    |
+    C#4 h.  mf  expression={dynamics: mp->mf}
+
+@track celli | instrument: strings/cello_section
+  mix: vol=-5dB, pan=0.1, send(concert_hall=45%)
+
+  @phrase intro [1:1:0 - 9:1:0]
+    D3  h.  pp  articulation=sustained
+    |
+    D3  h.  pp
+    |
+    D3  h.  p   expression={dynamics: pp->p}
+    |
+    A2  h.  p   articulation=legato
+    |
+    D3  h.  mp
+    |
+    F#3 h.  mp  articulation=legato vibrato={rate: 4.5Hz, depth: 15ct}
+    |
+    G3  h.  mf  articulation=legato
+    |
+    A3  h.  mf  expression={dynamics: mf->f}
+
+// --- WOODWINDS ---
+
+@track flute | instrument: woodwinds/flute
+  mix: vol=-8dB, pan=0.25, send(concert_hall=50%)
+
+  @phrase main_theme [9:1:0 - 17:1:0]
+    D6  q   mf  articulation=tenuto
+    rest q
+    A5  q   mp
+    |
+    B5  h.  f   vibrato={rate: 5Hz, depth: 15ct, delay: 0.3s}
+    |
+    rest h.
+    |
+    rest h.
+    |
+    D6  q   f   articulation=legato
+    E6  q   f
+    F#6 q   f
+    |
+    G6  h.  ff  vibrato={rate: 5.5Hz, depth: 20ct}
+    |
+    F#6 q   f   articulation=staccato
+    E6  q   mf  articulation=staccato
+    D6  q   mf  articulation=staccato
+    |
+    E6  h.  mf  expression={dynamics: f->mf}
+
+@track clarinet | instrument: woodwinds/clarinet
+  mix: vol=-8dB, pan=-0.25, send(concert_hall=50%)
+
+  @phrase main_theme [9:1:0 - 17:1:0]
+    F#4 h.  mf  articulation=legato
+    |
+    G4  h.  mf
+    |
+    A4  q   mf  articulation=legato
+    B4  q   f
+    A4  q   mf
+    |
+    G4  h.  mp  expression={dynamics: mf->mp}
+    |
+    F#4 h.  mf  articulation=sustained
+    |
+    A4  h.  f   vibrato={rate: 5Hz, depth: 20ct}
+    |
+    G4  q   mf  articulation=staccato
+    F#4 q   mf  articulation=staccato
+    E4  q   mp  articulation=staccato
+    |
+    D4  h.  mp  articulation=sustained
+
+// --- BRASS ---
+
+@track french_horn | instrument: brass/french_horn
+  mix: vol=-7dB, pan=0.2, send(concert_hall=55%)
+
+  @phrase main_theme [9:1:0 - 17:1:0]
+    rest h.
+    |
+    rest h.
+    |
+    rest h.
+    |
+    rest h.
+    |
+    D4  h.  f   articulation=sustained
+    |
+    D4  h   f   articulation=legato
+    E4  q   f
+    |
+    F#4 h.  ff  articulation=marcato
+    |
+    D4  h.  f   expression={dynamics: ff->f}
+
+// --- PERCUSSION ---
+
+@track timpani | instrument: percussion/timpani
+  mix: vol=-6dB, pan=0.05, send(concert_hall=40%)
+
+  @pattern main_rhythm [9:1:0 - 10:1:0] x8
+    kick  1:0  f   articulation=accent
+    rest  2:0
+    kick  3:0  mp
+
+// --- BUSES & MASTER ---
+
+@bus concert_hall
+  routes: [master]
+  effects:
+    - reverb: type=hall, size=large, decay=2.8s, predelay=25ms, damping=0.4, mix=100%
+    - eq: high_shelf=-2dB@9kHz, low_cut=80Hz
+
+@master
+  effects:
+    - eq: low_shelf=+1dB@80Hz, presence=+1.5dB@3kHz
+    - compression: ratio=2:1, threshold=-10dB, attack=20ms, release=150ms
+    - limiter: ceiling=-0.5dB

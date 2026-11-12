@@ -1,0 +1,56 @@
+/* OpenCompose DAW styles — manifest.
+   The partials below are contiguous parts of the former single daw.css,
+   imported in their original order: the cascade depends on that order, so
+   add new rules to the partial that owns the surface and do not reorder. */
+@import "./daw/tokens.css";
+@import "./daw/base.css";
+@import "./daw/layout.css";
+@import "./daw/toolbar.css";
+@import "./daw/timeline.css";
+@import "./daw/mixer-base.css";
+@import "./daw/chrome.css";
+@import "./daw/devices.css";
+@import "./daw/mixer-sends.css";
+@import "./daw/pianoroll.css";
+@import "./daw/presets.css";
+@import "./daw/mixer.css";
+@import "./daw/panels.css";
+@import "./daw/ai-thinking.css";
+@import "./daw/store.css";
+@import "./daw/shell.css";
+@import "./daw/gain-envelope.css";
+@import "./daw/ai-tools.css";
+@import "./daw/onboarding.css";
+
+/* One-time offer for a proxy found on the usual local ports. */
+.proxy-suggestion {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: 460px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-panel, var(--bg-elevated));
+  color: var(--text-primary);
+  box-shadow: 0 6px 20px rgb(0 0 0 / 35%);
+  font-size: var(--font-size-xs);
+}
+
+.proxy-suggestion-text {
+  flex: 1 1 auto;
+  color: var(--text-muted);
+}
+
+.proxy-suggestion button {
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  cursor: pointer;
+}

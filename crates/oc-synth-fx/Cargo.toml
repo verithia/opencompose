@@ -1,0 +1,16 @@
+[package]
+repository.workspace = true
+name = "oc-synth-fx"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Synth-level FX rack: serial, split and parallel routing over the built-in effects"
+
+[dependencies]
+oc-dsp = { path = "../oc-dsp" }
+serde.workspace = true
+
+[dev-dependencies]
+oc-test-support = { path = "../oc-test-support" }
+serde_json = { workspace = true, features = ["float_roundtrip"] }

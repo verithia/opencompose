@@ -1,0 +1,27 @@
+[package]
+autotests = false
+repository.workspace = true
+name = "oc-dsp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+# Timing/throughput harnesses. Off by default so a plain `cargo test` neither
+# compiles nor runs them; see AGENTS-testing.md for the command.
+perf-tests = []
+
+[dependencies]
+oc-audio = { package = "oc-audio-types", path = "../oc-audio-types" }
+oc-device-schema = { path = "../oc-device-schema" }
+serde.workspace = true
+serde_json.workspace = true
+rustfft.workspace = true
+
+[dev-dependencies]
+oc-test-support = { path = "../oc-test-support" }
+
+[[test]]
+name = "all"
+path = "tests/all.rs"

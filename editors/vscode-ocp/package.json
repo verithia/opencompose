@@ -1,0 +1,68 @@
+{
+  "name": "opencompose",
+  "displayName": "OpenCompose DSL",
+  "description": "Syntax highlighting, diagnostics, and completion for OpenCompose (.ocp) music files",
+  "version": "0.1.0",
+  "publisher": "opencompose",
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/verithia/opencompose"
+  },
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onLanguage:opencompose"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "opencompose",
+        "aliases": [
+          "OpenCompose",
+          "ocp"
+        ],
+        "extensions": [
+          ".ocp"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "opencompose",
+        "scopeName": "source.ocp",
+        "path": "./syntaxes/ocp.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "title": "OpenCompose",
+      "properties": {
+        "opencompose.lsp.path": {
+          "type": "string",
+          "default": "",
+          "description": "Path to ocp-lsp binary. Leave empty to use the one in PATH."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "tsc -p ./tsconfig.json",
+    "watch": "tsc -watch -p ./tsconfig.json",
+    "test": "npm run build && node --test test/*.test.cjs"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "@types/vscode": "^1.75.0",
+    "@vscode/vsce": "^3.9.1",
+    "typescript": "^5.0.0"
+  }
+}

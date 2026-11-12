@@ -1,0 +1,63 @@
+{
+  "responseHeader": {
+    "status": 0,
+    "QTime": 31,
+    "params": {
+      "query": "mediatype:audio AND (licenseurl:&quot;http\\:\\/\\/creativecommons.org/licenses/by/3.0/&quot; AND (text:snare OR text:snare OR text__reviews:snare))",
+      "qin": "mediatype:audio AND (licenseurl:&quot;http://creativecommons.org/licenses/by/3.0/&quot; AND snare)",
+      "fields": "identifier,title,creator,licenseurl,subject",
+      "wt": "json",
+      "rows": 3,
+      "start": 0
+    }
+  },
+  "response": {
+    "numFound": 14,
+    "start": 0,
+    "docs": [
+      {
+        "identifier": "bsdtalk138",
+        "title": "bsdtalk138 - Central Syslog",
+        "creator": "Fixture Creator",
+        "licenseurl": "http://creativecommons.org/licenses/by/3.0/",
+        "subject": [
+          "BSD",
+          "BSDTalk"
+        ]
+      },
+      {
+        "identifier": "ME1105AM",
+        "title": "Morning & Evening - November 5 AM",
+        "creator": "Spurgeon Audio",
+        "licenseurl": "http://creativecommons.org/licenses/by/3.0/",
+        "subject": [
+          "Christian",
+          "Jesus Christ",
+          "Charles Spurgeon",
+          "Morning and Evening",
+          "Devotional",
+          "Podcast",
+          "Weapon",
+          "Protection",
+          "Providence",
+          "Sovereignty"
+        ]
+      },
+      {
+        "identifier": "ME0124AM",
+        "title": "Morning & Evening - January 24 AM",
+        "creator": "Spurgeon Audio",
+        "licenseurl": "http://creativecommons.org/licenses/by/3.0/",
+        "subject": [
+          "Christian",
+          "Jesus Christ",
+          "Charles Spurgeon",
+          "Morning and Evening",
+          "Devotional",
+          "Podcast",
+          "deliver"
+        ]
+      }
+    ]
+  }
+}

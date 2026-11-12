@@ -1,0 +1,23 @@
+[package]
+repository.workspace = true
+name = "oc-sample"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Sample marketplace client: provider seam, licence rule and local store"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "blocking", "system-proxy"] }
+
+[features]
+local-provider-runner = []
+test-providers = []
+
+[[bin]]
+name = "oc-sample-provider"
+path = "src/bin/oc-sample-provider.rs"
+required-features = ["local-provider-runner"]

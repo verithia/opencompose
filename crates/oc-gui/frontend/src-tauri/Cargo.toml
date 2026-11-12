@@ -1,0 +1,91 @@
+[package]
+repository.workspace = true
+name = "oc-gui"
+version.workspace = true
+description = "OpenCompose DAW - AI-powered music production"
+authors = ["OpenCompose"]
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+name = "oc_gui_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[features]
+# MP3 export ships by default; `--no-default-features` builds the dialog variant
+# that lists MP3 disabled with the reason.
+default = ["mp3"]
+mp3 = ["oc-engine/mp3"]
+# Compile in the debug call sites; the --debug flag decides whether they fire.
+debug-log = ["oc-diag/debug-log", "oc-engine/debug-log", "oc-host/debug-log"]
+# Compile in the perf counters; the --perf flag decides whether they are collected.
+perf-log = ["oc-diag/perf-log", "oc-engine/perf-log", "oc-host/perf-log"]
+
+[build-dependencies]
+tauri-build = { version = "2.6.0", features = [] }
+
+[dependencies]
+oc-device-schema = { path = "../../../oc-device-schema" }
+# Tauri
+tauri = { version = "2.11.0", features = ["protocol-asset"] }
+tauri-plugin-log = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-single-instance = "2"
+
+# Serialization
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml = "0.9"
+
+# Logging
+log.workspace = true
+
+# Our workspace crates (path references)
+oc-audio = { path = "../../../oc-audio" }
+oc-build-parity = { path = "../../../oc-build-parity" }
+oc-diag = { path = "../../../oc-diag" }
+oc-dsl = { path = "../../../oc-dsl" }
+oc-market = { path = "../../../oc-market" }
+oc-engine = { path = "../../../oc-engine", default-features = false, features = ["plugin-host"] }
+oc-host = { path = "../../../oc-host" }
+oc-sample = { path = "../../../oc-sample" }
+oc-synth = { path = "../../../oc-synth" }
+
+# Lock-free ring buffer for audio thread communication
+rtrb = "0.3"
+
+# Async
+tokio = { version = "1", features = ["sync", "macros", "time", "net", "io-util", "fs"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls", "stream"] }
+keyring = { version = "3.6", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
+sha2 = "0.10"
+base64 = "0.22"
+flate2.workspace = true
+tar = { version = "0.4", default-features = false }
+ring = "0.17"
+zstd = "0.13"
+zeroize = { version = "1", features = ["serde"] }
+
+# Duration probe for AI attachments; the same decoder set oc-engine imports.
+symphonia = { version = "0.5", default-features = false, features = ["wav", "pcm", "flac", "mp3", "aiff", "ogg", "vorbis"] }
+hound = "3"
+tempfile.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_Security", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_JobObjects", "Win32_System_Pipes", "Win32_System_Threading"] }
+
+[dev-dependencies]
+oc-market = { path = "../../../oc-market", features = ["loopback"] }
+oc-host = { path = "../../../oc-host", features = ["test-support"] }
+oc-test-support = { path = "../../../oc-test-support" }
+tauri = { version = "2.11.0", features = ["test"] }
+oc-sample = { path = "../../../oc-sample", features = ["test-providers"] }
+midly = "0.5"
+oc-cli = { path = "../../../oc-cli" }
+# In-process fake plugins so tests can run one project through both renderers.
+oc-engine = { path = "../../../oc-engine", features = ["test-support"] }

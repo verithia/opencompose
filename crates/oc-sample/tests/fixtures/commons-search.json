@@ -1,0 +1,427 @@
+{
+  "continue": {
+    "clcontinue": "14898617|Audio_files_of_drum_patterns",
+    "continue": "||imageinfo"
+  },
+  "query": {
+    "pages": [
+      {
+        "pageid": 93535,
+        "ns": 6,
+        "title": "File:Snare drum unmuffled.ogg",
+        "index": 12,
+        "categories": [
+          {
+            "title": "Category:Snare drums"
+          },
+          {
+            "title": "Category:Sounds of drum-kit instruments"
+          },
+          {
+            "title": "Category:Sounds of drums"
+          }
+        ],
+        "imageinfo": [
+          {
+            "url": "https://upload.wikimedia.org/wikipedia/commons/b/b2/Snare_drum_unmuffled.ogg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=original",
+            "descriptionurl": "https://commons.wikimedia.org/wiki/File:Snare_drum_unmuffled.ogg",
+            "descriptionshorturl": "https://commons.wikimedia.org/w/index.php?curid=93535",
+            "size": 53722,
+            "duration": 4.816507936507937,
+            "extmetadata": {
+              "LicenseShortName": {
+                "value": "CC BY-SA 3.0",
+                "source": "commons-desc-page",
+                "hidden": ""
+              },
+              "LicenseUrl": {
+                "value": "http://creativecommons.org/licenses/by-sa/3.0/",
+                "source": "commons-desc-page"
+              },
+              "Artist": {
+                "value": "No machine-readable author provided. <a href=\"//commons.wikimedia.org/wiki/User:Fixture User\" title=\"User:Fixture User\">Fixture User</a> assumed (based on copyright claims).",
+                "source": "commons-desc-page"
+              },
+              "UsageTerms": {
+                "value": "Creative Commons Attribution-Share Alike 3.0",
+                "source": "commons-desc-page"
+              }
+            },
+            "metadata": [
+              {
+                "name": "version",
+                "value": 2
+              },
+              {
+                "name": "streams",
+                "value": [
+                  {
+                    "name": 5112,
+                    "value": [
+                      {
+                        "name": "serial",
+                        "value": 5112
+                      },
+                      {
+                        "name": "group",
+                        "value": 0
+                      },
+                      {
+                        "name": "type",
+                        "value": "Vorbis"
+                      },
+                      {
+                        "name": "vendor",
+                        "value": "Xiph.Org libVorbis I 20040920"
+                      },
+                      {
+                        "name": "length",
+                        "value": 4.816507936507937
+                      },
+                      {
+                        "name": "size",
+                        "value": 53722
+                      },
+                      {
+                        "name": "header",
+                        "value": [
+                          {
+                            "name": "vorbis_version",
+                            "value": 0
+                          },
+                          {
+                            "name": "audio_channels",
+                            "value": 2
+                          },
+                          {
+                            "name": "audio_sample_rate",
+                            "value": 44100
+                          },
+                          {
+                            "name": "bitrate_maximum",
+                            "value": 0
+                          },
+                          {
+                            "name": "bitrate_nominal",
+                            "value": 128000
+                          },
+                          {
+                            "name": "bitrate_minimum",
+                            "value": 0
+                          },
+                          {
+                            "name": "blocksize_0",
+                            "value": 8
+                          },
+                          {
+                            "name": "blocksize_1",
+                            "value": 11
+                          },
+                          {
+                            "name": "framing_flag",
+                            "value": 0
+                          }
+                        ]
+                      },
+                      {
+                        "name": "comments",
+                        "value": []
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "name": "length",
+                "value": 4.816507936507937
+              },
+              {
+                "name": "offset",
+                "value": null
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "pageid": 93537,
+        "ns": 6,
+        "title": "File:Snare drum muffled.ogg",
+        "index": 11,
+        "categories": [
+          {
+            "title": "Category:Drum muffling"
+          },
+          {
+            "title": "Category:Snare drums"
+          },
+          {
+            "title": "Category:Sounds of drum-kit instruments"
+          },
+          {
+            "title": "Category:Sounds of drums"
+          }
+        ],
+        "imageinfo": [
+          {
+            "url": "https://upload.wikimedia.org/wikipedia/commons/a/a3/Snare_drum_muffled.ogg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=original",
+            "descriptionurl": "https://commons.wikimedia.org/wiki/File:Snare_drum_muffled.ogg",
+            "descriptionshorturl": "https://commons.wikimedia.org/w/index.php?curid=93537",
+            "size": 37817,
+            "duration": 4.165102040816326,
+            "extmetadata": {
+              "LicenseShortName": {
+                "value": "CC BY-SA 3.0",
+                "source": "commons-desc-page",
+                "hidden": ""
+              },
+              "LicenseUrl": {
+                "value": "http://creativecommons.org/licenses/by-sa/3.0/",
+                "source": "commons-desc-page"
+              },
+              "Artist": {
+                "value": "No machine-readable author provided. <a href=\"//commons.wikimedia.org/wiki/User:Fixture User\" title=\"User:Fixture User\">Fixture User</a> assumed (based on copyright claims).",
+                "source": "commons-desc-page"
+              },
+              "UsageTerms": {
+                "value": "Creative Commons Attribution-Share Alike 3.0",
+                "source": "commons-desc-page"
+              }
+            },
+            "metadata": [
+              {
+                "name": "version",
+                "value": 2
+              },
+              {
+                "name": "streams",
+                "value": [
+                  {
+                    "name": 5110,
+                    "value": [
+                      {
+                        "name": "serial",
+                        "value": 5110
+                      },
+                      {
+                        "name": "group",
+                        "value": 0
+                      },
+                      {
+                        "name": "type",
+                        "value": "Vorbis"
+                      },
+                      {
+                        "name": "vendor",
+                        "value": "Xiph.Org libVorbis I 20040920"
+                      },
+                      {
+                        "name": "length",
+                        "value": 4.165102040816326
+                      },
+                      {
+                        "name": "size",
+                        "value": 37817
+                      },
+                      {
+                        "name": "header",
+                        "value": [
+                          {
+                            "name": "vorbis_version",
+                            "value": 0
+                          },
+                          {
+                            "name": "audio_channels",
+                            "value": 2
+                          },
+                          {
+                            "name": "audio_sample_rate",
+                            "value": 44100
+                          },
+                          {
+                            "name": "bitrate_maximum",
+                            "value": 0
+                          },
+                          {
+                            "name": "bitrate_nominal",
+                            "value": 128000
+                          },
+                          {
+                            "name": "bitrate_minimum",
+                            "value": 0
+                          },
+                          {
+                            "name": "blocksize_0",
+                            "value": 8
+                          },
+                          {
+                            "name": "blocksize_1",
+                            "value": 11
+                          },
+                          {
+                            "name": "framing_flag",
+                            "value": 0
+                          }
+                        ]
+                      },
+                      {
+                        "name": "comments",
+                        "value": []
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "name": "length",
+                "value": 4.165102040816326
+              },
+              {
+                "name": "offset",
+                "value": null
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "pageid": 93538,
+        "ns": 6,
+        "title": "File:Snare drum rim.ogg",
+        "index": 10,
+        "categories": [
+          {
+            "title": "Category:Snare drums"
+          },
+          {
+            "title": "Category:Sounds of drum-kit instruments"
+          },
+          {
+            "title": "Category:Sounds of drums"
+          }
+        ],
+        "imageinfo": [
+          {
+            "url": "https://upload.wikimedia.org/wikipedia/commons/5/51/Snare_drum_rim.ogg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=original",
+            "descriptionurl": "https://commons.wikimedia.org/wiki/File:Snare_drum_rim.ogg",
+            "descriptionshorturl": "https://commons.wikimedia.org/w/index.php?curid=93538",
+            "size": 46438,
+            "duration": 5.045510204081633,
+            "extmetadata": {
+              "LicenseShortName": {
+                "value": "CC BY-SA 3.0",
+                "source": "commons-desc-page",
+                "hidden": ""
+              },
+              "LicenseUrl": {
+                "value": "http://creativecommons.org/licenses/by-sa/3.0/",
+                "source": "commons-desc-page"
+              },
+              "Artist": {
+                "value": "No machine-readable author provided. <a href=\"//commons.wikimedia.org/wiki/User:Fixture User\" title=\"User:Fixture User\">Fixture User</a> assumed (based on copyright claims).",
+                "source": "commons-desc-page"
+              },
+              "UsageTerms": {
+                "value": "Creative Commons Attribution-Share Alike 3.0",
+                "source": "commons-desc-page"
+              }
+            },
+            "metadata": [
+              {
+                "name": "version",
+                "value": 2
+              },
+              {
+                "name": "streams",
+                "value": [
+                  {
+                    "name": 5111,
+                    "value": [
+                      {
+                        "name": "serial",
+                        "value": 5111
+                      },
+                      {
+                        "name": "group",
+                        "value": 0
+                      },
+                      {
+                        "name": "type",
+                        "value": "Vorbis"
+                      },
+                      {
+                        "name": "vendor",
+                        "value": "Xiph.Org libVorbis I 20040920"
+                      },
+                      {
+                        "name": "length",
+                        "value": 5.045510204081633
+                      },
+                      {
+                        "name": "size",
+                        "value": 46438
+                      },
+                      {
+                        "name": "header",
+                        "value": [
+                          {
+                            "name": "vorbis_version",
+                            "value": 0
+                          },
+                          {
+                            "name": "audio_channels",
+                            "value": 2
+                          },
+                          {
+                            "name": "audio_sample_rate",
+                            "value": 44100
+                          },
+                          {
+                            "name": "bitrate_maximum",
+                            "value": 0
+                          },
+                          {
+                            "name": "bitrate_nominal",
+                            "value": 128000
+                          },
+                          {
+                            "name": "bitrate_minimum",
+                            "value": 0
+                          },
+                          {
+                            "name": "blocksize_0",
+                            "value": 8
+                          },
+                          {
+                            "name": "blocksize_1",
+                            "value": 11
+                          },
+                          {
+                            "name": "framing_flag",
+                            "value": 0
+                          }
+                        ]
+                      },
+                      {
+                        "name": "comments",
+                        "value": []
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "name": "length",
+                "value": 5.045510204081633
+              },
+              {
+                "name": "offset",
+                "value": null
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,688 @@
+/* ============================================================================
+   Toolbar elements — Midnight Studio
+   Clean, restrained. SVG icons. No emoji. Purposeful motion.
+   ============================================================================ */
+
+/* Related controls sit in one recessed well, not as isolated squares. */
+.toolbar-group {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--bg-surface) 84%, var(--bg-void) 16%);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--text-primary) 6%, transparent);
+}
+
+.toolbar-group .toolbar-btn {
+  border-color: transparent;
+  background: transparent;
+}
+
+.toolbar-group .toolbar-btn:hover {
+  border-color: var(--border);
+  background: var(--bg-hover);
+}
+
+.toolbar-group .toolbar-btn.active {
+  border-color: var(--accent);
+  background: var(--accent-dim);
+}
+
+.toolbar-group .toolbar-btn.text-btn {
+  background: transparent;
+  border-color: transparent;
+}
+
+.toolbar-group .toolbar-btn.text-btn:hover {
+  background: var(--bg-hover);
+  border-color: var(--border);
+}
+
+.toolbar-group .toolbar-btn.text-btn.active {
+  background: var(--accent-dim);
+  border-color: var(--accent);
+}
+
+.toolbar-separator {
+  width: 1px;
+  height: 18px;
+  background: var(--border-light);
+  margin: 0 3px;
+  opacity: 0.35;
+}
+
+/* Position, tempo and meter read as one LCD well. */
+.toolbar-lcd {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-input);
+  box-shadow: inset 0 1px 3px color-mix(in srgb, var(--bg-void) 26%, transparent);
+}
+
+.toolbar-lcd .toolbar-group {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+}
+
+.toolbar-lcd .position-display {
+  min-width: 74px;
+  padding: 0;
+  border: 0;
+  background: none;
+  box-shadow: none;
+}
+
+.toolbar-lcd .tempo-input {
+  width: 48px;
+  padding: 0;
+  border: 0;
+  background: none;
+}
+
+.toolbar-lcd .time-sig-display {
+  padding: 2px 4px;
+}
+
+/* ── Base button ── */
+.toolbar-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 13px;
+  transition: background var(--transition-fast), color var(--transition-fast), transform 80ms var(--ease-spring);
+}
+
+.toolbar-btn svg {
+  flex-shrink: 0;
+}
+
+.toolbar-btn-label {
+  margin-left: 5px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+}
+
+.daw-toolbar .toolbar-btn:focus-visible,
+.daw-toolbar .zoom-step:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.toolbar-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.toolbar-btn:active {
+  transform: translateY(1px);
+  transition-duration: 40ms;
+}
+
+.toolbar-btn.active {
+  border-color: var(--accent);
+  background: var(--accent-dim);
+  color: var(--accent);
+}
+
+/* Text-style buttons (</>, AI) — need visible button affordance */
+.toolbar-btn.text-btn {
+  width: auto;
+  flex-shrink: 0;
+  padding: 0 8px;
+  height: 26px;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+}
+
+.toolbar-btn.text-btn:hover {
+  border-color: var(--text-muted);
+  background: var(--bg-secondary);
+}
+
+.toolbar-btn.text-btn.active {
+  border-color: var(--accent);
+  background: var(--accent-dim);
+  color: var(--accent);
+}
+
+/* ── Transport buttons ── */
+.transport-group {
+  gap: 4px;
+}
+
+.transport-btn {
+  width: 32px;
+  height: 28px;
+  flex: 0 0 32px;
+  padding: 0;
+  border-radius: var(--radius-sm);
+  border: 1.5px solid var(--border-light);
+  background: var(--bg-primary);
+  color: var(--text-muted);
+  transition: background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast), box-shadow var(--transition-fast), transform 80ms var(--ease-spring);
+}
+
+.transport-btn:hover {
+  background: var(--bg-secondary);
+  border-color: var(--text-muted);
+}
+
+.transport-btn:active {
+  transform: translateY(1px);
+}
+
+.transport-btn.play {
+  color: var(--play-green);
+  border-color: rgba(92, 184, 133, 0.35);
+}
+
+.transport-btn.play:hover {
+  border-color: var(--play-green);
+  box-shadow: 0 0 12px rgba(92, 184, 133, 0.2);
+  background: rgba(92, 184, 133, 0.06);
+}
+
+.transport-btn.play.active {
+  background: rgba(92, 184, 133, 0.1);
+  border-color: var(--play-green);
+  box-shadow: 0 0 16px rgba(92, 184, 133, 0.3);
+}
+
+.transport-btn.stop {
+  color: var(--stop-red);
+  border-color: rgba(199, 92, 92, 0.25);
+}
+
+.transport-btn.stop:hover {
+  border-color: var(--stop-red);
+  box-shadow: 0 0 8px rgba(199, 92, 92, 0.15);
+}
+
+/* ── Position display (bar:beat:sub) ── */
+.position-display {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-lg);
+  font-weight: 500;
+  color: var(--accent);
+  padding: 4px 12px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  min-width: 80px;
+  text-align: center;
+  letter-spacing: -0.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Tempo input ── */
+.tempo-group {
+  gap: 6px;
+}
+
+.tempo-input {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-md);
+  font-weight: 500;
+  color: var(--text-primary);
+  padding: 4px 8px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  width: 52px;
+  text-align: center;
+  outline: none;
+  transition: border-color var(--transition-fast);
+  font-variant-numeric: tabular-nums;
+  -moz-appearance: textfield;
+}
+
+.tempo-input::-webkit-inner-spin-button,
+.tempo-input::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.tempo-input:focus {
+  border-color: var(--accent);
+}
+
+.tempo-unit {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--text-muted);
+  letter-spacing: 0.05em;
+}
+
+.time-sig-menu {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.time-sig-display {
+  padding: 3px 6px;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.time-sig-display:hover,
+.time-sig-display.active {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+  border-color: var(--border);
+}
+
+.time-sig-popover {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  z-index: 40;
+  width: 226px;
+  padding: 8px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-elevated);
+}
+
+.time-sig-fields {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+}
+
+.time-sig-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.time-sig-field span {
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.time-sig-field input,
+.time-sig-field select {
+  width: 54px;
+  height: 24px;
+  padding: 0 4px;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  outline: none;
+}
+
+.time-sig-field input:focus,
+.time-sig-field select:focus {
+  border-color: var(--accent);
+}
+
+.time-sig-slash {
+  padding-bottom: 4px;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  color: var(--text-muted);
+}
+
+.time-sig-apply {
+  height: 24px;
+  margin-left: auto;
+  font-family: var(--font-ui);
+}
+
+.time-sig-hint {
+  margin: 6px 0 0;
+  font-size: 9px;
+  line-height: 1.35;
+  color: var(--text-muted);
+}
+
+/* Legacy compat — old .tempo-display class still used by tests */
+.tempo-display {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-md);
+  font-weight: 500;
+  color: var(--text-primary);
+  padding: 4px 8px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  text-align: center;
+}
+
+/* ── Project title ── */
+.project-title {
+  font-family: var(--font-ui);
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  font-style: normal;
+  color: var(--text-secondary);
+  letter-spacing: 0.01em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 240px;
+}
+
+.dirty-indicator {
+  color: var(--accent);
+  margin-left: 3px;
+  font-weight: 700;
+}
+
+/* Loop status under the transport: a refusal, never a modal. */
+.transport-status {
+  /* Feedback must not consume the already crowded transport row's width. */
+  position: absolute;
+  top: calc(100% + 4px);
+  left: calc(var(--track-header-width) + 10px);
+  box-sizing: border-box;
+  width: min(420px, calc(100vw - 32px));
+  max-width: calc(100% - var(--track-header-width) - 20px);
+  min-width: 0;
+  max-height: min(8em, 30vh);
+  padding: 6px 8px;
+  border: 1px solid var(--border-light);
+  border-left: 2px solid var(--danger, #d9534f);
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  font-size: 11px;
+  line-height: 1.4;
+  overflow: auto;
+  overscroll-behavior: contain;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.transport-options { position: relative; }
+.transport-options-popover.portalled {
+  position: fixed;
+  z-index: 10000;
+}
+
+.transport-options-popover {
+  position: absolute; top: calc(100% + 8px); left: 0; z-index: 60;
+  /* Rendered in the body: the transport strip scrolls, so an anchored popover
+     would be clipped by its overflow. */
+  max-height: min(70vh, 520px); overflow-y: auto;
+  width: min(280px, calc(100vw - 32px)); padding: 12px;
+  background: var(--bg-elevated); color: var(--text-primary);
+  border: 1px solid var(--border-light); border-radius: var(--radius-md);
+  box-shadow: var(--shadow-elevated); display: grid; gap: 10px;
+  font-size: 11px; white-space: normal;
+}
+.transport-option-field { display: grid; grid-template-columns: minmax(0, 1fr) 124px; align-items: center; gap: 8px; }
+.transport-option-field input, .transport-option-field select {
+  width: 100%; min-width: 0; height: 28px; padding: 3px 6px; box-sizing: border-box;
+  background: var(--bg-input); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-sm);
+}
+.transport-options-popover :is(.record-reason, .click-count-in-reason) { margin: 0; color: var(--text-secondary); font-size: 11px; line-height: 1.5; }
+.transport-btn.record { color: var(--stop-red); }
+.transport-btn.record.active { background: var(--accent-dim); border-color: var(--stop-red); }
+.transport-btn:disabled { opacity: .45; cursor: not-allowed; }
+.record-status { color: var(--stop-red); font: 11px var(--font-mono); white-space: nowrap; }
+.record-report { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+.transport-options-popover :is(input, select, button):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* Keep the loop control's footprint stable while its request is in flight. */
+.transport-btn.loop[aria-busy="true"] {
+  position: relative;
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.transport-btn.loop[aria-busy="true"]::after {
+  content: "";
+  position: absolute;
+  right: 2px;
+  top: 2px;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: transport-loop-pending 900ms ease-in-out infinite alternate;
+}
+@keyframes transport-loop-pending {
+  from { opacity: .35; }
+  to { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .transport-btn.loop[aria-busy="true"]::after { animation: none; }
+}
+
+/* ============================================================================
+   Scale resilience — the strip shrinks and wraps, the actions stay reachable
+   ============================================================================ */
+
+/*
+ * The left-hand controls live inside this strip. It takes the remaining width
+ * and wraps its groups; Preferences and Browse sit beside it and never shrink,
+ * so a large interface scale cannot push them off the right edge.
+ */
+.toolbar-scroll {
+  display: flex;
+  /* One row at every width: the strip scrolls instead of wrapping, so the
+     toolbar height never grows and the pinned actions stay put. */
+  flex: 1 1 0;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+}
+
+.toolbar-scroll::-webkit-scrollbar {
+  height: 0;
+}
+
+.toolbar-scroll > * {
+  flex: 0 0 auto;
+}
+
+.toolbar-scroll > .toolbar-group,
+.toolbar-scroll > .toolbar-lcd,
+.toolbar-scroll > .position-display,
+.toolbar-scroll > .tempo-group {
+  flex: 0 0 auto;
+  min-width: 0;
+}
+
+.toolbar-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Text labels give up their room before any control does. */
+@media (max-width: 1180px) {
+  .toolbar-btn-label {
+    display: none;
+  }
+
+  .daw-toolbar {
+    gap: 4px;
+  }
+
+  .toolbar-scroll {
+    gap: 4px;
+  }
+
+  .toolbar-separator {
+    margin: 0 5px;
+  }
+}
+
+@media (max-width: 900px) {
+  .toolbar-separator {
+    margin: 0 2px;
+  }
+
+  .tempo-input {
+    width: 52px;
+  }
+
+  .tempo-unit {
+    display: none;
+  }
+
+  /* One scrolling row; the shell row is fixed, so wrapped rows would be clipped. */
+  .daw-toolbar {
+    gap: 4px;
+    /* The left panel sits below the toolbar, so the track-header inset would
+       only steal width from the scroll strip. Keep the actions on screen. */
+    padding-left: 6px;
+    padding-right: 6px;
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  .toolbar-scroll {
+    /* Basis 0 so the strip yields before the pinned actions do. */
+    flex: 1 1 0;
+    flex-wrap: nowrap;
+    gap: 3px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
+  }
+
+  .toolbar-scroll::-webkit-scrollbar {
+    height: 0;
+  }
+
+  /* Controls keep their size and scroll; shrinking them would hide the glyphs. */
+  .toolbar-scroll > * {
+    flex: 0 0 auto;
+  }
+
+  /* The transport sits second and must be reachable without scrolling. */
+  .transport-btn {
+    width: 28px;
+    flex: 0 0 28px;
+  }
+
+  .transport-group {
+    gap: 3px;
+  }
+}
+
+/* ============================================================================
+   Scale-constant chrome — the toolbar always fits one row
+   ============================================================================ */
+
+/*
+ * The interface scale is a webview zoom: the CSS viewport shrinks by the same
+ * factor, so controls that grow with the zoom run out of room. Dividing their
+ * size by the scale keeps their rendered size constant and the row always fits,
+ * exactly as it does at 100%.
+ */
+.daw-toolbar .toolbar-btn:not(.text-btn) {
+  width: calc(30px / var(--chrome-scale));
+  height: calc(30px / var(--chrome-scale));
+}
+
+.daw-toolbar .toolbar-btn svg {
+  width: calc(14px / var(--chrome-scale));
+  height: calc(14px / var(--chrome-scale));
+}
+
+.daw-toolbar .transport-btn {
+  width: calc(32px / var(--chrome-scale));
+  height: calc(28px / var(--chrome-scale));
+  flex: 0 0 calc(32px / var(--chrome-scale));
+}
+
+.daw-toolbar .transport-group {
+  gap: calc(4px / var(--chrome-scale));
+}
+
+.daw-toolbar .position-display {
+  font-size: calc(var(--font-size-lg) / var(--chrome-scale));
+  padding: calc(4px / var(--chrome-scale)) calc(12px / var(--chrome-scale));
+  min-width: calc(80px / var(--chrome-scale));
+}
+
+.daw-toolbar .tempo-input {
+  font-size: calc(var(--font-size-md) / var(--chrome-scale));
+  padding: calc(4px / var(--chrome-scale)) calc(8px / var(--chrome-scale));
+  width: calc(52px / var(--chrome-scale));
+}
+
+.daw-toolbar .tempo-unit,
+.daw-toolbar .toolbar-btn-label {
+  font-size: calc(10px / var(--chrome-scale));
+  margin-left: calc(5px / var(--chrome-scale));
+}
+
+.daw-toolbar .time-sig-display {
+  font-size: calc(var(--font-size-sm) / var(--chrome-scale));
+  padding: calc(3px / var(--chrome-scale)) calc(6px / var(--chrome-scale));
+}
+
+.daw-toolbar .toolbar-btn.text-btn {
+  padding: 0 calc(8px / var(--chrome-scale));
+  height: calc(26px / var(--chrome-scale));
+  font-size: calc(11px / var(--chrome-scale));
+}
+
+/* The fixed-height, non-wrapping toolbar and its brand corner share one
+   logical height after webview zoom compensation. */
+:root {
+  --effective-toolbar-height: calc(var(--toolbar-height) / var(--chrome-scale));
+}
+
+/* The row itself follows the capped chrome so no empty band is left behind. */
+.daw-toolbar {
+  min-height: var(--effective-toolbar-height);
+}
+
+.daw-root {
+  grid-template-rows:
+    minmax(var(--effective-toolbar-height), auto)
+    1fr;
+}

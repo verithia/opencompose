@@ -1,0 +1,10 @@
+[package]
+name = "oc-test-support"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+# Permissive because the language crates use it as a dev-dependency.
+license = "MIT OR Apache-2.0"
+repository.workspace = true
+publish = false
+description = "Shared allocation instrumentation for OpenCompose runtime tests"

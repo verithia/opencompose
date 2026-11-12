@@ -1,0 +1,55 @@
+{
+  "metadata": {
+    "identifier": "bsdtalk138",
+    "title": "bsdtalk138 - Central Syslog",
+    "creator": "Fixture Creator",
+    "licenseurl": "http://creativecommons.org/licenses/by/3.0/",
+    "subject": [
+      "BSD",
+      "BSDTalk"
+    ]
+  },
+  "files": [
+    {
+      "name": "__ia_thumb.jpg",
+      "source": "original",
+      "size": "3340"
+    },
+    {
+      "name": "bsdtalk138.mp3",
+      "source": "original",
+      "length": "449.4",
+      "size": "3595195"
+    },
+    {
+      "name": "bsdtalk138.ogg",
+      "source": "derivative",
+      "length": "449.38",
+      "size": "4350951"
+    },
+    {
+      "name": "bsdtalk138.png",
+      "source": "derivative",
+      "size": "11239"
+    },
+    {
+      "name": "bsdtalk138_archive.torrent",
+      "source": "metadata",
+      "size": "2405"
+    },
+    {
+      "name": "bsdtalk138_files.xml",
+      "source": "original"
+    },
+    {
+      "name": "bsdtalk138_meta.sqlite",
+      "source": "original",
+      "size": "15360"
+    },
+    {
+      "name": "bsdtalk138_meta.xml",
+      "source": "original",
+      "size": "2529"
+    }
+  ]
+}

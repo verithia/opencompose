@@ -1,0 +1,46 @@
+name: Perf tests
+
+# On demand and nightly. The timing/throughput harnesses live behind the
+# `perf-tests` feature and the `perf` Cargo profile; the default CI job
+# deliberately neither compiles nor runs them, so a loaded runner cannot make
+# the normal gate flaky.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * *"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  perf:
+    name: Performance tests (macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.95.0
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-perf-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-perf-
+
+      - name: Perf tests
+        # `--profile perf` optimises oc-engine/oc-dsp/oc-gui (the real-time and
+        # measured crates) while everything else stays at dev speed. The two
+        # CPU-budget tests assert ratios to the in-process reference workload,
+        # so they do not depend on the runner's absolute speed.
+        run: cargo test --workspace --features perf-tests --profile perf

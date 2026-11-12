@@ -1,0 +1,12 @@
+data: {"event_type":"interaction.created","interaction":{"id":"int_tools","status":"in_progress"}}
+
+data: {"event_type":"step.start","index":0,"step":{"type":"function_call","id":"call_1","name":"read_context"}}
+
+data: {"event_type":"step.delta","index":0,"delta":{"type":"arguments","arguments":"{\"path\":"}}
+
+data: {"event_type":"step.delta","index":0,"delta":{"type":"arguments","arguments":"\"track:bass\"}"}}
+
+data: {"event_type":"step.stop","index":0,"step":{"type":"function_call","id":"call_1","name":"read_context","arguments":{"path":"track:bass"},"status":"completed"}}
+
+data: {"event_type":"interaction.completed","interaction":{"id":"int_tools","status":"completed","steps":[{"type":"function_call","id":"call_1","name":"read_context","arguments":{"path":"track:bass"}}],"usage":{"total_input_tokens":30,"total_output_tokens":9,"total_thought_tokens":4,"total_tokens":43}}}
+

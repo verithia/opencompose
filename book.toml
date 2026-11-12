@@ -1,0 +1,24 @@
+# mdBook configuration for the published documentation site.
+#
+# The book source is `docs/` itself, not a separate `book/src/` tree: the
+# repository already keeps 90 product and design documents there, and mdBook
+# needs one SUMMARY.md to order them. Putting the source elsewhere would mean
+# moving or copying those files on every edit. The build output goes to
+# `book/`, which is git-ignored; `scripts/docs.sh` builds rustdoc into
+# `book/api/` so the two halves deploy as one artifact.
+
+[book]
+title = "OpenCompose"
+authors = ["OpenCompose contributors"]
+description = "The OpenCompose DAW: the .ocp language, the engine, the crates and the agent surface."
+language = "en"
+src = "docs"
+
+[build]
+build-dir = "book"
+
+[output.html]
+git-repository-url = "https://github.com/verithia/opencompose"
+edit-url-template = "https://github.com/verithia/opencompose/edit/main/docs/{path}"
+# The book and the rustdoc for the same commit are deployed as one artifact:
+# the book at the site root, the API reference at /api/.

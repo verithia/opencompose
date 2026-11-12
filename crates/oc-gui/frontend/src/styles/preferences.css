@@ -1,0 +1,163 @@
+/* ============================================================================
+   Preferences bundle dialog — export, confirm and per-field report
+   ============================================================================ */
+
+.preferences-bundle-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(4px);
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+
+.preferences-bundle-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: min(560px, 100%);
+  max-height: min(80vh, 620px);
+  min-height: 0;
+  padding: 14px 16px 12px;
+  background: var(--bg-float);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-elevated);
+  color: var(--text-primary);
+}
+
+.preferences-bundle-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.preferences-bundle-title {
+  font-size: var(--font-size-md, 12px);
+  font-weight: 600;
+}
+
+.preferences-bundle-close {
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 6px;
+}
+
+.preferences-bundle-path {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-muted, var(--text-secondary));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.preferences-bundle-body,
+.preferences-bundle-status {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.preferences-bundle-applied {
+  color: var(--text-primary);
+}
+
+.preferences-bundle-error {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  color: var(--stop-red, #ef4444);
+  line-height: 1.5;
+}
+
+.preferences-bundle-skipped {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.preferences-bundle-skipped-head {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+}
+
+.preferences-bundle-skipped-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.preferences-bundle-skipped-row {
+  display: flex;
+  gap: 8px;
+  padding: 5px 8px;
+  border: 1px solid var(--border-subtle, var(--border-light));
+  border-radius: 6px;
+}
+
+.preferences-bundle-skipped-field {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--meter-yellow);
+}
+
+.preferences-bundle-skipped-reason {
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+
+.preferences-bundle-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  padding-top: 2px;
+}
+
+.preferences-bundle-btn {
+  padding: 4px 10px;
+  border: 1px solid var(--border-light);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+}
+
+.preferences-bundle-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.preferences-bundle-apply:not(:disabled) {
+  border-color: var(--accent, var(--border-light));
+}
+
+/* The two actions inside the preferences popover. */
+.preferences-bundle-actions-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.preferences-bundle-error-hint {
+  margin: 0;
+  font-size: 10px;
+  color: var(--stop-red, #ef4444);
+}

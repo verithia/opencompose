@@ -1,0 +1,24 @@
+[package]
+repository.workspace = true
+name = "oc-device-schema"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+# The language components stay permissive so editors and other tools can
+# read `.ocp` projects; see README.md.
+license = "MIT OR Apache-2.0"
+description = "Typed parameter contract for the built-in mixer devices"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+
+[[bin]]
+name = "gen-device-catalog"
+path = "src/bin/gen-device-catalog.rs"
+test = false
+
+[[bin]]
+name = "gen-synth-catalog"
+path = "src/bin/gen-synth-catalog.rs"
+test = false

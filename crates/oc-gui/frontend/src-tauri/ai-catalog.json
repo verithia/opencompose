@@ -1,0 +1,299 @@
+{
+  "version": "2026-10-28",
+  "providers": [
+    {
+      "id": "openai",
+      "name": "OpenAI",
+      "wire": "openai-responses",
+      "base_url": "https://api.openai.com/v1",
+      "path": "responses",
+      "auth": "bearer",
+      "hosts": ["api.openai.com"],
+      "auth_providers": [],
+      "models": [
+        {
+          "id": "gpt-6.1-sol",
+          "name": "GPT-6.1 Sol",
+          "context": 1050000,
+          "max_output": 128000,
+          "thinking_levels": ["low", "medium", "high"],
+          "reasoning": true,
+          "capabilities": { "text": true, "audio_in": false, "audio_out": false, "native_tool_calling": true, "streaming": true },
+          "status": "active"
+        },
+        {
+          "id": "gpt-6-astra",
+          "name": "GPT-6 Astra",
+          "context": 1050000,
+          "max_output": 128000,
+          "thinking_levels": ["low", "medium", "high"],
+          "reasoning": true,
+          "capabilities": { "text": true, "audio_in": false, "audio_out": false, "native_tool_calling": true, "streaming": true },
+          "status": "active"
+        },
+        {
+          "id": "gpt-6-luna",
+          "name": "GPT-6 Luna",
+          "context": 400000,
+          "max_output": 64000,
+          "thinking_levels": ["low", "medium", "high"],
+          "reasoning": true,
+          "capabilities": { "text": true, "audio_in": false, "audio_out": false, "native_tool_calling": true, "streaming": true },
+          "status": "active"
+        },
+        {
+          "id": "gpt-5.5",
+          "name": "GPT-5.5",
+          "context": 1050000,
+          "max_output": 128000,
+          "thinking_levels": ["low", "medium", "high"],
+          "reasoning": true,
+          "capabilities": { "text": true, "audio_in": false, "audio_out": false, "native_tool_calling": true, "streaming": true },
+          "status": "active"
+        }
+      ]
+    },
+    {
+      "id": "anthropic",
+      "name": "Anthropic",
+      "wire": "anthropic-messages",
+      "base_url": "https://api.anthropic.com/v1",
+      "path": "messages",
+      "auth": "x-api-key",
+      "hosts": ["api.anthropic.com"],
+      "auth_providers": [],
+      "models": [
+        {
+          "id": "claude-opus-4-6",
+          "name": "Claude Opus 4.6",
+          "context": 200000,
+          "max_output": 32768,
+          "thinking_levels": ["low", "medium", "high"],
+          "capabilities": { "text": true, "audio_in": false, "audio_out": false, "native_tool_calling": true, "streaming": true },
+          "status": "active"
+        },
+        {
+          "id": "claude-sonnet-4-6",
+          "name": "Claude Sonnet 4.6",
+          "context": 200000,
+          "max_output": 16384,
+          "thinking_levels": ["low", "medium", "high"],
+          "capabilities": { "text": true, "audio_in": false, "audio_out": false, "native_tool_calling": true, "streaming": true },
+          "status": "active"
+        },
+        {
+          "id": "claude-haiku-4-5",
+          "name": "Claude Haiku 4.5",
+          "context": 200000,
+          "max_output": 8192,
+          "capabilities": { "text": true, "audio_in": false, "audio_out": false, "native_tool_calling": true, "streaming": true },
+          "status": "active"
+        }
+      ]
+    },
+    {
+      "id": "google",
+      "name": "Google Gemini",
+      "wire": "gemini-interactions",
+      "base_url": "https://generativelanguage.googleapis.com/v1beta",
+      "path": "interactions",
+      "auth": "x-goog-api-key",
+      "hosts": ["generativelanguage.googleapis.com"],
+      "auth_providers": [],
+      "models": [
+        {
+          "id": "gemini-4-argon",
+          "name": "Gemini 4 Argon",
+          "context": 1048576,
+          "max_output": 65536,
+          "audio_input": {"channels": 1, "sample_rate": 16000, "formats": ["wav", "mp3"]},
+          "thinking_levels": ["low", "medium", "high"],
+          "capabilities": { "text": true, "audio_in": true, "audio_out": false, "native_tool_calling": true, "streaming": true },
+          "status": "active"
+        },
+        {
+          "id": "gemini-3.1-pro-preview",
+          "name": "Gemini 3.1 Pro (preview)",
+          "context": 1048576,
+          "max_output": 65536,
+          "thinking_levels": ["low", "medium", "high"],
+          "capabilities": { "text": true, "audio_in": true, "audio_out": false, "native_tool_calling": true, "streaming": true },
+          "status": "preview"
+        }
+      ]
+    },
+    {
+      "id": "opencode-go",
+      "name": "OpenCode Go",
+      "wire": "gemini-generate",
+      "base_url": "https://opencode.ai/inference/go/google/v1beta",
+      "path": "models/{model}:streamGenerateContent",
+      "query": [["alt", "sse"]],
+      "auth": "bearer",
+      "env": ["OPENCODE_API_KEY"],
+      "hosts": ["opencode.ai"],
+      "auth_providers": [],
+      "models": [
+        {
+          "id": "gemini-4-argon",
+          "name": "Gemini 4 Argon",
+          "context": 1048576,
+          "max_output": 65536,
+          "audio_input": {"channels": 1, "sample_rate": 16000, "formats": ["wav", "mp3"]},
+          "thinking_levels": ["low", "medium", "high"],
+          "temperature": false,
+          "top_p": false,
+          "capabilities": { "text": true, "audio_in": true, "audio_out": false, "native_tool_calling": true, "streaming": true },
+          "status": "active"
+        }
+      ]
+    },
+    {
+      "id": "deepseek",
+      "name": "DeepSeek",
+      "wire": "openai-chat-completions",
+      "base_url": "https://api.deepseek.com",
+      "path": "chat/completions",
+      "auth": "bearer",
+      "hosts": ["api.deepseek.com"],
+      "auth_providers": [],
+      "aliases": { "deepseek-v4-flash": "deepseek-flash" },
+      "models": [
+        {
+          "id": "deepseek-flash",
+          "name": "DeepSeek Flash",
+          "context": 1000000,
+          "max_output": 8192,
+          "capabilities": { "text": true, "audio_in": false, "audio_out": false, "native_tool_calling": true, "streaming": true },
+          "status": "active"
+        },
+        {
+          "id": "deepseek-v4-pro",
+          "name": "DeepSeek V4 Pro",
+          "context": 1000000,
+          "max_output": 8192,
+          "capabilities": { "text": true, "audio_in": false, "audio_out": false, "native_tool_calling": true, "streaming": true },
+          "status": "active"
+        }
+      ]
+    },
+    {
+      "id": "ollama",
+      "name": "Ollama (local)",
+      "wire": "openai-chat-completions",
+      "base_url": "http://localhost:11434/v1",
+      "path": "chat/completions",
+      "auth": "bearer",
+      "hosts": ["localhost", "127.0.0.1", "::1"],
+      "auth_providers": [],
+      "models": [
+        {
+          "id": "llama3.1",
+          "name": "Llama 3.1 (local)",
+          "context": 8192,
+          "max_output": 4096,
+          "capabilities": { "text": true, "audio_in": false, "audio_out": false, "native_tool_calling": false, "streaming": true },
+          "status": "active"
+        }
+      ]
+    },
+    {
+      "id": "openrouter-api",
+      "name": "OpenRouter",
+      "wire": "openai-chat-completions",
+      "base_url": "https://openrouter.ai/api/v1",
+      "path": "chat/completions",
+      "auth": "bearer",
+      "hosts": ["openrouter.ai"],
+      "auth_providers": [],
+      "models": []
+    },
+    {
+      "id": "google-ai-studio",
+      "name": "Google AI Studio",
+      "wire": "gemini-generate",
+      "base_url": "https://generativelanguage.googleapis.com/v1beta",
+      "path": "models/{model}:streamGenerateContent",
+      "query": [["alt", "sse"]],
+      "auth": "x-goog-api-key",
+      "hosts": ["generativelanguage.googleapis.com"],
+      "auth_providers": [],
+      "models": []
+    },
+    {
+      "id": "dashscope-api",
+      "name": "Alibaba DashScope",
+      "wire": "openai-chat-completions",
+      "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "path": "chat/completions",
+      "auth": "bearer",
+      "hosts": ["dashscope.aliyuncs.com"],
+      "auth_providers": [],
+      "models": []
+    },
+    {
+      "id": "siliconflow-api",
+      "name": "SiliconFlow",
+      "wire": "openai-chat-completions",
+      "base_url": "https://api.siliconflow.cn/v1",
+      "path": "chat/completions",
+      "auth": "bearer",
+      "hosts": ["api.siliconflow.cn"],
+      "auth_providers": [],
+      "models": []
+    },
+    {
+      "id": "moonshot-api",
+      "name": "Moonshot Kimi",
+      "wire": "openai-chat-completions",
+      "base_url": "https://api.moonshot.cn/v1",
+      "path": "chat/completions",
+      "auth": "bearer",
+      "hosts": ["api.moonshot.cn"],
+      "auth_providers": [],
+      "models": []
+    },
+    {
+      "id": "zhipu-api",
+      "name": "Zhipu GLM",
+      "wire": "openai-chat-completions",
+      "base_url": "https://open.bigmodel.cn/api/paas/v4",
+      "path": "chat/completions",
+      "auth": "bearer",
+      "hosts": ["open.bigmodel.cn"],
+      "auth_providers": [],
+      "models": []
+    },
+    {
+      "id": "groq-api",
+      "name": "Groq",
+      "wire": "openai-chat-completions",
+      "base_url": "https://api.groq.com/openai/v1",
+      "path": "chat/completions",
+      "auth": "bearer",
+      "hosts": ["api.groq.com"],
+      "auth_providers": [],
+      "models": []
+    },
+    {
+      "id": "xai-api",
+      "name": "xAI",
+      "wire": "openai-chat-completions",
+      "base_url": "https://api.x.ai/v1",
+      "path": "chat/completions",
+      "auth": "bearer",
+      "hosts": ["api.x.ai"],
+      "auth_providers": [],
+      "models": []
+    },
+    {
+      "id": "custom",
+      "name": "Custom endpoint",
+      "wire": "openai-chat-completions",
+      "auth": "bearer",
+      "hosts": [],
+      "auth_providers": [],
+      "models": []
+    }
+  ]
+}

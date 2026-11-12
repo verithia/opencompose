@@ -1,0 +1,3744 @@
+[
+  {
+    "description": "Report agent version, platform, plugin formats, and audio devices.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "required": [],
+      "type": "object"
+    },
+    "name": "system_capabilities"
+  },
+  {
+    "description": "Return the full project snapshot (AST, DSL, path, dirty flag, track count).",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "required": [],
+      "type": "object"
+    },
+    "name": "project_get"
+  },
+  {
+    "description": "List audio clips with their zero-based indices, media paths, timeline ranges, playback settings, and project revision.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "required": [],
+      "type": "object"
+    },
+    "name": "audio_clips_list"
+  },
+  {
+    "description": "Estimate attack times in the original media of a project clip, before offset, stretch, or warp. Returns source duration, timing resolution, analyzed end, and candidate source_seconds ranked by strength. Use source_seconds for warp anchors and audition to verify musical placement.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Estimate attack times in the original media of a project clip, before offset, stretch, or warp. Returns source duration, timing resolution, analyzed end, and candidate source_seconds ranked by strength. Use source_seconds for warp anchors and audition to verify musical placement.",
+      "properties": {
+        "clip_index": {
+          "description": "Zero-based clip index from audio_clips_list",
+          "type": "integer"
+        },
+        "duration_seconds": {
+          "description": "Search window in seconds, greater than 0 and at most 30, default 30",
+          "type": "number"
+        },
+        "limit": {
+          "description": "Maximum candidates, 1–128, default 24",
+          "type": "integer"
+        },
+        "source_start_seconds": {
+          "description": "Nonnegative source time to start searching, default 0",
+          "type": "number"
+        }
+      },
+      "required": [
+        "clip_index"
+      ],
+      "type": "object"
+    },
+    "name": "audio_clip_transients"
+  },
+  {
+    "description": "Import up to 64 same-origin mono or stereo WAV stems and one optional MIDI file into a saved project with no tracks or sections. Supply explicit project-relative paths inside handoff/, where the operator staged the exports. WAVs start at 1:1 with source speed and leading silence intact. Stereo files use unity-gain balance at center, including dual-mono prints. MIDI sets the project clock and starts muted, with raw key gates and separate sustain lanes by channel. Use the current revision from project_get. Conflicting Broadcast WAV start timestamps are refused. Returns revision, import counts and the number of timestamped stems. Missing timestamps leave common origin unverified. Inspect with audio_clips_list, then verify alignment before editing.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Import up to 64 same-origin mono or stereo WAV stems and one optional MIDI file into a saved project with no tracks or sections. Supply explicit project-relative paths inside handoff/, where the operator staged the exports. WAVs start at 1:1 with source speed and leading silence intact. Stereo files use unity-gain balance at center, including dual-mono prints. MIDI sets the project clock and starts muted, with raw key gates and separate sustain lanes by channel. Use the current revision from project_get. Conflicting Broadcast WAV start timestamps are refused. Returns revision, import counts and the number of timestamped stems. Missing timestamps leave common origin unverified. Inspect with audio_clips_list, then verify alignment before editing.",
+      "properties": {
+        "expected_revision": {
+          "description": "Project revision guard; the call fails if the project moved to another revision",
+          "type": "integer"
+        },
+        "paths": {
+          "items": {
+            "description": "Project-relative file path such as handoff/Drums.wav",
+            "type": "string"
+          },
+          "maxItems": 65,
+          "minItems": 1,
+          "type": "array"
+        }
+      },
+      "required": [
+        "paths",
+        "expected_revision"
+      ],
+      "type": "object"
+    },
+    "name": "import_aligned_stems"
+  },
+  {
+    "description": "Split or trim an audio clip using the same undoable edits as the timeline. Supply exactly one of split_at or trim_to. Optional trim_edge identifies the dragged edge when snapping a fine offset back to its unchanged musical anchor. Positions use one-based bar and beat and zero-based subdivision. Use audio_clips_list first and refresh it after a split because indices can change.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Split or trim an audio clip using the same undoable edits as the timeline. Supply exactly one of split_at or trim_to. Optional trim_edge identifies the dragged edge when snapping a fine offset back to its unchanged musical anchor. Positions use one-based bar and beat and zero-based subdivision. Use audio_clips_list first and refresh it after a split because indices can change.",
+      "properties": {
+        "clip_index": {
+          "description": "Zero-based clip index from audio_clips_list",
+          "type": "integer"
+        },
+        "expected_revision": {
+          "description": "Project revision guard; the call fails if the project moved to another revision",
+          "type": "integer"
+        },
+        "split_at": {
+          "additionalProperties": false,
+          "properties": {
+            "bar": {
+              "description": "One-based bar",
+              "type": "integer"
+            },
+            "beat": {
+              "description": "One-based beat within the bar",
+              "type": "integer"
+            },
+            "subdivision": {
+              "description": "Zero-based subdivision within the beat",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "bar",
+            "beat",
+            "subdivision"
+          ],
+          "type": "object"
+        },
+        "trim_edge": {
+          "enum": [
+            "start",
+            "end"
+          ],
+          "type": "string"
+        },
+        "trim_to": {
+          "additionalProperties": false,
+          "properties": {
+            "end": {
+              "additionalProperties": false,
+              "properties": {
+                "bar": {
+                  "description": "One-based bar",
+                  "type": "integer"
+                },
+                "beat": {
+                  "description": "One-based beat within the bar",
+                  "type": "integer"
+                },
+                "subdivision": {
+                  "description": "Zero-based subdivision within the beat",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "bar",
+                "beat",
+                "subdivision"
+              ],
+              "type": "object"
+            },
+            "start": {
+              "additionalProperties": false,
+              "properties": {
+                "bar": {
+                  "description": "One-based bar",
+                  "type": "integer"
+                },
+                "beat": {
+                  "description": "One-based beat within the bar",
+                  "type": "integer"
+                },
+                "subdivision": {
+                  "description": "Zero-based subdivision within the beat",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "bar",
+                "beat",
+                "subdivision"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "end",
+            "start"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "clip_index"
+      ],
+      "type": "object"
+    },
+    "name": "audio_clip_edit_range"
+  },
+  {
+    "description": "Move an audio clip precisely without trimming media or changing its elapsed duration. Supply exactly one of start_seconds (absolute project time) or nudge_ms (signed milliseconds: negative earlier, positive later). Get clip_index and expected_revision from audio_clips_list. The musical anchors remain authored separately; fine start/end offsets move together. This is an artistic placement edit, not latency compensation. Refresh the clip list after editing and compare aligned attacks with audition_range. One undo restores the placement.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Move an audio clip precisely without trimming media or changing its elapsed duration. Supply exactly one of start_seconds (absolute project time) or nudge_ms (signed milliseconds: negative earlier, positive later). Get clip_index and expected_revision from audio_clips_list. The musical anchors remain authored separately; fine start/end offsets move together. This is an artistic placement edit, not latency compensation. Refresh the clip list after editing and compare aligned attacks with audition_range. One undo restores the placement.",
+      "properties": {
+        "clip_index": {
+          "description": "Zero-based clip index from audio_clips_list",
+          "type": "integer"
+        },
+        "expected_revision": {
+          "description": "Project revision guard; the call fails if the project moved to another revision",
+          "type": "integer"
+        },
+        "nudge_ms": {
+          "description": "Signed placement change in milliseconds",
+          "type": "number"
+        },
+        "start_seconds": {
+          "description": "Absolute project start time in seconds",
+          "minimum": 0.0,
+          "type": "number"
+        }
+      },
+      "required": [
+        "clip_index"
+      ],
+      "type": "object"
+    },
+    "name": "audio_clip_set_placement"
+  },
+  {
+    "description": "Change an audio clip's speed, pitch, formants, or warp anchors in one undoable edit. Get clip_index and expected_revision from audio_clips_list. Omitted fields keep their current values. Set stretch_to to resize and scale the clip together, like Alt-dragging its right edge. Supply stretch or stretch_to, never both. Varispeed links pitch to speed like tape. Clear pitch, formant, preserve_formants and warp_markers when switching to varispeed. Other edits keep the timeline range fixed. Stretch is output duration divided by source duration; explicit tempo_follow=true instead fits the whole source to the clip range and clears its source offset and loop. Do not supply stretch together with tempo_follow=true; a processing mode is required. Unrelated edits that omit tempo_follow preserve existing trim/loop settings. Pitch and formant are in semitones. Set preserve_formants to compensate for pitch-induced formant movement. Compare the same window with audition_range.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Change an audio clip's speed, pitch, formants, or warp anchors in one undoable edit. Get clip_index and expected_revision from audio_clips_list. Omitted fields keep their current values. Set stretch_to to resize and scale the clip together, like Alt-dragging its right edge. Supply stretch or stretch_to, never both. Varispeed links pitch to speed like tape. Clear pitch, formant, preserve_formants and warp_markers when switching to varispeed. Other edits keep the timeline range fixed. Stretch is output duration divided by source duration; explicit tempo_follow=true instead fits the whole source to the clip range and clears its source offset and loop. Do not supply stretch together with tempo_follow=true; a processing mode is required. Unrelated edits that omit tempo_follow preserve existing trim/loop settings. Pitch and formant are in semitones. Set preserve_formants to compensate for pitch-induced formant movement. Compare the same window with audition_range.",
+      "properties": {
+        "clip_index": {
+          "description": "Zero-based clip index from audio_clips_list",
+          "type": "integer"
+        },
+        "expected_revision": {
+          "description": "Project revision guard; the call fails if the project moved to another revision",
+          "type": "integer"
+        },
+        "playback": {
+          "additionalProperties": false,
+          "description": "Arguments for this agent tool.",
+          "properties": {
+            "bypass_processing": {
+              "description": "Play the original media while retaining stretch, pitch, formants, and warp settings",
+              "type": "boolean"
+            },
+            "formant": {
+              "description": "Independent formant shift in semitones, from -12 to 12",
+              "type": "number"
+            },
+            "pitch": {
+              "description": "Pitch in semitones from -24 to 24; fractional values are supported",
+              "type": "number"
+            },
+            "preserve_formants": {
+              "description": "Compensate for the formant movement caused by pitch",
+              "type": "boolean"
+            },
+            "stretch": {
+              "description": "Duration multiplier from 0.25 to 4; 0.5 is twice as fast",
+              "type": "number"
+            },
+            "stretch_mode": {
+              "enum": [
+                "off",
+                "percussive",
+                "musical",
+                "varispeed"
+              ],
+              "type": "string"
+            },
+            "stretch_to": {
+              "additionalProperties": false,
+              "properties": {
+                "bar": {
+                  "description": "One-based bar",
+                  "type": "integer"
+                },
+                "beat": {
+                  "description": "One-based beat within the bar",
+                  "type": "integer"
+                },
+                "subdivision": {
+                  "description": "Zero-based subdivision within the beat",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "bar",
+                "beat",
+                "subdivision"
+              ],
+              "type": "object"
+            },
+            "tempo_follow": {
+              "description": "Fit the whole source to the clip range and reset source offset/loop; do not combine true with stretch",
+              "type": "boolean"
+            },
+            "warp_markers": {
+              "description": "Replace all anchors. Each maps source-media seconds to processed-media seconds. Disable tempo follow. Empty clears anchors.",
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "source_seconds": {
+                    "description": "Source-media seconds",
+                    "type": "number"
+                  },
+                  "target_seconds": {
+                    "description": "Processed-media seconds",
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "source_seconds",
+                  "target_seconds"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "clip_index",
+        "playback"
+      ],
+      "type": "object"
+    },
+    "name": "audio_clip_set_playback"
+  },
+  {
+    "description": "Return the current project as OpenCompose DSL text.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "required": [],
+      "type": "object"
+    },
+    "name": "project_dsl"
+  },
+  {
+    "description": "Create a new empty project.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "expected_revision": {
+          "description": "Project revision guard; the call fails if the project moved to another revision",
+          "type": "integer"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "name": "project_new"
+  },
+  {
+    "description": "Open an .ocp project from disk.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Open an .ocp project from disk.",
+      "properties": {
+        "expected_revision": {
+          "description": "Project revision guard; the call fails if the project moved to another revision",
+          "type": "integer"
+        },
+        "path": {
+          "description": "Absolute path to an .ocp file",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "name": "project_open"
+  },
+  {
+    "description": "Save the project. Omit path to save to the current file.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Save the project. Omit path to save to the current file.",
+      "properties": {
+        "path": {
+          "description": "Optional .ocp path",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "name": "project_save"
+  },
+  {
+    "description": "Set the project tempo in BPM (20-999).",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Set the project tempo in BPM (20-999).",
+      "properties": {
+        "expected_revision": {
+          "description": "Project revision guard; the call fails if the project moved to another revision",
+          "type": "integer"
+        },
+        "tempo": {
+          "description": "Tempo in BPM",
+          "type": "number"
+        }
+      },
+      "required": [
+        "tempo"
+      ],
+      "type": "object"
+    },
+    "name": "project_set_tempo"
+  },
+  {
+    "description": "Set the project name.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Set the project name.",
+      "properties": {
+        "expected_revision": {
+          "description": "Project revision guard; the call fails if the project moved to another revision",
+          "type": "integer"
+        },
+        "name": {
+          "description": "Project name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "name": "project_set_name"
+  },
+  {
+    "description": "Convert editorial timecode, project seconds or bar/beat positions using the current tempo and meter map. Use the saved project clock or supply both the exact picture rate and the timecode at project zero. Colons mean non-drop; a final semicolon enables drop-frame at 30000/1001 only. Each result gives the nearest picture frame, signed project seconds and grid offset. Pre-roll can be negative. High-frame-rate field-pair labels and 24-hour wraps require source frame indices supplied separately.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "origin": {
+          "description": "Picture timecode at project zero, HH:MM:SS:FF or HH:MM:SS;FF",
+          "type": "string"
+        },
+        "points": {
+          "items": {
+            "additionalProperties": false,
+            "maxProperties": 1,
+            "minProperties": 1,
+            "properties": {
+              "position": {
+                "additionalProperties": false,
+                "properties": {
+                  "bar": {
+                    "description": "One-based bar",
+                    "type": "integer"
+                  },
+                  "beat": {
+                    "description": "One-based beat within the bar",
+                    "type": "integer"
+                  },
+                  "subdivision": {
+                    "description": "Zero-based subdivision within the beat",
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "bar",
+                  "beat",
+                  "subdivision"
+                ],
+                "type": "object"
+              },
+              "seconds": {
+                "description": "Signed project time in seconds",
+                "type": "number"
+              },
+              "timecode": {
+                "description": "Editorial frame label",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "maxItems": 64,
+          "minItems": 1,
+          "type": "array"
+        },
+        "rate": {
+          "enum": [
+            "24000/1001",
+            "24",
+            "25",
+            "30000/1001",
+            "30",
+            "48000/1001",
+            "48",
+            "50",
+            "60000/1001",
+            "60"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "points"
+      ],
+      "type": "object"
+    },
+    "name": "picture_timecode"
+  },
+  {
+    "description": "Save the editorial frame rate and timecode at project zero as one undoable edit. Use the current revision from project_get. Pass clock=null to clear the saved setting. Only save settings explicitly confirmed by the operator.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Save the editorial frame rate and timecode at project zero as one undoable edit. Use the current revision from project_get. Pass clock=null to clear the saved setting. Only save settings explicitly confirmed by the operator.",
+      "properties": {
+        "clock": {
+          "additionalProperties": false,
+          "properties": {
+            "origin": {
+              "description": "Timecode at project zero",
+              "type": "string"
+            },
+            "rate": {
+              "enum": [
+                "24000/1001",
+                "24",
+                "25",
+                "30000/1001",
+                "30",
+                "48000/1001",
+                "48",
+                "50",
+                "60000/1001",
+                "60"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "origin",
+            "rate"
+          ],
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "expected_revision": {
+          "description": "Project revision guard; the call fails if the project moved to another revision",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "clock",
+        "expected_revision"
+      ],
+      "type": "object"
+    },
+    "name": "picture_clock_set"
+  },
+  {
+    "description": "Replace the tempo map with the given points, as one undoable Transport edit; an empty list returns the song to the project tempo. Use it when the tempo has to change inside the song (e.g. after bar 9) — project_set_tempo only moves the starting tempo. Points must be strictly ascending, and each tempo 1-400 BPM; an invalid map is refused with the points that were sent and leaves the project untouched. Returns the written points, the project tempo and the new revision.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Replace the tempo map with the given points, as one undoable Transport edit; an empty list returns the song to the project tempo. Use it when the tempo has to change inside the song (e.g. after bar 9) — project_set_tempo only moves the starting tempo. Points must be strictly ascending, and each tempo 1-400 BPM; an invalid map is refused with the points that were sent and leaves the project untouched. Returns the written points, the project tempo and the new revision.",
+      "properties": {
+        "expected_revision": {
+          "description": "Project revision guard; the call fails if the project moved to another revision",
+          "type": "integer"
+        },
+        "points": {
+          "description": "Tempo points, ascending; an empty array clears the map back to the project tempo",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "bar": {
+                "description": "One-indexed bar of the change",
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              "beat": {
+                "description": "Beat in that bar (default 1)",
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              "bpm": {
+                "description": "Tempo from this point on",
+                "type": "number"
+              },
+              "subdivision": {
+                "description": "Quarter-beat subdivision (default 0)",
+                "maximum": 3.0,
+                "minimum": 0.0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "bar",
+              "bpm"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "points"
+      ],
+      "type": "object"
+    },
+    "name": "tempo_map_set"
+  },
+  {
+    "description": "Replace the time-signature map with the given bar points, as one undoable Transport edit; an empty list returns to the base meter. Use it for meter changes inside the song (3/4 after bar 9). A bar-1 point overrides the base meter for playback, while the toolbar and project.properties keep showing the base field, so set both with project_edit when the whole song's meter changes. Arranged content keeps its absolute musical time. Bars are one-indexed and strictly ascending, and each meter is 1-32 over 1/2/4/8/16/32/64; an invalid map is refused with the points that were sent and leaves the project untouched. Returns the written points, the base meter and the new revision.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Replace the time-signature map with the given bar points, as one undoable Transport edit; an empty list returns to the base meter. Use it for meter changes inside the song (3/4 after bar 9). A bar-1 point overrides the base meter for playback, while the toolbar and project.properties keep showing the base field, so set both with project_edit when the whole song's meter changes. Arranged content keeps its absolute musical time. Bars are one-indexed and strictly ascending, and each meter is 1-32 over 1/2/4/8/16/32/64; an invalid map is refused with the points that were sent and leaves the project untouched. Returns the written points, the base meter and the new revision.",
+      "properties": {
+        "expected_revision": {
+          "description": "Project revision guard; the call fails if the project moved to another revision",
+          "type": "integer"
+        },
+        "points": {
+          "description": "Meter points at bar starts, ascending; an empty array clears the map back to the base meter",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "bar": {
+                "description": "One-indexed bar of the change",
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              "denominator": {
+                "enum": [
+                  1,
+                  2,
+                  4,
+                  8,
+                  16,
+                  32,
+                  64
+                ],
+                "type": "integer"
+              },
+              "numerator": {
+                "maximum": 32.0,
+                "minimum": 1.0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "bar",
+              "denominator",
+              "numerator"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "points"
+      ],
+      "type": "object"
+    },
+    "name": "time_signature_set"
+  },
+  {
+    "description": "Import one staged .mid or .midi from handoff/ into the saved project. Supply the current project_get revision. Preserves key-release note lengths and separate CC64 sustain by channel. Imports the MIDI clock for an empty project and keeps the clock of an existing arrangement.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Import one staged .mid or .midi from handoff/ into the saved project. Supply the current project_get revision. Preserves key-release note lengths and separate CC64 sustain by channel. Imports the MIDI clock for an empty project and keeps the clock of an existing arrangement.",
+      "properties": {
+        "expected_revision": {
+          "description": "Project revision guard; the call fails if the project moved to another revision",
+          "type": "integer"
+        },
+        "path": {
+          "description": "Project-relative staged MIDI file, for example handoff/Keys.mid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "expected_revision"
+      ],
+      "type": "object"
+    },
+    "name": "midi_import_handoff"
+  },
+  {
+    "description": "Export a committed saved project or track selection to a new MIDI file in handoff/. Supply the current project_get revision. Returns the relative path and export loss report. Commit the current transaction before exporting.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Export a committed saved project or track selection to a new MIDI file in handoff/. Supply the current project_get revision. Returns the relative path and export loss report. Commit the current transaction before exporting.",
+      "properties": {
+        "expected_revision": {
+          "description": "Current committed project revision from project_get",
+          "type": "integer"
+        },
+        "options": {
+          "description": "Export options; omitted fields keep the defaults (format 1, 480 PPQ, whole project).",
+          "properties": {
+            "channels": {
+              "description": "1-based channel overrides",
+              "items": {
+                "properties": {
+                  "channel": {
+                    "maximum": 16.0,
+                    "minimum": 1.0,
+                    "type": "integer"
+                  },
+                  "track": {
+                    "description": "Project track index",
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "channel",
+                  "track"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "format": {
+              "enum": [
+                0,
+                1
+              ],
+              "type": "integer"
+            },
+            "ppq": {
+              "enum": [
+                480,
+                960
+              ],
+              "type": "integer"
+            },
+            "scope": {
+              "oneOf": [
+                {
+                  "enum": [
+                    "Project"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "properties": {
+                    "Track": {
+                      "description": "Track index",
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "Track"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "properties": {
+                    "Tracks": {
+                      "properties": {
+                        "end": {
+                          "description": "End track (exclusive)",
+                          "type": "integer"
+                        },
+                        "start": {
+                          "description": "First track (inclusive)",
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "end",
+                        "start"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "Tracks"
+                  ],
+                  "type": "object"
+                }
+              ]
+            }
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "expected_revision"
+      ],
+      "type": "object"
+    },
+    "name": "midi_export_handoff"
+  },
+  {
+    "description": "Preview a Standard MIDI File import without changing the project. Returns the import summary (tracks, ignored events, tick error).",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Preview a Standard MIDI File import without changing the project. Returns the import summary (tracks, ignored events, tick error).",
+      "properties": {
+        "options": {
+          "description": "Import options; omitted fields keep the defaults.",
+          "properties": {
+            "drop_empty": {
+              "description": "Drop tracks/channels without notes (default true)",
+              "type": "boolean"
+            },
+            "expand_sustain": {
+              "description": "Extend note ends to CC64 releases (default true)",
+              "type": "boolean"
+            },
+            "import_clock": {
+              "description": "Import tempo, meter and key maps (default true)",
+              "type": "boolean"
+            },
+            "mappings": {
+              "description": "Per source-track/channel overrides",
+              "items": {
+                "properties": {
+                  "channel": {
+                    "description": "1-based channel; null keeps all channels",
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "name": {
+                    "description": "New track name",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "source_track": {
+                    "description": "Zero-based SMF track index",
+                    "type": "integer"
+                  },
+                  "target": {
+                    "oneOf": [
+                      {
+                        "enum": [
+                          "NewTrack",
+                          "Drop"
+                        ],
+                        "type": "string"
+                      },
+                      {
+                        "properties": {
+                          "ExistingTrack": {
+                            "description": "Project track index",
+                            "type": "integer"
+                          }
+                        },
+                        "required": [
+                          "ExistingTrack"
+                        ],
+                        "type": "object"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "source_track",
+                  "target"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "split_channels": {
+              "description": "Split every source track into one track per channel",
+              "type": "boolean"
+            }
+          },
+          "type": "object"
+        },
+        "path": {
+          "description": "Absolute path to a .mid/.midi file",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "name": "midi_import_preview"
+  },
+  {
+    "description": "Import a Standard MIDI File into the project using the mapping options. Returns the summary and new track count.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Import a Standard MIDI File into the project using the mapping options. Returns the summary and new track count.",
+      "properties": {
+        "expected_revision": {
+          "description": "Project revision guard; the call fails if the project moved to another revision",
+          "type": "integer"
+        },
+        "options": {
+          "description": "Import options; omitted fields keep the defaults.",
+          "properties": {
+            "drop_empty": {
+              "description": "Drop tracks/channels without notes (default true)",
+              "type": "boolean"
+            },
+            "expand_sustain": {
+              "description": "Extend note ends to CC64 releases (default true)",
+              "type": "boolean"
+            },
+            "import_clock": {
+              "description": "Import tempo, meter and key maps (default true)",
+              "type": "boolean"
+            },
+            "mappings": {
+              "description": "Per source-track/channel overrides",
+              "items": {
+                "properties": {
+                  "channel": {
+                    "description": "1-based channel; null keeps all channels",
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "name": {
+                    "description": "New track name",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "source_track": {
+                    "description": "Zero-based SMF track index",
+                    "type": "integer"
+                  },
+                  "target": {
+                    "oneOf": [
+                      {
+                        "enum": [
+                          "NewTrack",
+                          "Drop"
+                        ],
+                        "type": "string"
+                      },
+                      {
+                        "properties": {
+                          "ExistingTrack": {
+                            "description": "Project track index",
+                            "type": "integer"
+                          }
+                        },
+                        "required": [
+                          "ExistingTrack"
+                        ],
+                        "type": "object"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "source_track",
+                  "target"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "split_channels": {
+              "description": "Split every source track into one track per channel",
+              "type": "boolean"
+            }
+          },
+          "type": "object"
+        },
+        "path": {
+          "description": "Absolute path to a .mid/.midi file",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "name": "midi_import_apply"
+  },
+  {
+    "description": "Export the project (or a selection) as a Standard MIDI File and return the loss report.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Export the project (or a selection) as a Standard MIDI File and return the loss report.",
+      "properties": {
+        "options": {
+          "description": "Export options; omitted fields keep the defaults (format 1, 480 PPQ, whole project).",
+          "properties": {
+            "channels": {
+              "description": "1-based channel overrides",
+              "items": {
+                "properties": {
+                  "channel": {
+                    "maximum": 16.0,
+                    "minimum": 1.0,
+                    "type": "integer"
+                  },
+                  "track": {
+                    "description": "Project track index",
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "channel",
+                  "track"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "format": {
+              "enum": [
+                0,
+                1
+              ],
+              "type": "integer"
+            },
+            "ppq": {
+              "enum": [
+                480,
+                960
+              ],
+              "type": "integer"
+            },
+            "scope": {
+              "oneOf": [
+                {
+                  "enum": [
+                    "Project"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "properties": {
+                    "Track": {
+                      "description": "Track index",
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "Track"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "properties": {
+                    "Tracks": {
+                      "properties": {
+                        "end": {
+                          "description": "End track (exclusive)",
+                          "type": "integer"
+                        },
+                        "start": {
+                          "description": "First track (inclusive)",
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "end",
+                        "start"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "Tracks"
+                  ],
+                  "type": "object"
+                }
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "path": {
+          "description": "Output .mid/.midi path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "name": "midi_export"
+  },
+  {
+    "description": "Build an AI editing context for a DSL path (project, track:bass, ...); path grammar is described by `read_skill dsl-subtree-paths`.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Build an AI editing context for a DSL path (project, track:bass, ...); path grammar is described by `read_skill dsl-subtree-paths`.",
+      "properties": {
+        "instruction": {
+          "description": "Optional user instruction",
+          "type": "string"
+        },
+        "path": {
+          "description": "DSL subtree path: project, track:<name>, track:<n>, track:<name>.phrase:<name>, bus:<name>, preset:<name>, pattern:<name>, project.properties.\nNot replaceable: the whole project, pattern:<name>, sections; a replacement may target a track (or its .phrase/.mix/.effects), project.properties, bus:<name>, preset:<name> or master.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "name": "project_context"
+  },
+  {
+    "description": "Build a context for generating a new track, phrase, or preset.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Build a context for generating a new track, phrase, or preset.",
+      "properties": {
+        "instruction": {
+          "description": "Optional user instruction",
+          "type": "string"
+        },
+        "what": {
+          "description": "track | phrase | preset",
+          "type": "string"
+        }
+      },
+      "required": [
+        "what"
+      ],
+      "type": "object"
+    },
+    "name": "project_generate_context"
+  },
+  {
+    "description": "Validate a DSL replacement without applying it, including that every preset `file:` it names exists. Path grammar is described by `read_skill dsl-subtree-paths`.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Validate a DSL replacement without applying it, including that every preset `file:` it names exists. Path grammar is described by `read_skill dsl-subtree-paths`.",
+      "properties": {
+        "dsl": {
+          "description": "Replacement DSL",
+          "type": "string"
+        },
+        "path": {
+          "description": "DSL subtree path: project, track:<name>, track:<n>, track:<name>.phrase:<name>, bus:<name>, preset:<name>, pattern:<name>, project.properties.\nNot replaceable: the whole project, pattern:<name>, sections; a replacement may target a track (or its .phrase/.mix/.effects), project.properties, bus:<name>, preset:<name> or master.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "dsl"
+      ],
+      "type": "object"
+    },
+    "name": "project_validate"
+  },
+  {
+    "description": "Apply one complete DSL subtree replacement. Returns the new snapshot and a diff; path grammar is described by `read_skill dsl-subtree-paths`.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Apply one complete DSL subtree replacement. Returns the new snapshot and a diff; path grammar is described by `read_skill dsl-subtree-paths`.",
+      "properties": {
+        "dsl": {
+          "description": "Complete replacement DSL",
+          "type": "string"
+        },
+        "expected_dsl": {
+          "description": "Optional optimistic-concurrency guard; defaults to current DSL",
+          "type": "string"
+        },
+        "expected_revision": {
+          "description": "Project revision guard; the call fails if the project moved to another revision",
+          "type": "integer"
+        },
+        "path": {
+          "description": "DSL subtree path: project, track:<name>, track:<n>, track:<name>.phrase:<name>, bus:<name>, preset:<name>, pattern:<name>, project.properties.\nNot replaceable: the whole project, pattern:<name>, sections; a replacement may target a track (or its .phrase/.mix/.effects), project.properties, bus:<name>, preset:<name> or master.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "dsl"
+      ],
+      "type": "object"
+    },
+    "name": "project_edit"
+  },
+  {
+    "description": "Extract a DSL subtree without changing the project; path grammar is described by `read_skill dsl-subtree-paths`.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Extract a DSL subtree without changing the project; path grammar is described by `read_skill dsl-subtree-paths`.",
+      "properties": {
+        "path": {
+          "description": "DSL subtree path: project, track:<name>, track:<n>, track:<name>.phrase:<name>, bus:<name>, preset:<name>, pattern:<name>, project.properties.\nNot replaceable: the whole project, pattern:<name>, sections; a replacement may target a track (or its .phrase/.mix/.effects), project.properties, bus:<name>, preset:<name> or master.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "name": "project_extract"
+  },
+  {
+    "description": "Line diff between two DSL strings.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Line diff between two DSL strings.",
+      "properties": {
+        "new_dsl": {
+          "description": "New DSL",
+          "type": "string"
+        },
+        "old_dsl": {
+          "description": "Old DSL",
+          "type": "string"
+        }
+      },
+      "required": [
+        "old_dsl",
+        "new_dsl"
+      ],
+      "type": "object"
+    },
+    "name": "project_diff"
+  },
+  {
+    "description": "List tracks with pattern clip count (clips), audio clip count (audio_clips), preset, instrument, mix, mute/solo, and output.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "required": [],
+      "type": "object"
+    },
+    "name": "tracks_list"
+  },
+  {
+    "description": "Add a track. A track created without a preset gets the built-in OpenSynth default for its instrument family, so it renders; pass an existing playable preset to choose another sound. `read_skill playable-instruments` lists the families.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "expected_revision": {
+          "description": "Project revision guard; the call fails if the project moved to another revision",
+          "type": "integer"
+        },
+        "instrument_category": {
+          "description": "Instrument category (default: synth)",
+          "type": "string"
+        },
+        "instrument_name": {
+          "description": "Instrument name (default: default)",
+          "type": "string"
+        },
+        "name": {
+          "description": "Track name",
+          "type": "string"
+        },
+        "preset": {
+          "description": "Optional existing playable preset name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "name": "tracks_add"
+  },
+  {
+    "description": "Create a track and apply a complete @track DSL block in one call. Without an explicit preset the track gets a visible built-in default for its family; a declared SoundFont `file:` that is missing is refused. `read_skill playable-instruments` explains both. Shape: `@track lead | instrument: synth/lead` then optional `effects:` lines written `- delay: time=200ms, feedback=25%, mix=18%`, then `@phrase hook [1:1 - 5:1]` with `@0.0 C5 q f` lines. Never write `rest` events or `pedal` lines; a gap is an absent `@` position.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "dsl": {
+          "description": "Complete @track ... DSL block",
+          "type": "string"
+        },
+        "expected_revision": {
+          "description": "Project revision guard; the call fails if the project moved to another revision",
+          "type": "integer"
+        },
+        "instrument_category": {
+          "description": "Instrument category (default: synth)",
+          "type": "string"
+        },
+        "instrument_name": {
+          "description": "Instrument name (default: default)",
+          "type": "string"
+        },
+        "name": {
+          "description": "Track name",
+          "type": "string"
+        },
+        "preset": {
+          "description": "Optional existing playable preset name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "dsl"
+      ],
+      "type": "object"
+    },
+    "name": "tracks_create"
+  },
+  {
+    "description": "Remove a track by index.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "expected_revision": {
+          "description": "Project revision guard; the call fails if the project moved to another revision",
+          "type": "integer"
+        },
+        "index": {
+          "description": "Track index",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "index"
+      ],
+      "type": "object"
+    },
+    "name": "tracks_remove"
+  },
+  {
+    "description": "Duplicate a track: the copy is appended after the last track with the name you give, the source's instrument, engine and output routing, and its own copy of the preset, so editing one patch no longer changes the other. Use it when the producer wants a second part on the same sound; the copy starts with an empty mix, no clips, effects or automation (the GUI's duplicate is the same), so add those with project_edit if they are wanted. One undo entry covers the track and the preset copy. Returns the new track index and name, its preset and the new revision.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "expected_revision": {
+          "description": "Project revision guard; the call fails if the project moved to another revision",
+          "type": "integer"
+        },
+        "index": {
+          "description": "Source track index",
+          "type": "integer"
+        },
+        "name": {
+          "description": "Name for the copy",
+          "type": "string"
+        }
+      },
+      "required": [
+        "index",
+        "name"
+      ],
+      "type": "object"
+    },
+    "name": "tracks_duplicate"
+  },
+  {
+    "description": "Rename a track.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "expected_revision": {
+          "description": "Project revision guard; the call fails if the project moved to another revision",
+          "type": "integer"
+        },
+        "index": {
+          "description": "Track index",
+          "type": "integer"
+        },
+        "name": {
+          "description": "New name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "index",
+        "name"
+      ],
+      "type": "object"
+    },
+    "name": "tracks_rename"
+  },
+  {
+    "description": "Set track volume and/or pan.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "expected_revision": {
+          "description": "Project revision guard; the call fails if the project moved to another revision",
+          "type": "integer"
+        },
+        "index": {
+          "description": "Track index",
+          "type": "integer"
+        },
+        "pan": {
+          "description": "Pan, -1.0 to 1.0",
+          "type": "number"
+        },
+        "volume_db": {
+          "description": "Volume in dB",
+          "type": "number"
+        }
+      },
+      "required": [
+        "index"
+      ],
+      "type": "object"
+    },
+    "name": "tracks_mix"
+  },
+  {
+    "description": "Mute or unmute a track.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "expected_revision": {
+          "description": "Project revision guard; the call fails if the project moved to another revision",
+          "type": "integer"
+        },
+        "index": {
+          "description": "Track index",
+          "type": "integer"
+        },
+        "mute": {
+          "description": "Mute state",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "index",
+        "mute"
+      ],
+      "type": "object"
+    },
+    "name": "tracks_mute"
+  },
+  {
+    "description": "Solo or unsolo a track.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "expected_revision": {
+          "description": "Project revision guard; the call fails if the project moved to another revision",
+          "type": "integer"
+        },
+        "index": {
+          "description": "Track index",
+          "type": "integer"
+        },
+        "solo": {
+          "description": "Solo state",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "index",
+        "solo"
+      ],
+      "type": "object"
+    },
+    "name": "tracks_solo"
+  },
+  {
+    "description": "Assign or clear a track preset.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "expected_revision": {
+          "description": "Project revision guard; the call fails if the project moved to another revision",
+          "type": "integer"
+        },
+        "index": {
+          "description": "Track index",
+          "type": "integer"
+        },
+        "preset": {
+          "description": "Preset name, or null to clear",
+          "type": "string"
+        }
+      },
+      "required": [
+        "index"
+      ],
+      "type": "object"
+    },
+    "name": "tracks_preset"
+  },
+  {
+    "description": "Set a track's exclusive output (master or bus name).",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "expected_revision": {
+          "description": "Project revision guard; the call fails if the project moved to another revision",
+          "type": "integer"
+        },
+        "index": {
+          "description": "Track index",
+          "type": "integer"
+        },
+        "output": {
+          "description": "master or bus name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "index",
+        "output"
+      ],
+      "type": "object"
+    },
+    "name": "tracks_output"
+  },
+  {
+    "description": "Add or replace a send from a track to a bus.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "amount": {
+          "description": "Send amount, 0.0-4.0 (+12 dB)",
+          "type": "number"
+        },
+        "bus": {
+          "description": "Bus name",
+          "type": "string"
+        },
+        "expected_revision": {
+          "description": "Project revision guard; the call fails if the project moved to another revision",
+          "type": "integer"
+        },
+        "index": {
+          "description": "Track index",
+          "type": "integer"
+        },
+        "pan": {
+          "description": "Balance at the bus input, -1.0 to 1.0 (default 0)",
+          "type": "number"
+        },
+        "pre_fader": {
+          "description": "Tap before the channel fader (default false)",
+          "type": "boolean"
+        },
+        "source_output": {
+          "description": "Auxiliary output bus, 2 or higher (out1 is the main pair)",
+          "type": "integer"
+        },
+        "source_owner": {
+          "description": "Plugin-hosting track or preset name for an auxiliary output",
+          "type": "string"
+        }
+      },
+      "required": [
+        "index",
+        "bus"
+      ],
+      "type": "object"
+    },
+    "name": "tracks_send_add"
+  },
+  {
+    "description": "Remove a send from a track to a bus.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "bus": {
+          "description": "Bus name",
+          "type": "string"
+        },
+        "expected_revision": {
+          "description": "Project revision guard; the call fails if the project moved to another revision",
+          "type": "integer"
+        },
+        "index": {
+          "description": "Track index",
+          "type": "integer"
+        },
+        "source_output": {
+          "description": "Auxiliary output bus, 2 or higher",
+          "type": "integer"
+        },
+        "source_owner": {
+          "description": "Plugin-hosting owner when removing an auxiliary send",
+          "type": "string"
+        }
+      },
+      "required": [
+        "index",
+        "bus"
+      ],
+      "type": "object"
+    },
+    "name": "tracks_send_remove"
+  },
+  {
+    "description": "List the arrangement sections in written order with their spans, repeats and labels, and the rendered end (`rendered_end`, `rendered_bars`). Read-only; call it before editing so the name and range are known.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "required": [],
+      "type": "object"
+    },
+    "name": "sections_list"
+  },
+  {
+    "description": "Add a section: a named span of the arrangement, plus an optional repeat. Returns the updated section list and rendered end. Spans must not overlap; the list stays in written order and the arrangement must fit the 600-second project extent.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Add a section: a named span of the arrangement, plus an optional repeat. Returns the updated section list and rendered end. Spans must not overlap; the list stays in written order and the arrangement must fit the 600-second project extent.",
+      "properties": {
+        "end": {
+          "description": "End-exclusive end as bar:beat:subdivision, e.g. \"17:1\"",
+          "type": "string"
+        },
+        "expected_revision": {
+          "description": "Project revision guard; the call fails if the project moved to another revision",
+          "type": "integer"
+        },
+        "label": {
+          "description": "Optional display label",
+          "type": "string"
+        },
+        "name": {
+          "description": "Section name, e.g. verse",
+          "type": "string"
+        },
+        "repeat": {
+          "description": "How many times the span plays (default 1)",
+          "type": "integer"
+        },
+        "start": {
+          "description": "Start as bar:beat:subdivision (1-based), e.g. \"9:1\" or \"9\"",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "start",
+        "end"
+      ],
+      "type": "object"
+    },
+    "name": "sections_add"
+  },
+  {
+    "description": "Move or resize a section, set its repeat, rename it or change its label — use it when a part should repeat, last longer or move. Omitted fields keep their value; `repeat: null` or 1 clears a repeat and `label: null` or an empty string clears the label. Returns the updated section list and rendered end.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Move or resize a section, set its repeat, rename it or change its label — use it when a part should repeat, last longer or move. Omitted fields keep their value; `repeat: null` or 1 clears a repeat and `label: null` or an empty string clears the label. Returns the updated section list and rendered end.",
+      "properties": {
+        "end": {
+          "description": "New end-exclusive end as bar:beat:subdivision",
+          "type": "string"
+        },
+        "expected_revision": {
+          "description": "Project revision guard; the call fails if the project moved to another revision",
+          "type": "integer"
+        },
+        "label": {
+          "description": "New label; null or an empty string clears it",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "description": "Current section name",
+          "type": "string"
+        },
+        "new_name": {
+          "description": "Rename to this name; it must be unique",
+          "type": "string"
+        },
+        "repeat": {
+          "description": "Plays this many times; null or 1 removes the repeat",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "start": {
+          "description": "New start as bar:beat:subdivision",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "name": "sections_set"
+  },
+  {
+    "description": "Remove a section by name. Returns the updated section list and rendered end.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Remove a section by name. Returns the updated section list and rendered end.",
+      "properties": {
+        "expected_revision": {
+          "description": "Project revision guard; the call fails if the project moved to another revision",
+          "type": "integer"
+        },
+        "name": {
+          "description": "Section name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "name": "sections_remove"
+  },
+  {
+    "description": "List registered content libraries and their instruments, plus discovered_soundfonts from known local SF2/SF3 locations without requiring registration. Read-only. Load a discovered path using presets_add(source=soundfont, file=path, program=0), then tracks_preset.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "List registered content libraries and their instruments, plus discovered_soundfonts from known local SF2/SF3 locations without requiring registration. Read-only. Load a discovered path using presets_add(source=soundfont, file=path, program=0), then tracks_preset.",
+      "properties": {
+        "catalogue": {
+          "description": "Optional catalogue path; defaults to this profile's catalogue",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "name": "content_libraries"
+  },
+  {
+    "description": "Register a content-library root (a directory of .sf2/.sf3/.sfz instruments or a single instrument file). The root is scanned first; a write is backed up and verified, and a failed write restores the previous catalogue.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Register a content-library root (a directory of .sf2/.sf3/.sfz instruments or a single instrument file). The root is scanned first; a write is backed up and verified, and a failed write restores the previous catalogue.",
+      "properties": {
+        "catalogue": {
+          "description": "Optional catalogue path; defaults to this profile's catalogue",
+          "type": "string"
+        },
+        "name": {
+          "description": "Optional display name",
+          "type": "string"
+        },
+        "path": {
+          "description": "Directory or instrument file to register",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "name": "content_library_register"
+  },
+  {
+    "description": "Remove a registered content library by id. The files on disk are never touched; the catalogue is backed up first.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Remove a registered content library by id. The files on disk are never touched; the catalogue is backed up first.",
+      "properties": {
+        "catalogue": {
+          "description": "Optional catalogue path; defaults to this profile's catalogue",
+          "type": "string"
+        },
+        "id": {
+          "description": "Library id from content_libraries",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "name": "content_library_remove"
+  },
+  {
+    "description": "Rescan one registered library or all of them, updating the instrument list. Missing roots are kept and marked missing; the catalogue is backed up first.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Rescan one registered library or all of them, updating the instrument list. Missing roots are kept and marked missing; the catalogue is backed up first.",
+      "properties": {
+        "catalogue": {
+          "description": "Optional catalogue path; defaults to this profile's catalogue",
+          "type": "string"
+        },
+        "id": {
+          "description": "Optional library id; omit to rescan every library",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "name": "content_library_rescan"
+  },
+  {
+    "description": "List authored project presets and SoundFonts. With name, inspect one preset and its effective inherited parameters and insert order without scanning SoundFonts.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "List authored project presets and SoundFonts. With name, inspect one preset and its effective inherited parameters and insert order without scanning SoundFonts.",
+      "properties": {
+        "name": {
+          "description": "Exact project preset name, optional",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "name": "presets_list"
+  },
+  {
+    "description": "Share an existing OpenSynth project preset as one self-contained .ocppatch bundle, including its inherited voice, samples and inserts. Requires a saved, committed project and its current revision. Finish an active transaction first; in the panel, export in a new turn. Writes a new numbered file under handoff/ without overwriting an earlier export, and returns its relative path and byte count. External insert sidechains must be removed before sharing.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Share an existing OpenSynth project preset as one self-contained .ocppatch bundle, including its inherited voice, samples and inserts. Requires a saved, committed project and its current revision. Finish an active transaction first; in the panel, export in a new turn. Writes a new numbered file under handoff/ without overwriting an earlier export, and returns its relative path and byte count. External insert sidechains must be removed before sharing.",
+      "properties": {
+        "expected_revision": {
+          "description": "Current project revision from project_get",
+          "type": "integer"
+        },
+        "name": {
+          "description": "Existing project preset name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "expected_revision"
+      ],
+      "type": "object"
+    },
+    "name": "preset_bundle_export"
+  },
+  {
+    "description": "Load a staged .ocppatch file from the saved project's handoff/ folder into an existing OpenSynth project preset as one undoable edit. Replaces the whole voice and insert chain, detaches inheritance, and preserves the target's project name and track references. Also keeps a reusable library copy; Undo restores the project but retains that library copy. Duplicate library names get numbered copies. Requires current revision and transaction ownership. External insert sidechains are refused.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Load a staged .ocppatch file from the saved project's handoff/ folder into an existing OpenSynth project preset as one undoable edit. Replaces the whole voice and insert chain, detaches inheritance, and preserves the target's project name and track references. Also keeps a reusable library copy; Undo restores the project but retains that library copy. Duplicate library names get numbered copies. Requires current revision and transaction ownership. External insert sidechains are refused.",
+      "properties": {
+        "expected_revision": {
+          "description": "Project revision guard; the call fails if the project moved to another revision",
+          "type": "integer"
+        },
+        "name": {
+          "description": "Existing OpenSynth project preset to replace",
+          "type": "string"
+        },
+        "path": {
+          "description": "Project-relative .ocppatch path under handoff/, not an absolute path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "name",
+        "expected_revision"
+      ],
+      "type": "object"
+    },
+    "name": "preset_bundle_import"
+  },
+  {
+    "description": "Create a preset. For a local SoundFont use source=soundfont, file=<absolute SF2/SF3 path from soundfonts_list.discovered or content_libraries.discovered_soundfonts>, program=0 (or another program), then tracks_preset to assign it. Use source=clap|vst3|lv2 with plugin=<scanned plugin id> for instrument plugins.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Create a preset. For a local SoundFont use source=soundfont, file=<absolute SF2/SF3 path from soundfonts_list.discovered or content_libraries.discovered_soundfonts>, program=0 (or another program), then tracks_preset to assign it. Use source=clap|vst3|lv2 with plugin=<scanned plugin id> for instrument plugins.",
+      "properties": {
+        "expected_revision": {
+          "description": "Project revision guard; the call fails if the project moved to another revision",
+          "type": "integer"
+        },
+        "file": {
+          "description": "Optional sample/preset file",
+          "type": "string"
+        },
+        "name": {
+          "description": "Preset name",
+          "type": "string"
+        },
+        "patch": {
+          "description": "Optional plugin patch/path",
+          "type": "string"
+        },
+        "plugin": {
+          "description": "Plugin id from plugins_scan",
+          "type": "string"
+        },
+        "program": {
+          "description": "SoundFont program",
+          "type": "integer"
+        },
+        "source": {
+          "description": "clap | vst3 | lv2 | soundfont | builtin",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "source"
+      ],
+      "type": "object"
+    },
+    "name": "presets_add"
+  },
+  {
+    "description": "Remove a preset and clear it from tracks.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Remove a preset and clear it from tracks.",
+      "properties": {
+        "expected_revision": {
+          "description": "Project revision guard; the call fails if the project moved to another revision",
+          "type": "integer"
+        },
+        "name": {
+          "description": "Preset name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "name": "presets_remove"
+  },
+  {
+    "description": "Rename a project preset and rewrite every reference to it (tracks, patterns, patches that extend it) in the same undoable Preset edit, so nothing is left pointing at the old name. Use it when a patch is misnamed or before sharing it. An unknown name, an existing new name or an empty name is refused and nothing changes. Returns the new name, the tracks and patterns that now point at it, and the new revision.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Rename a project preset and rewrite every reference to it (tracks, patterns, patches that extend it) in the same undoable Preset edit, so nothing is left pointing at the old name. Use it when a patch is misnamed or before sharing it. An unknown name, an existing new name or an empty name is refused and nothing changes. Returns the new name, the tracks and patterns that now point at it, and the new revision.",
+      "properties": {
+        "expected_revision": {
+          "description": "Project revision guard; the call fails if the project moved to another revision",
+          "type": "integer"
+        },
+        "name": {
+          "description": "Current preset name",
+          "type": "string"
+        },
+        "new_name": {
+          "description": "New preset name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "new_name"
+      ],
+      "type": "object"
+    },
+    "name": "presets_rename"
+  },
+  {
+    "description": "Copy a project preset under a new name as one undoable Preset edit. With reassign true (the default) the tracks and patterns that played the original play the copy, so the original stays free to edit or remove; with false they keep playing the original. An unknown preset, an existing new name or an empty name is refused and nothing changes. Returns the new name, whether the references moved, and the new revision.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Copy a project preset under a new name as one undoable Preset edit. With reassign true (the default) the tracks and patterns that played the original play the copy, so the original stays free to edit or remove; with false they keep playing the original. An unknown preset, an existing new name or an empty name is refused and nothing changes. Returns the new name, whether the references moved, and the new revision.",
+      "properties": {
+        "expected_revision": {
+          "description": "Project revision guard; the call fails if the project moved to another revision",
+          "type": "integer"
+        },
+        "name": {
+          "description": "Preset to copy",
+          "type": "string"
+        },
+        "new_name": {
+          "description": "Name for the copy",
+          "type": "string"
+        },
+        "reassign": {
+          "description": "Point referencing tracks and patterns at the copy (default true)",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "new_name"
+      ],
+      "type": "object"
+    },
+    "name": "presets_duplicate"
+  },
+  {
+    "description": "Set or remove one preset parameter (state_file, articulation_..., cc_..._param, ...).",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Set or remove one preset parameter (state_file, articulation_..., cc_..._param, ...).",
+      "properties": {
+        "expected_revision": {
+          "description": "Project revision guard; the call fails if the project moved to another revision",
+          "type": "integer"
+        },
+        "name": {
+          "description": "Preset name",
+          "type": "string"
+        },
+        "param": {
+          "description": "Parameter name",
+          "type": "string"
+        },
+        "value": {
+          "description": "Parameter value; null removes",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "param"
+      ],
+      "type": "object"
+    },
+    "name": "presets_set_param"
+  },
+  {
+    "description": "Set multiple preset parameters atomically.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Set multiple preset parameters atomically.",
+      "properties": {
+        "expected_revision": {
+          "description": "Project revision guard; the call fails if the project moved to another revision",
+          "type": "integer"
+        },
+        "name": {
+          "description": "Preset name",
+          "type": "string"
+        },
+        "params": {
+          "description": "Object map {name: value}, an array of [name, value] pairs, or a JSON string of either, e.g. {\"amp.decay\": \"0.45s\"}"
+        },
+        "replace_synth": {
+          "description": "Replace the synth patch instead of merging",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "params"
+      ],
+      "type": "object"
+    },
+    "name": "presets_set_params"
+  },
+  {
+    "description": "Search the bundled free-plugin catalog. Read-only; never downloads or installs. Platform defaults to this host; invalid platform/format values are rejected.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Search the bundled free-plugin catalog. Read-only; never downloads or installs. Platform defaults to this host; invalid platform/format values are rejected.",
+      "properties": {
+        "format": {
+          "description": "vst3 | clap | au | standalone",
+          "type": "string"
+        },
+        "installed_only": {
+          "description": "Only return entries whose bundle is installed",
+          "type": "boolean"
+        },
+        "limit": {
+          "description": "Maximum entries to return (1-100, default 50)",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "platform": {
+          "description": "macos-aarch64 | macos-x86_64 | windows-x86_64 | linux-x86_64",
+          "type": "string"
+        },
+        "query": {
+          "description": "Optional case-insensitive name, vendor, description, or tag search",
+          "type": "string"
+        },
+        "tags": {
+          "description": "Required tags (all must match)",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "name": "plugin_search"
+  },
+  {
+    "description": "Resolve or execute a catalog install. dry_run defaults to true and performs no network or disk writes; pass dry_run=false to install. URLs always come from the verified catalog. The built-in panel permits signed-index, checksum/size-pinned native plugin archives (VST3, VST2, CLAP, LV2) and managed separator runtimes. Use plugin_search then one call with dry_run=false to install. Manual DMG/PKG/EXE installers are refused. Never run shell or pip commands.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Resolve or execute a catalog install. dry_run defaults to true and performs no network or disk writes; pass dry_run=false to install. URLs always come from the verified catalog. The built-in panel permits signed-index, checksum/size-pinned native plugin archives (VST3, VST2, CLAP, LV2) and managed separator runtimes. Use plugin_search then one call with dry_run=false to install. Manual DMG/PKG/EXE installers are refused. Never run shell or pip commands.",
+      "properties": {
+        "dry_run": {
+          "description": "Default true. false is explicit consent to download and install",
+          "type": "boolean"
+        },
+        "format": {
+          "description": "Optional preferred vst3/clap/au/standalone build",
+          "type": "string"
+        },
+        "id": {
+          "description": "Catalog entry id from plugin_search",
+          "type": "string"
+        },
+        "platform": {
+          "description": "Optional target platform; defaults to this host",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "name": "plugin_pull"
+  },
+  {
+    "description": "Refresh the signed remote plugin index and return its status. The index is fetched only when the plugin browser opens or a caller asks for it; a check inside the 6-hour freshness interval answers from the cache, and a refresh is limited to once per 5 minutes.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Refresh the signed remote plugin index and return its status. The index is fetched only when the plugin browser opens or a caller asks for it; a check inside the 6-hour freshness interval answers from the cache, and a refresh is limited to once per 5 minutes.",
+      "properties": {
+        "force": {
+          "description": "Bypass the 6-hour freshness interval; the 5-minute manual floor still applies",
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "name": "plugin_index_refresh"
+  },
+  {
+    "description": "List the downloadable instrument packs the signed index offers beside what is installed in the user's soundfont folder, with each pack's size and license. The discovered field also lists existing SF2/SF3 files found in known local instrument folders (15-second cache), without registration. DLS is not supported by the SoundFont engine. Load a discovered path using presets_add(source=soundfont, file=path, program=0), then assign it with tracks_preset. Discovered files are not managed packs and cannot be removed with soundfonts_remove. Read-only; installs nothing. An installed pack is playable through a preset with source: soundfont and that pack's path. The plugin browser's Instruments section is the user-facing install path: name the pack and let the user click Install.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "List the downloadable instrument packs the signed index offers beside what is installed in the user's soundfont folder, with each pack's size and license. The discovered field also lists existing SF2/SF3 files found in known local instrument folders (15-second cache), without registration. DLS is not supported by the SoundFont engine. Load a discovered path using presets_add(source=soundfont, file=path, program=0), then assign it with tracks_preset. Discovered files are not managed packs and cannot be removed with soundfonts_remove. Read-only; installs nothing. An installed pack is playable through a preset with source: soundfont and that pack's path. The plugin browser's Instruments section is the user-facing install path: name the pack and let the user click Install.",
+      "properties": {
+        "bank": {
+          "description": "Optional bank filter when inspecting a path; 0 is the standard melodic bank",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "limit": {
+          "description": "Programs per page, default 32, clamped to 1..64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "offset": {
+          "description": "Program page offset, default 0; use inspection.next_offset for the next page",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "path": {
+          "description": "Optional discovered SF2/SF3 path to inspect with the engine parser (max 128 MiB). Returns only inspection: bounded program metadata, totals, next_offset and warning summary; no sample data or unrelated pack listing. For piano use bank=0 and query=piano. validated=true means parsing succeeded; warning summaries are non-fatal. Prefer bank=0 programs with zones>0 for melodic tracks.",
+          "type": "string"
+        },
+        "query": {
+          "description": "Optional case-insensitive program-name filter, e.g. piano",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "name": "soundfonts_list"
+  },
+  {
+    "description": "Download one instrument pack from the verified index into the user's soundfont folder, checking the declared size and sha256 before the atomic rename. A refused or aborted download leaves no file behind.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Download one instrument pack from the verified index into the user's soundfont folder, checking the declared size and sha256 before the atomic rename. A refused or aborted download leaves no file behind.",
+      "properties": {
+        "id": {
+          "description": "Pack id from soundfonts_list, e.g. ms-basic",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "name": "soundfont_install"
+  },
+  {
+    "description": "Delete an installed instrument pack from the user's soundfont folder. Refused when the pack is not installed.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Delete an installed instrument pack from the user's soundfont folder. Refused when the pack is not installed.",
+      "properties": {
+        "id": {
+          "description": "Pack id from soundfonts_list",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "name": "soundfonts_remove"
+  },
+  {
+    "description": "Search several external sample markets at once for drum one-shots, loops, vocals, FX and instrument phrases. This build is a client: it hosts no catalogue. Markets with local debug plugins: openverse (an aggregator over Freesound, Jamendo, Wikimedia and others; no key), wikimedia-commons (no key), internet-archive (no key), freesound (needs FREESOUND_API_KEY or the org.opencompose.samples/freesound keyring item; a Freesound OAuth2 connection in External Sources preferences pulls the original, otherwise the 128 kbps preview), jamendo (needs JAMENDO_CLIENT_ID or the jamendo keyring item). Looperman, Splice, SampleSwap, SoundBible, Mixkit, Pixabay, Sample Focus, Bedroom Producers Blog and Cymatics are reported as unavailable with the reason and are never scraped. Each item carries its provider, id, kind, duration, licence, credit line and license_ok: CC0, public domain, CC BY and CC BY-SA need no confirmation; non-commercial, no-derivatives, GFDL and community licences are free to pull once the caller passes accept_licence to sample_pull. Every requested market appears in the providers array with available and reason, even when it could not answer, and a failing market is reported per page. Paged: pass next_offset back as offset. Read-only; downloads nothing. Name the markets with `providers` and keep `limit` small: a market that cannot be reached costs up to 15 seconds, so repeating the same broad query is the slowest thing this panel can do. Page with next_offset instead.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "channels": {
+          "description": "Optional channel count, usually 1 for mono or 2 for stereo",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "kind": {
+          "description": "Optional kind filter: drum, loop, vocal, fx, instrument, any",
+          "type": "string"
+        },
+        "limit": {
+          "default": 20,
+          "description": "Results per page per market, default 20, clamped to 1..50",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "max_seconds": {
+          "description": "Optional inclusive upper bound on duration in seconds",
+          "type": "number"
+        },
+        "min_seconds": {
+          "description": "Optional inclusive lower bound on duration in seconds",
+          "type": "number"
+        },
+        "offset": {
+          "default": 0,
+          "description": "Result offset, default 0; use next_offset from the previous page",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "provider": {
+          "description": "Deprecated single-market alias for providers, kept for older callers",
+          "type": "string"
+        },
+        "providers": {
+          "default": [],
+          "description": "Market ids to search, e.g. [\"openverse\", \"internet-archive\"]. Omit to search every available market. Unknown ids are reported in the result.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "query": {
+          "description": "Words to search for, e.g. snare, vinyl loop, choir ahh",
+          "type": "string"
+        },
+        "tags": {
+          "default": [],
+          "description": "Optional tags a result must relate to, such as acoustic or drums",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "type": "object"
+    },
+    "name": "sample_search"
+  },
+  {
+    "description": "Download one sample by provider and id from sample_search into the project's media/samples folder and return its path, media path and credit line. The licence and attribution are written into a .json sidecar beside the audio and recorded in index.json, so they travel with the project. The id is resolved by the named provider or by its prefix (commons:, openverse:, ia:, freesound:, jamendo:); a file URL always comes from the provider, never from the caller. Pass accept_licence: true after telling the user the licence; a non-free licence (non-commercial, no-derivatives, GFDL, a community licence or an unknown one) is refused with licence_notice and its terms sentence until then, and the receipt records licence_accepted. Refused with provider_unknown for an id no market carries, provider_unavailable for a page-only market or a keyed one without its key, size_mismatch or checksum_mismatch when the declared size or checksum does not match, and project_unsaved when the project has no folder. A Freesound pull fetches the original when an OAuth2 token is stored, otherwise its preview, and quality reports which one landed. Nothing is written on a refusal.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Download one sample by provider and id from sample_search into the project's media/samples folder and return its path, media path and credit line. The licence and attribution are written into a .json sidecar beside the audio and recorded in index.json, so they travel with the project. The id is resolved by the named provider or by its prefix (commons:, openverse:, ia:, freesound:, jamendo:); a file URL always comes from the provider, never from the caller. Pass accept_licence: true after telling the user the licence; a non-free licence (non-commercial, no-derivatives, GFDL, a community licence or an unknown one) is refused with licence_notice and its terms sentence until then, and the receipt records licence_accepted. Refused with provider_unknown for an id no market carries, provider_unavailable for a page-only market or a keyed one without its key, size_mismatch or checksum_mismatch when the declared size or checksum does not match, and project_unsaved when the project has no folder. A Freesound pull fetches the original when an OAuth2 token is stored, otherwise its preview, and quality reports which one landed. Nothing is written on a refusal.",
+      "properties": {
+        "accept_licence": {
+          "default": false,
+          "description": "Set true to pull a sample whose licence is not free to reuse after telling the user its terms; the file keeps that licence and its credit line",
+          "type": "boolean"
+        },
+        "dest": {
+          "description": "Optional destination directory: absolute, or relative to the project folder. Defaults to media/samples",
+          "type": "string"
+        },
+        "id": {
+          "description": "Sample id from sample_search, e.g. openverse:9f0c6b7a-…, ia:prelinger-snare, commons:File:Snare drum unmuffled.ogg",
+          "type": "string"
+        },
+        "provider": {
+          "description": "Market id, e.g. openverse | internet-archive | wikimedia-commons | freesound | jamendo; inferred from the id prefix when omitted",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "name": "sample_pull"
+  },
+  {
+    "description": "Scan installed CLAP/VST2/VST3/AU plugins (metadata only). Set rescan=true to retry bundles an earlier scan quarantined.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Scan installed CLAP/VST2/VST3/AU plugins (metadata only). Set rescan=true to retry bundles an earlier scan quarantined.",
+      "properties": {
+        "rescan": {
+          "description": "Set true to retry bundles an earlier scan quarantined; false reads the published inventory",
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "name": "plugins_scan"
+  },
+  {
+    "description": "Load a preset's CLAP/VST2/VST3 instrument and return its parameters.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "preset": {
+          "description": "Preset name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "preset"
+      ],
+      "type": "object"
+    },
+    "name": "plugins_load"
+  },
+  {
+    "description": "Return parameters for an already-loaded external plugin preset. For built-in OpenSynth use devices_catalog with instrument builtin.open_synth; it needs no plugin loading.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "preset": {
+          "description": "Preset name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "preset"
+      ],
+      "type": "object"
+    },
+    "name": "plugins_params"
+  },
+  {
+    "description": "Open the native plugin editor (macOS VST3 editor support is qualified).",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "preset": {
+          "description": "Preset name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "preset"
+      ],
+      "type": "object"
+    },
+    "name": "plugins_open_gui"
+  },
+  {
+    "description": "Close the native plugin editor.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "preset": {
+          "description": "Preset name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "preset"
+      ],
+      "type": "object"
+    },
+    "name": "plugins_close_gui"
+  },
+  {
+    "description": "Check whether a loaded plugin exposes a native editor.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "preset": {
+          "description": "Preset name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "preset"
+      ],
+      "type": "object"
+    },
+    "name": "plugins_has_gui"
+  },
+  {
+    "description": "Capture plugin state into the project (embedded) or a sidecar file.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Capture plugin state into the project (embedded) or a sidecar file.",
+      "properties": {
+        "expected_revision": {
+          "description": "Project revision guard; the call fails if the project moved to another revision",
+          "type": "integer"
+        },
+        "mode": {
+          "description": "embedded | file",
+          "type": "string"
+        },
+        "path": {
+          "description": "Sidecar path when mode=file",
+          "type": "string"
+        },
+        "preset": {
+          "description": "Preset name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "preset",
+        "mode"
+      ],
+      "type": "object"
+    },
+    "name": "plugins_save_state"
+  },
+  {
+    "description": "Return the per-format program capability table: which formats expose a native program list and which selection mechanisms are available. Data only; never loads a plugin.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Return the per-format program capability table: which formats expose a native program list and which selection mechanisms are available. Data only; never loads a plugin.",
+      "properties": {},
+      "required": [],
+      "type": "object"
+    },
+    "name": "plugins_program_capabilities"
+  },
+  {
+    "description": "List a preset's programs. VST3 plugins expose their own list; other formats return an empty list with the capability that says so. Loads a temporary instance when none is live.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "List a preset's programs. VST3 plugins expose their own list; other formats return an empty list with the capability that says so. Loads a temporary instance when none is live.",
+      "properties": {
+        "preset": {
+          "description": "Preset name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "preset"
+      ],
+      "type": "object"
+    },
+    "name": "plugins_programs"
+  },
+  {
+    "description": "Select one program and write its state into the project (embedded by default, or a verified sidecar file). Uses the plugin's program data where available; pass state_file to select a program by state when it is not. Honours the project revision guard and the plugin-state undo scope.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Select one program and write its state into the project (embedded by default, or a verified sidecar file). Uses the plugin's program data where available; pass state_file to select a program by state when it is not. Honours the project revision guard and the plugin-state undo scope.",
+      "properties": {
+        "expected_revision": {
+          "description": "Project revision guard; the call fails if the project moved to another revision",
+          "type": "integer"
+        },
+        "index": {
+          "description": "Program index from plugins_programs; use alone",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "mode": {
+          "description": "embedded | file (default embedded)",
+          "type": "string"
+        },
+        "name": {
+          "description": "Program name from plugins_programs; use alone",
+          "type": "string"
+        },
+        "path": {
+          "description": "Sidecar path when mode=file",
+          "type": "string"
+        },
+        "preset": {
+          "description": "Preset name",
+          "type": "string"
+        },
+        "state_file": {
+          "description": "State blob for the state-injection fallback; use alone",
+          "type": "string"
+        }
+      },
+      "required": [
+        "preset"
+      ],
+      "type": "object"
+    },
+    "name": "plugins_select_program"
+  },
+  {
+    "description": "Read a preset's current CLAP/VST2/VST3/AU/LV2 state as a portable value: state_hex, bytes, sha256 and truncated. The blob is capped at max_bytes (default 262144, ceiling 3145728); over the cap state_hex is null and truncated is true, never a fragment. Hand the value to `plugins_apply_state`. Loads a temporary AU/VST3/VST2/LV2 instance when the preset is not loaded; a CLAP preset must be loaded first.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Read a preset's current CLAP/VST2/VST3/AU/LV2 state as a portable value: state_hex, bytes, sha256 and truncated. The blob is capped at max_bytes (default 262144, ceiling 3145728); over the cap state_hex is null and truncated is true, never a fragment. Hand the value to `plugins_apply_state`. Loads a temporary AU/VST3/VST2/LV2 instance when the preset is not loaded; a CLAP preset must be loaded first.",
+      "properties": {
+        "max_bytes": {
+          "description": "Optional inline cap in encoded bytes (default 262144)",
+          "maximum": 3145728.0,
+          "minimum": 1.0,
+          "type": "integer"
+        },
+        "preset": {
+          "description": "Preset name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "preset"
+      ],
+      "type": "object"
+    },
+    "name": "plugins_read_state"
+  },
+  {
+    "description": "Write a plugin state value (from `plugins_read_state` or a saved envelope) into the preset. Verifies the envelope's format, plugin identity, version and SHA-256 before writing, clears any state_file and pushes one PluginState undo entry, so the next render uses the applied state.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Write a plugin state value (from `plugins_read_state` or a saved envelope) into the preset. Verifies the envelope's format, plugin identity, version and SHA-256 before writing, clears any state_file and pushes one PluginState undo entry, so the next render uses the applied state.",
+      "properties": {
+        "expected_revision": {
+          "description": "Project revision guard; the call fails if the project moved to another revision",
+          "type": "integer"
+        },
+        "preset": {
+          "description": "Preset name",
+          "type": "string"
+        },
+        "state_hex": {
+          "description": "Hex state envelope from plugins_read_state",
+          "type": "string"
+        }
+      },
+      "required": [
+        "preset",
+        "state_hex"
+      ],
+      "type": "object"
+    },
+    "name": "plugins_apply_state"
+  },
+  {
+    "description": "Start playback.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "required": [],
+      "type": "object"
+    },
+    "name": "transport_play"
+  },
+  {
+    "description": "Pause playback.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "required": [],
+      "type": "object"
+    },
+    "name": "transport_pause"
+  },
+  {
+    "description": "Stop and return to the start.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "required": [],
+      "type": "object"
+    },
+    "name": "transport_stop"
+  },
+  {
+    "description": "Seek to a beat position.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Seek to a beat position.",
+      "properties": {
+        "beat": {
+          "description": "Non-negative beat",
+          "type": "number"
+        }
+      },
+      "required": [
+        "beat"
+      ],
+      "type": "object"
+    },
+    "name": "transport_seek"
+  },
+  {
+    "description": "Return the current transport snapshot.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "required": [],
+      "type": "object"
+    },
+    "name": "transport_state"
+  },
+  {
+    "description": "Mute audio output.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "required": [],
+      "type": "object"
+    },
+    "name": "transport_mute"
+  },
+  {
+    "description": "Unmute audio output.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "required": [],
+      "type": "object"
+    },
+    "name": "transport_unmute"
+  },
+  {
+    "description": "Render the project to a WAV file (faster than realtime). The sample depth and dither default to the project's export setting.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Render the project to a WAV file (faster than realtime). The sample depth and dither default to the project's export setting.",
+      "properties": {
+        "dither": {
+          "description": "TPDF dither at one LSB before integer quantisation; refused for f32; omit to use the project export setting",
+          "type": "boolean"
+        },
+        "path": {
+          "description": "Output WAV path",
+          "type": "string"
+        },
+        "preRoll": {
+          "description": "Wall-clock warm-up per plugin instance before rendering (0..600 s, default 0)",
+          "type": "number"
+        },
+        "pre_roll": {
+          "description": "Deprecated alias for preRoll",
+          "type": "number"
+        },
+        "sample_format": {
+          "description": "WAV sample depth: i16, i24 or f32; omit to use the project export setting",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "name": "render_offline"
+  },
+  {
+    "description": "Render a time window in seconds or bars as an exact slice of the full render, served by the render cache. Optional track subset (a slice with the other tracks muted) and WAV stems. Returns the master path and each stem path with frame count, sample rate and channels, at the app's current output sample rate (Preferences → Audio) and pre-normalisation (a project loudness target applies to render_offline, not here). The result includes pre_encode peak and clipping evidence for the mix and each stem. To hear the window, use `audition_range`.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Render a time window in seconds or bars as an exact slice of the full render, served by the render cache. Optional track subset (a slice with the other tracks muted) and WAV stems. Returns the master path and each stem path with frame count, sample rate and channels, at the app's current output sample rate (Preferences → Audio) and pre-normalisation (a project loudness target applies to render_offline, not here). The result includes pre_encode peak and clipping evidence for the mix and each stem. To hear the window, use `audition_range`.",
+      "properties": {
+        "end": {
+          "description": "Range end in seconds; at most 600 s after start",
+          "type": "number"
+        },
+        "end_bar": {
+          "description": "Exclusive end bar; at most 600 s after start_bar",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "float_wav": {
+          "description": "Save 32-bit float WAV without changing project settings. Use a .wav path",
+          "type": "boolean"
+        },
+        "bus": {
+          "description": "Render one bus's processed return instead of the master mix. The whole graph keeps running, so a track feeding a sidechain key still ducks the return. Do not combine with tracks",
+          "type": "string"
+        },
+        "path": {
+          "description": "Output master WAV path",
+          "type": "string"
+        },
+        "preRoll": {
+          "description": "Wall-clock warm-up per plugin instance before rendering (0..600 s, default 0)",
+          "type": "number"
+        },
+        "pre_roll": {
+          "description": "Deprecated alias for preRoll",
+          "type": "number"
+        },
+        "start": {
+          "description": "Range start in seconds; use with end",
+          "type": "number"
+        },
+        "start_bar": {
+          "description": "One-indexed start bar; use with end_bar instead of seconds",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "stems": {
+          "description": "Write one WAV per selected track (default false)",
+          "type": "boolean"
+        },
+        "tracks": {
+          "description": "Optional track indices; omit for the full mix",
+          "items": {
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "name": "render_range"
+  },
+  {
+    "description": "Report plugin/feature compatibility for the current project.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "required": [],
+      "type": "object"
+    },
+    "name": "render_compat_report"
+  },
+  {
+    "description": "Export the whole mix, one file per track and bus, and stems.json into an existing directory, exactly like the toolbar's Export stems. Use it to hand stems to a mix engineer or to read every part's level at once; for one window of the song use render_range with stems instead. The directory must already exist. The set uses the project's export format at the app's current output sample rate (Preferences → Audio; this call cannot override either), and the mix is normalised to the project loudness target while the stems are not. Returns the manifest path, shared container, sample format, dither, sample rate and channels, and each file's absolute path, frames, peak, RMS and integrated LUFS; a render superseded by a newer one is refused.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Export the whole mix, one file per track and bus, and stems.json into an existing directory, exactly like the toolbar's Export stems. Use it to hand stems to a mix engineer or to read every part's level at once; for one window of the song use render_range with stems instead. The directory must already exist. The set uses the project's export format at the app's current output sample rate (Preferences → Audio; this call cannot override either), and the mix is normalised to the project loudness target while the stems are not. Returns the manifest path, shared container, sample format, dither, sample rate and channels, and each file's absolute path, frames, peak, RMS and integrated LUFS; a render superseded by a newer one is refused.",
+      "properties": {
+        "directory": {
+          "description": "Existing directory to write the stem set into",
+          "type": "string"
+        }
+      },
+      "required": [
+        "directory"
+      ],
+      "type": "object"
+    },
+    "name": "render_stems"
+  },
+  {
+    "description": "Render a time window exactly like render_range and return a WAV of it inline, so you can listen to the part you are working on. The clip is shaped for the model's audio input: mono at 16 kHz by default (the rate and channel count the provider keeps), and `channel` selects which side you hear — mono is the equal-weight downmix, left or right isolates one side, stereo keeps both when the model accepts two channels. `clip_sample_rate` overrides the inline rate (8000..48000). Windows follow render_range's rules; longer than 30 s returns the first 30 s with truncated=true. The full render is written to the requested path or temporary scratch. The pre_encode measurements describe that full-rate window and its saved format, even when the inline clip is truncated. A saved panel session may keep an operator copy subject to its archive format and storage limits.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Render a time window exactly like render_range and return a WAV of it inline, so you can listen to the part you are working on. The clip is shaped for the model's audio input: mono at 16 kHz by default (the rate and channel count the provider keeps), and `channel` selects which side you hear — mono is the equal-weight downmix, left or right isolates one side, stereo keeps both when the model accepts two channels. `clip_sample_rate` overrides the inline rate (8000..48000). Windows follow render_range's rules; longer than 30 s returns the first 30 s with truncated=true. The full render is written to the requested path or temporary scratch. The pre_encode measurements describe that full-rate window and its saved format, even when the inline clip is truncated. A saved panel session may keep an operator copy subject to its archive format and storage limits.",
+      "properties": {
+        "channel": {
+          "description": "Which side to hear: mono (downmix, default), left, right or stereo",
+          "type": "string"
+        },
+        "clip_sample_rate": {
+          "description": "Inline clip rate in Hz, 8000..48000; default 16000",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "end": {
+          "description": "Range end in seconds; at most 600 s after start",
+          "type": "number"
+        },
+        "end_bar": {
+          "description": "Exclusive end bar; at most 600 s after start_bar",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "float_wav": {
+          "description": "Save the full-rate output as 32-bit float WAV. The inline listening format stays the same",
+          "type": "boolean"
+        },
+        "path": {
+          "description": "Output master WAV path; omit for a bounded scratch path the app may reclaim",
+          "type": "string"
+        },
+        "start": {
+          "description": "Range start in seconds; use with end",
+          "type": "number"
+        },
+        "start_bar": {
+          "description": "One-indexed start bar; use with end_bar instead of seconds",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "tracks": {
+          "description": "Optional track indices; omit for the full mix",
+          "items": {
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "type": "array"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "name": "audition_range"
+  },
+  {
+    "description": "Hear a bounded window from an unprocessed clip source, an attached audio reference, or a saved arrangement render. Use exactly one of clip_index from audio_clips_list or an exact path from the current AI conversation. Times are relative to the source file, including for saved renders. Compare with audition_range for the current edited arrangement. Returns inline WAV and the actual source range heard. Does not write the project.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Hear a bounded window from an unprocessed clip source, an attached audio reference, or a saved arrangement render. Use exactly one of clip_index from audio_clips_list or an exact path from the current AI conversation. Times are relative to the source file, including for saved renders. Compare with audition_range for the current edited arrangement. Returns inline WAV and the actual source range heard. Does not write the project.",
+      "properties": {
+        "channel": {
+          "description": "Mono (default), left, right, or stereo",
+          "type": "string"
+        },
+        "clip_index": {
+          "description": "Zero-based clip index from audio_clips_list",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "clip_sample_rate": {
+          "description": "Inline rate in Hz, 8000..48000; default 16000",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "duration_seconds": {
+          "description": "Duration greater than 0 and at most 30 seconds, default 8",
+          "type": "number"
+        },
+        "path": {
+          "description": "Exact absolute path of an attached local audio reference or saved arrangement render from the current AI conversation; omit when using clip_index",
+          "type": "string"
+        },
+        "source_start_seconds": {
+          "description": "Nonnegative source time, default 0",
+          "type": "number"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "name": "audition_clip_source"
+  },
+  {
+    "description": "Analyze audio levels, spectrum and silence. Peaks and levels are not notes; for note events (start, end, midi, name, cents, confidence) call `analyze_notes`, and use `audition_range` to hear a project render. Set beat_grid for pulse evidence only: tempo candidates and observed attack anchors in a 4–30 second passage. Confirm meter and downbeat before editing. Use transients instead to measure attacks in a bounded source or rendered file passage. Results are in file seconds. Use level_window for raw sample peak and RMS on a short window, such as the last 40 ms before a hit. Use mono_fold for unlevelled octave-band loss when stereo is folded to (L+R)/2.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Analyze audio levels, spectrum and silence for a WAV or decoded media file.",
+      "properties": {
+        "beat_grid": {
+          "additionalProperties": false,
+          "description": "Optional pulse evidence mode. The passage must fit within the file.",
+          "properties": {
+            "duration": {
+              "description": "Passage duration in seconds (4 to 30)",
+              "type": "number"
+            },
+            "start": {
+              "description": "Source start in seconds (default 0)",
+              "type": "number"
+            }
+          },
+          "required": [
+            "duration"
+          ],
+          "type": "object"
+        },
+        "level_window": {
+          "additionalProperties": false,
+          "description": "Read sample peak and RMS directly on a file window. Choose only one of mono_fold, level_window, beat_grid and transients.",
+          "properties": {
+            "duration": {
+              "description": "Passage duration greater than 0 and at most 30 seconds",
+              "type": "number"
+            },
+            "start": {
+              "description": "File start in seconds (default 0)",
+              "type": "number"
+            }
+          },
+          "required": [
+            "duration"
+          ],
+          "type": "object"
+        },
+        "mono_fold": {
+          "additionalProperties": false,
+          "description": "Measure octave-band loss against the stereo channel mean without normalization. Choose only one of mono_fold, level_window, beat_grid and transients.",
+          "properties": {
+            "duration": {
+              "description": "Passage duration from 0.5 to 30 seconds",
+              "type": "number"
+            },
+            "start": {
+              "description": "File start in seconds (default 0)",
+              "type": "number"
+            }
+          },
+          "required": [
+            "duration"
+          ],
+          "type": "object"
+        },
+        "path": {
+          "description": "Absolute audio file path, e.g. from render_range or a conversation reference",
+          "type": "string"
+        },
+        "top_peaks": {
+          "description": "Number of spectral peaks to return in levels mode (0-64, default 8)",
+          "type": "integer"
+        },
+        "transients": {
+          "additionalProperties": false,
+          "description": "Optional attack evidence mode. The passage must fit within the file.",
+          "properties": {
+            "duration": {
+              "description": "Passage duration greater than 0 and at most 20 seconds",
+              "type": "number"
+            },
+            "limit": {
+              "description": "Maximum number of attacks, 1 to 128 (default 24)",
+              "type": "integer"
+            },
+            "min_gap_ms": {
+              "description": "Minimum spacing in milliseconds, 1 to 250 (default 35)",
+              "type": "number"
+            },
+            "start": {
+              "description": "File start in seconds (default 0)",
+              "type": "number"
+            }
+          },
+          "required": [
+            "duration"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "name": "audio_analyze"
+  },
+  {
+    "description": "Analyze and transcribe an external audio file or stem into notes: note events (start, end, MIDI number, name, cents off that pitch, detector confidence) with one monophonic detector; prefer writing the notes from what you hear, and use this only for audio whose notes are not written in the project DSL and that you cannot transcribe reliably by ear. Note times are relative to `start`, and the window may be a section. Every note also carries `start_beat` (quarter-note beats from the window start, 0-based), `duration_beats`, `bar` (1-based) and `suggested_duration`, the nearest DSL token (w, h, q, 8th, 16th, 32nd, 64th, dotted or triplet). Derive the duration token from `suggested_duration`; do not invent one. An octave is only decided when it beats the other octave by 6 dB on its own fundamental: a note whose sub-octave or octave-up layer is that close carries `octave_ambiguous: true` and `octave_runner_up` (the MIDI number it would take instead), and a repeated pitch holds its earlier octave while the reading stays ambiguous. When a note you need is flagged, do not pick an octave from it — re-run on a window where that voice sounds alone (or a stem), and say which octave you could not pin down. The top level reports the grid the beats assume (`tempo_bpm`, `time_signature`, `beats_per_bar`, `beat_seconds`, `quantise` tolerance); it comes from the tempo/time_signature arguments, else this WAV's render metadata, else the `project` you pass, and only then the engine default 120 BPM 4/4 with a warning. If the external tempo is unknown, ask audio_analyze for beat_grid evidence before supplying a confirmed grid. A note more than `quantise` beats off the 1/16 grid is named in `warnings` and its suggestion is a guess. A chord sets `polyphonic: true` and only the strongest voice is transcribed; drums, chords and ornaments under about 50 ms are not. Use `audition_range` to hear the same window.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Analyze and transcribe an external audio file or stem into notes: note events (start, end, MIDI number, name, cents off that pitch, detector confidence) with one monophonic detector; prefer writing the notes from what you hear, and use this only for audio whose notes are not written in the project DSL and that you cannot transcribe reliably by ear. Note times are relative to `start`, and the window may be a section. Every note also carries `start_beat` (quarter-note beats from the window start, 0-based), `duration_beats`, `bar` (1-based) and `suggested_duration`, the nearest DSL token (w, h, q, 8th, 16th, 32nd, 64th, dotted or triplet). Derive the duration token from `suggested_duration`; do not invent one. An octave is only decided when it beats the other octave by 6 dB on its own fundamental: a note whose sub-octave or octave-up layer is that close carries `octave_ambiguous: true` and `octave_runner_up` (the MIDI number it would take instead), and a repeated pitch holds its earlier octave while the reading stays ambiguous. When a note you need is flagged, do not pick an octave from it — re-run on a window where that voice sounds alone (or a stem), and say which octave you could not pin down. The top level reports the grid the beats assume (`tempo_bpm`, `time_signature`, `beats_per_bar`, `beat_seconds`, `quantise` tolerance); it comes from the tempo/time_signature arguments, else this WAV's render metadata, else the `project` you pass, and only then the engine default 120 BPM 4/4 with a warning. If the external tempo is unknown, ask audio_analyze for beat_grid evidence before supplying a confirmed grid. A note more than `quantise` beats off the 1/16 grid is named in `warnings` and its suggestion is a guess. A chord sets `polyphonic: true` and only the strongest voice is transcribed; drums, chords and ornaments under about 50 ms are not. Use `audition_range` to hear the same window.",
+      "properties": {
+        "end": {
+          "description": "Exclusive window end in seconds (default the file end)",
+          "type": "number"
+        },
+        "max_notes": {
+          "description": "Maximum notes to return, earliest first (1-1024, default 256)",
+          "type": "integer"
+        },
+        "min_confidence": {
+          "description": "Drop notes scored below this detector confidence (0-1, default 0)",
+          "type": "number"
+        },
+        "path": {
+          "description": "Absolute WAV path, e.g. from render_range",
+          "type": "string"
+        },
+        "project": {
+          "description": "Optional .ocp path to read tempo and time_signature from when the WAV is not a render_range output",
+          "type": "string"
+        },
+        "quantize": {
+          "description": "Snap start_beat and duration_beats to the nearest 1/16 and also report start_beat_quantised and duration_beats_quantised (default false: the reported beats stay the measurement)",
+          "type": "boolean"
+        },
+        "start": {
+          "description": "Window start in seconds (default 0)",
+          "type": "number"
+        },
+        "tempo": {
+          "description": "Tempo in BPM for the beat fields; default the render's project tempo, else the engine default 120 (warned)",
+          "type": "number"
+        },
+        "time_signature": {
+          "description": "Time signature such as \"4/4\" or \"3/4\"; default the render's project meter, else 4/4 (warned)",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "name": "analyze_notes"
+  },
+  {
+    "description": "Split a rendered WAV into stems before transcribing: `mode` auto (default) runs demucs or spleeter when one is on PATH and otherwise falls back to the built-in band split, external refuses when neither is installed, band always uses the fallback. The band split is a 200 Hz low/high filter split plus the mid for a stereo source — an approximation, not a source separation — and `method` says which path ran. Feed each stem to `analyze_notes`.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Split a rendered WAV into stems before transcribing: `mode` auto (default) runs demucs or spleeter when one is on PATH and otherwise falls back to the built-in band split, external refuses when neither is installed, band always uses the fallback. The band split is a 200 Hz low/high filter split plus the mid for a stereo source — an approximation, not a source separation — and `method` says which path ran. Feed each stem to `analyze_notes`.",
+      "properties": {
+        "mode": {
+          "description": "auto (default) prefers an installed CLI, external refuses when none is installed, band always uses the fallback",
+          "enum": [
+            "auto",
+            "external",
+            "band"
+          ],
+          "type": "string"
+        },
+        "out_dir": {
+          "description": "Parent directory for a fresh run subfolder; use the returned stem paths. Defaults to a temporary directory.",
+          "type": "string"
+        },
+        "path": {
+          "description": "Absolute WAV path, e.g. from render_range",
+          "type": "string"
+        },
+        "runtime_id": {
+          "description": "Optional installed separator catalog ID from plugin_search or plugin_pull. Requires that exact managed runtime and refuses instead of falling back. Cannot be combined with band mode.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "name": "separate_stems"
+  },
+  {
+    "description": "Compare two audio files (WAV or supported compressed media such as MP3/FLAC) using shared comparison definitions: LUFS delta, per-octave and body deltas, envelope and waveform correlation, max sample difference, level-matched log-mel error, tilt, crest/attack, bass harmonics and headline score. Compressed media is decoded to stereo at its native sample rate. Both analyzed signals must share a sample rate and frame count; render both sides at the same rate, which is the app's current output rate (Preferences → Audio). Different lengths or sample rates are refused unless allow_mismatch=true. For a passage, specify duration (up to 30 seconds) and independent reference_start and candidate_start in source seconds. A passage must fit both files. Set listen=true with a 0.4–8 second passage to receive two level-matched listening copies when measurable. They preserve source timing; the report verifies the actual delivered PCM. The listening comparison is labeled, so it is open rather than blind.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Compare two audio files (WAV or supported compressed media such as MP3/FLAC) using shared comparison definitions: LUFS delta, per-octave and body deltas, envelope and waveform correlation, max sample difference, level-matched log-mel error, tilt, crest/attack, bass harmonics and headline score. Compressed media is decoded to stereo at its native sample rate. Both analyzed signals must share a sample rate and frame count; render both sides at the same rate, which is the app's current output rate (Preferences → Audio). Different lengths or sample rates are refused unless allow_mismatch=true. For a passage, specify duration (up to 30 seconds) and independent reference_start and candidate_start in source seconds. A passage must fit both files. Set listen=true with a 0.4–8 second passage to receive two level-matched listening copies when measurable. They preserve source timing; the report verifies the actual delivered PCM. The listening comparison is labeled, so it is open rather than blind.",
+      "properties": {
+        "allow_mismatch": {
+          "description": "Resample and trim unequal lengths/rates instead of refusing (default false)",
+          "type": "boolean"
+        },
+        "candidate": {
+          "description": "Candidate audio file path (WAV, MP3, FLAC, or other supported media)",
+          "type": "string"
+        },
+        "candidate_start": {
+          "description": "Candidate passage start in source seconds, default 0. Requires duration.",
+          "type": "number"
+        },
+        "channel": {
+          "description": "Listening copies only: mono (default), left, right or stereo",
+          "type": "string"
+        },
+        "clip_sample_rate": {
+          "description": "Listening copies only: delivery rate in Hz, 8000..48000; default 16000",
+          "type": "integer"
+        },
+        "duration": {
+          "description": "Shared passage length in seconds, greater than 0 and at most 30; omit for whole files",
+          "type": "number"
+        },
+        "listen": {
+          "description": "Deliver a reference and candidate WAV pair with verified playback loudness; requires a duration of 0.4–8 seconds",
+          "type": "boolean"
+        },
+        "listening_only": {
+          "description": "With listen=true, return the matched pair and source windows without alignment or similarity metrics. Each source is converted independently to the listening rate.",
+          "type": "boolean"
+        },
+        "reference": {
+          "description": "Reference audio file path (WAV, MP3, FLAC, or other supported media)",
+          "type": "string"
+        },
+        "reference_start": {
+          "description": "Reference passage start in source seconds, default 0. Requires duration.",
+          "type": "number"
+        },
+        "stems": {
+          "description": "Use the narrower stem alignment window (default false)",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "reference",
+        "candidate"
+      ],
+      "type": "object"
+    },
+    "name": "audio_compare"
+  },
+  {
+    "description": "List output audio devices.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "required": [],
+      "type": "object"
+    },
+    "name": "audio_devices"
+  },
+  {
+    "description": "Return the current audio configuration.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "required": [],
+      "type": "object"
+    },
+    "name": "audio_config"
+  },
+  {
+    "description": "Undo one project edit.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "expected_revision": {
+          "description": "Project revision guard; the call fails if the project moved to another revision",
+          "type": "integer"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "name": "undo"
+  },
+  {
+    "description": "Redo one project edit.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "expected_revision": {
+          "description": "Project revision guard; the call fails if the project moved to another revision",
+          "type": "integer"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "name": "redo"
+  },
+  {
+    "description": "Return undo/redo availability and labels.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "required": [],
+      "type": "object"
+    },
+    "name": "undo_state"
+  },
+  {
+    "description": "List the undo stack in order — index, label, scopes, timestamp and whether each entry is applied (levels above `applied` are redo) — so you can tell the user what changed and in which order. Read-only: it never moves the cursor; undo and redo do that. Returns the entries plus the applied and redoable counts.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "required": [],
+      "type": "object"
+    },
+    "name": "undo_history"
+  },
+  {
+    "description": "List bundled sampler assets (soundfonts, kits, etc.).",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "required": [],
+      "type": "object"
+    },
+    "name": "sampler_assets"
+  },
+  {
+    "description": "Read the live mixer's current published meters without starting playback or rendering. Returns the same available/reason/playing state, master channels, mono state, master/track/bus peak and RMS levels in dBFS, gain reduction/effect bands and ceiling margins in dB, clipping latches, optional short-term LUFS (3-second window), stereo correlation and goniometer, and spectrum when already enabled. Unavailable or absent readings are not zero or silence measurements; paused readings may retain the last published chunk. This is live monitoring, not an offline analysis of current edits. For a reproducible headless measurement use render_range then audio_analyze.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "required": [],
+      "type": "object"
+    },
+    "name": "meter_snapshot"
+  },
+  {
+    "description": "Without arguments, list built-in mixer effects. For authoritative OpenSynth parameters use instrument builtin.open_synth, optionally prefix (e.g. osc.a. or mod.1.), query, or group. Returns bounded pages with ranges, units, defaults, enums, aliases, indexed families and implementation status; use next_offset for more. Defaults are not current preset values. Every entry carries primary: the ten to twenty parameters that carry the device — start there instead of reading every page. Prefer prefix or query over paging: pages hold 24 entries and the syntax has hundreds.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "group": {
+          "description": "Exact group id from returned groups",
+          "type": "string"
+        },
+        "instrument": {
+          "description": "builtin.open_synth; omit for mixer effects",
+          "type": "string"
+        },
+        "limit": {
+          "description": "Entries per page, default 24, maximum 64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "offset": {
+          "description": "Page offset, default 0",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "prefix": {
+          "description": "Project parameter key prefix, e.g. osc.a. or filter.",
+          "type": "string"
+        },
+        "query": {
+          "description": "Case-insensitive schema text filter",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "name": "devices_catalog"
+  },
+  {
+    "description": "List the device preset library: the shipped factory bank merged with the user library under ~/.opencompose, optionally for one device. Every row carries source (factory or user), shadows (a user row replaced a factory row with the same id) and deletable (false for factory rows). A broken user file is reported in warnings while the factory rows still list.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "List the device preset library: the shipped factory bank merged with the user library under ~/.opencompose, optionally for one device. Every row carries source (factory or user), shadows (a user row replaced a factory row with the same id) and deletable (false for factory rows). A broken user file is reported in warnings while the factory rows still list.",
+      "properties": {
+        "device": {
+          "description": "Optional device id from devices_catalog; omit to list every device",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "name": "device_presets_list"
+  },
+  {
+    "description": "Apply a device preset to the effect insert at index on target, as one undo entry. The preset must belong to the device the insert holds: a preset for another device is refused with the same sentence the apply_device_preset command returns. An unknown preset id is refused by name. Use device_presets_list for ids and devices_catalog for the insert's device.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Apply a device preset to the effect insert at index on target, as one undo entry. The preset must belong to the device the insert holds: a preset for another device is refused with the same sentence the apply_device_preset command returns. An unknown preset id is refused by name. Use device_presets_list for ids and devices_catalog for the insert's device.",
+      "properties": {
+        "device": {
+          "description": "Device id the effect insert holds; a preset for another device is refused",
+          "type": "string"
+        },
+        "effect_index": {
+          "description": "Effect index in the target's chain",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "expected_revision": {
+          "description": "Project revision guard; the call fails if the project moved to another revision",
+          "type": "integer"
+        },
+        "id": {
+          "description": "Preset id from device_presets_list",
+          "type": "string"
+        },
+        "target": {
+          "description": "track:N | bus:name | master | preset:name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "target",
+        "effect_index",
+        "device"
+      ],
+      "type": "object"
+    },
+    "name": "device_preset_apply"
+  },
+  {
+    "description": "Add an effect to track:N, bus:name, master, or preset:name.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Add an effect to track:N, bus:name, master, or preset:name.",
+      "properties": {
+        "effect_type": {
+          "description": "eq | compression | limiter | reverb | delay | ...",
+          "type": "string"
+        },
+        "expected_revision": {
+          "description": "Project revision guard; the call fails if the project moved to another revision",
+          "type": "integer"
+        },
+        "target": {
+          "description": "track:N | bus:name | master | preset:name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "target",
+        "effect_type"
+      ],
+      "type": "object"
+    },
+    "name": "effects_add"
+  },
+  {
+    "description": "Remove an effect by index.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Remove an effect by index.",
+      "properties": {
+        "expected_revision": {
+          "description": "Project revision guard; the call fails if the project moved to another revision",
+          "type": "integer"
+        },
+        "index": {
+          "description": "Effect index",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "target": {
+          "description": "track:N | bus:name | master | preset:name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "target",
+        "index"
+      ],
+      "type": "object"
+    },
+    "name": "effects_remove"
+  },
+  {
+    "description": "Bypass or enable an existing effect without changing its parameters or removing the insert. The index is zero-based within the target's effects chain.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Bypass or enable an existing effect without changing its parameters or removing the insert. The index is zero-based within the target's effects chain.",
+      "properties": {
+        "bypass": {
+          "description": "true bypasses the insert; false enables it",
+          "type": "boolean"
+        },
+        "expected_revision": {
+          "description": "Project revision guard; the call fails if the project moved to another revision",
+          "type": "integer"
+        },
+        "index": {
+          "description": "Zero-based effect index in the target's chain",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "target": {
+          "description": "track:N | bus:name | master | preset:name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "target",
+        "index",
+        "bypass"
+      ],
+      "type": "object"
+    },
+    "name": "effects_set_bypass"
+  },
+  {
+    "description": "Set an effect parameter.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Set an effect parameter.",
+      "properties": {
+        "expected_revision": {
+          "description": "Project revision guard; the call fails if the project moved to another revision",
+          "type": "integer"
+        },
+        "index": {
+          "description": "Effect index",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "param": {
+          "description": "Parameter name",
+          "type": "string"
+        },
+        "target": {
+          "description": "track:N | bus:name | master | preset:name",
+          "type": "string"
+        },
+        "value": {
+          "description": "Parameter value",
+          "type": "string"
+        }
+      },
+      "required": [
+        "target",
+        "index",
+        "param",
+        "value"
+      ],
+      "type": "object"
+    },
+    "name": "effects_set_param"
+  },
+  {
+    "description": "Create a bus.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Create a bus.",
+      "properties": {
+        "expected_revision": {
+          "description": "Project revision guard; the call fails if the project moved to another revision",
+          "type": "integer"
+        },
+        "name": {
+          "description": "Bus name",
+          "type": "string"
+        },
+        "routes": {
+          "description": "Route targets, e.g. [\"master\"]",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "name": "buses_add"
+  },
+  {
+    "description": "Replace a bus's routes.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Replace a bus's routes.",
+      "properties": {
+        "expected_revision": {
+          "description": "Project revision guard; the call fails if the project moved to another revision",
+          "type": "integer"
+        },
+        "name": {
+          "description": "Bus name",
+          "type": "string"
+        },
+        "routes": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "name",
+        "routes"
+      ],
+      "type": "object"
+    },
+    "name": "buses_routes"
+  },
+  {
+    "description": "Update a bus return's fader, mute and solo.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Update a bus return's fader, mute and solo.",
+      "properties": {
+        "expected_revision": {
+          "description": "Project revision guard; the call fails if the project moved to another revision",
+          "type": "integer"
+        },
+        "mute": {
+          "description": "Mute the bus return",
+          "type": "boolean"
+        },
+        "name": {
+          "description": "Bus name",
+          "type": "string"
+        },
+        "solo": {
+          "description": "Solo the bus return; its inputs stay audible",
+          "type": "boolean"
+        },
+        "volume_db": {
+          "description": "Return fader in dB, -120 to 24",
+          "type": "number"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "name": "buses_mix"
+  },
+  {
+    "description": "Remove an unused bus. A bus that still receives track outputs, sends or bus routes is rejected unless reroute is true; rerouting returns those track outputs to master and drops the sends/routes into it.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Remove an unused bus. A bus that still receives track outputs, sends or bus routes is rejected unless reroute is true; rerouting returns those track outputs to master and drops the sends/routes into it.",
+      "properties": {
+        "expected_revision": {
+          "description": "Project revision guard; the call fails if the project moved to another revision",
+          "type": "integer"
+        },
+        "name": {
+          "description": "Bus name",
+          "type": "string"
+        },
+        "reroute": {
+          "description": "Delete anyway, re-routing the bus's references",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "name": "buses_remove"
+  },
+  {
+    "description": "Begin an atomic batch of agent edits. Returns the base revision to pass as expected_revision until the batch is committed or rolled back.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Begin an atomic batch of agent edits. Returns the base revision to pass as expected_revision until the batch is committed or rolled back.",
+      "properties": {
+        "expected_revision": {
+          "description": "Project revision guard; the call fails if the project moved to another revision",
+          "type": "integer"
+        },
+        "label": {
+          "description": "Optional batch label",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "name": "transaction_begin"
+  },
+  {
+    "description": "Commit the active agent transaction and squash its edits into one undo entry.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Commit the active agent transaction and squash its edits into one undo entry.",
+      "properties": {},
+      "required": [],
+      "type": "object"
+    },
+    "name": "transaction_commit"
+  },
+  {
+    "description": "Discard this turn's agent transaction, restoring the project and undo history to before the turn's first edit. The panel asks the user before it runs.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Discard this turn's agent transaction, restoring the project and undo history to before the turn's first edit. The panel asks the user before it runs.",
+      "properties": {},
+      "required": [],
+      "type": "object"
+    },
+    "name": "transaction_rollback"
+  },
+  {
+    "description": "List the skill index (id, title, when, category, version, source). Bodies stay unread until read_skill; a skill is reference text and never grants a tool.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "required": [],
+      "type": "object"
+    },
+    "name": "list_skills"
+  },
+  {
+    "description": "Read one skill body by exact id from list_skills. For id production-curriculum, pass topic to get a genre, scene, or technique exercise, or omit it to browse fields. Returns Markdown and referenced panel tools.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Read one skill body by exact id from list_skills. For id production-curriculum, pass topic to get a genre, scene, or technique exercise, or omit it to browse fields. Returns Markdown and referenced panel tools.",
+      "properties": {
+        "id": {
+          "description": "Exact skill id from list_skills",
+          "type": "string"
+        },
+        "topic": {
+          "description": "Optional for production-curriculum only. Field, genre, scene, or production technique",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "name": "read_skill"
+  },
+  {
+    "description": "List saved AI conversations newest first, with title, turns, tokens and update time. Omit project to use the open project; all lists every project.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "List saved AI conversations newest first, with title, turns, tokens and update time. Omit project to use the open project; all lists every project.",
+      "properties": {
+        "all": {
+          "description": "List every project's conversations",
+          "type": "boolean"
+        },
+        "project": {
+          "description": "Optional absolute .ocp path; omit for the open project",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "name": "sessions_list"
+  },
+  {
+    "description": "Start a saved AI conversation and make it the one this session autosaves into. parent forks that conversation.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Start a saved AI conversation and make it the one this session autosaves into. parent forks that conversation.",
+      "properties": {
+        "parent": {
+          "description": "Session id to fork",
+          "type": "string"
+        },
+        "project": {
+          "description": "Optional absolute .ocp path; omit for the open project",
+          "type": "string"
+        },
+        "title": {
+          "description": "Optional title; the first user message is the default",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "name": "sessions_new"
+  },
+  {
+    "description": "Return a saved conversation's metadata and its wire messages, ready to replay. Loading makes it the autosave target.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Return a saved conversation's metadata and its wire messages, ready to replay. Loading makes it the autosave target.",
+      "properties": {
+        "id": {
+          "description": "Session id from sessions_list",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "name": "sessions_load"
+  },
+  {
+    "description": "Rename a saved AI conversation.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Rename a saved AI conversation.",
+      "properties": {
+        "id": {
+          "description": "Session id",
+          "type": "string"
+        },
+        "title": {
+          "description": "New title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "title"
+      ],
+      "type": "object"
+    },
+    "name": "sessions_rename"
+  },
+  {
+    "description": "Delete a saved AI conversation and its messages.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Delete a saved AI conversation and its messages.",
+      "properties": {
+        "id": {
+          "description": "Session id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "name": "sessions_delete"
+  },
+  {
+    "description": "Fold a saved conversation's older turns into one plain-text summary that also lists the most recent tool calls as text. No tool call, provider state or signature survives, so a model that requires thought signatures can replay it. Returns the compacted messages.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "description": "Fold a saved conversation's older turns into one plain-text summary that also lists the most recent tool calls as text. No tool call, provider state or signature survives, so a model that requires thought signatures can replay it. Returns the compacted messages.",
+      "properties": {
+        "id": {
+          "description": "Session id",
+          "type": "string"
+        },
+        "target_tokens": {
+          "description": "Optional token target for the summary",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "name": "sessions_compact"
+  }
+]

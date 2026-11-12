@@ -1,0 +1,301 @@
+/* ============================================================================
+   Sample markets — bottom panel
+   A client of other people's catalogues: search row, kind chips, provider
+   chips with availability, result rows, and one status line.
+   ============================================================================ */
+
+.sample-market-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+}
+
+.sample-market-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+}
+
+.sample-market-search {
+  flex: 1 1 200px;
+  min-width: 120px;
+  height: 24px;
+  padding: 0 8px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: var(--font-size-sm);
+}
+
+.sample-market-search:focus {
+  outline: none;
+  border-color: var(--border-focus);
+}
+
+.sample-market-search::placeholder {
+  color: var(--text-muted);
+}
+
+.sample-market-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.sample-market-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 20px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-primary);
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast),
+    border-color var(--transition-fast);
+}
+
+.sample-market-chip:hover {
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+}
+
+.sample-market-chip.on {
+  border-color: var(--accent);
+  background: var(--accent-dim);
+  color: var(--accent);
+}
+
+.sample-market-provider.unavailable {
+  border-style: dashed;
+  color: var(--text-muted);
+}
+
+.sample-market-provider.unavailable.on {
+  border-color: var(--text-muted);
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+}
+
+.sample-market-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--play-green);
+  flex-shrink: 0;
+}
+
+/* A placeholder chip while the markets are still being read. */
+.sample-market-chip-loading {
+  cursor: default;
+  opacity: 0.7;
+}
+
+.sample-market-dot.off {
+  background: var(--text-muted);
+}
+
+.sample-market-key {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+}
+
+.sample-market-key-label {
+  font-size: var(--font-size-xs);
+  color: var(--text-secondary);
+}
+
+.sample-market-oauth-status {
+  flex: 1 1 12rem;
+  min-width: 0;
+  font-size: var(--font-size-xs);
+  color: var(--text-secondary);
+}
+
+.sample-market-oauth input {
+  flex: 0 1 9rem;
+}
+
+.sample-market-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.sample-market-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  border-left: 3px solid transparent;
+  cursor: pointer;
+  transition: background var(--transition-fast);
+}
+
+.sample-market-row:hover {
+  background: var(--bg-elevated);
+}
+
+.sample-market-row.selected {
+  background: var(--bg-track-selected);
+  border-left-color: var(--accent);
+}
+
+/* Markets and the first search answer off-thread; show rows until they do. */
+.sample-market-skeleton {
+  padding: 4px 0;
+}
+
+.sample-market-row-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  pointer-events: none;
+  cursor: default;
+}
+
+.sample-market-row-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.sample-market-name {
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sample-market-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.sample-market-tag {
+  color: var(--text-secondary);
+}
+
+.sample-market-credit {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sample-market-license {
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text-muted);
+  font-size: 9px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.sample-market-license.ok {
+  border-color: var(--play-green);
+  color: var(--play-green);
+}
+
+.sample-market-license.notice {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.sample-market-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.sample-market-actions .toolbar-btn {
+  height: 22px;
+  min-height: 22px;
+  font-size: 10px;
+}
+
+.sample-market-actions .toolbar-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.sample-market-empty {
+  padding: 16px 12px;
+  color: var(--text-muted);
+  font-size: var(--font-size-sm);
+  text-align: center;
+}
+
+.sample-market-status {
+  flex-shrink: 0;
+  padding: 4px 8px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-size: var(--font-size-xs);
+  overflow-wrap: anywhere;
+}
+
+.sample-market-status:empty {
+  display: none;
+}
+
+/* A licence the user must accept before the file lands in the project. */
+.sample-market-licence-prompt {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-secondary);
+}
+
+.sample-market-licence-text {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  color: var(--text-primary);
+}
+
+.sample-market-licence-detail {
+  margin: 0;
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.sample-market-licence-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}

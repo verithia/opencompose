@@ -1,0 +1,1093 @@
+// OpenCompose performance reference session.
+// 20 tracks, 32 bars at 120 BPM, fixed 4/4, no plugins and no outside assets.
+// Eight OpenSynth tracks exercise unison, wavetable, filter and preset FX; eight
+// SoundFont tracks use GM programs; four sampler tracks use @kit drum kits.
+// Sampler pads read the checked-in test tone at
+// crates/oc-engine/tests/fixtures/sampler/tone.flac, so the checkout is enough.
+//
+// Render with:
+//   target/release/ocp render benchmarks/session-20tracks.ocp \
+//     --output /tmp/perf.wav --soundfont <gm-bank.sf2> \
+//     --sample-rate 48000 --no-loudness-normalisation
+//   Any General MIDI bank works; the bundled FluidR3Mono_GM.sf3 is suitable.
+//   scripts/perf/render_bench.sh          # the gated measurement
+//
+// The stage table, the throughput measurements and the remaining floor are in
+// docs/performance-targets.md.
+
+@ocp "0.2.0"
+
+@project "Performance Reference 20T"
+  tempo: 120
+  time_signature: 4/4
+  key: C minor
+
+// ---------------------------------------------------------------------------
+// OpenSynth patches
+// ---------------------------------------------------------------------------
+
+@preset synth_pad
+  source: builtin
+  plugin: "builtin.open_synth"
+  params: {synth_version: 2, osc.a.waveform: 4, osc.a.wavetable_position: 0.58, osc.a.level: 0.55, osc.a.warp_mode: 2, osc.a.warp_amount: 0.35, osc.b.waveform: 0, osc.b.level: 0.28, osc.b.semitones: 12, noise.level: 0.03, unison.voices: 2, unison.detune: 10ct, unison.width: 0.7, filter.model: 1, filter.cutoff: 2800Hz, filter.resonance: 0.28, filter.env.amount: 1.8, filter_env.attack: 0.45s, filter_env.decay: 1.2s, filter_env.sustain: 0.6, filter_env.release: 1.5s, amp.attack: 0.65s, amp.decay: 1.4s, amp.sustain: 0.78, amp.release: 1.8s, voice.polyphony: 8, quality.oversampling: 1, output.gain: 0.2}
+  effects:
+    - chorus: rate=0.28, depth=4.2, mix=24%
+
+@preset synth_lead
+  source: builtin
+  plugin: "builtin.open_synth"
+  params: {synth_version: 2, osc.a.waveform: 1, osc.a.level: 0.62, osc.b.waveform: 2, osc.b.level: 0.18, osc.b.semitones: -12, osc.b.unison: 2, osc.b.detune: 8ct, osc.b.width: 0.4, unison.voices: 1, unison.detune: 6ct, unison.width: 0.5, filter.model: 1, filter.cutoff: 2100Hz, filter.resonance: 0.38, filter.drive: 0.15, filter.env.amount: 3.6, filter_env.attack: 0.005s, filter_env.decay: 0.28s, filter_env.sustain: 0.35, filter_env.release: 0.3s, amp.attack: 0.008s, amp.decay: 0.35s, amp.sustain: 0.55, amp.release: 0.4s, lfo.sync: true, lfo.division: 3, mod.1.source: 0, mod.1.destination: 4, mod.1.amount: 0.12, voice.polyphony: 6, quality.oversampling: 1, output.gain: 0.22}
+  effects:
+    - delay: time_l=330ms, time_r=495ms, feedback=26%, mix=16%
+
+@preset synth_bass
+  source: builtin
+  plugin: "builtin.open_synth"
+  params: {synth_version: 2, osc.a.waveform: 1, osc.a.level: 0.7, osc.b.waveform: 2, osc.b.level: 0.2, osc.b.semitones: -12, sub.level: 0.45, sub.semitones: -12, filter.model: 2, filter.cutoff: 640Hz, filter.resonance: 0.32, filter.drive: 0.4, filter.env.amount: 3.2, filter_env.attack: 0.003s, filter_env.decay: 0.2s, filter_env.sustain: 0.15, filter_env.release: 0.18s, amp.attack: 0.004s, amp.decay: 0.22s, amp.sustain: 0.5, amp.release: 0.12s, voice.mono: true, voice.legato: true, voice.glide: 0.06s, voice.polyphony: 1, quality.oversampling: 1, output.gain: 0.26}
+  effects:
+    - saturator: drive=16%, mix=28%
+
+@preset synth_pluck
+  source: builtin
+  plugin: "builtin.open_synth"
+  params: {synth_version: 2, osc.a.waveform: 2, osc.a.level: 0.62, osc.a.pulse_width: 0.32, osc.b.waveform: 1, osc.b.level: 0.2, osc.b.semitones: 12, unison.voices: 1, unison.detune: 4ct, filter.model: 0, filter.cutoff: 2600Hz, filter.resonance: 0.42, filter.env.amount: 4.2, filter_env.attack: 0s, filter_env.decay: 0.16s, filter_env.sustain: 0, filter_env.release: 0.12s, amp.attack: 0s, amp.decay: 0.2s, amp.sustain: 0.08, amp.release: 0.22s, voice.polyphony: 8, quality.oversampling: 1, output.gain: 0.24}
+  effects:
+    - chorus: rate=0.42, depth=3.5, mix=18%
+
+@preset synth_keys
+  source: builtin
+  plugin: "builtin.open_synth"
+  params: {synth_version: 2, osc.a.waveform: 4, osc.a.wavetable_position: 0.32, osc.a.level: 0.55, osc.a.warp_mode: 6, osc.a.warp_amount: 0.2, osc.b.waveform: 0, osc.b.level: 0.3, osc.b.semitones: 12, sub.level: 0.15, unison.voices: 1, unison.detune: 4ct, filter.model: 0, filter.cutoff: 3600Hz, filter.resonance: 0.22, filter.env.amount: 1.5, amp.attack: 0.01s, amp.decay: 0.6s, amp.sustain: 0.55, amp.release: 0.9s, voice.polyphony: 8, quality.oversampling: 1, output.gain: 0.2}
+  effects:
+    - eq: low_freq=160Hz, low_gain=-1.5dB, mid_freq=1000Hz, mid_gain=1.5dB, q=1.0, high_freq=8000Hz, high_gain=-1dB
+
+@preset synth_arp
+  source: builtin
+  plugin: "builtin.open_synth"
+  params: {synth_version: 2, osc.a.waveform: 2, osc.a.level: 0.5, osc.b.waveform: 4, osc.b.wavetable_position: 0.7, osc.b.level: 0.3, osc.b.semitones: 12, osc.b.unison: 1, osc.b.detune: 4ct, unison.voices: 1, unison.detune: 4ct, filter.model: 1, filter.cutoff: 4200Hz, filter.resonance: 0.3, filter.env.amount: 2.2, amp.attack: 0.002s, amp.decay: 0.18s, amp.sustain: 0.2, amp.release: 0.25s, voice.polyphony: 6, quality.oversampling: 1, output.gain: 0.2}
+  effects:
+    - delay: time_l=250ms, time_r=375ms, feedback=30%, mix=18%
+
+@preset synth_brass
+  source: builtin
+  plugin: "builtin.open_synth"
+  params: {synth_version: 2, osc.a.waveform: 1, osc.a.level: 0.6, osc.b.waveform: 1, osc.b.level: 0.25, osc.b.semitones: 12, unison.voices: 2, unison.detune: 7ct, unison.width: 0.5, filter.model: 1, filter.cutoff: 1900Hz, filter.resonance: 0.3, filter.drive: 0.2, filter.env.amount: 4.8, filter_env.attack: 0.02s, filter_env.decay: 0.35s, filter_env.sustain: 0.45, filter_env.release: 0.3s, amp.attack: 0.03s, amp.decay: 0.4s, amp.sustain: 0.6, amp.release: 0.35s, voice.polyphony: 6, quality.oversampling: 1, output.gain: 0.2}
+  effects:
+    - saturator: drive=10%, mix=20%
+
+@preset synth_texture
+  source: builtin
+  plugin: "builtin.open_synth"
+  params: {synth_version: 2, osc.a.waveform: 4, osc.a.wavetable_position: 0.82, osc.a.level: 0.45, osc.a.warp_mode: 16, osc.a.warp_amount: 0.4, osc.b.waveform: 0, osc.b.level: 0.22, osc.b.semitones: 7, noise.level: 0.08, unison.voices: 2, unison.detune: 12ct, unison.width: 0.75, filter.model: 0, filter.mode: 1, filter.cutoff: 2600Hz, filter.resonance: 0.35, amp.attack: 1.2s, amp.decay: 2s, amp.sustain: 0.7, amp.release: 2.5s, voice.polyphony: 6, quality.oversampling: 1, output.gain: 0.16}
+  effects:
+    - phaser: rate=0.16, depth=55%, feedback=38%, mix=20%
+
+// ---------------------------------------------------------------------------
+// SoundFont patches (GM programs; rendered through --soundfont)
+// ---------------------------------------------------------------------------
+
+@preset sf_piano
+  source: soundfont
+  program: 0
+
+@preset sf_ep
+  source: soundfont
+  program: 4
+
+@preset sf_guitar
+  source: soundfont
+  program: 24
+
+@preset sf_bass
+  source: soundfont
+  program: 32
+
+@preset sf_violin
+  source: soundfont
+  program: 40
+
+@preset sf_strings
+  source: soundfont
+  program: 48
+
+@preset sf_brass
+  source: soundfont
+  program: 61
+
+@preset sf_flute
+  source: soundfont
+  program: 73
+
+// ---------------------------------------------------------------------------
+// Drum kits: 6 pads each, one velocity layer from the checked-in test tone
+// ---------------------------------------------------------------------------
+
+@kit kit_house
+  max_voices: 32
+  pad kick | gain: 12dB, tune: -24, decay: 0.32s, one_shot: true, choke: 1
+  pad snare | gain: 8dB, tune: -5, decay: 0.22s, one_shot: true
+  pad hat_closed | gain: 5dB, tune: 24, decay: 0.06s, one_shot: true, choke: 2
+  pad hat_open | gain: 4dB, tune: 19, decay: 0.28s, one_shot: true, choke: 2
+  pad clap | gain: 7dB, tune: 12, decay: 0.14s, one_shot: true
+  pad crash | gain: 4dB, tune: 24, decay: 0.9s, one_shot: true
+  layer kick | low: 1, high: 127, sample: "../crates/oc-engine/tests/fixtures/sampler/tone.flac"
+  layer snare | low: 1, high: 127, sample: "../crates/oc-engine/tests/fixtures/sampler/tone.flac"
+  layer hat_closed | low: 1, high: 127, sample: "../crates/oc-engine/tests/fixtures/sampler/tone.flac"
+  layer hat_open | low: 1, high: 127, sample: "../crates/oc-engine/tests/fixtures/sampler/tone.flac"
+  layer clap | low: 1, high: 127, sample: "../crates/oc-engine/tests/fixtures/sampler/tone.flac"
+  layer crash | low: 1, high: 127, sample: "../crates/oc-engine/tests/fixtures/sampler/tone.flac"
+
+@kit kit_break
+  max_voices: 32
+  pad kick | gain: 12dB, tune: -22, decay: 0.28s, one_shot: true, choke: 1
+  pad snare | gain: 9dB, tune: -3, decay: 0.2s, one_shot: true
+  pad hat_closed | gain: 5dB, tune: 22, decay: 0.05s, one_shot: true, choke: 2
+  pad tom_low | gain: 8dB, tune: -14, decay: 0.34s, one_shot: true
+  pad tom_high | gain: 8dB, tune: -7, decay: 0.22s, one_shot: true
+  pad crash | gain: 4dB, tune: 21, decay: 0.8s, one_shot: true
+  layer kick | low: 1, high: 127, sample: "../crates/oc-engine/tests/fixtures/sampler/tone.flac"
+  layer snare | low: 1, high: 127, sample: "../crates/oc-engine/tests/fixtures/sampler/tone.flac"
+  layer hat_closed | low: 1, high: 127, sample: "../crates/oc-engine/tests/fixtures/sampler/tone.flac"
+  layer tom_low | low: 1, high: 127, sample: "../crates/oc-engine/tests/fixtures/sampler/tone.flac"
+  layer tom_high | low: 1, high: 127, sample: "../crates/oc-engine/tests/fixtures/sampler/tone.flac"
+  layer crash | low: 1, high: 127, sample: "../crates/oc-engine/tests/fixtures/sampler/tone.flac"
+
+@kit kit_hats
+  max_voices: 32
+  pad hat_closed | gain: 5dB, tune: 24, decay: 0.05s, one_shot: true, choke: 2
+  pad hat_open | gain: 4dB, tune: 17, decay: 0.24s, one_shot: true, choke: 2
+  pad shaker | gain: 3dB, tune: 26, decay: 0.04s, one_shot: true
+  pad rim | gain: 7dB, tune: 19, decay: 0.06s, one_shot: true
+  pad clap | gain: 6dB, tune: 14, decay: 0.12s, one_shot: true
+  pad crash | gain: 3dB, tune: 24, decay: 0.7s, one_shot: true
+  layer hat_closed | low: 1, high: 127, sample: "../crates/oc-engine/tests/fixtures/sampler/tone.flac"
+  layer hat_open | low: 1, high: 127, sample: "../crates/oc-engine/tests/fixtures/sampler/tone.flac"
+  layer shaker | low: 1, high: 127, sample: "../crates/oc-engine/tests/fixtures/sampler/tone.flac", gain: -6dB
+  layer rim | low: 1, high: 127, sample: "../crates/oc-engine/tests/fixtures/sampler/tone.flac"
+  layer clap | low: 1, high: 127, sample: "../crates/oc-engine/tests/fixtures/sampler/tone.flac"
+  layer crash | low: 1, high: 127, sample: "../crates/oc-engine/tests/fixtures/sampler/tone.flac"
+
+@kit kit_perc
+  max_voices: 24
+  pad kick | gain: 11dB, tune: -25, decay: 0.26s, one_shot: true, choke: 1
+  pad snare | gain: 8dB, tune: -2, decay: 0.18s, one_shot: true
+  pad tom_low | gain: 8dB, tune: -16, decay: 0.3s, one_shot: true
+  pad tom_high | gain: 8dB, tune: -8, decay: 0.2s, one_shot: true
+  pad crash | gain: 3dB, tune: 23, decay: 0.65s, one_shot: true
+  pad rim | gain: 7dB, tune: 20, decay: 0.05s, one_shot: true
+  layer kick | low: 1, high: 127, sample: "../crates/oc-engine/tests/fixtures/sampler/tone.flac"
+  layer snare | low: 1, high: 127, sample: "../crates/oc-engine/tests/fixtures/sampler/tone.flac"
+  layer tom_low | low: 1, high: 127, sample: "../crates/oc-engine/tests/fixtures/sampler/tone.flac"
+  layer tom_high | low: 1, high: 127, sample: "../crates/oc-engine/tests/fixtures/sampler/tone.flac"
+  layer crash | low: 1, high: 127, sample: "../crates/oc-engine/tests/fixtures/sampler/tone.flac"
+  layer rim | low: 1, high: 127, sample: "../crates/oc-engine/tests/fixtures/sampler/tone.flac"
+
+// ---------------------------------------------------------------------------
+// Patterns
+// ---------------------------------------------------------------------------
+
+@pattern pad_chords
+  events:
+    @0 C3 w mp
+    @0 Eb3 w mp
+    @0 G3 w mp
+    @4 Ab2 w mp
+    @4 C3 w mp
+    @4 Eb3 w mp
+    @8 Eb3 w mp
+    @8 G3 w mp
+    @8 Bb3 w mp
+    @12 Bb2 w mp
+    @12 D3 w mp
+    @12 F3 w mp
+    @16 F2 w mp
+    @16 Ab2 w mp
+    @16 C3 w mp
+    @20 Db3 w mp
+    @20 F3 w mp
+    @20 Ab3 w mp
+    @24 G2 w mp
+    @24 B3 w mp
+    @24 D3 w mp
+    @28 C3 w mf
+    @28 Eb3 w mf
+    @28 G3 w mf
+
+@pattern lead_line
+  events:
+    C5 q mf
+    G4 8th mp
+    Eb5 8th mf
+    G4 q mp
+    Bb4 q mf
+    |
+    Bb4 q mf
+    F4 8th mp
+    D5 8th mf
+    F4 q mp
+    Ab4 q mf
+    |
+    Eb5 q f
+    Bb4 8th mf
+    G4 8th mp
+    Bb4 q mf
+    C5 q f
+    |
+    C5 h f vibrato={rate: 5Hz, depth: 18ct, delay: 0.2s}
+    G4 q mp
+    rest q
+    |
+    Ab4 q mf
+    Eb5 8th f
+    C5 8th mf
+    Ab4 q mp
+    Eb5 q f
+    |
+    Db5 q f
+    Ab4 8th mf
+    F4 8th mp
+    Db5 q mf
+    F5 q f
+    |
+    D5 q f
+    B4 8th mf
+    G4 8th mp
+    D5 q mf
+    G5 q f
+    |
+    C5 h. f vibrato={rate: 5.5Hz, depth: 22ct, delay: 0.15s}
+    Eb5 q f
+
+@pattern bass_line
+  events:
+    C2 q f
+    C2 8th mf
+    G2 8th mf
+    Bb2 q mf
+    C2 q f
+    |
+    Ab1 q f
+    Ab1 8th mf
+    Eb2 8th mf
+    C2 q mf
+    Ab1 q f
+    |
+    Eb2 q f
+    Eb2 8th mf
+    Bb2 8th mf
+    G2 q mf
+    Eb2 q f
+    |
+    Bb1 q f
+    Bb1 8th mf
+    F2 8th mf
+    D2 q mf
+    Bb1 q f
+    |
+    F1 q f
+    F1 8th mf
+    C2 8th mf
+    Ab2 q mf
+    F1 q f
+    |
+    Db2 q f
+    Db2 8th mf
+    Ab2 8th mf
+    F2 q mf
+    Db2 q f
+    |
+    G1 q f
+    G1 8th mf
+    D2 8th mf
+    B2 q mf
+    G1 q f
+    |
+    C2 q f
+    G2 8th mf
+    Eb2 8th mf
+    C2 q ff
+    C2 q f
+
+@pattern pluck_arp
+  events:
+    C5 8th mf
+    G4 8th mp
+    Eb5 8th mf
+    G4 8th mp
+    C5 8th mf
+    G4 8th mp
+    Bb4 8th mf
+    G4 8th mp
+    |
+    Ab4 8th mf
+    Eb4 8th mp
+    C5 8th mf
+    Eb4 8th mp
+    Ab4 8th mf
+    Eb4 8th mp
+    C5 8th mf
+    Eb4 8th mp
+    |
+    Bb4 8th mf
+    G4 8th mp
+    Eb5 8th mf
+    G4 8th mp
+    Bb4 8th mf
+    G4 8th mp
+    Eb5 8th mf
+    G4 8th mp
+    |
+    D5 8th mf
+    Bb4 8th mp
+    F4 8th mf
+    Bb4 8th mp
+    D5 8th mf
+    Bb4 8th mp
+    F4 8th mf
+    Bb4 8th mp
+    |
+    C5 8th mf
+    Ab4 8th mp
+    F4 8th mf
+    Ab4 8th mp
+    C5 8th mf
+    Ab4 8th mp
+    F4 8th mf
+    Ab4 8th mp
+    |
+    Db5 8th mf
+    Ab4 8th mp
+    F4 8th mf
+    Ab4 8th mp
+    Db5 8th mf
+    Ab4 8th mp
+    F4 8th mf
+    Ab4 8th mp
+    |
+    D5 8th mf
+    B4 8th mp
+    G4 8th mf
+    B4 8th mp
+    D5 8th mf
+    B4 8th mp
+    G4 8th mf
+    B4 8th mp
+    |
+    C5 8th mf
+    G4 8th mp
+    Eb5 8th mf
+    G4 8th mp
+    C5 8th mf
+    G4 8th mp
+    Eb5 8th mf
+    G4 8th mp
+
+@pattern keys_chords
+  events:
+    @0 C3 h mf
+    @0 Eb3 h mf
+    @0 G3 h mf
+    @2 Eb3 h mf
+    @2 G3 h mf
+    @2 C4 h mf
+    @4 Ab2 h mf
+    @4 C3 h mf
+    @4 Eb3 h mf
+    @6 C3 h mf
+    @6 Eb3 h mf
+    @6 Ab3 h mf
+    @8 Eb3 h mf
+    @8 G3 h mf
+    @8 Bb3 h mf
+    @10 G3 h mf
+    @10 Bb3 h mf
+    @10 Eb4 h mf
+    @12 Bb2 h mf
+    @12 D3 h mf
+    @12 F3 h mf
+    @14 D3 h mf
+    @14 F3 h mf
+    @14 Bb3 h mf
+    @16 F2 h mf
+    @16 Ab2 h mf
+    @16 C3 h mf
+    @18 Ab2 h mf
+    @18 C3 h mf
+    @18 F3 h mf
+    @20 Db3 h mf
+    @20 F3 h mf
+    @20 Ab3 h mf
+    @22 F3 h mf
+    @22 Ab3 h mf
+    @22 Db4 h mf
+    @24 G2 h mf
+    @24 B3 h mf
+    @24 D3 h mf
+    @26 B3 h mf
+    @26 D3 h mf
+    @26 G3 h mf
+    @28 C3 h mf
+    @28 Eb3 h mf
+    @28 G3 h mf
+    @30 Eb3 h mf
+    @30 G3 h mf
+    @30 C4 h mf
+
+@pattern arp_16
+  events:
+    C5 16th mf
+    G4 16th mp
+    Eb5 16th mf
+    G4 16th mp
+    C5 16th mf
+    G4 16th mp
+    Eb5 16th mf
+    G4 16th mp
+    C5 16th mf
+    G4 16th mp
+    Bb4 16th mf
+    G4 16th mp
+    C5 16th mf
+    G4 16th mp
+    Eb5 16th mf
+    G4 16th mp
+    |
+    Ab4 16th mf
+    Eb4 16th mp
+    C5 16th mf
+    Eb4 16th mp
+    Ab4 16th mf
+    Eb4 16th mp
+    C5 16th mf
+    Eb4 16th mp
+    Ab4 16th mf
+    Eb4 16th mp
+    Bb4 16th mf
+    Eb4 16th mp
+    Ab4 16th mf
+    Eb4 16th mp
+    C5 16th mf
+    Eb4 16th mp
+    |
+    Bb4 16th mf
+    G4 16th mp
+    Eb5 16th mf
+    G4 16th mp
+    Bb4 16th mf
+    G4 16th mp
+    Eb5 16th mf
+    G4 16th mp
+    Bb4 16th mf
+    G4 16th mp
+    F5 16th mf
+    G4 16th mp
+    Bb4 16th mf
+    G4 16th mp
+    Eb5 16th mf
+    G4 16th mp
+    |
+    D5 16th mf
+    Bb4 16th mp
+    F4 16th mf
+    Bb4 16th mp
+    D5 16th mf
+    Bb4 16th mp
+    F4 16th mf
+    Bb4 16th mp
+    D5 16th mf
+    Bb4 16th mp
+    F5 16th mf
+    Bb4 16th mp
+    D5 16th mf
+    Bb4 16th mp
+    F4 16th mf
+    Bb4 16th mp
+    |
+    C5 16th mf
+    Ab4 16th mp
+    F4 16th mf
+    Ab4 16th mp
+    C5 16th mf
+    Ab4 16th mp
+    F4 16th mf
+    Ab4 16th mp
+    C5 16th mf
+    Ab4 16th mp
+    Eb5 16th mf
+    Ab4 16th mp
+    C5 16th mf
+    Ab4 16th mp
+    F4 16th mf
+    Ab4 16th mp
+    |
+    Db5 16th mf
+    Ab4 16th mp
+    F4 16th mf
+    Ab4 16th mp
+    Db5 16th mf
+    Ab4 16th mp
+    F4 16th mf
+    Ab4 16th mp
+    Db5 16th mf
+    Ab4 16th mp
+    Ab5 16th mf
+    Ab4 16th mp
+    Db5 16th mf
+    Ab4 16th mp
+    F4 16th mf
+    Ab4 16th mp
+    |
+    D5 16th mf
+    B4 16th mp
+    G4 16th mf
+    B4 16th mp
+    D5 16th mf
+    B4 16th mp
+    G4 16th mf
+    B4 16th mp
+    D5 16th mf
+    B4 16th mp
+    G5 16th mf
+    B4 16th mp
+    D5 16th mf
+    B4 16th mp
+    G4 16th mf
+    B4 16th mp
+    |
+    C5 16th mf
+    G4 16th mp
+    Eb5 16th mf
+    G4 16th mp
+    C5 16th mf
+    G4 16th mp
+    Eb5 16th mf
+    G4 16th mp
+    C5 16th mf
+    G4 16th mp
+    Bb4 16th mf
+    G4 16th mp
+    C5 16th mf
+    G4 16th mp
+    Eb5 16th mf
+    G4 16th mp
+
+@pattern brass_stabs
+  events:
+    @0 C4 q f
+    @0 Eb4 q f
+    @0 G4 q f
+    @2.5 C4 q f
+    @2.5 Eb4 q f
+    @2.5 G4 q f
+    @4 Ab3 q f
+    @4 C4 q f
+    @4 Eb4 q f
+    @6.5 Ab3 q f
+    @6.5 C4 q f
+    @6.5 Eb4 q f
+    @8 Eb4 q f
+    @8 G4 q f
+    @8 Bb4 q f
+    @10.5 Eb4 q f
+    @10.5 G4 q f
+    @10.5 Bb4 q f
+    @12 Bb3 q f
+    @12 D4 q f
+    @12 F4 q f
+    @14.5 Bb3 q f
+    @14.5 D4 q f
+    @14.5 F4 q f
+    @16 F3 q f
+    @16 Ab3 q f
+    @16 C4 q f
+    @18.5 F3 q f
+    @18.5 Ab3 q f
+    @18.5 C4 q f
+    @20 Db4 q f
+    @20 F4 q f
+    @20 Ab4 q f
+    @22.5 Db4 q f
+    @22.5 F4 q f
+    @22.5 Ab4 q f
+    @24 G3 q f
+    @24 B3 q f
+    @24 D4 q f
+    @26.5 G3 q f
+    @26.5 B3 q f
+    @26.5 D4 q f
+    @28 C4 q f
+    @28 Eb4 q f
+    @28 G4 q f
+    @30.5 C4 q f
+    @30.5 Eb4 q f
+    @30.5 G4 q f
+
+@pattern texture_air
+  events:
+    @0 C5 w mp
+    @0 G5 w mp
+    @0 Eb6 w mp
+    @4 Ab4 w mp
+    @4 Eb5 w mp
+    @4 C6 w mp
+    @8 Bb4 w mp
+    @8 F5 w mp
+    @8 D6 w mp
+    @12 F4 w mp
+    @12 C5 w mp
+    @12 Ab5 w mp
+    @16 F4 w mp
+    @16 C5 w mp
+    @16 Ab5 w mp
+    @20 Db5 w mp
+    @20 Ab5 w mp
+    @20 F6 w mp
+    @24 G4 w mp
+    @24 D5 w mp
+    @24 B5 w mp
+    @28 C5 w mp
+    @28 G5 w mp
+    @28 Eb6 w mp
+
+@pattern ep_riff
+  events:
+    @0 C4 8th mf
+    @0.5 Eb4 8th mp
+    @1 G4 8th mf
+    @1.5 Bb4 8th mp
+    @2 C5 8th mf
+    @2.5 Bb4 8th mp
+    @3 G4 8th mf
+    @3.5 Eb4 8th mp
+    @4 Ab3 8th mf
+    @4.5 C4 8th mp
+    @5 Eb4 8th mf
+    @5.5 G4 8th mp
+    @6 Ab4 8th mf
+    @6.5 G4 8th mp
+    @7 Eb4 8th mf
+    @7.5 C4 8th mp
+    @8 Eb4 8th mf
+    @8.5 G4 8th mp
+    @9 Bb4 8th mf
+    @9.5 D5 8th mp
+    @10 Eb5 8th mf
+    @10.5 D5 8th mp
+    @11 Bb4 8th mf
+    @11.5 G4 8th mp
+    @12 D4 8th mf
+    @12.5 F4 8th mp
+    @13 Bb4 8th mf
+    @13.5 D5 8th mp
+    @14 F5 8th mf
+    @14.5 D5 8th mp
+    @15 Bb4 8th mf
+    @15.5 F4 8th mp
+    @16 F3 8th mf
+    @16.5 Ab3 8th mp
+    @17 C4 8th mf
+    @17.5 Eb4 8th mp
+    @18 F4 8th mf
+    @18.5 Eb4 8th mp
+    @19 C4 8th mf
+    @19.5 Ab3 8th mp
+    @20 Db4 8th mf
+    @20.5 F4 8th mp
+    @21 Ab4 8th mf
+    @21.5 C5 8th mp
+    @22 Db5 8th mf
+    @22.5 C5 8th mp
+    @23 Ab4 8th mf
+    @23.5 F4 8th mp
+    @24 G3 8th mf
+    @24.5 B3 8th mp
+    @25 D4 8th mf
+    @25.5 G4 8th mp
+    @26 B4 8th mf
+    @26.5 G4 8th mp
+    @27 D4 8th mf
+    @27.5 B3 8th mp
+    @28 C4 8th mf
+    @28.5 Eb4 8th mp
+    @29 G4 8th mf
+    @29.5 C5 8th mp
+    @30 Eb5 8th mf
+    @30.5 C5 8th mp
+    @31 G4 8th mf
+    @31.5 Eb4 8th mp
+
+@pattern violin_line
+  events:
+    @0 C5 h. mf vibrato={rate: 4.8Hz, depth: 16ct, delay: 0.25s}
+    @3 G4 q mp
+    @4 Ab4 h. mf vibrato={rate: 5Hz, depth: 18ct, delay: 0.2s}
+    @7 Eb4 q mp
+    @8 Bb4 h. mf vibrato={rate: 5.2Hz, depth: 17ct, delay: 0.22s}
+    @11 F4 q mp
+    @12 D5 h. f vibrato={rate: 5.1Hz, depth: 20ct, delay: 0.18s}
+    @15 Bb4 q mp
+    @16 C5 h. mf vibrato={rate: 4.9Hz, depth: 18ct, delay: 0.24s}
+    @19 Ab4 q mp
+    @20 Db5 h. f vibrato={rate: 5.3Hz, depth: 20ct, delay: 0.18s}
+    @23 Ab4 q mp
+    @24 G4 h. mf vibrato={rate: 5Hz, depth: 16ct, delay: 0.22s}
+    @27 D5 q mp
+    @28 C5 w f vibrato={rate: 5.4Hz, depth: 22ct, delay: 0.15s}
+
+@pattern drum_house
+  hits:
+    kick 1:0 ff
+    hat_closed 1:0 mp
+    hat_closed 1:1 mp
+    hat_open 1:2 mf
+    hat_closed 1:3 mp
+    kick 2:0 f
+    clap 2:0 f
+    hat_closed 2:1 mp
+    hat_closed 2:2 mf
+    hat_closed 2:3 mp
+    kick 3:0 f
+    hat_closed 3:0 mp
+    hat_closed 3:1 mp
+    hat_open 3:2 mf
+    hat_closed 3:3 mp
+    kick 4:0 ff
+    snare 4:0 ff
+    hat_closed 4:1 mp
+    crash 4:2 mf
+
+@pattern drum_break
+  hits:
+    kick 1:0 ff
+    hat_closed 1:0 mp
+    snare 1:2 f
+    hat_closed 1:2 mp
+    kick 1:3 mf
+    hat_closed 1:3 mp
+    kick 2:0 f
+    hat_closed 2:0 mp
+    snare 2:2 ff
+    hat_closed 2:2 mp
+    tom_low 2:3 mf
+    kick 3:0 f
+    hat_closed 3:0 mp
+    snare 3:1 f
+    hat_closed 3:1 mp
+    kick 3:2 mf
+    hat_closed 3:2 mp
+    snare 3:3 mf
+    hat_closed 3:3 mp
+    kick 4:0 ff
+    snare 4:0 ff
+    tom_high 4:2 mf
+    crash 4:2 f
+    tom_low 4:3 f
+
+@pattern drum_hats
+  hits:
+    hat_closed 1:0 mf
+    shaker 1:0 mp
+    hat_closed 1:1 mp
+    shaker 1:1 mp
+    hat_closed 1:2 mf
+    shaker 1:2 mp
+    hat_open 1:3 mf
+    hat_closed 2:0 mf
+    shaker 2:0 mp
+    hat_closed 2:1 mp
+    shaker 2:1 mp
+    rim 2:2 mf
+    hat_closed 2:2 mf
+    shaker 2:2 mp
+    hat_closed 2:3 mp
+    shaker 2:3 mp
+    hat_closed 3:0 mf
+    shaker 3:0 mp
+    hat_closed 3:1 mp
+    shaker 3:1 mp
+    hat_closed 3:2 mf
+    shaker 3:2 mp
+    hat_open 3:3 mf
+    hat_closed 4:0 mf
+    shaker 4:0 mp
+    hat_closed 4:1 mp
+    clap 4:2 f
+    crash 4:2 mf
+    hat_closed 4:3 mp
+
+@pattern drum_perc
+  hits:
+    kick 1:0 ff
+    rim 1:1 mf
+    tom_high 1:2 mf
+    kick 1:3 f
+    tom_low 2:0 f
+    snare 2:1 mf
+    rim 2:2 mf
+    tom_high 2:3 f
+    kick 3:0 f
+    tom_low 3:1 mf
+    snare 3:2 f
+    tom_high 3:3 mf
+    kick 4:0 ff
+    crash 4:0 f
+    tom_low 4:2 f
+    rim 4:3 mf
+
+// ---------------------------------------------------------------------------
+// Tracks
+// ---------------------------------------------------------------------------
+
+@track synth_pad | instrument: synth/pad_warm, preset: synth_pad, channel: 0
+  mix: vol=-10dB, pan=-0.12, send(music_bus=55%), send(space_bus=18%)
+  clip: pad_chords [1:1 - 9:1]
+  clip: pad_chords [9:1 - 17:1]
+  clip: pad_chords [17:1 - 25:1]
+  clip: pad_chords [25:1 - 33:1]
+  automation: brightness {1:1=35%, 5:1=48%, 9:1=62%, 13:1=40%, 17:1=55%, 21:1=72%, 25:1=46%, 29:1=60%}
+  automation: volume {1:1=-10dB, 5:1=-8dB, 9:1=-6dB, 13:1=-9dB, 17:1=-7dB, 21:1=-5dB, 25:1=-8dB, 29:1=-6dB}
+  automation: pan {1:1=-0.12, 9:1=0.18, 17:1=-0.2, 25:1=0.1, 29:1=-0.05}
+
+@track synth_lead | instrument: synth/lead_saw, preset: synth_lead, channel: 1
+  mix: vol=-8dB, pan=0.14, send(music_bus=45%), send(space_bus=14%)
+  clip: lead_line [1:1 - 9:1]
+  clip: lead_line [9:1 - 17:1]
+  clip: lead_line [17:1 - 25:1]
+  clip: lead_line [25:1 - 33:1]
+  automation: brightness {1:1=45%, 5:1=62%, 9:1=78%, 13:1=50%, 17:1=68%, 21:1=84%, 25:1=55%, 29:1=74%}
+  automation: volume {1:1=-8dB, 5:1=-6dB, 9:1=-4dB, 13:1=-7dB, 17:1=-5dB, 21:1=-3dB, 25:1=-7dB, 29:1=-5dB}
+  automation: pan {1:1=0.14, 9:1=-0.16, 17:1=0.22, 25:1=-0.1, 29:1=0.08}
+
+@track synth_bass | instrument: synth/bass_sub, preset: synth_bass, channel: 2
+  mix: vol=-7dB, pan=0, send(music_bus=35%)
+  clip: bass_line [1:1 - 9:1]
+  clip: bass_line [9:1 - 17:1]
+  clip: bass_line [17:1 - 25:1]
+  clip: bass_line [25:1 - 33:1]
+  automation: brightness {1:1=28%, 5:1=42%, 9:1=55%, 13:1=32%, 17:1=48%, 21:1=60%, 25:1=36%, 29:1=52%}
+  automation: volume {1:1=-7dB, 5:1=-5dB, 9:1=-4dB, 13:1=-6dB, 17:1=-4dB, 21:1=-3dB, 25:1=-6dB, 29:1=-4dB}
+  automation: pan {1:1=0, 9:1=-0.04, 17:1=0.04, 25:1=0, 29:1=-0.02}
+
+@track synth_pluck | instrument: synth/pluck, preset: synth_pluck, channel: 3
+  mix: vol=-12dB, pan=-0.28, send(music_bus=40%), send(space_bus=16%)
+  clip: pluck_arp [1:1 - 9:1]
+  clip: pluck_arp [9:1 - 17:1]
+  clip: pluck_arp [17:1 - 25:1]
+  clip: pluck_arp [25:1 - 33:1]
+  automation: brightness {1:1=40%, 5:1=58%, 9:1=70%, 13:1=45%, 17:1=64%, 21:1=76%, 25:1=50%, 29:1=66%}
+  automation: volume {1:1=-12dB, 5:1=-10dB, 9:1=-8dB, 13:1=-11dB, 17:1=-9dB, 21:1=-7dB, 25:1=-11dB, 29:1=-8dB}
+  automation: pan {1:1=-0.28, 9:1=0.1, 17:1=-0.32, 25:1=0.06, 29:1=-0.18}
+
+@track synth_keys | instrument: synth/keys, preset: synth_keys, channel: 4
+  mix: vol=-11dB, pan=0.26, send(music_bus=30%), send(space_bus=20%)
+  clip: keys_chords [1:1 - 9:1]
+  clip: keys_chords [9:1 - 17:1]
+  clip: keys_chords [17:1 - 25:1]
+  clip: keys_chords [25:1 - 33:1]
+  automation: brightness {1:1=38%, 5:1=52%, 9:1=66%, 13:1=44%, 17:1=58%, 21:1=70%, 25:1=48%, 29:1=62%}
+  automation: volume {1:1=-11dB, 5:1=-9dB, 9:1=-7dB, 13:1=-10dB, 17:1=-8dB, 21:1=-6dB, 25:1=-10dB, 29:1=-7dB}
+  automation: pan {1:1=0.26, 9:1=-0.08, 17:1=0.3, 25:1=-0.04, 29:1=0.16}
+
+@track synth_arp | instrument: synth/arp, preset: synth_arp, channel: 5
+  mix: vol=-14dB, pan=-0.18, send(music_bus=50%), send(space_bus=10%)
+  clip: arp_16 [1:1 - 9:1]
+  clip: arp_16 [9:1 - 17:1]
+  clip: arp_16 [17:1 - 25:1]
+  clip: arp_16 [25:1 - 33:1]
+  automation: brightness {1:1=50%, 5:1=66%, 9:1=82%, 13:1=56%, 17:1=72%, 21:1=88%, 25:1=60%, 29:1=78%}
+  automation: volume {1:1=-14dB, 5:1=-12dB, 9:1=-10dB, 13:1=-13dB, 17:1=-11dB, 21:1=-9dB, 25:1=-13dB, 29:1=-10dB}
+  automation: pan {1:1=-0.18, 9:1=0.12, 17:1=-0.24, 25:1=0.08, 29:1=-0.1}
+
+@track synth_brass | instrument: synth/brass, preset: synth_brass, channel: 6
+  mix: vol=-13dB, pan=0.2, send(music_bus=42%)
+  clip: brass_stabs [1:1 - 9:1]
+  clip: brass_stabs [9:1 - 17:1]
+  clip: brass_stabs [17:1 - 25:1]
+  clip: brass_stabs [25:1 - 33:1]
+  automation: brightness {1:1=42%, 5:1=60%, 9:1=74%, 13:1=48%, 17:1=66%, 21:1=80%, 25:1=52%, 29:1=70%}
+  automation: volume {1:1=-13dB, 5:1=-11dB, 9:1=-9dB, 13:1=-12dB, 17:1=-10dB, 21:1=-8dB, 25:1=-12dB, 29:1=-9dB}
+  automation: pan {1:1=0.2, 9:1=-0.12, 17:1=0.24, 25:1=-0.08, 29:1=0.12}
+
+@track synth_texture | instrument: synth/texture, preset: synth_texture, channel: 7
+  mix: vol=-16dB, pan=0.32, send(music_bus=25%), send(space_bus=35%)
+  clip: texture_air [1:1 - 9:1]
+  clip: texture_air [9:1 - 17:1]
+  clip: texture_air [17:1 - 25:1]
+  clip: texture_air [25:1 - 33:1]
+  automation: brightness {1:1=30%, 5:1=46%, 9:1=60%, 13:1=36%, 17:1=52%, 21:1=68%, 25:1=42%, 29:1=58%}
+  automation: volume {1:1=-16dB, 5:1=-14dB, 9:1=-12dB, 13:1=-15dB, 17:1=-13dB, 21:1=-11dB, 25:1=-15dB, 29:1=-12dB}
+  automation: pan {1:1=0.32, 9:1=-0.2, 17:1=0.36, 25:1=-0.14, 29:1=0.22}
+
+@track piano | instrument: piano/acoustic_grand, preset: sf_piano, channel: 0
+  mix: vol=-8dB, pan=0.08, send(inst_bus=40%), send(space_bus=12%)
+  clip: keys_chords [1:1 - 9:1]
+  clip: keys_chords [9:1 - 17:1]
+  clip: keys_chords [17:1 - 25:1]
+  clip: keys_chords [25:1 - 33:1]
+  automation: brightness {1:1=40%, 5:1=56%, 9:1=70%, 13:1=46%, 17:1=62%, 21:1=76%, 25:1=50%, 29:1=66%}
+  automation: volume {1:1=-8dB, 5:1=-6dB, 9:1=-5dB, 13:1=-7dB, 17:1=-5dB, 21:1=-4dB, 25:1=-7dB, 29:1=-5dB}
+  automation: pan {1:1=0.08, 9:1=-0.1, 17:1=0.12, 25:1=-0.06, 29:1=0.04}
+
+@track electric_piano | instrument: piano/electric_piano, preset: sf_ep, channel: 1
+  mix: vol=-11dB, pan=-0.22, send(inst_bus=35%), send(space_bus=16%)
+  clip: ep_riff [1:1 - 9:1]
+  clip: ep_riff [9:1 - 17:1]
+  clip: ep_riff [17:1 - 25:1]
+  clip: ep_riff [25:1 - 33:1]
+  automation: brightness {1:1=36%, 5:1=52%, 9:1=68%, 13:1=42%, 17:1=58%, 21:1=74%, 25:1=46%, 29:1=62%}
+  automation: volume {1:1=-11dB, 5:1=-9dB, 9:1=-7dB, 13:1=-10dB, 17:1=-8dB, 21:1=-6dB, 25:1=-10dB, 29:1=-7dB}
+  automation: pan {1:1=-0.22, 9:1=0.14, 17:1=-0.26, 25:1=0.1, 29:1=-0.12}
+
+@track nylon_guitar | instrument: guitar/nylon_string, preset: sf_guitar, channel: 2
+  mix: vol=-13dB, pan=0.3, send(inst_bus=32%), send(space_bus=14%)
+  clip: pluck_arp [1:1 - 9:1]
+  clip: pluck_arp [9:1 - 17:1]
+  clip: pluck_arp [17:1 - 25:1]
+  clip: pluck_arp [25:1 - 33:1]
+  automation: brightness {1:1=34%, 5:1=50%, 9:1=64%, 13:1=40%, 17:1=56%, 21:1=70%, 25:1=44%, 29:1=60%}
+  automation: volume {1:1=-13dB, 5:1=-11dB, 9:1=-9dB, 13:1=-12dB, 17:1=-10dB, 21:1=-8dB, 25:1=-12dB, 29:1=-9dB}
+  automation: pan {1:1=0.3, 9:1=-0.16, 17:1=0.34, 25:1=-0.1, 29:1=0.2}
+
+@track acoustic_bass | instrument: bass/acoustic, preset: sf_bass, channel: 3
+  mix: vol=-10dB, pan=-0.04, send(inst_bus=30%)
+  clip: bass_line [1:1 - 9:1]
+  clip: bass_line [9:1 - 17:1]
+  clip: bass_line [17:1 - 25:1]
+  clip: bass_line [25:1 - 33:1]
+  automation: brightness {1:1=26%, 5:1=40%, 9:1=54%, 13:1=30%, 17:1=46%, 21:1=58%, 25:1=34%, 29:1=50%}
+  automation: volume {1:1=-10dB, 5:1=-8dB, 9:1=-6dB, 13:1=-9dB, 17:1=-7dB, 21:1=-5dB, 25:1=-9dB, 29:1=-6dB}
+  automation: pan {1:1=-0.04, 9:1=0.06, 17:1=-0.08, 25:1=0.02, 29:1=-0.02}
+
+@track violin | instrument: strings/violin, preset: sf_violin, channel: 4
+  mix: vol=-14dB, pan=0.18, send(inst_bus=38%), send(space_bus=22%)
+  clip: violin_line [1:1 - 9:1]
+  clip: violin_line [9:1 - 17:1]
+  clip: violin_line [17:1 - 25:1]
+  clip: violin_line [25:1 - 33:1]
+  automation: brightness {1:1=38%, 5:1=54%, 9:1=68%, 13:1=44%, 17:1=60%, 21:1=74%, 25:1=48%, 29:1=64%}
+  automation: volume {1:1=-14dB, 5:1=-12dB, 9:1=-10dB, 13:1=-13dB, 17:1=-11dB, 21:1=-9dB, 25:1=-13dB, 29:1=-10dB}
+  automation: pan {1:1=0.18, 9:1=-0.14, 17:1=0.22, 25:1=-0.08, 29:1=0.1}
+
+@track strings | instrument: strings/ensemble, preset: sf_strings, channel: 5
+  mix: vol=-15dB, pan=-0.3, send(inst_bus=36%), send(space_bus=26%)
+  clip: pad_chords [1:1 - 9:1]
+  clip: pad_chords [9:1 - 17:1]
+  clip: pad_chords [17:1 - 25:1]
+  clip: pad_chords [25:1 - 33:1]
+  automation: brightness {1:1=32%, 5:1=48%, 9:1=62%, 13:1=38%, 17:1=54%, 21:1=68%, 25:1=42%, 29:1=58%}
+  automation: volume {1:1=-15dB, 5:1=-13dB, 9:1=-11dB, 13:1=-14dB, 17:1=-12dB, 21:1=-10dB, 25:1=-14dB, 29:1=-11dB}
+  automation: pan {1:1=-0.3, 9:1=0.12, 17:1=-0.34, 25:1=0.06, 29:1=-0.18}
+
+@track brass | instrument: brass/section, preset: sf_brass, channel: 6
+  mix: vol=-12dB, pan=0.24, send(inst_bus=34%), send(space_bus=12%)
+  clip: brass_stabs [1:1 - 9:1]
+  clip: brass_stabs [9:1 - 17:1]
+  clip: brass_stabs [17:1 - 25:1]
+  clip: brass_stabs [25:1 - 33:1]
+  automation: brightness {1:1=44%, 5:1=60%, 9:1=74%, 13:1=50%, 17:1=66%, 21:1=80%, 25:1=54%, 29:1=70%}
+  automation: volume {1:1=-12dB, 5:1=-10dB, 9:1=-8dB, 13:1=-11dB, 17:1=-9dB, 21:1=-7dB, 25:1=-11dB, 29:1=-8dB}
+  automation: pan {1:1=0.24, 9:1=-0.1, 17:1=0.28, 25:1=-0.06, 29:1=0.14}
+
+@track flute | instrument: woodwind/flute, preset: sf_flute, channel: 7
+  mix: vol=-15dB, pan=-0.26, send(inst_bus=28%), send(space_bus=18%)
+  clip: lead_line [1:1 - 9:1]
+  clip: lead_line [9:1 - 17:1]
+  clip: lead_line [17:1 - 25:1]
+  clip: lead_line [25:1 - 33:1]
+  automation: brightness {1:1=40%, 5:1=56%, 9:1=70%, 13:1=46%, 17:1=62%, 21:1=76%, 25:1=50%, 29:1=66%}
+  automation: volume {1:1=-15dB, 5:1=-13dB, 9:1=-11dB, 13:1=-14dB, 17:1=-12dB, 21:1=-10dB, 25:1=-14dB, 29:1=-11dB}
+  automation: pan {1:1=-0.26, 9:1=0.1, 17:1=-0.3, 25:1=0.04, 29:1=-0.14}
+
+@track kit_house_track | instrument: drums/drumkit, preset: kit_house, channel: 9
+  mix: vol=-4dB, pan=0, send(drum_bus=65%), send(space_bus=6%)
+  clip: drum_house [1:1 - 5:1]
+  clip: drum_house [5:1 - 9:1]
+  clip: drum_house [9:1 - 13:1]
+  clip: drum_house [13:1 - 17:1]
+  clip: drum_house [17:1 - 21:1]
+  clip: drum_house [21:1 - 25:1]
+  clip: drum_house [25:1 - 29:1]
+  clip: drum_house [29:1 - 33:1]
+
+@track kit_break_track | instrument: drums/drumkit, preset: kit_break, channel: 9
+  mix: vol=-6dB, pan=0.08, send(drum_bus=60%), send(space_bus=8%)
+  clip: drum_break [1:1 - 5:1]
+  clip: drum_break [5:1 - 9:1]
+  clip: drum_break [9:1 - 13:1]
+  clip: drum_break [13:1 - 17:1]
+  clip: drum_break [17:1 - 21:1]
+  clip: drum_break [21:1 - 25:1]
+  clip: drum_break [25:1 - 29:1]
+  clip: drum_break [29:1 - 33:1]
+
+@track kit_hats_track | instrument: drums/drumkit, preset: kit_hats, channel: 9
+  mix: vol=-9dB, pan=-0.16, send(drum_bus=55%), send(space_bus=10%)
+  clip: drum_hats [1:1 - 5:1]
+  clip: drum_hats [5:1 - 9:1]
+  clip: drum_hats [9:1 - 13:1]
+  clip: drum_hats [13:1 - 17:1]
+  clip: drum_hats [17:1 - 21:1]
+  clip: drum_hats [21:1 - 25:1]
+  clip: drum_hats [25:1 - 29:1]
+  clip: drum_hats [29:1 - 33:1]
+
+@track kit_perc_track | instrument: drums/drumkit, preset: kit_perc, channel: 9
+  mix: vol=-8dB, pan=0.22, send(drum_bus=50%), send(space_bus=12%)
+  clip: drum_perc [1:1 - 5:1]
+  clip: drum_perc [5:1 - 9:1]
+  clip: drum_perc [9:1 - 13:1]
+  clip: drum_perc [13:1 - 17:1]
+  clip: drum_perc [17:1 - 21:1]
+  clip: drum_perc [21:1 - 25:1]
+  clip: drum_perc [25:1 - 29:1]
+  clip: drum_perc [29:1 - 33:1]
+
+// ---------------------------------------------------------------------------
+// Buses and master
+// ---------------------------------------------------------------------------
+
+@bus drum_bus
+  mix: vol=-5dB
+  routes: [master]
+  effects:
+    - compression: threshold=-16dB, ratio=3:1, attack=8ms, release=120ms, knee=6dB, makeup=2dB, mix=100%
+    - eq: low_freq=90Hz, low_gain=1.5dB, mid_freq=400Hz, mid_gain=-1.5dB, q=1.1, high_freq=7500Hz, high_gain=1dB
+    - saturator: drive=18%, mix=30%
+    - delay: time_l=280ms, time_r=420ms, feedback=22%, mix=12%
+
+@bus music_bus
+  mix: vol=-6dB
+  routes: [master]
+  effects:
+    - compression: threshold=-18dB, ratio=2.5:1, attack=12ms, release=180ms, knee=6dB, makeup=2.5dB, mix=100%
+    - eq: low_freq=140Hz, low_gain=-2dB, mid_freq=900Hz, mid_gain=1.5dB, q=1.2, high_freq=8500Hz, high_gain=-1.5dB
+    - saturator: drive=12%, mix=22%
+    - delay: time_l=310ms, time_r=465ms, feedback=24%, mix=20%
+
+@bus inst_bus
+  mix: vol=-6dB
+  routes: [master]
+  effects:
+    - compression: threshold=-20dB, ratio=2:1, attack=18ms, release=200ms, knee=8dB, makeup=3dB, mix=100%
+    - eq: low_freq=120Hz, low_gain=1dB, mid_freq=900Hz, mid_gain=-1dB, q=1.0, high_freq=9000Hz, high_gain=1dB
+    - saturator: drive=10%, mix=18%
+    - reverb: decay=2.6s, predelay=28ms, damping=48%, mix=24%, low_cut=160Hz, high_cut=8500Hz
+
+@bus space_bus
+  mix: vol=-9dB
+  routes: [master]
+  effects:
+    - compression: threshold=-22dB, ratio=1.8:1, attack=25ms, release=240ms, knee=8dB, makeup=3dB, mix=100%
+    - eq: low_freq=200Hz, low_gain=-3dB, mid_freq=1200Hz, mid_gain=1dB, q=1.0, high_freq=9000Hz, high_gain=-1dB
+    - saturator: drive=8%, mix=15%
+    - delay: time_l=420ms, time_r=630ms, feedback=32%, mix=22%
+
+@master
+  volume: -1dB
+  loudness: -14dB
+  effects:
+    - compression: threshold=-10dB, ratio=2.5:1, attack=8ms, release=140ms, knee=6dB, makeup=1.5dB, mix=100%
+    - limiter: ceiling=-1dB, release=100ms, lookahead=8ms, true_peak=true, oversampling=4x
+
+@section full [1:1 - 33:1]
+  label: "Reference 32 bars"

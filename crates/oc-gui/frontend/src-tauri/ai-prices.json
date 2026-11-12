@@ -1,0 +1,104 @@
+{
+  "version": "2026-10-29",
+  "source": "https://models.dev/api.json",
+  "source_sha256": "abf71b3b9e0bca07fd2947542b3ccc3d42ffe28180813e902efd08ac6f2c7f56",
+  "unit": "USD per million tokens",
+  "records": [
+    {
+      "provider": "anthropic",
+      "model": "claude-haiku-4-5",
+      "input": 1,
+      "output": 5,
+      "currency": "USD",
+      "cached_input": 0.1
+    },
+    {
+      "provider": "anthropic",
+      "model": "claude-opus-4-6",
+      "input": 5,
+      "output": 25,
+      "currency": "USD",
+      "cached_input": 0.5
+    },
+    {
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "input": 3,
+      "output": 15,
+      "currency": "USD",
+      "cached_input": 0.3
+    },
+    {
+      "provider": "deepseek",
+      "model": "deepseek-flash",
+      "input": 0.15,
+      "output": 0.6,
+      "currency": "USD",
+      "cached_input": 0.003
+    },
+    {
+      "provider": "deepseek",
+      "model": "deepseek-v4-pro",
+      "input": 0.66,
+      "output": 1.98,
+      "currency": "USD",
+      "cached_input": 0.022
+    },
+    {
+      "provider": "google",
+      "model": "gemini-3.1-pro-preview",
+      "input": 2,
+      "output": 12,
+      "currency": "USD",
+      "cached_input": 0.2
+    },
+    {
+      "provider": "google",
+      "model": "gemini-4-argon",
+      "input": 2,
+      "output": 10,
+      "currency": "USD",
+      "cached_input": 0.1
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-5.5",
+      "input": 5,
+      "output": 30,
+      "currency": "USD",
+      "cached_input": 0.5
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-6-astra",
+      "input": 10,
+      "output": 50,
+      "currency": "USD",
+      "cached_input": 1
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-6-luna",
+      "input": 0.1,
+      "output": 0.5,
+      "currency": "USD",
+      "cached_input": 0.01
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-6.1-sol",
+      "input": 2,
+      "output": 10,
+      "currency": "USD",
+      "cached_input": 0.1
+    },
+    {
+      "provider": "opencode-go",
+      "model": "gemini-4-argon",
+      "input": 2,
+      "output": 10,
+      "currency": "USD",
+      "cached_input": 0.1
+    }
+  ]
+}

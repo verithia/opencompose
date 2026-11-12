@@ -1,0 +1,98 @@
+// OpenSynth production showcase
+// Four patches exercise polyphony, mono glide, tempo sync, modulation, and patch FX.
+
+@ocp "0.2.0"
+
+@project "OpenSynth Showcase"
+  tempo: 118
+  time_signature: 4/4
+  key: C minor
+
+@preset neon_bass
+  source: builtin
+  plugin: "builtin.open_synth"
+  params: {synth_version: 2, osc.a.waveform: 1, osc.a.level: 0.74, osc.b.waveform: 2, osc.b.level: 0.22, osc.b.semitones: -12, sub.level: 0.42, filter.cutoff: 740Hz, filter.resonance: 0.32, filter.env.amount: 3.8, amp.attack: 0.004s, amp.decay: 0.18s, amp.sustain: 0.62, amp.release: 0.14s, voice.mono: true, voice.legato: true, voice.glide: 0.07s, quality.oversampling: 2, output.gain: 0.26}
+  effects:
+    - saturator: drive=12%, mix=25%
+
+@preset glass_pad
+  source: builtin
+  plugin: "builtin.open_synth"
+  params: {synth_version: 2, osc.a.waveform: 4, osc.a.wavetable_position: 0.58, osc.a.level: 0.58, osc.b.waveform: 0, osc.b.level: 0.32, osc.b.semitones: 12, noise.level: 0.035, unison.detune: 14ct, unison.width: 0.78, filter.cutoff: 4200Hz, filter.resonance: 0.2, amp.attack: 0.72s, amp.decay: 1.4s, amp.sustain: 0.78, amp.release: 3.2s, lfo.sync: true, lfo.division: 4, mod.1.source: 0, mod.1.destination: 4, mod.1.amount: 0.2, quality.oversampling: 2, output.gain: 0.18}
+  effects:
+    - chorus: rate=0.35, depth=3.5, mix=28%
+    - reverb: decay=3.2s, mix=24%
+
+@preset pulse_pluck
+  source: builtin
+  plugin: "builtin.open_synth"
+  params: {synth_version: 2, osc.a.waveform: 2, osc.a.level: 0.68, osc.a.pulse_width: 0.3, osc.b.waveform: 1, osc.b.level: 0.17, ring.level: 0.12, filter.mode: 1, filter.cutoff: 1800Hz, filter.resonance: 0.44, filter.env.amount: 4.6, filter_env.attack: 0s, filter_env.decay: 0.16s, filter_env.sustain: 0, filter_env.release: 0.12s, amp.attack: 0s, amp.decay: 0.22s, amp.sustain: 0.12, amp.release: 0.18s, quality.oversampling: 1}
+
+@track bass | instrument: synth/virtual_analog, preset: neon_bass
+  mix: vol=-4dB, pan=0
+  @phrase bassline [1:1:0 - 5:1:0]
+    C2 q f
+    C3 8th mf
+    G2 8th mf
+    Bb2 q f
+    G2 q mf
+    |
+    Ab2 q f
+    Eb2 q mf
+    G2 h f
+    |
+    C2 q f
+    G2 q mf
+    Bb2 q f
+    C3 q ff
+    |
+    G2 h mf
+    C2 h f
+
+@track pad | instrument: synth/virtual_analog, preset: glass_pad
+  mix: vol=-10dB, pan=0
+  @phrase harmony [1:1:0 - 5:1:0]
+    @0.0 C3 w mp
+    @0.0 Eb3 w mp
+    @0.0 G3 w mp
+    |
+    @4.0 Ab2 w mp
+    @4.0 C3 w mp
+    @4.0 Eb3 w mp
+    |
+    @8.0 Bb2 w mp
+    @8.0 D3 w mp
+    @8.0 F3 w mp
+    |
+    @12.0 C3 w mf
+    @12.0 Eb3 w mf
+    @12.0 G3 w mf
+
+@track pluck | instrument: synth/virtual_analog, preset: pulse_pluck
+  mix: vol=-7dB, pan=0.2
+  @phrase motif [1:1:0 - 5:1:0]
+    C5 8th mf
+    G4 8th mp
+    Eb5 8th mf
+    G4 8th mp
+    C5 8th mf
+    G4 8th mp
+    Bb4 q f
+    |
+    Ab4 8th mf
+    Eb5 8th f
+    C5 q mf
+    G4 h mp
+    |
+    Bb4 8th mf
+    F5 8th f
+    D5 q mf
+    G4 h mp
+    |
+    C5 q f
+    G4 q mf
+    Eb5 h f
+
+@master
+  effects:
+    - limiter: ceiling=-0.8dB

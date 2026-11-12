@@ -1,0 +1,118 @@
+// OpenCompose Preset Example
+// Demonstrates user-defined presets: soundfont, CLAP plugin, sample, builtin
+
+@ocp "0.2.0"
+
+@project "Preset Demo"
+  tempo: 120
+  time_signature: 4/4
+  key: C major
+
+// === User-defined presets ===
+
+@preset bright_piano
+  source: soundfont
+  program: 1
+
+@preset warm_pad
+  source: soundfont
+  program: 89
+  effects:
+    - chorus: rate=0.8, depth=4.0, mix=30%
+    - reverb: decay=2.5s, mix=40%
+
+@preset lofi_keys
+  source: soundfont
+  program: 4
+  effects:
+    - distortion: drive=30%, mix=20%
+    - eq: high_shelf=-4dB@8kHz
+
+@preset test_sine
+  source: builtin
+  plugin: "builtin.test_tone"
+  params: {frequency: 440, amplitude: 0.5, waveform: 0}
+
+// === Tracks using presets ===
+
+@track piano | preset: bright_piano
+  mix: vol=-3dB, pan=-0.1
+
+  @phrase melody [1:1:0 - 5:1:0]
+    C4  q   mf
+    E4  q   mf  articulation=legato
+    G4  h   f
+    |
+    A4  q.  f
+    G4  8th mf
+    F4  h   mp
+    |
+    E4  q   mp
+    D4  q   p
+    C4  h   p
+    |
+    rest w
+
+@track pads | preset: warm_pad
+  mix: vol=-10dB, pan=0
+
+  @phrase chords [1:1:0 - 5:1:0]
+    C3  w   pp  articulation=sustained
+    |
+    F3  w   pp
+    |
+    G3  w   p   expression={dynamics: pp->p}
+    |
+    C3  w   pp
+
+@track keys | preset: lofi_keys
+  mix: vol=-6dB, pan=0.15
+
+  @phrase riff [1:1:0 - 5:1:0]
+    C4  8th mf  articulation=staccato
+    E4  8th mf  articulation=staccato
+    G4  q   f
+    E4  8th mf
+    C4  8th mf
+    G3  q   mf
+    |
+    rest w
+    |
+    C4  8th mf  articulation=staccato
+    E4  8th mf  articulation=staccato
+    G4  q   f
+    E4  8th mf
+    C4  8th mf
+    G3  q   mf
+    |
+    rest w
+
+@track bass | instrument: bass/electric_finger
+  mix: vol=-2dB, pan=0
+
+  @phrase bassline [1:1:0 - 5:1:0]
+    C2  q   f
+    rest q
+    C2  8th mf
+    rest 8th
+    C2  q   f
+    |
+    F2  q   f
+    rest q
+    F2  8th mf
+    rest 8th
+    F2  q   f
+    |
+    G2  q   f
+    rest q
+    G2  8th mf
+    rest 8th
+    G2  q   f
+    |
+    C2  w   f
+
+@master
+  effects:
+    - eq: low_shelf=+1dB@80Hz
+    - compression: ratio=2:1, threshold=-8dB, attack=20ms, release=150ms
+    - limiter: ceiling=-0.3dB

@@ -1,0 +1,208 @@
+/* ============================================================================
+   Audio export dialog — options, progress and finished pages
+   ============================================================================ */
+
+.export-audio-dialog {
+  width: min(820px, 100%);
+}
+
+.export-audio-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 20px 16px;
+  overflow: auto;
+}
+
+.export-audio-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--bg-surface) 55%, transparent);
+}
+
+.export-audio-section .midi-panel-head,
+.export-audio-summary .midi-panel-head,
+.export-audio-finished .midi-panel-head {
+  padding: 0;
+  border-bottom: none;
+}
+
+.export-audio-path {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.export-audio-reason {
+  margin: 0;
+  color: var(--meter-yellow);
+  font-size: 10px;
+}
+
+.export-audio-format-hint {
+  margin: 0;
+}
+
+.export-audio-stem-preview {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.export-audio-dither {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-secondary);
+}
+
+.export-audio-dither input:disabled + span {
+  color: var(--text-muted);
+}
+
+.export-audio-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--bg-primary) 60%, transparent);
+}
+
+.export-audio-summary-line {
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.export-audio-summary-empty {
+  font-size: 11px;
+}
+
+.export-audio-overwrite {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--meter-yellow) 55%, transparent);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--meter-yellow) 8%, transparent);
+}
+
+.export-audio-overwrite-title {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.export-audio-overwrite-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.export-audio-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 28px 12px;
+  text-align: center;
+}
+
+.export-audio-phase {
+  font-family: var(--font-display);
+  font-size: 15px;
+}
+
+.export-audio-track {
+  position: relative;
+  height: 6px;
+  overflow: hidden;
+  border-radius: 3px;
+  background: var(--bg-primary);
+}
+
+.export-audio-track-fill {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 35%;
+  border-radius: 3px;
+  background: var(--accent);
+  animation: export-audio-slide 1.4s ease-in-out infinite;
+}
+
+/* A fraction from the engine replaces the indeterminate slide. */
+.export-audio-track-known {
+  animation: none;
+  transition: width 120ms linear;
+}
+
+.export-audio-cancelled {
+  color: var(--text-secondary) !important;
+}
+
+@keyframes export-audio-slide {
+  0% {
+    left: -35%;
+  }
+  100% {
+    left: 100%;
+  }
+}
+
+.export-audio-cancel-note {
+  margin: 0;
+  font-size: 10px;
+}
+
+.export-audio-finished {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--bg-surface) 55%, transparent);
+}
+
+.export-audio-finished-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--text-secondary);
+}
+
+.export-audio-finished-row strong {
+  font-family: var(--font-mono);
+  font-weight: 500;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
+.export-audio-finished-path {
+  flex: 1;
+}
+
+.export-audio-clipped {
+  margin: 4px 0 0;
+  color: var(--text-secondary);
+  font-size: 11px;
+}

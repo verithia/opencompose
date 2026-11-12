@@ -1,0 +1,907 @@
+@font-face {
+  font-family: "Quicksand";
+  font-style: normal;
+  font-weight: 300 700;
+  font-display: swap;
+  src: url("../../assets/fonts/quicksand-latin.woff2") format("woff2");
+}
+
+/* ============================================================================
+   OpenCompose DAW — studio instrument design language.
+   Neutral chassis, calibrated track colours, precision type.
+   ============================================================================ */
+
+:root,
+:root[data-theme="midnight"] {
+  /* ── Backgrounds: cool-neutral elevation stack (z0 → z5) ── */
+  --bg-void:       #100b0f;  /* z0: behind everything */
+  --bg-primary:    #171018;  /* z1: main content (timeline grid, piano roll) */
+  --bg-secondary:  #21171c;  /* z2: track headers, mixer strips, panel chrome */
+  --bg-surface:    #2a1d22;  /* z3: toolbar, status bar, tab strip */
+  --bg-elevated:   #34262b;  /* z4: dropdowns, context menus, tooltips */
+  --bg-float:      #402f34;  /* z5: floating panels, modals */
+  --bg-track:      #21171c;
+  --bg-track-selected: #2b2028;
+  --bg-input:      #100b0f;
+
+  /* ── Text: warm off-whites ── */
+  --text-primary:   #e8e6e3;
+  --text-secondary: #9b9893;
+  --text-muted:     #5c5955;
+  --text-accent:    #e2a842;
+
+  /* ── Accent: amber-gold — warmth, creativity, precision ── */
+  --accent:       #e2a842;
+  --accent-hover: #d49a35;
+  --accent-dim:   rgba(226, 168, 66, 0.10);
+  --accent-glow:  rgba(226, 168, 66, 0.20);
+
+  /* Secondary accent: cool slate-blue for informational states */
+  --accent-cool:      #6b8aab;
+  --accent-cool-dim:  rgba(107, 138, 171, 0.12);
+
+  /* ── Borders: barely visible, structural ── */
+  --border:       rgba(255, 224, 180, 0.055);
+  --border-light: rgba(255, 224, 180, 0.10);
+
+  /* ── Mixer ── */
+  --fader-track: #0a0b0d;
+  --fader-fill:  #e2a842;
+  --meter-green:  #5cb885;
+  --meter-yellow: #d4914e;
+  --meter-red:    #c75c5c;
+
+  /* ── Transport ── */
+  --play-green:  #5cb885;
+  --stop-red:    #c75c5c;
+  --record-red:  #c75c5c;
+
+  /* ── Track lane colors: desaturated pastels ── */
+  --track-color-0: #6bc0e8;
+  --track-color-1: #5cc9a0;
+  --track-color-2: #e0c050;
+  --track-color-3: #a89dd8;
+  --track-color-4: #d98e8e;
+  --track-color-5: #a4cc5a;
+  --track-color-6: #52c9b8;
+  --track-color-7: #d98eb8;
+
+  /* ── Piano roll ── */
+  --note-fill:     #e2a842;
+  --note-selected: #6b8aab;
+  --grid-line: #22161f;
+  --grid-bar:  #44303a;
+  --grid-beat: #2d2028;
+
+  /* ── Spacing (4px grid) ── */
+  --toolbar-height:     48px;
+  --ruler-height:       32px;
+  --track-header-width: 200px;
+  /* Webview zoom, published by uiScaleStore; 1 until the app mounts. */
+  --ui-scale: 1;
+  /* Chrome that must not grow with the interface scale: sizes are divided by
+     this so the toolbar and the brand corner keep their rendered size. */
+  --chrome-scale: max(1, var(--ui-scale));
+  --track-row-height:   64px;
+  --mixer-strip-width:  80px;
+  --panel-gap:          0px;
+
+  /* ── Typography ── */
+  --font-display: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-brand:   "Quicksand", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-ui:      "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  --font-mono:    "SF Mono", "JetBrains Mono", "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
+  --font-size-xs: 11px;
+  --font-size-sm: 12px;
+  --font-size-md: 13px;
+  --font-size-lg: 15px;
+
+  /* ── Misc ── */
+  --bg-hover:       rgba(255, 255, 255, 0.04);
+  --border-focus:   var(--accent);
+  --shadow-panel:   0 1px 3px rgba(0, 0, 0, 0.4);
+  --shadow-elevated: 0 8px 32px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(255, 255, 255, 0.03);
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --chrome-bg: linear-gradient(180deg, #35252a 0%, #23181d 52%, #171016 100%);
+  --panel-bg: var(--bg-primary);
+  --sidebar-bg: linear-gradient(180deg, #24191f 0%, #191118 100%);
+  --tab-strip-bg: #24191f;
+  --timeline-bg:
+    radial-gradient(circle at 18% 0%, rgba(226, 168, 66, 0.12), transparent 26%),
+    linear-gradient(180deg, #1b1218 0%, #100b10 100%);
+  --track-header-bg: #21171c;
+  --track-lane-bg: rgba(34, 23, 30, 0.82);
+  --track-lane-alt-bg: rgba(22, 15, 21, 0.92);
+  --ruler-bg: linear-gradient(180deg, #2f2228 0%, #1d141a 100%);
+  --clip-overlay: linear-gradient(180deg, rgba(255, 255, 255, 0.16), rgba(0, 0, 0, 0.18));
+  --clip-border: rgba(255, 255, 255, 0.10);
+  --clip-text: var(--text-primary);
+  --clip-text-muted: var(--text-secondary);
+  --clip-label-bg: linear-gradient(90deg, color-mix(in srgb, var(--bg-elevated) 88%, transparent), color-mix(in srgb, var(--bg-elevated) 48%, transparent));
+  /* Neutral frame: readable over light and dark clip material without borrowing the accent. */
+  --selection-frame: var(--text-primary);
+  --clip-selected-ring: 0 0 0 1px var(--bg-void), 0 0 0 3px var(--selection-frame);
+  --active-ring: inset 0 -2px 0 var(--accent);
+
+  /* ── Motion ── */
+  --ease-out:    cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --transition-fast:   120ms cubic-bezier(0.16, 1, 0.3, 1);
+  --transition-normal: 240ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+:root[data-theme="graphite"] {
+  color-scheme: dark;
+
+  /* Neutral carbon-slate chassis: track colour stays the only colour. */
+  --bg-void:       #0B0D10;
+  --bg-primary:    #12151A;
+  --bg-secondary:  #181C22;
+  --bg-surface:    #1E232B;
+  --bg-elevated:   #262C36;
+  --bg-float:      #2E3540;
+  --bg-track:      #171B21;
+  --bg-track-selected: #222832;
+  --bg-input:      #0E1115;
+
+  --text-primary:   #EDF2F7;
+  --text-secondary: #A0AEC0;
+  --text-muted:     #64748B;
+  --text-accent:    #38BDF8;
+
+  --accent:       #38BDF8;
+  --accent-hover: #7DD3FC;
+  --accent-dim:   rgba(56, 189, 248, 0.14);
+  --accent-glow:  rgba(56, 189, 248, 0.24);
+  --accent-cool:      #818CF8;
+  --accent-cool-dim:  rgba(129, 140, 248, 0.14);
+
+  --border:       rgba(255, 255, 255, 0.07);
+  --border-light: rgba(255, 255, 255, 0.13);
+
+  --fader-track: #0B0D10;
+  --fader-fill:  #38BDF8;
+  --meter-green:  #34D399;
+  --meter-yellow: #FBBF24;
+  --meter-red:    #FB7185;
+
+  --play-green:  #34D399;
+  --stop-red:    #FB7185;
+  --record-red:  #FB7185;
+
+  --track-color-0: #38BDF8;
+  --track-color-1: #34D399;
+  --track-color-2: #FBBF24;
+  --track-color-3: #A78BFA;
+  --track-color-4: #FB7185;
+  --track-color-5: #A3E635;
+  --track-color-6: #2DD4BF;
+  --track-color-7: #F472B6;
+
+  --note-fill:     #38BDF8;
+  --note-selected: #818CF8;
+  --grid-line: #181C23;
+  --grid-beat: #202630;
+  --grid-bar:  #333C4A;
+
+  --bg-hover:       rgba(255, 255, 255, 0.05);
+  --border-focus:   var(--accent);
+  --shadow-panel:   inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 1px 2px rgba(0, 0, 0, 0.45);
+  --shadow-elevated: 0 16px 40px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(255, 255, 255, 0.06);
+  --radius-sm: 3px;
+  --radius-md: 4px;
+  --radius-lg: 6px;
+
+  --chrome-bg: linear-gradient(180deg, #222730 0%, #191D24 100%);
+  --panel-bg: #12151A;
+  --sidebar-bg: #161A20;
+  --tab-strip-bg: #1A1E25;
+  --timeline-bg: #12151A;
+  --track-header-bg: #181C22;
+  --track-lane-bg: #14181E;
+  --track-lane-alt-bg: #111419;
+  --ruler-bg: #1A1E26;
+  --clip-overlay: linear-gradient(180deg, rgba(255, 255, 255, 0.05) 0%, rgba(0, 0, 0, 0.12) 100%);
+  --clip-border: rgba(255, 255, 255, 0.18);
+  --active-ring: inset 0 -2px 0 var(--accent);
+}
+
+:root[data-theme="ivory"] {
+  color-scheme: light;
+
+  /* Calibrated daylight chassis: no sepia, no paper texture. */
+  --bg-void:       #DCE2EA;
+  --bg-primary:    #F3F5F8;
+  --bg-secondary:  #EAEFF5;
+  --bg-surface:    #E1E7EF;
+  --bg-elevated:   #FFFFFF;
+  --bg-float:      #FFFFFF;
+  --bg-track:      #EAEFF5;
+  --bg-track-selected: #DBE4F0;
+  --bg-input:      #FFFFFF;
+
+  --text-primary:   #0F172A;
+  --text-secondary: #334155;
+  --text-muted:     #64748B;
+  --text-accent:    #0284C7;
+
+  --accent:       #0284C7;
+  --accent-hover: #0369A1;
+  --accent-dim:   rgba(2, 132, 199, 0.12);
+  --accent-glow:  rgba(2, 132, 199, 0.20);
+  --accent-cool:      #4F46E5;
+  --accent-cool-dim:  rgba(79, 70, 229, 0.12);
+
+  --border:       rgba(15, 23, 42, 0.10);
+  --border-light: rgba(15, 23, 42, 0.18);
+
+  --fader-track: #DCE2EA;
+  --fader-fill:  #0284C7;
+  --meter-green:  #059669;
+  --meter-yellow: #D97706;
+  --meter-red:    #E11D48;
+
+  --play-green:  #059669;
+  --stop-red:    #E11D48;
+  --record-red:  #E11D48;
+
+  --track-color-0: #0284C7;
+  --track-color-1: #059669;
+  --track-color-2: #D97706;
+  --track-color-3: #7C3AED;
+  --track-color-4: #E11D48;
+  --track-color-5: #65A30D;
+  --track-color-6: #0D9488;
+  --track-color-7: #C026D3;
+
+  --note-fill:     #0284C7;
+  --note-selected: #4F46E5;
+  --grid-line: #E5EAF0;
+  --grid-beat: #D5DCE6;
+  --grid-bar:  #94A3B8;
+
+  --bg-hover:       rgba(15, 23, 42, 0.05);
+  --border-focus:   var(--accent);
+  --shadow-panel:   inset 0 1px 0 rgba(255, 255, 255, 0.90), 0 1px 2px rgba(15, 23, 42, 0.10);
+  --shadow-elevated: 0 14px 34px rgba(15, 23, 42, 0.14), 0 0 0 1px rgba(15, 23, 42, 0.08);
+  --radius-sm: 3px;
+  --radius-md: 4px;
+  --radius-lg: 6px;
+
+  --chrome-bg: linear-gradient(180deg, #F8FAFC 0%, #E8EEF5 100%);
+  --panel-bg: #F3F5F8;
+  --sidebar-bg: #EDF2F7;
+  --tab-strip-bg: #E2E8F0;
+  --timeline-bg: #F3F5F8;
+  --track-header-bg: #EAEFF5;
+  --track-lane-bg: #F8FAFC;
+  --track-lane-alt-bg: #F1F5F9;
+  --ruler-bg: #E8EEF5;
+  --clip-overlay: linear-gradient(180deg, rgba(255, 255, 255, 0.25) 0%, rgba(15, 23, 42, 0.04) 100%);
+  --clip-border: rgba(15, 23, 42, 0.22);
+  --active-ring: inset 0 -2px 0 var(--accent);
+}
+
+:root[data-theme="linen"] {
+  --bg-void:       #d9d4ca;
+  --bg-primary:    #efede6;
+  --bg-secondary:  #e4e0d6;
+  --bg-surface:    #d5cec0;
+  --bg-elevated:   #f8f5ed;
+  --bg-float:      #fffdf6;
+  --bg-track:      #e4e0d6;
+  --bg-track-selected: #d6d3c6;
+  --bg-input:      #fbf8ef;
+
+  --text-primary:   #242621;
+  --text-secondary: #55594d;
+  --text-muted:     #838473;
+  --text-accent:    #627a48;
+
+  --accent:       #6f8f4c;
+  --accent-hover: #5f7d3f;
+  --accent-dim:   rgba(111, 143, 76, 0.14);
+  --accent-glow:  rgba(111, 143, 76, 0.24);
+  --accent-cool:      #557c9e;
+  --accent-cool-dim:  rgba(85, 124, 158, 0.13);
+
+  --border:       rgba(58, 60, 50, 0.14);
+  --border-light: rgba(58, 60, 50, 0.23);
+
+  --fader-track: #c5bead;
+  --fader-fill:  #6f8f4c;
+  --meter-green:  #5f9a62;
+  --meter-yellow: #c99a43;
+  --meter-red:    #bf635c;
+
+  --play-green:  #5f9a62;
+  --stop-red:    #bf635c;
+  --record-red:  #bf635c;
+
+  --track-color-0: #5a93bd;
+  --track-color-1: #669b70;
+  --track-color-2: #c6a04d;
+  --track-color-3: #8b82c1;
+  --track-color-4: #c9756a;
+  --track-color-5: #8da957;
+  --track-color-6: #5ba49a;
+  --track-color-7: #bb7da0;
+
+  --note-fill:     #6f8f4c;
+  --note-selected: #557c9e;
+  --grid-line: #e1ddd2;
+  --grid-bar:  #aca693;
+  --grid-beat: #cbc5b6;
+
+  --bg-hover:       rgba(58, 60, 50, 0.07);
+  --border-focus:   var(--accent);
+  --shadow-panel:   inset 0 1px 0 rgba(255, 255, 255, 0.55), 0 1px 2px rgba(67, 62, 49, 0.15);
+  --shadow-elevated: 0 12px 28px rgba(67, 62, 49, 0.18), 0 0 0 1px rgba(58, 60, 50, 0.10);
+  --radius-sm: 7px;
+  --radius-md: 11px;
+  --radius-lg: 15px;
+  --chrome-bg: linear-gradient(180deg, #e1d9c9 0%, #cac1ae 100%);
+  --panel-bg: #efede6;
+  --sidebar-bg: linear-gradient(180deg, #E5E1D7 0%, #DDD8CC 100%);
+  --tab-strip-bg: #d8d0c0;
+  --timeline-bg:
+    radial-gradient(circle at 80% 12%, rgba(111, 143, 76, 0.12), transparent 24%),
+    linear-gradient(180deg, #efede6 0%, #e6e1d6 100%);
+  --track-header-bg: #e4e0d6;
+  --track-lane-bg: rgba(245, 242, 233, 0.84);
+  --track-lane-alt-bg: rgba(231, 226, 215, 0.9);
+  --ruler-bg: linear-gradient(180deg, #ddd6c7 0%, #cfc6b4 100%);
+  --clip-overlay: linear-gradient(180deg, rgba(255, 255, 255, 0.30), rgba(46, 51, 39, 0.10));
+  --clip-border: rgba(46, 51, 39, 0.22);
+  --active-ring: inset 0 -3px 0 var(--accent);
+}
+
+:root[data-theme="draft"] {
+  --bg-void:       #d8e1e8;
+  --bg-primary:    #eef5f8;
+  --bg-secondary:  #dfeaf0;
+  --bg-surface:    #cbd9e2;
+  --bg-elevated:   #f7fbfd;
+  --bg-float:      #ffffff;
+  --bg-track:      #dfeaf0;
+  --bg-track-selected: #c7d9e5;
+  --bg-input:      #fbfeff;
+
+  --text-primary:   #17222a;
+  --text-secondary: #40525e;
+  --text-muted:     #6f8490;
+  --text-accent:    #007f9f;
+
+  --accent:       #0097b8;
+  --accent-hover: #007f9f;
+  --accent-dim:   rgba(0, 151, 184, 0.13);
+  --accent-glow:  rgba(0, 151, 184, 0.24);
+  --accent-cool:      #3f67b5;
+  --accent-cool-dim:  rgba(63, 103, 181, 0.13);
+
+  --border:       rgba(25, 58, 76, 0.15);
+  --border-light: rgba(25, 58, 76, 0.26);
+
+  --fader-track: #b9cad3;
+  --fader-fill:  #0097b8;
+  --meter-green:  #2f9f70;
+  --meter-yellow: #d49a35;
+  --meter-red:    #ca594f;
+
+  --play-green:  #2f9f70;
+  --stop-red:    #ca594f;
+  --record-red:  #ca594f;
+
+  --track-color-0: #2e9ccb;
+  --track-color-1: #39a87b;
+  --track-color-2: #d0a13d;
+  --track-color-3: #8078d8;
+  --track-color-4: #d46f65;
+  --track-color-5: #88a84a;
+  --track-color-6: #31aaa3;
+  --track-color-7: #c16aa2;
+
+  --note-fill:     #0097b8;
+  --note-selected: #3f67b5;
+  --grid-line: #d9e7ee;
+  --grid-bar:  #8faab8;
+  --grid-beat: #bed0da;
+
+  --bg-hover:       rgba(25, 58, 76, 0.07);
+  --border-focus:   var(--accent);
+  --shadow-panel:   inset 0 1px 0 rgba(255, 255, 255, 0.68), 0 1px 2px rgba(47, 75, 90, 0.16);
+  --shadow-elevated: 0 12px 28px rgba(47, 75, 90, 0.18), 0 0 0 1px rgba(25, 58, 76, 0.12);
+  --radius-sm: 2px;
+  --radius-md: 4px;
+  --radius-lg: 6px;
+  --chrome-bg: linear-gradient(180deg, #d6e4ec 0%, #b9cbd6 100%);
+  --panel-bg: #eef5f8;
+  --sidebar-bg: linear-gradient(180deg, #e3eef4 0%, #d4e2ea 100%);
+  --tab-strip-bg: #cbd9e2;
+  --timeline-bg:
+    linear-gradient(90deg, rgba(0, 151, 184, 0.10) 1px, transparent 1px),
+    linear-gradient(0deg, rgba(0, 151, 184, 0.055) 1px, transparent 1px),
+    linear-gradient(180deg, #eef5f8 0%, #e4eef4 100%);
+  --track-header-bg: #dfeaf0;
+  --track-lane-bg: rgba(246, 251, 253, 0.84);
+  --track-lane-alt-bg: rgba(225, 237, 244, 0.92);
+  --ruler-bg: linear-gradient(180deg, #d2e0e9 0%, #bacbd7 100%);
+  --clip-overlay: linear-gradient(180deg, rgba(255, 255, 255, 0.32), rgba(17, 49, 65, 0.12));
+  --clip-border: rgba(17, 49, 65, 0.24);
+  --active-ring: inset 0 0 0 1px var(--accent), inset 0 -3px 0 var(--accent);
+}
+
+:root[data-theme="quartz"] {
+  --bg-void:       #dce4ec;
+  --bg-primary:    #f7f9fb;
+  --bg-secondary:  #edf2f6;
+  --bg-surface:    #e0e7ef;
+  --bg-elevated:   #ffffff;
+  --bg-float:      #ffffff;
+  --bg-track:      #edf2f6;
+  --bg-track-selected: #dbe7f3;
+  --bg-input:      #ffffff;
+
+  --text-primary:   #111827;
+  --text-secondary: #475569;
+  --text-muted:     #7b8794;
+  --text-accent:    #3157d8;
+
+  --accent:       #3157d8;
+  --accent-hover: #2447bf;
+  --accent-dim:   rgba(49, 87, 216, 0.12);
+  --accent-glow:  rgba(49, 87, 216, 0.22);
+  --accent-cool:      #0099b8;
+  --accent-cool-dim:  rgba(0, 153, 184, 0.12);
+
+  --border:       rgba(30, 41, 59, 0.12);
+  --border-light: rgba(30, 41, 59, 0.22);
+
+  --fader-track: #cfd8e3;
+  --fader-fill:  #3157d8;
+  --meter-green:  #16a064;
+  --meter-yellow: #d4922f;
+  --meter-red:    #d64d55;
+
+  --play-green:  #16a064;
+  --stop-red:    #d64d55;
+  --record-red:  #d64d55;
+
+  --track-color-0: #2387d4;
+  --track-color-1: #13a66f;
+  --track-color-2: #d49b28;
+  --track-color-3: #7257d9;
+  --track-color-4: #d85f56;
+  --track-color-5: #7ea52f;
+  --track-color-6: #14a5aa;
+  --track-color-7: #c7579c;
+
+  --note-fill:     #3157d8;
+  --note-selected: #0099b8;
+  --grid-line: #e4ebf1;
+  --grid-bar:  #a8b7c7;
+  --grid-beat: #ccd7e2;
+
+  --bg-hover:       rgba(49, 87, 216, 0.07);
+  --border-focus:   var(--accent);
+  --shadow-panel:   inset 0 1px 0 rgba(255, 255, 255, 0.86), 0 1px 2px rgba(30, 41, 59, 0.12);
+  --shadow-elevated: 0 14px 32px rgba(30, 41, 59, 0.15), 0 0 0 1px rgba(30, 41, 59, 0.10);
+  --radius-sm: 3px;
+  --radius-md: 5px;
+  --radius-lg: 8px;
+  --chrome-bg: linear-gradient(180deg, #ffffff 0%, #e6edf4 58%, #d5dee9 100%);
+  --panel-bg: #f7f9fb;
+  --sidebar-bg: linear-gradient(180deg, #f3f7fa 0%, #e4ebf2 100%);
+  --tab-strip-bg: #e5ecf3;
+  --timeline-bg:
+    linear-gradient(90deg, rgba(49, 87, 216, 0.055) 1px, transparent 1px),
+    linear-gradient(180deg, #f9fbfd 0%, #eef4f8 100%);
+  --track-header-bg: #edf2f6;
+  --track-lane-bg: rgba(255, 255, 255, 0.82);
+  --track-lane-alt-bg: rgba(235, 241, 247, 0.92);
+  --ruler-bg: linear-gradient(180deg, #f5f8fb 0%, #d9e3ee 100%);
+  --clip-overlay: linear-gradient(180deg, rgba(255, 255, 255, 0.42), rgba(20, 40, 78, 0.11));
+  --clip-border: rgba(30, 41, 59, 0.26);
+  --active-ring: inset 0 0 0 1px var(--accent), inset 0 -3px 0 var(--accent);
+}
+
+:root[data-theme="prism"] {
+  --bg-void:       #e7ebf3;
+  --bg-primary:    #fbfcff;
+  --bg-secondary:  #eff3fa;
+  --bg-surface:    #e5eaf4;
+  --bg-elevated:   #ffffff;
+  --bg-float:      #ffffff;
+  --bg-track:      #f0f4fb;
+  --bg-track-selected: #e3e9fb;
+  --bg-input:      #ffffff;
+
+  --text-primary:   #171923;
+  --text-secondary: #4a5365;
+  --text-muted:     #7b8496;
+  --text-accent:    #7c3aed;
+
+  --accent:       #7c3aed;
+  --accent-hover: #6d28d9;
+  --accent-dim:   rgba(124, 58, 237, 0.11);
+  --accent-glow:  rgba(124, 58, 237, 0.22);
+  --accent-cool:      #06a3c8;
+  --accent-cool-dim:  rgba(6, 163, 200, 0.12);
+
+  --border:       rgba(36, 44, 64, 0.11);
+  --border-light: rgba(36, 44, 64, 0.20);
+
+  --fader-track: #d7deea;
+  --fader-fill:  #7c3aed;
+  --meter-green:  #13a36d;
+  --meter-yellow: #e4a328;
+  --meter-red:    #e05262;
+
+  --play-green:  #13a36d;
+  --stop-red:    #e05262;
+  --record-red:  #e05262;
+
+  --track-color-0: #0ea5e9;
+  --track-color-1: #10b981;
+  --track-color-2: #eab308;
+  --track-color-3: #8b5cf6;
+  --track-color-4: #f97362;
+  --track-color-5: #84cc16;
+  --track-color-6: #14b8a6;
+  --track-color-7: #ec4899;
+
+  --note-fill:     #7c3aed;
+  --note-selected: #06a3c8;
+  --grid-line: #e8edf7;
+  --grid-bar:  #aeb9cb;
+  --grid-beat: #d3dbea;
+
+  --bg-hover:       rgba(124, 58, 237, 0.065);
+  --border-focus:   var(--accent);
+  --shadow-panel:   inset 0 1px 0 rgba(255, 255, 255, 0.88), 0 1px 2px rgba(36, 44, 64, 0.11);
+  --shadow-elevated: 0 16px 36px rgba(69, 78, 104, 0.16), 0 0 0 1px rgba(36, 44, 64, 0.09);
+  --radius-sm: 2px;
+  --radius-md: 4px;
+  --radius-lg: 6px;
+  --chrome-bg:
+    linear-gradient(90deg, rgba(14, 165, 233, 0.12), rgba(124, 58, 237, 0.12), rgba(236, 72, 153, 0.10)),
+    linear-gradient(180deg, #ffffff 0%, #e9eef8 100%);
+  --panel-bg: #fbfcff;
+  --sidebar-bg:
+    radial-gradient(circle at 0% 0%, rgba(14, 165, 233, 0.12), transparent 24%),
+    linear-gradient(180deg, #f8fbff 0%, #e8eef8 100%);
+  --tab-strip-bg: #e8edf7;
+  --timeline-bg:
+    radial-gradient(circle at 12% 0%, rgba(124, 58, 237, 0.10), transparent 22%),
+    radial-gradient(circle at 86% 8%, rgba(6, 163, 200, 0.10), transparent 24%),
+    linear-gradient(180deg, #fbfcff 0%, #f0f5fb 100%);
+  --track-header-bg: #eff3fa;
+  --track-lane-bg: rgba(255, 255, 255, 0.84);
+  --track-lane-alt-bg: rgba(236, 242, 250, 0.92);
+  --ruler-bg: linear-gradient(180deg, #fbfcff 0%, #dee7f3 100%);
+  --clip-overlay: linear-gradient(180deg, rgba(255, 255, 255, 0.42), rgba(69, 35, 121, 0.10));
+  --clip-border: rgba(36, 44, 64, 0.30);
+  --active-ring: inset 0 0 0 1px rgba(124, 58, 237, 0.82), inset 0 -3px 0 var(--accent);
+}
+
+:root[data-theme="carbon"] {
+  --bg-void:       #050606;
+  --bg-primary:    #0b0d0d;
+  --bg-secondary:  #121515;
+  --bg-surface:    #1a1e1e;
+  --bg-elevated:   #232828;
+  --bg-float:      #2d3333;
+  --bg-track:      #111414;
+  --bg-track-selected: #1b2321;
+  --bg-input:      #060707;
+
+  --text-primary:   #e7ecea;
+  --text-secondary: #aab4b0;
+  --text-muted:     #66716d;
+  --text-accent:    #7bd88f;
+
+  --accent:       #7bd88f;
+  --accent-hover: #8de89f;
+  --accent-dim:   rgba(123, 216, 143, 0.11);
+  --accent-glow:  rgba(123, 216, 143, 0.22);
+  --accent-cool:      #74a6d8;
+  --accent-cool-dim:  rgba(116, 166, 216, 0.12);
+
+  --border:       rgba(200, 220, 212, 0.07);
+  --border-light: rgba(200, 220, 212, 0.14);
+
+  --fader-track: #050606;
+  --fader-fill:  #7bd88f;
+  --meter-green:  #7bd88f;
+  --meter-yellow: #d9b35a;
+  --meter-red:    #d66262;
+
+  --play-green:  #7bd88f;
+  --stop-red:    #d66262;
+  --record-red:  #d66262;
+
+  --track-color-0: #67b9dc;
+  --track-color-1: #70cf99;
+  --track-color-2: #d3b653;
+  --track-color-3: #9992df;
+  --track-color-4: #d88378;
+  --track-color-5: #a1c965;
+  --track-color-6: #63cbc1;
+  --track-color-7: #cf88b7;
+
+  --note-fill:     #7bd88f;
+  --note-selected: #74a6d8;
+  --grid-line: #101414;
+  --grid-bar:  #2f3a38;
+  --grid-beat: #1d2423;
+
+  --bg-hover:       rgba(255, 255, 255, 0.045);
+  --border-focus:   var(--accent);
+  --shadow-panel:   inset 0 1px 0 rgba(255, 255, 255, 0.035), 0 1px 4px rgba(0, 0, 0, 0.54);
+  --shadow-elevated: 0 16px 38px rgba(0, 0, 0, 0.65), 0 0 0 1px rgba(200, 220, 212, 0.06);
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --chrome-bg: linear-gradient(180deg, #242a2a 0%, #111515 100%);
+  --panel-bg: #0b0d0d;
+  --sidebar-bg: linear-gradient(180deg, #101313 0%, #0C0F0F 100%);
+  --tab-strip-bg: #171b1b;
+  --timeline-bg:
+    radial-gradient(circle at 10% 0%, rgba(123, 216, 143, 0.11), transparent 22%),
+    linear-gradient(180deg, #0d1010 0%, #070808 100%);
+  --track-header-bg: #121515;
+  --track-lane-bg: rgba(17, 20, 20, 0.84);
+  --track-lane-alt-bg: rgba(10, 12, 12, 0.94);
+  --ruler-bg: linear-gradient(180deg, #1c2221 0%, #0f1212 100%);
+  --clip-overlay: linear-gradient(180deg, rgba(255, 255, 255, 0.13), rgba(0, 0, 0, 0.20));
+  --clip-border: rgba(220, 240, 232, 0.13);
+  --active-ring: inset 0 -3px 0 var(--accent);
+}
+
+:root[data-theme="ember"] {
+  --bg-void:       #0d0705;
+  --bg-primary:    #180d09;
+  --bg-secondary:  #24130d;
+  --bg-surface:    #321b12;
+  --bg-elevated:   #412419;
+  --bg-float:      #522f22;
+  --bg-track:      #24130d;
+  --bg-track-selected: #372015;
+  --bg-input:      #0d0705;
+
+  --text-primary:   #f0e4d9;
+  --text-secondary: #b89f8e;
+  --text-muted:     #705849;
+  --text-accent:    #ff9a45;
+
+  --accent:       #ff9a45;
+  --accent-hover: #ffad63;
+  --accent-dim:   rgba(255, 154, 69, 0.13);
+  --accent-glow:  rgba(255, 154, 69, 0.26);
+  --accent-cool:      #5ac7bc;
+  --accent-cool-dim:  rgba(90, 199, 188, 0.12);
+
+  --border:       rgba(255, 190, 128, 0.07);
+  --border-light: rgba(255, 190, 128, 0.14);
+
+  --fader-track: #0d0705;
+  --fader-fill:  #ff9a45;
+  --meter-green:  #71c47d;
+  --meter-yellow: #ffb757;
+  --meter-red:    #ff6e6a;
+
+  --play-green:  #71c47d;
+  --stop-red:    #ff6e6a;
+  --record-red:  #ff6e6a;
+
+  --track-color-0: #63b7d9;
+  --track-color-1: #68c28f;
+  --track-color-2: #f0b94c;
+  --track-color-3: #b196ec;
+  --track-color-4: #f07e70;
+  --track-color-5: #abc85c;
+  --track-color-6: #5ac7bc;
+  --track-color-7: #df86b8;
+
+  --note-fill:     #ff9a45;
+  --note-selected: #5ac7bc;
+  --grid-line: #24130d;
+  --grid-bar:  #5b3220;
+  --grid-beat: #3a2015;
+
+  --bg-hover:       rgba(255, 255, 255, 0.05);
+  --border-focus:   var(--accent);
+  --shadow-panel:   inset 0 1px 0 rgba(255, 190, 128, 0.055), 0 1px 4px rgba(0, 0, 0, 0.52);
+  --shadow-elevated: 0 16px 38px rgba(0, 0, 0, 0.62), 0 0 0 1px rgba(255, 190, 128, 0.06);
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --chrome-bg: linear-gradient(180deg, #4a2819 0%, #24130d 58%, #130906 100%);
+  --panel-bg: #180d09;
+  --sidebar-bg: linear-gradient(180deg, #2a160f 0%, #180d09 100%);
+  --tab-strip-bg: #2f1a11;
+  --timeline-bg:
+    radial-gradient(circle at 20% 0%, rgba(255, 154, 69, 0.16), transparent 25%),
+    linear-gradient(180deg, #1c0f0a 0%, #100805 100%);
+  --track-header-bg: #24130d;
+  --track-lane-bg: rgba(36, 19, 13, 0.82);
+  --track-lane-alt-bg: rgba(21, 11, 7, 0.94);
+  --ruler-bg: linear-gradient(180deg, #3d2318 0%, #1e100b 100%);
+  --clip-overlay: linear-gradient(180deg, rgba(255, 255, 255, 0.17), rgba(0, 0, 0, 0.22));
+  --clip-border: rgba(255, 190, 128, 0.14);
+  --active-ring: inset 0 -3px 0 var(--accent);
+}
+
+:root[data-theme="vector"] {
+  --bg-void:       #000403;
+  --bg-primary:    #020908;
+  --bg-secondary:  #061210;
+  --bg-surface:    #0a1b18;
+  --bg-elevated:   #0f2823;
+  --bg-float:      #14332d;
+  --bg-track:      #061210;
+  --bg-track-selected: #0b231f;
+  --bg-input:      #000403;
+
+  --text-primary:   #d9fff4;
+  --text-secondary: #8ccbbb;
+  --text-muted:     #436f65;
+  --text-accent:    #74ff8a;
+
+  --accent:       #74ff8a;
+  --accent-hover: #9affaa;
+  --accent-dim:   rgba(116, 255, 138, 0.12);
+  --accent-glow:  rgba(116, 255, 138, 0.28);
+  --accent-cool:      #3de6ff;
+  --accent-cool-dim:  rgba(61, 230, 255, 0.14);
+
+  --border:       rgba(116, 255, 138, 0.09);
+  --border-light: rgba(61, 230, 255, 0.18);
+
+  --fader-track: #000403;
+  --fader-fill:  #74ff8a;
+  --meter-green:  #74ff8a;
+  --meter-yellow: #f6e66b;
+  --meter-red:    #ff5b73;
+
+  --play-green:  #74ff8a;
+  --stop-red:    #ff5b73;
+  --record-red:  #ff5b73;
+
+  --track-color-0: #3de6ff;
+  --track-color-1: #74ff8a;
+  --track-color-2: #f6e66b;
+  --track-color-3: #a78cff;
+  --track-color-4: #ff7b73;
+  --track-color-5: #b8ff68;
+  --track-color-6: #55ffe0;
+  --track-color-7: #ff7bd5;
+
+  --note-fill:     #74ff8a;
+  --note-selected: #3de6ff;
+  --grid-line: #071411;
+  --grid-bar:  #1b5a4f;
+  --grid-beat: #0e302b;
+
+  --bg-hover:       rgba(116, 255, 138, 0.06);
+  --border-focus:   var(--accent);
+  --shadow-panel:   0 0 0 1px rgba(116, 255, 138, 0.08);
+  --shadow-elevated: 0 0 34px rgba(61, 230, 255, 0.12), 0 0 0 1px rgba(116, 255, 138, 0.14);
+  --radius-sm: 2px;
+  --radius-md: 4px;
+  --radius-lg: 6px;
+  --chrome-bg: linear-gradient(180deg, #0f2823 0%, #061210 100%);
+  --panel-bg: #020908;
+  --sidebar-bg: linear-gradient(180deg, #071613 0%, #020908 100%);
+  --tab-strip-bg: #071613;
+  --timeline-bg:
+    linear-gradient(90deg, rgba(116, 255, 138, 0.08) 1px, transparent 1px),
+    linear-gradient(0deg, rgba(61, 230, 255, 0.045) 1px, transparent 1px),
+    radial-gradient(circle at 10% 0%, rgba(61, 230, 255, 0.10), transparent 24%),
+    linear-gradient(180deg, #020908 0%, #000403 100%);
+  --track-header-bg: #061210;
+  --track-lane-bg: rgba(6, 18, 16, 0.82);
+  --track-lane-alt-bg: rgba(2, 9, 8, 0.94);
+  --ruler-bg: linear-gradient(180deg, #0d211d 0%, #04100e 100%);
+  --clip-overlay: linear-gradient(180deg, rgba(116, 255, 138, 0.16), rgba(0, 0, 0, 0.20));
+  --clip-border: rgba(116, 255, 138, 0.24);
+  --active-ring: inset 0 0 0 1px var(--accent), inset 0 -3px 0 var(--accent);
+}
+
+:root[data-theme="signal"] {
+  --bg-void:       #000000;
+  --bg-primary:    #050505;
+  --bg-secondary:  #0c0c0c;
+  --bg-surface:    #141414;
+  --bg-elevated:   #202020;
+  --bg-float:      #292929;
+  --bg-track:      #0c0c0c;
+  --bg-track-selected: #181818;
+  --bg-input:      #000000;
+
+  --text-primary:   #ffffff;
+  --text-secondary: #d0d0d0;
+  --text-muted:     #8f8f8f;
+  --text-accent:    #ffd15c;
+
+  --accent:       #ffd15c;
+  --accent-hover: #ffe08a;
+  --accent-dim:   rgba(255, 209, 92, 0.18);
+  --accent-glow:  rgba(255, 209, 92, 0.28);
+  --accent-cool:      #8fc7ff;
+  --accent-cool-dim:  rgba(143, 199, 255, 0.18);
+
+  --border:       rgba(255, 255, 255, 0.14);
+  --border-light: rgba(255, 255, 255, 0.24);
+
+  --fader-track: #000000;
+  --fader-fill:  #ffd15c;
+  --meter-green:  #63e69a;
+  --meter-yellow: #ffd15c;
+  --meter-red:    #ff7272;
+
+  --play-green:  #63e69a;
+  --stop-red:    #ff7272;
+  --record-red:  #ff7272;
+
+  --track-color-0: #66d9ff;
+  --track-color-1: #66ffb5;
+  --track-color-2: #ffd15c;
+  --track-color-3: #b4a7ff;
+  --track-color-4: #ff9b91;
+  --track-color-5: #caff73;
+  --track-color-6: #66ffe8;
+  --track-color-7: #ff9fd4;
+
+  --note-fill:     #ffd15c;
+  --note-selected: #8fc7ff;
+  --grid-line: #121212;
+  --grid-bar:  #737373;
+  --grid-beat: #383838;
+
+  --bg-hover:       rgba(255, 255, 255, 0.09);
+  --border-focus:   var(--accent);
+  --shadow-panel:   none;
+  --shadow-elevated: 0 0 0 1px var(--border-light);
+  --radius-sm: 3px;
+  --radius-md: 5px;
+  --radius-lg: 7px;
+  --chrome-bg: #000000;
+  --panel-bg: #000000;
+  --sidebar-bg: #050505;
+  --tab-strip-bg: #000000;
+  --timeline-bg:
+    linear-gradient(90deg, rgba(255, 255, 255, 0.08) 1px, transparent 1px),
+    linear-gradient(180deg, #000000 0%, #050505 100%);
+  --track-header-bg: #050505;
+  --track-lane-bg: #000000;
+  --track-lane-alt-bg: #090909;
+  --ruler-bg: #000000;
+  --clip-overlay: linear-gradient(180deg, rgba(255, 255, 255, 0.30), rgba(0, 0, 0, 0.20));
+  --clip-border: rgba(255, 255, 255, 0.72);
+  --active-ring: inset 0 0 0 2px var(--accent), inset 0 -4px 0 var(--accent);
+}
+
+:root[data-theme="signal"] .daw-toolbar,
+:root[data-theme="signal"] .bottom-panel-tabs,
+:root[data-theme="signal"] .right-sidebar,
+:root[data-theme="signal"] .track-headers,
+:root[data-theme="signal"] .timeline-ruler,
+:root[data-theme="signal"] .status-bar {
+  border-color: rgba(255, 255, 255, 0.42);
+}
+
+:root[data-theme="signal"] .track-header,
+:root[data-theme="signal"] .track-lane {
+  border-bottom-color: rgba(255, 255, 255, 0.22);
+}
+
+:root[data-theme="signal"] .toolbar-btn,
+:root[data-theme="signal"] .transport-btn,
+:root[data-theme="signal"] .track-btn,
+:root[data-theme="signal"] .preferences-popover,
+:root[data-theme="signal"] .theme-select {
+  border: 1px solid rgba(255, 255, 255, 0.38);
+}

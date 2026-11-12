@@ -1,0 +1,89 @@
+/* ============================================================================
+   Mixer panel
+   ============================================================================ */
+
+.mixer-panel {
+  display: flex;
+  gap: var(--panel-gap);
+  padding: 12px;
+  background: var(--bg-primary);
+  overflow: auto;
+  align-items: flex-start;
+  height: 100%;
+}
+
+.mixer-strip {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  width: var(--mixer-strip-width);
+  min-width: var(--mixer-strip-width);
+  padding: 8px 4px;
+  background: var(--bg-surface);
+  border-radius: 4px;
+}
+
+.mixer-strip-label {
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  width: 100%;
+}
+
+.mixer-fader-container {
+  position: relative;
+  width: 24px;
+  height: 120px;
+  background: var(--fader-track);
+  border-radius: 2px;
+  cursor: pointer;
+}
+
+.mixer-fader-fill {
+  position: absolute;
+  bottom: 0;
+  width: 100%;
+  border-radius: 2px;
+  transition: height var(--transition-fast);
+}
+
+.mixer-fader-thumb {
+  position: absolute;
+  width: 30px;
+  height: 6px;
+  left: -3px;
+  background: var(--text-primary);
+  border-radius: 2px;
+  cursor: grab;
+}
+
+.mixer-db-label {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  color: var(--text-secondary);
+}
+
+.mixer-pan-knob {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 2px solid var(--border-light);
+  background: var(--bg-input);
+  position: relative;
+  cursor: pointer;
+}
+
+.mixer-pan-indicator {
+  position: absolute;
+  top: 2px;
+  left: 50%;
+  width: 2px;
+  height: 10px;
+  background: var(--accent);
+  transform-origin: bottom center;
+  border-radius: 1px;
+}

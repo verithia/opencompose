@@ -1,0 +1,29 @@
+[package]
+autotests = false
+repository.workspace = true
+name = "oc-synth-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "OpenSynth engine core: voices, routing, sampler, and the patch types shared by the importer and the facade"
+
+[dependencies]
+oc-audio = { path = "../oc-audio", default-features = false }
+oc-device-schema = { path = "../oc-device-schema" }
+oc-dsp = { path = "../oc-dsp" }
+oc-dsl = { path = "../oc-dsl" }
+oc-synth-fx = { path = "../oc-synth-fx" }
+claxon = "0.4"
+hound = "3"
+log.workspace = true
+rustfft.workspace = true
+serde = { workspace = true, features = ["rc"] }
+serde_json = { workspace = true, features = ["float_roundtrip"] }
+
+[dev-dependencies]
+oc-test-support = { path = "../oc-test-support" }
+
+[[test]]
+name = "all"
+path = "tests/all.rs"

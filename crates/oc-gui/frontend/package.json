@@ -1,0 +1,43 @@
+{
+  "name": "frontend",
+  "private": true,
+  "license": "AGPL-3.0-or-later",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "node scripts/check-version.mjs && tsc -b && vite build",
+    "preview": "vite preview",
+    "ui:clip-gestures": "node scripts/ui-clip-gestures.mjs",
+    "ui:interactions": "playwright install chromium && node scripts/ui-interactions.mjs",
+    "ui:preset-click": "playwright install chromium && node scripts/ui-preset-click.mjs",
+    "ui:screenshot": "playwright install chromium && node scripts/ui-screenshot.mjs",
+    "test": "vitest run",
+    "typecheck": "tsc -b --noEmit",
+    "test:coverage": "vitest run --coverage",
+    "test:watch": "vitest",
+    "layout-check": "vitest run --config vitest.layout.config.ts",
+    "tauri": "tauri",
+    "version:check": "node scripts/check-version.mjs",
+    "smoke:macos": "bash scripts/smoke-macos.sh"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.11.0",
+    "@tauri-apps/plugin-dialog": "^2.7.0",
+    "marked": "^18.1.2",
+    "solid-js": "^1.9.12"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.60.0",
+    "@solidjs/testing-library": "^0.8.10",
+    "@tauri-apps/cli": "^2.11.0",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@types/node": "^24.12.2",
+    "@vitest/coverage-v8": "^4.1.11",
+    "jsdom": "^29.1.1",
+    "typescript": "~6.0.2",
+    "vite": "^8.0.10",
+    "vite-plugin-solid": "^2.11.12",
+    "vitest": "^4.1.5"
+  }
+}

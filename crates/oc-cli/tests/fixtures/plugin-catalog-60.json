@@ -1,0 +1,1986 @@
+{
+  "entries": [
+    {
+      "description": "A lush algorithmic reverb with three decay models, damping, and a modulation stage tuned for long ambient tails.",
+      "homepage": "https://plugins.example.com/northwind-audio-drift-0",
+      "id": "northwind-audio.drift0",
+      "installs": [
+        {
+          "archive": "zip",
+          "bytes": 12000000,
+          "format": "vst3",
+          "kind": "github_release",
+          "platform": "macos-aarch64",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000001",
+          "url": "https://github.com/example/northwind-audio-drift-0/releases/download/v1.2.3/northwind-audio-drift-0-mac.zip"
+        },
+        {
+          "archive": "installer",
+          "bytes": 15000000,
+          "format": "vst3",
+          "kind": "direct",
+          "platform": "windows-x86_64",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000065",
+          "url": "https://downloads.example.net/northwind-audio-drift-0/setup-0.exe"
+        }
+      ],
+      "name": "Drift MK I",
+      "tags": [
+        "reverb",
+        "ambience",
+        "spatial"
+      ],
+      "vendor": "Northwind Audio",
+      "version": "1.0.0"
+    },
+    {
+      "description": "A transparent bus compressor with program-dependent release, sidechain filtering, and parallel mix for glue without pumping.",
+      "homepage": "https://plugins.example.com/kestrel-dsp-ember-1",
+      "id": "kestrel-dsp.ember1",
+      "installs": [
+        {
+          "archive": "zip",
+          "bytes": 12137000,
+          "format": "vst3",
+          "kind": "github_release",
+          "platform": "macos-aarch64",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000002",
+          "url": "https://github.com/example/kestrel-dsp-ember-1/releases/download/v1.2.3/kestrel-dsp-ember-1-mac.zip"
+        },
+        {
+          "archive": "installer",
+          "bytes": 15211000,
+          "format": "vst3",
+          "kind": "direct",
+          "platform": "windows-x86_64",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000066",
+          "url": "https://downloads.example.net/kestrel-dsp-ember-1/setup-1.exe"
+        }
+      ],
+      "name": "Ember MK II",
+      "tags": [
+        "compressor",
+        "dynamics",
+        "mixing"
+      ],
+      "vendor": "Kestrel DSP",
+      "version": "2.1.1"
+    },
+    {
+      "description": "A hybrid wavetable synthesizer with two oscillators, per-voice modulation, and a built-in arpeggiator with probability.",
+      "homepage": "https://plugins.example.com/marlowe-labs-harbor-2",
+      "id": "marlowe-labs.harbor2",
+      "installs": [
+        {
+          "archive": "zip",
+          "bytes": 12274000,
+          "format": "vst3",
+          "kind": "github_release",
+          "platform": "macos-aarch64",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000003",
+          "url": "https://github.com/example/marlowe-labs-harbor-2/releases/download/v1.2.3/marlowe-labs-harbor-2-mac.zip"
+        },
+        {
+          "archive": "installer",
+          "bytes": 15422000,
+          "format": "vst3",
+          "kind": "direct",
+          "platform": "windows-x86_64",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000067",
+          "url": "https://downloads.example.net/marlowe-labs-harbor-2/setup-2.exe"
+        }
+      ],
+      "name": "Harbor Pro",
+      "tags": [
+        "synthesizer",
+        "wavetable",
+        "modulation"
+      ],
+      "vendor": "Marlowe Labs",
+      "version": "3.2.2"
+    },
+    {
+      "description": "A mastering equalizer with dynamic bands, mid-side processing, and a linear-phase mode for delicate high-frequency work.",
+      "homepage": "https://plugins.example.com/fjord-instruments-lumen-3",
+      "id": "fjord-instruments.lumen3",
+      "installs": [
+        {
+          "archive": "zip",
+          "bytes": 12411000,
+          "format": "vst3",
+          "kind": "github_release",
+          "platform": "macos-aarch64",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000004",
+          "url": "https://github.com/example/fjord-instruments-lumen-3/releases/download/v1.2.3/fjord-instruments-lumen-3-mac.zip"
+        },
+        {
+          "archive": "installer",
+          "bytes": 15633000,
+          "format": "vst3",
+          "kind": "direct",
+          "platform": "windows-x86_64",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000068",
+          "url": "https://downloads.example.net/fjord-instruments-lumen-3/setup-3.exe"
+        }
+      ],
+      "name": "Lumen Lite",
+      "tags": [
+        "equalizer",
+        "mastering",
+        "linear-phase"
+      ],
+      "vendor": "Fjord Instruments",
+      "version": "1.3.3"
+    },
+    {
+      "description": "A stereo delay with pitch-shifted taps, diffusion, and tempo-synced modulation for spacious rhythmic echoes.",
+      "homepage": "https://plugins.example.com/cinder-works-mosaic-4",
+      "id": "cinder-works.mosaic4",
+      "installs": [
+        {
+          "archive": "zip",
+          "bytes": 12548000,
+          "format": "vst3",
+          "kind": "github_release",
+          "platform": "macos-aarch64",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000005",
+          "url": "https://github.com/example/cinder-works-mosaic-4/releases/download/v1.2.3/cinder-works-mosaic-4-mac.zip"
+        },
+        {
+          "archive": "installer",
+          "bytes": 15844000,
+          "format": "vst3",
+          "kind": "direct",
+          "platform": "windows-x86_64",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000069",
+          "url": "https://downloads.example.net/cinder-works-mosaic-4/setup-4.exe"
+        }
+      ],
+      "name": "Mosaic XL",
+      "tags": [
+        "delay",
+        "creative",
+        "stereo"
+      ],
+      "vendor": "Cinder Works",
+      "version": "2.4.4"
+    },
+    {
+      "description": "A drum sampler with layered velocity, per-pad envelopes, and drag-and-drop import for building custom kits quickly.",
+      "homepage": "https://plugins.example.com/halcyon-audio-nimbus-5",
+      "id": "halcyon-audio.nimbus5",
+      "installs": [
+        {
+          "archive": "zip",
+          "bytes": 12685000,
+          "format": "vst3",
+          "kind": "github_release",
+          "platform": "macos-aarch64",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000006",
+          "url": "https://github.com/example/halcyon-audio-nimbus-5/releases/download/v1.2.3/halcyon-audio-nimbus-5-mac.zip"
+        },
+        {
+          "archive": "installer",
+          "bytes": 16055000,
+          "format": "vst3",
+          "kind": "direct",
+          "platform": "windows-x86_64",
+          "sha256": "000000000000000000000000000000000000000000000000000000000000006a",
+          "url": "https://downloads.example.net/halcyon-audio-nimbus-5/setup-5.exe"
+        }
+      ],
+      "name": "Nimbus MK I",
+      "tags": [
+        "sampler",
+        "drums",
+        "velocity"
+      ],
+      "vendor": "Halcyon Audio",
+      "version": "3.5.5"
+    },
+    {
+      "description": "A saturation unit combining tape, tube, and diode curves with oversampling and a mix control for parallel color.",
+      "homepage": "https://plugins.example.com/paper-lantern-orbit-6",
+      "id": "paper-lantern.orbit6",
+      "installs": [
+        {
+          "archive": "zip",
+          "bytes": 12822000,
+          "format": "vst3",
+          "kind": "github_release",
+          "platform": "macos-aarch64",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000007",
+          "url": "https://github.com/example/paper-lantern-orbit-6/releases/download/v1.2.3/paper-lantern-orbit-6-mac.zip"
+        },
+        {
+          "archive": "installer",
+          "bytes": 16266000,
+          "format": "vst3",
+          "kind": "direct",
+          "platform": "windows-x86_64",
+          "sha256": "000000000000000000000000000000000000000000000000000000000000006b",
+          "url": "https://downloads.example.net/paper-lantern-orbit-6/setup-6.exe"
+        }
+      ],
+      "name": "Orbit MK II",
+      "tags": [
+        "saturation",
+        "analog",
+        "oversampling"
+      ],
+      "vendor": "Paper Lantern",
+      "version": "1.6.6"
+    },
+    {
+      "description": "A creative filter bank with morphing formant, comb, and ladder modes, plus an envelope follower and LFO routing panel.",
+      "homepage": "https://plugins.example.com/quiet-machine-pulse-7",
+      "id": "quiet-machine.pulse7",
+      "installs": [
+        {
+          "archive": "zip",
+          "bytes": 12959000,
+          "format": "vst3",
+          "kind": "github_release",
+          "platform": "macos-aarch64",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000008",
+          "url": "https://github.com/example/quiet-machine-pulse-7/releases/download/v1.2.3/quiet-machine-pulse-7-mac.zip"
+        },
+        {
+          "archive": "installer",
+          "bytes": 16477000,
+          "format": "vst3",
+          "kind": "direct",
+          "platform": "windows-x86_64",
+          "sha256": "000000000000000000000000000000000000000000000000000000000000006c",
+          "url": "https://downloads.example.net/quiet-machine-pulse-7/setup-7.exe"
+        }
+      ],
+      "name": "Pulse Pro",
+      "tags": [
+        "filter",
+        "creative",
+        "modulation"
+      ],
+      "vendor": "Quiet Machine",
+      "version": "2.7.0"
+    },
+    {
+      "description": "A granular texture instrument that freezes input, scatters grains across the stereo field, and syncs grain size to tempo.",
+      "homepage": "https://plugins.example.com/northwind-audio-quartz-8",
+      "id": "northwind-audio.quartz8",
+      "installs": [
+        {
+          "archive": "zip",
+          "bytes": 13096000,
+          "format": "vst3",
+          "kind": "github_release",
+          "platform": "macos-aarch64",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000009",
+          "url": "https://github.com/example/northwind-audio-quartz-8/releases/download/v1.2.3/northwind-audio-quartz-8-mac.zip"
+        },
+        {
+          "archive": "installer",
+          "bytes": 16688000,
+          "format": "vst3",
+          "kind": "direct",
+          "platform": "windows-x86_64",
+          "sha256": "000000000000000000000000000000000000000000000000000000000000006d",
+          "url": "https://downloads.example.net/northwind-audio-quartz-8/setup-8.exe"
+        }
+      ],
+      "name": "Quartz Lite",
+      "tags": [
+        "granular",
+        "texture",
+        "experimental"
+      ],
+      "vendor": "Northwind Audio",
+      "version": "3.8.1"
+    },
+    {
+      "description": "A channel strip with gate, EQ, compressor, and drive in one window, designed for fast tracking and low CPU overhead.",
+      "homepage": "https://plugins.example.com/kestrel-dsp-ripple-9",
+      "id": "kestrel-dsp.ripple9",
+      "installs": [
+        {
+          "archive": "zip",
+          "bytes": 13233000,
+          "format": "vst3",
+          "kind": "github_release",
+          "platform": "macos-aarch64",
+          "sha256": "000000000000000000000000000000000000000000000000000000000000000a",
+          "url": "https://github.com/example/kestrel-dsp-ripple-9/releases/download/v1.2.3/kestrel-dsp-ripple-9-mac.zip"
+        },
+        {
+          "archive": "installer",
+          "bytes": 16899000,
+          "format": "vst3",
+          "kind": "direct",
+          "platform": "windows-x86_64",
+          "sha256": "000000000000000000000000000000000000000000000000000000000000006e",
+          "url": "https://downloads.example.net/kestrel-dsp-ripple-9/setup-9.exe"
+        }
+      ],
+      "name": "Ripple XL",
+      "tags": [
+        "channel-strip",
+        "mixing",
+        "efficient"
+      ],
+      "vendor": "Kestrel DSP",
+      "version": "1.9.2"
+    },
+    {
+      "description": "A pitch and time processor for harmonizing takes, with formant preservation, MIDI sidechain, and scale-aware snapping.",
+      "homepage": "https://plugins.example.com/marlowe-labs-summit-10",
+      "id": "marlowe-labs.summit10",
+      "installs": [
+        {
+          "archive": "zip",
+          "bytes": 13370000,
+          "format": "vst3",
+          "kind": "github_release",
+          "platform": "macos-aarch64",
+          "sha256": "000000000000000000000000000000000000000000000000000000000000000b",
+          "url": "https://github.com/example/marlowe-labs-summit-10/releases/download/v1.2.3/marlowe-labs-summit-10-mac.zip"
+        },
+        {
+          "archive": "installer",
+          "bytes": 17110000,
+          "format": "vst3",
+          "kind": "direct",
+          "platform": "windows-x86_64",
+          "sha256": "000000000000000000000000000000000000000000000000000000000000006f",
+          "url": "https://downloads.example.net/marlowe-labs-summit-10/setup-10.exe"
+        }
+      ],
+      "name": "Summit MK I",
+      "tags": [
+        "pitch",
+        "harmony",
+        "formant"
+      ],
+      "vendor": "Marlowe Labs",
+      "version": "2.0.3"
+    },
+    {
+      "description": "A modulation workstation with six LFOs, four envelopes, and a drag-and-drop matrix for shaping evolving presets.",
+      "homepage": "https://plugins.example.com/fjord-instruments-tide-11",
+      "id": "fjord-instruments.tide11",
+      "installs": [
+        {
+          "archive": "zip",
+          "bytes": 13507000,
+          "format": "vst3",
+          "kind": "github_release",
+          "platform": "macos-aarch64",
+          "sha256": "000000000000000000000000000000000000000000000000000000000000000c",
+          "url": "https://github.com/example/fjord-instruments-tide-11/releases/download/v1.2.3/fjord-instruments-tide-11-mac.zip"
+        },
+        {
+          "archive": "installer",
+          "bytes": 17321000,
+          "format": "vst3",
+          "kind": "direct",
+          "platform": "windows-x86_64",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000070",
+          "url": "https://downloads.example.net/fjord-instruments-tide-11/setup-11.exe"
+        }
+      ],
+      "name": "Tide MK II",
+      "tags": [
+        "modulation",
+        "envelope",
+        "matrix"
+      ],
+      "vendor": "Fjord Instruments",
+      "version": "3.1.4"
+    },
+    {
+      "description": "A lush algorithmic reverb with three decay models, damping, and a modulation stage tuned for long ambient tails.",
+      "homepage": "https://plugins.example.com/cinder-works-umbra-12",
+      "id": "cinder-works.umbra12",
+      "installs": [
+        {
+          "archive": "zip",
+          "bytes": 13644000,
+          "format": "vst3",
+          "kind": "github_release",
+          "platform": "macos-aarch64",
+          "sha256": "000000000000000000000000000000000000000000000000000000000000000d",
+          "url": "https://github.com/example/cinder-works-umbra-12/releases/download/v1.2.3/cinder-works-umbra-12-mac.zip"
+        },
+        {
+          "archive": "installer",
+          "bytes": 17532000,
+          "format": "vst3",
+          "kind": "direct",
+          "platform": "windows-x86_64",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000071",
+          "url": "https://downloads.example.net/cinder-works-umbra-12/setup-12.exe"
+        }
+      ],
+      "name": "Umbra Pro",
+      "tags": [
+        "reverb",
+        "ambience",
+        "spatial"
+      ],
+      "vendor": "Cinder Works",
+      "version": "1.2.5"
+    },
+    {
+      "description": "A transparent bus compressor with program-dependent release, sidechain filtering, and parallel mix for glue without pumping.",
+      "homepage": "https://plugins.example.com/halcyon-audio-vector-13",
+      "id": "halcyon-audio.vector13",
+      "installs": [
+        {
+          "archive": "zip",
+          "bytes": 13781000,
+          "format": "vst3",
+          "kind": "github_release",
+          "platform": "macos-aarch64",
+          "sha256": "000000000000000000000000000000000000000000000000000000000000000e",
+          "url": "https://github.com/example/halcyon-audio-vector-13/releases/download/v1.2.3/halcyon-audio-vector-13-mac.zip"
+        },
+        {
+          "archive": "installer",
+          "bytes": 17743000,
+          "format": "vst3",
+          "kind": "direct",
+          "platform": "windows-x86_64",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000072",
+          "url": "https://downloads.example.net/halcyon-audio-vector-13/setup-13.exe"
+        }
+      ],
+      "name": "Vector Lite",
+      "tags": [
+        "compressor",
+        "dynamics",
+        "mixing"
+      ],
+      "vendor": "Halcyon Audio",
+      "version": "2.3.6"
+    },
+    {
+      "description": "A hybrid wavetable synthesizer with two oscillators, per-voice modulation, and a built-in arpeggiator with probability.",
+      "homepage": "https://plugins.example.com/paper-lantern-willow-14",
+      "id": "paper-lantern.willow14",
+      "installs": [
+        {
+          "archive": "zip",
+          "bytes": 13918000,
+          "format": "vst3",
+          "kind": "github_release",
+          "platform": "macos-aarch64",
+          "sha256": "000000000000000000000000000000000000000000000000000000000000000f",
+          "url": "https://github.com/example/paper-lantern-willow-14/releases/download/v1.2.3/paper-lantern-willow-14-mac.zip"
+        },
+        {
+          "archive": "installer",
+          "bytes": 17954000,
+          "format": "vst3",
+          "kind": "direct",
+          "platform": "windows-x86_64",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000073",
+          "url": "https://downloads.example.net/paper-lantern-willow-14/setup-14.exe"
+        }
+      ],
+      "name": "Willow XL",
+      "tags": [
+        "synthesizer",
+        "wavetable",
+        "modulation"
+      ],
+      "vendor": "Paper Lantern",
+      "version": "3.4.0"
+    },
+    {
+      "description": "A mastering equalizer with dynamic bands, mid-side processing, and a linear-phase mode for delicate high-frequency work.",
+      "homepage": "https://plugins.example.com/quiet-machine-zenith-15",
+      "id": "quiet-machine.zenith15",
+      "installs": [
+        {
+          "archive": "zip",
+          "bytes": 14055000,
+          "format": "vst3",
+          "kind": "github_release",
+          "platform": "macos-aarch64",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000010",
+          "url": "https://github.com/example/quiet-machine-zenith-15/releases/download/v1.2.3/quiet-machine-zenith-15-mac.zip"
+        },
+        {
+          "archive": "installer",
+          "bytes": 18165000,
+          "format": "vst3",
+          "kind": "direct",
+          "platform": "windows-x86_64",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000074",
+          "url": "https://downloads.example.net/quiet-machine-zenith-15/setup-15.exe"
+        }
+      ],
+      "name": "Zenith MK I",
+      "tags": [
+        "equalizer",
+        "mastering",
+        "linear-phase"
+      ],
+      "vendor": "Quiet Machine",
+      "version": "1.5.1"
+    },
+    {
+      "description": "A stereo delay with pitch-shifted taps, diffusion, and tempo-synced modulation for spacious rhythmic echoes.",
+      "homepage": "https://plugins.example.com/northwind-audio-aster-16",
+      "id": "northwind-audio.aster16",
+      "installs": [
+        {
+          "archive": "zip",
+          "bytes": 14192000,
+          "format": "vst3",
+          "kind": "github_release",
+          "platform": "macos-aarch64",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000011",
+          "url": "https://github.com/example/northwind-audio-aster-16/releases/download/v1.2.3/northwind-audio-aster-16-mac.zip"
+        },
+        {
+          "archive": "installer",
+          "bytes": 18376000,
+          "format": "vst3",
+          "kind": "direct",
+          "platform": "windows-x86_64",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000075",
+          "url": "https://downloads.example.net/northwind-audio-aster-16/setup-16.exe"
+        }
+      ],
+      "name": "Aster MK II",
+      "tags": [
+        "delay",
+        "creative",
+        "stereo"
+      ],
+      "vendor": "Northwind Audio",
+      "version": "2.6.2"
+    },
+    {
+      "description": "A drum sampler with layered velocity, per-pad envelopes, and drag-and-drop import for building custom kits quickly.",
+      "homepage": "https://plugins.example.com/kestrel-dsp-bloom-17",
+      "id": "kestrel-dsp.bloom17",
+      "installs": [
+        {
+          "archive": "zip",
+          "bytes": 14329000,
+          "format": "vst3",
+          "kind": "github_release",
+          "platform": "macos-aarch64",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000012",
+          "url": "https://github.com/example/kestrel-dsp-bloom-17/releases/download/v1.2.3/kestrel-dsp-bloom-17-mac.zip"
+        },
+        {
+          "archive": "installer",
+          "bytes": 18587000,
+          "format": "vst3",
+          "kind": "direct",
+          "platform": "windows-x86_64",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000076",
+          "url": "https://downloads.example.net/kestrel-dsp-bloom-17/setup-17.exe"
+        }
+      ],
+      "name": "Bloom Pro",
+      "tags": [
+        "sampler",
+        "drums",
+        "velocity"
+      ],
+      "vendor": "Kestrel DSP",
+      "version": "3.7.3"
+    },
+    {
+      "description": "A saturation unit combining tape, tube, and diode curves with oversampling and a mix control for parallel color.",
+      "homepage": "https://plugins.example.com/marlowe-labs-cinder-18",
+      "id": "marlowe-labs.cinder18",
+      "installs": [
+        {
+          "archive": "zip",
+          "bytes": 14466000,
+          "format": "vst3",
+          "kind": "github_release",
+          "platform": "macos-aarch64",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000013",
+          "url": "https://github.com/example/marlowe-labs-cinder-18/releases/download/v1.2.3/marlowe-labs-cinder-18-mac.zip"
+        },
+        {
+          "archive": "installer",
+          "bytes": 18798000,
+          "format": "vst3",
+          "kind": "direct",
+          "platform": "windows-x86_64",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000077",
+          "url": "https://downloads.example.net/marlowe-labs-cinder-18/setup-18.exe"
+        }
+      ],
+      "name": "Cinder Lite",
+      "tags": [
+        "saturation",
+        "analog",
+        "oversampling"
+      ],
+      "vendor": "Marlowe Labs",
+      "version": "1.8.4"
+    },
+    {
+      "description": "A creative filter bank with morphing formant, comb, and ladder modes, plus an envelope follower and LFO routing panel.",
+      "homepage": "https://plugins.example.com/fjord-instruments-delta-19",
+      "id": "fjord-instruments.delta19",
+      "installs": [
+        {
+          "archive": "zip",
+          "bytes": 14603000,
+          "format": "vst3",
+          "kind": "github_release",
+          "platform": "macos-aarch64",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000014",
+          "url": "https://github.com/example/fjord-instruments-delta-19/releases/download/v1.2.3/fjord-instruments-delta-19-mac.zip"
+        },
+        {
+          "archive": "installer",
+          "bytes": 19009000,
+          "format": "vst3",
+          "kind": "direct",
+          "platform": "windows-x86_64",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000078",
+          "url": "https://downloads.example.net/fjord-instruments-delta-19/setup-19.exe"
+        }
+      ],
+      "name": "Delta XL",
+      "tags": [
+        "filter",
+        "creative",
+        "modulation"
+      ],
+      "vendor": "Fjord Instruments",
+      "version": "2.9.5"
+    },
+    {
+      "description": "A granular texture instrument that freezes input, scatters grains across the stereo field, and syncs grain size to tempo.",
+      "homepage": "https://plugins.example.com/cinder-works-drift-20",
+      "id": "cinder-works.drift20",
+      "installs": [
+        {
+          "archive": "zip",
+          "bytes": 14740000,
+          "format": "vst3",
+          "kind": "github_release",
+          "platform": "macos-aarch64",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000015",
+          "url": "https://github.com/example/cinder-works-drift-20/releases/download/v1.2.3/cinder-works-drift-20-mac.zip"
+        },
+        {
+          "archive": "installer",
+          "bytes": 19220000,
+          "format": "vst3",
+          "kind": "direct",
+          "platform": "windows-x86_64",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000079",
+          "url": "https://downloads.example.net/cinder-works-drift-20/setup-20.exe"
+        }
+      ],
+      "name": "Drift MK I",
+      "tags": [
+        "granular",
+        "texture",
+        "experimental"
+      ],
+      "vendor": "Cinder Works",
+      "version": "3.0.6"
+    },
+    {
+      "description": "A channel strip with gate, EQ, compressor, and drive in one window, designed for fast tracking and low CPU overhead.",
+      "homepage": "https://plugins.example.com/halcyon-audio-ember-21",
+      "id": "halcyon-audio.ember21",
+      "installs": [
+        {
+          "archive": "zip",
+          "bytes": 14877000,
+          "format": "vst3",
+          "kind": "github_release",
+          "platform": "macos-aarch64",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000016",
+          "url": "https://github.com/example/halcyon-audio-ember-21/releases/download/v1.2.3/halcyon-audio-ember-21-mac.zip"
+        },
+        {
+          "archive": "installer",
+          "bytes": 19431000,
+          "format": "vst3",
+          "kind": "direct",
+          "platform": "windows-x86_64",
+          "sha256": "000000000000000000000000000000000000000000000000000000000000007a",
+          "url": "https://downloads.example.net/halcyon-audio-ember-21/setup-21.exe"
+        }
+      ],
+      "name": "Ember MK II",
+      "tags": [
+        "channel-strip",
+        "mixing",
+        "efficient"
+      ],
+      "vendor": "Halcyon Audio",
+      "version": "1.1.0"
+    },
+    {
+      "description": "A pitch and time processor for harmonizing takes, with formant preservation, MIDI sidechain, and scale-aware snapping.",
+      "homepage": "https://plugins.example.com/paper-lantern-harbor-22",
+      "id": "paper-lantern.harbor22",
+      "installs": [
+        {
+          "archive": "zip",
+          "bytes": 15014000,
+          "format": "vst3",
+          "kind": "github_release",
+          "platform": "macos-aarch64",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000017",
+          "url": "https://github.com/example/paper-lantern-harbor-22/releases/download/v1.2.3/paper-lantern-harbor-22-mac.zip"
+        },
+        {
+          "archive": "installer",
+          "bytes": 19642000,
+          "format": "vst3",
+          "kind": "direct",
+          "platform": "windows-x86_64",
+          "sha256": "000000000000000000000000000000000000000000000000000000000000007b",
+          "url": "https://downloads.example.net/paper-lantern-harbor-22/setup-22.exe"
+        }
+      ],
+      "name": "Harbor Pro",
+      "tags": [
+        "pitch",
+        "harmony",
+        "formant"
+      ],
+      "vendor": "Paper Lantern",
+      "version": "2.2.1"
+    },
+    {
+      "description": "A modulation workstation with six LFOs, four envelopes, and a drag-and-drop matrix for shaping evolving presets.",
+      "homepage": "https://plugins.example.com/quiet-machine-lumen-23",
+      "id": "quiet-machine.lumen23",
+      "installs": [
+        {
+          "archive": "zip",
+          "bytes": 15151000,
+          "format": "vst3",
+          "kind": "github_release",
+          "platform": "macos-aarch64",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000018",
+          "url": "https://github.com/example/quiet-machine-lumen-23/releases/download/v1.2.3/quiet-machine-lumen-23-mac.zip"
+        },
+        {
+          "archive": "installer",
+          "bytes": 19853000,
+          "format": "vst3",
+          "kind": "direct",
+          "platform": "windows-x86_64",
+          "sha256": "000000000000000000000000000000000000000000000000000000000000007c",
+          "url": "https://downloads.example.net/quiet-machine-lumen-23/setup-23.exe"
+        }
+      ],
+      "name": "Lumen Lite",
+      "tags": [
+        "modulation",
+        "envelope",
+        "matrix"
+      ],
+      "vendor": "Quiet Machine",
+      "version": "3.3.2"
+    },
+    {
+      "description": "A lush algorithmic reverb with three decay models, damping, and a modulation stage tuned for long ambient tails.",
+      "homepage": "https://plugins.example.com/northwind-audio-mosaic-24",
+      "id": "northwind-audio.mosaic24",
+      "installs": [
+        {
+          "archive": "zip",
+          "bytes": 15288000,
+          "format": "vst3",
+          "kind": "github_release",
+          "platform": "macos-aarch64",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000019",
+          "url": "https://github.com/example/northwind-audio-mosaic-24/releases/download/v1.2.3/northwind-audio-mosaic-24-mac.zip"
+        },
+        {
+          "archive": "installer",
+          "bytes": 20064000,
+          "format": "vst3",
+          "kind": "direct",
+          "platform": "windows-x86_64",
+          "sha256": "000000000000000000000000000000000000000000000000000000000000007d",
+          "url": "https://downloads.example.net/northwind-audio-mosaic-24/setup-24.exe"
+        }
+      ],
+      "name": "Mosaic XL",
+      "tags": [
+        "reverb",
+        "ambience",
+        "spatial"
+      ],
+      "vendor": "Northwind Audio",
+      "version": "1.4.3"
+    },
+    {
+      "description": "A transparent bus compressor with program-dependent release, sidechain filtering, and parallel mix for glue without pumping.",
+      "homepage": "https://plugins.example.com/kestrel-dsp-nimbus-25",
+      "id": "kestrel-dsp.nimbus25",
+      "installs": [
+        {
+          "archive": "zip",
+          "bytes": 15425000,
+          "format": "vst3",
+          "kind": "github_release",
+          "platform": "macos-aarch64",
+          "sha256": "000000000000000000000000000000000000000000000000000000000000001a",
+          "url": "https://github.com/example/kestrel-dsp-nimbus-25/releases/download/v1.2.3/kestrel-dsp-nimbus-25-mac.zip"
+        },
+        {
+          "archive": "installer",
+          "bytes": 20275000,
+          "format": "vst3",
+          "kind": "direct",
+          "platform": "windows-x86_64",
+          "sha256": "000000000000000000000000000000000000000000000000000000000000007e",
+          "url": "https://downloads.example.net/kestrel-dsp-nimbus-25/setup-25.exe"
+        }
+      ],
+      "name": "Nimbus MK I",
+      "tags": [
+        "compressor",
+        "dynamics",
+        "mixing"
+      ],
+      "vendor": "Kestrel DSP",
+      "version": "2.5.4"
+    },
+    {
+      "description": "A hybrid wavetable synthesizer with two oscillators, per-voice modulation, and a built-in arpeggiator with probability.",
+      "homepage": "https://plugins.example.com/marlowe-labs-orbit-26",
+      "id": "marlowe-labs.orbit26",
+      "installs": [
+        {
+          "archive": "zip",
+          "bytes": 15562000,
+          "format": "vst3",
+          "kind": "github_release",
+          "platform": "macos-aarch64",
+          "sha256": "000000000000000000000000000000000000000000000000000000000000001b",
+          "url": "https://github.com/example/marlowe-labs-orbit-26/releases/download/v1.2.3/marlowe-labs-orbit-26-mac.zip"
+        },
+        {
+          "archive": "installer",
+          "bytes": 20486000,
+          "format": "vst3",
+          "kind": "direct",
+          "platform": "windows-x86_64",
+          "sha256": "000000000000000000000000000000000000000000000000000000000000007f",
+          "url": "https://downloads.example.net/marlowe-labs-orbit-26/setup-26.exe"
+        }
+      ],
+      "name": "Orbit MK II",
+      "tags": [
+        "synthesizer",
+        "wavetable",
+        "modulation"
+      ],
+      "vendor": "Marlowe Labs",
+      "version": "3.6.5"
+    },
+    {
+      "description": "A mastering equalizer with dynamic bands, mid-side processing, and a linear-phase mode for delicate high-frequency work.",
+      "homepage": "https://plugins.example.com/fjord-instruments-pulse-27",
+      "id": "fjord-instruments.pulse27",
+      "installs": [
+        {
+          "archive": "zip",
+          "bytes": 15699000,
+          "format": "vst3",
+          "kind": "github_release",
+          "platform": "macos-aarch64",
+          "sha256": "000000000000000000000000000000000000000000000000000000000000001c",
+          "url": "https://github.com/example/fjord-instruments-pulse-27/releases/download/v1.2.3/fjord-instruments-pulse-27-mac.zip"
+        },
+        {
+          "archive": "installer",
+          "bytes": 20697000,
+          "format": "vst3",
+          "kind": "direct",
+          "platform": "windows-x86_64",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000080",
+          "url": "https://downloads.example.net/fjord-instruments-pulse-27/setup-27.exe"
+        }
+      ],
+      "name": "Pulse Pro",
+      "tags": [
+        "equalizer",
+        "mastering",
+        "linear-phase"
+      ],
+      "vendor": "Fjord Instruments",
+      "version": "1.7.6"
+    },
+    {
+      "description": "A stereo delay with pitch-shifted taps, diffusion, and tempo-synced modulation for spacious rhythmic echoes.",
+      "homepage": "https://plugins.example.com/cinder-works-quartz-28",
+      "id": "cinder-works.quartz28",
+      "installs": [
+        {
+          "archive": "zip",
+          "bytes": 15836000,
+          "format": "vst3",
+          "kind": "github_release",
+          "platform": "macos-aarch64",
+          "sha256": "000000000000000000000000000000000000000000000000000000000000001d",
+          "url": "https://github.com/example/cinder-works-quartz-28/releases/download/v1.2.3/cinder-works-quartz-28-mac.zip"
+        },
+        {
+          "archive": "installer",
+          "bytes": 20908000,
+          "format": "vst3",
+          "kind": "direct",
+          "platform": "windows-x86_64",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000081",
+          "url": "https://downloads.example.net/cinder-works-quartz-28/setup-28.exe"
+        }
+      ],
+      "name": "Quartz Lite",
+      "tags": [
+        "delay",
+        "creative",
+        "stereo"
+      ],
+      "vendor": "Cinder Works",
+      "version": "2.8.0"
+    },
+    {
+      "description": "A drum sampler with layered velocity, per-pad envelopes, and drag-and-drop import for building custom kits quickly.",
+      "homepage": "https://plugins.example.com/halcyon-audio-ripple-29",
+      "id": "halcyon-audio.ripple29",
+      "installs": [
+        {
+          "archive": "zip",
+          "bytes": 15973000,
+          "format": "vst3",
+          "kind": "github_release",
+          "platform": "macos-aarch64",
+          "sha256": "000000000000000000000000000000000000000000000000000000000000001e",
+          "url": "https://github.com/example/halcyon-audio-ripple-29/releases/download/v1.2.3/halcyon-audio-ripple-29-mac.zip"
+        },
+        {
+          "archive": "installer",
+          "bytes": 21119000,
+          "format": "vst3",
+          "kind": "direct",
+          "platform": "windows-x86_64",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000082",
+          "url": "https://downloads.example.net/halcyon-audio-ripple-29/setup-29.exe"
+        }
+      ],
+      "name": "Ripple XL",
+      "tags": [
+        "sampler",
+        "drums",
+        "velocity"
+      ],
+      "vendor": "Halcyon Audio",
+      "version": "3.9.1"
+    },
+    {
+      "description": "A saturation unit combining tape, tube, and diode curves with oversampling and a mix control for parallel color.",
+      "homepage": "https://plugins.example.com/paper-lantern-summit-30",
+      "id": "paper-lantern.summit30",
+      "installs": [
+        {
+          "archive": "zip",
+          "bytes": 16110000,
+          "format": "vst3",
+          "kind": "github_release",
+          "platform": "macos-aarch64",
+          "sha256": "000000000000000000000000000000000000000000000000000000000000001f",
+          "url": "https://github.com/example/paper-lantern-summit-30/releases/download/v1.2.3/paper-lantern-summit-30-mac.zip"
+        },
+        {
+          "archive": "installer",
+          "bytes": 21330000,
+          "format": "vst3",
+          "kind": "direct",
+          "platform": "windows-x86_64",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000083",
+          "url": "https://downloads.example.net/paper-lantern-summit-30/setup-30.exe"
+        }
+      ],
+      "name": "Summit MK I",
+      "tags": [
+        "saturation",
+        "analog",
+        "oversampling"
+      ],
+      "vendor": "Paper Lantern",
+      "version": "1.0.2"
+    },
+    {
+      "description": "A creative filter bank with morphing formant, comb, and ladder modes, plus an envelope follower and LFO routing panel.",
+      "homepage": "https://plugins.example.com/quiet-machine-tide-31",
+      "id": "quiet-machine.tide31",
+      "installs": [
+        {
+          "archive": "zip",
+          "bytes": 16247000,
+          "format": "vst3",
+          "kind": "github_release",
+          "platform": "macos-aarch64",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000020",
+          "url": "https://github.com/example/quiet-machine-tide-31/releases/download/v1.2.3/quiet-machine-tide-31-mac.zip"
+        },
+        {
+          "archive": "installer",
+          "bytes": 21541000,
+          "format": "vst3",
+          "kind": "direct",
+          "platform": "windows-x86_64",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000084",
+          "url": "https://downloads.example.net/quiet-machine-tide-31/setup-31.exe"
+        }
+      ],
+      "name": "Tide MK II",
+      "tags": [
+        "filter",
+        "creative",
+        "modulation"
+      ],
+      "vendor": "Quiet Machine",
+      "version": "2.1.3"
+    },
+    {
+      "description": "A granular texture instrument that freezes input, scatters grains across the stereo field, and syncs grain size to tempo.",
+      "homepage": "https://plugins.example.com/northwind-audio-umbra-32",
+      "id": "northwind-audio.umbra32",
+      "installs": [
+        {
+          "archive": "zip",
+          "bytes": 16384000,
+          "format": "vst3",
+          "kind": "github_release",
+          "platform": "macos-aarch64",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000021",
+          "url": "https://github.com/example/northwind-audio-umbra-32/releases/download/v1.2.3/northwind-audio-umbra-32-mac.zip"
+        },
+        {
+          "archive": "installer",
+          "bytes": 21752000,
+          "format": "vst3",
+          "kind": "direct",
+          "platform": "windows-x86_64",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000085",
+          "url": "https://downloads.example.net/northwind-audio-umbra-32/setup-32.exe"
+        }
+      ],
+      "name": "Umbra Pro",
+      "tags": [
+        "granular",
+        "texture",
+        "experimental"
+      ],
+      "vendor": "Northwind Audio",
+      "version": "3.2.4"
+    },
+    {
+      "description": "A channel strip with gate, EQ, compressor, and drive in one window, designed for fast tracking and low CPU overhead.",
+      "homepage": "https://plugins.example.com/kestrel-dsp-vector-33",
+      "id": "kestrel-dsp.vector33",
+      "installs": [
+        {
+          "archive": "zip",
+          "bytes": 16521000,
+          "format": "vst3",
+          "kind": "github_release",
+          "platform": "macos-aarch64",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000022",
+          "url": "https://github.com/example/kestrel-dsp-vector-33/releases/download/v1.2.3/kestrel-dsp-vector-33-mac.zip"
+        },
+        {
+          "archive": "installer",
+          "bytes": 21963000,
+          "format": "vst3",
+          "kind": "direct",
+          "platform": "windows-x86_64",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000086",
+          "url": "https://downloads.example.net/kestrel-dsp-vector-33/setup-33.exe"
+        }
+      ],
+      "name": "Vector Lite",
+      "tags": [
+        "channel-strip",
+        "mixing",
+        "efficient"
+      ],
+      "vendor": "Kestrel DSP",
+      "version": "1.3.5"
+    },
+    {
+      "description": "A pitch and time processor for harmonizing takes, with formant preservation, MIDI sidechain, and scale-aware snapping.",
+      "homepage": "https://plugins.example.com/marlowe-labs-willow-34",
+      "id": "marlowe-labs.willow34",
+      "installs": [
+        {
+          "archive": "zip",
+          "bytes": 16658000,
+          "format": "vst3",
+          "kind": "github_release",
+          "platform": "macos-aarch64",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000023",
+          "url": "https://github.com/example/marlowe-labs-willow-34/releases/download/v1.2.3/marlowe-labs-willow-34-mac.zip"
+        },
+        {
+          "archive": "installer",
+          "bytes": 22174000,
+          "format": "vst3",
+          "kind": "direct",
+          "platform": "windows-x86_64",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000087",
+          "url": "https://downloads.example.net/marlowe-labs-willow-34/setup-34.exe"
+        }
+      ],
+      "name": "Willow XL",
+      "tags": [
+        "pitch",
+        "harmony",
+        "formant"
+      ],
+      "vendor": "Marlowe Labs",
+      "version": "2.4.6"
+    },
+    {
+      "description": "A modulation workstation with six LFOs, four envelopes, and a drag-and-drop matrix for shaping evolving presets.",
+      "homepage": "https://plugins.example.com/fjord-instruments-zenith-35",
+      "id": "fjord-instruments.zenith35",
+      "installs": [
+        {
+          "archive": "zip",
+          "bytes": 16795000,
+          "format": "vst3",
+          "kind": "github_release",
+          "platform": "macos-aarch64",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000024",
+          "url": "https://github.com/example/fjord-instruments-zenith-35/releases/download/v1.2.3/fjord-instruments-zenith-35-mac.zip"
+        },
+        {
+          "archive": "installer",
+          "bytes": 22385000,
+          "format": "vst3",
+          "kind": "direct",
+          "platform": "windows-x86_64",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000088",
+          "url": "https://downloads.example.net/fjord-instruments-zenith-35/setup-35.exe"
+        }
+      ],
+      "name": "Zenith MK I",
+      "tags": [
+        "modulation",
+        "envelope",
+        "matrix"
+      ],
+      "vendor": "Fjord Instruments",
+      "version": "3.5.0"
+    },
+    {
+      "description": "A lush algorithmic reverb with three decay models, damping, and a modulation stage tuned for long ambient tails.",
+      "homepage": "https://plugins.example.com/cinder-works-aster-36",
+      "id": "cinder-works.aster36",
+      "installs": [
+        {
+          "archive": "zip",
+          "bytes": 16932000,
+          "format": "vst3",
+          "kind": "github_release",
+          "platform": "macos-aarch64",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000025",
+          "url": "https://github.com/example/cinder-works-aster-36/releases/download/v1.2.3/cinder-works-aster-36-mac.zip"
+        },
+        {
+          "archive": "installer",
+          "bytes": 22596000,
+          "format": "vst3",
+          "kind": "direct",
+          "platform": "windows-x86_64",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000089",
+          "url": "https://downloads.example.net/cinder-works-aster-36/setup-36.exe"
+        }
+      ],
+      "name": "Aster MK II",
+      "tags": [
+        "reverb",
+        "ambience",
+        "spatial"
+      ],
+      "vendor": "Cinder Works",
+      "version": "1.6.1"
+    },
+    {
+      "description": "A transparent bus compressor with program-dependent release, sidechain filtering, and parallel mix for glue without pumping.",
+      "homepage": "https://plugins.example.com/halcyon-audio-bloom-37",
+      "id": "halcyon-audio.bloom37",
+      "installs": [
+        {
+          "archive": "zip",
+          "bytes": 17069000,
+          "format": "vst3",
+          "kind": "github_release",
+          "platform": "macos-aarch64",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000026",
+          "url": "https://github.com/example/halcyon-audio-bloom-37/releases/download/v1.2.3/halcyon-audio-bloom-37-mac.zip"
+        },
+        {
+          "archive": "installer",
+          "bytes": 22807000,
+          "format": "vst3",
+          "kind": "direct",
+          "platform": "windows-x86_64",
+          "sha256": "000000000000000000000000000000000000000000000000000000000000008a",
+          "url": "https://downloads.example.net/halcyon-audio-bloom-37/setup-37.exe"
+        }
+      ],
+      "name": "Bloom Pro",
+      "tags": [
+        "compressor",
+        "dynamics",
+        "mixing"
+      ],
+      "vendor": "Halcyon Audio",
+      "version": "2.7.2"
+    },
+    {
+      "description": "A hybrid wavetable synthesizer with two oscillators, per-voice modulation, and a built-in arpeggiator with probability.",
+      "homepage": "https://plugins.example.com/paper-lantern-cinder-38",
+      "id": "paper-lantern.cinder38",
+      "installs": [
+        {
+          "archive": "zip",
+          "bytes": 17206000,
+          "format": "vst3",
+          "kind": "github_release",
+          "platform": "macos-aarch64",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000027",
+          "url": "https://github.com/example/paper-lantern-cinder-38/releases/download/v1.2.3/paper-lantern-cinder-38-mac.zip"
+        },
+        {
+          "archive": "installer",
+          "bytes": 23018000,
+          "format": "vst3",
+          "kind": "direct",
+          "platform": "windows-x86_64",
+          "sha256": "000000000000000000000000000000000000000000000000000000000000008b",
+          "url": "https://downloads.example.net/paper-lantern-cinder-38/setup-38.exe"
+        }
+      ],
+      "name": "Cinder Lite",
+      "tags": [
+        "synthesizer",
+        "wavetable",
+        "modulation"
+      ],
+      "vendor": "Paper Lantern",
+      "version": "3.8.3"
+    },
+    {
+      "description": "A mastering equalizer with dynamic bands, mid-side processing, and a linear-phase mode for delicate high-frequency work.",
+      "homepage": "https://plugins.example.com/quiet-machine-delta-39",
+      "id": "quiet-machine.delta39",
+      "installs": [
+        {
+          "archive": "zip",
+          "bytes": 17343000,
+          "format": "vst3",
+          "kind": "github_release",
+          "platform": "macos-aarch64",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000028",
+          "url": "https://github.com/example/quiet-machine-delta-39/releases/download/v1.2.3/quiet-machine-delta-39-mac.zip"
+        },
+        {
+          "archive": "installer",
+          "bytes": 23229000,
+          "format": "vst3",
+          "kind": "direct",
+          "platform": "windows-x86_64",
+          "sha256": "000000000000000000000000000000000000000000000000000000000000008c",
+          "url": "https://downloads.example.net/quiet-machine-delta-39/setup-39.exe"
+        }
+      ],
+      "name": "Delta XL",
+      "tags": [
+        "equalizer",
+        "mastering",
+        "linear-phase"
+      ],
+      "vendor": "Quiet Machine",
+      "version": "1.9.4"
+    },
+    {
+      "description": "A stereo delay with pitch-shifted taps, diffusion, and tempo-synced modulation for spacious rhythmic echoes.",
+      "homepage": "https://plugins.example.com/northwind-audio-drift-40",
+      "id": "northwind-audio.drift40",
+      "installs": [
+        {
+          "archive": "zip",
+          "bytes": 17480000,
+          "format": "vst3",
+          "kind": "github_release",
+          "platform": "macos-aarch64",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000029",
+          "url": "https://github.com/example/northwind-audio-drift-40/releases/download/v1.2.3/northwind-audio-drift-40-mac.zip"
+        },
+        {
+          "archive": "installer",
+          "bytes": 23440000,
+          "format": "vst3",
+          "kind": "direct",
+          "platform": "windows-x86_64",
+          "sha256": "000000000000000000000000000000000000000000000000000000000000008d",
+          "url": "https://downloads.example.net/northwind-audio-drift-40/setup-40.exe"
+        }
+      ],
+      "name": "Drift MK I",
+      "tags": [
+        "delay",
+        "creative",
+        "stereo"
+      ],
+      "vendor": "Northwind Audio",
+      "version": "2.0.5"
+    },
+    {
+      "description": "A drum sampler with layered velocity, per-pad envelopes, and drag-and-drop import for building custom kits quickly.",
+      "homepage": "https://plugins.example.com/kestrel-dsp-ember-41",
+      "id": "kestrel-dsp.ember41",
+      "installs": [
+        {
+          "archive": "zip",
+          "bytes": 17617000,
+          "format": "vst3",
+          "kind": "github_release",
+          "platform": "macos-aarch64",
+          "sha256": "000000000000000000000000000000000000000000000000000000000000002a",
+          "url": "https://github.com/example/kestrel-dsp-ember-41/releases/download/v1.2.3/kestrel-dsp-ember-41-mac.zip"
+        },
+        {
+          "archive": "installer",
+          "bytes": 23651000,
+          "format": "vst3",
+          "kind": "direct",
+          "platform": "windows-x86_64",
+          "sha256": "000000000000000000000000000000000000000000000000000000000000008e",
+          "url": "https://downloads.example.net/kestrel-dsp-ember-41/setup-41.exe"
+        }
+      ],
+      "name": "Ember MK II",
+      "tags": [
+        "sampler",
+        "drums",
+        "velocity"
+      ],
+      "vendor": "Kestrel DSP",
+      "version": "3.1.6"
+    },
+    {
+      "description": "A saturation unit combining tape, tube, and diode curves with oversampling and a mix control for parallel color.",
+      "homepage": "https://plugins.example.com/marlowe-labs-harbor-42",
+      "id": "marlowe-labs.harbor42",
+      "installs": [
+        {
+          "archive": "zip",
+          "bytes": 17754000,
+          "format": "vst3",
+          "kind": "github_release",
+          "platform": "macos-aarch64",
+          "sha256": "000000000000000000000000000000000000000000000000000000000000002b",
+          "url": "https://github.com/example/marlowe-labs-harbor-42/releases/download/v1.2.3/marlowe-labs-harbor-42-mac.zip"
+        },
+        {
+          "archive": "installer",
+          "bytes": 23862000,
+          "format": "vst3",
+          "kind": "direct",
+          "platform": "windows-x86_64",
+          "sha256": "000000000000000000000000000000000000000000000000000000000000008f",
+          "url": "https://downloads.example.net/marlowe-labs-harbor-42/setup-42.exe"
+        }
+      ],
+      "name": "Harbor Pro",
+      "tags": [
+        "saturation",
+        "analog",
+        "oversampling"
+      ],
+      "vendor": "Marlowe Labs",
+      "version": "1.2.0"
+    },
+    {
+      "description": "A creative filter bank with morphing formant, comb, and ladder modes, plus an envelope follower and LFO routing panel.",
+      "homepage": "https://plugins.example.com/fjord-instruments-lumen-43",
+      "id": "fjord-instruments.lumen43",
+      "installs": [
+        {
+          "archive": "zip",
+          "bytes": 17891000,
+          "format": "vst3",
+          "kind": "github_release",
+          "platform": "macos-aarch64",
+          "sha256": "000000000000000000000000000000000000000000000000000000000000002c",
+          "url": "https://github.com/example/fjord-instruments-lumen-43/releases/download/v1.2.3/fjord-instruments-lumen-43-mac.zip"
+        },
+        {
+          "archive": "installer",
+          "bytes": 24073000,
+          "format": "vst3",
+          "kind": "direct",
+          "platform": "windows-x86_64",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000090",
+          "url": "https://downloads.example.net/fjord-instruments-lumen-43/setup-43.exe"
+        }
+      ],
+      "name": "Lumen Lite",
+      "tags": [
+        "filter",
+        "creative",
+        "modulation"
+      ],
+      "vendor": "Fjord Instruments",
+      "version": "2.3.1"
+    },
+    {
+      "description": "A granular texture instrument that freezes input, scatters grains across the stereo field, and syncs grain size to tempo.",
+      "homepage": "https://plugins.example.com/cinder-works-mosaic-44",
+      "id": "cinder-works.mosaic44",
+      "installs": [
+        {
+          "archive": "zip",
+          "bytes": 18028000,
+          "format": "vst3",
+          "kind": "github_release",
+          "platform": "macos-aarch64",
+          "sha256": "000000000000000000000000000000000000000000000000000000000000002d",
+          "url": "https://github.com/example/cinder-works-mosaic-44/releases/download/v1.2.3/cinder-works-mosaic-44-mac.zip"
+        },
+        {
+          "archive": "installer",
+          "bytes": 24284000,
+          "format": "vst3",
+          "kind": "direct",
+          "platform": "windows-x86_64",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000091",
+          "url": "https://downloads.example.net/cinder-works-mosaic-44/setup-44.exe"
+        }
+      ],
+      "name": "Mosaic XL",
+      "tags": [
+        "granular",
+        "texture",
+        "experimental"
+      ],
+      "vendor": "Cinder Works",
+      "version": "3.4.2"
+    },
+    {
+      "description": "A channel strip with gate, EQ, compressor, and drive in one window, designed for fast tracking and low CPU overhead.",
+      "homepage": "https://plugins.example.com/halcyon-audio-nimbus-45",
+      "id": "halcyon-audio.nimbus45",
+      "installs": [
+        {
+          "archive": "zip",
+          "bytes": 18165000,
+          "format": "vst3",
+          "kind": "github_release",
+          "platform": "macos-aarch64",
+          "sha256": "000000000000000000000000000000000000000000000000000000000000002e",
+          "url": "https://github.com/example/halcyon-audio-nimbus-45/releases/download/v1.2.3/halcyon-audio-nimbus-45-mac.zip"
+        },
+        {
+          "archive": "installer",
+          "bytes": 24495000,
+          "format": "vst3",
+          "kind": "direct",
+          "platform": "windows-x86_64",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000092",
+          "url": "https://downloads.example.net/halcyon-audio-nimbus-45/setup-45.exe"
+        }
+      ],
+      "name": "Nimbus MK I",
+      "tags": [
+        "channel-strip",
+        "mixing",
+        "efficient"
+      ],
+      "vendor": "Halcyon Audio",
+      "version": "1.5.3"
+    },
+    {
+      "description": "A pitch and time processor for harmonizing takes, with formant preservation, MIDI sidechain, and scale-aware snapping.",
+      "homepage": "https://plugins.example.com/paper-lantern-orbit-46",
+      "id": "paper-lantern.orbit46",
+      "installs": [
+        {
+          "archive": "zip",
+          "bytes": 18302000,
+          "format": "vst3",
+          "kind": "github_release",
+          "platform": "macos-aarch64",
+          "sha256": "000000000000000000000000000000000000000000000000000000000000002f",
+          "url": "https://github.com/example/paper-lantern-orbit-46/releases/download/v1.2.3/paper-lantern-orbit-46-mac.zip"
+        },
+        {
+          "archive": "installer",
+          "bytes": 24706000,
+          "format": "vst3",
+          "kind": "direct",
+          "platform": "windows-x86_64",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000093",
+          "url": "https://downloads.example.net/paper-lantern-orbit-46/setup-46.exe"
+        }
+      ],
+      "name": "Orbit MK II",
+      "tags": [
+        "pitch",
+        "harmony",
+        "formant"
+      ],
+      "vendor": "Paper Lantern",
+      "version": "2.6.4"
+    },
+    {
+      "description": "A modulation workstation with six LFOs, four envelopes, and a drag-and-drop matrix for shaping evolving presets.",
+      "homepage": "https://plugins.example.com/quiet-machine-pulse-47",
+      "id": "quiet-machine.pulse47",
+      "installs": [
+        {
+          "archive": "zip",
+          "bytes": 18439000,
+          "format": "vst3",
+          "kind": "github_release",
+          "platform": "macos-aarch64",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000030",
+          "url": "https://github.com/example/quiet-machine-pulse-47/releases/download/v1.2.3/quiet-machine-pulse-47-mac.zip"
+        },
+        {
+          "archive": "installer",
+          "bytes": 24917000,
+          "format": "vst3",
+          "kind": "direct",
+          "platform": "windows-x86_64",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000094",
+          "url": "https://downloads.example.net/quiet-machine-pulse-47/setup-47.exe"
+        }
+      ],
+      "name": "Pulse Pro",
+      "tags": [
+        "modulation",
+        "envelope",
+        "matrix"
+      ],
+      "vendor": "Quiet Machine",
+      "version": "3.7.5"
+    },
+    {
+      "description": "A lush algorithmic reverb with three decay models, damping, and a modulation stage tuned for long ambient tails.",
+      "homepage": "https://plugins.example.com/northwind-audio-quartz-48",
+      "id": "northwind-audio.quartz48",
+      "installs": [
+        {
+          "archive": "zip",
+          "bytes": 18576000,
+          "format": "vst3",
+          "kind": "github_release",
+          "platform": "macos-aarch64",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000031",
+          "url": "https://github.com/example/northwind-audio-quartz-48/releases/download/v1.2.3/northwind-audio-quartz-48-mac.zip"
+        },
+        {
+          "archive": "installer",
+          "bytes": 25128000,
+          "format": "vst3",
+          "kind": "direct",
+          "platform": "windows-x86_64",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000095",
+          "url": "https://downloads.example.net/northwind-audio-quartz-48/setup-48.exe"
+        }
+      ],
+      "name": "Quartz Lite",
+      "tags": [
+        "reverb",
+        "ambience",
+        "spatial"
+      ],
+      "vendor": "Northwind Audio",
+      "version": "1.8.6"
+    },
+    {
+      "description": "A transparent bus compressor with program-dependent release, sidechain filtering, and parallel mix for glue without pumping.",
+      "homepage": "https://plugins.example.com/kestrel-dsp-ripple-49",
+      "id": "kestrel-dsp.ripple49",
+      "installs": [
+        {
+          "archive": "zip",
+          "bytes": 18713000,
+          "format": "vst3",
+          "kind": "github_release",
+          "platform": "macos-aarch64",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000032",
+          "url": "https://github.com/example/kestrel-dsp-ripple-49/releases/download/v1.2.3/kestrel-dsp-ripple-49-mac.zip"
+        },
+        {
+          "archive": "installer",
+          "bytes": 25339000,
+          "format": "vst3",
+          "kind": "direct",
+          "platform": "windows-x86_64",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000096",
+          "url": "https://downloads.example.net/kestrel-dsp-ripple-49/setup-49.exe"
+        }
+      ],
+      "name": "Ripple XL",
+      "tags": [
+        "compressor",
+        "dynamics",
+        "mixing"
+      ],
+      "vendor": "Kestrel DSP",
+      "version": "2.9.0"
+    },
+    {
+      "description": "A hybrid wavetable synthesizer with two oscillators, per-voice modulation, and a built-in arpeggiator with probability.",
+      "homepage": "https://plugins.example.com/marlowe-labs-summit-50",
+      "id": "marlowe-labs.summit50",
+      "installs": [
+        {
+          "archive": "zip",
+          "bytes": 18850000,
+          "format": "vst3",
+          "kind": "github_release",
+          "platform": "macos-aarch64",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000033",
+          "url": "https://github.com/example/marlowe-labs-summit-50/releases/download/v1.2.3/marlowe-labs-summit-50-mac.zip"
+        },
+        {
+          "archive": "installer",
+          "bytes": 25550000,
+          "format": "vst3",
+          "kind": "direct",
+          "platform": "windows-x86_64",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000097",
+          "url": "https://downloads.example.net/marlowe-labs-summit-50/setup-50.exe"
+        }
+      ],
+      "name": "Summit MK I",
+      "tags": [
+        "synthesizer",
+        "wavetable",
+        "modulation"
+      ],
+      "vendor": "Marlowe Labs",
+      "version": "3.0.1"
+    },
+    {
+      "description": "A mastering equalizer with dynamic bands, mid-side processing, and a linear-phase mode for delicate high-frequency work.",
+      "homepage": "https://plugins.example.com/fjord-instruments-tide-51",
+      "id": "fjord-instruments.tide51",
+      "installs": [
+        {
+          "archive": "zip",
+          "bytes": 18987000,
+          "format": "vst3",
+          "kind": "github_release",
+          "platform": "macos-aarch64",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000034",
+          "url": "https://github.com/example/fjord-instruments-tide-51/releases/download/v1.2.3/fjord-instruments-tide-51-mac.zip"
+        },
+        {
+          "archive": "installer",
+          "bytes": 25761000,
+          "format": "vst3",
+          "kind": "direct",
+          "platform": "windows-x86_64",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000098",
+          "url": "https://downloads.example.net/fjord-instruments-tide-51/setup-51.exe"
+        }
+      ],
+      "name": "Tide MK II",
+      "tags": [
+        "equalizer",
+        "mastering",
+        "linear-phase"
+      ],
+      "vendor": "Fjord Instruments",
+      "version": "1.1.2"
+    },
+    {
+      "description": "A stereo delay with pitch-shifted taps, diffusion, and tempo-synced modulation for spacious rhythmic echoes.",
+      "homepage": "https://plugins.example.com/cinder-works-umbra-52",
+      "id": "cinder-works.umbra52",
+      "installs": [
+        {
+          "archive": "zip",
+          "bytes": 19124000,
+          "format": "vst3",
+          "kind": "github_release",
+          "platform": "macos-aarch64",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000035",
+          "url": "https://github.com/example/cinder-works-umbra-52/releases/download/v1.2.3/cinder-works-umbra-52-mac.zip"
+        },
+        {
+          "archive": "installer",
+          "bytes": 25972000,
+          "format": "vst3",
+          "kind": "direct",
+          "platform": "windows-x86_64",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000099",
+          "url": "https://downloads.example.net/cinder-works-umbra-52/setup-52.exe"
+        }
+      ],
+      "name": "Umbra Pro",
+      "tags": [
+        "delay",
+        "creative",
+        "stereo"
+      ],
+      "vendor": "Cinder Works",
+      "version": "2.2.3"
+    },
+    {
+      "description": "A drum sampler with layered velocity, per-pad envelopes, and drag-and-drop import for building custom kits quickly.",
+      "homepage": "https://plugins.example.com/halcyon-audio-vector-53",
+      "id": "halcyon-audio.vector53",
+      "installs": [
+        {
+          "archive": "zip",
+          "bytes": 19261000,
+          "format": "vst3",
+          "kind": "github_release",
+          "platform": "macos-aarch64",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000036",
+          "url": "https://github.com/example/halcyon-audio-vector-53/releases/download/v1.2.3/halcyon-audio-vector-53-mac.zip"
+        },
+        {
+          "archive": "installer",
+          "bytes": 26183000,
+          "format": "vst3",
+          "kind": "direct",
+          "platform": "windows-x86_64",
+          "sha256": "000000000000000000000000000000000000000000000000000000000000009a",
+          "url": "https://downloads.example.net/halcyon-audio-vector-53/setup-53.exe"
+        }
+      ],
+      "name": "Vector Lite",
+      "tags": [
+        "sampler",
+        "drums",
+        "velocity"
+      ],
+      "vendor": "Halcyon Audio",
+      "version": "3.3.4"
+    },
+    {
+      "description": "A saturation unit combining tape, tube, and diode curves with oversampling and a mix control for parallel color.",
+      "homepage": "https://plugins.example.com/paper-lantern-willow-54",
+      "id": "paper-lantern.willow54",
+      "installs": [
+        {
+          "archive": "zip",
+          "bytes": 19398000,
+          "format": "vst3",
+          "kind": "github_release",
+          "platform": "macos-aarch64",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000037",
+          "url": "https://github.com/example/paper-lantern-willow-54/releases/download/v1.2.3/paper-lantern-willow-54-mac.zip"
+        },
+        {
+          "archive": "installer",
+          "bytes": 26394000,
+          "format": "vst3",
+          "kind": "direct",
+          "platform": "windows-x86_64",
+          "sha256": "000000000000000000000000000000000000000000000000000000000000009b",
+          "url": "https://downloads.example.net/paper-lantern-willow-54/setup-54.exe"
+        }
+      ],
+      "name": "Willow XL",
+      "tags": [
+        "saturation",
+        "analog",
+        "oversampling"
+      ],
+      "vendor": "Paper Lantern",
+      "version": "1.4.5"
+    },
+    {
+      "description": "A creative filter bank with morphing formant, comb, and ladder modes, plus an envelope follower and LFO routing panel.",
+      "homepage": "https://plugins.example.com/quiet-machine-zenith-55",
+      "id": "quiet-machine.zenith55",
+      "installs": [
+        {
+          "archive": "zip",
+          "bytes": 19535000,
+          "format": "vst3",
+          "kind": "github_release",
+          "platform": "macos-aarch64",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000038",
+          "url": "https://github.com/example/quiet-machine-zenith-55/releases/download/v1.2.3/quiet-machine-zenith-55-mac.zip"
+        },
+        {
+          "archive": "installer",
+          "bytes": 26605000,
+          "format": "vst3",
+          "kind": "direct",
+          "platform": "windows-x86_64",
+          "sha256": "000000000000000000000000000000000000000000000000000000000000009c",
+          "url": "https://downloads.example.net/quiet-machine-zenith-55/setup-55.exe"
+        }
+      ],
+      "name": "Zenith MK I",
+      "tags": [
+        "filter",
+        "creative",
+        "modulation"
+      ],
+      "vendor": "Quiet Machine",
+      "version": "2.5.6"
+    },
+    {
+      "description": "A granular texture instrument that freezes input, scatters grains across the stereo field, and syncs grain size to tempo.",
+      "homepage": "https://plugins.example.com/northwind-audio-aster-56",
+      "id": "northwind-audio.aster56",
+      "installs": [
+        {
+          "archive": "zip",
+          "bytes": 19672000,
+          "format": "vst3",
+          "kind": "github_release",
+          "platform": "macos-aarch64",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000039",
+          "url": "https://github.com/example/northwind-audio-aster-56/releases/download/v1.2.3/northwind-audio-aster-56-mac.zip"
+        },
+        {
+          "archive": "installer",
+          "bytes": 26816000,
+          "format": "vst3",
+          "kind": "direct",
+          "platform": "windows-x86_64",
+          "sha256": "000000000000000000000000000000000000000000000000000000000000009d",
+          "url": "https://downloads.example.net/northwind-audio-aster-56/setup-56.exe"
+        }
+      ],
+      "name": "Aster MK II",
+      "tags": [
+        "granular",
+        "texture",
+        "experimental"
+      ],
+      "vendor": "Northwind Audio",
+      "version": "3.6.0"
+    },
+    {
+      "description": "A channel strip with gate, EQ, compressor, and drive in one window, designed for fast tracking and low CPU overhead.",
+      "homepage": "https://plugins.example.com/kestrel-dsp-bloom-57",
+      "id": "kestrel-dsp.bloom57",
+      "installs": [
+        {
+          "archive": "zip",
+          "bytes": 19809000,
+          "format": "vst3",
+          "kind": "github_release",
+          "platform": "macos-aarch64",
+          "sha256": "000000000000000000000000000000000000000000000000000000000000003a",
+          "url": "https://github.com/example/kestrel-dsp-bloom-57/releases/download/v1.2.3/kestrel-dsp-bloom-57-mac.zip"
+        },
+        {
+          "archive": "installer",
+          "bytes": 27027000,
+          "format": "vst3",
+          "kind": "direct",
+          "platform": "windows-x86_64",
+          "sha256": "000000000000000000000000000000000000000000000000000000000000009e",
+          "url": "https://downloads.example.net/kestrel-dsp-bloom-57/setup-57.exe"
+        }
+      ],
+      "name": "Bloom Pro",
+      "tags": [
+        "channel-strip",
+        "mixing",
+        "efficient"
+      ],
+      "vendor": "Kestrel DSP",
+      "version": "1.7.1"
+    },
+    {
+      "description": "A pitch and time processor for harmonizing takes, with formant preservation, MIDI sidechain, and scale-aware snapping.",
+      "homepage": "https://plugins.example.com/marlowe-labs-cinder-58",
+      "id": "marlowe-labs.cinder58",
+      "installs": [
+        {
+          "archive": "zip",
+          "bytes": 19946000,
+          "format": "vst3",
+          "kind": "github_release",
+          "platform": "macos-aarch64",
+          "sha256": "000000000000000000000000000000000000000000000000000000000000003b",
+          "url": "https://github.com/example/marlowe-labs-cinder-58/releases/download/v1.2.3/marlowe-labs-cinder-58-mac.zip"
+        },
+        {
+          "archive": "installer",
+          "bytes": 27238000,
+          "format": "vst3",
+          "kind": "direct",
+          "platform": "windows-x86_64",
+          "sha256": "000000000000000000000000000000000000000000000000000000000000009f",
+          "url": "https://downloads.example.net/marlowe-labs-cinder-58/setup-58.exe"
+        }
+      ],
+      "name": "Cinder Lite",
+      "tags": [
+        "pitch",
+        "harmony",
+        "formant"
+      ],
+      "vendor": "Marlowe Labs",
+      "version": "2.8.2"
+    },
+    {
+      "description": "A modulation workstation with six LFOs, four envelopes, and a drag-and-drop matrix for shaping evolving presets.",
+      "homepage": "https://plugins.example.com/fjord-instruments-delta-59",
+      "id": "fjord-instruments.delta59",
+      "installs": [
+        {
+          "archive": "zip",
+          "bytes": 20083000,
+          "format": "vst3",
+          "kind": "github_release",
+          "platform": "macos-aarch64",
+          "sha256": "000000000000000000000000000000000000000000000000000000000000003c",
+          "url": "https://github.com/example/fjord-instruments-delta-59/releases/download/v1.2.3/fjord-instruments-delta-59-mac.zip"
+        },
+        {
+          "archive": "installer",
+          "bytes": 27449000,
+          "format": "vst3",
+          "kind": "direct",
+          "platform": "windows-x86_64",
+          "sha256": "00000000000000000000000000000000000000000000000000000000000000a0",
+          "url": "https://downloads.example.net/fjord-instruments-delta-59/setup-59.exe"
+        }
+      ],
+      "name": "Delta XL",
+      "tags": [
+        "modulation",
+        "envelope",
+        "matrix"
+      ],
+      "vendor": "Fjord Instruments",
+      "version": "3.9.3"
+    }
+  ],
+  "generated_at": "2026-10-22T08:00:00Z",
+  "schema": 1
+}

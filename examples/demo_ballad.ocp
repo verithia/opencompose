@@ -1,0 +1,93 @@
+// OpenCompose Example: Melancholic Piano Ballad with Cello
+// Demonstrates: tracks, phrases, articulations, expression, effects, mix, buses
+
+@ocp "0.2.0"
+
+@project "Autumn Leaves"
+  tempo: 72
+  time_signature: 4/4
+  key: A minor
+
+@track piano | instrument: piano/acoustic_grand
+  mix: vol=-3dB, pan=0, send(hall_reverb=25%)
+
+  @phrase intro [1:1:0 - 5:1:0]
+    A3  q   mp
+    C4  q   mp  articulation=legato
+    E4  h   mf  expression={dynamics: mp->mf}
+    |
+    F4  q.  mf
+    E4  8th mp
+    D4  h   mp  articulation=legato
+    |
+    C4  q   mp
+    B3  q   p
+    A3  h   p   expression={dynamics: p->pp}
+    |
+    rest w
+
+  @phrase verse [5:1:0 - 12:4:0]
+    A3  8th mp
+    C4  8th mp
+    E4  q   mf  articulation=legato
+    A4  q.  f   vibrato={rate: 4.5Hz, depth: 15ct, delay: 0.2s}
+    G4  8th mf
+    |
+    F4  h.  mf  expression={dynamics: mf->mp}
+    E4  q   mp
+    |
+    D4  q   mp  articulation=legato
+    E4  q   mp
+    C4  h   p   expression={dynamics: mp->p}
+    |
+    rest h
+    A3  q   pp
+    B3  q   pp  articulation=legato
+
+@track cello | instrument: strings/cello
+  mix: vol=-6dB, pan=-0.15, send(hall_reverb=40%)
+
+  @phrase intro [1:1:0 - 5:1:0]
+    A2  w   p   articulation=sustained
+    |
+    F2  h   p   articulation=legato
+    E2  h   p
+    |
+    D2  w   mp  articulation=tremolo vibrato={rate: 5Hz, depth: 20ct}
+    |
+    A2  w   pp  expression={dynamics: pp->ppp}
+
+  @phrase verse [5:1:0 - 12:4:0]
+    A2  h   mp  articulation=legato
+    C3  h   mp
+    |
+    D3  w   mf  vibrato={rate: 5.5Hz, depth: 25ct, delay: 0.3s}
+    |
+    E3  h.  mf  articulation=legato
+    D3  q   mp
+    |
+    C3  w   p   expression={dynamics: mp->p}
+
+@track strings_pad | instrument: strings/section
+  mix: vol=-10dB, pan=0, send(hall_reverb=60%)
+
+  @phrase verse_bg [5:1:0 - 12:4:0]
+    A3  w   pp  articulation=sustained
+    |
+    D4  w   pp  articulation=sustained
+    |
+    E4  w   pp  expression={dynamics: pp->p}
+    |
+    A3  w   ppp
+
+@bus hall_reverb
+  routes: [master]
+  effects:
+    - reverb: type=hall, size=large, decay=3.2s, predelay=30ms, mix=100%
+    - eq: high_shelf=-2dB@10kHz
+
+@master
+  effects:
+    - eq: low_cut=30Hz, high_shelf=-1dB@12kHz
+    - compression: ratio=2:1, threshold=-8dB, attack=30ms, release=200ms
+    - limiter: ceiling=-0.3dB

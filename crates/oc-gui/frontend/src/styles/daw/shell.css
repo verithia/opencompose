@@ -1,0 +1,290 @@
+/* ── Product mark ── */
+.brand-block {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  width: var(--track-header-width);
+  height: calc(var(--effective-toolbar-height) + var(--ruler-height));
+  /* Non-macOS centres the lockup in the toolbar band; macOS pins it below the
+     traffic lights instead (see the inset rule below). */
+  padding: 0 14px var(--ruler-height);
+  /* One continuous chrome surface for the whole corner. The ruler band starts
+     at the block's right border, so no band edge crosses the wordmark. */
+  background: var(--chrome-bg);
+  border-right: 1px solid var(--border-light);
+  /* The mark paints with currentColor, so it inherits this brown. */
+  color: var(--text-secondary);
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.brand-lights {
+  display: none;
+}
+
+/* macOS draws the traffic lights in physical pixels, so the corner they own is
+   divided by the webview zoom instead of tracking it. */
+:root[data-platform="macos"] {
+  --traffic-light-inset: calc(30px / var(--ui-scale));
+}
+
+/* Pin the lockup below the lights at every scale. */
+:root[data-platform="macos"] .brand-block {
+  justify-content: flex-start;
+  padding-top: var(--traffic-light-inset);
+}
+
+/* Windows and Linux draw their caption controls on the right, so the corner
+   holds no lights; the lockup still sits where the macOS rule puts it — in the
+   lower half of the toolbar band, just above the ruler — instead of floating at
+   the top of the window. */
+:root:not([data-platform="macos"]) .brand-block {
+  justify-content: flex-start;
+  padding-top: 30px;
+}
+
+/* The mark sits beside the wordmark below the lights; both scale with the zoom. */
+:root[data-platform="macos"] .app-logo {
+  top: calc(22px / var(--ui-scale));
+}
+
+:root:not([data-platform="macos"]) .app-logo {
+  top: 22px;
+}
+
+.brand-lockup {
+  display: flex;
+  /* The mark is absolutely placed on the right of the block; reserve its
+     width so a long wordmark ellipsizes instead of running underneath it. */
+  padding-right: 38px;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* The brand block owns the top-left corner (traffic lights included), so the
+   toolbar starts after it. */
+.daw-toolbar {
+  padding-left: calc(var(--track-header-width) + 10px);
+}
+
+:root[data-platform="macos"] .daw-toolbar {
+  padding-left: calc(var(--track-header-width) + 10px);
+}
+
+.brand-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  /* The one place the brand face is used: the wordmark. */
+  font-family: var(--font-brand);
+  font-size: 17px;
+  font-weight: 500;
+  letter-spacing: 0.012em;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+/* Flat mono mark used as an alpha mask: no tile, border or shadow. */
+/* Pinned independently so the word stays put when the mark moves. */
+.app-logo {
+  position: absolute;
+  top: 24px;
+  right: 16px;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 auto;
+  background-color: currentColor;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  mask-position: center;
+  -webkit-mask-size: contain;
+  mask-size: contain;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.brand .project-title {
+  padding-right: 6px;
+}
+
+/* ── Toolbar menus ── */
+.toolbar-menu {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.toolbar-menu-popover {
+  top: calc(100% + 6px);
+  left: 0;
+  right: auto;
+  min-width: 200px;
+  gap: 2px;
+}
+
+.toolbar-menu-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.toolbar-menu-item:hover {
+  background: var(--bg-hover);
+}
+
+.toolbar-menu-item:disabled {
+  color: var(--text-muted);
+  cursor: default;
+}
+
+.toolbar-menu-item:disabled:hover {
+  background: transparent;
+}
+
+.toolbar-menu-item kbd {
+  color: var(--text-muted);
+  font: 11px var(--font-mono, monospace);
+}
+
+.status-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.status-right {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* Project name: centred, the only place it appears. */
+.status-project {
+  justify-self: center;
+  max-width: 46vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-ui);
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  color: var(--text-secondary);
+  letter-spacing: 0.01em;
+}
+
+.status-project .dirty-indicator {
+  margin-left: 4px;
+  color: var(--text-accent);
+}
+
+/* ── Frameless window chrome (Windows/Linux) ── */
+.window-controls {
+  display: flex;
+  align-items: stretch;
+  align-self: stretch;
+  margin: 0 -10px 0 6px;
+}
+
+.window-control {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 46px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: default;
+}
+
+.window-control:hover {
+  background: rgb(0 0 0 / 0.06);
+  color: var(--text-primary);
+}
+
+.window-control.close:hover {
+  background: #e81123;
+  color: #ffffff;
+}
+
+.window-resize-edges {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  pointer-events: none;
+}
+
+.window-resize-edge {
+  position: absolute;
+  pointer-events: auto;
+}
+
+.window-resize-edge.n,
+.window-resize-edge.s {
+  left: 8px;
+  right: 8px;
+  height: 5px;
+  cursor: ns-resize;
+}
+
+.window-resize-edge.n { top: 0; }
+.window-resize-edge.s { bottom: 0; }
+
+.window-resize-edge.w,
+.window-resize-edge.e {
+  top: 8px;
+  bottom: 8px;
+  width: 5px;
+  cursor: ew-resize;
+}
+
+.window-resize-edge.w { left: 0; }
+.window-resize-edge.e { right: 0; }
+
+.window-resize-edge.nw,
+.window-resize-edge.ne,
+.window-resize-edge.sw,
+.window-resize-edge.se {
+  width: 10px;
+  height: 10px;
+}
+
+.window-resize-edge.nw { top: 0; left: 0; cursor: nwse-resize; }
+.window-resize-edge.ne { top: 0; right: 0; cursor: nesw-resize; }
+.window-resize-edge.sw { bottom: 0; left: 0; cursor: nesw-resize; }
+.window-resize-edge.se { bottom: 0; right: 0; cursor: nwse-resize; }
+
+/* Below 900px the corner narrows to the track header; a smaller wordmark keeps
+   the name whole instead of ellipsizing it to "OpenCom…". */
+@media (max-width: 900px) {
+  .brand-name {
+    font-size: 13px;
+    letter-spacing: 0;
+  }
+
+  .brand-lockup {
+    padding-right: 42px;
+    gap: 8px;
+  }
+}
+

@@ -1,0 +1,169 @@
+/* ============================================================================
+   Resource browser — plugins, samples and built-in effects in one overlay
+   ============================================================================ */
+
+.resource-browser-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 16px;
+  background: color-mix(in srgb, var(--bg-void) 60%, transparent);
+  backdrop-filter: blur(3px);
+}
+
+.resource-browser {
+  display: flex;
+  flex-direction: column;
+  width: min(920px, calc(100vw - 32px));
+  height: min(78vh, 700px);
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-lg);
+  background: var(--bg-float);
+  box-shadow: var(--shadow-elevated);
+}
+
+.resource-browser-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 12px 16px 8px;
+}
+
+.resource-browser-title {
+  font-family: var(--font-display);
+  font-size: var(--font-size-lg);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.resource-browser-close {
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.resource-browser-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--border-light);
+}
+
+.resource-browser-tab {
+  padding: 7px 12px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+}
+
+.resource-browser-tab:hover {
+  color: var(--text-primary);
+}
+
+.resource-browser-tab.active {
+  border-bottom-color: var(--accent);
+  color: var(--accent);
+}
+
+.resource-browser-body {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.resource-browser-body > * {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* ── Effects tab ── */
+
+.resource-effects {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--bg-primary);
+}
+
+.resource-effects-hint {
+  margin: 0;
+  padding: 8px 12px 0;
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.resource-effects-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 8px 12px 12px;
+  overflow-y: auto;
+}
+
+.resource-effects-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+
+.resource-effects-group-label {
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.resource-effects-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border: 1px solid var(--border-subtle, var(--border-light));
+  border-radius: var(--radius-sm);
+  background: var(--bg-secondary);
+}
+
+.resource-effects-row-main {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.resource-effects-name {
+  color: var(--text-primary);
+  font-size: var(--font-size-sm);
+}
+
+.resource-effects-description {
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+  line-height: 1.35;
+}
+
+.resource-effects-status {
+  padding: 6px 12px 10px;
+  color: var(--text-secondary);
+  font-size: var(--font-size-xs);
+}

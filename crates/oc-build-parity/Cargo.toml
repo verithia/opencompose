@@ -1,0 +1,32 @@
+[package]
+repository.workspace = true
+name = "oc-build-parity"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Manifest-only crate that pins the dependency feature sets the oc-cli and oc-gui builds must agree on"
+
+# Pins for the normal dependency graph. Each of these crates is reached by both
+# front-ends, but the GUI's Tauri dependencies turn extra features on, so the
+# two builds would otherwise resolve different units and rebuild everything
+# above them on every alternation.
+[dependencies]
+bitflags = { version = "2", features = ["serde"] }
+log = { workspace = true, features = ["std", "kv", "kv_unstable", "value-bag"] }
+miniz_oxide = "0.8"
+serde_json = { workspace = true, features = ["alloc", "raw_value"] }
+simd-adler32 = { version = "0.3", features = ["const-generics", "std"] }
+time = { version = "0.3", features = ["local-offset", "macros"] }
+
+# The build-script graph is resolved separately from the normal graph, and
+# `tauri-build` needs features on these that `bindgen` (in the CLI's graph via
+# `coreaudio-sys`) does not, so it needs its own pins.
+[build-dependencies]
+proc-macro2 = { version = "1", features = ["span-locations"] }
+syn = { version = "2", features = ["fold", "visit"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+dispatch2 = "0.3"
+objc2 = { workspace = true, features = ["exception", "disable-encoding-assertions"] }
+objc2-core-foundation = { version = "0.3", features = ["CFBase", "CFUserNotification", "alloc", "std"] }

@@ -1,0 +1,73 @@
+// A four-bar, sample-free sketch. Edit the three phrases, then save and export.
+@ocp "0.2.0"
+@project "First sketch"
+  tempo: 108
+  time_signature: 4/4
+  key: C major
+
+@preset soft_keys
+  source: builtin
+  plugin: "builtin.open_synth"
+  params: {osc.a.waveform: 0, osc.a.level: 0.65, osc.b.level: 0, osc.c.level: 0, amp.attack: 0.008, amp.release: 0.18, output.loudness_trim_db: -8}
+
+@preset round_bass
+  source: builtin
+  plugin: "builtin.open_synth"
+  params: {osc.a.waveform: 0, osc.a.level: 0.7, osc.b.level: 0, osc.c.level: 0, amp.attack: 0.005, amp.release: 0.08, output.loudness_trim_db: -10}
+
+@track Keys | preset: soft_keys
+  mix: vol=-5dB, pan=-0.15
+  @phrase melody [1:1:0 - 5:1:0]
+    E4 q mf
+    G4 q mp
+    C5 h mf
+    |
+    D5 q mp
+    C5 q mf
+    A4 h mp
+    |
+    G4 q mf
+    E4 q mp
+    D4 h mp
+    |
+    E4 q mp
+    G4 q mp
+    C4 h mf
+
+@track Bass | preset: round_bass
+  mix: vol=-6dB, pan=0
+  @phrase roots [1:1:0 - 5:1:0]
+    C2 h mp
+    G2 h mp
+    |
+    A2 h mp
+    E2 h mp
+    |
+    F2 h mp
+    C2 h mp
+    |
+    G2 h mp
+    C2 h mp
+
+@track Pulse | preset: soft_keys
+  mix: vol=-12dB, pan=0.2
+  @phrase pulse [1:1:0 - 5:1:0]
+    C4 q mp
+    G4 q mp
+    E4 q mp
+    G4 q mp
+    |
+    A3 q mp
+    E4 q mp
+    C4 q mp
+    E4 q mp
+    |
+    F3 q mp
+    C4 q mp
+    A3 q mp
+    C4 q mp
+    |
+    G3 q mp
+    D4 q mp
+    G3 q mp
+    C4 q mp

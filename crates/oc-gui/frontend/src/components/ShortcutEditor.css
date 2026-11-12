@@ -1,0 +1,283 @@
+/* Shortcut editor — a searchable command table with one-key capture. */
+
+.shortcut-editor-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 16px;
+  background: color-mix(in srgb, var(--bg-void) 60%, transparent);
+  backdrop-filter: blur(3px);
+}
+
+.shortcut-editor {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: min(720px, calc(100vw - 32px));
+  max-height: min(82vh, 720px);
+  overflow: hidden;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-lg);
+  background: var(--bg-float);
+  box-shadow: var(--shadow-elevated);
+}
+
+.shortcut-editor-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px 8px;
+}
+
+.shortcut-editor-title {
+  font-family: var(--font-display);
+  font-size: var(--font-size-lg);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.shortcut-editor-close {
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.shortcut-editor-search {
+  margin: 0 16px 8px;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font: var(--font-size-sm) / 1.4 var(--font-ui);
+}
+
+.shortcut-table {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 0 8px 8px;
+}
+
+.shortcut-head,
+.shortcut-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 180px 130px 72px;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+}
+
+.shortcut-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--bg-float);
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--border);
+}
+
+.shortcut-row {
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+}
+
+.shortcut-row.recording {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.shortcut-command {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-primary);
+}
+
+.shortcut-custom {
+  flex: 0 0 auto;
+  padding: 1px 5px;
+  border: 1px solid var(--border-light);
+  border-radius: 999px;
+  color: var(--text-muted);
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.shortcut-binding {
+  width: 100%;
+  padding: 4px 8px;
+  border: 1px solid var(--border-light);
+  border-radius: 5px;
+  background: var(--bg-input);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  text-align: left;
+  cursor: pointer;
+}
+
+.shortcut-binding.recording {
+  border-color: var(--accent);
+  color: var(--text-primary);
+}
+
+.shortcut-binding:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.shortcut-category {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.shortcut-row-reset {
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.shortcut-row-reset:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.shortcut-error,
+.shortcut-recording-hint {
+  grid-column: 1 / -1;
+  margin: 2px 0 0;
+  font-size: var(--font-size-xs);
+}
+
+.shortcut-error {
+  color: var(--stop-red);
+}
+
+.shortcut-recording-hint {
+  color: var(--accent);
+}
+
+.shortcut-editor-empty {
+  margin: 18px 10px;
+  color: var(--text-muted);
+  font-size: var(--font-size-sm);
+  text-align: center;
+}
+
+.shortcut-editor-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--border);
+}
+
+.shortcut-status {
+  min-height: 1em;
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.shortcut-restore {
+  padding: 5px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-size: var(--font-size-xs);
+  cursor: pointer;
+}
+
+.shortcut-confirm {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 10px;
+  padding: 32px;
+  background: color-mix(in srgb, var(--bg-float) 94%, transparent);
+}
+
+.shortcut-confirm-title {
+  font-family: var(--font-display);
+  font-size: var(--font-size-lg);
+  color: var(--text-primary);
+}
+
+.shortcut-confirm-body {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--font-size-sm);
+  line-height: 1.5;
+}
+
+.shortcut-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.shortcut-confirm-cancel,
+.shortcut-confirm-apply {
+  padding: 6px 14px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+}
+
+.shortcut-confirm-apply {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--bg-void);
+  font-weight: 600;
+}
+
+/* The surface on its own: the dialog and the Preferences page share it. */
+.shortcut-editor-body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.shortcut-editor-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.shortcut-editor-panel .shortcut-editor-body {
+  min-height: 0;
+}

@@ -1,0 +1,326 @@
+/* ============================================================================
+   Catppuccin variants — official palette, mapped onto the DAW token set.
+   Mauve/pink drive the accent, blue/teal the cool secondary accents.
+   ============================================================================ */
+
+:root[data-theme="catppuccin-latte"] {
+  color-scheme: light;
+
+  --bg-void:       #dce0e8;
+  --bg-primary:    #eff1f5;
+  --bg-secondary:  #e6e9ef;
+  --bg-surface:    #ccd0da;
+  --bg-elevated:   #f4f6fa;
+  --bg-float:      #ffffff;
+  --bg-track:      #e6e9ef;
+  --bg-track-selected: #d9dee8;
+  --bg-input:      #f9fafc;
+
+  --text-primary:   #4c4f69;
+  --text-secondary: #5c5f77;
+  --text-muted:     #7c7f93;
+  --text-accent:    #8839ef;
+
+  --accent:       #8839ef;
+  --accent-hover: #7326d8;
+  --accent-dim:   rgba(136, 57, 239, 0.12);
+  --accent-glow:  rgba(136, 57, 239, 0.20);
+  --accent-cool:      #1e66f5;
+  --accent-cool-dim:  rgba(30, 102, 245, 0.12);
+
+  --border:       rgba(76, 79, 105, 0.16);
+  --border-light: rgba(76, 79, 105, 0.26);
+
+  --fader-track: #bcc0cc;
+  --fader-fill:  #8839ef;
+  --meter-green:  #40a02b;
+  --meter-yellow: #df8e1d;
+  --meter-red:    #d20f39;
+
+  --play-green:  #40a02b;
+  --stop-red:    #d20f39;
+  --record-red:  #d20f39;
+
+  --track-color-0: #1e66f5;
+  --track-color-1: #179299;
+  --track-color-2: #df8e1d;
+  --track-color-3: #8839ef;
+  --track-color-4: #e64553;
+  --track-color-5: #40a02b;
+  --track-color-6: #209fb5;
+  --track-color-7: #ea76cb;
+
+  --note-fill:     #8839ef;
+  --note-selected: #1e66f5;
+  --grid-line: #e2e6ee;
+  --grid-bar:  #bcc0cc;
+  --grid-beat: #d2d7e0;
+
+  --bg-hover:       rgba(76, 79, 105, 0.08);
+  --border-focus:   var(--accent);
+  --shadow-panel:   inset 0 1px 0 rgba(255, 255, 255, 0.55), 0 1px 2px rgba(76, 79, 105, 0.18);
+  --shadow-elevated: 0 14px 34px rgba(76, 79, 105, 0.20), 0 0 0 1px rgba(76, 79, 105, 0.12);
+  --radius-sm: 5px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --chrome-bg: linear-gradient(180deg, #f2f4f8 0%, #dce0e8 100%);
+  --panel-bg: #eff1f5;
+  --sidebar-bg: linear-gradient(180deg, #e9ecf2 0%, #dce0e8 100%);
+  --tab-strip-bg: #e2e6ee;
+  --timeline-bg:
+    linear-gradient(90deg, rgba(76, 79, 105, 0.045) 1px, transparent 1px),
+    linear-gradient(180deg, #eff1f5 0%, #e9ecf2 100%);
+  --track-header-bg: #e6e9ef;
+  --track-lane-bg: rgba(239, 241, 245, 0.88);
+  --track-lane-alt-bg: rgba(230, 233, 239, 0.92);
+  --ruler-bg: linear-gradient(180deg, #e2e6ee 0%, #d3d8e2 100%);
+  --clip-overlay: linear-gradient(180deg, rgba(255, 255, 255, 0.34), rgba(76, 79, 105, 0.10));
+  --clip-border: rgba(76, 79, 105, 0.24);
+  --active-ring: inset 0 -3px 0 var(--accent);
+}
+
+:root[data-theme="catppuccin-frappe"] {
+  color-scheme: dark;
+
+  --bg-void:       #232634;
+  --bg-primary:    #303446;
+  --bg-secondary:  #292c3c;
+  --bg-surface:    #414559;
+  --bg-elevated:   #51576d;
+  --bg-float:      #626880;
+  --bg-track:      #292c3c;
+  --bg-track-selected: #414559;
+  --bg-input:      #232634;
+
+  --text-primary:   #c6d0f5;
+  --text-secondary: #b5bfe2;
+  --text-muted:     #838ba7;
+  --text-accent:    #ca9ee6;
+
+  --accent:       #ca9ee6;
+  --accent-hover: #f4b8e4;
+  --accent-dim:   rgba(202, 158, 230, 0.14);
+  --accent-glow:  rgba(202, 158, 230, 0.26);
+  --accent-cool:      #8caaee;
+  --accent-cool-dim:  rgba(140, 170, 238, 0.14);
+
+  --border:       rgba(198, 208, 245, 0.12);
+  --border-light: rgba(198, 208, 245, 0.22);
+
+  --fader-track: #232634;
+  --fader-fill:  #ca9ee6;
+  --meter-green:  #a6d189;
+  --meter-yellow: #e5c890;
+  --meter-red:    #e78284;
+
+  --play-green:  #a6d189;
+  --stop-red:    #e78284;
+  --record-red:  #e78284;
+
+  --track-color-0: #8caaee;
+  --track-color-1: #81c8be;
+  --track-color-2: #e5c890;
+  --track-color-3: #f4b8e4;
+  --track-color-4: #ef9f76;
+  --track-color-5: #a6d189;
+  --track-color-6: #99d1db;
+  --track-color-7: #babbf1;
+
+  --note-fill:     #ca9ee6;
+  --note-selected: #8caaee;
+  --grid-line: #414559;
+  --grid-bar:  #626880;
+  --grid-beat: #51576d;
+
+  --bg-hover:       rgba(255, 255, 255, 0.06);
+  --border-focus:   var(--accent);
+  --shadow-panel:   inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 1px 2px rgba(0, 0, 0, 0.45);
+  --shadow-elevated: 0 12px 28px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(198, 208, 245, 0.10);
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 9px;
+  --chrome-bg: linear-gradient(180deg, #51576d 0%, #414559 55%, #292c3c 100%);
+  --panel-bg: #303446;
+  --sidebar-bg: linear-gradient(180deg, #414559 0%, #292c3c 100%);
+  --tab-strip-bg: #414559;
+  --timeline-bg:
+    repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.03) 0, rgba(255, 255, 255, 0.03) 1px, transparent 1px, transparent 24px),
+    linear-gradient(180deg, #303446 0%, #292c3c 100%);
+  --track-header-bg: #292c3c;
+  --track-lane-bg: rgba(65, 69, 89, 0.55);
+  --track-lane-alt-bg: rgba(41, 44, 60, 0.90);
+  --ruler-bg: linear-gradient(180deg, #51576d 0%, #292c3c 100%);
+  --clip-overlay: linear-gradient(180deg, rgba(255, 255, 255, 0.14), rgba(0, 0, 0, 0.18));
+  --clip-border: rgba(198, 208, 245, 0.24);
+  --active-ring: inset 0 0 0 1px var(--accent), inset 0 -3px 0 var(--accent);
+}
+
+:root[data-theme="catppuccin-macchiato"] {
+  color-scheme: dark;
+
+  --bg-void:       #181926;
+  --bg-primary:    #24273a;
+  --bg-secondary:  #1e2030;
+  --bg-surface:    #363a4f;
+  --bg-elevated:   #494d64;
+  --bg-float:      #5b6078;
+  --bg-track:      #1e2030;
+  --bg-track-selected: #363a4f;
+  --bg-input:      #181926;
+
+  --text-primary:   #cad3f5;
+  --text-secondary: #b8c0e0;
+  --text-muted:     #8087a2;
+  --text-accent:    #c6a0f6;
+
+  --accent:       #c6a0f6;
+  --accent-hover: #f5bde6;
+  --accent-dim:   rgba(198, 160, 246, 0.14);
+  --accent-glow:  rgba(198, 160, 246, 0.26);
+  --accent-cool:      #8aadf4;
+  --accent-cool-dim:  rgba(138, 173, 244, 0.14);
+
+  --border:       rgba(202, 211, 245, 0.12);
+  --border-light: rgba(202, 211, 245, 0.22);
+
+  --fader-track: #181926;
+  --fader-fill:  #c6a0f6;
+  --meter-green:  #a6da95;
+  --meter-yellow: #eed49f;
+  --meter-red:    #ed8796;
+
+  --play-green:  #a6da95;
+  --stop-red:    #ed8796;
+  --record-red:  #ed8796;
+
+  --track-color-0: #8aadf4;
+  --track-color-1: #8bd5ca;
+  --track-color-2: #eed49f;
+  --track-color-3: #f5bde6;
+  --track-color-4: #f5a97f;
+  --track-color-5: #a6da95;
+  --track-color-6: #91d7e3;
+  --track-color-7: #b7bdf8;
+
+  --note-fill:     #c6a0f6;
+  --note-selected: #8aadf4;
+  --grid-line: #363a4f;
+  --grid-bar:  #5b6078;
+  --grid-beat: #494d64;
+
+  --bg-hover:       rgba(255, 255, 255, 0.06);
+  --border-focus:   var(--accent);
+  --shadow-panel:   inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 1px 2px rgba(0, 0, 0, 0.45);
+  --shadow-elevated: 0 12px 28px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(202, 211, 245, 0.10);
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 9px;
+  --chrome-bg: linear-gradient(180deg, #494d64 0%, #363a4f 55%, #1e2030 100%);
+  --panel-bg: #24273a;
+  --sidebar-bg: linear-gradient(180deg, #363a4f 0%, #1e2030 100%);
+  --tab-strip-bg: #363a4f;
+  --timeline-bg:
+    repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.03) 0, rgba(255, 255, 255, 0.03) 1px, transparent 1px, transparent 24px),
+    linear-gradient(180deg, #24273a 0%, #1e2030 100%);
+  --track-header-bg: #1e2030;
+  --track-lane-bg: rgba(54, 58, 79, 0.55);
+  --track-lane-alt-bg: rgba(30, 32, 48, 0.90);
+  --ruler-bg: linear-gradient(180deg, #494d64 0%, #1e2030 100%);
+  --clip-overlay: linear-gradient(180deg, rgba(255, 255, 255, 0.14), rgba(0, 0, 0, 0.18));
+  --clip-border: rgba(202, 211, 245, 0.24);
+  --active-ring: inset 0 0 0 1px var(--accent), inset 0 -3px 0 var(--accent);
+}
+
+:root[data-theme="catppuccin-mocha"] {
+  color-scheme: dark;
+
+  --bg-void:       #11111b;
+  --bg-primary:    #1e1e2e;
+  --bg-secondary:  #181825;
+  --bg-surface:    #313244;
+  --bg-elevated:   #45475a;
+  --bg-float:      #585b70;
+  --bg-track:      #181825;
+  --bg-track-selected: #313244;
+  --bg-input:      #11111b;
+
+  --text-primary:   #cdd6f4;
+  --text-secondary: #bac2de;
+  --text-muted:     #7f849c;
+  --text-accent:    #cba6f7;
+
+  --accent:       #cba6f7;
+  --accent-hover: #f5c2e7;
+  --accent-dim:   rgba(203, 166, 247, 0.14);
+  --accent-glow:  rgba(203, 166, 247, 0.26);
+  --accent-cool:      #89b4fa;
+  --accent-cool-dim:  rgba(137, 180, 250, 0.14);
+
+  --border:       rgba(205, 214, 244, 0.12);
+  --border-light: rgba(205, 214, 244, 0.22);
+
+  --fader-track: #11111b;
+  --fader-fill:  #cba6f7;
+  --meter-green:  #a6e3a1;
+  --meter-yellow: #f9e2af;
+  --meter-red:    #f38ba8;
+
+  --play-green:  #a6e3a1;
+  --stop-red:    #f38ba8;
+  --record-red:  #f38ba8;
+
+  --track-color-0: #89b4fa;
+  --track-color-1: #94e2d5;
+  --track-color-2: #f9e2af;
+  --track-color-3: #f5c2e7;
+  --track-color-4: #fab387;
+  --track-color-5: #a6e3a1;
+  --track-color-6: #89dceb;
+  --track-color-7: #b4befe;
+
+  --note-fill:     #cba6f7;
+  --note-selected: #89b4fa;
+  --grid-line: #313244;
+  --grid-bar:  #585b70;
+  --grid-beat: #45475a;
+
+  --bg-hover:       rgba(255, 255, 255, 0.06);
+  --border-focus:   var(--accent);
+  --shadow-panel:   inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 1px 2px rgba(0, 0, 0, 0.45);
+  --shadow-elevated: 0 12px 28px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(205, 214, 244, 0.10);
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 9px;
+  --chrome-bg: linear-gradient(180deg, #45475a 0%, #313244 55%, #181825 100%);
+  --panel-bg: #1e1e2e;
+  --sidebar-bg: linear-gradient(180deg, #313244 0%, #181825 100%);
+  --tab-strip-bg: #313244;
+  --timeline-bg:
+    repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.03) 0, rgba(255, 255, 255, 0.03) 1px, transparent 1px, transparent 24px),
+    linear-gradient(180deg, #1e1e2e 0%, #181825 100%);
+  --track-header-bg: #181825;
+  --track-lane-bg: rgba(49, 50, 68, 0.55);
+  --track-lane-alt-bg: rgba(24, 24, 37, 0.90);
+  --ruler-bg: linear-gradient(180deg, #45475a 0%, #181825 100%);
+  --clip-overlay: linear-gradient(180deg, rgba(255, 255, 255, 0.14), rgba(0, 0, 0, 0.18));
+  --clip-border: rgba(205, 214, 244, 0.24);
+  --active-ring: inset 0 0 0 1px var(--accent), inset 0 -3px 0 var(--accent);
+}
+
+/* Clip foreground/formula tokens derive from the per-variant track + accent vars. */
+:root:is([data-theme="catppuccin-latte"], [data-theme="catppuccin-frappe"], [data-theme="catppuccin-macchiato"], [data-theme="catppuccin-mocha"]) {
+  --clip-text: var(--text-primary);
+  --clip-text-muted: var(--text-secondary);
+}
+
+/* Latte is light: use the light syntax palette so the DSL editor stays readable. */
+:root[data-theme="catppuccin-latte"] .dsl-editor-panel {
+  --syn-comment: #7c7f93;
+  --syn-keyword: #8839ef;
+  --syn-property: #179299;
+  --syn-string: #9c6a00;
+  --syn-pitch: #2f7d1e;
+  --syn-duration: #7287fd;
+  --syn-dynamics: #d9622b;
+  --syn-articulation: #d20f39;
+}

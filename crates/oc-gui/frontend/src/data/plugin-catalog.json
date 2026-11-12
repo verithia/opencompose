@@ -1,0 +1,2850 @@
+{
+  "schema": 2,
+  "generated_at": "2026-10-26T15:30:00Z",
+  "entries": [
+    {
+      "id": "vital-audio.vital",
+      "name": "Vital",
+      "vendor": "Vital Audio",
+      "homepage": "https://vital.audio/",
+      "license": "Freeware",
+      "tags": [
+        "synth",
+        "freemium"
+      ],
+      "description": "Spectral warping wavetable synth.",
+      "aliases": [
+        "Vital"
+      ],
+      "installs": [
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "vst3",
+          "url": "https://vital.audio/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "au",
+          "url": "https://vital.audio/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "standalone",
+          "url": "https://vital.audio/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "vst3",
+          "url": "https://vital.audio/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "au",
+          "url": "https://vital.audio/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "standalone",
+          "url": "https://vital.audio/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "windows-x86_64",
+          "format": "vst3",
+          "url": "https://vital.audio/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "windows-x86_64",
+          "format": "standalone",
+          "url": "https://vital.audio/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "linux-x86_64",
+          "format": "vst3",
+          "url": "https://vital.audio/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "linux-x86_64",
+          "format": "standalone",
+          "url": "https://vital.audio/"
+        }
+      ]
+    },
+    {
+      "id": "surge-synth-team.surge-xt",
+      "name": "Surge XT",
+      "vendor": "Surge Synth Team",
+      "homepage": "https://surge-synthesizer.github.io/",
+      "license": "GPL-3.0",
+      "tags": [
+        "synth",
+        "open-source"
+      ],
+      "description": "Surge is back, XTended and open source!",
+      "installs": [
+        {
+          "kind": "github_release",
+          "platform": "macos-aarch64",
+          "format": "vst3",
+          "archive": "dmg",
+          "url": "https://github.com/surge-synthesizer/releases-xt/releases/download/1.3.4/surge-xt-macOS-1.3.4.dmg"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "clap",
+          "url": "https://surge-synthesizer.github.io/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "au",
+          "url": "https://surge-synthesizer.github.io/"
+        },
+        {
+          "kind": "github_release",
+          "platform": "macos-x86_64",
+          "format": "vst3",
+          "archive": "dmg",
+          "url": "https://github.com/surge-synthesizer/releases-xt/releases/download/1.3.4/surge-xt-macOS-1.3.4.dmg"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "clap",
+          "url": "https://surge-synthesizer.github.io/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "au",
+          "url": "https://surge-synthesizer.github.io/"
+        },
+        {
+          "kind": "github_release",
+          "platform": "windows-x86_64",
+          "format": "vst3",
+          "archive": "installer",
+          "url": "https://github.com/surge-synthesizer/releases-xt/releases/download/1.3.4/surge-xt-win64-1.3.4-setup.exe"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "windows-x86_64",
+          "format": "clap",
+          "url": "https://surge-synthesizer.github.io/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "linux-x86_64",
+          "format": "vst3",
+          "url": "https://surge-synthesizer.github.io/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "linux-x86_64",
+          "format": "clap",
+          "url": "https://surge-synthesizer.github.io/"
+        }
+      ]
+    },
+    {
+      "id": "surge-synth-team.surge-xt-effects",
+      "name": "Surge XT Effects",
+      "vendor": "Surge Synth Team",
+      "homepage": "https://surge-synthesizer.github.io/",
+      "license": "GPL-3.0",
+      "tags": [
+        "utility",
+        "open-source"
+      ],
+      "description": "The effects half of Surge XT, free and open source.",
+      "aliases": [
+        "Surge XT Effects"
+      ],
+      "installs": [
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "vst3",
+          "url": "https://surge-synthesizer.github.io/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "clap",
+          "url": "https://surge-synthesizer.github.io/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "au",
+          "url": "https://surge-synthesizer.github.io/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "vst3",
+          "url": "https://surge-synthesizer.github.io/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "clap",
+          "url": "https://surge-synthesizer.github.io/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "au",
+          "url": "https://surge-synthesizer.github.io/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "windows-x86_64",
+          "format": "vst3",
+          "url": "https://surge-synthesizer.github.io/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "windows-x86_64",
+          "format": "clap",
+          "url": "https://surge-synthesizer.github.io/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "linux-x86_64",
+          "format": "vst3",
+          "url": "https://surge-synthesizer.github.io/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "linux-x86_64",
+          "format": "clap",
+          "url": "https://surge-synthesizer.github.io/"
+        }
+      ]
+    },
+    {
+      "id": "airwindows.consolidated",
+      "name": "Airwindows Consolidated",
+      "vendor": "Airwindows",
+      "homepage": "https://www.airwindows.com/consolidated/",
+      "license": "MIT",
+      "tags": [
+        "saturation",
+        "open-source"
+      ],
+      "description": "Airwindows Consolidated is CLAP native, and gives you all the things special to that format.",
+      "installs": [
+        {
+          "kind": "github_release",
+          "platform": "macos-aarch64",
+          "format": "vst3",
+          "archive": "dmg",
+          "url": "https://github.com/baconpaul/airwin2rack/releases/download/DAWPlugin/airwindows-consolidated-macOS-2026-10-24-dcf98a3.dmg",
+          "sha256": "92538298316b0ea97a98729e12f96b26b027e60ebe65a39e6126440380f8b782",
+          "bytes": 49332978
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "clap",
+          "url": "https://www.airwindows.com/consolidated/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "au",
+          "url": "https://www.airwindows.com/consolidated/"
+        },
+        {
+          "kind": "github_release",
+          "platform": "macos-x86_64",
+          "format": "vst3",
+          "archive": "dmg",
+          "url": "https://github.com/baconpaul/airwin2rack/releases/download/DAWPlugin/airwindows-consolidated-macOS-2026-10-24-dcf98a3.dmg",
+          "sha256": "92538298316b0ea97a98729e12f96b26b027e60ebe65a39e6126440380f8b782",
+          "bytes": 49332978
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "clap",
+          "url": "https://www.airwindows.com/consolidated/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "au",
+          "url": "https://www.airwindows.com/consolidated/"
+        },
+        {
+          "kind": "github_release",
+          "platform": "windows-x86_64",
+          "format": "vst3",
+          "archive": "installer",
+          "url": "https://github.com/baconpaul/airwin2rack/releases/download/DAWPlugin/AirwindowsConsolidated-2026-10-24-dcf98a3-Windows-64bit-setup.exe",
+          "sha256": "ec5fb0cdf30a328e41b96e85a6dd6ffb1ef53798f54e7efd50b0ac75f64304da",
+          "bytes": 10925041
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "windows-x86_64",
+          "format": "clap",
+          "url": "https://www.airwindows.com/consolidated/"
+        },
+        {
+          "kind": "github_release",
+          "platform": "linux-x86_64",
+          "format": "vst3",
+          "archive": "zip",
+          "url": "https://github.com/baconpaul/airwin2rack/releases/download/DAWPlugin/AirwindowsConsolidated-2026-10-24-dcf98a3-Linux.zip",
+          "sha256": "740297c0d34dc255d8780ad62509d054f3ff0480aac43f90071465fd23c53be4",
+          "bytes": 32627944
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "linux-x86_64",
+          "format": "clap",
+          "url": "https://www.airwindows.com/consolidated/"
+        }
+      ]
+    },
+    {
+      "id": "sfztools.sfizz",
+      "name": "sfizz",
+      "vendor": "SFZTools",
+      "homepage": "https://sfz.tools/sfizz/",
+      "license": "BSD-2-Clause",
+      "tags": [
+        "sampler",
+        "open-source"
+      ],
+      "description": "sfizz is a sample-based musical synthesizer.",
+      "aliases": [
+        "sfizz"
+      ],
+      "installs": [
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "vst3",
+          "url": "https://sfz.tools/sfizz/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "au",
+          "url": "https://sfz.tools/sfizz/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "standalone",
+          "url": "https://sfz.tools/sfizz/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "vst3",
+          "url": "https://sfz.tools/sfizz/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "au",
+          "url": "https://sfz.tools/sfizz/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "standalone",
+          "url": "https://sfz.tools/sfizz/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "windows-x86_64",
+          "format": "vst3",
+          "url": "https://sfz.tools/sfizz/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "windows-x86_64",
+          "format": "standalone",
+          "url": "https://sfz.tools/sfizz/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "linux-x86_64",
+          "format": "vst3",
+          "url": "https://sfz.tools/sfizz/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "linux-x86_64",
+          "format": "standalone",
+          "url": "https://sfz.tools/sfizz/"
+        }
+      ]
+    },
+    {
+      "id": "decent-samples.decent-sampler",
+      "name": "Decent Sampler",
+      "vendor": "Decent Samples",
+      "homepage": "https://www.decentsamples.com/product/decent-sampler-plugin/",
+      "license": "Freeware",
+      "tags": [
+        "sampler",
+        "freeware"
+      ],
+      "description": "A FREE sampling plugin that allows you to play samples in the Decent Sampler format.",
+      "installs": [
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "vst3",
+          "url": "https://www.decentsamples.com/product/decent-sampler-plugin/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "au",
+          "url": "https://www.decentsamples.com/product/decent-sampler-plugin/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "standalone",
+          "url": "https://www.decentsamples.com/product/decent-sampler-plugin/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "vst3",
+          "url": "https://www.decentsamples.com/product/decent-sampler-plugin/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "au",
+          "url": "https://www.decentsamples.com/product/decent-sampler-plugin/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "standalone",
+          "url": "https://www.decentsamples.com/product/decent-sampler-plugin/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "windows-x86_64",
+          "format": "vst3",
+          "url": "https://www.decentsamples.com/product/decent-sampler-plugin/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "windows-x86_64",
+          "format": "standalone",
+          "url": "https://www.decentsamples.com/product/decent-sampler-plugin/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "linux-x86_64",
+          "format": "vst3",
+          "url": "https://www.decentsamples.com/product/decent-sampler-plugin/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "linux-x86_64",
+          "format": "standalone",
+          "url": "https://www.decentsamples.com/product/decent-sampler-plugin/"
+        },
+        {
+          "kind": "direct",
+          "platform": "macos-aarch64",
+          "format": "au",
+          "archive": "zip",
+          "url": "https://cdn.decentsamples.com/production/builds/ds/1.40.1/Decent_Sampler-1.40.1-Mac.zip",
+          "sha256": "561dbb73934e444b3fff98a0786c83a0db90ed87e22035dd7c2a09ab16a67364",
+          "bytes": 67824394,
+          "wrapped": true
+        },
+        {
+          "kind": "direct",
+          "platform": "macos-x86_64",
+          "format": "au",
+          "archive": "zip",
+          "url": "https://cdn.decentsamples.com/production/builds/ds/1.40.1/Decent_Sampler-1.40.1-Mac.zip",
+          "sha256": "561dbb73934e444b3fff98a0786c83a0db90ed87e22035dd7c2a09ab16a67364",
+          "bytes": 67824394,
+          "wrapped": true
+        },
+        {
+          "kind": "direct",
+          "platform": "windows-x86_64",
+          "format": "vst3",
+          "archive": "zip",
+          "url": "https://cdn.decentsamples.com/production/builds/ds/1.40.1/Decent_Sampler-1.40.1-Windows.zip",
+          "sha256": "e994591945decf8d0082da816816ee656806f90c3728b93b183c5b6364a7c148",
+          "bytes": 49727610,
+          "wrapped": true
+        }
+      ],
+      "version": "1.40.1"
+    },
+    {
+      "id": "spitfire-audio.labs",
+      "name": "Spitfire LABS",
+      "vendor": "Spitfire Audio",
+      "homepage": "https://splice.com/instrument/labs-instrument",
+      "license": "Freeware",
+      "tags": [
+        "sampler",
+        "freeware"
+      ],
+      "description": "Free sampled instrument libraries from Spitfire Audio, released monthly.",
+      "aliases": [
+        "LABS",
+        "Spitfire LABS"
+      ],
+      "installs": [
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "vst3",
+          "url": "https://splice.com/instrument/labs-instrument"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "au",
+          "url": "https://splice.com/instrument/labs-instrument"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "vst3",
+          "url": "https://splice.com/instrument/labs-instrument"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "au",
+          "url": "https://splice.com/instrument/labs-instrument"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "windows-x86_64",
+          "format": "vst3",
+          "url": "https://splice.com/instrument/labs-instrument"
+        }
+      ]
+    },
+    {
+      "id": "valhalla-dsp.supermassive",
+      "name": "Valhalla Supermassive",
+      "vendor": "Valhalla DSP",
+      "homepage": "https://valhalladsp.com/shop/reverb/valhalla-supermassive/",
+      "license": "Freeware",
+      "tags": [
+        "reverb",
+        "freeware"
+      ],
+      "description": "ValhallaSupermassive has been designed from the ground up for MASSIVE delays and reverbs.",
+      "aliases": [
+        "ValhallaSupermassive",
+        "Valhalla Supermassive"
+      ],
+      "installs": [
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "vst3",
+          "url": "https://valhalladsp.com/shop/reverb/valhalla-supermassive/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "au",
+          "url": "https://valhalladsp.com/shop/reverb/valhalla-supermassive/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "vst3",
+          "url": "https://valhalladsp.com/shop/reverb/valhalla-supermassive/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "au",
+          "url": "https://valhalladsp.com/shop/reverb/valhalla-supermassive/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "windows-x86_64",
+          "format": "vst3",
+          "url": "https://valhalladsp.com/shop/reverb/valhalla-supermassive/"
+        }
+      ]
+    },
+    {
+      "id": "tal-software.tal-reverb-4",
+      "name": "TAL-Reverb-4",
+      "vendor": "TAL Software",
+      "homepage": "https://tal-software.com/products/tal-reverb-4",
+      "license": "Freeware",
+      "tags": [
+        "reverb",
+        "freeware"
+      ],
+      "description": "TAL-Reverb-4 is a high quality plate reverb with a vintage 80's character.",
+      "installs": [
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "vst3",
+          "url": "https://tal-software.com/products/tal-reverb-4"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "clap",
+          "url": "https://tal-software.com/products/tal-reverb-4"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "au",
+          "url": "https://tal-software.com/products/tal-reverb-4"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "vst3",
+          "url": "https://tal-software.com/products/tal-reverb-4"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "clap",
+          "url": "https://tal-software.com/products/tal-reverb-4"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "au",
+          "url": "https://tal-software.com/products/tal-reverb-4"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "windows-x86_64",
+          "format": "vst3",
+          "url": "https://tal-software.com/products/tal-reverb-4"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "windows-x86_64",
+          "format": "clap",
+          "url": "https://tal-software.com/products/tal-reverb-4"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "linux-x86_64",
+          "format": "vst3",
+          "url": "https://tal-software.com/products/tal-reverb-4"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "linux-x86_64",
+          "format": "clap",
+          "url": "https://tal-software.com/products/tal-reverb-4"
+        }
+      ]
+    },
+    {
+      "id": "tal-software.tal-chorus-lx",
+      "name": "TAL-Chorus-LX",
+      "vendor": "TAL Software",
+      "homepage": "https://tal-software.com/products/tal-chorus-lx",
+      "license": "Freeware",
+      "tags": [
+        "delay",
+        "freeware"
+      ],
+      "description": "TAL-Chorus-LX is a vintage chorus effect that emulates the Juno 60 chorus.",
+      "installs": [
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "vst3",
+          "url": "https://tal-software.com/products/tal-chorus-lx"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "clap",
+          "url": "https://tal-software.com/products/tal-chorus-lx"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "au",
+          "url": "https://tal-software.com/products/tal-chorus-lx"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "vst3",
+          "url": "https://tal-software.com/products/tal-chorus-lx"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "clap",
+          "url": "https://tal-software.com/products/tal-chorus-lx"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "au",
+          "url": "https://tal-software.com/products/tal-chorus-lx"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "windows-x86_64",
+          "format": "vst3",
+          "url": "https://tal-software.com/products/tal-chorus-lx"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "windows-x86_64",
+          "format": "clap",
+          "url": "https://tal-software.com/products/tal-chorus-lx"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "linux-x86_64",
+          "format": "vst3",
+          "url": "https://tal-software.com/products/tal-chorus-lx"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "linux-x86_64",
+          "format": "clap",
+          "url": "https://tal-software.com/products/tal-chorus-lx"
+        }
+      ]
+    },
+    {
+      "id": "tokyo-dawn.tdr-nova",
+      "name": "TDR Nova",
+      "vendor": "Tokyo Dawn Records",
+      "homepage": "https://www.tokyodawn.net/tdr-nova/",
+      "license": "Freeware",
+      "tags": [
+        "eq",
+        "freeware"
+      ],
+      "description": "NOVA is a parallel dynamic equalizer.",
+      "installs": [
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "vst3",
+          "url": "https://www.tokyodawn.net/tdr-nova/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "au",
+          "url": "https://www.tokyodawn.net/tdr-nova/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "vst3",
+          "url": "https://www.tokyodawn.net/tdr-nova/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "au",
+          "url": "https://www.tokyodawn.net/tdr-nova/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "windows-x86_64",
+          "format": "vst3",
+          "url": "https://www.tokyodawn.net/tdr-nova/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "linux-x86_64",
+          "format": "vst3",
+          "url": "https://www.tokyodawn.net/tdr-nova/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "vst2",
+          "url": "https://www.tokyodawn.net/tdr-nova/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "vst2",
+          "url": "https://www.tokyodawn.net/tdr-nova/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "windows-x86_64",
+          "format": "vst2",
+          "url": "https://www.tokyodawn.net/tdr-nova/"
+        }
+      ]
+    },
+    {
+      "id": "tokyo-dawn.tdr-kotelnikov",
+      "name": "TDR Kotelnikov",
+      "vendor": "Tokyo Dawn Records",
+      "homepage": "https://www.tokyodawn.net/tdr-kotelnikov/",
+      "license": "Freeware",
+      "tags": [
+        "compressor",
+        "freeware"
+      ],
+      "description": "TDR Kotelnikov is a wideband dynamics processor combining high fidelity dynamic range control with deep musical flexibility.",
+      "installs": [
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "vst3",
+          "url": "https://www.tokyodawn.net/tdr-kotelnikov/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "au",
+          "url": "https://www.tokyodawn.net/tdr-kotelnikov/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "vst3",
+          "url": "https://www.tokyodawn.net/tdr-kotelnikov/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "au",
+          "url": "https://www.tokyodawn.net/tdr-kotelnikov/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "windows-x86_64",
+          "format": "vst3",
+          "url": "https://www.tokyodawn.net/tdr-kotelnikov/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "linux-x86_64",
+          "format": "vst3",
+          "url": "https://www.tokyodawn.net/tdr-kotelnikov/"
+        }
+      ]
+    },
+    {
+      "id": "youlean.loudness-meter-2",
+      "name": "Youlean Loudness Meter 2",
+      "vendor": "Youlean",
+      "homepage": "https://youlean.co/youlean-loudness-meter/",
+      "license": "Freeware",
+      "tags": [
+        "metering",
+        "freemium"
+      ],
+      "description": "Youlean Loudness Meter helps you find the true perceived loudness of your audio and prepares it for TV or streaming services release.",
+      "aliases": [
+        "Youlean Loudness Meter 2",
+        "Youlean Loudness Meter"
+      ],
+      "installs": [
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "vst3",
+          "url": "https://youlean.co/youlean-loudness-meter/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "au",
+          "url": "https://youlean.co/youlean-loudness-meter/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "standalone",
+          "url": "https://youlean.co/youlean-loudness-meter/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "vst3",
+          "url": "https://youlean.co/youlean-loudness-meter/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "au",
+          "url": "https://youlean.co/youlean-loudness-meter/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "standalone",
+          "url": "https://youlean.co/youlean-loudness-meter/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "windows-x86_64",
+          "format": "vst3",
+          "url": "https://youlean.co/youlean-loudness-meter/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "windows-x86_64",
+          "format": "standalone",
+          "url": "https://youlean.co/youlean-loudness-meter/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "vst2",
+          "url": "https://youlean.co/youlean-loudness-meter/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "vst2",
+          "url": "https://youlean.co/youlean-loudness-meter/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "windows-x86_64",
+          "format": "vst2",
+          "url": "https://youlean.co/youlean-loudness-meter/"
+        }
+      ]
+    },
+    {
+      "id": "voxengo.span",
+      "name": "Voxengo SPAN",
+      "vendor": "Voxengo",
+      "homepage": "https://www.voxengo.com/product/span/",
+      "license": "Freeware",
+      "tags": [
+        "metering",
+        "freeware"
+      ],
+      "description": "SPAN is a free real-time \u201cfast Fourier transform\u201d (FFT) audio frequency spectrum analyzer.",
+      "aliases": [
+        "Voxengo SPAN",
+        "SPAN"
+      ],
+      "installs": [
+        {
+          "kind": "direct",
+          "platform": "macos-aarch64",
+          "format": "vst3",
+          "archive": "dmg",
+          "url": "https://www.voxengo.com/files/VoxengoSPAN_324_Mac_AU_AAX_VST_setup.dmg",
+          "sha256": "82685deeac6060b72621516c7e524730345f06942ace2e32324cacd55f41c476",
+          "bytes": 36089508
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "au",
+          "url": "https://www.voxengo.com/product/span/"
+        },
+        {
+          "kind": "direct",
+          "platform": "macos-x86_64",
+          "format": "vst3",
+          "archive": "dmg",
+          "url": "https://www.voxengo.com/files/VoxengoSPAN_324_Mac_AU_AAX_VST_setup.dmg",
+          "sha256": "82685deeac6060b72621516c7e524730345f06942ace2e32324cacd55f41c476",
+          "bytes": 36089508
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "au",
+          "url": "https://www.voxengo.com/product/span/"
+        },
+        {
+          "kind": "direct",
+          "platform": "windows-x86_64",
+          "format": "vst3",
+          "archive": "installer",
+          "url": "https://www.voxengo.com/files/VoxengoSPAN_324_Win32_64_VST_VST3_AAX_setup.exe",
+          "sha256": "dc62221a8f0784165ae0ff1482c6a96f9911b5dc9e6afeada67b3d46f4385ec2",
+          "bytes": 9278200
+        },
+        {
+          "kind": "direct",
+          "platform": "macos-aarch64",
+          "format": "vst2",
+          "archive": "dmg",
+          "url": "https://www.voxengo.com/files/VoxengoSPAN_324_Mac_AU_AAX_VST_setup.dmg",
+          "sha256": "82685deeac6060b72621516c7e524730345f06942ace2e32324cacd55f41c476",
+          "bytes": 36089508
+        },
+        {
+          "kind": "direct",
+          "platform": "macos-x86_64",
+          "format": "vst2",
+          "archive": "dmg",
+          "url": "https://www.voxengo.com/files/VoxengoSPAN_324_Mac_AU_AAX_VST_setup.dmg",
+          "sha256": "82685deeac6060b72621516c7e524730345f06942ace2e32324cacd55f41c476",
+          "bytes": 36089508
+        },
+        {
+          "kind": "direct",
+          "platform": "windows-x86_64",
+          "format": "vst2",
+          "archive": "installer",
+          "url": "https://www.voxengo.com/files/VoxengoSPAN_324_Win32_64_VST_VST3_AAX_setup.exe",
+          "sha256": "dc62221a8f0784165ae0ff1482c6a96f9911b5dc9e6afeada67b3d46f4385ec2",
+          "bytes": 9278200
+        }
+      ]
+    },
+    {
+      "id": "melda.mfreefxbundle",
+      "name": "Melda MFreeFXBundle",
+      "vendor": "MeldaProduction",
+      "homepage": "https://www.meldaproduction.com/MFreeFXBundle",
+      "license": "Freeware",
+      "tags": [
+        "utility",
+        "freeware"
+      ],
+      "description": "MFreeFXBundle contains a set of audio effects, which are completely free.",
+      "aliases": [
+        "MFreeFXBundle",
+        "Melda MFreeFXBundle"
+      ],
+      "installs": [
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "vst3",
+          "url": "https://www.meldaproduction.com/MFreeFXBundle"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "au",
+          "url": "https://www.meldaproduction.com/MFreeFXBundle"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "vst3",
+          "url": "https://www.meldaproduction.com/MFreeFXBundle"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "au",
+          "url": "https://www.meldaproduction.com/MFreeFXBundle"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "windows-x86_64",
+          "format": "vst3",
+          "url": "https://www.meldaproduction.com/MFreeFXBundle"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "vst2",
+          "url": "https://www.meldaproduction.com/MFreeFXBundle"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "vst2",
+          "url": "https://www.meldaproduction.com/MFreeFXBundle"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "windows-x86_64",
+          "format": "vst2",
+          "url": "https://www.meldaproduction.com/MFreeFXBundle"
+        }
+      ]
+    },
+    {
+      "id": "auburn-sounds.graillon",
+      "name": "Graillon",
+      "vendor": "Auburn Sounds",
+      "homepage": "https://www.auburnsounds.com/products/Graillon.html",
+      "license": "Freeware",
+      "tags": [
+        "vocal",
+        "freemium"
+      ],
+      "description": "GRAILLON 3 is an enhanced pitch correction tool.",
+      "aliases": [
+        "Graillon 2",
+        "Graillon 3",
+        "Graillon"
+      ],
+      "installs": [
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "vst3",
+          "url": "https://www.auburnsounds.com/products/Graillon.html"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "au",
+          "url": "https://www.auburnsounds.com/products/Graillon.html"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "vst3",
+          "url": "https://www.auburnsounds.com/products/Graillon.html"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "au",
+          "url": "https://www.auburnsounds.com/products/Graillon.html"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "windows-x86_64",
+          "format": "vst3",
+          "url": "https://www.auburnsounds.com/products/Graillon.html"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "linux-x86_64",
+          "format": "vst3",
+          "url": "https://www.auburnsounds.com/products/Graillon.html"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "vst2",
+          "url": "https://www.auburnsounds.com/products/Graillon.html"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "vst2",
+          "url": "https://www.auburnsounds.com/products/Graillon.html"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "windows-x86_64",
+          "format": "vst2",
+          "url": "https://www.auburnsounds.com/products/Graillon.html"
+        }
+      ]
+    },
+    {
+      "id": "melda.mautopitch",
+      "name": "MAutoPitch",
+      "vendor": "MeldaProduction",
+      "homepage": "https://www.meldaproduction.com/MAutoPitch",
+      "license": "Freeware",
+      "tags": [
+        "vocal",
+        "freeware"
+      ],
+      "description": "MAutoPitch is a simple but great sounding automatic tuning and pitch correction plugin designed for vocals and other monophonic instruments.",
+      "installs": [
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "vst3",
+          "url": "https://www.meldaproduction.com/MAutoPitch"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "au",
+          "url": "https://www.meldaproduction.com/MAutoPitch"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "vst3",
+          "url": "https://www.meldaproduction.com/MAutoPitch"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "au",
+          "url": "https://www.meldaproduction.com/MAutoPitch"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "windows-x86_64",
+          "format": "vst3",
+          "url": "https://www.meldaproduction.com/MAutoPitch"
+        }
+      ]
+    },
+    {
+      "id": "tal-software.tal-vocoder",
+      "name": "TAL Vocoder",
+      "vendor": "TAL Software",
+      "homepage": "https://tal-software.com/products",
+      "license": "Freeware",
+      "tags": [
+        "vocal",
+        "freeware"
+      ],
+      "description": "Classic vocoder that imposes an external modulator's spectrum on a carrier.",
+      "installs": [
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "vst3",
+          "url": "https://tal-software.com/products"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "clap",
+          "url": "https://tal-software.com/products"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "au",
+          "url": "https://tal-software.com/products"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "vst3",
+          "url": "https://tal-software.com/products"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "clap",
+          "url": "https://tal-software.com/products"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "au",
+          "url": "https://tal-software.com/products"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "windows-x86_64",
+          "format": "vst3",
+          "url": "https://tal-software.com/products"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "windows-x86_64",
+          "format": "clap",
+          "url": "https://tal-software.com/products"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "linux-x86_64",
+          "format": "vst3",
+          "url": "https://tal-software.com/products"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "linux-x86_64",
+          "format": "clap",
+          "url": "https://tal-software.com/products"
+        }
+      ]
+    },
+    {
+      "id": "distrho.cardinal",
+      "name": "Cardinal",
+      "vendor": "DISTRHO",
+      "homepage": "https://github.com/DISTRHO/Cardinal",
+      "license": "GPL-3.0",
+      "tags": [
+        "synth",
+        "open-source"
+      ],
+      "description": "Cardinal is a free and open-source virtual modular synthesizer plugin.",
+      "installs": [
+        {
+          "kind": "github_release",
+          "platform": "macos-aarch64",
+          "format": "vst3",
+          "archive": "pkg",
+          "url": "https://github.com/DISTRHO/Cardinal/releases/download/26.02/Cardinal-macOS-universal-26.02.pkg"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "clap",
+          "url": "https://github.com/DISTRHO/Cardinal"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "au",
+          "url": "https://github.com/DISTRHO/Cardinal"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "standalone",
+          "url": "https://github.com/DISTRHO/Cardinal"
+        },
+        {
+          "kind": "github_release",
+          "platform": "macos-x86_64",
+          "format": "vst3",
+          "archive": "pkg",
+          "url": "https://github.com/DISTRHO/Cardinal/releases/download/26.02/Cardinal-macOS-universal-26.02.pkg"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "clap",
+          "url": "https://github.com/DISTRHO/Cardinal"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "au",
+          "url": "https://github.com/DISTRHO/Cardinal"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "standalone",
+          "url": "https://github.com/DISTRHO/Cardinal"
+        },
+        {
+          "kind": "github_release",
+          "platform": "windows-x86_64",
+          "format": "vst3",
+          "archive": "installer",
+          "url": "https://github.com/DISTRHO/Cardinal/releases/download/26.02/Cardinal-win64-26.02-installer.exe",
+          "sha256": "16f21250fe656fc766f6c1df79c45244bbdf55ffa90ff0c3c3ace9af70cf3e24",
+          "bytes": 368923667
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "windows-x86_64",
+          "format": "clap",
+          "url": "https://github.com/DISTRHO/Cardinal"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "windows-x86_64",
+          "format": "standalone",
+          "url": "https://github.com/DISTRHO/Cardinal"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "linux-x86_64",
+          "format": "vst3",
+          "url": "https://github.com/DISTRHO/Cardinal"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "linux-x86_64",
+          "format": "clap",
+          "url": "https://github.com/DISTRHO/Cardinal"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "linux-x86_64",
+          "format": "standalone",
+          "url": "https://github.com/DISTRHO/Cardinal"
+        }
+      ]
+    },
+    {
+      "id": "chowdsp.chowtape-model",
+      "name": "ChowTapeModel",
+      "vendor": "Chowdhury DSP",
+      "homepage": "https://chowdsp.com/products.html",
+      "license": "GPL-3.0",
+      "tags": [
+        "saturation",
+        "open-source"
+      ],
+      "description": "Chow Tape Model is a digital emulation of a reel-to-reel analog tape machine.",
+      "aliases": [
+        "ChowTapeModel",
+        "Chow Tape Model"
+      ],
+      "installs": [
+        {
+          "kind": "github_release",
+          "platform": "macos-aarch64",
+          "format": "vst3",
+          "archive": "dmg",
+          "url": "https://github.com/jatinchowdhury18/AnalogTapeModel/releases/download/v2.11.4/ChowTapeModel-Mac-2.11.4.dmg",
+          "sha256": "9b37e2b6cb6c0a839ee9c65e1a958834ca647b3edfc4bd144115c483b4d64f82",
+          "bytes": 28745196
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "clap",
+          "url": "https://chowdsp.com/products.html"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "au",
+          "url": "https://chowdsp.com/products.html"
+        },
+        {
+          "kind": "github_release",
+          "platform": "macos-x86_64",
+          "format": "vst3",
+          "archive": "dmg",
+          "url": "https://github.com/jatinchowdhury18/AnalogTapeModel/releases/download/v2.11.4/ChowTapeModel-Mac-2.11.4.dmg",
+          "sha256": "9b37e2b6cb6c0a839ee9c65e1a958834ca647b3edfc4bd144115c483b4d64f82",
+          "bytes": 28745196
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "clap",
+          "url": "https://chowdsp.com/products.html"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "au",
+          "url": "https://chowdsp.com/products.html"
+        },
+        {
+          "kind": "github_release",
+          "platform": "windows-x86_64",
+          "format": "vst3",
+          "archive": "installer",
+          "url": "https://github.com/jatinchowdhury18/AnalogTapeModel/releases/download/v2.11.4/ChowTapeModel-Win-64bit-2.11.4.exe",
+          "sha256": "8ba6e91196067244837877d9ca4a8e4a1f5bfad60cf33fa699c8a5b41f1211bf",
+          "bytes": 10646528
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "windows-x86_64",
+          "format": "clap",
+          "url": "https://chowdsp.com/products.html"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "linux-x86_64",
+          "format": "vst3",
+          "url": "https://chowdsp.com/products.html"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "linux-x86_64",
+          "format": "clap",
+          "url": "https://chowdsp.com/products.html"
+        }
+      ]
+    },
+    {
+      "id": "asb2m10.dexed",
+      "name": "Dexed",
+      "vendor": "asb2m10",
+      "homepage": "https://asb2m10.github.io/dexed/",
+      "license": "GPL-3.0",
+      "tags": [
+        "synth",
+        "open-source"
+      ],
+      "description": "Dexed is a multi platform, multi format plugin synth that is closely modeled on the Yamaha DX7.",
+      "installs": [
+        {
+          "kind": "github_release",
+          "platform": "macos-aarch64",
+          "format": "vst3",
+          "archive": "zip",
+          "url": "https://github.com/asb2m10/dexed/releases/download/v1.0.1/Dexed-1.0.1-macOS.zip",
+          "sha256": "4269448bc1312424cafd29aff615d891bc5905ebfc54b42ce70c56b9b10dc401",
+          "bytes": 16939688
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "clap",
+          "url": "https://asb2m10.github.io/dexed/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "au",
+          "url": "https://asb2m10.github.io/dexed/"
+        },
+        {
+          "kind": "github_release",
+          "platform": "macos-x86_64",
+          "format": "vst3",
+          "archive": "zip",
+          "url": "https://github.com/asb2m10/dexed/releases/download/v1.0.1/Dexed-1.0.1-macOS.zip",
+          "sha256": "4269448bc1312424cafd29aff615d891bc5905ebfc54b42ce70c56b9b10dc401",
+          "bytes": 16939688
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "clap",
+          "url": "https://asb2m10.github.io/dexed/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "au",
+          "url": "https://asb2m10.github.io/dexed/"
+        },
+        {
+          "kind": "github_release",
+          "platform": "windows-x86_64",
+          "format": "vst3",
+          "archive": "zip",
+          "url": "https://github.com/asb2m10/dexed/releases/download/v1.0.1/Dexed-1.0.1-win.zip",
+          "sha256": "1f118445f2c5c411636bb41ddf8b456db09af74cd38f9ede8a93a01020505f05",
+          "bytes": 9742538
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "windows-x86_64",
+          "format": "clap",
+          "url": "https://asb2m10.github.io/dexed/"
+        },
+        {
+          "kind": "github_release",
+          "platform": "linux-x86_64",
+          "format": "vst3",
+          "archive": "zip",
+          "url": "https://github.com/asb2m10/dexed/releases/download/v1.0.1/Dexed-1.0.1-lnx.zip",
+          "sha256": "2bac3d0c4237e8c22c4274b6d5b59fe6329fcae72864f81b5830393eff354fc1",
+          "bytes": 7725160
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "linux-x86_64",
+          "format": "clap",
+          "url": "https://asb2m10.github.io/dexed/"
+        }
+      ]
+    },
+    {
+      "id": "matt-tytel.helm",
+      "name": "Helm",
+      "vendor": "Matt Tytel",
+      "homepage": "https://tytel.org/helm/",
+      "license": "GPL-3.0",
+      "tags": [
+        "synth",
+        "open-source"
+      ],
+      "description": "Helm runs in GNU/Linux, Mac OSX and Windows.",
+      "installs": [
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "vst3",
+          "url": "https://tytel.org/helm/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "au",
+          "url": "https://tytel.org/helm/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "standalone",
+          "url": "https://tytel.org/helm/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "vst3",
+          "url": "https://tytel.org/helm/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "au",
+          "url": "https://tytel.org/helm/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "standalone",
+          "url": "https://tytel.org/helm/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "windows-x86_64",
+          "format": "vst3",
+          "url": "https://tytel.org/helm/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "windows-x86_64",
+          "format": "standalone",
+          "url": "https://tytel.org/helm/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "linux-x86_64",
+          "format": "vst3",
+          "url": "https://tytel.org/helm/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "linux-x86_64",
+          "format": "standalone",
+          "url": "https://tytel.org/helm/"
+        }
+      ]
+    },
+    {
+      "id": "discodsp.ob-xd",
+      "name": "OB-Xd",
+      "vendor": "discoDSP",
+      "homepage": "https://www.discodsp.com/obxd/",
+      "license": "Freeware",
+      "tags": [
+        "synth",
+        "open-source"
+      ],
+      "description": "OB-Xd 3 is an emulation of the Oberheim OB-X with the limits of the 1979 hardware taken off.",
+      "installs": [
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "vst3",
+          "url": "https://www.discodsp.com/obxd/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "au",
+          "url": "https://www.discodsp.com/obxd/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "standalone",
+          "url": "https://www.discodsp.com/obxd/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "vst3",
+          "url": "https://www.discodsp.com/obxd/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "au",
+          "url": "https://www.discodsp.com/obxd/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "standalone",
+          "url": "https://www.discodsp.com/obxd/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "windows-x86_64",
+          "format": "vst3",
+          "url": "https://www.discodsp.com/obxd/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "windows-x86_64",
+          "format": "standalone",
+          "url": "https://www.discodsp.com/obxd/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "linux-x86_64",
+          "format": "vst3",
+          "url": "https://www.discodsp.com/obxd/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "linux-x86_64",
+          "format": "standalone",
+          "url": "https://www.discodsp.com/obxd/"
+        },
+        {
+          "kind": "direct",
+          "platform": "linux-x86_64",
+          "format": "lv2",
+          "archive": "installer",
+          "url": "https://github.com/reales/OB-Xd/releases/download/v2.20/Obxd220.deb",
+          "plugin_id": "https://www.discodsp.com/obxd/",
+          "bytes": 31478530,
+          "sha256": "f934966008503217a38f5133107bb4712d5d7ac792137c01e771422b3270c27e"
+        }
+      ]
+    },
+    {
+      "id": "u-he.zebralette",
+      "name": "Zebralette",
+      "vendor": "u-he",
+      "homepage": "https://u-he.com/products/zebralette/",
+      "license": "Freeware",
+      "tags": [
+        "synth",
+        "freeware"
+      ],
+      "description": "Free single-oscillator cut-down of Zebra with the full wavetable editor.",
+      "installs": [
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "vst3",
+          "url": "https://u-he.com/products/zebralette/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "au",
+          "url": "https://u-he.com/products/zebralette/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "vst3",
+          "url": "https://u-he.com/products/zebralette/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "au",
+          "url": "https://u-he.com/products/zebralette/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "windows-x86_64",
+          "format": "vst3",
+          "url": "https://u-he.com/products/zebralette/"
+        }
+      ]
+    },
+    {
+      "id": "u-he.podolski",
+      "name": "Podolski",
+      "vendor": "u-he",
+      "homepage": "https://u-he.com/products/podolski/",
+      "license": "Freeware",
+      "tags": [
+        "synth",
+        "freeware"
+      ],
+      "description": "Free single-oscillator analogue-style synth from u-he.",
+      "installs": [
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "vst3",
+          "url": "https://u-he.com/products/podolski/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "au",
+          "url": "https://u-he.com/products/podolski/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "vst3",
+          "url": "https://u-he.com/products/podolski/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "au",
+          "url": "https://u-he.com/products/podolski/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "windows-x86_64",
+          "format": "vst3",
+          "url": "https://u-he.com/products/podolski/"
+        },
+        {
+          "kind": "direct",
+          "platform": "macos-aarch64",
+          "format": "au",
+          "archive": "zip",
+          "url": "https://dl.u-he.com/releases/Podolski_123_12092_Mac.zip",
+          "sha256": "b3477dbd7306d733303bb3656798e8dbff2876cebc5057dd25bf05ae7162baa4",
+          "bytes": 53040979,
+          "wrapped": true
+        },
+        {
+          "kind": "direct",
+          "platform": "macos-x86_64",
+          "format": "au",
+          "archive": "zip",
+          "url": "https://dl.u-he.com/releases/Podolski_123_12092_Mac.zip",
+          "sha256": "b3477dbd7306d733303bb3656798e8dbff2876cebc5057dd25bf05ae7162baa4",
+          "bytes": 53040979,
+          "wrapped": true
+        },
+        {
+          "kind": "direct",
+          "platform": "windows-x86_64",
+          "format": "vst3",
+          "archive": "zip",
+          "url": "https://dl.u-he.com/releases/Podolski_123_12092_Win.zip",
+          "sha256": "d0ef1c3ee15a4377c4664114af08bd4cf1a7d2b7cbe504c8d5f4ff1df784c83a",
+          "bytes": 36535299,
+          "wrapped": true
+        }
+      ],
+      "version": "1.2.3"
+    },
+    {
+      "id": "u-he.tyrelln6",
+      "name": "TyrellN6",
+      "vendor": "u-he",
+      "homepage": "https://u-he.com/products/tyrelln6/",
+      "license": "Freeware",
+      "tags": [
+        "synth",
+        "freeware"
+      ],
+      "description": "Free 6-voice analogue-style polysynth from u-he and Amazona.de.",
+      "installs": [
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "vst3",
+          "url": "https://u-he.com/products/tyrelln6/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "au",
+          "url": "https://u-he.com/products/tyrelln6/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "vst3",
+          "url": "https://u-he.com/products/tyrelln6/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "au",
+          "url": "https://u-he.com/products/tyrelln6/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "windows-x86_64",
+          "format": "vst3",
+          "url": "https://u-he.com/products/tyrelln6/"
+        },
+        {
+          "kind": "direct",
+          "platform": "macos-aarch64",
+          "format": "au",
+          "archive": "zip",
+          "url": "https://dl.u-he.com/releases/TyrellN6_300_public_beta_16976_Mac.zip",
+          "sha256": "582b73c740daf309d6b4a6b64a7fe742b4b592c11f1de8165710226a8172b1ad",
+          "bytes": 50052935,
+          "wrapped": true
+        },
+        {
+          "kind": "direct",
+          "platform": "macos-x86_64",
+          "format": "au",
+          "archive": "zip",
+          "url": "https://dl.u-he.com/releases/TyrellN6_300_public_beta_16976_Mac.zip",
+          "sha256": "582b73c740daf309d6b4a6b64a7fe742b4b592c11f1de8165710226a8172b1ad",
+          "bytes": 50052935,
+          "wrapped": true
+        },
+        {
+          "kind": "direct",
+          "platform": "windows-x86_64",
+          "format": "vst3",
+          "archive": "zip",
+          "url": "https://dl.u-he.com/releases/TyrellN6_300_public_beta_16976_Win.zip",
+          "sha256": "5a00b934f95da95ce03ff2c982367d727183101df910de1ef78af8500f9a6e5a",
+          "bytes": 13044426,
+          "wrapped": true
+        }
+      ],
+      "version": "3.0"
+    },
+    {
+      "id": "u-he.triple-cheese",
+      "name": "Triple Cheese",
+      "vendor": "u-he",
+      "homepage": "https://u-he.com/products/triplecheese/",
+      "license": "Freeware",
+      "tags": [
+        "synth",
+        "freeware"
+      ],
+      "description": "Free comb-filter synth that replaces the oscillators with three tuned combs.",
+      "installs": [
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "vst3",
+          "url": "https://u-he.com/products/triplecheese/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "au",
+          "url": "https://u-he.com/products/triplecheese/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "vst3",
+          "url": "https://u-he.com/products/triplecheese/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "au",
+          "url": "https://u-he.com/products/triplecheese/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "windows-x86_64",
+          "format": "vst3",
+          "url": "https://u-he.com/products/triplecheese/"
+        },
+        {
+          "kind": "direct",
+          "platform": "macos-aarch64",
+          "format": "au",
+          "archive": "zip",
+          "url": "https://dl.u-he.com/releases/TripleCheese_13_12092_Mac.zip",
+          "sha256": "9542262570317927d9914aa45086ae37eae3c4b96f2f00cfd67cef9513d7b353",
+          "bytes": 29870856,
+          "wrapped": true
+        },
+        {
+          "kind": "direct",
+          "platform": "macos-x86_64",
+          "format": "au",
+          "archive": "zip",
+          "url": "https://dl.u-he.com/releases/TripleCheese_13_12092_Mac.zip",
+          "sha256": "9542262570317927d9914aa45086ae37eae3c4b96f2f00cfd67cef9513d7b353",
+          "bytes": 29870856,
+          "wrapped": true
+        },
+        {
+          "kind": "direct",
+          "platform": "windows-x86_64",
+          "format": "vst3",
+          "archive": "zip",
+          "url": "https://dl.u-he.com/releases/TripleCheese_13_12092_Win.zip",
+          "sha256": "49247fe63f35b4a046590f84b4d9021d794a32f3293932c1e62675fa0a291a02",
+          "bytes": 13581969,
+          "wrapped": true
+        }
+      ],
+      "version": "1.3"
+    },
+    {
+      "id": "kilohearts.essentials",
+      "name": "Kilohearts Essentials",
+      "vendor": "Kilohearts",
+      "homepage": "https://kilohearts.com/products/kilohearts_essentials",
+      "license": "Freeware",
+      "tags": [
+        "utility",
+        "freeware"
+      ],
+      "description": "Kilohearts Essentials is a free collection of extremely useful effects which can be used as regular plugins in your DAW or loaded as Snapins in any Kilohearts Snapin Host.",
+      "installs": [
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "vst3",
+          "url": "https://kilohearts.com/products/kilohearts_essentials"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "au",
+          "url": "https://kilohearts.com/products/kilohearts_essentials"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "vst3",
+          "url": "https://kilohearts.com/products/kilohearts_essentials"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "au",
+          "url": "https://kilohearts.com/products/kilohearts_essentials"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "windows-x86_64",
+          "format": "vst3",
+          "url": "https://kilohearts.com/products/kilohearts_essentials"
+        }
+      ]
+    },
+    {
+      "id": "analog-obsession.analog-obsession",
+      "name": "Analog Obsession",
+      "vendor": "Analog Obsession",
+      "homepage": "https://analogobsession.com/",
+      "license": "Freeware",
+      "tags": [
+        "saturation",
+        "freeware"
+      ],
+      "description": "Plug-Ins (AAX/VST/AU) for all major digital audio workstations (DAW).",
+      "installs": [
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "vst3",
+          "url": "https://analogobsession.com/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "au",
+          "url": "https://analogobsession.com/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "vst3",
+          "url": "https://analogobsession.com/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "au",
+          "url": "https://analogobsession.com/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "windows-x86_64",
+          "format": "vst3",
+          "url": "https://analogobsession.com/"
+        }
+      ]
+    },
+    {
+      "id": "sonimus.soneq",
+      "name": "Sonimus SonEQ",
+      "vendor": "Sonimus",
+      "homepage": "https://sonimus.com/products/soneq/",
+      "license": "Freeware",
+      "tags": [
+        "eq",
+        "freeware"
+      ],
+      "description": "Free three-band equaliser with musical low and high shelves.",
+      "aliases": [
+        "SonEQ",
+        "SonEQ 2"
+      ],
+      "installs": [
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "vst3",
+          "url": "https://sonimus.com/products/soneq/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "au",
+          "url": "https://sonimus.com/products/soneq/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "vst3",
+          "url": "https://sonimus.com/products/soneq/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "au",
+          "url": "https://sonimus.com/products/soneq/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "windows-x86_64",
+          "format": "vst3",
+          "url": "https://sonimus.com/products/soneq/"
+        }
+      ]
+    },
+    {
+      "id": "manda-audio.mt-power-drum-kit-2",
+      "name": "MT Power Drum Kit 2",
+      "vendor": "Manda Audio",
+      "homepage": "https://www.powerdrumkit.com/",
+      "license": "Freeware",
+      "tags": [
+        "drums",
+        "freeware"
+      ],
+      "description": "The MT Power Drum Kit is a free drum sampler offering the powerful, high-quality sounds of an acoustic, realistic drum kit.",
+      "aliases": [
+        "MT Power Drum Kit 2",
+        "MT Power Drum Kit"
+      ],
+      "installs": [
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "vst3",
+          "url": "https://www.powerdrumkit.com/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "au",
+          "url": "https://www.powerdrumkit.com/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "vst3",
+          "url": "https://www.powerdrumkit.com/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "au",
+          "url": "https://www.powerdrumkit.com/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "windows-x86_64",
+          "format": "vst3",
+          "url": "https://www.powerdrumkit.com/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "linux-x86_64",
+          "format": "vst3",
+          "url": "https://www.powerdrumkit.com/"
+        }
+      ]
+    },
+    {
+      "id": "drumgizmo.drumgizmo",
+      "name": "DrumGizmo",
+      "vendor": "DrumGizmo",
+      "homepage": "https://www.drumgizmo.org/",
+      "license": "GPL-3.0",
+      "tags": [
+        "drums",
+        "open-source"
+      ],
+      "description": "Open-source multisampled drum kit player with round-robin and velocity layers.",
+      "installs": [
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "vst3",
+          "url": "https://www.drumgizmo.org/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "clap",
+          "url": "https://www.drumgizmo.org/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "standalone",
+          "url": "https://www.drumgizmo.org/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "vst3",
+          "url": "https://www.drumgizmo.org/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "clap",
+          "url": "https://www.drumgizmo.org/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "standalone",
+          "url": "https://www.drumgizmo.org/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "windows-x86_64",
+          "format": "vst3",
+          "url": "https://www.drumgizmo.org/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "windows-x86_64",
+          "format": "clap",
+          "url": "https://www.drumgizmo.org/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "windows-x86_64",
+          "format": "standalone",
+          "url": "https://www.drumgizmo.org/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "linux-x86_64",
+          "format": "vst3",
+          "url": "https://www.drumgizmo.org/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "linux-x86_64",
+          "format": "clap",
+          "url": "https://www.drumgizmo.org/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "linux-x86_64",
+          "format": "standalone",
+          "url": "https://www.drumgizmo.org/"
+        }
+      ]
+    },
+    {
+      "id": "chowdsp.chow-kick",
+      "name": "Chow Kick",
+      "vendor": "Chowdhury DSP",
+      "homepage": "https://chowdsp.com/products.html",
+      "license": "BSD-3-Clause",
+      "tags": [
+        "drums",
+        "open-source"
+      ],
+      "description": "Chow Kick is a kick drum synthesizer based on creative physical modelling of old drum machine circuits.",
+      "installs": [
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "vst3",
+          "url": "https://chowdsp.com/products.html"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "clap",
+          "url": "https://chowdsp.com/products.html"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "au",
+          "url": "https://chowdsp.com/products.html"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "vst3",
+          "url": "https://chowdsp.com/products.html"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "clap",
+          "url": "https://chowdsp.com/products.html"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "au",
+          "url": "https://chowdsp.com/products.html"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "windows-x86_64",
+          "format": "vst3",
+          "url": "https://chowdsp.com/products.html"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "windows-x86_64",
+          "format": "clap",
+          "url": "https://chowdsp.com/products.html"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "linux-x86_64",
+          "format": "vst3",
+          "url": "https://chowdsp.com/products.html"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "linux-x86_64",
+          "format": "clap",
+          "url": "https://chowdsp.com/products.html"
+        }
+      ]
+    },
+    {
+      "id": "u-he.protoverb",
+      "name": "Protoverb",
+      "vendor": "u-he",
+      "homepage": "https://u-he.com/products/protoverb/",
+      "license": "Freeware",
+      "tags": [
+        "reverb",
+        "freeware"
+      ],
+      "description": "Free experimental room reverb built from a large bank of generated models.",
+      "installs": [
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "vst3",
+          "url": "https://u-he.com/products/protoverb/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "au",
+          "url": "https://u-he.com/products/protoverb/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "vst3",
+          "url": "https://u-he.com/products/protoverb/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "au",
+          "url": "https://u-he.com/products/protoverb/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "windows-x86_64",
+          "format": "vst3",
+          "url": "https://u-he.com/products/protoverb/"
+        },
+        {
+          "kind": "direct",
+          "platform": "macos-aarch64",
+          "format": "au",
+          "archive": "zip",
+          "url": "https://dl.u-he.com/releases/Protoverb_101_12092_Mac.zip",
+          "sha256": "18d15e06620c14c41923bc59c0c61d7f4614afdd6174c399f5835c766c527eaf",
+          "bytes": 25625800,
+          "wrapped": true
+        },
+        {
+          "kind": "direct",
+          "platform": "macos-x86_64",
+          "format": "au",
+          "archive": "zip",
+          "url": "https://dl.u-he.com/releases/Protoverb_101_12092_Mac.zip",
+          "sha256": "18d15e06620c14c41923bc59c0c61d7f4614afdd6174c399f5835c766c527eaf",
+          "bytes": 25625800,
+          "wrapped": true
+        },
+        {
+          "kind": "direct",
+          "platform": "windows-x86_64",
+          "format": "vst3",
+          "archive": "zip",
+          "url": "https://dl.u-he.com/releases/Protoverb_101_12092_Win.zip",
+          "sha256": "74068b721e993251c040820fa3eaf4cdb567e882f996a461253f902924a94794",
+          "bytes": 10634011,
+          "wrapped": true
+        }
+      ],
+      "version": "1.0.1"
+    },
+    {
+      "id": "voxengo.oldskoolverb",
+      "name": "Voxengo OldSkoolVerb",
+      "vendor": "Voxengo",
+      "homepage": "https://www.voxengo.com/product/oldskoolverb/",
+      "license": "Freeware",
+      "tags": [
+        "reverb",
+        "freeware"
+      ],
+      "description": "OldSkoolVerb is a free algorithmic reverberation AAX, AudioUnit, and VST plugin.",
+      "aliases": [
+        "OldSkoolVerb"
+      ],
+      "installs": [
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "vst3",
+          "url": "https://www.voxengo.com/product/oldskoolverb/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-aarch64",
+          "format": "au",
+          "url": "https://www.voxengo.com/product/oldskoolverb/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "vst3",
+          "url": "https://www.voxengo.com/product/oldskoolverb/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "macos-x86_64",
+          "format": "au",
+          "url": "https://www.voxengo.com/product/oldskoolverb/"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "windows-x86_64",
+          "format": "vst3",
+          "url": "https://www.voxengo.com/product/oldskoolverb/"
+        },
+        {
+          "kind": "direct",
+          "platform": "macos-aarch64",
+          "format": "vst2",
+          "archive": "dmg",
+          "url": "https://www.voxengo.com/files/VoxengoOldSkoolVerb_214_Mac_AU_AAX_VST_setup.dmg",
+          "sha256": "f6ba1416e31d16d52becf8df7a602d9da22c5c015419fdada0ad8282f4ad2008",
+          "bytes": 29375793
+        },
+        {
+          "kind": "direct",
+          "platform": "macos-x86_64",
+          "format": "vst2",
+          "archive": "dmg",
+          "url": "https://www.voxengo.com/files/VoxengoOldSkoolVerb_214_Mac_AU_AAX_VST_setup.dmg",
+          "sha256": "f6ba1416e31d16d52becf8df7a602d9da22c5c015419fdada0ad8282f4ad2008",
+          "bytes": 29375793
+        },
+        {
+          "kind": "direct",
+          "platform": "windows-x86_64",
+          "format": "vst2",
+          "archive": "installer",
+          "url": "https://www.voxengo.com/files/VoxengoOldSkoolVerb_214_Win32_64_VST_VST3_AAX_setup.exe",
+          "sha256": "ff65291e30e2c38abc3b8bd89c47469f20905f6b50a7eed217f2c5c433915b30",
+          "bytes": 7509256
+        }
+      ]
+    },
+    {
+      "id": "dragonfly-reverb.dragonfly-reverb",
+      "name": "Dragonfly Reverb",
+      "vendor": "Dragonfly Reverb",
+      "homepage": "https://michaelwillis.github.io/dragonfly-reverb/",
+      "license": "GPL-3.0",
+      "tags": [
+        "reverb",
+        "open-source"
+      ],
+      "description": "A family of algorithmic reverbs with hall, plate, room and early-reflection models.",
+      "installs": [
+        {
+          "kind": "github_release",
+          "platform": "linux-x86_64",
+          "format": "vst2",
+          "archive": "installer",
+          "url": "https://github.com/michaelwillis/dragonfly-reverb/releases/download/3.2.10/dragonfly-reverb-3.2.10-linux-x86_64.tar.xz",
+          "bytes": 2267368,
+          "sha256": "59f1593120de82e31dd194e2ab1536af14fec2b3ec6ec45abf6d9c8ac02ef430"
+        },
+        {
+          "kind": "github_release",
+          "platform": "linux-x86_64",
+          "format": "lv2",
+          "archive": "installer",
+          "url": "https://github.com/michaelwillis/dragonfly-reverb/releases/download/3.2.10/dragonfly-reverb-3.2.10-linux-x86_64.tar.xz",
+          "bytes": 2267368,
+          "sha256": "59f1593120de82e31dd194e2ab1536af14fec2b3ec6ec45abf6d9c8ac02ef430"
+        },
+        {
+          "kind": "github_release",
+          "platform": "windows-x86_64",
+          "format": "vst2",
+          "archive": "zip",
+          "url": "https://github.com/michaelwillis/dragonfly-reverb/releases/download/3.2.10/dragonfly-reverb-3.2.10-win64.zip",
+          "bytes": 22447365,
+          "sha256": "ca5f35f9dcd9a33f06490d3c92f04061a1a798cb81257d5ca5851bdda0824c66"
+        },
+        {
+          "kind": "github_release",
+          "platform": "windows-x86_64",
+          "format": "lv2",
+          "archive": "zip",
+          "url": "https://github.com/michaelwillis/dragonfly-reverb/releases/download/3.2.10/dragonfly-reverb-3.2.10-win64.zip",
+          "bytes": 22447365,
+          "sha256": "ca5f35f9dcd9a33f06490d3c92f04061a1a798cb81257d5ca5851bdda0824c66"
+        },
+        {
+          "kind": "github_release",
+          "platform": "macos-x86_64",
+          "format": "vst2",
+          "archive": "dmg",
+          "url": "https://github.com/michaelwillis/dragonfly-reverb/releases/download/3.2.10/dragonfly-reverb-3.2.10-macos-intel.dmg",
+          "bytes": 12527433,
+          "sha256": "e6e2da2c962d41d46f8359bbd7ec8cff2be79b561539e18d3f73fdc29721bd93"
+        },
+        {
+          "kind": "github_release",
+          "platform": "macos-x86_64",
+          "format": "lv2",
+          "archive": "dmg",
+          "url": "https://github.com/michaelwillis/dragonfly-reverb/releases/download/3.2.10/dragonfly-reverb-3.2.10-macos-intel.dmg",
+          "bytes": 12527433,
+          "sha256": "e6e2da2c962d41d46f8359bbd7ec8cff2be79b561539e18d3f73fdc29721bd93"
+        },
+        {
+          "kind": "github_release",
+          "platform": "macos-aarch64",
+          "format": "vst2",
+          "archive": "dmg",
+          "url": "https://github.com/michaelwillis/dragonfly-reverb/releases/download/3.2.10/dragonfly-reverb-3.2.10-macos-universal.dmg",
+          "bytes": 24954281,
+          "sha256": "e0b854b92a4e51ce5851320fb1a9f91ab1a4309f997de070e175b3e5cab4adaf"
+        },
+        {
+          "kind": "github_release",
+          "platform": "macos-aarch64",
+          "format": "lv2",
+          "archive": "dmg",
+          "url": "https://github.com/michaelwillis/dragonfly-reverb/releases/download/3.2.10/dragonfly-reverb-3.2.10-macos-universal.dmg",
+          "bytes": 24954281,
+          "sha256": "e0b854b92a4e51ce5851320fb1a9f91ab1a4309f997de070e175b3e5cab4adaf"
+        }
+      ]
+    },
+    {
+      "id": "wolf-plugins.wolf-shaper",
+      "name": "Wolf Shaper",
+      "vendor": "Wolf Plugins",
+      "homepage": "https://wolf-plugins.github.io/wolf-shaper/",
+      "license": "GPL-3.0",
+      "tags": [
+        "saturation",
+        "open-source"
+      ],
+      "description": "A waveshaper with an editable transfer curve, oversampling and modulation.",
+      "installs": [
+        {
+          "kind": "github_release",
+          "platform": "linux-x86_64",
+          "format": "vst2",
+          "archive": "zip",
+          "url": "https://github.com/wolf-plugins/wolf-shaper/releases/download/v1.0.2/wolf-shaper-v1.0.2-linux-x64.zip",
+          "bytes": 5089663,
+          "sha256": "8b844e9b535d2b8a8a07fc6cec207beae8161f7d6da36e4a856a766aa441b848"
+        },
+        {
+          "kind": "github_release",
+          "platform": "linux-x86_64",
+          "format": "lv2",
+          "archive": "zip",
+          "url": "https://github.com/wolf-plugins/wolf-shaper/releases/download/v1.0.2/wolf-shaper-v1.0.2-linux-x64.zip",
+          "plugin_id": "https://github.com/pdesaulniers/wolf-shaper",
+          "bytes": 5089663,
+          "sha256": "8b844e9b535d2b8a8a07fc6cec207beae8161f7d6da36e4a856a766aa441b848"
+        },
+        {
+          "kind": "github_release",
+          "platform": "windows-x86_64",
+          "format": "vst2",
+          "archive": "zip",
+          "url": "https://github.com/wolf-plugins/wolf-shaper/releases/download/v1.0.2/wolf-shaper-v1.0.2+20230515144200-windows-x64.zip",
+          "bytes": 5481008,
+          "sha256": "42a703a5f71b19855d9213d57f2261d2182c73c73d39730775188df3e4c47da9"
+        },
+        {
+          "kind": "github_release",
+          "platform": "windows-x86_64",
+          "format": "lv2",
+          "archive": "zip",
+          "url": "https://github.com/wolf-plugins/wolf-shaper/releases/download/v1.0.2/wolf-shaper-v1.0.2+20230515144200-windows-x64.zip",
+          "plugin_id": "https://github.com/pdesaulniers/wolf-shaper",
+          "bytes": 5481008,
+          "sha256": "42a703a5f71b19855d9213d57f2261d2182c73c73d39730775188df3e4c47da9"
+        }
+      ]
+    },
+    {
+      "id": "werman.noise-suppression-for-voice",
+      "name": "Noise Suppression for Voice",
+      "vendor": "werman",
+      "homepage": "https://github.com/werman/noise-suppression-for-voice",
+      "license": "GPL-3.0",
+      "tags": [
+        "utility",
+        "open-source"
+      ],
+      "description": "Real-time RNNoise suppression packaged as mono and stereo plugins.",
+      "installs": [
+        {
+          "kind": "github_release",
+          "platform": "linux-x86_64",
+          "format": "vst2",
+          "archive": "zip",
+          "url": "https://github.com/werman/noise-suppression-for-voice/releases/download/v1.10/linux-rnnoise.zip",
+          "bytes": 36831356,
+          "sha256": "811390b6eb6e28dde023c70590c74d26e74ebb2e595bcf4b95af2341db160e99"
+        },
+        {
+          "kind": "github_release",
+          "platform": "linux-x86_64",
+          "format": "lv2",
+          "archive": "zip",
+          "url": "https://github.com/werman/noise-suppression-for-voice/releases/download/v1.10/linux-rnnoise.zip",
+          "bytes": 36831356,
+          "sha256": "811390b6eb6e28dde023c70590c74d26e74ebb2e595bcf4b95af2341db160e99"
+        },
+        {
+          "kind": "github_release",
+          "platform": "windows-x86_64",
+          "format": "vst2",
+          "archive": "zip",
+          "url": "https://github.com/werman/noise-suppression-for-voice/releases/download/v1.10/win-rnnoise.zip",
+          "bytes": 37740885,
+          "sha256": "e4dcc186102850f8dcebeb766ad1bf34c24f6280bd614ef84b72dae4783fc517"
+        },
+        {
+          "kind": "github_release",
+          "platform": "windows-x86_64",
+          "format": "lv2",
+          "archive": "zip",
+          "url": "https://github.com/werman/noise-suppression-for-voice/releases/download/v1.10/win-rnnoise.zip",
+          "bytes": 37740885,
+          "sha256": "e4dcc186102850f8dcebeb766ad1bf34c24f6280bd614ef84b72dae4783fc517"
+        },
+        {
+          "kind": "github_release",
+          "platform": "macos-aarch64",
+          "format": "vst2",
+          "archive": "zip",
+          "url": "https://github.com/werman/noise-suppression-for-voice/releases/download/v1.10/macos-rnnoise.zip",
+          "bytes": 81797637,
+          "sha256": "53c41fe3ce8af529b1d2d18802ecbd7e9f0b6d7ad013fd5f92f6af974472a9e9"
+        },
+        {
+          "kind": "github_release",
+          "platform": "macos-aarch64",
+          "format": "lv2",
+          "archive": "zip",
+          "url": "https://github.com/werman/noise-suppression-for-voice/releases/download/v1.10/macos-rnnoise.zip",
+          "bytes": 81797637,
+          "sha256": "53c41fe3ce8af529b1d2d18802ecbd7e9f0b6d7ad013fd5f92f6af974472a9e9"
+        },
+        {
+          "kind": "github_release",
+          "platform": "macos-x86_64",
+          "format": "vst2",
+          "archive": "zip",
+          "url": "https://github.com/werman/noise-suppression-for-voice/releases/download/v1.10/macos-rnnoise.zip",
+          "bytes": 81797637,
+          "sha256": "53c41fe3ce8af529b1d2d18802ecbd7e9f0b6d7ad013fd5f92f6af974472a9e9"
+        },
+        {
+          "kind": "github_release",
+          "platform": "macos-x86_64",
+          "format": "lv2",
+          "archive": "zip",
+          "url": "https://github.com/werman/noise-suppression-for-voice/releases/download/v1.10/macos-rnnoise.zip",
+          "bytes": 81797637,
+          "sha256": "53c41fe3ce8af529b1d2d18802ecbd7e9f0b6d7ad013fd5f92f6af974472a9e9"
+        }
+      ]
+    },
+    {
+      "id": "jpcima.adlplug",
+      "name": "ADLplug",
+      "vendor": "jpcima",
+      "homepage": "https://github.com/jpcima/ADLplug",
+      "license": "BSL-1.0",
+      "tags": [
+        "synth",
+        "open-source"
+      ],
+      "description": "An FM chip synthesizer that plays OPL3 and OPN2 patches through emulated hardware.",
+      "installs": [
+        {
+          "kind": "github_release",
+          "platform": "linux-x86_64",
+          "format": "vst2",
+          "archive": "installer",
+          "url": "https://github.com/jpcima/ADLplug/releases/download/v1.0.2/adlplug_amd64.deb",
+          "bytes": 3822930,
+          "sha256": "7e3f433f93f861f475e80d571e79ab0ada157590b276179d82f07797cb27d01b"
+        },
+        {
+          "kind": "github_release",
+          "platform": "linux-x86_64",
+          "format": "lv2",
+          "archive": "installer",
+          "url": "https://github.com/jpcima/ADLplug/releases/download/v1.0.2/adlplug_amd64.deb",
+          "plugin_id": "https://github.com/jpcima/ADLplug",
+          "bytes": 3822930,
+          "sha256": "7e3f433f93f861f475e80d571e79ab0ada157590b276179d82f07797cb27d01b"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "windows-x86_64",
+          "format": "vst2",
+          "url": "https://github.com/jpcima/ADLplug/releases/tag/v1.0.2"
+        },
+        {
+          "kind": "vendor_page",
+          "platform": "windows-x86_64",
+          "format": "lv2",
+          "url": "https://github.com/jpcima/ADLplug/releases/tag/v1.0.2"
+        }
+      ]
+    },
+    {
+      "id": "brummer10.gxplugins",
+      "name": "GxPlugins",
+      "vendor": "Hermann Brummer",
+      "homepage": "https://github.com/brummer10/GxPlugins.lv2",
+      "license": "GPL-3.0",
+      "tags": [
+        "saturation",
+        "open-source"
+      ],
+      "description": "A collection of guitar-effect emulations, from fuzz and overdrive to wah and compression.",
+      "installs": [
+        {
+          "kind": "github_release",
+          "platform": "linux-x86_64",
+          "format": "lv2",
+          "archive": "installer",
+          "url": "https://github.com/brummer10/GxPlugins.lv2/releases/download/v1.0/gxplugins_1.0_amd64.deb",
+          "bytes": 4855002,
+          "sha256": "2e8afb653e4c243dda9b000faa23fd7cfead7c4c37cbe693235d84f42cd354f7"
+        }
+      ]
+    },
+    {
+      "id": "zamaudio.zam-plugins",
+      "name": "ZamPlugins",
+      "vendor": "ZamAudio",
+      "homepage": "https://github.com/zamaudio/zam-plugins",
+      "license": "GPL-2.0",
+      "tags": [
+        "utility",
+        "open-source"
+      ],
+      "description": "A mixing suite covering EQ, dynamics, tape saturation and amp models.",
+      "installs": [
+        {
+          "kind": "github_release",
+          "platform": "linux-x86_64",
+          "format": "vst2",
+          "archive": "installer",
+          "url": "https://github.com/zamaudio/zam-plugins/releases/download/4.5/zam-plugins-4.5-linux-x86_64.tar.xz",
+          "bytes": 39868912,
+          "sha256": "16b022cce2998d11d3dbcf15aa6fe176cd14576cad42250ae8cfc56d1b7add7a"
+        },
+        {
+          "kind": "github_release",
+          "platform": "linux-x86_64",
+          "format": "lv2",
+          "archive": "installer",
+          "url": "https://github.com/zamaudio/zam-plugins/releases/download/4.5/zam-plugins-4.5-linux-x86_64.tar.xz",
+          "bytes": 39868912,
+          "sha256": "16b022cce2998d11d3dbcf15aa6fe176cd14576cad42250ae8cfc56d1b7add7a"
+        }
+      ]
+    },
+    {
+      "id": "lsp-plugins.lsp-plugins",
+      "name": "LSP Plugins",
+      "vendor": "LSP Plugins",
+      "homepage": "https://github.com/lsp-plugins/lsp-plugins",
+      "license": "LGPL-3.0",
+      "tags": [
+        "utility",
+        "open-source"
+      ],
+      "description": "A studio processor and instrument suite for mixing, mastering and live sound.",
+      "installs": [
+        {
+          "kind": "github_release",
+          "platform": "linux-x86_64",
+          "format": "vst2",
+          "archive": "installer",
+          "url": "https://github.com/lsp-plugins/lsp-plugins/releases/download/1.2.35/lsp-plugins-1.2.35-Linux-x86_64.7z",
+          "bytes": 38793460,
+          "sha256": "4ef3b2f63b29a522fdaf3a18f879c1c85c82f0bdd1e0b3c849a5f3c4b08d2550"
+        },
+        {
+          "kind": "github_release",
+          "platform": "linux-x86_64",
+          "format": "lv2",
+          "archive": "installer",
+          "url": "https://github.com/lsp-plugins/lsp-plugins/releases/download/1.2.35/lsp-plugins-1.2.35-Linux-x86_64.7z",
+          "bytes": 38793460,
+          "sha256": "4ef3b2f63b29a522fdaf3a18f879c1c85c82f0bdd1e0b3c849a5f3c4b08d2550"
+        }
+      ]
+    }
+  ]
+}

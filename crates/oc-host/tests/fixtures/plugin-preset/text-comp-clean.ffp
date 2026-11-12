@@ -1,0 +1,18 @@
+[Preset]
+Signature=FC3p
+Version=2
+Name=Clean
+Author=OpenCompose
+Description="Clean, transparent compression"
+Tags=Basic
+
+[Parameters]
+Style=0
+Threshold=-16
+Ratio=0.560000002384186
+Knee=7.34594345092773
+Attack=0.142277777194977
+Release=0.277943134307861
+Auto Gain=1
+Knee Display Enabled=0
+Maximum Lookahead=0

@@ -1,0 +1,445 @@
+/* ============================================================================
+   DSL Editor
+   ============================================================================ */
+
+.dsl-editor-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--bg-primary);
+}
+
+.dsl-editor-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 12px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+}
+
+.dsl-editor-modified {
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--accent-soft, color-mix(in srgb, var(--accent) 18%, transparent));
+  color: var(--accent);
+  font-size: var(--font-size-xs);
+}
+
+.dsl-apply { margin-left: 4px; }
+
+/* Editor container: stacked pre (highlight) + textarea (input) */
+.dsl-editor-container {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+}
+
+.dsl-highlight-layer,
+.dsl-input-layer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 12px;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-md);
+  line-height: 1.6;
+  tab-size: 2;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  overflow: auto;
+  margin: 0;
+  border: none;
+}
+
+.dsl-highlight-layer {
+  background: var(--bg-input);
+  color: var(--text-primary);
+  pointer-events: none;
+  z-index: 0;
+}
+
+.dsl-input-layer {
+  background: transparent;
+  color: transparent;
+  caret-color: var(--text-primary);
+  z-index: 1;
+  resize: none;
+  outline: none;
+}
+
+.dsl-input-layer::placeholder {
+  color: var(--text-muted);
+}
+
+/* Dark palette by default; all five light themes override the token palette. */
+:root:is([data-theme="ivory"], [data-theme="linen"], [data-theme="draft"], [data-theme="quartz"], [data-theme="prism"]) .dsl-editor-panel {
+  --syn-comment: #53565a;
+  --syn-keyword: #8b246a;
+  --syn-property: #006272;
+  --syn-string: #705200;
+  --syn-pitch: #14632c;
+  --syn-duration: #67449c;
+  --syn-dynamics: #8b430b;
+  --syn-articulation: #a52d35;
+}
+.dsl-editor-panel .syn-comment { color: var(--syn-comment, #a6adb5); }
+.dsl-editor-panel .syn-keyword { color: var(--syn-keyword, #ff79c6); }
+.dsl-editor-panel .syn-property, .dsl-editor-panel .syn-drum, .dsl-editor-panel .syn-modifier { color: var(--syn-property, #8be9fd); }
+.dsl-editor-panel .syn-string { color: var(--syn-string, #f1fa8c); }
+.dsl-editor-panel .syn-pitch { color: var(--syn-pitch, #50fa7b); }
+.dsl-editor-panel .syn-duration, .dsl-editor-panel .syn-number-unit { color: var(--syn-duration, #bd93f9); }
+.dsl-editor-panel .syn-dynamics { color: var(--syn-dynamics, #ffb86c); }
+.dsl-editor-panel .syn-articulation { color: var(--syn-articulation, #ff8b8b); }
+.dsl-editor-panel .syn-barline, .dsl-editor-panel .syn-rest { color: var(--syn-comment, #a6adb5); }
+/* Keep glyph metrics identical across overlay layers: weight/italics otherwise
+   shift the visible tokens away from the textarea caret and selection. */
+.dsl-editor-panel [class^="syn-"] { font-weight: inherit; font-style: normal; }
+.dsl-input-layer::selection { background: color-mix(in srgb, var(--accent) 28%, transparent); }
+/* Legacy selectors retained below; scoped palette above takes precedence. */
+.syn-comment { color: #6a737d; font-style: italic; }
+.syn-keyword { color: #ff79c6; font-weight: 600; }
+.syn-property { color: #8be9fd; }
+.syn-string { color: #f1fa8c; }
+.syn-pitch { color: #50fa7b; font-weight: 600; }
+.syn-duration { color: #bd93f9; }
+.syn-dynamics { color: #ffb86c; font-weight: 600; }
+.syn-articulation { color: #ff6e6e; }
+.syn-drum { color: #8be9fd; font-weight: 600; }
+.syn-number-unit { color: #bd93f9; }
+.syn-modifier { color: #8be9fd; }
+.syn-barline { color: #6272a4; }
+.syn-rest { color: #6272a4; font-style: italic; }
+
+/* ============================================================================
+   Status bar
+   ============================================================================ */
+
+.status-bar {
+  display: grid;
+  /* Every track is shrinkable: a centred project name must ellipsize, not
+     spill over both edges of a narrow window. */
+  grid-template-columns: minmax(0, 1fr) minmax(0, auto) minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  height: 24px;
+  background: var(--chrome-bg);
+  border-top: 1px solid var(--border-light);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.025);
+  font-size: var(--font-size-xs);
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  letter-spacing: 0.2px;
+  flex-shrink: 0;
+  min-width: 0;
+}
+
+.status-error {
+  color: var(--stop-red);
+  font-weight: 500;
+}
+
+/* The bounce report is one long line; the chip clips it instead of pushing the
+   transport time off the bar. */
+.status-left {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* Counters and the transport state stay whole; the selection text is the one
+   that gives up characters before the row spills into the project name. */
+.status-left .status-chip {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.status-left .status-chip.selected,
+.status-left .status-chip.space-target {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.status-project {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: center;
+}
+
+.status-chip.bounce-report {
+  max-width: 460px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-chip,
+.status-transport-time {
+  display: inline-flex;
+  align-items: center;
+  height: 16px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: rgba(0, 0, 0, 0.16);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.status-chip.strong {
+  color: var(--play-green);
+  border-color: rgba(123, 199, 111, 0.28);
+  background: rgba(123, 199, 111, 0.08);
+  font-weight: 700;
+}
+
+.status-chip.selected {
+  color: var(--text-secondary);
+  border-color: var(--border-light);
+}
+
+.status-chip.loading {
+  color: var(--accent);
+  border-color: rgba(226, 168, 66, 0.28);
+  background: var(--accent-dim);
+}
+
+/* A project rebuild publishes its stage and lane, so the chip carries a moving
+   sweep instead of reading as a frozen label. */
+.status-chip.build-progress {
+  position: relative;
+  overflow: hidden;
+  gap: 4px;
+  max-width: 360px;
+}
+
+.build-progress-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.build-progress-sweep {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    color-mix(in srgb, var(--accent) 22%, transparent) 50%,
+    transparent 100%
+  );
+  animation: build-sweep 1.4s linear infinite;
+  pointer-events: none;
+}
+
+@keyframes build-sweep {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(100%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .build-progress-sweep {
+    animation: none;
+    opacity: 0.35;
+  }
+}
+
+.status-chip.space-target {
+  color: var(--text-muted);
+  border-color: var(--border-light);
+  background: transparent;
+}
+
+.status-transport-time {
+  color: var(--text-secondary);
+  border-color: var(--border-light);
+}
+
+/* ============================================================================
+   Empty state
+   ============================================================================ */
+
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--text-muted);
+  gap: 12px;
+  background: radial-gradient(ellipse at center, var(--accent-dim) 0%, transparent 70%);
+}
+
+.empty-state-icon {
+  font-size: 48px;
+  opacity: 0.25;
+}
+
+.empty-state-text {
+  font-family: var(--font-display);
+  font-size: 17px;
+  font-weight: 400;
+  color: var(--text-secondary);
+  letter-spacing: -0.3px;
+}
+
+.empty-state-hint {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  /* The column is the track-header width; centre the copy inside it instead of
+     letting the sentence run past the edge. */
+  max-width: 176px;
+  padding: 0 8px;
+  text-align: center;
+  text-wrap: balance;
+  font-size: 14px;
+  font-weight: 450;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.empty-state-shortcut {
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+
+/* ============================================================================
+   Floating Panels
+   ============================================================================ */
+
+.floating-panel {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-float);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-elevated);
+  overflow: hidden;
+  transition: box-shadow var(--transition-fast);
+}
+
+.floating-panel:hover {
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.05);
+}
+
+.floating-panel-title {
+  display: flex;
+  align-items: center;
+  height: 32px;
+  padding: 0 10px;
+  background: var(--bg-elevated);
+  border-bottom: 1px solid var(--border);
+  cursor: grab;
+  -webkit-user-select: none;
+  user-select: none;
+  flex-shrink: 0;
+}
+
+.floating-panel-title:active {
+  cursor: grabbing;
+}
+
+.floating-panel-label {
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  color: var(--text-secondary);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.floating-panel-btns {
+  display: flex;
+  gap: 2px;
+  margin-left: 8px;
+}
+
+.floating-panel-btn {
+  width: 20px;
+  height: 20px;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.floating-panel-btn:hover {
+  background: var(--bg-surface);
+  color: var(--text-primary);
+}
+
+.floating-panel-content {
+  flex: 1;
+  overflow: auto;
+  position: relative;
+  min-height: 0; /* allow flex child to shrink */
+}
+
+.floating-panel-resize {
+  position: absolute;
+  bottom: 0;
+  right: 0;
+  width: 14px;
+  height: 14px;
+  cursor: nwse-resize;
+  z-index: 10;
+}
+
+.floating-panel-resize::after {
+  content: "";
+  position: absolute;
+  bottom: 3px;
+  right: 3px;
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid var(--text-muted);
+  border-bottom: 2px solid var(--text-muted);
+  opacity: 0.4;
+}
+
+/* Panel tab */
+.panel-tab {
+  cursor: pointer;
+}
+
+.panel-tab.floating-indicator {
+  font-style: italic;
+  opacity: 0.6;
+  border-bottom: 2px dashed var(--accent-dim);
+}
+
+.panel-tab.dragging {
+  opacity: 0.5;
+}
+
+.panel-tab-detach-hint {
+  font-size: 8px;
+  color: var(--text-muted);
+  margin-left: 2px;
+  opacity: 0;
+  transition: opacity var(--transition-normal);
+}
+
+.panel-tab:hover .panel-tab-detach-hint {
+  opacity: 0.6;
+}
+
+/* Floating panels position themselves via inline styles (position: absolute) */
+/* They live directly in .daw-body which has position: relative */

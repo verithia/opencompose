@@ -1,0 +1,203 @@
+{
+  "result_count": 240,
+  "page_count": 80,
+  "page": 1,
+  "page_size": 3,
+  "results": [
+    {
+      "id": "03fa3080-bcb3-423f-a781-47dc20bedd59",
+      "title": "Snare 4.wav",
+      "creator": "Fixture Creator",
+      "foreign_landing_url": "https://freesound.org/people/FixtureCreator/sounds/26903",
+      "url": "https://cdn.freesound.org/previews/26/26903_113878-hq.mp3",
+      "filesize": 10384,
+      "filetype": "mp3",
+      "duration": 377,
+      "sample_rate": null,
+      "channels": null,
+      "license": "by",
+      "license_version": "3.0",
+      "license_url": "https://creativecommons.org/licenses/by/3.0/",
+      "provider": "freesound",
+      "source": "freesound",
+      "category": null,
+      "tags": [
+        {
+          "name": "amen"
+        },
+        {
+          "name": "beat"
+        },
+        {
+          "name": "break"
+        },
+        {
+          "name": "drum"
+        },
+        {
+          "name": "hat"
+        },
+        {
+          "name": "hi"
+        },
+        {
+          "name": "hit"
+        },
+        {
+          "name": "jungle"
+        },
+        {
+          "name": "kick"
+        },
+        {
+          "name": "kit"
+        },
+        {
+          "name": "reverse"
+        },
+        {
+          "name": "sliced"
+        },
+        {
+          "name": "snare"
+        }
+      ],
+      "alt_files": [
+        {
+          "url": "https://freesound.org/apiv2/sounds/26903/download/"
+        }
+      ]
+    },
+    {
+      "id": "e43d1972-6c6c-44be-a6f7-1eea6cda842f",
+      "title": "Snare Drum, Single Hit, A (H1).wav",
+      "creator": "Fixture Creator",
+      "foreign_landing_url": "https://freesound.org/people/FixtureCreator/sounds/410514",
+      "url": "https://cdn.freesound.org/previews/410/410514_5121236-hq.mp3",
+      "filesize": 39188,
+      "filetype": "mp3",
+      "duration": 1631,
+      "sample_rate": null,
+      "channels": null,
+      "license": "by",
+      "license_version": "4.0",
+      "license_url": "https://creativecommons.org/licenses/by/4.0/",
+      "provider": "freesound",
+      "source": "freesound",
+      "category": null,
+      "tags": [
+        {
+          "name": "Drum"
+        },
+        {
+          "name": "Drums"
+        },
+        {
+          "name": "Drumstick"
+        },
+        {
+          "name": "Hit"
+        },
+        {
+          "name": "Hits"
+        },
+        {
+          "name": "Percussion"
+        },
+        {
+          "name": "Snare"
+        },
+        {
+          "name": "drum"
+        },
+        {
+          "name": "drums"
+        },
+        {
+          "name": "drumstick"
+        },
+        {
+          "name": "hit"
+        },
+        {
+          "name": "hits"
+        },
+        {
+          "name": "percussion"
+        },
+        {
+          "name": "snare"
+        }
+      ],
+      "alt_files": [
+        {
+          "url": "https://freesound.org/apiv2/sounds/410514/download/"
+        }
+      ]
+    },
+    {
+      "id": "03a091fa-4014-4331-a3fc-9e19a5fbf7ac",
+      "title": "Reverse Snare 3.wav",
+      "creator": "Fixture Creator",
+      "foreign_landing_url": "https://freesound.org/people/FixtureCreator/sounds/26893",
+      "url": "https://cdn.freesound.org/previews/26/26893_113878-hq.mp3",
+      "filesize": 10018,
+      "filetype": "mp3",
+      "duration": 361,
+      "sample_rate": null,
+      "channels": null,
+      "license": "by",
+      "license_version": "3.0",
+      "license_url": "https://creativecommons.org/licenses/by/3.0/",
+      "provider": "freesound",
+      "source": "freesound",
+      "category": null,
+      "tags": [
+        {
+          "name": "amen"
+        },
+        {
+          "name": "beat"
+        },
+        {
+          "name": "break"
+        },
+        {
+          "name": "drum"
+        },
+        {
+          "name": "hat"
+        },
+        {
+          "name": "hi"
+        },
+        {
+          "name": "hit"
+        },
+        {
+          "name": "jungle"
+        },
+        {
+          "name": "kick"
+        },
+        {
+          "name": "kit"
+        },
+        {
+          "name": "reverse"
+        },
+        {
+          "name": "sliced"
+        },
+        {
+          "name": "snare"
+        }
+      ],
+      "alt_files": [
+        {
+          "url": "https://freesound.org/apiv2/sounds/26893/download/"
+        }
+      ]
+    }
+  ]
+}

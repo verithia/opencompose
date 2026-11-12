@@ -1,0 +1,39 @@
+[package]
+repository.workspace = true
+autotests = false
+name = "oc-synth"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Native synth facade: OpenSynth, preset import, sampler and performance scheduling"
+
+[dependencies]
+oc-audio = { path = "../oc-audio", default-features = false }
+oc-dsl = { path = "../oc-dsl" }
+oc-synth-core = { path = "../oc-synth-core" }
+oc-synth-import = { path = "../oc-synth-import" }
+hound = "3"
+log.workspace = true
+serde = { workspace = true, features = ["rc"] }
+serde_json = { workspace = true, features = ["float_roundtrip"] }
+
+[dev-dependencies]
+oc-test-support = { path = "../oc-test-support" }
+rustfft.workspace = true
+
+[[test]]
+name = "all"
+path = "tests/all.rs"
+
+[[test]]
+name = "drumkit_synth_alloc"
+path = "tests/drumkit_synth_alloc.rs"
+
+[[test]]
+name = "fx_parallel_alloc"
+path = "tests/fx_parallel_alloc.rs"
+
+[[test]]
+name = "source_render_alloc"
+path = "tests/source_render_alloc.rs"

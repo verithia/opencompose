@@ -1,0 +1,25 @@
+// Dynamic EQ showcase: six bands plus low/high cuts on the master.
+// The 1 kHz bell ducks the held tone while the static shaping stays fixed.
+
+@ocp "0.2.0"
+
+@project "Dynamic EQ four bars"
+  tempo: 120
+  time_signature: 4/4
+
+@preset tone
+  source: builtin
+  plugin: "builtin.test_tone"
+  params: {frequency: 220, amplitude: 0.35, waveform: 0}
+
+@track tone | preset: tone, instrument: synth/lead_square
+  mix: vol=-3dB
+  @phrase four_bars [1:1:0 - 5:1:0]
+    C4 w mf
+    C4 w mf
+    C4 w mf
+    C4 w mf
+
+@master
+  effects:
+    - dynamic_eq: band1_enabled=true, band1_type=bell, band1_freq=80Hz, band1_q=1, band1_gain=+2dB, band1_dynamic=true, band1_threshold=-30dB, band1_range=-6dB, band1_attack=10ms, band1_release=150ms, band2_enabled=true, band2_type=bell, band2_freq=1kHz, band2_q=1, band2_gain=0dB, band2_dynamic=true, band2_threshold=-30dB, band2_range=-9dB, band2_attack=3ms, band2_release=100ms, band3_enabled=true, band3_type=high_shelf, band3_freq=8kHz, band3_q=0.707, band3_gain=-3dB, band4_enabled=true, band4_type=notch, band4_freq=60Hz, band4_q=4, band4_gain=0dB, band5_enabled=true, band5_type=low_shelf, band5_freq=200Hz, band5_q=0.707, band5_gain=+1dB, band6_enabled=true, band6_type=bell, band6_freq=4kHz, band6_q=1, band6_gain=-2dB, low_cut_enabled=true, low_cut_freq=30Hz, low_cut_q=0.707, high_cut_enabled=true, high_cut_freq=18kHz, high_cut_q=0.707

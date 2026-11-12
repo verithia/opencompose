@@ -1,0 +1,1176 @@
+// ============================================================================
+// OpenCompose DSL Grammar (PEG) — pest-compatible
+// ============================================================================
+//
+// Whitespace strategy:
+//   - WHITESPACE (implicit) consumes spaces, tabs, AND newlines
+//   - COMMENT (implicit) strips // comments
+//   - This means the grammar is NOT line-sensitive — structure comes from
+//     keywords (@project, @track, @phrase, etc.) not from indentation
+//   - This is simpler and more robust for pest
+//
+// Adding a new construct:
+//   1. Add grammar rule here
+//   2. Add AST type in ast.rs
+//   3. Add parse_xxx function in parser.rs
+//   4. Add serialize_xxx in serializer.rs
+//   5. Add validation in validator.rs
+// ============================================================================
+
+// --- Implicit rules ---
+
+WHITESPACE = _{ " " | "\t" | "\r\n" | "\n" | "\r" }
+COMMENT = _{ "//" ~ (!("\r\n" | "\n" | "\r") ~ ANY)* }
+
+// === Top Level ===
+
+project = {
+    SOI ~
+    version_line? ~
+    project_header ~
+    top_level_block* ~
+    EOI
+}
+
+version_line = { "@ocp" ~ string_literal }
+
+project_header = {
+    "@project" ~ string_literal? ~
+    project_property*
+}
+
+project_property = {
+    tempo_prop |
+    time_sig_prop |
+    key_prop |
+    swing_prop |
+    swing_subdivision_prop |
+    solo_mode_prop |
+    mpe_prop |
+    export_prop |
+    live_resample_prop |
+    automation_normalization_prop |
+    picture_clock_prop |
+    tempo_map_prop |
+    time_sig_map_prop |
+    key_map_prop
+}
+
+picture_clock_prop = { "picture_clock:" ~ "{" ~ "rate:" ~ string_literal ~ "," ~ "origin:" ~ string_literal ~ "}" }
+
+key_map_prop = { "key_map:" ~ key_map_point* }
+key_map_point = { bar_beat ~ "=" ~ key_signature }
+
+tempo_prop     = { "tempo:" ~ number }
+time_sig_prop  = { "time_signature:" ~ time_signature }
+key_prop       = { "key:" ~ key_signature }
+swing_prop     = { "swing:" ~ percentage }
+swing_subdivision_prop = { "swing_subdivision:" ~ swing_subdivision_value }
+swing_subdivision_value = @{ "8th" | "16th" }
+solo_mode_prop = { "solo_mode:" ~ solo_mode_value }
+solo_mode_value = @{ "upstream" | "both" }
+
+// Version of the normalized automation table that stored synth lanes use.
+// Absent is version 1 (the original table); 2 is the widened table.
+automation_normalization_prop = { "automation_normalization:" ~ normalization_version }
+normalization_version = @{ "1" | "2" }
+
+mpe_prop = { "mpe:" ~ "{" ~ (mpe_setting ~ ("," ~ mpe_setting)*)? ~ "}" }
+mpe_setting = _{ mpe_zone_prop | mpe_bend_range_prop }
+mpe_zone_prop = { mpe_zone_name ~ ":" ~ channel_range }
+mpe_zone_name = @{ "lower" | "upper" }
+mpe_bend_range_prop = { "bend_range:" ~ number }
+channel_range = { integer ~ "-" ~ integer }
+
+// The nested form is canonical: container plus a per-container option block.
+// The flat `format:`/`dither:` pair stays accepted so older projects load.
+export_prop = { "export:" ~ "{" ~ (export_setting ~ ("," ~ export_setting)*)? ~ "}" }
+export_setting = _{ export_container_prop | export_wav_prop | export_flac_prop | export_mp3_prop | export_format_prop | export_dither_prop | export_sample_rate_prop | export_resample_prop }
+export_container_prop = { "container:" ~ export_container_value }
+export_container_value = @{ "wav" | "flac" | "mp3" }
+export_wav_prop = { "wav:" ~ "{" ~ (export_wav_setting ~ ("," ~ export_wav_setting)*)? ~ "}" }
+export_wav_setting = _{ export_depth_prop | export_dither_prop }
+export_flac_prop = { "flac:" ~ "{" ~ (export_flac_setting ~ ("," ~ export_flac_setting)*)? ~ "}" }
+export_flac_setting = _{ export_depth_prop | export_flac_level_prop }
+export_flac_level_prop = { "level:" ~ integer }
+export_mp3_prop = { "mp3:" ~ "{" ~ (export_mp3_setting ~ ("," ~ export_mp3_setting)*)? ~ "}" }
+export_mp3_setting = _{ export_mp3_bitrate_prop | export_mp3_vbr_quality_prop }
+export_mp3_bitrate_prop = { "bitrate:" ~ integer }
+export_mp3_vbr_quality_prop = { "vbr_quality:" ~ integer }
+export_depth_prop = { "depth:" ~ export_format_value }
+export_format_prop = { "format:" ~ export_format_value }
+export_dither_prop = { "dither:" ~ boolean }
+export_format_value = @{ "i16" | "i24" | "f32" }
+export_sample_rate_prop = { "sample_rate:" ~ integer }
+export_resample_prop = { "resample:" ~ resample_step }
+live_resample_prop = { "live_resample:" ~ resample_step }
+resample_step = @{ "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" }
+
+tempo_map_prop = { "tempo_map:" ~ tempo_map_point* }
+tempo_map_point = { bar_beat ~ tempo_position_offset? ~ "=" ~ number ~ "bpm"? }
+tempo_position_offset = { "+" ~ number ~ "q" }
+
+time_sig_map_prop = { "time_sig_map:" ~ time_sig_map_point* }
+time_sig_map_point = { bar_beat ~ "=" ~ time_signature }
+
+top_level_block = {
+    control_link_block |
+    control_source_block |
+    audio_clip_block |
+    vocal_tune_block |
+    vocal_harmony_block |
+    kit_block |
+    preset_block |
+    pattern_def_block |
+    track_block |
+    bus_block |
+    master_block |
+    section_block |
+    marker_block |
+    group_block |
+    stray_pedal_line
+}
+
+// === Audio Clip (decoded media placed on a track) ===
+
+audio_clip_block = {
+    "@audio_clip" ~ name ~ time_range ~
+    "|" ~ audio_clip_track_prop ~
+    audio_clip_content*
+}
+
+audio_clip_track_prop = { "track:" ~ name }
+
+audio_clip_content = {
+    audio_clip_file_prop |
+    audio_clip_placement_start_prop |
+    audio_clip_placement_end_prop |
+    audio_clip_offset_prop |
+    audio_clip_loop_prop |
+    audio_clip_gain_prop |
+    audio_clip_gain_envelope_prop |
+    audio_clip_fade_in_prop |
+    audio_clip_fade_out_prop |
+    audio_clip_invert_prop |
+    audio_clip_crossfade_prop |
+    audio_clip_stretch_prop |
+    audio_clip_stretch_mode_prop |
+    audio_clip_bypass_processing_prop |
+    audio_clip_tempo_follow_prop |
+    audio_clip_pitch_prop |
+    audio_clip_formant_prop |
+    audio_clip_warp_prop |
+    audio_clip_preserve_formants_prop |
+    audio_clip_take_group_prop |
+    audio_clip_take_prop |
+    audio_clip_muted_prop
+}
+
+audio_clip_file_prop     = { "file:" ~ string_literal }
+audio_clip_placement_start_prop = { "placement_start:" ~ signed_time_value }
+audio_clip_placement_end_prop = { "placement_end:" ~ signed_time_value }
+signed_time_value = ${ signed_number ~ unit_gap ~ ("ms" | "s") ~ unit_end }
+audio_clip_offset_prop   = { "offset:" ~ time_value }
+audio_clip_loop_prop     = { "loop:" ~ time_value }
+audio_clip_gain_prop     = { "gain:" ~ db_value }
+audio_clip_gain_envelope_prop = { "gain_envelope:" ~ gain_envelope_point ~ ("," ~ gain_envelope_point)* }
+gain_envelope_point      = { number ~ ":" ~ db_value }
+audio_clip_fade_in_prop  = { "fade_in:" ~ time_value }
+audio_clip_fade_out_prop = { "fade_out:" ~ time_value }
+audio_clip_invert_prop    = { "invert:" ~ boolean }
+audio_clip_crossfade_prop = { "crossfade:" ~ time_value }
+audio_clip_stretch_prop  = { "stretch:" ~ number }
+audio_clip_stretch_mode_prop = { "mode:" ~ audio_clip_stretch_mode }
+audio_clip_bypass_processing_prop = { "bypass_processing:" ~ boolean }
+audio_clip_tempo_follow_prop = { "tempo_follow:" ~ boolean }
+audio_clip_pitch_prop    = { "pitch:" ~ signed_number }
+audio_clip_warp_prop = { "warp:" ~ time_value ~ "->" ~ time_value }
+audio_clip_formant_prop = { "formant:" ~ signed_number }
+audio_clip_preserve_formants_prop = { "preserve_formants:" ~ boolean }
+audio_clip_take_group_prop = { "take_group:" ~ string_literal }
+audio_clip_take_prop     = { "take:" ~ integer }
+audio_clip_muted_prop    = { "muted:" ~ boolean }
+
+audio_clip_stretch_mode = @{ "off" | "percussive" | "musical" | "varispeed" }
+
+// === Control Source (audio-derived control signal) ===
+
+control_source_block = {
+    "@control_source" ~ name ~
+    ("|" ~ control_source_props)? ~
+    control_source_prop*
+}
+
+control_source_props = { control_source_prop ~ ("," ~ control_source_prop)* }
+
+// One prop per key. Unknown keys are left for the block boundary to reject.
+control_source_prop = {
+    control_from_prop |
+    control_attack_prop |
+    control_release_prop |
+    control_lfo_prop |
+    control_lfo_depth_prop |
+    control_formula_prop |
+    control_scale_prop |
+    control_offset_prop |
+    control_curve_prop |
+    control_source_unknown_prop
+}
+
+control_source_unknown_prop = { identifier ~ ":" ~ control_formula_value }
+
+control_from_prop = { "from" ~ ":" ~ control_tap }
+control_tap = { ("track" | "sidechain") ~ "(" ~ name ~ ")" | name }
+
+control_attack_prop  = { "attack" ~ ":" ~ time_value }
+control_release_prop = { "release" ~ ":" ~ time_value }
+
+control_lfo_prop = { "lfo" ~ ":" ~ control_lfo }
+control_lfo = { "none" | control_lfo_shape ~ control_lfo_rate? }
+control_lfo_rate = { "@" ~ freq_value }
+control_lfo_shape = @{ "sine" | "triangle" | "square" | "saw" }
+
+control_lfo_depth_prop = { "lfo_depth" ~ ":" ~ number }
+control_formula_prop = { "formula" ~ ":" ~ control_formula_value }
+// The expression is a raw token: it has no commas, so the prop list stays flat.
+control_formula_value = @{ (!("," | "\r\n" | "\n" | "\r") ~ ANY)+ }
+control_scale_prop  = { "scale" ~ ":" ~ signed_number }
+control_offset_prop = { "offset" ~ ":" ~ signed_number }
+control_curve_prop  = { "curve" ~ ":" ~ control_curve }
+control_curve = @{ "linear" | "squared" | "sqrt" | "log" }
+
+// === Control Link (one control fanning out to many parameter targets) ===
+
+control_link_block = {
+    "@control_link" ~ name ~
+    control_link_source ~
+    control_link_target+
+}
+
+control_link_source = { "from" ~ ":" ~ control_link_source_value }
+control_link_source_value = { control_link_cc | control_link_macro | control_link_lane }
+control_link_cc = { "cc" ~ "(" ~ integer ~ ("," ~ integer)? ~ ")" }
+control_link_macro = { "macro" ~ "(" ~ integer ~ ")" }
+control_link_lane = { "lane" ~ "(" ~ name ~ "," ~ name ~ ")" }
+
+// `->` is the fan-out row; `target:` is the legacy single-target spelling and
+// loads as a one-entry fan-out.
+control_link_target = {
+    control_link_arrow_target |
+    control_link_legacy_target
+}
+control_link_arrow_target = { "->" ~ control_link_target_body }
+control_link_legacy_target = { "target" ~ ":" ~ control_link_target_body }
+control_link_target_body = {
+    "track" ~ ":" ~ name ~
+    "param" ~ ":" ~ control_link_param ~
+    "formula" ~ ":" ~ control_link_formula ~
+    control_link_smoothing?
+}
+control_link_param = { string_literal | control_link_param_key }
+control_link_param_key = @{ (ASCII_ALPHANUMERIC | "_" | "." | "-")+ }
+control_link_smoothing = { "smoothing" ~ ":" ~ time_value }
+control_link_formula = @{ "linear" | "inverted" | "exponential" | "logarithmic" | "midi_unit" | "midi_centered" }
+
+// === Vocal Tune (stored per-note tuning decisions) ===
+
+vocal_tune_block = {
+    "@vocal_tune" ~ name ~ vocal_tune_selector? ~
+    vocal_tune_content*
+}
+
+vocal_tune_selector = {
+    "|" ~ vocal_tune_selector_prop ~ ("," ~ vocal_tune_selector_prop)*
+}
+
+vocal_tune_selector_prop = { vocal_tune_selector_key ~ ":" ~ name }
+vocal_tune_selector_key = @{ "clip" | "track" }
+
+vocal_tune_content = {
+    vocal_tune_scale_prop |
+    vocal_tune_snap_prop |
+    vocal_tune_reference_prop |
+    vocal_tune_cap_prop |
+    vocal_tune_window_prop |
+    vocal_tune_max_move_prop |
+    vocal_tune_amount_prop |
+    vocal_tune_retune_prop |
+    vocal_tune_formant_prop |
+    vocal_tune_vibrato_prop |
+    vocal_tune_notes |
+    vocal_tune_unknown_prop
+}
+
+vocal_tune_scale_prop = { "scale:" ~ vocal_tune_scale_value }
+vocal_tune_scale_value = { vocal_tune_inherit | key_signature }
+vocal_tune_inherit = @{ "inherit" }
+
+vocal_tune_snap_prop = { "snap:" ~ vocal_tune_snap_value }
+vocal_tune_snap_value = @{ "auto" | "scale" | "reference" | "off" }
+vocal_tune_reference_prop = { "reference:" ~ name }
+vocal_tune_cap_prop = { "cap:" ~ signed_cents_value }
+vocal_tune_window_prop = { "window:" ~ signed_cents_value }
+vocal_tune_max_move_prop = { "max_move:" ~ time_value }
+
+vocal_tune_amount_prop = { "amount:" ~ percentage }
+vocal_tune_retune_prop = { "retune:" ~ time_value }
+vocal_tune_formant_prop = { "formant:" ~ signed_cents_value }
+vocal_tune_vibrato_prop = { "vibrato:" ~ vocal_tune_vibrato_value }
+vocal_tune_vibrato_value = @{ "preserve" | "flatten" | "scale" }
+
+vocal_tune_notes = { "notes:" ~ vocal_tune_note* }
+
+vocal_tune_note = { "-" ~ vocal_note_item+ }
+
+vocal_note_item = { vocal_note_key ~ "=" ~ vocal_note_token }
+vocal_note_key = @{ identifier }
+vocal_note_token = @{ (!(" " | "\t" | "\r\n" | "\n" | "\r") ~ ANY)+ }
+
+// Any other `field: value` pair parses here so the parser can name the field
+// and list the accepted ones instead of a bare syntax error.
+vocal_tune_unknown_prop = {
+    identifier ~ ":" ~
+    (percentage | time_value | signed_cents_value | key_signature | identifier)
+}
+
+signed_cents_value = ${ signed_number ~ unit_gap ~ "ct" ~ unit_end }
+
+// === Vocal Harmony (a second voice derived from a tuned clip) ===
+
+vocal_harmony_block = {
+    "@vocal_harmony" ~ name ~ vocal_harmony_selector? ~
+    vocal_harmony_content*
+}
+
+vocal_harmony_selector = {
+    "|" ~ vocal_tune_selector_prop ~ ("," ~ vocal_tune_selector_prop)*
+}
+
+vocal_harmony_content = {
+    vocal_harmony_interval_prop |
+    vocal_harmony_level_prop |
+    vocal_harmony_pan_prop |
+    vocal_harmony_unknown_prop
+}
+
+vocal_harmony_interval_prop = { "interval:" ~ signed_integer }
+vocal_harmony_level_prop = { "level:" ~ db_value }
+vocal_harmony_pan_prop = { "pan:" ~ signed_number }
+
+// Any other `field: value` pair parses here so the parser can name the field
+// and list the accepted ones instead of a bare syntax error.
+vocal_harmony_unknown_prop = {
+    identifier ~ ":" ~
+    (percentage | time_value | db_value | signed_cents_value | key_signature | identifier)
+}
+
+// === Preset Definition ===
+
+preset_block = {
+    "@preset" ~ name ~
+    preset_content*
+}
+
+preset_content = {
+    preset_source_prop |
+    preset_plugin_prop |
+    preset_program_prop |
+    preset_patch_prop |
+    preset_file_prop |
+    preset_root_note_prop |
+    preset_extends_prop |
+    preset_params_line |
+    effects_block
+}
+
+preset_source_prop    = { "source:" ~ identifier }
+preset_plugin_prop    = { "plugin:" ~ string_literal }
+preset_program_prop   = { "program:" ~ integer }
+preset_patch_prop     = { "patch:" ~ string_literal }
+preset_file_prop      = { "file:" ~ string_literal }
+preset_root_note_prop = { "root_note:" ~ pitch }
+preset_extends_prop   = { "extends:" ~ name }
+
+preset_params_line = {
+    "params:" ~ "{" ~ key_value_list ~ "}"
+}
+
+// === Drum Kit Definition ===
+//
+// A kit lowers to a builtin preset; pads and layers are encoded as preset
+// params so every render path resolves kits without a second registry.
+
+kit_block = {
+    "@kit" ~ name ~
+    kit_content*
+}
+
+kit_content = {
+    kit_max_voices_prop |
+    kit_pad_line |
+    kit_layer_line
+}
+
+kit_max_voices_prop = { "max_voices:" ~ integer }
+kit_pad_line = { "pad" ~ kit_pad_name ~ ("|" ~ key_value_list)? }
+kit_layer_line = { "layer" ~ kit_pad_name ~ ("|" ~ key_value_list)? }
+kit_pad_name = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
+
+// === Named Pattern Definition (top-level, reusable via clips) ===
+
+pattern_def_block = {
+    "@pattern" ~ name ~ ("|" ~ pattern_inline_props)? ~
+    pattern_def_content*
+}
+
+pattern_inline_props = {
+    pattern_inline_prop ~ ("," ~ pattern_inline_prop)*
+}
+
+pattern_inline_prop = {
+    instrument_prop |
+    preset_ref_prop |
+    engine_prop |
+    pattern_transpose_prop |
+    pattern_swing_prop |
+    pattern_bars_prop |
+    pattern_color_prop
+}
+
+pattern_transpose_prop = { "transpose:" ~ signed_integer }
+pattern_swing_prop     = { "swing:" ~ percentage }
+pattern_bars_prop      = { "bars:" ~ number }
+pattern_color_prop     = { "color:" ~ string_literal }
+
+pattern_def_content = {
+    events_block |
+    hits_block |
+    effects_block |
+    automation_line |
+    mix_line
+}
+
+events_block = {
+    "events:" ~ phrase_event*
+}
+
+hits_block = {
+    "hits:" ~ hit_entry*
+}
+
+hit_entry = {
+    pedal_in_hits | hairpin_in_pattern | hit_event | bar_line | pattern_rest
+}
+
+// Drum hits are one-shots with no note-off to hold; the parser refuses this.
+pedal_in_hits = { note_position ~ "pedal" ~ pedal_state }
+
+// A hairpin needs written dynamics, which drum hits do not carry.
+hairpin_in_pattern = { note_position ~ hairpin_kind }
+
+// === Track ===
+
+track_block = {
+    track_header ~
+    track_content*
+}
+
+track_header = {
+    "@track" ~ name ~ ("|" ~ track_inline_props)?
+}
+
+track_inline_props = {
+    track_inline_prop ~ ("," ~ track_inline_prop)*
+}
+
+track_inline_prop = {
+    instrument_prop |
+    preset_ref_prop |
+    engine_prop |
+    channel_prop |
+    output_port_prop |
+    output_pair_prop
+}
+
+instrument_prop = { "instrument:" ~ instrument_path }
+preset_ref_prop = { "preset:" ~ name }
+engine_prop     = { "engine:" ~ identifier }
+channel_prop    = { "channel:" ~ integer }
+output_port_prop = { "port:" ~ integer }
+output_pair_prop = { "pair:" ~ integer }
+
+// Track content is delimited by knowing what can appear inside a track
+// vs. what starts a new top-level block. The PEG ordered choice handles this:
+// pest tries each alternative in order and backtracks on failure.
+track_content = {
+    performance_block |
+    mix_line |
+    effects_block |
+    route_line |
+    phrase_block |
+    pattern_block |
+    clip_line |
+    gain_automation_line |
+    automation_line |
+    engine_params_line |
+    stray_pedal_line
+}
+
+// A pedal mark outside a phrase or pattern: the parser refuses it by name.
+stray_pedal_line = { note_position ~ "pedal" ~ pedal_state }
+
+performance_block = { "performance:" ~ "{" ~ performance_event* ~ "}" }
+performance_event = { "@" ~ number ~ "ch" ~ integer ~ identifier ~ signed_integer ~ signed_integer? ~ ";" }
+
+// === Instrument Path ===
+
+// A bare name is a drum-kit instrument (`instrument: drumkit`); the
+// `category/name` form stays canonical for every other instrument.
+instrument_path = @{
+    (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* ~
+    ("/" ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")*)?
+}
+
+// === Mix ===
+
+mix_line = {
+    "mix:" ~ mix_property ~ ("," ~ mix_property)*
+}
+
+mix_property = {
+    output_prop |
+    vol_prop |
+    pan_prop |
+    pan_law_prop |
+    send_prop |
+    mute_prop |
+    solo_prop |
+    display_name_prop |
+    color_prop |
+    solo_safe_prop |
+    polarity_prop |
+    pdc_prop |
+    latency_prop |
+    smart_disable_prop |
+    control_prop
+}
+
+smart_disable_prop = { "smart_disable" ~ "=" ~ boolean }
+
+vol_prop  = { "vol" ~ "=" ~ db_value }
+pan_prop  = { "pan" ~ "=" ~ signed_number }
+pan_law_prop = { "pan_law" ~ "=" ~ pan_law_value }
+pan_law_value = { "auto" | "balance" }
+send_prop = { "send" ~ "(" ~ aux_source? ~ name ~ "=" ~ send_level ~ send_extra* ~ ")" }
+send_level = { db_value | percentage | number }
+send_extra = { send_tap | send_pan }
+send_tap = { "," ~ ("pre" | "post") }
+send_pan = { "," ~ "pan" ~ "=" ~ signed_number }
+aux_source = { aux_ref ~ "->" }
+aux_ref = { name ~ "." ~ "out" ~ integer }
+mute_prop = { "mute" ~ "=" ~ boolean }
+solo_prop = { "solo" ~ "=" ~ boolean }
+output_prop = { "output" ~ "=" ~ name }
+display_name_prop = { "display_name" ~ "=" ~ string_literal }
+color_prop = { "color" ~ "=" ~ string_literal }
+solo_safe_prop = { "solo_safe" ~ "=" ~ boolean }
+polarity_prop = { "polarity" ~ "=" ~ polarity_value }
+
+// A fader ride from an audio-derived control source, e.g. control(kick=-12dB).
+control_prop = { "control" ~ "(" ~ name ~ "=" ~ db_value ~ ")" }
+polarity_value = { polarity_mode | boolean }
+pdc_prop = { "pdc" ~ "=" ~ pdc_state }
+latency_prop = { "latency" ~ "=" ~ signed_integer }
+pdc_state = { "when_recording" | "on" | "off" }
+polarity_mode = @{ "invert" | "normal" }
+
+// === Effects ===
+
+effects_block = {
+    "effects:" ~
+    effect_entry+
+}
+
+effect_entry = {
+    "-" ~ effect_type ~ (":" ~ effect_params)?
+}
+
+// The parser resolves names through EffectType's shared alias authority.
+effect_type = @{ "plugin:" ~ plugin_id | (ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_" | "-")*) }
+
+
+plugin_id = @{ "\"" ~ ("\\\"" | "\\\\" | !("\"" | "\r" | "\n") ~ ANY)* ~ "\""
+    | (ASCII_ALPHANUMERIC | "." | "_" | "-")+ }
+
+effect_params = {
+    effect_param ~ ("," ~ effect_param)*
+}
+
+// Effect params are lenient: key=value where value can contain complex
+// expressions like "high_shelf=-2dB@10kHz", "ratio=2:1", "type=hall"
+// We parse the value as a raw token string for maximum flexibility.
+effect_param = {
+    effect_param_name ~ "=" ~ effect_param_value
+}
+
+effect_param_name = @{
+    (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")*
+}
+
+// Effect param values are lenient — any non-whitespace chars up to comma/end
+// This handles: -2dB@10kHz, 2:1, hall, 100%, 30Hz, 3.2s, etc.
+effect_param_value = @{
+    (!("," | "\r\n" | "\n" | "\r" | " " | "\t") ~ ANY)+
+}
+
+// === Phrase ===
+
+phrase_block = {
+    phrase_header ~
+    phrase_event*
+}
+
+phrase_header = {
+    "@phrase" ~ name ~ time_range? ~ ("|" ~ channel_prop)?
+}
+
+// A phrase event is a note, rest, pedal mark or bar line.
+// IMPORTANT: We need to make sure a phrase_event does NOT consume
+// the start of the next block (e.g. "@track", "@phrase", "@pattern", etc.)
+phrase_event = {
+    bar_line |
+    unclosed_chord |
+    pedal_event |
+    pedal_missing_position |
+    hairpin_event |
+    hairpin_missing_position |
+    rest_event |
+    note_line |
+    bad_comma_line
+}
+
+// A sustain pedal spans notes, so it is a phrase/pattern event with its own
+// position and never part of the sequential note-line model.
+pedal_event = { note_position ~ "pedal" ~ pedal_state }
+
+pedal_state = @{ "down" | "up" }
+
+// A hairpin spans notes, so it is a phrase event with its own position and
+// never part of the sequential note-line model.
+hairpin_event = { note_position ~ hairpin_kind }
+
+hairpin_missing_position = { hairpin_kind }
+
+hairpin_kind = @{ "cresc" | "dim" }
+
+// Missing `@<beat>`: the parser turns this into an explicit refusal.
+pedal_missing_position = { "pedal" ~ pedal_state }
+
+// === Time Range ===
+
+time_range = {
+    "[" ~ bar_beat ~ ("-" ~ bar_beat)? ~ "]"
+}
+
+bar_beat = {
+    integer ~ ":" ~ integer ~ (":" ~ integer)?
+}
+
+// === Note Event ===
+
+// One line is a position and one or more events separated by commas; every
+// event on the line sounds at that position. A line without `@N` shares the
+// sequential position. Members keep their own duration, dynamics and modifiers.
+note_line = { grace_prefix? ~ note_position? ~ note_member ~ (comma ~ note_member)* }
+
+note_member = { note_head ~ duration ~ dynamics? ~ note_modifier* }
+
+comma = { "," }
+
+// A malformed comma list: only reached when `note_line` failed, so the parser
+// turns it into one of the comma refusals. The tail is the rest of the line.
+bad_comma_line = ${ grace_prefix? ~ hs* ~ note_position? ~ hs* ~ comma ~ line_tail }
+
+line_tail = { (!("\r\n" | "\n" | "\r") ~ ANY)* }
+
+hs = _{ " " | "\t" }
+
+grace_prefix = { "@grace" }
+
+note_position = { "@" ~ number }
+
+// A chord sounds its pitches together: one duration, dynamic and modifier set
+// for every member. The token is bounded to one line so a missing `]` cannot
+// swallow the phrase; the members are validated in the parser for exact
+// messages (a rest member, no member, a repeated pitch).
+note_head = { chord | pitch }
+
+chord = ${ "[" ~ (!("]" | "\r" | "\n") ~ ANY)* ~ "]" }
+
+unclosed_chord = ${ "[" ~ (!("]" | "\r" | "\n") ~ ANY)* ~ (EOI | "\r\n" | "\n" | "\r") }
+
+// === Pitch ===
+
+pitch = @{
+    note_name ~ accidental? ~ ("-1" | ASCII_DIGIT)
+}
+
+note_name = { "A" | "B" | "C" | "D" | "E" | "F" | "G" }
+accidental = { "##" | "#" | "bb" | "b" }
+
+// === Duration ===
+
+duration = @{
+    (number ~ base_duration) |              // rest 8w = 8 whole notes
+    base_duration ~ ("." | "..")? ~ tuplet_mod? ~ tie_chain?
+}
+
+tuplet_mod = @{ number ~ ":" ~ number | "t" }
+
+tie_chain = @{ ("~" ~ base_duration ~ ("." | "..")?)* }
+
+base_duration = {
+    "16th" | "32nd" | "64th" | "8th" | "w" | "h" | "q"
+}
+
+// === Dynamics ===
+
+dynamics = @{
+    ("ppp" | "pp" | "mp" | "mf" | "fff" | "ff" | "p" | "f") ~ !(ASCII_ALPHANUMERIC | "_")
+}
+
+// === Note Modifiers ===
+
+note_modifier = {
+    articulation_mod |
+    vibrato_mod |
+    expression_mod |
+    pitch_bend_mod |
+    gliss_mod |
+    generic_mod
+}
+
+// The glissando mark. Bare `gliss` slides to the next note of the phrase,
+// `gliss=G4` names the destination, `gliss=120ms` reaches it in that long, and
+// `gliss=run` / `gliss=run_diatonic` write the slide as short notes. The
+// boundary guard keeps a longer modifier name out of this rule.
+gliss_mod = { gliss_word ~ ("=" ~ gliss_value)? }
+
+// Atomic, so the boundary check sees the character after `gliss` itself rather
+// than the next token past a space.
+gliss_word = @{ "gliss" ~ !(ASCII_ALPHANUMERIC | "_") }
+
+gliss_value = { gliss_pitch | time_value | identifier }
+
+// Scientific octave, matching the note-line pitch rule.
+gliss_pitch = @{ note_name ~ accidental? ~ ("-1" | ASCII_DIGIT) }
+
+articulation_mod = {
+    "articulation" ~ "=" ~ articulation_value
+}
+
+articulation_value = @{
+    "staccatissimo" | "staccato" |
+    "sul_ponticello" | "sul_tasto" |
+    "flutter_tongue" |
+    "col_legno" |
+    "ghost_note" | "rim_shot" |
+    "hammer_on" | "pull_off" | "palm_mute" |
+    "legato" | "tenuto" | "marcato" | "accent" |
+    "pizzicato" | "arco" | "tremolo" | "trill" |
+    "harmonics" |
+    "muted" | "open" | "sforzando" |
+    "slide" | "bend" |
+    "flam" | "roll" |
+    "sustained" | "detached"
+}
+
+vibrato_mod = {
+    "vibrato" ~ "=" ~ "{" ~ vibrato_params ~ "}"
+}
+
+vibrato_params = {
+    vibrato_param ~ ("," ~ vibrato_param)*
+}
+
+vibrato_param = {
+    vibrato_rate | vibrato_depth | vibrato_delay
+}
+
+vibrato_rate  = { "rate:" ~ freq_value }
+vibrato_depth = { "depth:" ~ cents_value }
+vibrato_delay = { "delay:" ~ time_value }
+
+expression_mod = {
+    "expression" ~ "=" ~ "{" ~ expression_params ~ "}"
+}
+
+expression_params = {
+    expression_param ~ ("," ~ expression_param)*
+}
+
+expression_param = {
+    identifier ~ ":" ~ expression_value
+}
+
+expression_value = {
+    expr_atom ~ ("->" ~ expr_atom)?
+}
+
+// An expression atom can be a dynamics name OR a regular param value
+expr_atom = {
+    dynamics | param_value
+}
+
+pitch_bend_mod = {
+    "bend" ~ "=" ~ cents_value
+}
+
+generic_mod = {
+    identifier ~ "=" ~ param_value
+}
+
+// === Rest ===
+
+rest_event = {
+    "rest" ~ duration
+}
+
+// === Bar Line ===
+
+bar_line = { "|" }
+
+// === Pattern (drums) ===
+
+// A drum pattern placed inline in a track: `@pattern name [range] xN` followed
+// by hit lines. A `@pattern` that carries inline properties or a named body is
+// a top-level definition, so the drum form refuses that header: the block ends
+// the track and the definition parses at the project level, whatever position
+// it is written in.
+pattern_block = {
+    !pattern_def_header ~
+    pattern_header ~
+    pattern_event*
+}
+
+// The header of a named pattern definition, used only as a lookahead.
+pattern_def_header = {
+    "@pattern" ~ name ~
+    (pattern_def_inline_props | pattern_def_body)
+}
+
+pattern_def_inline_props = { "|" ~ pattern_inline_props }
+
+pattern_def_body = { pattern_def_content_start ~ ":" }
+
+pattern_def_content_start = @{ "events" | "hits" | "effects" | "automation" | "mix" }
+
+pattern_header = {
+    "@pattern" ~ name ~ time_range? ~ repeat_count?
+}
+
+repeat_count = @{ "x" ~ ASCII_DIGIT+ }
+
+pattern_event = {
+    pedal_in_hits |
+    hairpin_in_pattern |
+    bar_line |
+    pattern_rest |
+    hit_event
+}
+
+// A rest within a drum pattern (silence at a beat position)
+pattern_rest = { "rest" ~ beat_position }
+
+hit_event = {
+    drum_name ~ beat_position ~ dynamics? ~ hit_modifier*
+}
+
+drum_name = @{ identifier }
+
+beat_position = {
+    integer ~ ":" ~ integer
+}
+
+hit_modifier = {
+    hit_articulation_mod |
+    generic_mod
+}
+
+hit_articulation_mod = {
+    "articulation" ~ "=" ~ hit_articulation_value
+}
+
+hit_articulation_value = @{
+    "half_open" | "cross_stick" |
+    "closed" | "open" |
+    "ghost_note" | "flam" | "roll" | "rim_shot"
+}
+
+// === Automation ===
+
+automation_line = {
+    "automation:" ~ automation_target ~ automation_attr* ~ "{" ~ automation_points ~ "}"
+}
+
+// `<effect>.<parameter>` addresses an effect; a bare name is an instrument lane.
+automation_target = @{ identifier ~ ("." ~ identifier)? }
+
+automation_attr = _{
+    automation_ppq |
+    automation_time_range |
+    automation_muted |
+    automation_smoothing |
+    automation_mode |
+    automation_speed |
+    automation_mult |
+    automation_pw |
+    automation_skew |
+    automation_tension |
+    automation_amount
+}
+
+automation_ppq = { "[" ~ "ppq=" ~ integer ~ "]" }
+
+// `[start - end]` makes the lane a clip that writes only inside the span.
+// Both ends are required, so a single `[3:1]` stays a syntax error here.
+automation_time_range = { "[" ~ bar_beat ~ "-" ~ bar_beat ~ "]" }
+
+// A flag, like `linear`/`step` on `gain_automation:`: no `=` and no value.
+automation_muted = { "muted" }
+
+automation_smoothing = { "smoothing=" ~ time_value }
+
+// `mode=lfo` makes the point sequence one cycle of a waveform.
+automation_mode = { "mode=" ~ lane_mode_name }
+
+lane_mode_name = { "envelope" | "lfo" }
+
+automation_speed = { "speed=" ~ lfo_speed }
+
+lfo_speed = _{ lfo_speed_hz | lfo_speed_note }
+
+lfo_speed_hz = ${ number ~ unit_gap ~ "Hz" ~ unit_end }
+
+lfo_speed_note = ${ integer ~ "/" ~ integer }
+
+automation_mult = { "mult=" ~ number }
+
+automation_pw = { "pw=" ~ number }
+
+automation_skew = { "skew=" ~ signed_number }
+
+automation_curve = { "curve=" ~ curve_name }
+
+// One rule serves both scopes: a lane's cycle tension before `{`, a point's
+// segment tension inside it.
+automation_tension = { "tension=" ~ number }
+
+automation_amount = { "amount=" ~ number }
+
+curve_name = { "linear" | "stairs" | "half_sine" | "half-sine" | "smooth" }
+
+// === Clip (pattern reference on track) ===
+
+clip_line = {
+    "clip:" ~ name ~ time_range ~ clip_offset_prop? ~ clip_loop_prop? ~ clip_id_prop?
+}
+
+// Slip hides this many quarter notes at the start of the pattern.
+clip_offset_prop = { "offset:" ~ beat_value }
+
+// The clip repeats this many quarter notes of pattern content.
+clip_loop_prop = { "loop:" ~ beat_value }
+
+// Group membership names the clip by this identifier.
+clip_id_prop = { "id:" ~ name }
+
+beat_value = ${ number ~ unit_gap ~ "q" ~ unit_end }
+
+// === Automation Points ===
+
+automation_points = {
+    automation_point ~ ("," ~ automation_point)*
+}
+
+automation_point = {
+    bar_beat ~ "=" ~ automation_point_value ~ automation_curve? ~ automation_tension?
+}
+
+// An attribute keyword is never the point value, so `1:2=curve` can name one.
+automation_point_value = _{ !(("curve" | "tension") ~ "=") ~ param_value }
+
+// === Bus ===
+
+bus_block = {
+    bus_header ~
+    bus_content*
+}
+
+bus_header = {
+    "@bus" ~ name
+}
+
+bus_content = {
+    gain_automation_line |
+    automation_line |
+    bus_mix_line |
+    routes_line |
+    effects_block |
+    route_line
+}
+
+bus_mix_line = {
+    "mix:" ~ bus_mix_property ~ ("," ~ bus_mix_property)*
+}
+
+bus_mix_property = {
+    vol_prop |
+    mute_prop |
+    solo_prop
+}
+
+routes_line = {
+    "routes:" ~ "[" ~ name_list ~ "]"
+}
+
+// One route into a device input of the owner's effect chain. The kind is
+// `audio` when omitted; `control` carries a @control_source reading and is
+// never summed into the output. The target is an effect address, resolved the
+// way automation lanes resolve one (`compression`, `fx2`).
+route_line = {
+    "route:" ~ route_kind? ~ name ~ "->" ~ route_target
+}
+route_kind = @{ "audio" | "control" }
+route_target = @{ identifier }
+
+// === Master ===
+
+master_block = {
+    "@master" ~
+    master_content*
+}
+
+master_content = {
+    gain_automation_line |
+    automation_line |
+    effects_block |
+    route_line |
+    loudness_line |
+    master_volume_line
+}
+
+loudness_line = { "loudness:" ~ db_value }
+master_volume_line = { "volume:" ~ db_value }
+
+gain_automation_line = {
+    "gain_automation:" ~ gain_interpolation ~ gain_ppq? ~ time_range ~ "{" ~ automation_points ~ "}"
+}
+gain_interpolation = { "linear" | "step" }
+gain_ppq = { "ppq=" ~ integer }
+
+// === Section ===
+
+section_block = {
+    "@section" ~ name ~ time_range ~
+    section_content*
+}
+
+section_content = {
+    repeat_line |
+    label_line |
+    flags_line
+}
+
+repeat_line = { "repeat:" ~ integer }
+label_line  = { "label:" ~ string_literal }
+flags_line  = { "flags:" ~ sound_flag_value }
+sound_flag_value = @{
+    "pizzicato" | "pizz" | "arco" | "con_sord" | "muted" |
+    "sul_ponticello" | "sul_pont" | "sul_tasto"
+}
+
+// === Marker (a named point on the timeline) ===
+// `at` separates a point from the `[start - end]` span a section writes.
+marker_block = { "@marker" ~ name ~ "at" ~ bar_beat }
+
+// === Clip Group (clips that move and select as one unit) ===
+// Members are clip identifiers; `[start - end]` spans stay on the clips.
+group_block = { "@group" ~ name ~ "{" ~ group_members_prop ~ "}" }
+group_members_prop = { "members:" ~ name_list }
+
+// === Engine Params (escape hatch) ===
+
+engine_params_line = {
+    "engine_params:" ~ "{" ~ key_value_list ~ "}"
+}
+
+key_value_list = {
+    key_value_pair ~ ("," ~ key_value_pair)*
+}
+
+key_value_pair = {
+    param_key ~ ":" ~ param_value
+}
+
+// Physical plugin parameter namespaces (including numbered modulation slots).
+param_key = @{ identifier ~ ("." ~ (ASCII_ALPHANUMERIC | "_")+)* }
+
+// === Primitive Value Types ===
+
+time_signature = { integer ~ "/" ~ integer }
+
+key_signature = {
+    note_name ~ accidental? ~ key_mode
+}
+
+key_mode = @{ "major" | "minor" | "maj" | "min" }
+
+// Values with units
+// A suffix belongs to this numeric token, not the next line/identifier.
+// Compound atomic rules retain numeric children for the parser while disabling
+// implicit whitespace/comments. Horizontal spacing before a unit is allowed.
+unit_gap = _{ (" " | "\t")* }
+unit_end = _{ !(ASCII_ALPHANUMERIC | "_") }
+db_value    = ${ signed_number ~ unit_gap ~ "dB" ~ unit_end }
+percentage  = ${ number ~ unit_gap ~ "%" ~ unit_end }
+freq_value  = ${ number ~ unit_gap ~ "Hz" ~ unit_end }
+cents_value = ${ number ~ unit_gap ~ "ct" ~ unit_end }
+time_value  = ${ number ~ unit_gap ~ ("ms" | "s") ~ unit_end }
+
+param_value = {
+    db_value |
+    percentage |
+    freq_value |
+    cents_value |
+    time_value |
+    array_value |
+    signed_number |
+    string_literal |
+    boolean |
+    pitch_name_value |  // bare note names as values (e.g. note: F#2)
+    identifier        // bare identifiers as values (e.g. hall, large, plate)
+}
+
+// Fixed-length numeric arrays carry drawn LFO shapes through preset params.
+array_value = { "[" ~ (signed_number ~ ("," ~ signed_number)*)? ~ "]" }
+
+// === Numeric Primitives ===
+
+number = @{ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? }
+signed_number = @{ ("+" | "-")? ~ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? }
+integer = @{ ASCII_DIGIT+ }
+signed_integer = @{ ("+" | "-")? ~ ASCII_DIGIT+ }
+boolean = { "true" | "false" }
+
+// === String & Identifier ===
+
+identifier = @{ (ASCII_ALPHA | "_" | "/") ~ (ASCII_ALPHANUMERIC | "_" | "/")* }
+
+// Note names carry accidentals that an identifier cannot hold (`F#2`, `Bb2`).
+pitch_name_value = @{ ("A" | "B" | "C" | "D" | "E" | "F" | "G") ~ ("##" | "#" | "bb" | "b")? ~ ("-1" | ASCII_DIGIT+) }
+identifier_list = { identifier ~ ("," ~ identifier)* }
+name = _{ string_literal | identifier }
+name_list = { name ~ ("," ~ name)* }
+string_literal = ${ "\"" ~ string_inner ~ "\"" }
+string_inner = @{ (!"\"" ~ !("\r\n" | "\n" | "\r") ~ ANY)* }

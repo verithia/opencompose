@@ -1,0 +1,25 @@
+[package]
+repository.workspace = true
+name = "oc-synth-import"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Foreign preset and project-state import mapped onto OpenSynth patch types"
+
+[dependencies]
+oc-dsl = { path = "../oc-dsl" }
+oc-dsp = { path = "../oc-dsp" }
+oc-synth-core = { path = "../oc-synth-core" }
+oc-synth-fx = { path = "../oc-synth-fx" }
+ciborium = "0.2"
+log.workspace = true
+md-5 = "0.10"
+serde.workspace = true
+serde_json = { workspace = true, features = ["float_roundtrip"] }
+zstd = "0.13"
+
+[dev-dependencies]
+oc-test-support = { path = "../oc-test-support" }
+hound = "3"
+rustfft.workspace = true

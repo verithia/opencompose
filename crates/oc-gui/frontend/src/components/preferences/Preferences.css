@@ -1,0 +1,422 @@
+/* ============================================================================
+   Preferences — one modal, a page per subject
+   ============================================================================ */
+
+.preferences-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 16px;
+  background: color-mix(in srgb, var(--bg-void) 60%, transparent);
+  backdrop-filter: blur(3px);
+}
+
+.preferences-modal {
+  font-size: 14px;
+  font-weight: 450;
+  display: flex;
+  flex-direction: column;
+  width: min(1000px, calc(100vw - 32px));
+  /* One height for every page: switching tabs must not resize the window. */
+  height: min(86vh, 760px);
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-lg);
+  background: var(--bg-float);
+  box-shadow: var(--shadow-elevated);
+}
+
+.preferences-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 14px 16px 10px;
+  border-bottom: 1px solid var(--border-light);
+}
+
+.preferences-modal-title {
+  font-family: var(--font-display);
+  font-size: var(--font-size-lg);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.preferences-modal-close {
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.preferences-modal-body {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.preferences-nav {
+  display: flex;
+  flex: 0 0 168px;
+  flex-direction: column;
+  gap: 2px;
+  width: 168px;
+  padding: 10px 8px;
+  overflow-y: auto;
+  border-right: 1px solid var(--border-light);
+  background: var(--bg-secondary);
+}
+
+.preferences-nav-item {
+  padding: 7px 10px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--font-size-sm);
+  text-align: left;
+  cursor: pointer;
+}
+
+.preferences-nav-item:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.preferences-nav-item.active {
+  border-color: var(--accent);
+  background: var(--accent-dim);
+  color: var(--accent);
+}
+
+.preferences-page {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  min-height: 0;
+  padding: 14px 18px 18px;
+  overflow-y: auto;
+}
+
+/* ── Fields and readouts ── */
+
+
+.preferences-hint {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 450;
+  line-height: 1.5;
+}
+
+.preferences-error {
+  margin: 0;
+  color: var(--stop-red, #ef4444);
+  font-size: var(--font-size-sm);
+  line-height: 1.45;
+}
+
+.preferences-source-heading {
+  margin: 0;
+}
+
+.preferences-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.preferences-field-label {
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 550;
+}
+
+.preferences-range {
+  flex: 0 1 220px;
+  min-width: 120px;
+  accent-color: var(--accent);
+}
+
+.preferences-scale-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.preferences-inline-value {
+  min-width: 52px;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  text-align: right;
+}
+
+.preferences-scale-value {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: 600;
+}
+
+.preferences-scale-number {
+  box-sizing: border-box;
+  width: 76px;
+  min-height: 28px;
+  padding: 3px 5px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font: inherit;
+  font-family: var(--font-mono);
+}
+
+.preferences-scale-number[aria-invalid="true"] {
+  border-color: var(--stop-red);
+}
+
+.preferences-facts {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.preferences-fact {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-subtle, var(--border-light));
+  border-radius: var(--radius-sm);
+  background: var(--bg-secondary);
+}
+
+.preferences-fact-label {
+  color: var(--text-secondary);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.preferences-fact-value {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: var(--text-primary);
+  font-size: var(--font-size-sm);
+}
+
+.preferences-repository-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  text-align: left;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.preferences-repository-link:hover {
+  color: var(--text-primary);
+}
+
+.preferences-path-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.preferences-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.preferences-plugin-format {
+  padding: 1px 6px;
+  border: 1px solid var(--border-light);
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+/* The embedded shortcut table fills the page instead of sizing a dialog. */
+.preferences-page .shortcut-editor-panel {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 300px;
+}
+
+/* ── Network page ── */
+.preferences-proxy-url {
+  width: min(320px, 100%);
+  padding: 5px 8px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.preferences-proxy-url:disabled {
+  opacity: 0.5;
+}
+
+.preferences-network-result.ok { color: var(--play-green); }
+.preferences-network-result:not(.ok) { color: var(--stop-red); }
+.preferences-network-saved { color: var(--play-green); }
+
+/* Storage: sizes and the per-block rescan. */
+.preferences-size {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.preferences-scan.scanning {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.preferences-inline-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+/* Storage blocks: a framed card, with the name left and size+scan right. */
+.preferences-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-secondary);
+}
+
+.preferences-block-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+}
+
+.preferences-block-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.preferences-block .preferences-fact-label { margin: 0; }
+
+.preferences-workspace-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  margin-top: 4px;
+  padding: 4px 0 2px;
+  background: none;
+  border: 0;
+  border-top: 1px solid var(--border-light);
+  text-align: left;
+  cursor: pointer;
+}
+
+.preferences-workspace-head:hover .preferences-path { color: var(--text-primary); }
+
+.preferences-workspace-toggle {
+  width: 10px;
+  flex: 0 0 auto;
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.preferences-workspace-head .preferences-path {
+  color: var(--text-primary);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.preferences-session-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  padding-left: 12px;
+}
+
+.preferences-session-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-secondary);
+  font-size: 11.5px;
+  font-weight: 400;
+}
+
+
+/* The AI page keeps the dialog's familiar Done action at the end of its long
+   form; the header still closes the modal from any page. */
+.ai-settings-page-foot {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 4px;
+}
+
+
+/* A narrow window keeps the AI form readable by stacking its two columns
+   instead of squeezing controls into ~200 px each. */
+@media (max-width: 760px) {
+  .preferences-page[data-page="ai"] .ai-settings-columns {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.preferences-help-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+.preferences-help-manual { min-width: 0; }
+.preferences-help-manual summary { cursor: pointer; padding: 8px 0; color: var(--text-primary); }
+.preferences-help-manual summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.preferences-help-manual .ai-markdown {
+  padding: 12px;
+  border-inline-start: 2px solid var(--border-light);
+  color: var(--text-primary);
+}
+.preferences-help-manual pre { overflow-x: auto; }
+
+.preferences-help-credits { margin: 12px 0; color: var(--text-primary); }
+.preferences-help-credits summary { cursor: pointer; padding: 6px 0; }
+.preferences-help-credits pre { white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; font: 11px/1.6 var(--font-mono); }
+.preferences-build-identity { overflow-wrap: anywhere; user-select: text; }
+
+.preferences-engine-diagnostics summary { cursor: pointer; padding: 8px 0; color: var(--text-primary); }
+.preferences-engine-diagnostics .preferences-facts { margin-top: 8px; }

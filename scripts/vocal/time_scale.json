@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "note": "Per-singer audio/annotation duration ratio for corpus files that were stored at a different speed than their annotation. A clip with ratio r is compared after mapping our time t to the annotation at t / r, for both the frame f0 match and the note boundaries. Measured per clip; see <corpus-dir>/MANIFEST.md 'Known corpus defects'.",
+  "audio_duration_ratio": {
+    "m9": 0.5
+  }
+}

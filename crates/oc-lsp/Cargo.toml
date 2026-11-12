@@ -1,0 +1,21 @@
+[package]
+repository.workspace = true
+name = "oc-lsp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+# The language components stay permissive so editors and other tools can
+# read `.ocp` projects; see README.md.
+license = "MIT OR Apache-2.0"
+description = "Language Server Protocol implementation for OpenCompose DSL"
+
+[[bin]]
+name = "ocp-lsp"
+path = "src/main.rs"
+
+[dependencies]
+oc-dsl = { path = "../oc-dsl" }
+tower-lsp = "0.20"
+tokio = { version = "1", features = ["full"] }
+serde.workspace = true
+serde_json.workspace = true

@@ -1,0 +1,70 @@
+[package]
+repository.workspace = true
+autotests = false
+name = "oc-engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "OpenCompose audio rendering engine — interprets AST and drives audio backends"
+
+[features]
+# The native SoundFont player needs no library, so it is always built and the
+# plugin host stays a default. MP3 export is pure Rust and measured at or above
+# the reference encoder on the gate fixtures (see docs/export-format.md), so it
+# ships by default too.
+default = ["plugin-host", "mp3"]
+# The plugin host uses the SoundFont source as its fallback instrument.
+plugin-host = ["dep:oc-host"]
+debug-log = ["oc-diag/debug-log"]
+perf-log = ["oc-diag/perf-log"]
+# In-process fake plugins for streaming/offline parity tests.
+test-support = ["plugin-host", "oc-host?/test-support"]
+# MP3 (MPEG Layer III) export. The encoder is pure Rust, so the feature adds no
+# C toolchain; a build without it names the format and refuses it at export.
+mp3 = ["dep:rusty_mp3"]
+# Timing/throughput harnesses. Off by default so a plain `cargo test` neither
+# compiles nor runs them; see AGENTS-testing.md for the command.
+perf-tests = []
+
+[dependencies]
+oc-audio = { path = "../oc-audio", default-features = false }
+oc-diag = { path = "../oc-diag" }
+oc-dsp = { path = "../oc-dsp" }
+oc-synth = { path = "../oc-synth" }
+oc-host = { path = "../oc-host", optional = true }
+md-5 = "0.10"
+oc-dsl = { path = "../oc-dsl" }
+serde = { workspace = true, features = ["rc"] }
+serde_json = { workspace = true, features = ["float_roundtrip"] }
+thiserror.workspace = true
+toml = "0.8"
+hound = "3"             # WAV read/write
+claxon = "0.4"          # FLAC decoding for the built-in sampler
+flacenc = { version = "0.5.1", default-features = false } # FLAC encoding
+rusty_mp3 = { version = "1.0.5", optional = true } # MP3 encoding, behind `mp3`
+rustfft.workspace = true
+log.workspace = true
+bytemuck = "1"
+tempfile.workspace = true
+fs4 = { version = "1.1", default-features = false, features = ["sync"] }
+midly = "0.5"           # Standard MIDI File import/export
+
+# Live MIDI I/O (CoreMIDI / WinMM / ALSA)
+midir = "0.11"
+rtrb.workspace = true
+
+symphonia = { version = "0.5", default-features = false, features = ["wav", "pcm", "flac", "mp3", "aiff", "ogg", "vorbis"] }
+
+[dev-dependencies]
+oc-test-support = { path = "../oc-test-support" }
+oc-host = { path = "../oc-host", features = ["test-support"] }
+oc-dsl = { path = "../oc-dsl" }
+midly = "0.5"
+
+[[test]]
+name = "all"
+path = "tests/all.rs"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

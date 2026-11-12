@@ -1,0 +1,20 @@
+.startup-appearance {
+  margin: 16px 0;
+  padding: 12px 0;
+  border: 0;
+  border-top: 1px solid var(--border-light);
+  min-width: 0;
+  color: var(--text-primary);
+}
+.startup-appearance legend { font-weight: 600; padding: 0 8px 0 0; }
+.startup-appearance p { margin: 0 0 10px; color: var(--text-secondary); font-size: var(--font-size-sm); }
+.startup-appearance-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.startup-appearance label { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.startup-appearance select {
+  width: 100%; min-height: 32px;
+  border: 1px solid var(--border-light); border-radius: var(--radius-sm);
+  background: var(--bg-input); color: var(--text-primary); font: inherit;
+  padding: 5px 8px;
+}
+.startup-appearance select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+@media (max-width: 540px) { .startup-appearance-fields { grid-template-columns: 1fr; } }

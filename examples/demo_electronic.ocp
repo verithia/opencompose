@@ -1,0 +1,115 @@
+// OpenCompose Example: Electronic / Synth Track
+// Demonstrates: synth instruments, drum patterns, automation, effects chains
+
+@ocp "0.2.0"
+
+@project "Neon Drive"
+  tempo: 128
+  time_signature: 4/4
+  key: F minor
+
+@track lead | instrument: synth/lead_saw
+  mix: vol=-4dB, pan=0.1, send(plate_reverb=20%), send(stereo_delay=35%)
+
+  @phrase drop [1:1:0 - 5:1:0]
+    F4  8th  f   articulation=staccato
+    rest 8th
+    Ab4 8th  f   articulation=staccato
+    rest 8th
+    Bb4 q    ff  articulation=accent vibrato={rate: 6Hz, depth: 30ct, delay: 0.1s}
+    |
+    C5  q.   ff  expression={dynamics: ff->mf}
+    Bb4 8th  mf
+    Ab4 q    mf  articulation=legato
+    F4  q    mp
+    |
+    Eb4 h    mf  vibrato={rate: 5Hz, depth: 25ct}
+    F4  h    mf  articulation=legato
+    |
+    Ab4 w    f   expression={dynamics: mf->f} vibrato={rate: 5.5Hz, depth: 35ct, delay: 0.2s}
+
+  // The lane name is the patch parameter `filter.cutoff` in the interpreter's
+  // `pluginparam_` encoding: the name bytes in hex.
+  automation: pluginparam_66696c7465722e6375746f6666 {1:1:0=20%, 2:1:0=60%, 3:1:0=90%, 4:1:0=50%}
+
+@track bass | instrument: synth/bass_sub
+  mix: vol=-2dB, pan=0
+
+  @phrase drop [1:1:0 - 5:1:0]
+    F1  8th  ff  articulation=staccato
+    rest 8th
+    F1  8th  f
+    rest 8th
+    F1  q    ff  articulation=accent
+    |
+    Ab1 8th  ff  articulation=staccato
+    rest 8th
+    Ab1 8th  f
+    rest 8th
+    Ab1 q    ff
+    |
+    Bb1 8th  ff  articulation=staccato
+    rest 8th
+    Bb1 q    f
+    Ab1 q    f   articulation=legato
+    |
+    F1  h    ff  articulation=accent
+    rest h
+
+@track pad | instrument: synth/pad_warm
+  mix: vol=-12dB, pan=0, send(plate_reverb=50%)
+
+  @phrase drop [1:1:0 - 5:1:0]
+    F3  w   mp  articulation=sustained
+    |
+    Ab3 w   mp
+    |
+    Bb3 w   mf  expression={dynamics: mp->mf}
+    |
+    Ab3 w   mp  expression={dynamics: mf->mp}
+
+  automation: brightness {1:1:0=30%, 2:1:0=40%, 3:1:0=70%, 4:1:0=45%}
+
+@track drums | instrument: drums/electronic
+  mix: vol=0dB, pan=0
+
+  @pattern main_beat [1:1:0 - 2:1:0] x4
+    kick    1:0  ff
+    hihat   1:0  mp  articulation=closed
+    hihat   1:2  mp  articulation=closed
+    snare   2:0  f
+    hihat   2:0  mp  articulation=open
+    hihat   2:2  mf  articulation=closed
+    kick    3:0  f
+    kick    3:2  mf
+    hihat   3:0  mp  articulation=closed
+    hihat   3:2  mp  articulation=closed
+    snare   4:0  ff  articulation=accent
+    hihat   4:0  mf  articulation=open
+    hihat   4:2  mp  articulation=closed
+
+  @pattern fill [4:1:0 - 5:1:0]
+    snare   3:0  f
+    snare   3:1  mf
+    snare   3:2  f
+    snare   3:3  ff  articulation=flam
+    kick    4:0  ff
+    crash   4:0  ff
+
+@bus plate_reverb
+  routes: [master]
+  effects:
+    - reverb: type=plate, decay=1.8s, predelay=10ms, damping=0.6, mix=100%
+
+@bus stereo_delay
+  routes: [master]
+  effects:
+    - delay: time_l=375ms, time_r=250ms, feedback=35%, mix=100%
+    - eq: high_cut=8kHz
+
+@master
+  effects:
+    - eq: low_shelf=+2dB@60Hz, high_shelf=-1dB@14kHz
+    - compression: ratio=3:1, threshold=-6dB, attack=5ms, release=80ms
+    - stereo_width: amount=120%
+    - limiter: ceiling=-0.1dB

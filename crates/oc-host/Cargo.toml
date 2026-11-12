@@ -1,0 +1,102 @@
+[package]
+repository.workspace = true
+autotests = false
+name = "oc-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+debug-log = ["oc-diag/debug-log"]
+perf-log = ["oc-diag/perf-log"]
+test-support = []
+
+[dependencies]
+oc-diag = { path = "../oc-diag" }
+oc-audio = { path = "../oc-audio", default-features = false }
+oc-device-schema = { path = "../oc-device-schema" }
+oc-dsp = { path = "../oc-dsp" }
+oc-synth = { path = "../oc-synth" }
+oc-dsl = { path = "../oc-dsl" }
+serde = { workspace = true, features = ["rc"] }
+serde_json.workspace = true
+thiserror.workspace = true
+log.workspace = true
+libc = "0.2"
+clap-sys = "0.5"
+vst3 = "0.3"
+rtrb.workspace = true
+plist = "1.9"
+sha2.workspace = true
+
+[dev-dependencies]
+oc-synth-import = { path = "../oc-synth-import" }
+oc-test-support = { path = "../oc-test-support" }
+
+[build-dependencies]
+cc = "1"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2.workspace = true
+objc2-foundation = { version = "0.3", features = ["NSDate", "NSGeometry", "NSRunLoop", "NSString"] }
+objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSResponder", "NSView", "NSWindow"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_JobObjects",
+    "Win32_System_Pipes",
+    "Win32_System_Threading",
+    "Win32_Graphics_Gdi",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Ole",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[[test]]
+name = "vst3_editor_lifecycle"
+harness = false
+
+[[test]]
+name = "vst3_editor_probe"
+harness = false
+
+# Feasibility probe for hosting an x86_64-only bundle from a translated
+# process. It is not a product entry point, so it is gated behind
+# `test-support` and is never built by a workspace build.
+[[bin]]
+name = "opencompose-plugin-scan-helper"
+path = "src/bin/opencompose-plugin-scan-helper.rs"
+
+[[bin]]
+name = "oc-x86-vst3-probe"
+path = "src/bin/oc-x86-vst3-probe.rs"
+required-features = ["test-support"]
+
+[[example]]
+name = "vst3_editor_probe"
+required-features = ["test-support"]
+
+[[example]]
+name = "clap_effect_probe"
+required-features = ["test-support"]
+
+[[example]]
+name = "vst2_panel_probe"
+required-features = ["test-support"]
+
+[[test]]
+name = "all"
+path = "tests/all.rs"
+
+# Needs its own process for the counting global allocator.
+[[test]]
+name = "vst3_rt_alloc"
+path = "tests/vst3_rt_alloc.rs"
+harness = false
+required-features = ["test-support"]

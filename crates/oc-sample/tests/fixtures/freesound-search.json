@@ -1,0 +1,56 @@
+{
+  "count": 42,
+  "next": "https://freesound.org/apiv2/search/text/?query=snare&page=2",
+  "previous": null,
+  "results": [
+    {
+      "id": 14854,
+      "name": "snare_01.wav",
+      "tags": ["snare", "drum", "one-shot", "acoustic"],
+      "license": "Creative Commons 0",
+      "duration": 0.42,
+      "samplerate": 44100,
+      "channels": 1,
+      "filesize": 37044,
+      "previews": {
+        "preview-hq-mp3": "https://cdn.freesound.org/previews/14/14854_100-hq.mp3",
+        "preview-lq-mp3": "https://cdn.freesound.org/previews/14/14854_100-lq.mp3",
+        "preview-hq-ogg": "https://cdn.freesound.org/previews/14/14854_100-hq.ogg",
+        "preview-lq-ogg": "https://cdn.freesound.org/previews/14/14854_100-lq.ogg"
+      },
+      "type": "wav",
+      "username": "bassmosphere"
+    },
+    {
+      "id": 22222,
+      "name": "vocal_loop_ahh.wav",
+      "tags": ["vocal", "loop", "voice", "female"],
+      "license": "Attribution NonCommercial",
+      "duration": 8.0,
+      "samplerate": 48000,
+      "channels": 2,
+      "filesize": 1536000,
+      "previews": {
+        "preview-hq-mp3": "https://cdn.freesound.org/previews/22/22222_200-hq.mp3",
+        "preview-lq-mp3": "https://cdn.freesound.org/previews/22/22222_200-lq.mp3"
+      },
+      "type": "wav",
+      "username": "loopqueen"
+    },
+    {
+      "id": 33333,
+      "name": "upright_piano_phrase.wav",
+      "tags": ["piano", "phrase", "acoustic"],
+      "license": "Attribution",
+      "duration": 12.5,
+      "samplerate": 44100,
+      "channels": 2,
+      "filesize": 2205000,
+      "previews": {
+        "preview-hq-mp3": "https://cdn.freesound.org/previews/33/33333_300-hq.mp3"
+      },
+      "type": "wav",
+      "username": "pianoman"
+    }
+  ]
+}

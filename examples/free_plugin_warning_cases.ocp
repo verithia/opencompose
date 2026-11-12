@@ -1,0 +1,157 @@
+// Free Plugin Compatibility Cases
+// This file intentionally exercises plugins that may be installed in several
+// formats and may fail at render time if a selected bundle is missing or has an
+// incompatible CPU architecture.
+//
+// Expected behavior today:
+// - CLAP plugin effects render when the selected CLAP is installed.
+// - VST3 presets render by loading the selected VST3 bundle at render time.
+// - Missing VST3/AU plugins, or incompatible bundles such as Intel-only VST3s
+//   in an ARM-native build, produce a warning/error.
+//
+// Free plugins used here:
+// - ChowMultiTool CLAP effect: https://github.com/Chowdhury-DSP/ChowMultiTool
+// - Dexed VST3 synth: https://github.com/asb2m10/dexed
+// - Surge XT VST3 synth: https://surge-synthesizer.github.io/
+// - Vital VST3 synth free tier: https://vital.audio/ (Intel-only on macOS)
+
+@ocp "0.2.0"
+
+@project "Free Plugin Warning Cases"
+  tempo: 124
+  time_signature: 4/4
+  key: A minor
+
+@preset sf_epiano
+  source: soundfont
+  program: 5
+
+@preset dexed_vst3
+  source: vst3
+  plugin: "vst3:dexed"
+  patch: "E.PIANO 1"
+  params: {algorithm: 5, feedback: 6, op1_level: 99, op2_level: 75}
+
+@preset surge_xt_vst3
+  source: vst3
+  plugin: "vst3:surge_xt"
+  patch: "Init"
+  params: {filter1_cutoff: 0.55, filter1_resonance: 0.2, osc1_type: saw}
+
+@preset vital_vst3
+  source: vst3
+  plugin: "vst3:vital"
+  patch: "Init"
+  params: {osc_1_level: 0.8, filter_1_cutoff: 0.55, filter_1_resonance: 0.2}
+
+@track clean_reference | preset: sf_epiano, instrument: piano/electric_piano
+  mix: vol=-7dB, pan=-0.1
+  effects:
+    - plugin:org.chowdsp.ChowMultiTool
+    - chorus: rate=0.7, depth=3.5, mix=22%
+  @phrase riff [1:1:0 - 5:1:0]
+    @0.0 A3 8th mf
+    @0.5 C4 8th mf
+    @1.0 E4 q f
+    @2.0 C4 8th mf
+    @2.5 A3 8th mf
+    @3.0 E3 q mp
+    |
+    @0.0 F3 8th mf
+    @0.5 A3 8th mf
+    @1.0 C4 q f
+    @2.0 A3 8th mf
+    @2.5 F3 8th mf
+    @3.0 C3 q mp
+    |
+    @0.0 G3 8th mf
+    @0.5 B3 8th mf
+    @1.0 D4 q f
+    @2.0 B3 8th mf
+    @2.5 G3 8th mf
+    @3.0 D3 q mp
+    |
+    @0.0 A3 q f
+    @1.0 C4 q f
+    @2.0 E4 q f
+    @3.0 A4 q ff
+
+@track dexed_keys | preset: dexed_vst3, instrument: piano/electric_piano
+  mix: vol=-11dB, pan=0.12
+  @phrase chords [1:1:0 - 5:1:0]
+    @0.0 A2 h mp
+    @0.0 C3 h mp
+    @0.0 E3 h mp
+    @2.0 G2 h mp
+    @2.0 B2 h mp
+    @2.0 D3 h mp
+    |
+    @0.0 F2 w mp
+    @0.0 A2 w mp
+    @0.0 C3 w mp
+    |
+    @0.0 G2 w mf
+    @0.0 B2 w mf
+    @0.0 D3 w mf
+    |
+    @0.0 A2 w mf
+    @0.0 C3 w mf
+    @0.0 E3 w mf
+
+@track surge_vst3_lead | preset: surge_xt_vst3, instrument: synth/lead
+  mix: vol=-13dB, pan=0.2
+  @phrase lead [1:1:0 - 5:1:0]
+    @0.0 E5 8th f
+    rest 8th
+    @1.0 G5 8th f
+    @1.5 A5 8th ff
+    @2.0 C6 q ff
+    @3.0 B5 q f
+    |
+    @0.0 A5 q f
+    @1.0 E5 q mf
+    @2.0 D5 8th mf
+    @2.5 C5 8th mf
+    @3.0 A4 q mf
+    |
+    @0.0 B4 q f
+    @1.0 D5 q f
+    @2.0 G5 h ff
+    |
+    @0.0 E5 8th f
+    @0.5 G5 8th f
+    @1.0 A5 h ff
+    rest q
+
+@track vital_vst3_pluck | preset: vital_vst3, instrument: synth/lead
+  mix: vol=-15dB, pan=-0.2
+  @phrase pluck [1:1:0 - 5:1:0]
+    @0.0 A4 8th f
+    @0.5 C5 8th f
+    @1.0 E5 8th f
+    @1.5 A5 8th ff
+    @2.0 E5 q f
+    @3.0 C5 q mf
+    |
+    @0.0 F4 8th mf
+    @0.5 A4 8th mf
+    @1.0 C5 8th f
+    @1.5 F5 8th f
+    @2.0 C5 q mf
+    @3.0 A4 q mf
+    |
+    @0.0 G4 8th f
+    @0.5 B4 8th f
+    @1.0 D5 8th f
+    @1.5 G5 8th ff
+    @2.0 D5 q f
+    @3.0 B4 q mf
+    |
+    @0.0 A4 q f
+    @1.0 C5 q f
+    @2.0 E5 h ff
+
+@master
+  effects:
+    - eq: high_shelf=-1dB@9000Hz
+    - limiter: ceiling=-0.6dB

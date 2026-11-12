@@ -1,0 +1,12 @@
+data: {"event_type":"interaction.created","interaction":{"id":"int_text","status":"in_progress"}}
+
+data: {"event_type":"step.start","index":0,"step":{"type":"model_output"}}
+
+data: {"event_type":"step.delta","index":0,"delta":{"type":"text","text":"Hello"}}
+
+data: {"event_type":"step.delta","index":0,"delta":{"type":"text","text":"!"}}
+
+data: {"event_type":"step.stop","index":0,"step":{"type":"model_output","status":"completed"}}
+
+data: {"event_type":"interaction.completed","interaction":{"id":"int_text","status":"completed","steps":[{"type":"model_output","content":[{"type":"text","text":"Hello!"}]}],"usage":{"total_input_tokens":12,"total_output_tokens":7,"total_thought_tokens":3,"total_tokens":22}}}
+

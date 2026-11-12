@@ -1,0 +1,61 @@
+/* ============================================================================
+   Reset & Base
+   ============================================================================ */
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body, #root {
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg-void);
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+  font-size: var(--font-size-md);
+  line-height: 1.4;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  /* WebKit (the Tauri webview) only honours the prefixed property. */
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* Button faces belong to theme tokens, not the platform's cached native
+   appearance. Focus, disabled state and borders remain owned by each control. */
+button {
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+/* Read-only copy targets opt back in. WebKit needs the prefix, like the lock. */
+.selectable {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+/* Subtle scrollbar styling for WebKit */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--bg-void);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-light);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}
+
+::-webkit-scrollbar-corner {
+  background: var(--bg-primary);
+}

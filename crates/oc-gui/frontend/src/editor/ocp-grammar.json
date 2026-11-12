@@ -1,0 +1,108 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "OpenCompose",
+  "scopeName": "source.ocp",
+  "fileTypes": ["ocp"],
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#keywords" },
+    { "include": "#properties" },
+    { "include": "#strings" },
+    { "include": "#pitches" },
+    { "include": "#durations" },
+    { "include": "#dynamics" },
+    { "include": "#articulations" },
+    { "include": "#modifiers" },
+    { "include": "#numbers" },
+    { "include": "#barline" },
+    { "include": "#drums" },
+    { "include": "#operators" }
+  ],
+  "repository": {
+    "comments": {
+      "match": "//.*$",
+      "name": "comment.line.double-slash.ocp"
+    },
+    "keywords": {
+      "match": "@(project|track|phrase|pattern|bus|master|section)\\b",
+      "name": "keyword.control.ocp"
+    },
+    "properties": {
+      "match": "\\b(tempo|time_signature|key|swing|instrument|engine|mix|effects|routes|automation|loudness|repeat|label|engine_params):",
+      "name": "support.type.property-name.ocp"
+    },
+    "strings": {
+      "begin": "\"",
+      "end": "\"",
+      "name": "string.quoted.double.ocp"
+    },
+    "pitches": {
+      "match": "\\b([A-G])(##?|bb?)?([0-9])\\b",
+      "name": "constant.other.pitch.ocp",
+      "captures": {
+        "1": { "name": "constant.other.pitch.note.ocp" },
+        "2": { "name": "constant.other.pitch.accidental.ocp" },
+        "3": { "name": "constant.numeric.pitch.octave.ocp" }
+      }
+    },
+    "durations": {
+      "match": "\\b(w|h|q|8th|16th|32nd|64th)(\\.{1,2})?(t)?(~(w|h|q|8th|16th|32nd|64th))?\\b",
+      "name": "constant.other.duration.ocp"
+    },
+    "dynamics": {
+      "match": "\\b(ppp|pp|mp|mf|fff|ff|p|f)\\b",
+      "name": "entity.name.tag.dynamics.ocp"
+    },
+    "articulations": {
+      "match": "articulation=(staccatissimo|staccato|sul_ponticello|sul_tasto|flutter_tongue|col_legno|ghost_note|rim_shot|hammer_on|pull_off|palm_mute|legato|tenuto|marcato|accent|pizzicato|arco|tremolo|trill|harmonics|muted|open|sforzando|slide|bend|flam|roll|sustained|detached)",
+      "name": "variable.parameter.articulation.ocp",
+      "captures": {
+        "1": { "name": "constant.language.articulation.ocp" }
+      }
+    },
+    "modifiers": {
+      "match": "\\b(vibrato|expression|bend|send|vol|pan|mute|solo)\\b",
+      "name": "variable.parameter.modifier.ocp"
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "match": "[+-]?\\d+(\\.\\d+)?dB",
+          "name": "constant.numeric.db.ocp"
+        },
+        {
+          "match": "\\d+(\\.\\d+)?%",
+          "name": "constant.numeric.percentage.ocp"
+        },
+        {
+          "match": "\\d+(\\.\\d+)?Hz",
+          "name": "constant.numeric.frequency.ocp"
+        },
+        {
+          "match": "\\d+(\\.\\d+)?(ms|s|ct)",
+          "name": "constant.numeric.unit.ocp"
+        },
+        {
+          "match": "\\d+/\\d+",
+          "name": "constant.numeric.time-sig.ocp"
+        },
+        {
+          "match": "[+-]?\\d+(\\.\\d+)?",
+          "name": "constant.numeric.ocp"
+        }
+      ]
+    },
+    "barline": {
+      "match": "^\\s*\\|\\s*$",
+      "name": "punctuation.separator.barline.ocp"
+    },
+    "drums": {
+      "match": "\\b(kick|snare|hihat|crash|ride|splash|china|tom_high|tom_mid|tom_low|cowbell|clap|rim|shaker|tambourine|cabasa|guiro|woodblock)\\b",
+      "name": "entity.name.function.drum.ocp"
+    },
+    "operators": {
+      "match": "(->|\\[|\\]|\\{|\\}|\\||=|:|-)",
+      "name": "keyword.operator.ocp"
+    }
+  }
+}

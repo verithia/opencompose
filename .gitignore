@@ -1,0 +1,26 @@
+/target
+/book/
+.DS_Store
+
+# JavaScript and desktop build output
+node_modules/
+dist/
+/crates/oc-gui/frontend/src-tauri/target/
+/crates/oc-gui/frontend/src-tauri/gen/
+/editors/vscode-ocp/out/
+*.vsix
+
+# Python build output, environments, and caches
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.venv/
+build/
+
+# Private signing key
+plugin-index.key
+
+# Local-only staging for material that must never be published
+/private/

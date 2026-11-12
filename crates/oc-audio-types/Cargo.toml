@@ -1,0 +1,14 @@
+[package]
+repository.workspace = true
+name = "oc-audio-types"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Effect and transport contracts shared by the DSP graph and plugin hosts"
+
+[dependencies]
+oc-dsl = { path = "../oc-dsl" }
+
+[dev-dependencies]
+oc-test-support = { path = "../oc-test-support" }

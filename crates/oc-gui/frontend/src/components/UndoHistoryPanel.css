@@ -1,0 +1,123 @@
+.undo-history-toggle {
+  background: none;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.undo-history-toggle:hover {
+  color: var(--text-primary, #eee);
+}
+
+.undo-history-panel {
+  position: absolute;
+  right: 12px;
+  bottom: 34px;
+  z-index: 40;
+  width: 340px;
+  max-height: 320px;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-secondary, #1a1a1a);
+  border: 1px solid var(--border, #333);
+  border-radius: 8px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+  color: var(--text-primary, #eee);
+  font-size: var(--font-size-sm, 12px);
+}
+
+.undo-history-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border, #333);
+}
+
+.undo-history-close {
+  background: none;
+  border: 0;
+  color: var(--text-muted, #888);
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.undo-history-empty {
+  margin: 0;
+  padding: 16px 10px;
+  color: var(--text-muted, #888);
+}
+
+.undo-history-list {
+  list-style: none;
+  margin: 0;
+  padding: 4px;
+  overflow: auto;
+}
+
+.undo-history-entry {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
+  grid-template-areas: "index name time" "index scopes state";
+  gap: 1px 6px;
+  width: 100%;
+  padding: 5px 6px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.undo-history-entry:hover {
+  border-color: var(--accent, #7c3aed);
+}
+
+.undo-history-entry.redo {
+  opacity: 0.55;
+}
+
+.undo-history-index {
+  grid-area: index;
+  color: var(--text-muted, #888);
+  font-family: var(--font-mono, monospace);
+  font-variant-numeric: tabular-nums;
+}
+
+.undo-history-name {
+  grid-area: name;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.undo-history-scopes {
+  grid-area: scopes;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+}
+
+.undo-history-scope {
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--bg-primary, #111);
+  border: 1px solid var(--border, #333);
+  color: var(--text-secondary, #bbb);
+  font-size: var(--font-size-xs, 11px);
+}
+
+.undo-history-time {
+  grid-area: time;
+  color: var(--text-muted, #888);
+  font-variant-numeric: tabular-nums;
+}
+
+.undo-history-state {
+  grid-area: state;
+  color: var(--text-muted, #888);
+  font-size: var(--font-size-xs, 11px);
+}

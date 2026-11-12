@@ -1,0 +1,171 @@
+/* ============================================================================
+   Output device (toolbar preferences)
+   ============================================================================ */
+
+.audio-io-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.audio-io-section.audio-io-busy {
+  opacity: 0.65;
+}
+
+.audio-io-missing,
+.audio-io-notice,
+.audio-io-failure {
+  margin: 0;
+  font-size: var(--font-size-xs);
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+.audio-io-missing {
+  color: var(--warning, #d9a441);
+}
+
+.audio-io-notice {
+  color: var(--text-secondary);
+}
+
+.audio-io-failure {
+  color: var(--danger, #d96a6a);
+}
+
+.audio-io-readout {
+  margin: 0;
+  font-size: var(--font-size-xs);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+}
+
+.audio-io-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+/* ── Input capture ── */
+
+.audio-input-clip {
+  color: #ff6b6b;
+  font-weight: 600;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.audio-input-level {
+  font-variant-numeric: tabular-nums;
+}
+
+.audio-monitor-hint,
+.audio-input-closed {
+  opacity: 0.75;
+}
+
+/* ── Click and count-in ── */
+
+.transport-btn.click.active {
+  color: #ffd166;
+}
+
+.toolbar-select.click-count-in {
+  font-size: 11px;
+  max-width: 132px;
+}
+
+.click-level-input {
+  width: 48px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.click-count-in-reason,
+.record-reason {
+  font-size: 10px;
+  opacity: 0.7;
+  max-width: 220px;
+}
+
+/* ── Recording ── */
+
+.transport-btn.record {
+  color: #ff5f5f;
+}
+
+.transport-btn.record.active {
+  animation: record-pulse 1s ease-in-out infinite;
+}
+
+@keyframes record-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+.record-status {
+  font-size: 11px;
+  font-weight: 600;
+  color: #ff5f5f;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.record-stop {
+  font-size: 10px;
+}
+
+.record-report {
+  font-size: 10px;
+  max-width: 320px;
+  color: #ff9c9c;
+}
+
+/* What a record press will do: MIDI into a pattern, or the input device. */
+.record-arm-chip {
+  font-size: 10px;
+  max-width: 260px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  color: var(--text-muted);
+  background: color-mix(in srgb, #ff5f5f 10%, transparent);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.record-quantise {
+  font-size: 10px;
+  min-width: 78px;
+}
+
+.record-overdub.active,
+.record-punch-toggle.active {
+  color: #ff5f5f;
+  border-color: color-mix(in srgb, #ff5f5f 60%, transparent);
+}
+
+.record-punch {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.punch-input {
+  width: 44px;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.record-punch-error {
+  font-size: 10px;
+  max-width: 260px;
+  color: #ff9c9c;
+}
+
+.track-btn.track-arm-btn.arm-active {
+  color: #ff5f5f;
+  border-color: #ff5f5f;
+}

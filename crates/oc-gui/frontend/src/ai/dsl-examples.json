@@ -1,0 +1,113 @@
+{
+  "version": 1,
+  "examples": [
+    {
+      "id": "project-header",
+      "title": "Project header (tempo and meter changes)",
+      "fragment": "@project \"Name\"\n  tempo: 120\n  time_signature: 4/4\n  key: C major\n  swing: 56%\n  tempo_map: 9:1 = 90\n  time_sig_map: 17:1 = 3/4",
+      "note": "`tempo_map`/`time_sig_map` change tempo and meter at a written bar; the header values are the start. `swing:` is a percentage: the off-beat 8th lands that far late, and a pattern may override it."
+    },
+    {
+      "id": "presets",
+      "title": "Presets (sound sources)",
+      "wrap": "@project \"Example\"",
+      "fragment": "@preset warm_pad\n  source: soundfont\n  program: 89"
+    },
+    {
+      "id": "patterns",
+      "title": "Named patterns (reusable content)",
+      "wrap": "@project \"Example\"",
+      "fragment": "@pattern bass_line | instrument: bass/electric_bass, preset: punchy_bass\n  events:\n    Bb1 8th f articulation=staccato\n    @1.0 Db2 q mf\n    rest 8th",
+      "note": "A pattern holds `events:` or `hits:` only; effects, mix and automation belong to the track that hosts the clip."
+    },
+    {
+      "id": "track-clip",
+      "title": "Track with effects, mix and a clip",
+      "wrap": "@project \"Example\"",
+      "fragment": "@track bass | preset: punchy_bass, instrument: bass/electric_bass\n  effects:\n    - compression: ratio=4:1\n  mix: vol=-3dB, pan=0, send(reverb=30%), send(delay=15%)\n  clip: bass_line [9:1 - 16:4]",
+      "note": "`send(...)` is a mix property, not a line of its own. Built-in effects: eq, passive_eq, compressor, leveler, opto, fet, iron, doubler, exciter, ducked_send, reverb, delay, chorus, limiter, distortion, flanger, phaser, gate, saturator, stereo_width."
+    },
+    {
+      "id": "inline-phrase",
+      "title": "Inline phrases (notes directly in tracks)",
+      "wrap": "@project \"Example\"",
+      "fragment": "@track piano | instrument: piano/acoustic_grand\n  mix: vol=-4dB, pan=0\n  @phrase intro [1:1:0 - 8:4:0]\n    C4  q   mf\n    E4  q   mf  articulation=legato\n    G4  h   f\n    rest q"
+    },
+    {
+      "id": "chords",
+      "title": "Several notes at once (one position, comma list)",
+      "wrap": "@project \"Example\"\n@track piano | instrument: piano/acoustic_grand",
+      "fragment": "@phrase chords [9:1:0 - 11:1:0]\n  @0.0 G4 q mf, G5 q mf\n  @1.0 C4 q. mf, E4 q. mf, G4 q. mf\n  @2.0 [D4 F4 A4] h mp, C5 q pp",
+      "note": "Each member keeps its own duration, dynamics and modifiers; the line advances once, by its longest member. `@N` is an absolute beat position inside the phrase; without it the line follows the previous one."
+    },
+    {
+      "id": "gliss",
+      "title": "Glissando (slide and run)",
+      "wrap": "@project \"Example\"\n@preset tone\n  source: builtin\n  plugin: \"builtin.open_synth\"",
+      "fragment": "@track lead | preset: tone, instrument: synth/lead_saw\n  @phrase slide [1:1 - 3:1]\n    C4 q mf gliss\n    G4 h mf\n    A4 q mf gliss=run\n    E5 q mf",
+      "note": "`gliss` slides from the note's own pitch to the next note's pitch; `gliss=G4` names the destination and `gliss=120ms` arrives that early. A slide needs a builtin preset (`source: builtin, plugin: \"builtin.open_synth\"`): a sampled preset (SoundFont, sample bank) is a recording and cannot slide, so write `gliss=run` (chromatic) or `gliss=run_diatonic` (the project key) — short notes, which play on any source."
+    },
+    {
+      "id": "drum-notation",
+      "title": "Drum notation",
+      "wrap": "@project \"Example\"",
+      "fragment": "@track drums | instrument: drums/drumkit\n  @pattern groove [1:1 - 9:1] x8\n    kick 1:0 f\n    snare 2:0 f\n    hat_closed 1:2 mp articulation=closed",
+      "note": "A hit is `<pad> <beat>:<subdivision>` in the pattern's own bar (16ths 0-3); `xN` repeats that bar. Drums: kick, snare, hat_closed, hat_open, crash, ride, tom_low, clap, rim."
+    },
+    {
+      "id": "drum-kit",
+      "title": "Drum kits (@kit)",
+      "wrap": "@project \"Example\"",
+      "fragment": "@kit basic\n  max_voices: 32\n  pad kick  | note: C2, gain: -2dB, choke: 1\n  pad snare | note: D2, decay: 0.2s\n  layer kick | low: 1, high: 127, sample: \"samples/kick.wav\"\n\n@track drums | instrument: drums/drumkit, preset: basic\n  @pattern beat [1:1 - 2:1]\n    kick 1:0 ff\n    snare 2:0 mf",
+      "note": "A pad with no playable `layer` falls back to its synthesised `voice`."
+    },
+    {
+      "id": "audio-clip",
+      "title": "Placed audio (@audio_clip)",
+      "wrap": "@project \"Example\"",
+      "fragment": "@audio_clip intro [1:1 - 5:1] | track: tape\n  file: \"media/intro.flac\"  offset: 250ms  gain: -3dB  fade_in: 5ms\n@track tape | instrument: audio/clip",
+      "note": "The file is relative to the project; parsing and validation do not open it."
+    },
+    {
+      "id": "automation",
+      "title": "Automation lanes",
+      "wrap": "@project \"Example\"",
+      "fragment": "@track lead | instrument: synth/lead_saw\n  effects:\n    - eq: high_gain=0dB@8kHz\n  automation: brightness {1:1=20%, 5:1=90%}\n  automation: eq.high_gain [ppq=480] smoothing=25ms {1:1=-6dB, 9:1=+6dB curve=half_sine}",
+      "note": "A bare target (`brightness`) is a control lane: a step list. `<effect>.<param>` (`eq.high_gain`, `fx2.Mix`) is an effect parameter and also takes `curve=`, `tension=`, `smoothing=`, `mode=lfo` with `speed`/`mult`."
+    },
+    {
+      "id": "buses",
+      "title": "Buses (shared routing)",
+      "wrap": "@project \"Example\"",
+      "fragment": "@bus reverb\n  routes: [piano, strings]\n  effects:\n    - reverb: type=hall, decay=2.5s, mix=100%"
+    },
+    {
+      "id": "master",
+      "title": "Master",
+      "wrap": "@project \"Example\"",
+      "fragment": "@master\n  effects:\n    - eq: low_shelf=+1dB@60Hz\n    - limiter: ceiling=-0.3dB\n  gain_automation: linear [1:1 - 9:1] {1:1=1, 5:1=0.5, 8:1=1}",
+      "note": "`gain_automation:` is a post-insert ramp on a bus or the master: `linear` or `step`, the range, then points. Points are linear factors (0..1), not dB; the range end is exclusive."
+    },
+    {
+      "id": "sections",
+      "title": "Sections and repeat",
+      "wrap": "@project \"Example\"",
+      "fragment": "@section verse [9:1 - 17:1]\n  repeat: 2\n  label: \"Verse\"\n\n@section chorus [17:1 - 25:1]",
+      "note": "Sections define the rendered timeline; `repeat: N` plays the span N times, so the end can be later than the written one. Edit with `sections_list`, `sections_add`, `sections_set` and `sections_remove`."
+    },
+    {
+      "id": "pedal",
+      "title": "Sustain pedal",
+      "wrap": "@project \"Example\"\n@track piano | instrument: piano/acoustic_grand",
+      "fragment": "@phrase pedalled [1:1 - 3:1]\n  @0 pedal down\n  C4 w mf\n  @6 pedal up",
+      "note": "`pedal down` holds every note whose note-off happens while it is down; `pedal up` releases them through their normal release. A pedal always carries `@<beat>` and is a phrase or pattern-`events:` line, never a note modifier and never in `hits:`."
+    },
+    {
+      "id": "hairpin",
+      "title": "Crescendo and diminuendo (hairpins)",
+      "wrap": "@project \"Example\"\n@track strings | preset: warm_pad, instrument: strings/violin",
+      "fragment": "@phrase swell [1:1 - 5:1]\n  @0.0 cresc\n  @0 C4 w pp\n  @4 C4 w\n  @8 C4 w\n  @12 C4 w f",
+      "note": "`cresc` / `dim` at `@<beat>` swell from the dynamic in force there to the next written dynamic, or to the phrase end (default pp to f, and f to pp for `dim`); the notes between them take the start level and the ramp runs continuously through them. It expands to a `gain_automation:` clip on the track, which `ocp fmt` shows as a comment under the mark; a sampled instrument's timbre does not brighten with the ramp."
+    }
+  ]
+}

@@ -1,0 +1,20 @@
+/* Live preview traces inside the shared synth graph frame. */
+.synth-wave-voice {
+  fill: none;
+  stroke: var(--synth-line);
+  stroke-width: 1;
+  opacity: 0.22;
+  vector-effect: non-scaling-stroke;
+}
+
+.synth-wave-readout {
+  fill: var(--text-secondary);
+  font: 600 3.4px var(--font-mono);
+  opacity: 0.8;
+}
+
+.synth-wave-fallback {
+  fill: var(--text-secondary);
+  font: 600 3.4px var(--font-mono);
+  opacity: 0.55;
+}

@@ -1,0 +1,1097 @@
+{
+  "base": {
+    "schema": 2,
+    "generated_at": "2026-11-01T00:00:00Z",
+    "entries": [
+      {
+        "id": "example.synth",
+        "name": "Example Synth",
+        "vendor": "Example Audio",
+        "version": "1.0.0",
+        "description": "A compact synthesizer.",
+        "license": "MIT",
+        "tags": [
+          "synth"
+        ],
+        "aliases": [
+          "ExampleSynth"
+        ],
+        "known_issues": [
+          "First launch scans content."
+        ],
+        "installs": [
+          {
+            "kind": "direct",
+            "platform": "macos-aarch64",
+            "format": "vst3",
+            "archive": "zip",
+            "url": "https://plugins.example.test/synth.zip",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "bytes": 1024,
+            "plugin_id": "vst3:example_synth"
+          }
+        ]
+      }
+    ]
+  },
+  "complete": {
+    "schema": 2,
+    "generated_at": "2026-11-01T00:00:00Z",
+    "entries": [
+      {
+        "id": "example.synth",
+        "name": "Example Synth",
+        "vendor": "Example Audio",
+        "version": "1.0.0",
+        "description": "A compact synthesizer.",
+        "license": "MIT",
+        "tags": [
+          "synth"
+        ],
+        "aliases": [
+          "ExampleSynth"
+        ],
+        "known_issues": [
+          "First launch scans content."
+        ],
+        "installs": [
+          {
+            "kind": "direct",
+            "platform": "macos-aarch64",
+            "format": "vst3",
+            "archive": "zip",
+            "url": "https://plugins.example.test/synth.zip",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "bytes": 1024,
+            "plugin_id": "vst3:example_synth",
+            "companion_content": {
+              "target": "surge-xt-factory",
+              "archive": "tar-gz",
+              "url": "https://plugins.example.test/content.tar.gz",
+              "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+              "bytes": 1024,
+              "strip_prefix": "factory"
+            }
+          },
+          {
+            "kind": "direct",
+            "platform": "macos-aarch64",
+            "format": "standalone",
+            "archive": "tar-gz",
+            "url": "https://plugins.example.test/synth.zip",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "bytes": 1024,
+            "runtime": {
+              "provider": "spleeter",
+              "layout_version": 1,
+              "launcher": "bin/spleeter",
+              "required_files": [
+                {
+                  "path": "bin/spleeter",
+                  "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                },
+                {
+                  "path": "python/bin/python3",
+                  "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                },
+                {
+                  "path": "models/2stems/checkpoint",
+                  "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                },
+                {
+                  "path": "models/2stems/model.data-00000-of-00001",
+                  "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                },
+                {
+                  "path": "models/2stems/model.index",
+                  "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                },
+                {
+                  "path": "models/2stems/.probe",
+                  "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    ],
+    "packs": [
+      {
+        "kind": "soundfont",
+        "id": "basic",
+        "name": "Basic",
+        "version": "1.0.0",
+        "description": "A basic sound set.",
+        "url": "https://plugins.example.test/basic.sf3",
+        "bytes": 1024,
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "license": {
+          "name": "MIT",
+          "url": "https://plugins.example.test/license",
+          "text": "MIT license and attribution."
+        }
+      },
+      {
+        "kind": "future-impulse",
+        "id": "future-hall",
+        "extra": {
+          "channels": 4,
+          "positions": [
+            0,
+            1
+          ]
+        }
+      }
+    ]
+  },
+  "invalid": [
+    {
+      "name": "empty tags",
+      "code": "invalid_tag",
+      "path": "entries[0].tags",
+      "document": {
+        "schema": 2,
+        "generated_at": "2026-11-01T00:00:00Z",
+        "entries": [
+          {
+            "id": "example.synth",
+            "name": "Example Synth",
+            "vendor": "Example Audio",
+            "version": "1.0.0",
+            "description": "A compact synthesizer.",
+            "license": "MIT",
+            "tags": [],
+            "aliases": [
+              "ExampleSynth"
+            ],
+            "known_issues": [
+              "First launch scans content."
+            ],
+            "installs": [
+              {
+                "kind": "direct",
+                "platform": "macos-aarch64",
+                "format": "vst3",
+                "archive": "zip",
+                "url": "https://plugins.example.test/synth.zip",
+                "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "bytes": 1024,
+                "plugin_id": "vst3:example_synth"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "multi sentence description",
+      "code": "description",
+      "path": "entries[0].description",
+      "document": {
+        "schema": 2,
+        "generated_at": "2026-11-01T00:00:00Z",
+        "entries": [
+          {
+            "id": "example.synth",
+            "name": "Example Synth",
+            "vendor": "Example Audio",
+            "version": "1.0.0",
+            "description": "One sentence. Another sentence.",
+            "license": "MIT",
+            "tags": [
+              "synth"
+            ],
+            "aliases": [
+              "ExampleSynth"
+            ],
+            "known_issues": [
+              "First launch scans content."
+            ],
+            "installs": [
+              {
+                "kind": "direct",
+                "platform": "macos-aarch64",
+                "format": "vst3",
+                "archive": "zip",
+                "url": "https://plugins.example.test/synth.zip",
+                "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "bytes": 1024,
+                "plugin_id": "vst3:example_synth"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "invalid scanner id",
+      "code": "plugin_id",
+      "path": "entries[0].installs[0].plugin_id",
+      "document": {
+        "schema": 2,
+        "generated_at": "2026-11-01T00:00:00Z",
+        "entries": [
+          {
+            "id": "example.synth",
+            "name": "Example Synth",
+            "vendor": "Example Audio",
+            "version": "1.0.0",
+            "description": "A compact synthesizer.",
+            "license": "MIT",
+            "tags": [
+              "synth"
+            ],
+            "aliases": [
+              "ExampleSynth"
+            ],
+            "known_issues": [
+              "First launch scans content."
+            ],
+            "installs": [
+              {
+                "kind": "direct",
+                "platform": "macos-aarch64",
+                "format": "vst3",
+                "archive": "zip",
+                "url": "https://plugins.example.test/synth.zip",
+                "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "bytes": 1024,
+                "plugin_id": "vst3:Not A Slug"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "invalid pack id",
+      "code": "pack",
+      "path": "packs[0].id",
+      "document": {
+        "schema": 2,
+        "generated_at": "2026-11-01T00:00:00Z",
+        "entries": [
+          {
+            "id": "example.synth",
+            "name": "Example Synth",
+            "vendor": "Example Audio",
+            "version": "1.0.0",
+            "description": "A compact synthesizer.",
+            "license": "MIT",
+            "tags": [
+              "synth"
+            ],
+            "aliases": [
+              "ExampleSynth"
+            ],
+            "known_issues": [
+              "First launch scans content."
+            ],
+            "installs": [
+              {
+                "kind": "direct",
+                "platform": "macos-aarch64",
+                "format": "vst3",
+                "archive": "zip",
+                "url": "https://plugins.example.test/synth.zip",
+                "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "bytes": 1024,
+                "plugin_id": "vst3:example_synth",
+                "companion_content": {
+                  "target": "surge-xt-factory",
+                  "archive": "tar-gz",
+                  "url": "https://plugins.example.test/content.tar.gz",
+                  "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                  "bytes": 1024,
+                  "strip_prefix": "factory"
+                }
+              },
+              {
+                "kind": "direct",
+                "platform": "macos-aarch64",
+                "format": "standalone",
+                "archive": "tar-gz",
+                "url": "https://plugins.example.test/synth.zip",
+                "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "bytes": 1024,
+                "runtime": {
+                  "provider": "spleeter",
+                  "layout_version": 1,
+                  "launcher": "bin/spleeter",
+                  "required_files": [
+                    {
+                      "path": "bin/spleeter",
+                      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                    },
+                    {
+                      "path": "python/bin/python3",
+                      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                    },
+                    {
+                      "path": "models/2stems/checkpoint",
+                      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                    },
+                    {
+                      "path": "models/2stems/model.data-00000-of-00001",
+                      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                    },
+                    {
+                      "path": "models/2stems/model.index",
+                      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                    },
+                    {
+                      "path": "models/2stems/.probe",
+                      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ],
+        "packs": [
+          {
+            "kind": "soundfont",
+            "id": "../bank",
+            "name": "Basic",
+            "version": "1.0.0",
+            "description": "A basic sound set.",
+            "url": "https://plugins.example.test/basic.sf3",
+            "bytes": 1024,
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "license": {
+              "name": "MIT",
+              "url": "https://plugins.example.test/license",
+              "text": "MIT license and attribution."
+            }
+          },
+          {
+            "kind": "future-impulse",
+            "id": "future-hall",
+            "extra": {
+              "channels": 4,
+              "positions": [
+                0,
+                1
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "invalid license URL",
+      "code": "pack",
+      "path": "packs[0].license.url",
+      "document": {
+        "schema": 2,
+        "generated_at": "2026-11-01T00:00:00Z",
+        "entries": [
+          {
+            "id": "example.synth",
+            "name": "Example Synth",
+            "vendor": "Example Audio",
+            "version": "1.0.0",
+            "description": "A compact synthesizer.",
+            "license": "MIT",
+            "tags": [
+              "synth"
+            ],
+            "aliases": [
+              "ExampleSynth"
+            ],
+            "known_issues": [
+              "First launch scans content."
+            ],
+            "installs": [
+              {
+                "kind": "direct",
+                "platform": "macos-aarch64",
+                "format": "vst3",
+                "archive": "zip",
+                "url": "https://plugins.example.test/synth.zip",
+                "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "bytes": 1024,
+                "plugin_id": "vst3:example_synth",
+                "companion_content": {
+                  "target": "surge-xt-factory",
+                  "archive": "tar-gz",
+                  "url": "https://plugins.example.test/content.tar.gz",
+                  "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                  "bytes": 1024,
+                  "strip_prefix": "factory"
+                }
+              },
+              {
+                "kind": "direct",
+                "platform": "macos-aarch64",
+                "format": "standalone",
+                "archive": "tar-gz",
+                "url": "https://plugins.example.test/synth.zip",
+                "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "bytes": 1024,
+                "runtime": {
+                  "provider": "spleeter",
+                  "layout_version": 1,
+                  "launcher": "bin/spleeter",
+                  "required_files": [
+                    {
+                      "path": "bin/spleeter",
+                      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                    },
+                    {
+                      "path": "python/bin/python3",
+                      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                    },
+                    {
+                      "path": "models/2stems/checkpoint",
+                      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                    },
+                    {
+                      "path": "models/2stems/model.data-00000-of-00001",
+                      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                    },
+                    {
+                      "path": "models/2stems/model.index",
+                      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                    },
+                    {
+                      "path": "models/2stems/.probe",
+                      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ],
+        "packs": [
+          {
+            "kind": "soundfont",
+            "id": "basic",
+            "name": "Basic",
+            "version": "1.0.0",
+            "description": "A basic sound set.",
+            "url": "https://plugins.example.test/basic.sf3",
+            "bytes": 1024,
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "license": {
+              "name": "MIT",
+              "url": "license.txt",
+              "text": "MIT license and attribution."
+            }
+          },
+          {
+            "kind": "future-impulse",
+            "id": "future-hall",
+            "extra": {
+              "channels": 4,
+              "positions": [
+                0,
+                1
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "oversize pack description",
+      "code": "pack",
+      "path": "packs[0].description",
+      "document": {
+        "schema": 2,
+        "generated_at": "2026-11-01T00:00:00Z",
+        "entries": [
+          {
+            "id": "example.synth",
+            "name": "Example Synth",
+            "vendor": "Example Audio",
+            "version": "1.0.0",
+            "description": "A compact synthesizer.",
+            "license": "MIT",
+            "tags": [
+              "synth"
+            ],
+            "aliases": [
+              "ExampleSynth"
+            ],
+            "known_issues": [
+              "First launch scans content."
+            ],
+            "installs": [
+              {
+                "kind": "direct",
+                "platform": "macos-aarch64",
+                "format": "vst3",
+                "archive": "zip",
+                "url": "https://plugins.example.test/synth.zip",
+                "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "bytes": 1024,
+                "plugin_id": "vst3:example_synth",
+                "companion_content": {
+                  "target": "surge-xt-factory",
+                  "archive": "tar-gz",
+                  "url": "https://plugins.example.test/content.tar.gz",
+                  "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                  "bytes": 1024,
+                  "strip_prefix": "factory"
+                }
+              },
+              {
+                "kind": "direct",
+                "platform": "macos-aarch64",
+                "format": "standalone",
+                "archive": "tar-gz",
+                "url": "https://plugins.example.test/synth.zip",
+                "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "bytes": 1024,
+                "runtime": {
+                  "provider": "spleeter",
+                  "layout_version": 1,
+                  "launcher": "bin/spleeter",
+                  "required_files": [
+                    {
+                      "path": "bin/spleeter",
+                      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                    },
+                    {
+                      "path": "python/bin/python3",
+                      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                    },
+                    {
+                      "path": "models/2stems/checkpoint",
+                      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                    },
+                    {
+                      "path": "models/2stems/model.data-00000-of-00001",
+                      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                    },
+                    {
+                      "path": "models/2stems/model.index",
+                      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                    },
+                    {
+                      "path": "models/2stems/.probe",
+                      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ],
+        "packs": [
+          {
+            "kind": "soundfont",
+            "id": "basic",
+            "name": "Basic",
+            "version": "1.0.0",
+            "description": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+            "url": "https://plugins.example.test/basic.sf3",
+            "bytes": 1024,
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "license": {
+              "name": "MIT",
+              "url": "https://plugins.example.test/license",
+              "text": "MIT license and attribution."
+            }
+          },
+          {
+            "kind": "future-impulse",
+            "id": "future-hall",
+            "extra": {
+              "channels": 4,
+              "positions": [
+                0,
+                1
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "missing runtime files",
+      "code": "runtime",
+      "path": "entries[0].installs[1].runtime",
+      "document": {
+        "schema": 2,
+        "generated_at": "2026-11-01T00:00:00Z",
+        "entries": [
+          {
+            "id": "example.synth",
+            "name": "Example Synth",
+            "vendor": "Example Audio",
+            "version": "1.0.0",
+            "description": "A compact synthesizer.",
+            "license": "MIT",
+            "tags": [
+              "synth"
+            ],
+            "aliases": [
+              "ExampleSynth"
+            ],
+            "known_issues": [
+              "First launch scans content."
+            ],
+            "installs": [
+              {
+                "kind": "direct",
+                "platform": "macos-aarch64",
+                "format": "vst3",
+                "archive": "zip",
+                "url": "https://plugins.example.test/synth.zip",
+                "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "bytes": 1024,
+                "plugin_id": "vst3:example_synth",
+                "companion_content": {
+                  "target": "surge-xt-factory",
+                  "archive": "tar-gz",
+                  "url": "https://plugins.example.test/content.tar.gz",
+                  "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                  "bytes": 1024,
+                  "strip_prefix": "factory"
+                }
+              },
+              {
+                "kind": "direct",
+                "platform": "macos-aarch64",
+                "format": "standalone",
+                "archive": "tar-gz",
+                "url": "https://plugins.example.test/synth.zip",
+                "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "bytes": 1024,
+                "runtime": {
+                  "provider": "spleeter",
+                  "layout_version": 1,
+                  "launcher": "bin/spleeter",
+                  "required_files": []
+                }
+              }
+            ]
+          }
+        ],
+        "packs": [
+          {
+            "kind": "soundfont",
+            "id": "basic",
+            "name": "Basic",
+            "version": "1.0.0",
+            "description": "A basic sound set.",
+            "url": "https://plugins.example.test/basic.sf3",
+            "bytes": 1024,
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "license": {
+              "name": "MIT",
+              "url": "https://plugins.example.test/license",
+              "text": "MIT license and attribution."
+            }
+          },
+          {
+            "kind": "future-impulse",
+            "id": "future-hall",
+            "extra": {
+              "channels": 4,
+              "positions": [
+                0,
+                1
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "unsupported companion target",
+      "code": "companion",
+      "path": "entries[0].installs[0].companion_content",
+      "document": {
+        "schema": 2,
+        "generated_at": "2026-11-01T00:00:00Z",
+        "entries": [
+          {
+            "id": "example.synth",
+            "name": "Example Synth",
+            "vendor": "Example Audio",
+            "version": "1.0.0",
+            "description": "A compact synthesizer.",
+            "license": "MIT",
+            "tags": [
+              "synth"
+            ],
+            "aliases": [
+              "ExampleSynth"
+            ],
+            "known_issues": [
+              "First launch scans content."
+            ],
+            "installs": [
+              {
+                "kind": "direct",
+                "platform": "macos-aarch64",
+                "format": "vst3",
+                "archive": "zip",
+                "url": "https://plugins.example.test/synth.zip",
+                "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "bytes": 1024,
+                "plugin_id": "vst3:example_synth",
+                "companion_content": {
+                  "target": "unsupported",
+                  "archive": "tar-gz",
+                  "url": "https://plugins.example.test/content.tar.gz",
+                  "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                  "bytes": 1024,
+                  "strip_prefix": "factory"
+                }
+              },
+              {
+                "kind": "direct",
+                "platform": "macos-aarch64",
+                "format": "standalone",
+                "archive": "tar-gz",
+                "url": "https://plugins.example.test/synth.zip",
+                "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "bytes": 1024,
+                "runtime": {
+                  "provider": "spleeter",
+                  "layout_version": 1,
+                  "launcher": "bin/spleeter",
+                  "required_files": [
+                    {
+                      "path": "bin/spleeter",
+                      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                    },
+                    {
+                      "path": "python/bin/python3",
+                      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                    },
+                    {
+                      "path": "models/2stems/checkpoint",
+                      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                    },
+                    {
+                      "path": "models/2stems/model.data-00000-of-00001",
+                      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                    },
+                    {
+                      "path": "models/2stems/model.index",
+                      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                    },
+                    {
+                      "path": "models/2stems/.probe",
+                      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ],
+        "packs": [
+          {
+            "kind": "soundfont",
+            "id": "basic",
+            "name": "Basic",
+            "version": "1.0.0",
+            "description": "A basic sound set.",
+            "url": "https://plugins.example.test/basic.sf3",
+            "bytes": 1024,
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "license": {
+              "name": "MIT",
+              "url": "https://plugins.example.test/license",
+              "text": "MIT license and attribution."
+            }
+          },
+          {
+            "kind": "future-impulse",
+            "id": "future-hall",
+            "extra": {
+              "channels": 4,
+              "positions": [
+                0,
+                1
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "runtime unknown field",
+      "code": "parse",
+      "path": "entries[0]",
+      "document": {
+        "schema": 2,
+        "generated_at": "2026-11-01T00:00:00Z",
+        "entries": [
+          {
+            "id": "example.synth",
+            "name": "Example Synth",
+            "vendor": "Example Audio",
+            "version": "1.0.0",
+            "description": "A compact synthesizer.",
+            "license": "MIT",
+            "tags": [
+              "synth"
+            ],
+            "aliases": [
+              "ExampleSynth"
+            ],
+            "known_issues": [
+              "First launch scans content."
+            ],
+            "installs": [
+              {
+                "kind": "direct",
+                "platform": "macos-aarch64",
+                "format": "vst3",
+                "archive": "zip",
+                "url": "https://plugins.example.test/synth.zip",
+                "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "bytes": 1024,
+                "plugin_id": "vst3:example_synth",
+                "companion_content": {
+                  "target": "surge-xt-factory",
+                  "archive": "tar-gz",
+                  "url": "https://plugins.example.test/content.tar.gz",
+                  "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                  "bytes": 1024,
+                  "strip_prefix": "factory"
+                }
+              },
+              {
+                "kind": "direct",
+                "platform": "macos-aarch64",
+                "format": "standalone",
+                "archive": "tar-gz",
+                "url": "https://plugins.example.test/synth.zip",
+                "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "bytes": 1024,
+                "runtime": {
+                  "provider": "spleeter",
+                  "layout_version": 1,
+                  "launcher": "bin/spleeter",
+                  "required_files": [
+                    {
+                      "path": "bin/spleeter",
+                      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                    },
+                    {
+                      "path": "python/bin/python3",
+                      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                    },
+                    {
+                      "path": "models/2stems/checkpoint",
+                      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                    },
+                    {
+                      "path": "models/2stems/model.data-00000-of-00001",
+                      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                    },
+                    {
+                      "path": "models/2stems/model.index",
+                      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                    },
+                    {
+                      "path": "models/2stems/.probe",
+                      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                    }
+                  ],
+                  "unrecognized": true
+                }
+              }
+            ]
+          }
+        ],
+        "packs": [
+          {
+            "kind": "soundfont",
+            "id": "basic",
+            "name": "Basic",
+            "version": "1.0.0",
+            "description": "A basic sound set.",
+            "url": "https://plugins.example.test/basic.sf3",
+            "bytes": 1024,
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "license": {
+              "name": "MIT",
+              "url": "https://plugins.example.test/license",
+              "text": "MIT license and attribution."
+            }
+          },
+          {
+            "kind": "future-impulse",
+            "id": "future-hall",
+            "extra": {
+              "channels": 4,
+              "positions": [
+                0,
+                1
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "companion unknown field",
+      "code": "parse",
+      "path": "entries[0]",
+      "document": {
+        "schema": 2,
+        "generated_at": "2026-11-01T00:00:00Z",
+        "entries": [
+          {
+            "id": "example.synth",
+            "name": "Example Synth",
+            "vendor": "Example Audio",
+            "version": "1.0.0",
+            "description": "A compact synthesizer.",
+            "license": "MIT",
+            "tags": [
+              "synth"
+            ],
+            "aliases": [
+              "ExampleSynth"
+            ],
+            "known_issues": [
+              "First launch scans content."
+            ],
+            "installs": [
+              {
+                "kind": "direct",
+                "platform": "macos-aarch64",
+                "format": "vst3",
+                "archive": "zip",
+                "url": "https://plugins.example.test/synth.zip",
+                "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "bytes": 1024,
+                "plugin_id": "vst3:example_synth",
+                "companion_content": {
+                  "target": "surge-xt-factory",
+                  "archive": "tar-gz",
+                  "url": "https://plugins.example.test/content.tar.gz",
+                  "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                  "bytes": 1024,
+                  "strip_prefix": "factory",
+                  "unrecognized": true
+                }
+              },
+              {
+                "kind": "direct",
+                "platform": "macos-aarch64",
+                "format": "standalone",
+                "archive": "tar-gz",
+                "url": "https://plugins.example.test/synth.zip",
+                "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "bytes": 1024,
+                "runtime": {
+                  "provider": "spleeter",
+                  "layout_version": 1,
+                  "launcher": "bin/spleeter",
+                  "required_files": [
+                    {
+                      "path": "bin/spleeter",
+                      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                    },
+                    {
+                      "path": "python/bin/python3",
+                      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                    },
+                    {
+                      "path": "models/2stems/checkpoint",
+                      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                    },
+                    {
+                      "path": "models/2stems/model.data-00000-of-00001",
+                      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                    },
+                    {
+                      "path": "models/2stems/model.index",
+                      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                    },
+                    {
+                      "path": "models/2stems/.probe",
+                      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ],
+        "packs": [
+          {
+            "kind": "soundfont",
+            "id": "basic",
+            "name": "Basic",
+            "version": "1.0.0",
+            "description": "A basic sound set.",
+            "url": "https://plugins.example.test/basic.sf3",
+            "bytes": 1024,
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "license": {
+              "name": "MIT",
+              "url": "https://plugins.example.test/license",
+              "text": "MIT license and attribution."
+            }
+          },
+          {
+            "kind": "future-impulse",
+            "id": "future-hall",
+            "extra": {
+              "channels": 4,
+              "positions": [
+                0,
+                1
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "future catalog schema",
+      "code": "schema",
+      "path": "schema",
+      "document": {
+        "schema": 999,
+        "generated_at": "2026-11-01T00:00:00Z",
+        "entries": [
+          {
+            "id": "example.synth",
+            "name": "Example Synth",
+            "vendor": "Example Audio",
+            "version": "1.0.0",
+            "description": "A compact synthesizer.",
+            "license": "MIT",
+            "tags": [
+              "synth"
+            ],
+            "aliases": [
+              "ExampleSynth"
+            ],
+            "known_issues": [
+              "First launch scans content."
+            ],
+            "installs": [
+              {
+                "kind": "direct",
+                "platform": "macos-aarch64",
+                "format": "vst3",
+                "archive": "zip",
+                "url": "https://plugins.example.test/synth.zip",
+                "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "bytes": 1024,
+                "plugin_id": "vst3:example_synth"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

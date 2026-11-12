@@ -1,0 +1,111 @@
+// Free CLAP Plugin Render Test
+// Install the plugins, scan them in OpenCompose, then open this file.
+// Renderable today: CLAP instrument presets. Plugin params are stored in the DSL,
+// but OpenCompose does not apply CLAP params yet.
+//
+// Free plugins used here:
+// - Surge XT: https://surge-synthesizer.github.io/
+// - Cardinal Synth: https://github.com/DISTRHO/Cardinal
+
+@ocp "0.2.0"
+
+@project "Free CLAP Plugin Render Test"
+  tempo: 112
+  time_signature: 4/4
+  key: D minor
+
+@preset surge_xt_bass
+  source: clap
+  plugin: "org.surge-synth-team.surge-xt"
+  patch: "Init"
+  params: {filter1_cutoff: 0.42, filter1_resonance: 0.25, osc1_type: saw}
+
+@preset surge_xt_lead
+  source: clap
+  plugin: "org.surge-synth-team.surge-xt"
+  patch: "Init"
+  params: {filter1_cutoff: 0.68, filter1_resonance: 0.18, osc1_unison_voices: 4}
+
+@preset cardinal_synth
+  source: clap
+  plugin: "studio.kx.distrho.cardinal#synth"
+  patch: "Init"
+  params: {browserZoom: 100, tooltips: true, rackBrightness: 65}
+
+@track bass | preset: surge_xt_bass, instrument: bass/electric_bass
+  mix: vol=-7dB, pan=0
+  @phrase bassline [1:1:0 - 5:1:0]
+    @0.0 D2 8th f
+    rest 8th
+    @1.0 D2 8th mf
+    @1.5 F2 8th mf
+    @2.0 C3 q f
+    @3.0 A2 q mf
+    |
+    @0.0 Bb1 q f
+    @1.0 F2 8th mf
+    rest 8th
+    @2.0 C2 q f
+    @3.0 C3 q mf
+    |
+    @0.0 G1 q f
+    @1.0 D2 8th mf
+    @1.5 G2 8th mf
+    @2.0 A2 q f
+    @3.0 C3 q mf
+    |
+    @0.0 D2 q ff
+    rest q
+    @2.0 A2 8th f
+    @2.5 C3 8th f
+    @3.0 D3 q ff
+
+@track lead | preset: surge_xt_lead, instrument: piano/acoustic_grand
+  mix: vol=-10dB, pan=0.18
+  @phrase hook [1:1:0 - 5:1:0]
+    @0.0 D5 8th f articulation=staccato
+    @0.5 F5 8th f articulation=staccato
+    @1.0 A5 q ff
+    @2.0 G5 8th mf
+    @2.5 F5 8th mf
+    @3.0 D5 q f
+    |
+    @0.0 C5 8th f
+    @0.5 D5 8th f
+    @1.0 F5 q f
+    @2.0 E5 8th mf
+    @2.5 C5 8th mf
+    @3.0 A4 q mf
+    |
+    @0.0 Bb4 q f
+    @1.0 D5 q f
+    @2.0 C5 8th mf
+    @2.5 A4 8th mf
+    @3.0 G4 q mf
+    |
+    @0.0 A4 8th f
+    @0.5 C5 8th f
+    @1.0 D5 h ff
+    rest q
+  automation: filter_cutoff {1:1=30%, 2:1=65%, 3:1=45%, 4:1=80%}
+
+@track modular_pad | preset: cardinal_synth, instrument: synth/pad
+  mix: vol=-16dB, pan=-0.12
+  @phrase pad [1:1:0 - 5:1:0]
+    @0.0 D3 w mp articulation=sustained
+    @0.0 A3 w mp articulation=sustained
+    |
+    @0.0 Bb2 w mp articulation=sustained
+    @0.0 F3 w mp articulation=sustained
+    |
+    @0.0 G2 w mp articulation=sustained
+    @0.0 D3 w mp articulation=sustained
+    |
+    @0.0 A2 w mf articulation=sustained
+    @0.0 E3 w mf articulation=sustained
+
+@master
+  effects:
+    - eq: low_shelf=+1dB@90Hz
+    - compression: ratio=2:1, threshold=-12dB, attack=15ms, release=120ms
+    - limiter: ceiling=-0.5dB

@@ -1,0 +1,16 @@
+[package]
+repository.workspace = true
+name = "oc-data"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Data utilities: MIDI→DSL conversion, batch rendering, synthetic MIDI generation"
+
+[dependencies]
+oc-dsl = { path = "../oc-dsl" }
+oc-engine = { path = "../oc-engine", default-features = false, features = ["plugin-host"] }
+serde.workspace = true
+
+[dev-dependencies]
+midly = "0.5"

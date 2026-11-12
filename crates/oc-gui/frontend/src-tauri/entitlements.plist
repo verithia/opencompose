@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- CLAP/VST3 bundles are code signed by their own vendors, so hardened
+	     runtime library validation would refuse to load them without this. -->
+	<key>com.apple.security.cs.disable-library-validation</key>
+	<true/>
+	<!-- Takes and monitoring open a capture stream. The matching
+	     NSMicrophoneUsageDescription is merged from Info.plist. -->
+	<key>com.apple.security.device.audio-input</key>
+	<true/>
+</dict>
+</plist>

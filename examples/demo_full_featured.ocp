@@ -1,0 +1,444 @@
+@ocp "0.2.0"
+
+@project "Midnight City"
+  tempo: 110
+  time_signature: 4/4
+  key: Bb minor
+  key_map:
+    17:1 = Db major
+
+@preset lush_pad
+  source: soundfont
+  program: 89
+  effects:
+    - eq: high_shelf=-2dB@10kHz
+    - chorus: rate=0.8, depth=4, mix=30%
+
+@preset aggressive_lead
+  source: soundfont
+  program: 81
+  effects:
+    - eq: low_cut=200Hz, presence=+2dB@3kHz
+    - compression: ratio=3:1, threshold=-10dB, attack=5ms, release=80ms
+
+@preset punchy_bass
+  source: soundfont
+  program: 33
+  effects:
+    - compression: sidechain=drums, ratio=4:1, threshold=-12dB, attack=10ms, release=100ms
+    - eq: low_shelf=+2dB@80Hz, high_cut=6000Hz
+
+@preset tight_drums
+  source: soundfont
+  program: 0
+  effects:
+    - compression: ratio=3:1, threshold=-8dB, attack=5ms, release=60ms
+    - eq: low_shelf=+2dB@60Hz, presence=+1dB@4kHz
+
+@preset brass_stab_base
+  source: soundfont
+  program: 61
+  effects:
+    - eq: low_cut=200Hz, presence=+2dB@2.5kHz
+
+@preset brass_stab
+  extends: brass_stab_base
+  effects:
+    - reverb: decay=0.8s, mix=15%
+
+@preset clean_guitar
+  source: soundfont
+  program: 27
+  effects:
+    - chorus: rate=1.2, depth=2.5, mix=25%
+    - eq: low_cut=150Hz
+
+@preset lofi_keys
+  source: soundfont
+  program: 4
+  effects:
+    - distortion: drive=25%, mix=15%
+    - eq: high_shelf=-5dB@6kHz
+    - reverb: decay=1.2s, mix=20%
+
+@preset surge_lead
+  source: clap
+  plugin: "org.surge-synth-team.surge-xt"
+
+@preset test_signal
+  source: builtin
+  plugin: "builtin.test_tone"
+  params: {frequency: 440, amplitude: 0.3, waveform: 0}
+
+@preset standard_drums
+  source: soundfont
+  program: 0
+
+@section intro [1:1 - 9:1]
+  label: "Atmospheric intro — pad + arpeggiated synth"
+
+@section verse [9:1 - 17:1]
+  label: "Full band enters — bass, drums, rhythm guitar"
+
+@section chorus [17:1 - 25:1]
+  label: "Chorus — all instruments, brass stab, modulation to Db major"
+
+@pattern brass_chorus_hits | instrument: brass/brass_section, preset: brass_stab, transpose: 0, color: "#ffcc00"
+  events:
+    Bb4 8th ff articulation=marcato text="Hit!"
+    rest 8th
+    rest q
+    rest h
+    Db5 8th ff articulation=marcato text="Punch!"
+    rest 8th
+    rest q
+    rest h
+    rest 2w
+    Eb5 8th ff articulation=sforzando text="Cresc!"
+    rest 8th
+    Db5 8th f
+    rest 8th
+    Bb4 q f articulation=accent
+    rest q
+    rest 2w
+    Bb4 8th ff articulation=marcato
+    rest 8th
+    rest q
+    Db5 8th f articulation=accent v=110
+    rest 8th
+    rest q
+    Eb5 h ff articulation=sustained vibrato={rate: 5Hz, depth: 20ct, delay: 0.3s} text="Finale"
+    rest h
+
+@pattern drums_verse_beat | instrument: drums/acoustic_kit, preset: tight_drums, swing: 55%, color: "#ff6b6b"
+  hits:
+    kick    1:0  f
+    hihat   1:0  mp  articulation=closed
+    hihat   1:2  mp  articulation=closed
+    snare   2:0  f
+    hihat   2:0  mf  articulation=open
+    hihat   2:2  mp  articulation=closed
+    kick    3:0  mf
+    kick    3:2  mf
+    hihat   3:0  mp  articulation=closed
+    hihat   3:2  mp  articulation=closed
+    snare   4:0  f
+    hihat   4:0  mf  articulation=closed
+    hihat   4:2  mp  articulation=open
+
+@pattern drums_chorus_beat | instrument: drums/acoustic_kit, preset: tight_drums, swing: 60%, color: "#ff4444"
+  hits:
+    kick    1:0  ff
+    hihat   1:0  mf  articulation=closed
+    ride    1:0  mf
+    hihat   1:2  mp  articulation=closed
+    snare   2:0  ff
+    ride    2:0  mf
+    hihat   2:2  mf  articulation=open
+    kick    3:0  f
+    kick    3:2  f
+    ride    3:0  mf
+    hihat   3:2  mp  articulation=closed
+    snare   4:0  ff
+    crash   4:0  f
+    hihat   4:2  mf  articulation=open
+
+@track pad | preset: lush_pad, instrument: piano/acoustic_grand
+  mix: vol=-4dB, send(mix_bus=55%)
+  @phrase intro_pad [1:1 - 9:1]
+    Bb3 w mp articulation=sustained
+    Db4 w mp expression={dynamics: mp->mf}
+    Eb4 w mf articulation=sustained vibrato={rate: 4Hz, depth: 15ct, delay: 0.5s}
+    F4 w mf
+    F4 w f articulation=sustained
+    Eb4 w mf expression={dynamics: f->mf}
+    Db4 w mp expression={dynamics: mf->mp}
+  @phrase verse_pad [9:1 - 17:1]
+    Bb3 w mf articulation=sustained
+    Db4 w mf
+    Eb4 w f expression={dynamics: mf->f}
+    F4 w f
+    Bb3 w mf
+    Db4 w mf
+    Eb4 w f
+    F4 w mf expression={dynamics: f->mf}
+  @phrase chord_pad [17:1 - 25:1]
+    @0 Bb3 h mf articulation=sustained
+    @0 Db4 h mf
+    @0 F4 h mf
+    @2 Eb4 h mf articulation=sustained
+    @2 Gb4 h mf
+    @2 Bb4 h mf
+    @0 F4 h f articulation=sustained
+    @0 Ab4 h f
+    @0 C5 h f
+    @2 Gb4 h f
+    @2 Bb4 h f
+    @2 Db5 h f
+    @0 Eb4 h f articulation=sustained
+    @0 Gb4 h f
+    @0 Bb4 h f
+    @2 Db4 h mf
+    @2 F4 h mf
+    @2 Ab4 h mf
+    @0 Bb3 w mf articulation=sustained
+    @0 Db4 w mf
+    @0 F4 w mf
+  automation: brightness {1:1=20%, 4:1=50%, 8:1=30%, 12:1=60%, 16:1=40%}
+
+@track lead | preset: aggressive_lead, instrument: piano/acoustic_grand
+  mix: vol=-6dB, pan=0.15, send(mix_bus=40%)
+  @phrase intro_arp [5:1 - 9:1]
+    Bb4 8th mf articulation=staccato
+    Db5 8th mf articulation=staccato
+    F5 8th f articulation=accent
+    Db5 8th mf
+    Bb4 8th mf articulation=staccato
+    F5 8th f
+    Db5 8th mf
+    Bb4 8th mf
+    Bb4 8th mf articulation=staccato
+    Eb5 8th mf
+    Gb5 8th f articulation=accent vibrato={rate: 6Hz, depth: 25ct}
+    Eb5 8th mf
+    Bb4 8th mf
+    Gb5 8th f
+    Eb5 8th mf articulation=staccato
+    Bb4 8th mf
+    F4 8th mf articulation=staccato
+    Ab4 8th mf
+    Db5 8th f articulation=accent
+    Ab4 8th mf
+    F4 8th mf
+    Db5 8th f
+    Ab4 8th mf articulation=staccato
+    F4 8th mf
+    Eb4 8th mp
+    Gb4 8th mp
+    Bb4 8th mf
+    Eb5 8th mf articulation=accent
+    Gb4 8th mp
+    Bb4 8th mf
+    Eb5 q f articulation=legato expression={dynamics: mp->f}
+  @phrase chorus_lead [17:1 - 25:1]
+    Bb5 q. ff articulation=accent vibrato={rate: 5.5Hz, depth: 30ct, delay: 0.15s}
+    Ab5 8th f
+    Gb5 q f articulation=legato
+    F5 q mf
+    Eb5 h. f expression={dynamics: f->mf}
+    Db5 q mf articulation=legato
+    Bb4 h mf vibrato={rate: 5Hz, depth: 20ct}
+    @grace Db5 16th f
+    Db5 q f
+    Eb5 q f articulation=accent
+    F5 w ff vibrato={rate: 6Hz, depth: 35ct, delay: 0.2s} expression={dynamics: f->ff}
+    Gb5 q ff articulation=marcato
+    F5 q f articulation=legato
+    Eb5 q f
+    Db5 q mf
+    Bb4 h mf expression={dynamics: f->mf}
+    rest h
+    F5 q. f articulation=accent
+    Eb5 8th mf
+    Db5 q mf articulation=legato
+    Bb4 q mp
+    Db5 q~h f articulation=sustained expression={dynamics: mf->f}
+  automation: filter_cutoff {5:1=30%, 6:1=60%, 7:1=80%, 8:1=50%, 17:1=40%, 20:1=90%, 24:1=60%}
+
+@track surge_synth | preset: surge_lead, instrument: piano/acoustic_grand
+  mix: vol=-8dB, pan=-0.2, send(mix_bus=30%)
+  @phrase surge_melody [17:1 - 25:1]
+    Bb4 8th f articulation=staccato
+    rest 8th
+    Db5 8th f articulation=staccato
+    rest 8th
+    Eb5 q ff articulation=accent
+    F5 q. ff
+    Eb5 8th mf
+    Db5 q mf articulation=legato
+    Bb4 q mp
+    C5 q~h mf vibrato={rate: 5Hz, depth: 25ct}
+    Db5 h mf articulation=legato
+    Bb4 w f
+    Db5 8th f articulation=staccato
+    rest 8th
+    Eb5 8th f articulation=staccato
+    rest 8th
+    F5 q ff
+    Gb5 q. ff
+    F5 8th mf
+    Eb5 q mf
+    Db5 q mp
+    Eb5 q5:4 f vibrato={rate: 5.5Hz, depth: 30ct}
+    F5 q5:4 f
+    Gb5 q5:4 f articulation=accent
+    Db5 q5:4 mf
+    Eb5 h f
+    Bb4 h. mf
+
+@track bass | preset: punchy_bass, instrument: bass/electric_bass
+  mix: vol=-2.7dB, send(drum_bus=70%)
+  effects:
+    - compression: sidechain=drums, ratio=3:1, threshold=-8dB
+  @phrase verse_bass [9:1 - 17:1]
+    Bb1 8th f articulation=staccato
+    rest 8th
+    Bb1 8th mf
+    rest 8th
+    Bb1 q f articulation=accent
+    Db2 8th f articulation=staccato
+    rest 8th
+    Db2 8th mf
+    rest 8th
+    Db2 q f
+    Eb2 8th f articulation=staccato
+    rest 8th
+    Eb2 q mf
+    F2 q f articulation=legato
+    Gb2 h f articulation=accent
+    F2 h mf articulation=legato
+    Bb1 8th f articulation=staccato v=100
+    rest 8th
+    Bb1 8th mf
+    rest 8th
+    Bb1 q f
+    Db2 q f articulation=staccato
+    rest q
+    Eb2 q f
+    rest q
+    F2 8th f articulation=staccato
+    rest 8th
+    F2 q mf
+    Eb2 q mf articulation=legato
+    Db2 h~q f
+    Bb1 h f articulation=accent
+  @phrase chorus_bass [17:1 - 25:1]
+    Bb1 q ff articulation=accent
+    rest 8th
+    Bb1 8th f
+    Bb1 q ff
+    Bb2 q f articulation=staccato
+    Db2 q ff articulation=accent
+    rest 8th
+    Db2 8th f
+    Db2 q ff
+    Db2 q f
+    Eb2 q ff articulation=accent
+    rest 8th
+    Eb2 8th f
+    F2 q ff articulation=legato
+    Gb2 q f
+    F2 h ff articulation=accent
+    Eb2 h f articulation=legato
+    Bb1 q ff articulation=accent
+    rest 8th
+    Bb1 8th f
+    Bb1 q ff
+    Bb2 q f articulation=staccato v=115
+    Db2 q ff
+    Eb2 q ff articulation=legato
+    F2 h ff
+    Gb2 q ff articulation=accent
+    F2 q f
+    Eb2 q f articulation=legato muted=true
+    Db2 q mf
+    Bb1 w ff articulation=accent
+
+@track drums | preset: tight_drums, instrument: drums/acoustic_kit
+  mix: vol=-1dB, send(drum_bus=85%)
+  clip: drums_verse_beat [9:1 - 10:1]
+  clip: drums_verse_beat [10:1 - 11:1]
+  clip: drums_verse_beat [11:1 - 12:1]
+  clip: drums_verse_beat [12:1 - 13:1]
+  clip: drums_verse_beat [13:1 - 14:1]
+  clip: drums_verse_beat [14:1 - 15:1]
+  clip: drums_verse_beat [15:1 - 16:1]
+  clip: drums_verse_beat [16:1 - 17:1]
+  clip: drums_chorus_beat [17:1 - 18:1]
+  clip: drums_chorus_beat [18:1 - 19:1]
+  clip: drums_chorus_beat [19:1 - 20:1]
+  clip: drums_chorus_beat [20:1 - 21:1]
+  clip: drums_chorus_beat [21:1 - 22:1]
+  clip: drums_chorus_beat [22:1 - 23:1]
+  clip: drums_chorus_beat [23:1 - 24:1]
+  @pattern chorus_fill [24:1 - 25:1]
+    snare 1:0 f
+    snare 1:2 mf
+    tom_high 2:0 f
+    tom_high 2:2 mf
+    tom_mid 3:0 f articulation=accent
+    tom_mid 3:2 f
+    tom_low 4:0 ff articulation=accent
+    kick 4:2 ff
+    crash 4:0 ff
+
+@track brass | instrument: brass/brass_section
+  mix: vol=-5dB, pan=0.05, send(mix_bus=35%)
+  clip: brass_chorus_hits [17:1 - 25:1]
+
+@track guitar | preset: clean_guitar, instrument: guitar/electric
+  mix: vol=-8dB, pan=-0.25, send(mix_bus=15%)
+  effects:
+    - plugin:org.chowdsp.ChowMultiTool
+  @phrase verse_gtr [9:1 - 17:1]
+    Bb3 8th mp articulation=palm_mute
+    Bb3 8th mp articulation=palm_mute
+    Bb3 q mf
+    Db4 8th mp articulation=palm_mute
+    Db4 8th mp articulation=palm_mute
+    Db4 q mf
+    Eb4 8th mp articulation=palm_mute
+    Eb4 8th mp articulation=palm_mute
+    Eb4 q mf
+    F4 8th mp articulation=palm_mute
+    F4 8th mp articulation=palm_mute
+    F4 q mf articulation=legato
+    Gb4 h mf expression={dynamics: mf->mp}
+    F4 h mp articulation=legato
+    Eb4 w mp expression={dynamics: mp->pp}
+    rest 2w
+
+@track keys | preset: lofi_keys, instrument: piano/electric_piano
+  mix: vol=-12dB, pan=0.2
+  @phrase verse_keys [9:1 - 17:1]
+    Bb3 q mp
+    Db4 q mp articulation=legato
+    Eb4 h mf
+    F4 q mf
+    Eb4 q mp articulation=legato
+    Db4 h mp
+    Bb3 q mp
+    Db4 q mp
+    F4 h mf expression={dynamics: mp->mf}
+    Eb4 w mp expression={dynamics: mf->mp}
+    rest w
+    rest w
+    Bb3 q mp
+    Db4 q mp articulation=legato
+    Eb4 h mf
+    Db4 q~h p expression={dynamics: mp->p}
+
+@bus mix_bus
+  routes: [master]
+  effects:
+    - eq: high_pass=80Hz, low_shelf=-1dB@200Hz
+    - reverb: type=hall, size=large, decay=2.5s, predelay=25ms, damping=0.35, mix=35%
+    - delay: time_l=340ms, time_r=227ms, feedback=30%, mix=15%
+    - compression: ratio=2:1, threshold=-10dB, attack=15ms, release=150ms
+    - eq: high_shelf=-2dB@9kHz, presence=+1dB@3kHz
+
+@bus drum_bus
+  routes: [master]
+  effects:
+    - eq: low_shelf=+2dB@60Hz, high_cut=12kHz
+    - compression: ratio=4:1, threshold=-6dB, attack=3ms, release=50ms
+    - saturator: drive=15%, mix=20%
+    - reverb: type=room, decay=0.8s, mix=10%
+    - eq: presence=+1dB@4kHz, notch=-2dB@300Hz
+
+@master
+  effects:
+    - eq: low_shelf=+1dB@60Hz, high_shelf=-0.5dB@14kHz, notch=-2dB@400Hz
+    - compression: ratio=2:1, threshold=-8dB, attack=20ms, release=150ms
+    - stereo_width: amount=110%
+    - limiter: ceiling=-0.3dB
