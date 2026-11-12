@@ -362,6 +362,14 @@ edited in the preset editor. **Add preset** creates a project preset from the
 selected source. The **Store** tab opens external plugin, sample, soundfont and
 preset sites in a separate window and lists the bundled free-plugin catalog.
 
+Each Store card shows the site's own favicon when the site offers one, and a
+category glyph otherwise. The app ships no site logos: the first time the tab
+shows a site, the backend asks that site's https origin for its favicon,
+through the proxy chosen in Network preferences, and keeps the answer in the
+app cache for a month (a site with no usable icon is asked again after a day).
+Only PNG, ICO and WebP files up to 64 KB are shown; the page itself never loads
+an image from the site.
+
 ## DSL editor
 
 **D** opens the DSL sidebar: the project as text, with syntax highlighting.

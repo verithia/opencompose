@@ -1,12 +1,39 @@
 /**
  * StoreBrowser layout and filtering tests.
  */
-import { afterEach, describe, it, expect } from "vitest";
-import { render, fireEvent } from "@solidjs/testing-library";
+import { afterEach, beforeEach, describe, it, expect } from "vitest";
+import { render, fireEvent, waitFor } from "@solidjs/testing-library";
 import { StoreBrowser } from "../../components/StoreBrowser";
 import { i18n } from "../../stores/i18n";
+import { clearSiteIcons } from "../../stores/storeIcons";
+import { invokeMock } from "../setup";
+
+const SURGE_PAGE = "https://surge-synthesizer.github.io/";
+const PNG_DATA = "data:image/png;base64,iVBORw0KGgo=";
+
+/** Answers `store_site_icon` from a table keyed by site page; null elsewhere. */
+function serveIcons(icons: Record<string, unknown>): void {
+  invokeMock.mockImplementation(async (cmd: string, args?: { url?: string }) =>
+    cmd === "store_site_icon" ? (icons[args?.url ?? ""] ?? null) : undefined);
+}
+
+function card(container: HTMLElement, name: string): Element {
+  return [...container.querySelectorAll(".store-card")]
+    .find((element) => element.textContent?.includes(name))!;
+}
+
+function iconRequests(): string[] {
+  return invokeMock.mock.calls
+    .filter(([command]) => command === "store_site_icon")
+    .map(([, args]) => (args as { url: string }).url);
+}
 
 describe("StoreBrowser", () => {
+  beforeEach(() => {
+    clearSiteIcons();
+    invokeMock.mockReset();
+    serveIcons({});
+  });
   afterEach(() => i18n.setLocale("en"));
 
   it("renders a compact header, search, and category control", () => {
@@ -72,20 +99,63 @@ describe("StoreBrowser", () => {
     expect(container.querySelectorAll(".store-card")).toHaveLength(0);
   });
 
-  it("shows our category glyph on every card and loads no image", () => {
+  it("shows the icon the backend returns and our glyph for every other site", async () => {
+    serveIcons({ [SURGE_PAGE]: PNG_DATA });
     const { container } = render(() => <StoreBrowser />);
-    const cards = [...container.querySelectorAll(".store-card")];
-    expect(cards.length).toBeGreaterThan(0);
-    // Third-party logos are not bundled, and the page makes no image request.
-    expect(container.querySelector("img.store-card-icon")).toBeNull();
-    for (const card of cards) {
-      const glyph = card.querySelector(".store-card-icon-fallback")!;
-      expect(glyph.querySelector("svg")).toBeTruthy();
-      expect(glyph.getAttribute("aria-hidden")).toBe("true");
+    const surge = card(container, "Surge XT");
+    await waitFor(() => expect(surge.querySelector("img.store-card-icon")).toBeTruthy());
+    const img = surge.querySelector<HTMLImageElement>("img.store-card-icon")!;
+    expect(img.getAttribute("src")).toBe(PNG_DATA);
+    expect(img.getAttribute("alt")).toBe("");
+    expect(img.getAttribute("aria-hidden")).toBe("true");
+
+    // Only the backend's data URL is ever an image source; nothing remote.
+    const images = [...container.querySelectorAll("img")];
+    expect(images).toHaveLength(1);
+    const freesound = card(container, "Freesound").querySelector(".store-card-icon-fallback")!;
+    expect(freesound.querySelector("svg")).toBeTruthy();
+    expect(freesound.getAttribute("data-category")).toBe("samples");
+    // The backend is asked with the site page, once per card.
+    expect(iconRequests()).toContain(SURGE_PAGE);
+    expect(iconRequests()).toHaveLength(container.querySelectorAll(".store-card").length);
+  });
+
+  it("falls back to our glyph when the icon fails to decode", async () => {
+    serveIcons({ [SURGE_PAGE]: PNG_DATA });
+    const { container } = render(() => <StoreBrowser />);
+    const surge = card(container, "Surge XT");
+    await waitFor(() => expect(surge.querySelector("img.store-card-icon")).toBeTruthy());
+    surge.querySelector("img.store-card-icon")!.dispatchEvent(new Event("error"));
+    await waitFor(() => expect(surge.querySelector("img.store-card-icon")).toBeNull());
+    const fallback = surge.querySelector(".store-card-icon-fallback")!;
+    expect(fallback.getAttribute("data-category")).toBe("plugins");
+    expect(fallback.getAttribute("aria-hidden")).toBe("true");
+  });
+
+  it("never displays a reply that is not a raster data URL", async () => {
+    serveIcons({
+      [SURGE_PAGE]: "https://surge-synthesizer.github.io/favicon.ico",
+      "https://vital.audio/": "data:image/svg+xml;base64,PHN2Zy8+",
+      "https://freesound.org/": { url: PNG_DATA },
+      // The last card answers validly, so the refused replies have settled
+      // once its image is on screen.
+      "https://patchstorage.com/": PNG_DATA,
+    });
+    const { container } = render(() => <StoreBrowser />);
+    await waitFor(() => expect(card(container, "Patchstorage").querySelector("img")).toBeTruthy());
+    expect(container.querySelectorAll("img")).toHaveLength(1);
+    for (const name of ["Surge XT", "Vital Synth", "Freesound"]) {
+      expect(card(container, name).querySelector(".store-card-icon-fallback svg"), name).toBeTruthy();
     }
-    const surge = cards.find((element) => element.textContent?.includes("Surge XT"))!;
-    expect(surge.querySelector(".store-card-icon-fallback")!.getAttribute("data-category")).toBe("plugins");
-    const freesound = cards.find((element) => element.textContent?.includes("Freesound"))!;
-    expect(freesound.querySelector(".store-card-icon-fallback")!.getAttribute("data-category")).toBe("samples");
+  });
+
+  it("asks the backend once per site across renders", async () => {
+    serveIcons({ [SURGE_PAGE]: PNG_DATA });
+    const first = render(() => <StoreBrowser />);
+    await waitFor(() => expect(card(first.container, "Surge XT").querySelector("img")).toBeTruthy());
+    first.unmount();
+    const second = render(() => <StoreBrowser />);
+    await waitFor(() => expect(card(second.container, "Surge XT").querySelector("img")).toBeTruthy());
+    expect(iconRequests().filter((url) => url === SURGE_PAGE)).toHaveLength(1);
   });
 });

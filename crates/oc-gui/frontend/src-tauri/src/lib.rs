@@ -52,6 +52,7 @@ mod samples;
 mod soundfont_store;
 mod startup;
 mod state;
+mod store_icons;
 mod tool_registry;
 mod window_guard;
 mod workspaces;
@@ -556,6 +557,7 @@ pub fn run_with_options(path: Option<String>, diag: DiagOptions) {
             commands::plugin_catalog,
             commands::plugin_search,
             commands::plugin_store_open,
+            store_icons::store_site_icon,
             commands::plugin_store_install,
             commands::install_cancel,
             commands::plugin_manual_page,

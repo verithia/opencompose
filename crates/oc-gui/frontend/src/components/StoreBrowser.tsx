@@ -5,8 +5,9 @@
  * with full browser functionality (login, download, etc.) without
  * iframe restrictions.
  */
-import { For, Show, createSignal } from "solid-js";
+import { For, Show, createEffect, createSignal, on, onCleanup } from "solid-js";
 import { i18n, type I18nKey } from "../stores/i18n";
+import { siteIcon } from "../stores/storeIcons";
 import { PluginStore } from "./PluginStore";
 import { useTooltip } from "./Tooltip";
 import { DiskIcon, FolderIcon, PlugIcon, WaveIcon } from "./icons";
@@ -143,11 +144,44 @@ function CategoryGlyph(props: { category: StoreSite["category"] }) {
   }
 }
 
+/**
+ * The site's own favicon once the backend has it, otherwise our glyph. The
+ * glyph shows while the request runs, so a slow or blocked site never leaves
+ * an empty card.
+ */
 function StoreCardIcon(props: { site: StoreSite }) {
+  const [src, setSrc] = createSignal<string | null>(null);
+  const [failed, setFailed] = createSignal(false);
+  createEffect(on(() => props.site.url, (url) => {
+    let live = true;
+    setSrc(null);
+    setFailed(false);
+    void siteIcon(url).then((value) => {
+      if (live) setSrc(value);
+    });
+    onCleanup(() => {
+      live = false;
+    });
+  }));
   return (
-    <span class="store-card-icon store-card-icon-fallback" data-category={props.site.category} aria-hidden="true">
-      <CategoryGlyph category={props.site.category} />
-    </span>
+    <Show
+      when={!failed() && src()}
+      fallback={
+        <span class="store-card-icon store-card-icon-fallback" data-category={props.site.category} aria-hidden="true">
+          <CategoryGlyph category={props.site.category} />
+        </span>
+      }
+    >
+      {(icon) => (
+        <img
+          class="store-card-icon"
+          src={icon()}
+          alt=""
+          aria-hidden="true"
+          onError={() => setFailed(true)}
+        />
+      )}
+    </Show>
   );
 }
 
