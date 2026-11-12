@@ -34,6 +34,7 @@ use crate::tool_registry::arguments::ToolArguments;
 use crate::tool_registry::{ToolId, is_mutation_tool, mcp_tools};
 
 mod access_token;
+mod saved_completion;
 use access_token::make_token;
 mod audition_media;
 mod dispatch_policy;
@@ -413,7 +414,7 @@ fn route(app: &AppHandle, request: &Request, token: &str) -> (u16, String) {
             if panel_turn_active(app) {
                 return complete_failure(AiError::new("busy", "Another AI request is active"));
             }
-            handle_ai_complete(body)
+            handle_ai_complete_for(body, Some(app))
         },
         |body| handle_mcp(app, body),
     )
@@ -492,7 +493,12 @@ fn panel_tools_body(path: &str) -> String {
 /// answer: the decoded wire message with `ok` beside it. A failure carries the
 /// class-derived status and the provider layer's verdict. The endpoint never logs
 /// the request or the credential.
+#[cfg(test)]
 fn handle_ai_complete(body: &[u8]) -> (u16, String) {
+    handle_ai_complete_for(body, None)
+}
+
+fn handle_ai_complete_for(body: &[u8], app: Option<&AppHandle>) -> (u16, String) {
     let request = match complete_request(body) {
         Ok(request) => request,
         Err(error) => return complete_failure(AiError::new("request", error)),
@@ -500,7 +506,7 @@ fn handle_ai_complete(body: &[u8]) -> (u16, String) {
     // Held until the turn ends, on every path including a panic. A malformed
     // request is refused above without waiting behind a running turn.
     let _turn = lock_ai_turn(&AI_TURN);
-    match block_on(complete_turn(&request)) {
+    match block_on(complete_turn(&request, app)) {
         Ok(message) => {
             let mut payload = match message {
                 Value::Object(object) => object,
@@ -548,6 +554,7 @@ struct CompleteRequest {
     messages: Value,
     tools: bool,
     max_tokens: Option<u64>,
+    saved: Option<saved_completion::Binding>,
 }
 
 fn complete_request(body: &[u8]) -> Result<CompleteRequest, String> {
@@ -585,27 +592,49 @@ fn complete_request(body: &[u8]) -> Result<CompleteRequest, String> {
         messages,
         tools,
         max_tokens,
+        saved: saved_completion::Binding::parse(&value)?,
     })
 }
 
-async fn complete_turn(request: &CompleteRequest) -> Result<Value, AiError> {
+async fn complete_turn(
+    request: &CompleteRequest,
+    app: Option<&AppHandle>,
+) -> Result<Value, AiError> {
     let entry = crate::ai_service::provider(&request.provider).map_err(AiError::config)?;
     crate::ai::endpoint(&entry.endpoint).map_err(AiError::config)?;
-    let credential = crate::ai_service::resolve_credential(&entry).await?;
-    // The message array is part of the request: a refusal here is malformed
-    // input, whatever internal class the decoder used.
-    let (mut turn, _notices) =
-        crate::ai::request_from_wire(&entry, request.messages.clone(), request.tools, None)
-            .map_err(|error| AiError::new("request", error.message))?;
-    if let Some(max_tokens) = request.max_tokens {
-        turn.max_tokens = max_tokens;
-    }
-    let provider = crate::ai::provider_for(&entry, credential).map_err(AiError::from)?;
     let stats = crate::ai::timing::TurnStatsHandle::new(&entry.id, &entry.model, entry.wire());
-    let mut emitted = false;
-    let mut message = crate::ai::run(provider.as_ref(), &turn, &None, &mut emitted, &stats)
-        .await
-        .map_err(AiError::from)?;
+    let saved = match request.saved.as_ref() {
+        Some(binding) => Some(saved_completion::SavedTurn::prepare(
+            app.ok_or_else(|| AiError::config("Saved turns require an application host"))?,
+            binding,
+            &entry,
+            &request.messages,
+            &stats,
+        )?),
+        None => None,
+    };
+    let outbound = saved
+        .as_ref()
+        .map_or(&request.messages, |saved| &saved.messages);
+    let result = async {
+        let credential = crate::ai_service::resolve_credential(&entry).await?;
+        let (mut turn, _notices) =
+            crate::ai::request_from_wire(&entry, outbound.clone(), request.tools, None)
+                .map_err(|error| AiError::new("request", error.message))?;
+        if let Some(max_tokens) = request.max_tokens {
+            turn.max_tokens = max_tokens;
+        }
+        let provider = crate::ai::provider_for(&entry, credential).map_err(AiError::from)?;
+        let mut emitted = false;
+        crate::ai::run(provider.as_ref(), &turn, &None, &mut emitted, &stats)
+            .await
+            .map_err(AiError::from)
+    }
+    .await;
+    if let Some(saved) = saved {
+        saved.finish(&entry, &stats, result.as_ref().ok()).await?;
+    }
+    let mut message = result?;
     // Our canonical turn keeps no raw finish string, so the outcome we decoded
     // is what this endpoint reports: a turn with calls asked for them.
     let reason = if message.get("tool_calls").is_some() {

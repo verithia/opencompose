@@ -292,8 +292,11 @@ The panel starts a conversation with the first message of a turn and uses that
 message as the title, so the conversation it saves into is the one it shows.
 `sessions_new` and `sessions_load` also mark a conversation as the target for the
 open project, and the first turn of a fresh process starts a new one. An external
-agent drives its own turns and calls the commands below instead; the
-`/ai/complete` endpoint does not autosave.
+agent creates a named conversation with `sessions_new` before its first turn.
+The `/ai/complete` endpoint saves into that conversation when every request
+names its session and the open project file, as described in
+[Headless agent host](agent-loop.md#headless-agent-host). Requests that omit
+that binding remain ephemeral.
 
 ## The conversation switcher
 

@@ -87,3 +87,5 @@ time_s                                   Audio or model result field, not an age
 time_sig_map                             DSL or serialized project field, not an agent tool
 time_signature                           DSL or serialized project field, not an agent tool
 transport_snapshot                       Internal rendering helper, not an agent tool
+
+project_path                             Saved conversation project-file field, not an agent tool

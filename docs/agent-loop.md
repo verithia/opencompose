@@ -40,6 +40,19 @@ Give each concurrent host a separate `OPENCOMPOSE_CONFIG_DIR`. This directory
 owns its configuration and private `agent.json` endpoint; it does not
 automatically inherit another profile's provider settings or credentials.
 `OPENCOMPOSE_AGENT_PORT=0` requests an available port, recorded in that endpoint.
+For a saved headless conversation, create a project file and call
+`sessions_new` with that file and a title. Send both `session_id` and the
+absolute `project_path` on each `POST /ai/complete` request. The file must be
+open in that host and the session must belong to its workspace. Requests save
+incoming tool results, audition media and the provider reply through the same
+conversation store as the AI panel. Keep saving the same project path; copies
+for checkpoints do not change the session's working file. Omitting both fields
+keeps the request ephemeral.
+
+The store belongs to `OPENCOMPOSE_CONFIG_DIR`. A private profile's sessions do
+not appear in the default desktop profile. Use the intended profile when you
+want to continue the conversation there.
+
 Stop the host before removing its profile. Headless mode still uses the native
 application event loop; it is not a standalone core daemon for systems without
 a window-system session. Audio playback tools can use hardware output, so
