@@ -81,7 +81,14 @@ function toolsetRow(title: string): HTMLElement {
   return row as HTMLElement;
 }
 
-beforeEach(() => invokeMock.mockReset());
+beforeEach(() => {
+  invokeMock.mockReset();
+  // The panel restores the last saved selection over the backend defaults, and
+  // every case here starts from the defaults its own backend reports.
+  try {
+    window.localStorage?.removeItem("opencompose.ai.toolsets.v1");
+  } catch (_) {}
+});
 afterEach(cleanup);
 
 describe("toolset thumbnail", () => {
