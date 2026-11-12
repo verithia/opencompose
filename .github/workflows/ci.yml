@@ -252,12 +252,14 @@ jobs:
             pkg-config
 
       - name: Build the first-block tests
-        # Compiled first so the timed step below measures playback, not rustc.
-        run: cargo test -p oc-gui --lib --locked --no-run
+        # The latency contract is about the shipped app, so it is measured on
+        # the release profile. Compiled first so the timed step below measures
+        # playback, not rustc.
+        run: cargo test -p oc-gui --lib --release --locked --no-run
 
       - name: First-block latency (serial)
         run: |
-          cargo test -p oc-gui --lib --locked first_block_tests:: -- --ignored --test-threads=1 --skip review_
+          cargo test -p oc-gui --lib --release --locked first_block_tests:: -- --ignored --test-threads=1 --skip review_
 
   windows:
     name: Rust check and clip cache tests (Windows)
