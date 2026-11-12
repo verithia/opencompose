@@ -130,37 +130,92 @@ jobs:
             exit 1
           fi
 
+      - name: Cross-check Intel macOS target
+        if: runner.os == 'macOS'
+        run: |
+          rustup target add x86_64-apple-darwin
+          cargo check --target x86_64-apple-darwin -p oc-dsp -p oc-engine -p oc-cli --locked
+
+  test:
+    # The suite runs in package shards on separate runners: the test binaries
+    # otherwise run one after another, and a few of them take minutes each.
+    name: Rust tests (${{ matrix.os }}, ${{ matrix.shard }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+        shard: [gui, dsp, engine, rest]
+        include:
+          - shard: gui
+            packages: -p oc-gui
+          - shard: dsp
+            packages: -p oc-dsp -p oc-synth-core -p oc-synth-fx
+          - shard: engine
+            packages: -p oc-engine
+          - shard: rest
+            # Everything the other shards do not name.
+            packages: >-
+              --workspace --exclude oc-gui --exclude oc-dsp --exclude oc-synth-core
+              --exclude oc-synth-fx --exclude oc-engine
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.95.0
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.shard }}
+          cache-on-failure: true
+
+      - name: Install system dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libdbus-1-dev \
+            libasound2-dev \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev \
+            libjavascriptcoregtk-4.1-dev \
+            libsoup-3.0-dev \
+            pkg-config
+
       - name: Cargo test
         # Every failing test binary is reported, not only the first.
-        run: cargo test --workspace --no-fail-fast
-
-      - name: Owned VST3 lifecycle (CPU-only native fixture)
-        timeout-minutes: 10
-        run: cargo test -p oc-host --test vst3_rt_alloc --features test-support --locked -- --owned-lifecycle
+        run: cargo test ${{ matrix.packages }} --locked --no-fail-fast
 
       - name: Credential store round trip (skip reason stays visible)
         # The Linux runner has no Secret Service, so this test prints
         # "SKIP …: OS credential store unavailable" instead of passing as if it
         # had stored a key. --nocapture keeps that reason in the job log; macOS
         # exercises the real login keychain here.
+        if: matrix.shard == 'gui'
         run: |
-          cargo test -p oc-gui --lib \
+          cargo test -p oc-gui --lib --locked \
             a_saved_key_is_reported_as_present_and_never_returned -- --nocapture
 
       - name: SIMD backends and bit identity
         # Pins the kernel tests and prints the backend this CPU selected, so an
         # x86 runner exercises SSE2 (and AVX2 when the CPU advertises it).
+        if: matrix.shard == 'dsp' || matrix.shard == 'engine' || matrix.shard == 'rest'
         run: |
-          cargo test -p oc-dsp --lib simd:: -- --nocapture
-          cargo test -p oc-dsp --test all devices::dispatch:: -- --nocapture
-          cargo test -p oc-engine --test all simd_bit_identity:: -- --nocapture
-          cargo test -p oc-cli --test all simd_identity:: -- --nocapture
+          case "${{ matrix.shard }}" in
+            dsp)
+              cargo test -p oc-dsp --lib --locked simd:: -- --nocapture
+              cargo test -p oc-dsp --test all --locked devices::dispatch:: -- --nocapture ;;
+            engine)
+              cargo test -p oc-engine --test all --locked simd_bit_identity:: -- --nocapture ;;
+            rest)
+              cargo test -p oc-cli --test all --locked simd_identity:: -- --nocapture ;;
+          esac
 
-      - name: Cross-check Intel macOS target
-        if: runner.os == 'macOS'
-        run: |
-          rustup target add x86_64-apple-darwin
-          cargo check --target x86_64-apple-darwin -p oc-dsp -p oc-engine -p oc-cli --locked
+      - name: Owned VST3 lifecycle (CPU-only native fixture)
+        if: matrix.shard == 'rest'
+        timeout-minutes: 10
+        run: cargo test -p oc-host --test vst3_rt_alloc --features test-support --locked -- --owned-lifecycle
 
   first-block:
     # The timed first-block contract runs serially for minutes, so it gets its
