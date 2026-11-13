@@ -1144,7 +1144,7 @@ fn external_project_notification(
     caller: &str,
     result: &Value,
 ) -> Option<Value> {
-    if caller != HTTP_BATCH_OWNER
+    if !crate::state::is_external_caller(caller)
         || !is_mutation_tool(tool)
         || inner.transaction.is_some()
         || result.get("ok").and_then(Value::as_bool) == Some(false)
@@ -2396,8 +2396,7 @@ fn conversation_audio_source(
     use std::path::Path;
 
     let refusal = "Use a local audio reference or saved render from the current conversation, or use clip_index";
-    let id = caller
-        .strip_prefix(crate::state::PANEL_BATCH_OWNER_PREFIX)
+    let id = crate::state::caller_conversation(caller)
         .filter(|_| Path::new(path).is_absolute())
         .ok_or(refusal)?;
     let find = |messages: &[Value]| {
@@ -3398,9 +3397,7 @@ fn dispatch_tool(
                 channel,
                 target_rate.clamp(8_000, 48_000),
                 &state(app),
-                caller
-                    .strip_prefix(crate::state::PANEL_BATCH_OWNER_PREFIX)
-                    .is_some_and(|id| id != "unsaved"),
+                crate::state::caller_conversation(caller).is_some(),
             )?)
         }
         ToolId::AudioAnalyze => audio_analyze_tool(args),
@@ -6085,6 +6082,19 @@ providers:
         );
         transaction_rollback(&state, HTTP_BATCH_OWNER).unwrap();
 
+        // A client bound to the panel's conversation owns its batch as well:
+        // the panel can neither recover nor join it.
+        let bound = crate::state::http_session_owner("a");
+        transaction_begin(&state, Some("bound batch".into()), &bound).unwrap();
+        assert!(
+            crate::commands::recover_panel_batch(&state)
+                .unwrap()
+                .is_none()
+        );
+        assert!(transaction_commit(&state, "panel:a").is_err());
+        assert_eq!(state.batch_owner().as_deref(), Some(bound.as_str()));
+        transaction_rollback(&state, &bound).unwrap();
+
         // A panel batch is recovered, and a second recovery is a no-op.
         let base =
             transaction_begin(&state, Some("panel batch".into()), "panel:a").unwrap()["revision"]
@@ -7304,6 +7314,9 @@ providers:
             external_project_notification(&inner, "tracks_mix", HTTP_BATCH_OWNER, &ok).unwrap();
         assert_eq!(edit["snapshot"]["revision"], inner.revision);
         assert_eq!(edit["replaces_document"], false);
+        // A client bound to a saved conversation is still external to the panel.
+        let bound = crate::state::http_session_owner("abc123");
+        assert!(external_project_notification(&inner, "tracks_mix", &bound, &ok).is_some());
         assert_eq!(
             external_project_notification(&inner, "project_open", HTTP_BATCH_OWNER, &ok).unwrap()["replaces_document"],
             true

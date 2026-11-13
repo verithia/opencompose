@@ -44,7 +44,10 @@ For a saved headless conversation, create a project file and call
 `sessions_new` with that file and a title. Send both `session_id` and the
 absolute `project_path` on each `POST /ai/complete` request and each `/call`
 envelope. Tool calls then use that conversation's ownership, including access
-to its attached audio references and saved renders. The file must be
+to its attached audio references and saved renders. Their project transaction
+stays the client's own: an AI panel working in the same conversation cannot
+join, commit or recover it, and each committed edit is published to the
+window like any other external edit. The file must be
 open in that host and the session must belong to its workspace. Requests save
 incoming tool results, audition media and the provider reply through the same
 conversation store as the AI panel. Keep saving the same project path; copies

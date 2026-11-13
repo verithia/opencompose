@@ -33,11 +33,7 @@ impl Binding {
     pub(super) fn caller(&self, app: &AppHandle) -> Result<String, String> {
         self.validate_project(app.state::<AppState>().lock_inner().file_path.as_deref())?;
         self.validate_session(&sessions::Store::config())?;
-        Ok(format!(
-            "{}{}",
-            crate::state::PANEL_BATCH_OWNER_PREFIX,
-            self.id
-        ))
+        Ok(crate::state::http_session_owner(&self.id))
     }
 
     fn validate_session(&self, store: &sessions::Store) -> Result<(), String> {
