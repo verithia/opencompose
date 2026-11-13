@@ -25,10 +25,13 @@ mod artifacts;
 pub(super) mod lookup;
 #[path = "session_message.rs"]
 mod message_protocol;
+#[path = "session_turns.rs"]
+pub mod turns;
 #[path = "session_versions.rs"]
 mod versions;
 use crate::private_fs;
-use message_protocol::{MessageKind, MessageMeta};
+pub use message_protocol::MessageKind;
+use message_protocol::MessageMeta;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -787,74 +790,6 @@ impl Store {
         Ok(removed)
     }
 
-    /// Cut the conversation back to its first `keep` messages.
-    ///
-    /// The store is append-only, so a rewind rewrites the file with one turn
-    /// that holds the kept prefix. A cut that lands inside a tool block moves
-    /// back to the call that opened the block, because a provider rejects a
-    /// result whose call is gone. A call left without its result is answered
-    /// with a refusal, because a provider rejects a history where a call is not
-    /// followed by a result.
-    pub fn rewind(&self, id: &str, keep: usize) -> Result<usize, String> {
-        let _lock = self.mutation_lock()?;
-        let (dir, mut meta) = self.find(id)?;
-        let (view, _) = read_view(&dir)?;
-        if keep == 0 || keep > view.len() {
-            return Err(format!(
-                "rewind needs 1..{} messages, got {keep}",
-                view.len()
-            ));
-        }
-        let keep = block_start(&view, keep);
-        if keep == 0 {
-            return Err("rewind would cut before the first tool call".into());
-        }
-        let mut kept: Vec<Value> = view[..keep].to_vec();
-        // Every result in the prefix is known before any call is judged: a
-        // result always follows its call, so one pass would call each completed
-        // call unanswered.
-        let answered: std::collections::HashSet<&str> = kept
-            .iter()
-            .filter(|message| message["role"] == "tool")
-            .filter_map(|message| message["tool_call_id"].as_str())
-            .collect();
-        let mut pending: Vec<String> = Vec::new();
-        for message in &kept {
-            for call in message["tool_calls"].as_array().into_iter().flatten() {
-                if let Some(call) = call["id"].as_str()
-                    && !answered.contains(call)
-                    && !pending.iter().any(|open| open == call)
-                {
-                    pending.push(call.to_owned());
-                }
-            }
-        }
-        for call in pending {
-            kept.push(json!({
-                "role": "tool",
-                "tool_call_id": call,
-                "content": json!({
-                    "error": "the conversation was rewound before this call returned",
-                }).to_string(),
-            }));
-        }
-        let record = Record {
-            v: VERSION,
-            kind: RecordKind::Turn,
-            at: now(),
-            dropped: None,
-            tokens_before: None,
-            tokens_after: None,
-            truncated: None,
-            messages: kept.clone(),
-        };
-        write_records(&dir, &[record])?;
-        meta.tokens = estimate_tokens(&kept);
-        meta.updated = now();
-        write_meta(&dir, &meta)?;
-        Ok(kept.len())
-    }
-
     /// Save one DSL version for a session. Content-addressed, so the same
     /// document costs one file however many messages carry it.
     pub fn snapshot_dsl(&self, id: &str, dsl: &str) -> Result<String, String> {
@@ -935,7 +870,7 @@ impl Store {
             .iter()
             .filter_map(|message| message["tool_call_id"].as_str())
             .collect();
-        let closed = close_unanswered_round(&mut pending, &answered);
+        let closed = close_unanswered_round(&dir, &mut pending, &answered);
         let start = pending.len();
         let (appended, absorbed) = absorb(&mut pending, &filtered);
         // A version and its first transcript reference share the store lock,
@@ -944,10 +879,17 @@ impl Store {
         let inline_audio = filtered
             .iter()
             .any(|message| message.get("input_audio").is_some());
-        if appended > 0 || !closed.is_empty() {
+        let closed_round = !closed.is_empty();
+        if appended > 0 || closed_round {
             let mut added = closed;
             added.extend_from_slice(&pending[start..]);
             append_records(&dir, &[turn_record(&now(), added)])?;
+        }
+        if closed_round {
+            // The round is answered on disk, so its started markers are spent.
+            // Cleared only after the write: a failed write keeps them, and the
+            // next preparation still tells a lost result from a call never run.
+            turns::clear_started(&dir)?;
         }
         let saved_auditions = pending[start..]
             .iter()
@@ -1079,7 +1021,7 @@ impl Store {
         let _lock = self.mutation_lock()?;
         let (dir, mut meta) = self.find(id)?;
         let (mut view, _) = read_view(&dir)?;
-        let mut messages = close_unanswered_round(&mut view, &[]);
+        let mut messages = close_unanswered_round(&dir, &mut view, &[]);
         let mut rollback = json!({"role": "user", "content": format!(
             "Host transaction rollback: all project edits in the interrupted transaction were reverted. Earlier successful mutation results describe historical intermediate states, not the current project. Current project DSL sha256 {}; track count {}. Inspect current project before further edits. External rendered or separated audio files are not reverted.",
             facts.dsl_digest, facts.track_count
@@ -2172,63 +2114,19 @@ fn tool_blocks(view: &[Value]) -> Vec<(usize, usize)> {
     blocks
 }
 
-/// The first index a cut at `keep` may keep: a cut that lands on a tool result
-/// moves back to the call that opened the block. A conversation that keeps a
-/// call without the results it owes is one a provider refuses, and a kept call
-/// whose results were dropped would be closed as unanswered.
-fn block_start(view: &[Value], keep: usize) -> usize {
-    if keep >= view.len() || view[keep]["role"] != "tool" {
-        return keep;
-    }
-    for (start, end) in tool_blocks(view) {
-        if start < keep && keep < end {
-            return start;
-        }
-    }
-    keep
-}
-
 /// Closes a last round whose calls never got a result: a window that reloaded
 /// mid-turn, or a client that died, stops the loop that owed them. `answered`
 /// names the calls the request being prepared brings results for, which are not
 /// debts. Returns the results it added, in call order; a round that follows the
 /// block is complete and is left alone.
-fn close_unanswered_round(view: &mut Vec<Value>, answered: &[&str]) -> Vec<Value> {
-    let Some((start, end)) = tool_blocks(view).last().copied() else {
-        return Vec::new();
-    };
-    if end < view.len() {
-        return Vec::new();
-    }
-    let calls = view[start]["tool_calls"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default();
-    let known: Vec<&str> = view[start + 1..end]
-        .iter()
-        .filter_map(|message| message["tool_call_id"].as_str())
-        .chain(answered.iter().copied())
-        .collect();
-    let mut closed = Vec::new();
-    for call in &calls {
-        let Some(id) = call["id"].as_str() else {
-            continue;
-        };
-        if known.contains(&id) {
-            continue;
-        }
-        let name = call["function"]["name"].as_str().unwrap_or("the tool");
-        closed.push(json!({
-            "role": "tool",
-            "tool_call_id": id,
-            "content": format!(
-                "Not run: the window that was running this turn went away before {name} returned, so it has no result."
-            ),
-        }));
-    }
-    for message in &mut closed {
-        message_protocol::tag_new(message);
-    }
+fn close_unanswered_round(dir: &Path, view: &mut Vec<Value>, answered: &[&str]) -> Vec<Value> {
+    // A call the request itself answers is not a debt.
+    let mut closed = turns::close_open(view, &turns::started_in(dir));
+    closed.retain(|message| {
+        !message["tool_call_id"]
+            .as_str()
+            .is_some_and(|id| answered.contains(&id))
+    });
     view.extend(closed.iter().cloned());
     closed
 }
@@ -2902,6 +2800,11 @@ fn should_compact(view: &[Value], overhead: u64, context_length: u64) -> bool {
     let limit = (context_length as f64 * AUTO_COMPACT_FRACTION) as u64;
     let floor = (context_length as f64 * AUTO_COMPACT_CONVERSATION_FLOOR) as u64;
     tokens + overhead > limit.max(1) && tokens > floor
+}
+
+/// Versioned metadata for a host message of `kind`, as saved on the wire.
+pub fn message_meta(kind: MessageKind) -> Value {
+    json!(MessageMeta::new(kind))
 }
 
 // ---- token estimate -----------------------------------------------------
@@ -4448,189 +4351,6 @@ mod tests {
         assert_eq!(
             reopened.load(&first.id).unwrap().meta.permission,
             SessionPermission::RequireApproval
-        );
-        std::fs::remove_dir_all(store.root().parent().unwrap()).unwrap();
-    }
-
-    #[test]
-    fn a_rewind_keeps_the_prefix_and_closes_a_dangling_call() {
-        let (store, project) = fixture("rewind");
-        let session = store
-            .create(Some(&workspace(&project)), Some(&project), None, None)
-            .unwrap();
-        let (dir, _) = store.find(&session.id).unwrap();
-        let call = json!({
-            "role": "assistant",
-            "content": null,
-            "tool_calls": [{"id": "call-1", "type": "function",
-                            "function": {"name": "edit_subtree", "arguments": "{}"}}]
-        });
-        let record = Record {
-            v: VERSION,
-            kind: RecordKind::Turn,
-            at: now(),
-            dropped: None,
-            tokens_before: None,
-            tokens_after: None,
-            truncated: None,
-            messages: vec![user("first"), call, user("outcome")],
-        };
-        write_records(&dir, &[record]).unwrap();
-
-        let kept = store.rewind(&session.id, 2).unwrap();
-        assert_eq!(kept, 3, "the kept prefix plus the closed call");
-        let (view, _) = read_view(&dir).unwrap();
-        assert_eq!(view[0]["content"], "first");
-        assert_eq!(view[1]["tool_calls"][0]["id"], "call-1");
-        // The call the cut left open is answered, so the next request is valid.
-        assert_eq!(view[2]["role"], "tool");
-        assert_eq!(view[2]["tool_call_id"], "call-1");
-        assert_eq!(view.len(), 3, "a completed call gets no second result");
-        std::fs::remove_dir_all(store.root().parent().unwrap()).unwrap();
-    }
-
-    /// One round as the loop saves it: the call and the result it produced.
-    fn completed_round(round: usize) -> Vec<Value> {
-        vec![
-            json!({
-                "role": "assistant",
-                "content": null,
-                "tool_calls": [{
-                    "id": format!("done-{round}"),
-                    "type": "function",
-                    "function": {"name": "tracks_list", "arguments": "{}"}
-                }]
-            }),
-            json!({
-                "role": "tool",
-                "tool_call_id": format!("done-{round}"),
-                "content": "{\"ok\":true}"
-            }),
-        ]
-    }
-
-    #[test]
-    fn a_rewind_closes_only_the_call_it_left_open() {
-        let (store, project) = fixture("rewind-completed");
-        let session = store
-            .create(Some(&workspace(&project)), Some(&project), None, None)
-            .unwrap();
-        let (dir, _) = store.find(&session.id).unwrap();
-        let mut messages = vec![user("three rounds, then one call still open")];
-        for round in 0..3 {
-            messages.extend(completed_round(round));
-        }
-        messages.push(json!({
-            "role": "assistant",
-            "content": null,
-            "tool_calls": [{
-                "id": "open",
-                "type": "function",
-                "function": {"name": "tracks_add", "arguments": "{}"}
-            }]
-        }));
-        write_records(&dir, &[turn_record(&now(), messages)]).unwrap();
-
-        // Keeping every message drops nothing, so the trailing call is the only
-        // one without a result.
-        let kept = store.rewind(&session.id, 8).unwrap();
-        let (view, _) = read_view(&dir).unwrap();
-        assert_eq!(kept, 9, "the kept prefix plus one closing result");
-        let closed: Vec<&str> = view
-            .iter()
-            .filter(|message| message["tool_call_id"].is_string())
-            .filter(|message| {
-                message["content"]
-                    .as_str()
-                    .is_some_and(|content| content.contains("rewound before"))
-            })
-            .filter_map(|message| message["tool_call_id"].as_str())
-            .collect();
-        assert_eq!(closed, ["open"], "completed calls are not answered again");
-        let mut answered: Vec<&str> = view
-            .iter()
-            .filter_map(|message| message["tool_call_id"].as_str())
-            .collect();
-        answered.sort_unstable();
-        assert_eq!(
-            answered,
-            ["done-0", "done-1", "done-2", "open"],
-            "no call is answered twice"
-        );
-        std::fs::remove_dir_all(store.root().parent().unwrap()).unwrap();
-    }
-
-    #[test]
-    fn a_rewind_lands_on_the_start_of_a_tool_block() {
-        let (store, project) = fixture("rewind-block");
-        let block = || {
-            vec![
-                user("start"),
-                json!({
-                    "role": "assistant",
-                    "content": null,
-                    "tool_calls": [
-                        {"id": "call-a", "type": "function",
-                         "function": {"name": "tracks_list", "arguments": "{}"}},
-                        {"id": "call-b", "type": "function",
-                         "function": {"name": "buses_list", "arguments": "{}"}}
-                    ]
-                }),
-                json!({"role": "tool", "tool_call_id": "call-a", "content": "{\"ok\":true}"}),
-                json!({"role": "tool", "tool_call_id": "call-b", "content": "{\"ok\":true}"}),
-                user("outcome"),
-            ]
-        };
-        for (label, cut, expected) in [
-            // A cut on either result moves back to the call that opened the block.
-            ("first-result", 2, 1),
-            ("second-result", 3, 1),
-            // A cut after the block keeps it whole.
-            ("after-block", 5, 5),
-        ] {
-            let session = store
-                .create(
-                    Some(&workspace(&project)),
-                    Some(&project),
-                    Some(label),
-                    None,
-                )
-                .unwrap();
-            let (dir, _) = store.find(&session.id).unwrap();
-            write_records(&dir, &[turn_record(&now(), block())]).unwrap();
-            assert_eq!(
-                store.rewind(&session.id, cut).unwrap(),
-                expected,
-                "{label}: keep {cut}"
-            );
-            let (view, _) = read_view(&dir).unwrap();
-            assert_eq!(view.len(), expected, "{label}");
-            assert_eq!(view[0]["content"], "start");
-            if expected == 1 {
-                assert_eq!(view[0]["role"], "user", "{label}: the whole block is gone");
-            }
-        }
-        std::fs::remove_dir_all(store.root().parent().unwrap()).unwrap();
-    }
-
-    #[test]
-    fn a_rewind_refuses_an_index_outside_the_conversation() {
-        let (store, project) = fixture("rewind-range");
-        let session = store
-            .create(Some(&workspace(&project)), Some(&project), None, None)
-            .unwrap();
-        let (dir, _) = store.find(&session.id).unwrap();
-        write_records(&dir, &[turn_record(&now(), vec![user("only message")])]).unwrap();
-
-        assert!(
-            store.rewind(&session.id, 0).is_err(),
-            "nothing would be kept"
-        );
-        assert!(store.rewind(&session.id, 2).is_err(), "past the end");
-        assert_eq!(
-            store.view(&session.id).unwrap().len(),
-            1,
-            "a refused rewind leaves the conversation alone"
         );
         std::fs::remove_dir_all(store.root().parent().unwrap()).unwrap();
     }
@@ -6741,8 +6461,8 @@ mod tests {
         assert_eq!(closed["role"], "tool");
         assert_eq!(closed["tool_call_id"], "call-tracks_mix");
         assert!(
-            closed["content"].as_str().unwrap().contains("Not run"),
-            "the model reads why the call has no result: {closed}"
+            closed["content"].as_str().unwrap().contains("not run"),
+            "a call that was never marked started reads as not run: {closed}"
         );
         assert_eq!(
             messages.last().unwrap()["content"],
@@ -6780,7 +6500,7 @@ mod tests {
             .filter(|message| {
                 message["content"]
                     .as_str()
-                    .is_some_and(|content| content.contains("Not run"))
+                    .is_some_and(|content| content.contains("not run"))
             })
             .count();
         assert_eq!(closings, 1);

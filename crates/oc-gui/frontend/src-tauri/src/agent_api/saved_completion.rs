@@ -30,6 +30,10 @@ impl Binding {
         &self.id
     }
 
+    pub(super) fn project(&self) -> &Path {
+        &self.project
+    }
+
     pub(super) fn caller(&self, app: &AppHandle) -> Result<String, String> {
         self.validate_project(app.state::<AppState>().lock_inner().file_path.as_deref())?;
         self.validate_session(&sessions::Store::config())?;

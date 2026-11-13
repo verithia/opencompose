@@ -19,8 +19,9 @@ import { resetStats } from "../stores/aiStats";
 import { i18n } from "../stores/i18n";
 import type { ActiveTurn, SessionMeta } from "../ai/sessions";
 import type { ProjectSnapshot } from "../types/project";
-import type { WireMessage } from "../ai/agent";
+import type { WireMessage } from "../ai/wire";
 import type { MediaAttachment } from "../ai/media";
+import { answerFakeTurn, cancelFakeTurn, resetFakeTurns, runFakeTurn, type TurnStartArgs } from "./helpers/fakeTurn";
 
 const CAPABILITIES = { text: true, audio_in: false, audio_out: false, native_tool_calling: true, streaming: true };
 
@@ -90,8 +91,6 @@ type ChatCall = { messages: { role: string; content?: unknown; media?: MediaAtta
 
 /** Everything a test can steer; the mock only reads it. */
 const backend = {
-  /** Turns a test holds open, oldest first. */
-  held: [] as { resolve: (value: unknown) => void; reject: (reason: unknown) => void }[],
   /** False once a test wants later turns to answer at once. */
   hold: true,
   /** The turn `ai_active_turn` reports; the mock clears it after one answer. */
@@ -112,6 +111,10 @@ const backend = {
   loadedIds: [] as string[],
   /** What `ai_batch_recover` answers: the restored document, or null. */
   recovered: null as ProjectSnapshot | null,
+  /** The questions the inherited turn waits on. */
+  questions: [] as { call_id: string; tool: string; args: Record<string, unknown> }[],
+  /** Every `ai_turn_answer`, in order. */
+  answers: [] as Record<string, unknown>[],
 };
 
 function installBackend() {
@@ -133,14 +136,26 @@ function installBackend() {
         if (backend.activeOnce) backend.active = null;
         return answer;
       }
-      case "ai_chat": {
-        backend.chatCalls.push({ ...typed, messages: JSON.parse(JSON.stringify(typed.messages)) } as ChatCall);
-        if (!backend.hold) return { role: "assistant", content: "Done." };
-        return new Promise((resolve, reject) => backend.held.push({ resolve, reject }));
+      case "ai_turn_start": {
+        return runFakeTurn(typed as unknown as TurnStartArgs, {
+          chat: async (round) => {
+            backend.chatCalls.push({ ...round, messages: JSON.parse(JSON.stringify(round.messages)) } as ChatCall);
+            if (!backend.hold) return { role: "assistant", content: "Done." };
+            return new Promise(() => {});
+          },
+        });
       }
+      case "ai_turn_answer": {
+        backend.answers.push(typed);
+        if (backend.active && typed.requestId === backend.active.request_id) return undefined;
+        return answerFakeTurn(String(typed.requestId), String(typed.callId), typed.decision as never);
+      }
+      case "ai_turn_questions": return backend.questions;
       case "ai_cancel": {
         backend.cancels.push({ requestId: String(typed.requestId ?? "") });
-        backend.held.shift()?.reject({ kind: "cancelled", message: "Request cancelled" });
+        cancelFakeTurn(String(typed.requestId ?? ""));
+        // The inherited turn closes and lets go of its slot.
+        if (backend.active?.request_id === typed.requestId) backend.active = null;
         return undefined;
       }
       case "sessions_list": return backend.sessions.map((entry) => ({ ...entry }));
@@ -232,10 +247,12 @@ async function queue(text: string) {
 
 beforeEach(() => {
   invokeMock.mockReset();
-  backend.held = [];
+  resetFakeTurns();
   backend.hold = true;
   backend.active = null;
   backend.activeOnce = false;
+  backend.questions = [];
+  backend.answers = [];
   backend.chatCalls = [];
   backend.calls = [];
   backend.cancels = [];
@@ -253,22 +270,23 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  resetFakeTurns();
   aiSession.reset();
   aiLimits.setActiveContext(null);
   resetStats();
 });
 
 describe("a reloaded window", () => {
-  it("rolls back a stranded panel batch once on mount and shows the restored document", async () => {
+  it("recovers a stranded panel batch once on mount and shows the document it committed", async () => {
     reloadWith({ open: "s1" });
     backend.loaded = [{ role: "user", content: "first" }];
-    const restored = { ...makeSnapshot(), dsl_source: '@project "Pre-batch"\n  tempo: 120\n' };
+    const restored = { ...makeSnapshot(), dsl_source: '@project "Committed"\n  tempo: 120\n' };
     backend.recovered = restored;
     await mount();
 
-    // The panel rolls the orphan back exactly once, before its first turn.
+    // The panel recovers the orphan exactly once, before its first turn.
     expect(backend.calls.filter((command) => command === "ai_batch_recover")).toHaveLength(1);
-    // What is on screen is the pre-batch document, not the orphan's edits.
+    // What is on screen is the document the recovery committed.
     expect(store.dslSource()).toBe(restored.dsl_source);
   });
 
@@ -335,6 +353,27 @@ describe("a reloaded window", () => {
     expect(runningRow()).toBeNull();
     expect(storedState().turn).toBeNull();
     await waitFor(() => expect(rows().at(-1)?.textContent).toContain("was stopped"));
+  });
+
+  it("shows the card the inherited turn waits on and answers that turn", async () => {
+    reloadWith({ open: "s1", turn: { session: "s1", started: Date.now() } });
+    backend.active = { request_id: "r1", session_id: "s1" };
+    backend.loaded = [{ role: "user", content: "remove the bass" }];
+    backend.questions = [{ call_id: "c7", tool: "tracks_remove", args: { track: "Bass" } }];
+    await mount();
+
+    await waitFor(() => expect(document.querySelector(".ai-approval-card")).toBeTruthy());
+    expect(backend.calls).toContain("ai_turn_questions");
+    fireEvent.click(document.querySelector(".ai-approval-reject")!);
+    await waitFor(() => expect(backend.answers).toHaveLength(1));
+    // The answer names the turn the backend reported and the call it asked
+    // about, so it reaches the loop that is still waiting.
+    expect(backend.answers[0]).toMatchObject({
+      requestId: "r1",
+      callId: "c7",
+      decision: { approved: false, always: false },
+    });
+    expect(document.querySelector(".ai-approval-card")).toBeNull();
   });
 
   it("clears the marker when the backend reports no turn, and paints none", async () => {

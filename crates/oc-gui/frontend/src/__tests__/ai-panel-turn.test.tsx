@@ -18,6 +18,7 @@ import { aiWorkspace } from "../stores/aiWorkspace";
 import { aiConfig, getActiveProvider, hasUnsavedConfig } from "../ai/config";
 import { elapsedLabel, stopStalled, STOP_STALLED_SECONDS } from "../ai/transcript";
 import type { SessionMeta } from "../ai/sessions";
+import { answerFakeTurn, cancelFakeTurn, emitTurnProject, resetFakeTurns, runFakeTurn, type TurnStartArgs } from "./helpers/fakeTurn";
 
 const CAPABILITIES = { text: true, audio_in: false, audio_out: false, native_tool_calling: true, streaming: true };
 
@@ -94,16 +95,23 @@ function installBackend() {
       case "ai_toolsets": return SETS;
       case "ai_tools": return TOOLS;
       case "ai_build_context": return { dsl_context: '@project "Test Project"\n  tempo: 128\n' };
-      case "ai_chat": {
-        backend.chatCalls.push({ ...typed, messages: JSON.parse(JSON.stringify(typed.messages)) } as ChatCall);
-        return backend.chat();
-      }
+      case "ai_turn_start": return runFakeTurn(typed as unknown as TurnStartArgs, {
+        chat: (round) => {
+          backend.chatCalls.push({ ...round, messages: JSON.parse(JSON.stringify(round.messages)) } as unknown as ChatCall);
+          return backend.chat();
+        },
+        tool: (call) => backend.tool(call),
+        ask: (call) => call.tool === "edit_subtree" || call.tool === "tracks_remove",
+      });
+      case "ai_turn_answer": return answerFakeTurn(String(typed.requestId), String(typed.callId), typed.decision as never);
+      case "ai_turn_questions": return [];
+      case "ai_batch_recover": return null;
       case "ai_cancel": {
         backend.cancelIds.push(String(typed.requestId));
         if (backend.cancel) backend.cancel(String(typed.requestId));
+        cancelFakeTurn(String(typed.requestId));
         return undefined;
       }
-      case "ai_call_tool": return backend.tool(typed as { tool: string; args: Record<string, unknown> });
       case "ai_validate_edit": return { valid: true };
       case "extract_subtree": return { dsl_text: "@project \"Test Project\"\n" };
       case "diff_dsl": return { old_text: "before", new_text: "after", hunks: [{ lines: [{ kind: "Added", text: "+ @project" }] }] };
@@ -181,6 +189,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  resetFakeTurns();
   aiSession.reset();
   workspaceStore.reset();
   aiLimits.setActiveContext(null);
@@ -259,68 +268,6 @@ describe("the turn in flight", () => {
     await waitFor(() => expect(input().disabled).toBe(false));
     expect(document.body.textContent).toContain("Cancelled before any edit was applied");
     expect(answers()).toHaveLength(0);
-  });
-
-  it("stops the active separator when the composer Stop button is clicked", async () => {
-    const pending = held();
-    const tool = { name: "separate_stems", description: "Separate stems", area: "analysis", mutation: false,
-      inputSchema: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } };
-    const previous = invokeMock.getMockImplementation()!;
-    invokeMock.mockImplementation(async (command: string, args?: unknown) => {
-      if (command === "ai_tools") return [...TOOLS, tool];
-      if (command === "ai_toolsets") return [{ ...SETS[0], tools: [...SETS[0].tools, tool.name] }];
-      if (command === "ai_cancel_separator") {
-        pending.reject({ error: "separation cancelled" });
-        return undefined;
-      }
-      return previous(command, args);
-    });
-    backend.chat = async () => ({ role: "assistant", content: null, tool_calls: [
-      { id: "split", type: "function", function: { name: tool.name, arguments: '{"path":"/tmp/mix.wav"}' } },
-    ] });
-    backend.tool = () => pending.promise;
-    await mount();
-    await startTurn("Separate the reference.");
-    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("ai_call_tool", expect.objectContaining({ tool: tool.name, cancellationId: expect.any(String) })));
-    const launched = invokeMock.mock.calls.find(([command, args]) => command === "ai_call_tool" && (args as {tool: string}).tool === tool.name)![1] as {cancellationId: string};
-    fireEvent.click(cancelButton()!);
-    await waitFor(() => expect(pendingRow()).toBeNull());
-    expect(invokeMock).toHaveBeenCalledWith("ai_cancel_separator", { cancellationId: launched.cancellationId });
-    expect(backend.chatCalls).toHaveLength(1);
-  });
-
-  it("keeps an answer whose commit outlived Stop instead of leaving a silent hole", async () => {
-    // The turn had already answered and was committing its batch when Stop
-    // arrived: dropping the answer would leave the question with no reply.
-    const commit = held();
-    let commitStarted!: () => void;
-    const committing = new Promise<void>((resolve) => { commitStarted = resolve; });
-    let round = 0;
-    backend.chat = async () => {
-      round += 1;
-      return round === 1
-        ? {
-          role: "assistant", content: null,
-          tool_calls: [{ id: "call-1", type: "function", function: { name: "tracks_add", arguments: JSON.stringify({ name: "bass" }) } }],
-        }
-        : { role: "assistant", content: "Added the bass track." };
-    };
-    backend.tool = async ({ tool }) => {
-      if (tool === "transaction_commit") { commitStarted(); return commit.promise; }
-      if (tool === "transaction_begin") return { active: true, label: "AI edit" };
-      return { revision: 1 };
-    };
-    await mount();
-    await typeAndSend("add a bass track");
-    // Wait until the loop is parked inside the commit, then stop.
-    await committing;
-    fireEvent.click(cancelButton()!);
-    await waitFor(() => expect(phase()).toBe("Stopping…"));
-    commit.resolve({ committed: true });
-
-    await waitFor(() => expect(pendingRow()).toBeNull());
-    expect(answers().at(-1)?.textContent).toContain("Added the bass track.");
-    expect(systemRows()).toHaveLength(0);
   });
 
   it("clears the composer on Send and gives the draft back when the credential read fails", async () => {
@@ -620,6 +567,7 @@ describe("native edit snapshots", () => {
         snap.project.properties.tempo = 76;
         snap.dirty = true;
         backend.snapshot = snap;
+        emitTurnProject(snap);
       }
       return {revision:2};
     };
@@ -641,11 +589,12 @@ describe("native edit snapshots", () => {
     backend.tool = async ({tool}) => {
       if (tool === "tracks_add") {
         const snap = makeSnapshot(); snap.project.name = "Transient edit"; backend.snapshot = snap;
+        emitTurnProject(snap);
       }
       return {revision:2};
     };
     await typeAndSend("compose piano");
-    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("ai_call_tool",expect.objectContaining({tool:"transaction_commit"})));
+    await waitFor(() => expect(store.project.name).toBe("Transient edit"));
     await waitFor(() => expect(pendingRow()).toBeNull());
     expect(store.project.name).toBe("Transient edit");
   });
@@ -704,45 +653,6 @@ describe("provider reasoning channel", () => {
   });
 });
 
-describe("a reply the store did not keep", () => {
-  const WARNING = "The reply could not be saved; it will be lost when the window closes. Session s1: no session 's1'";
-
-  it("shows the warning under the answer and offers only a retry", async () => {
-    backend.chat = async () => ({ role: "assistant", content: "The bass line is in.", session_warning: WARNING });
-    await mount();
-    await typeAndSend("add a bass line");
-    await waitFor(() => expect(pendingRow()).toBeNull());
-
-    expect(answers()).toHaveLength(1);
-    expect(document.querySelector(".ai-session-warning")?.textContent).toBe(WARNING);
-    expect(retryButton()).toBeTruthy();
-    // A finished turn cannot be continued, only sent again to be saved.
-    expect(document.querySelector(".ai-turn-continue")).toBeFalsy();
-  });
-
-  it("replaces the unsaved answer on retry instead of stacking a second one", async () => {
-    let turn = 0;
-    backend.chat = async () => {
-      turn += 1;
-      return turn === 1
-        ? { role: "assistant", content: "The bass line is in.", session_warning: WARNING }
-        : { role: "assistant", content: "The bass line is in." };
-    };
-    await mount();
-    await typeAndSend("add a bass line");
-    await waitFor(() => expect(pendingRow()).toBeNull());
-    expect(answers()).toHaveLength(1);
-
-    fireEvent.click(retryButton()!);
-    await waitFor(() => expect(backend.chatCalls).toHaveLength(2));
-    await waitFor(() => expect(pendingRow()).toBeNull());
-
-    expect(answers()).toHaveLength(1);
-    expect(answers()[0].textContent).toContain("The bass line is in.");
-    expect(document.querySelector(".ai-session-warning")).toBeFalsy();
-  });
-});
-
 describe("the edit target", () => {
   it("falls back to the whole project when another document opens in the same folder", async () => {
     backend.snapshot = { ...makeSnapshot(), file_path: "/Users/me/songs/one.ocp" };
@@ -787,7 +697,7 @@ describe("an unsaved provider draft", () => {
     const saved = commands.lastIndexOf("save_ai_config");
     expect(saved).toBeGreaterThanOrEqual(0);
     // The write precedes the request it applies to.
-    expect(saved).toBeLessThan(commands.indexOf("ai_chat"));
+    expect(saved).toBeLessThan(commands.indexOf("ai_turn_start"));
     expect(hasUnsavedConfig()).toBe(false);
     expect(input().value).toBe("");
   });

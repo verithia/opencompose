@@ -8,11 +8,11 @@ import { cleanup, fireEvent, render, waitFor } from "@solidjs/testing-library";
 import { invokeMock, makeSnapshot, openDialogMock, openStepGroups, aiConfigWire } from "./setup";
 import { store } from "../stores/project";
 import { AiPanel } from "../components/AiPanel";
-import { MAX_TOOL_ROUNDS } from "../ai/agent";
 import { aiLimits } from "../stores/aiLimits";
 import { resetStats } from "../stores/aiStats";
 import { aiSession } from "../stores/aiSession";
 import { i18n, type I18nKey } from "../stores/i18n";
+import { answerFakeTurn, cancelFakeTurn, resetFakeTurns, runFakeTurn, type TurnStartArgs } from "./helpers/fakeTurn";
 
 const CAPABILITIES = { text: true, audio_in: false, audio_out: false, native_tool_calling: true, streaming: true };
 
@@ -55,6 +55,7 @@ const backend = {
 
 function installBackend() {
   invokeMock.mockImplementation(async (cmd: string, args?: unknown) => {
+    const typed = (args ?? {}) as Record<string, unknown>;
     switch (cmd) {
       case "load_ai_config": return aiConfigWire();
       case "save_ai_config": return { path: "/tmp/ai-providers.yaml", warnings: [] };
@@ -64,13 +65,28 @@ function installBackend() {
       case "ai_toolsets": return SETS;
       case "ai_tools": return backend.tools;
       case "ai_build_context": return { dsl_context: '@project "Test Project"\n  tempo: 128\n' };
-      case "ai_chat": {
-        // The loop keeps mutating its own array, so the request is copied here.
-        backend.chatCalls.push({ ...(args as Record<string, unknown>), messages: JSON.parse(JSON.stringify((args as Record<string, unknown>).messages)) });
-        return backend.chat();
+      case "ai_turn_start": {
+        return runFakeTurn(typed as unknown as TurnStartArgs, {
+          chat: async (round) => {
+            // The fake keeps appending to its own array, so the request is copied here.
+            backend.chatCalls.push({
+              ...round,
+              messages: JSON.parse(JSON.stringify(round.messages)),
+            } as unknown as { messages: { role: string; content?: unknown; tool_call_id?: string }[]; [key: string]: unknown });
+            return backend.chat();
+          },
+          tool: (call) => backend.tool(call),
+          mutation: (tool) => backend.tools.some((entry) => entry.name === tool && entry.mutation),
+        });
       }
+      case "ai_turn_answer": return answerFakeTurn(String(typed.requestId), String(typed.callId), typed.decision as never);
+      case "ai_turn_questions": return [];
+      case "ai_cancel": cancelFakeTurn(String(typed.requestId)); return undefined;
+      case "ai_batch_recover": return null;
       case "ai_attach_media": return ATTACHMENT;
-      case "ai_call_tool": return backend.tool((args ?? {}) as { tool: string; args: Record<string, unknown> });
+      case "sessions_new": return { id: "s1", title: String(typed.title ?? "new") };
+      case "sessions_list": return [];
+      case "sessions_load": return { meta: { id: "s1", title: "new" }, messages: [], skipped: 0 };
       default: return makeSnapshot();
     }
   });
@@ -115,95 +131,19 @@ beforeEach(() => {
   resetStats();
   aiSession.reset();
   openDialogMock.mockReset();
+  resetFakeTurns();
   installBackend();
 });
 
 afterEach(() => {
   cleanup();
+  resetFakeTurns();
   aiSession.reset();
   aiLimits.setActiveContext(null);
   resetStats();
 });
 
 describe("a turn that stops early", () => {
-  it("reports the cap exit once, in the failed row, and never as an assistant answer", async () => {
-    // Different work each round, so the round cap (not the repeat guard) ends it.
-    let step = 0;
-    backend.chat = async () => ({
-      role: "assistant",
-      content: null,
-      tool_calls: [{ id: `call-${step}`, type: "function", function: { name: "tracks_list", arguments: JSON.stringify({ step: step++ }) } }],
-    });
-    await mount();
-    await send("describe the mix");
-    // The cap reports a stop row, so the turn settles when that row's Continue
-    // is on screen and the composer is usable again.
-    await waitFor(() => expect(continueButton()).toBeTruthy());
-    await waitFor(() => expect(input().disabled).toBe(false));
-
-    expect(failures()).toHaveLength(1);
-    expect(answers()).toHaveLength(0);
-    // Folded by default; the reason is one click away.
-    expect(failures()[0].hasAttribute("open")).toBe(false);
-    expect(failures()[0].textContent).toContain("Failed");
-    (failures()[0] as HTMLDetailsElement).open = true;
-    const failure = failures()[0].textContent ?? "";
-    expect(failure).toContain(
-      `stopped after ${MAX_TOOL_ROUNDS} tool rounds; the work is unfinished; the last action was tracks_list`,
-    );
-    // With no edit applied, the notice says the project is unchanged and still
-    // offers Continue.
-    expect(lastSystemRow()?.textContent).toContain("stopped at the round limit");
-    expect(lastSystemRow()?.textContent).toContain("no edit had been applied");
-    expect(retryButton()).toBeNull();
-  });
-
-  it("keeps the edits a timed-out turn had already applied", async () => {
-    backend.tool = async ({ tool }) => {
-      if (tool === "transaction_begin") return { active: true, label: "AI edit" };
-      if (tool === "transaction_commit") return { committed: true, revision: 2 };
-      return { revision: 1 };
-    };
-    let round = 0;
-    backend.chat = async () => {
-      round += 1;
-      if (round === 1) {
-        return {
-          role: "assistant", content: null,
-          tool_calls: [{ id: "call-1", type: "function", function: { name: "tracks_rename", arguments: "{}" } }],
-        };
-      }
-      throw { kind: "timeout", message: "Provider request timed out" };
-    };
-    await mount();
-    await send("rename the track");
-    await waitFor(() => expect(continueButton()).toBeTruthy());
-
-    expect(retryButton()).toBeTruthy();
-    expect(lastSystemRow()?.textContent).toContain("model request timed out");
-    expect(lastSystemRow()?.textContent).toContain("Applied edits kept: 1");
-  });
-
-  it("reports the repeated-call stop once and keeps the tool name in the failed row", async () => {
-    // Only a repeated mutation stops the loop; a repeated read is allowed to
-    // continue, because stopping it would roll back edits it never caused.
-    const call = { id: "call-1", type: "function", function: { name: "tracks_rename", arguments: "{}" } };
-    backend.chat = async () => ({ role: "assistant", content: null, tool_calls: [call] });
-    await mount();
-    await send("describe the mix");
-    await settle();
-
-    expect(failures()).toHaveLength(1);
-    expect(answers()).toHaveLength(0);
-    expect(failures()[0].hasAttribute("open")).toBe(false);
-    (failures()[0] as HTMLDetailsElement).open = true;
-    await waitFor(() =>
-      expect(failures()[0].textContent ?? "").toContain(
-        "the model repeated the same call twice",
-      ),
-    );
-  });
-
   it("still shows a normal answer as an assistant bubble", async () => {
     backend.chat = async () => ({ role: "assistant", content: "The mix has one track." });
     await mount();
@@ -213,6 +153,56 @@ describe("a turn that stops early", () => {
     expect(answers()).toHaveLength(1);
     expect(answers()[0].textContent).toContain("The mix has one track.");
     expect(failures()).toHaveLength(0);
+  });
+});
+
+describe("the stop facts the backend reports", () => {
+  /** A turn whose outcome is scripted, as the loop would report it. */
+  function outcome(value: unknown) {
+    const base = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation(async (command: string, args?: unknown) =>
+      command === "ai_turn_start" ? value : base(command, args));
+  }
+  const lastRow = () => ([...document.querySelectorAll(".ai-message.system")] as HTMLElement[]).at(-1);
+
+  it.each([
+    [{ cancelled: false, done: 64, planned: 64, edits: 3, committed: true }, "ai.cap.kept", false],
+    [{ cancelled: false, done: 2, planned: 2, edits: 0 }, "ai.cap.keptNone", true],
+    [{ cancelled: false, done: 2, planned: 2, edits: 2, committed: true, timed_out: true }, "ai.timeout.kept", true],
+    [{ cancelled: false, done: 1, planned: 2, edits: 1, committed: true, failure_kept: true }, "ai.failure.kept", true],
+    [{ cancelled: true, done: 1, planned: 3, not_run: 2, edits: 1, committed: true }, "ai.cancel.kept", false],
+  ] as const)("words %o from the locale table and offers what it allows", async (stop, key, retry) => {
+    outcome({ text: "stopped", failed: true, stop });
+    await mount();
+    await send("build the arrangement");
+    await settle();
+    expect(lastRow()?.textContent).toContain(i18n.t(key as I18nKey, { edits: stop.edits }));
+    expect(!!document.querySelector(".ai-turn-retry")).toBe(retry);
+    expect(document.querySelector(".ai-turn-continue")).toBeTruthy();
+  });
+
+  it("puts a commit failure first and offers neither Retry nor a silent success", async () => {
+    outcome({
+      text: "stopped", failed: true,
+      stop: { cancelled: false, done: 1, planned: 1, edits: 1, commit_error: "disk full" },
+    });
+    await mount();
+    await send("rename the bass");
+    await settle();
+    expect(lastRow()?.textContent).toContain(i18n.t("ai.failure.commitFailed", { error: "disk full" }));
+    expect(document.querySelector(".ai-turn-retry")).toBeNull();
+    expect(answers()).toHaveLength(0);
+  });
+
+  it("names a provider failure and withholds Retry when resending cannot help", async () => {
+    outcome({ text: "bad key", failed: true, error: { kind: "auth", message: "bad key", retryable: false } });
+    await mount();
+    await send("describe the mix");
+    await settle();
+    expect(lastRow()?.textContent).toContain("Error: bad key");
+    expect(document.querySelector(".ai-turn-retry")).toBeNull();
+    // The message goes back to the composer so nothing typed is lost.
+    expect(input().value).toBe("describe the mix");
   });
 });
 
@@ -228,10 +218,7 @@ describe("a cancelled turn", () => {
   ];
 
   it("cancels while a call is in flight: the landed edits stay", async () => {
-    let project = "snapshot";
-    let snapshot: string | null = null;
-    const undo: string[] = [];
-    const commands: string[] = [];
+    const dispatched: string[] = [];
     backend.tools = MUTATING;
     backend.chat = async (): Promise<unknown> => ({
       role: "assistant",
@@ -242,14 +229,10 @@ describe("a cancelled turn", () => {
         function: { name: "tracks_add", arguments: JSON.stringify({ name }) },
       })),
     });
-    backend.tool = async ({ tool, args }) => {
-      commands.push(tool);
-      if (tool === "transaction_begin") { snapshot = project; return { active: true, label: args.label }; }
-      if (tool === "transaction_commit") { undo.push(snapshot ?? project); snapshot = null; return { committed: true }; }
-      if (tool === "transaction_rollback") { project = snapshot ?? project; snapshot = null; return { rolled_back: true }; }
-      project = `${project}+${tool}`;
+    backend.tool = async ({ tool }) => {
+      dispatched.push(tool);
       // The user clicks Cancel while the second call is still running.
-      if (commands.filter((name) => name === "tracks_add").length === 2) fireEvent.click(cancelButton()!);
+      if (dispatched.length === 2) fireEvent.click(cancelButton()!);
       return { revision: 1 };
     };
     await mount();
@@ -260,23 +243,26 @@ describe("a cancelled turn", () => {
     expect(systemRows()).toHaveLength(1);
     const notice = systemRows()[0].textContent ?? "";
     expect(notice).toContain("Cancelled. Applied edits kept: 2");
-    expect(notice).toContain("Right-click the user message to roll back this turn.");
     // A cancelled turn is a notice, not an answer, and not an error bubble.
     expect(answers()).toHaveLength(0);
     expect(document.body.textContent).not.toContain("Request cancelled");
-    // The edits stay as the turn's one entry; the user can revert it from the
-    // message menu.
-    expect(project).toBe("snapshot+tracks_add+tracks_add");
-    expect(snapshot).toBeNull();
-    expect(undo).toEqual(["snapshot"]);
-    expect(commands).toEqual([
-      "transaction_begin", "tracks_add", "tracks_add", "transaction_commit",
-    ]);
+    // The two calls that returned are the edits the notice counts; the rest
+    // never ran.
+    expect(dispatched).toEqual(["tracks_add", "tracks_add"]);
   });
 
   it("cancels before any call runs and says the project is unchanged", async () => {
-    let rejectChat: ((reason?: unknown) => void) | null = null;
-    backend.chat = () => new Promise((_resolve, reject) => { rejectChat = reject; });
+    const dispatched: string[] = [];
+    let providerStarted!: () => void;
+    const provider = new Promise<void>((resolve) => { providerStarted = resolve; });
+    backend.chat = () => {
+      providerStarted();
+      return new Promise(() => {});
+    };
+    backend.tool = async ({ tool }) => {
+      dispatched.push(tool);
+      return { tracks: [] };
+    };
     await mount();
     await send("describe the mix");
     const cancel = await waitFor(() => {
@@ -284,9 +270,10 @@ describe("a cancelled turn", () => {
       expect(button).toBeTruthy();
       return button!;
     });
-    await waitFor(() => expect(rejectChat).toBeTruthy());
+    // The turn owns the composer before it reaches the provider; wait for the
+    // request so Stop names a turn the backend holds.
+    await provider;
     fireEvent.click(cancel);
-    rejectChat!({ kind: "cancelled", message: "Request cancelled" });
 
     await waitFor(() => expect(document.body.textContent).toContain("Cancelled before any edit was applied"));
     await waitFor(() => expect(input().disabled).toBe(false));
@@ -294,7 +281,7 @@ describe("a cancelled turn", () => {
     expect(systemRows()[0].querySelector(".ai-message-content")?.textContent).toBe("Cancelled before any edit was applied; the project is unchanged.");
     expect(answers()).toHaveLength(0);
     expect(document.body.textContent).not.toContain("Request cancelled");
-    expect(invokeMock.mock.calls.some(([command]) => command === "ai_call_tool")).toBe(false);
+    expect(dispatched).toEqual([]);
     expect(document.querySelector(".ai-tool-result")).toBeFalsy();
   });
 });
@@ -318,7 +305,7 @@ function failingRound(round: number, failure: unknown) {
 }
 
 describe("retry and continue", () => {
-  it("offers one Retry on a transport failure, restores the draft and the attachment, and resends the same messages", async () => {
+  it("offers one Retry on a transport failure, restores the draft and the attachment, and sends the system prompt again", async () => {
     backend.chat = failingRound(2, { kind: "network", message: "connection reset" });
     await mount();
     openDialogMock.mockResolvedValueOnce("/tmp/take.wav");
@@ -334,17 +321,16 @@ describe("retry and continue", () => {
     expect(input().value).toBe("add a bass line");
     expect(document.querySelector(".ai-attachment-chip")?.getAttribute("data-media-path")).toBe("/tmp/take.wav");
 
-    const failed = backend.chatCalls.at(-1)!;
     backend.chat = async () => ({ role: "assistant", content: "The bass line is in." });
     fireEvent.click(retryButton()!);
     await waitFor(() => expect(document.body.textContent).toContain("The bass line is in."));
 
-    // The retry sent the turn's own messages, not a rebuilt question: the user
-    // row is one, and the assistant/tool state is the failed turn's.
-    expect(backend.chatCalls.at(-1)!.messages).toEqual(failed.messages);
+    // A resumed turn sends only the system prompt; the backend replays the
+    // saved conversation, so the question is not sent twice.
+    expect(backend.chatCalls.at(-1)!.messages.map((message) => message.role)).toEqual(["system"]);
     expect(userRows()).toHaveLength(1);
     expect(input().value).toBe("add a bass line");
-    // One shot: the row it came from no longer offers it.
+    // One shot: the row it came from stops offering it.
     expect(retryButton()).toBeNull();
   });
 
@@ -394,19 +380,12 @@ describe("retry and continue", () => {
     expect(document.querySelector(".ai-turn-actions")).toBeFalsy();
   });
 
-  it("keeps a failed turn's edits and continues from the same project", async () => {
+  it("keeps a failed turn's edits and continues without replaying the call", async () => {
     const MUTATING = [{ name: "tracks_add", description: "Add a track", area: "tracks", mutation: true, inputSchema: {} }];
     backend.tools = MUTATING;
-    let project = "snapshot";
-    let snapshot: string | null = null;
-    const undo: string[] = [];
-    const commands: string[] = [];
-    backend.tool = async ({ tool, args }) => {
-      commands.push(tool);
-      if (tool === "transaction_begin") { snapshot = project; return { active: true, label: args.label }; }
-      if (tool === "transaction_commit") { undo.push(snapshot ?? project); snapshot = null; return { committed: true }; }
-      if (tool === "transaction_rollback") { project = snapshot ?? project; snapshot = null; return { rolled_back: true }; }
-      project = `${project}+${tool}`;
+    const dispatched: string[] = [];
+    backend.tool = async ({ tool }) => {
+      dispatched.push(tool);
       return { revision: 1 };
     };
     let call = 0;
@@ -426,71 +405,17 @@ describe("retry and continue", () => {
     // Retry resends the failed request only; it does not replay the edit.
     expect(retryButton()).toBeTruthy();
     expect(document.querySelector(".ai-turn-note")?.textContent).toContain("last request");
-    expect(project).toBe("snapshot+tracks_add");
-    expect(undo).toEqual(["snapshot"]);
+    expect(dispatched).toEqual(["tracks_add"]);
     expect(lastSystemRow()?.textContent).toContain("The turn failed. Applied edits kept: 1");
     expect(lastSystemRow()?.textContent).toContain("Right-click the user message to roll back this turn.");
 
-    // Continue carries the same wire to an answer without applying the edit again.
+    // Continue sends only the system prompt; the backend replays the saved
+    // conversation, so the edit is not applied a second time.
     backend.chat = async (): Promise<unknown> => ({ role: "assistant", content: "Track added." });
     fireEvent.click(continueButton()!);
     await waitFor(() => expect(document.body.textContent).toContain("Track added."));
-    expect(commands).toEqual(["transaction_begin", "tracks_add", "transaction_commit"]);
-    expect(undo).toEqual(["snapshot"]);
-  });
-
-  it("keeps what landed at the round cap, so Continue resumes a project with the work in it", async () => {
-    const MUTATING = [{ name: "tracks_add", description: "Add a track", area: "tracks", mutation: true, inputSchema: {} }];
-    backend.tools = MUTATING;
-    let project = "snapshot";
-    let snapshot: string | null = null;
-    const undo: string[] = [];
-    const commands: string[] = [];
-    backend.tool = async ({ tool, args }) => {
-      commands.push(tool);
-      if (tool === "transaction_begin") { snapshot = project; return { active: true, label: args.label }; }
-      if (tool === "transaction_commit") { undo.push(snapshot ?? project); snapshot = null; return { committed: true }; }
-      if (tool === "transaction_rollback") { project = snapshot ?? project; snapshot = null; return { rolled_back: true }; }
-      project = `${project}+${tool}`;
-      return { revision: commands.length };
-    };
-    let step = 0;
-    backend.chat = async (): Promise<unknown> => ({
-      role: "assistant", content: null,
-      tool_calls: [{ id: `call-${step}`, type: "function", function: { name: "tracks_add", arguments: JSON.stringify({ name: `t${step++}` }) } }],
-    });
-    await mount();
-    await send("add sixteen tracks");
-    await waitFor(() => expect(continueButton()).toBeTruthy());
-    await waitFor(() => expect(input().disabled).toBe(false));
-
-    // The cap is a budget stop, not a failure: the batch is committed as the
-    // turn's one undo entry, so the tracks the turn wrote are still there.
-    expect(backend.chatCalls).toHaveLength(MAX_TOOL_ROUNDS);
-    expect(commands.at(-1)).toBe("transaction_commit");
-    expect(undo).toHaveLength(1);
-    expect(project).not.toBe("snapshot");
-    // Retry would apply the same edits twice, so only Continue is offered.
-    expect(retryButton()).toBeNull();
-    expect(lastSystemRow()?.textContent).toContain("stopped at the round limit");
-    expect(lastSystemRow()?.textContent).toContain(`Applied edits kept: ${MAX_TOOL_ROUNDS}`);
-    expect(document.querySelector(".ai-turn-note")?.textContent).toContain("Continue resumes after");
-    expect(userRows()).toHaveLength(1);
-    const capped = backend.chatCalls.at(-1)!;
-
-    backend.chat = async () => ({ role: "assistant", content: "Sixteen rounds was enough." });
-    fireEvent.click(continueButton()!);
-    await waitFor(() => expect(document.body.textContent).toContain("Sixteen rounds was enough."));
-
-    // Continue sent the conversation the stopped turn held: the last request
-    // plus the round it never sent, and no second copy of the question.
-    const resumed = backend.chatCalls.at(-1)!;
-    expect(resumed.messages.slice(0, capped.messages.length)).toEqual(capped.messages);
-    expect(resumed.messages.length).toBe(capped.messages.length + 2);
-    expect(resumed.messages.at(-1)).toMatchObject({ role: "tool", tool_call_id: `call-${MAX_TOOL_ROUNDS - 1}` });
-    expect(userRows()).toHaveLength(1);
-    // The transcript says where it resumed.
-    expect(lastSystemRow()?.textContent).toContain("Resumed after");
+    expect(backend.chatCalls.at(-1)!.messages.map((message) => message.role)).toEqual(["system"]);
+    expect(dispatched).toEqual(["tracks_add"]);
   });
 
   it("offers Continue but not Retry after a cancel, and closes the calls that never ran", async () => {
@@ -520,12 +445,10 @@ describe("retry and continue", () => {
     fireEvent.click(continueButton()!);
     await waitFor(() => expect(document.body.textContent).toContain("The mix has no tracks."));
 
+    // Continue sends only the system prompt; the backend replays the saved
+    // conversation, including the call that never ran.
     const resumed = backend.chatCalls.at(-1)!;
-    // The two results that landed stay; the call that never ran is answered as
-    // "not run", so the model is not asked to trust a call that never happened.
-    expect(resumed.messages.map(message => message.role)).toEqual(["system", "user", "assistant", "tool", "tool", "tool"]);
-    expect(resumed.messages.filter(message => message.role === "tool").map(message => message.tool_call_id)).toEqual(["call-0", "call-1", "call-2"]);
-    expect(JSON.parse(String(resumed.messages.at(-1)!.content)).error).toContain("stopped before this call ran");
+    expect(resumed.messages.map(message => message.role)).toEqual(["system"]);
     expect(userRows()).toHaveLength(1);
     expect(lastSystemRow()?.textContent).toContain("Resumed after 2 of 3 requested calls.");
   });

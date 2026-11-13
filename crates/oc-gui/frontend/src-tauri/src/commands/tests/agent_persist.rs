@@ -322,7 +322,7 @@ fn a_mutating_tool_publishes_the_file_and_a_batch_waits_for_its_commit() {
 }
 
 #[test]
-fn a_batch_a_reloaded_panel_left_open_is_recovered_and_the_file_saves() {
+fn a_batch_a_dead_turn_left_open_is_committed_and_the_file_saves() {
     let fixture = Fixture::new("agent-batch-recover");
     let baseline = fixture.state.lock_inner().dsl_source.clone();
     let path = fixture.path.clone();
@@ -335,13 +335,15 @@ fn a_batch_a_reloaded_panel_left_open_is_recovered_and_the_file_saves() {
     set_mute(&fixture.state, true);
     assert!(fixture.state.lock_inner().transaction.is_some());
 
-    // The panel mounts and recovers the batch the dead turn left open.
+    // The panel mounts and recovers the batch the dead turn left open: the
+    // applied edit stays, and the project file holds it.
     let recovered = crate::commands::recover_panel_batch(&fixture.state)
         .unwrap()
         .expect("the panel's orphan is recovered");
     assert!(fixture.state.lock_inner().transaction.is_none());
-    assert_eq!(recovered.dsl_source, baseline);
-    assert!(!recovered.project.tracks[0].mix.mute);
+    assert_ne!(recovered.dsl_source, baseline);
+    assert!(recovered.project.tracks[0].mix.mute);
+    assert_eq!(fixture.bytes(), recovered.dsl_source.as_bytes());
 
     // Save works immediately, and a second recovery is a no-op.
     assert_eq!(

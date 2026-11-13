@@ -15,6 +15,7 @@ import { store } from "../../stores/project";
 import { AiPanel } from "../../components/AiPanel";
 import { Timeline } from "../../components/Timeline";
 import App from "../../App";
+import { answerFakeTurn, resetFakeTurns, runFakeTurn, type TurnStartArgs } from "../helpers/fakeTurn";
 
 function stylesheet(name: string): string {
   return readFileSync(`${process.cwd()}/src/styles/daw/${name}`, "utf8");
@@ -35,6 +36,7 @@ function selectOf(el: Element): string {
 
 beforeEach(() => {
   invokeMock.mockClear();
+  resetFakeTurns();
   injectStyles("base.css", "timeline.css");
 });
 
@@ -42,12 +44,14 @@ afterEach(() => {
   for (const el of injected) el.remove();
   injected = [];
   store.setError(null);
+  resetFakeTurns();
 });
 
 describe("AI panel text", () => {
   it("keeps the transcript and tool output selectable", async () => {
     let chatCalls = 0;
-    invokeMock.mockImplementation(async (cmd: string, _args?: unknown) => {
+    invokeMock.mockImplementation(async (cmd: string, args?: unknown) => {
+      const typed = (args ?? {}) as Record<string, unknown>;
       if (cmd === "load_ai_config") return aiConfigWire();
       if (cmd === "save_ai_config") return "ok";
       if (cmd === "ai_key_status") return false;
@@ -61,18 +65,28 @@ describe("AI panel text", () => {
           inputSchema: { type: "object", properties: {}, additionalProperties: true },
         }];
       }
-      if (cmd === "ai_call_tool") return { score: 0.87, loudness_delta_db: -1.2 };
-      if (cmd === "ai_chat") {
-        chatCalls += 1;
-        if (chatCalls === 1) {
-          return {
-            role: "assistant",
-            content: null,
-            tool_calls: [{ id: "call-1", type: "function", function: { name: "audio_compare", arguments: "{}" } }],
-          };
-        }
-        return { role: "assistant", content: "The target render is 1.2 dB quieter." };
+      if (cmd === "sessions_new") return { id: "s1", title: String(typed.title ?? "new") };
+      if (cmd === "sessions_list") return [];
+      if (cmd === "sessions_load") return { meta: { id: "s1", title: "new" }, messages: [], skipped: 0 };
+      if (cmd === "ai_turn_start") {
+        return runFakeTurn(typed as unknown as TurnStartArgs, {
+          chat: async () => {
+            chatCalls += 1;
+            if (chatCalls === 1) {
+              return {
+                role: "assistant",
+                content: null,
+                tool_calls: [{ id: "call-1", type: "function", function: { name: "audio_compare", arguments: "{}" } }],
+              };
+            }
+            return { role: "assistant", content: "The target render is 1.2 dB quieter." };
+          },
+          tool: async () => ({ score: 0.87, loudness_delta_db: -1.2 }),
+        });
       }
+      if (cmd === "ai_turn_answer") return answerFakeTurn(String(typed.requestId), String(typed.callId), typed.decision as never);
+      if (cmd === "ai_turn_questions") return [];
+      if (cmd === "ai_batch_recover") return null;
       return makeSnapshot();
     });
     await store.initProject();
@@ -80,6 +94,7 @@ describe("AI panel text", () => {
     const { container } = render(() => <AiPanel />);
     // loadConfig resolves after mount and clears the unsaved-config gate.
     await vi.waitFor(() => expect(container.querySelector(".ai-save-notice")).toBeFalsy());
+    await vi.waitFor(() => expect(container.querySelector(".ai-toolset-chip")).toBeTruthy());
     fireEvent.input(container.querySelector(".ai-input") as HTMLInputElement, {
       target: { value: "Compare the last render" },
     });

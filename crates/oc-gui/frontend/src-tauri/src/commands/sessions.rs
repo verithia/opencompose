@@ -6,7 +6,6 @@
 use crate::ai::sessions::{
     self, Compaction, Fork, Loaded, ProjectFacts, Scope, SessionMeta, Store,
 };
-use crate::ai_service::{ActiveTurn, Requests};
 use crate::commands::AiProviderEntry;
 use crate::state::{AppState, AppStateInner};
 use serde_json::{Value, json};
@@ -166,34 +165,6 @@ pub fn sessions_load(id: String) -> Result<Loaded, String> {
 #[tauri::command]
 pub fn sessions_drop_history(id: String, keep: u64) -> Result<Value, String> {
     store().drop_history(&id, keep)
-}
-
-/// Cut the conversation back to its first `keep` wire messages, at the start of
-/// a tool block the cut landed inside, closing any call the cut left without a
-/// result. Refused while a turn is still writing this conversation's history.
-#[tauri::command]
-pub fn sessions_rewind(
-    id: String,
-    keep: usize,
-    requests: State<'_, Requests>,
-) -> Result<Value, String> {
-    let active = requests.active()?;
-    refuse_while_running(active.as_ref(), &id)?;
-    let kept = store().rewind(&id, keep)?;
-    Ok(json!({ "kept": kept }))
-}
-
-/// Why a rewind cannot run: a turn that is still answering writes messages at
-/// the end of the very history the rewind rewrites. A request that has not named
-/// its conversation yet may be saving into this one, so it counts as running.
-fn refuse_while_running(active: Option<&ActiveTurn>, id: &str) -> Result<(), String> {
-    let Some(turn) = active else {
-        return Ok(());
-    };
-    match turn.session_id.as_deref() {
-        Some(session) if session != id => Ok(()),
-        _ => Err("A turn is still running in this conversation; stop it before reverting.".into()),
-    }
 }
 
 /// Save the project DSL as it stands before a message is sent, so that message
@@ -490,26 +461,4 @@ pub fn archive_event(turn: &PreparedTurn) -> Value {
         "session_id": turn.session_id,
         "evicted": turn.archive_evicted,
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn running(session: Option<&str>) -> ActiveTurn {
-        ActiveTurn {
-            request_id: "r1".into(),
-            session_id: session.map(str::to_owned),
-        }
-    }
-
-    #[test]
-    fn a_rewind_is_refused_while_a_turn_writes_the_conversation() {
-        assert!(refuse_while_running(None, "s1").is_ok());
-        // A turn saving into another conversation does not block this one.
-        assert!(refuse_while_running(Some(&running(Some("other"))), "s1").is_ok());
-        assert!(refuse_while_running(Some(&running(Some("s1"))), "s1").is_err());
-        // A request that has not named its conversation yet may be saving here.
-        assert!(refuse_while_running(Some(&running(None)), "s1").is_err());
-    }
 }

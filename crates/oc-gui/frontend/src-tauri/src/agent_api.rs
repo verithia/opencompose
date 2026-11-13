@@ -404,6 +404,13 @@ fn write_response(stream: &mut TcpStream, status: u16, body: &str) -> std::io::R
 }
 
 fn route(app: &AppHandle, request: &Request, token: &str) -> (u16, String) {
+    let path = request.path.split('?').next().unwrap_or(&request.path);
+    if request.method == "POST" && path == "/ai/turn" {
+        if !authorized(&request.headers, token) {
+            return (401, error_body("unauthorized"));
+        }
+        return handle_ai_turn(app, &request.body);
+    }
     route_with(
         request,
         token,
@@ -517,6 +524,108 @@ fn handle_ai_complete_for(body: &[u8], app: Option<&AppHandle>) -> (u16, String)
         }
         Err(error) => complete_failure(error),
     }
+}
+
+/// `POST /ai/turn`: one whole agent turn on the backend loop the panel runs,
+/// with nobody to ask. Body: `{provider, session_id, project_path, messages,
+/// toolsets?, label?}`, where `messages` is the system prompt and the new user
+/// message; the history comes from the saved conversation. Calls that need a
+/// person are refused to the model; edits apply, and the turn's batch commits
+/// on every ending. Answer: the turn's outcome with `ok` beside it.
+fn handle_ai_turn(app: &AppHandle, body: &[u8]) -> (u16, String) {
+    let (start, owner) = match turn_request(app, body) {
+        Ok(request) => request,
+        Err(error) => return complete_failure(error),
+    };
+    match block_on(crate::ai::agent_loop::host::run(
+        app,
+        start,
+        crate::ai_service::TurnChannels::default(),
+        false,
+        owner,
+    )) {
+        Ok(outcome) => {
+            let mut payload = json!(outcome);
+            payload["ok"] = json!(!outcome.failed);
+            (200, payload.to_string())
+        }
+        Err(error) => complete_failure(error),
+    }
+}
+
+/// Parses and binds a headless turn. The binding is required: the loop
+/// saves every round, so a turn without a conversation has nowhere to go.
+fn turn_request(
+    app: &AppHandle,
+    body: &[u8],
+) -> Result<(crate::ai::agent_loop::host::TurnStart, String), AiError> {
+    let (start, binding) = parse_turn(body)?;
+    let owner = binding
+        .caller(app)
+        .map_err(|error| AiError::new("session_binding", error))?;
+    Ok((start, owner))
+}
+
+/// The request shape of `POST /ai/turn`, checked without an application.
+fn parse_turn(
+    body: &[u8],
+) -> Result<
+    (
+        crate::ai::agent_loop::host::TurnStart,
+        saved_completion::Binding,
+    ),
+    AiError,
+> {
+    let request = |message: String| AiError::new("request", message);
+    let value: Value =
+        serde_json::from_slice(body).map_err(|error| request(format!("invalid JSON: {error}")))?;
+    let provider = value
+        .get("provider")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|id| !id.is_empty() && id.len() <= 100)
+        .ok_or_else(|| request("missing 'provider'".into()))?
+        .to_owned();
+    let messages = match value.get("messages") {
+        Some(Value::Array(messages)) if !messages.is_empty() => messages.clone(),
+        _ => return Err(request("missing 'messages'".into())),
+    };
+    let toolsets = match value.get("toolsets") {
+        None | Some(Value::Null) => None,
+        Some(Value::Array(items)) if items.len() <= 64 => Some(
+            items
+                .iter()
+                .map(|item| {
+                    item.as_str()
+                        .filter(|name| !name.is_empty() && name.len() <= 100)
+                        .map(str::to_owned)
+                        .ok_or_else(|| request("'toolsets' must be a list of names".into()))
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+        ),
+        Some(_) => return Err(request("'toolsets' must be a list of names".into())),
+    };
+    let label = match value.get("label") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(label)) if label.len() <= 200 => Some(label.clone()),
+        Some(_) => return Err(request("'label' must be a short string".into())),
+    };
+    let binding = saved_completion::Binding::parse(&value)
+        .map_err(request)?
+        .ok_or_else(|| request("An agent turn requires session_id and project_path".into()))?;
+    let token =
+        access_token::make_token().map_err(|_| AiError::config("Request identity unavailable"))?;
+    let start = crate::ai::agent_loop::host::TurnStart {
+        provider_id: provider,
+        request_id: format!("turn-{}", &token[..token.len().min(48)]),
+        session_id: binding.id().to_owned(),
+        messages,
+        toolsets,
+        label,
+        allowed: Vec::new(),
+        project: Some(binding.project().to_path_buf()),
+    };
+    Ok((start, binding))
 }
 
 /// The HTTP status a failed `/ai/complete` answers with. Only a malformed
@@ -6062,6 +6171,50 @@ providers:
     }
 
     #[test]
+    fn a_headless_turn_request_is_bounded_and_bound() {
+        let project = if cfg!(windows) {
+            "C:/p/song.ocp"
+        } else {
+            "/p/song.ocp"
+        };
+        let body = |extra: Value| {
+            let mut value = json!({
+                "provider": "p",
+                "session_id": "s1",
+                "project_path": project,
+                "messages": [{ "role": "user", "content": "hi" }],
+            });
+            for (key, item) in extra.as_object().unwrap() {
+                value[key] = item.clone();
+            }
+            value.to_string().into_bytes()
+        };
+        let (start, binding) = parse_turn(&body(json!({ "toolsets": ["mix"] }))).unwrap();
+        assert_eq!(start.session_id, "s1");
+        assert_eq!(binding.id(), "s1");
+        assert_eq!(start.toolsets, Some(vec!["mix".to_owned()]));
+        assert!(start.request_id.starts_with("turn-") && start.request_id.len() <= 96);
+        assert!(
+            start.allowed.is_empty(),
+            "nobody granted anything to a headless turn"
+        );
+        for bad in [
+            json!({ "session_id": null, "project_path": null }),
+            json!({ "project_path": "relative.ocp" }),
+            json!({ "messages": [] }),
+            json!({ "provider": "" }),
+            json!({ "toolsets": "mix" }),
+            json!({ "toolsets": [1] }),
+            json!({ "label": "x".repeat(201) }),
+        ] {
+            let error = parse_turn(&body(bad.clone()))
+                .err()
+                .unwrap_or_else(|| panic!("{bad} is refused"));
+            assert_eq!(error.kind, "request", "{bad}");
+        }
+    }
+
+    #[test]
     fn recovery_closes_only_a_panel_batch() {
         let state = panel_state("@project \"Recover\"\n  tempo: 120\n");
 
@@ -6112,7 +6265,10 @@ providers:
         let recovered = crate::commands::recover_panel_batch(&state)
             .unwrap()
             .expect("the panel batch is recovered");
-        assert_eq!(recovered.project.properties.tempo, 120.0);
+        assert_eq!(
+            recovered.project.properties.tempo, 150.0,
+            "applied edits stay"
+        );
         assert_eq!(recovered.revision, base + 1);
         assert!(state.lock_inner().transaction.is_none());
         assert!(

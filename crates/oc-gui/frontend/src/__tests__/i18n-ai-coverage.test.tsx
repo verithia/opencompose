@@ -18,10 +18,9 @@
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
-import { aiConfigWire, invokeMock, makeSnapshot, openStepGroups } from "./setup";
+import { aiConfigWire, invokeMock, makeSnapshot } from "./setup";
 import { store } from "../stores/project";
 import { i18n, type I18nKey } from "../stores/i18n";
-import { aiSession } from "../stores/aiSession";
 import { aiLimits } from "../stores/aiLimits";
 import { AiPanel } from "../components/AiPanel";
 import { AiSettingsModal } from "../components/AiSettingsModal";
@@ -30,7 +29,10 @@ import { AiStats } from "../components/AiStats";
 import { AiModelLimits } from "../components/AiModelLimits";
 import { AiThinking, type ThinkingFacts } from "../components/AiThinking";
 import { compactionNotice } from "../ai/sessions";
+import { aiWorkspace } from "../stores/aiWorkspace";
 import type { ToolsetDef } from "../ai/toolsets";
+import type { WireMessage } from "../ai/wire";
+import { answerFakeTurn, cancelFakeTurn, emitTurnEvent, resetFakeTurns, runFakeTurn, type TurnStartArgs } from "./helpers/fakeTurn";
 
 const ZH = "zh-Hans" as const;
 
@@ -137,19 +139,11 @@ function proposalReply(path = "track:lead") {
   };
 }
 
-/** A tool call whose result becomes one transcript tool row. */
-function toolReply(name = "tracks_list") {
-  return {
-    role: "assistant",
-    content: null,
-    tool_calls: [{ id: "call-1", type: "function", function: { name, arguments: "{}" } }],
-  };
-}
-
 /** Everything a test steers; the mock below only reads it. */
 const backend = {
   chat: async (): Promise<unknown> => ({ role: "assistant", content: "Hello." }),
   chatCalls: 0,
+  messages: [] as WireMessage[],
   toolsets: [] as ToolsetDef[],
   validate: async (): Promise<unknown> => ({ valid: true }),
   apply: async (): Promise<unknown> => makeSnapshot(),
@@ -163,7 +157,8 @@ const backend = {
 const TOOLSET: ToolsetDef = { id: "project-edit", title: "Project edit", description: "Tracks, presets and buses", tools: ["tracks_list"], default_on: false };
 
 function installBackend() {
-  invokeMock.mockImplementation(async (cmd: string) => {
+  invokeMock.mockImplementation(async (cmd: string, args?: unknown) => {
+    const typed = (args ?? {}) as Record<string, unknown>;
     switch (cmd) {
       case "load_ai_config": return aiConfigWire();
       case "save_ai_config": return backend.save();
@@ -180,13 +175,39 @@ function installBackend() {
       case "ai_toolsets": return backend.toolsets;
       case "ai_tools": return TOOLS;
       case "ai_build_context": return { dsl_context: '@project "Test Project"\n  tempo: 128\n' };
-      case "ai_chat": backend.chatCalls += 1; return backend.chat();
+      case "ai_turn_start": {
+        return runFakeTurn(typed as unknown as TurnStartArgs, {
+          chat: async (round) => {
+            backend.chatCalls += 1;
+            backend.messages = round.messages.map((message) => ({ ...message }));
+            const reply = await backend.chat() as { tool_calls?: { function?: { name?: string } }[] };
+            if (aiWorkspace.permission() === "autoreview"
+              && reply?.tool_calls?.some((call) => call.function?.name === "edit_subtree")) {
+              emitTurnEvent(round.requestId, round.sessionId, {
+                type: "preview", call_id: "call-1", tool: "edit_subtree",
+                path: "track:lead", before: "before", after: "after",
+              });
+            }
+            return reply;
+          },
+          tool: (call) => backend.tool(call),
+          ask: (call) => call.tool === "edit_subtree" && aiWorkspace.permission() === "require_approval",
+        });
+      }
+      case "ai_turn_answer": return answerFakeTurn(String(typed.requestId), String(typed.callId), typed.decision as never);
+      case "ai_turn_questions": return [];
+      case "ai_cancel": cancelFakeTurn(String(typed.requestId ?? "")); return undefined;
+      // The settings page probes the provider on its own, outside a turn.
+      case "ai_chat": return backend.chat();
       case "ai_validate_edit": return backend.validate();
       case "extract_subtree": return { dsl_text: "track lead\n" };
       case "diff_dsl": return { old_text: "a", new_text: "b", hunks: [{ lines: [{ kind: "Added", text: "b" }] }] };
       case "ai_apply_edit": return backend.apply();
-      case "ai_call_tool": return backend.tool({});
       case "ai_project_instructions_get": return { text: "", max_chars: 2000 };
+      case "ai_batch_recover": return null;
+      case "sessions_new": return { id: "s1", title: String(typed.title ?? "new") };
+      case "sessions_list": return [];
+      case "sessions_load": return { meta: { id: "s1", title: "new" }, messages: [], skipped: 0 };
       case "ai_oauth_status":
         return { state: "signed_out", account: null, project: null, expires_at: null, reauth_required: true, message: "" };
       default: return makeSnapshot();
@@ -229,6 +250,7 @@ beforeEach(() => {
   invokeMock.mockReset();
   backend.chat = async () => ({ role: "assistant", content: "Hello." });
   backend.chatCalls = 0;
+  backend.messages = [];
   backend.toolsets = [];
   backend.validate = async () => ({ valid: true });
   backend.apply = async () => makeSnapshot();
@@ -236,6 +258,7 @@ beforeEach(() => {
   backend.keyStatus = async () => true;
   backend.save = async () => ({ path: "/tmp/ai-providers.yaml", warnings: [] });
   backend.effectiveContext = undefined;
+  resetFakeTurns();
   installBackend();
   // Mounts below happen in zh-Hans; the helpers switch to English and back only
   // to read the two table values.
@@ -244,7 +267,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
-  aiSession.setPending(null);
+  resetFakeTurns();
   i18n.setLocale("en");
 });
 
@@ -272,9 +295,7 @@ describe("AI panel quick actions", () => {
     const view = await mountPanel();
     fireEvent.click([...view.container.querySelectorAll(".ai-quick-btn")][0]);
     await waitFor(() => expect(backend.chatCalls).toBe(1));
-    const call = invokeMock.mock.calls.find(([cmd]) => cmd === "ai_chat")!;
-    const messages = (call[1] as { messages: { role: string; content?: string }[] }).messages;
-    const sent = messages.filter((message) => message.role === "user").map((message) => message.content);
+    const sent = backend.messages.filter((message) => message.role === "user").map((message) => message.content);
     expect(sent).toContain(zh("ai.quick.describePrompt"));
     expect(sent).not.toContain(english("ai.quick.describePrompt"));
   });
@@ -411,9 +432,10 @@ describe("AI edit permission", () => {
   });
 
   it("names the validated edit in the panel's language", async () => {
-    backend.chat = async () => proposalReply();
+    let round = 0;
+    backend.chat = async () => (++round === 1 ? proposalReply() : { role: "assistant", content: "Done." });
     await mountPanel();
-    // `autoreview` records the replacement it applies as a diff row.
+    // `autoreview` shows the replacement the backend previewed as a diff row.
     await choosePermission("autoreview");
     await send("add a lead");
     const row = await waitFor(() => {
@@ -459,26 +481,6 @@ describe("AI edit permission", () => {
 });
 
 describe("AI tool rows", () => {
-  it("names a repeated call from the table", async () => {
-    // The loop answers a call it has already seen with a reported failure row
-    // instead of looping; that row's state word comes from the table.
-    backend.chat = async () => toolReply("tracks_rename");
-    const view = await mountPanel();
-    const { en: wrong, tr: failed } = both("ai.tool.failed");
-    await send("list the tracks");
-    const summary = await waitFor(() => {
-      // The rich call row carries the call's name; the reported row does not.
-      openStepGroups(view.container);
-      const element = [...view.container.querySelectorAll(".ai-message.tool .ai-tool-result summary")]
-        .find((node) => !node.querySelector(".ai-tool-name"));
-      expect(element, "the reported tool row").toBeTruthy();
-      return element!;
-    });
-    const rendered = textOf(summary);
-    expect(rendered.endsWith(failed), rendered).toBe(true);
-    expect(rendered.endsWith(wrong), rendered).toBe(false);
-  });
-
   it("translates the success word a restored row falls back to", () => {
     // A tool row with no call attached (an older transcript) has no argument or
     // result line, so the state word is all it says about the outcome.

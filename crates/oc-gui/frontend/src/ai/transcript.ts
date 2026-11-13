@@ -4,7 +4,7 @@
  * result to the call that produced it, so the transcript keeps the tool's name,
  * what it was asked and what it returned.
  */
-import type { ToolCall, TurnStop, WireMessage } from "./agent";
+import type { ToolCall, TurnStop, WireMessage } from "./wire";
 import type { MediaAttachment } from "./media";
 import { isAuditionKind, messageKind, type MessageMeta } from "./messageProtocol";
 
@@ -24,30 +24,23 @@ export interface ToolRow {
 }
 
 /**
- * What a stopped turn leaves behind, so its row can send the same turn again
- * (Retry) or resume it (Continue). `messages` is the wire the loop last held,
- * system prompt included: resending it is the same turn, not a retyped copy.
+ * What a stopped turn leaves behind, so its row can send the turn again
+ * (Retry) or resume it (Continue). `messages` is what the turn sent: the
+ * system prompt and the person's message. The backend replays the saved
+ * conversation, so a resumed turn sends only the system prompt.
  */
 export interface StoppedTurn {
   messages: WireMessage[];
-  /** Successful mutating calls in the turn: rolled back, or kept when it committed. */
+  /** Successful edits in the turn; a stop keeps them. */
   edits: number;
-  /** The loop's own counts, when it stopped rather than threw. */
+  /** The loop's own counts, when it stopped with facts to report. */
   stop?: TurnStop;
-  /** Why the pre-turn snapshot could not be restored; then neither action is safe. */
-  restoreError?: string;
   /**
-   * The provider layer's verdict, when a failure threw instead of reporting
-   * facts: false means resending the same turn cannot work (bad key, endpoint
-   * or request), so the row offers no Retry. Absent keeps Retry available for
-   * failures this process raised itself.
+   * The provider layer's verdict on a failure: false means resending the same
+   * turn cannot work (bad key, endpoint or request), so the row offers no
+   * Retry. Absent keeps Retry available.
    */
   retryable?: boolean;
-  /**
-   * The turn finished, but the store did not keep its answer. Only resending
-   * the turn can save one, so the row offers Retry and not Continue.
-   */
-  retryOnly?: boolean;
 }
 
 /**
@@ -280,39 +273,17 @@ export function userTurnOf(messages: WireMessage[]): ChatMessage | null {
  * offers Retry; a failure the provider calls non-retryable offers none either.
  */
 export function canRetry(resume: StoppedTurn): boolean {
-  if (resume.retryable === false || resume.restoreError || resume.stop?.commitError) return false;
-  // A kept failure or timeout failed on the last request; Retry sends that
-  // request again over the same wire and does not replay the applied calls.
-  if (resume.stop?.failureKept || resume.stop?.timedOut) return true;
+  if (resume.retryable === false || resume.stop?.commit_error) return false;
+  // A kept failure or timeout failed on the last request; Retry sends the saved
+  // conversation again and does not replay the applied calls.
+  if (resume.stop?.failure_kept || resume.stop?.timed_out) return true;
   return !resume.stop?.cancelled && !resume.stop?.committed;
 }
 
-/** Retry needs a wire; Continue also needs a turn that went past its question. */
+/** Continue needs a turn that went past its question. */
 export function canContinue(resume: StoppedTurn): boolean {
-  if (resume.restoreError || resume.retryOnly) return false;
-  if (resume.stop) return true;
-  return resume.messages.some(message =>
-    message.role === "tool" || (message.role === "assistant" && !!message.tool_calls?.length));
+  return !!resume.stop && resume.stop.done + (resume.stop.not_run ?? 0) > 0;
 }
-
-/**
- * A stopped turn can end mid-round: the model asked for more calls than ran.
- * A request cannot carry an unanswered call, so the resumed wire closes the
- * round with one "not run" result per missing call. Nothing is applied.
- */
-export function closedRound(messages: WireMessage[]): WireMessage[] {
-  const last = messages.findLastIndex(message => message.role === "assistant" && !!message.tool_calls?.length);
-  if (last < 0) return messages;
-  const calls = messages[last].tool_calls ?? [];
-  const answered = new Set(messages.slice(last + 1).filter(message => message.role === "tool").map(message => message.tool_call_id));
-  const missing = calls.filter(call => !answered.has(call.id));
-  if (!missing.length) return messages;
-  const notRun = "the turn stopped before this call ran; nothing in the project changed";
-  return [...messages, ...missing.map(call => ({
-    role: "tool" as const, tool_call_id: call.id, content: JSON.stringify({ error: notRun }),
-  }))];
-}
-
 
 /**
  * A long conversation renders its newest slice: the wire still carries every

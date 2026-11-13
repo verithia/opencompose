@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub(super) enum MessageKind {
+pub enum MessageKind {
     User,
     Assistant,
     Tool,

@@ -1,46 +1,19 @@
 import { Show } from "solid-js";
 import { i18n } from "../stores/i18n";
 import { previewStore } from "../stores/preview";
-import { useTooltip } from "./Tooltip";
 
+/**
+ * The bar of a preview the backend holds: the two sides on the left, the
+ * decision on the right.
+ */
 export function ProposalReviewBar(props: {
-  pendingPath: string | undefined;
   applying: boolean;
-  loading: boolean;
-  previewChangeText: string | null;
   previewPath: string;
-  onPreview: () => Promise<void>;
-  onAccept: () => Promise<void>;
-  onReject: () => Promise<void>;
   onPreviewAccept: () => Promise<void>;
   onPreviewDecline: () => Promise<void>;
 }) {
   return (
     <>
-      {/* Accept/Reject bar. A preview replaces it: the same proposal now has a
-          document to listen to, so the decision belongs to the preview bar. */}
-      <Show when={props.pendingPath !== undefined && !previewStore.open()}>
-        <div class="ai-accept-bar">
-          <span class="selectable" {...useTooltip(() => props.pendingPath)}>{props.pendingPath}</span>
-          {/* A turn waiting on this decision is paused, not busy: the buttons stay live. */}
-          <button
-            class="ai-preview-open"
-            disabled={props.applying || props.loading || previewStore.busy()}
-            onClick={props.onPreview}
-          >{i18n.t("ai.preview.start")}</button>
-          <button
-            class="ai-accept-btn"
-            disabled={props.applying || props.loading}
-            onClick={props.onAccept}
-          >{i18n.t("ai.edit.accept")}</button>
-          <button
-            class="ai-reject-btn"
-            disabled={props.applying || props.loading}
-            onClick={props.onReject}
-          >{i18n.t("ai.edit.reject")}</button>
-        </div>
-      </Show>
-
       {/* Preview bar: the two sides on the left, the decision on the right. */}
       <Show when={previewStore.open()}>
         <div class="ai-preview-bar" role="group" aria-label={i18n.t("ai.preview.start")}>
@@ -61,9 +34,6 @@ export function ProposalReviewBar(props: {
           {/* The change line sits above the side hint in one text column, so a
               long diff summary wraps instead of pushing the buttons out. */}
           <div class="ai-preview-text">
-            <Show when={props.previewChangeText}>
-              <span class="ai-preview-change selectable">{props.previewChangeText}</span>
-            </Show>
             <span class="ai-preview-hint selectable">
               {i18n.t(
                 previewStore.side() === "proposal" ? "ai.preview.hintProposal" : "ai.preview.hintBase",

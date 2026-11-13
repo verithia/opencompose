@@ -15,6 +15,7 @@ import { resetStats } from "../stores/aiStats";
 import { i18n } from "../stores/i18n";
 import type { SessionMeta } from "../ai/sessions";
 import type { MediaAttachment } from "../ai/media";
+import { cancelFakeTurn, resetFakeTurns, runFakeTurn, type TurnStartArgs } from "./helpers/fakeTurn";
 
 const CAPABILITIES = { text: true, audio_in: false, audio_out: false, native_tool_calling: true, streaming: true };
 
@@ -91,14 +92,19 @@ function installBackend() {
       case "ai_toolsets": return SETS;
       case "ai_tools": return [];
       case "ai_build_context": return { dsl_context: '@project "Test Project"\n  tempo: 128\n' };
-      case "ai_chat": {
-        backend.calls.push("ai_chat");
-        backend.chatCalls.push({ ...typed, messages: JSON.parse(JSON.stringify(typed.messages)) } as ChatCall);
-        if (!backend.hold) return { role: "assistant", content: "Done." };
-        return new Promise((resolve, reject) => backend.held.push({ resolve, reject }));
-      }
+      case "ai_turn_start": return runFakeTurn(typed as unknown as TurnStartArgs, {
+        chat: async (round) => {
+          backend.calls.push("ai_turn_start");
+          backend.chatCalls.push({ ...round, messages: JSON.parse(JSON.stringify(round.messages)) } as ChatCall);
+          if (!backend.hold) return { role: "assistant", content: "Done." };
+          return new Promise((resolve, reject) => backend.held.push({ resolve, reject }));
+        },
+        tool: async () => ({ ok: true }),
+      });
+      case "ai_turn_questions": return [];
       case "ai_cancel": {
         backend.calls.push("ai_cancel");
+        cancelFakeTurn(String(typed.requestId));
         backend.held.shift()?.reject({ kind: "cancelled", message: "Request cancelled" });
         return undefined;
       }
@@ -173,6 +179,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  resetFakeTurns();
   aiSession.reset();
   aiLimits.setActiveContext(null);
   resetStats();
@@ -338,7 +345,7 @@ describe("a message composed while a turn runs", () => {
     await waitFor(() => expect(backend.chatCalls).toHaveLength(2));
 
     // The cancel came before the send, never after it, and only the head left.
-    expect(backend.calls.indexOf("ai_cancel")).toBeLessThan(backend.calls.lastIndexOf("ai_chat"));
+    expect(backend.calls.indexOf("ai_cancel")).toBeLessThan(backend.calls.lastIndexOf("ai_turn_start"));
     expect(backend.chatCalls[1].messages.at(-1)?.content).toBe("steer this");
     expect(sentContents().filter((text) => text === "steer this")).toHaveLength(1);
     await waitFor(() => expect(queueTexts()).toEqual(["and this"]));
@@ -381,27 +388,6 @@ describe("a message composed while a turn runs", () => {
     await waitFor(() => expect(backend.chatCalls).toHaveLength(2));
     expect(backend.chatCalls[1].messages.at(-1)?.content).toBe("next");
     await waitFor(() => expect(document.querySelector(".ai-queue-row")).toBeNull());
-  });
-
-  it("says the queue is waiting for the edit decision, not for a turn", async () => {
-    await mount();
-    await startTurn();
-    await typeAndSend("next");
-    await waitFor(() => expect(queueText()).toBe("next"));
-
-    // The turn ends with a proposal waiting for an answer: the queue must say
-    // what it is actually waiting on instead of promising a turn that ended.
-    aiSession.setPending({
-      proposal: { path: "project", dsl: "@project", expectedDsl: "before" },
-      diff: { old_text: "before", new_text: "@project", hunks: [] },
-    });
-    backend.hold = false;
-    backend.held.shift()!.resolve({ role: "assistant", content: "First answer." });
-
-    await waitFor(() => expect(document.querySelector(".ai-pending")).toBeNull());
-    await waitFor(() => expect(document.querySelector(".ai-queue-hint")?.textContent).toBe("Waiting for edit review…"));
-    expect(aiSession.queued()).toHaveLength(1);
-    expect(backend.chatCalls).toHaveLength(1);
   });
 
   it("queues the composer's attachment chips with the message", async () => {

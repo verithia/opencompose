@@ -1,5 +1,6 @@
 //! Provider-agnostic conversation model, credential-safe transport helpers and
 //! the adapter boundary. Native wire formats never leave this module.
+pub mod agent_loop;
 pub mod anthropic;
 pub mod auth;
 pub mod catalog;

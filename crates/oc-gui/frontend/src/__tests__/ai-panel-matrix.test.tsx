@@ -22,6 +22,7 @@ import { preferencesUi } from "../stores/preferencesUi";
 import { i18n, type I18nKey } from "../stores/i18n";
 import { approvalEffect } from "../ai/approval";
 import { allowedTools, clearAllowedTools } from "../ai/approvalMemory";
+import { answerFakeTurn, cancelFakeTurn, resetFakeTurns, runFakeTurn, type TurnStartArgs } from "./helpers/fakeTurn";
 
 // jsdom in this suite has no storage backend; the approval memory only needs
 // get/set/remove.
@@ -127,6 +128,7 @@ const backend = {
   apply: async (): Promise<unknown> => makeSnapshot(),
   snapshot: null as unknown,
   tool: async (_call: { tool: string; args: Record<string, unknown> }): Promise<unknown> => ({ ok: true }),
+  dispatched: [] as string[],
   toolsetReads: [] as Record<string, unknown>[],
   limits: { provider_id: "x", model_id: "y", bundled: null, overridden: null },
 };
@@ -144,8 +146,21 @@ function installBackend() {
       case "ai_toolsets": return SETS;
       case "ai_tools": backend.toolsetReads.push(typed); return TOOLS;
       case "ai_build_context": return { dsl_context: '@project "Test Project"\n  tempo: 128\n' };
-      case "ai_chat": backend.chatCalls.push(typed); return backend.chat();
-      case "ai_cancel": backend.cancel?.(typed.requestId as string); return undefined;
+      case "ai_turn_start": return runFakeTurn(typed as unknown as TurnStartArgs, {
+        chat: (round) => {
+          backend.chatCalls.push({ ...round, messages: JSON.parse(JSON.stringify(round.messages)) });
+          return backend.chat();
+        },
+        tool: (call) => { backend.dispatched.push(call.tool); return backend.tool(call); },
+        ask: (call) => call.tool === "edit_subtree" || call.tool === "tracks_remove" || call.tool === "transaction_rollback",
+      });
+      case "ai_turn_answer": return answerFakeTurn(String(typed.requestId), String(typed.callId), typed.decision as never);
+      case "ai_turn_questions": return [];
+      case "ai_cancel": {
+        cancelFakeTurn(String(typed.requestId));
+        backend.cancel?.(typed.requestId as string);
+        return undefined;
+      }
       case "ai_attach_media": backend.attachCalls += 1; return backend.attach();
       case "ai_validate_edit": return backend.validate();
       case "extract_subtree": return { dsl_text: "track lead\n" };
@@ -153,11 +168,6 @@ function installBackend() {
       case "sessions_new": return {id:"checkpoint-session",title:"Test conversation"};
       case "sessions_set_permission":
         return {id: typed.id, title: "Test conversation", permission: typed.permission};
-      case "sessions_checkpoint": return undefined;
-      // No panel batch is open in a fresh window: `null`, not a snapshot.
-      case "ai_batch_recover": return null;
-      case "ai_apply_edit": return backend.apply();
-      case "ai_call_tool": return backend.tool((args ?? {}) as { tool: string; args: Record<string, unknown> });
       case "get_project": return backend.snapshot ?? makeSnapshot();
       default: return makeSnapshot();
     }
@@ -181,7 +191,7 @@ const effortTrigger = () => document.querySelector(".ai-model-effort .oc-dropdow
 const settingsButton = () => screen.getByRole("button", { name: "Provider settings" });
 const dialog = () => screen.queryByRole("dialog", { name: /AI settings|Preferences/ });
 const sendCalls = () => invokeMock.mock.calls.filter(([command]) => command === "ai_build_context").length;
-const chatCalls = () => invokeMock.mock.calls.filter(([command]) => command === "ai_chat").length;
+const chatCalls = () => invokeMock.mock.calls.filter(([command]) => command === "ai_turn_start").length;
 
 function optionLabels(listbox: HTMLElement): string[] {
   return [...listbox.querySelectorAll('[role="option"]')]
@@ -237,8 +247,6 @@ async function approvalCard(): Promise<HTMLElement> {
   await waitFor(() => expect(document.querySelector(".ai-approval-card")).toBeTruthy());
   return document.querySelector(".ai-approval-card") as HTMLElement;
 }
-const cardApprove = () => document.querySelector(".ai-approval-approve") as HTMLButtonElement;
-const cardReject = () => document.querySelector(".ai-approval-reject") as HTMLButtonElement;
 
 beforeEach(() => {
   window.localStorage.clear();
@@ -255,6 +263,7 @@ beforeEach(() => {
   backend.apply = async () => makeSnapshot();
   backend.snapshot = null;
   backend.tool = async () => ({ ok: true });
+  backend.dispatched = [];
   backend.toolsetReads = [];
   backend.limits = { provider_id: "x", model_id: "y", bundled: null, overridden: null };
   i18n.setLocale("en");
@@ -271,6 +280,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  resetFakeTurns();
   aiSession.reset();
   aiLimits.setActiveContext(null);
   resetStats();
@@ -537,7 +547,7 @@ describe("toolset chips", () => {
       if (cmd === "ai_toolsets") return sets;
       if (cmd === "ai_tools") return many.map((name, index) => ({ name, description: index === 0 ? "first tool" : "", area: "x", inputSchema: {} }));
       if (cmd === "ai_build_context") return { dsl_context: "" };
-      if (cmd === "ai_chat") return { role: "assistant", content: "ok" };
+      if (cmd === "ai_turn_start") return { text: "ok", failed: false };
       return makeSnapshot();
     });
     const view = await mount();
@@ -717,8 +727,8 @@ describe("composer: input and send", () => {
     await mount();
     const pending = deferred();
     backend.chat = () => pending.promise;
-    backend.cancel = () => pending.reject({ kind: "cancelled", message: "Request cancelled" });
     await send("long request");
+    await waitFor(() => expect(backend.chatCalls).toHaveLength(1));
     const cancel = await waitFor(() => {
       const button = screen.getByRole("button", { name: "Cancel request" });
       expect(button).toBeTruthy();
@@ -775,7 +785,7 @@ describe("composer: input and send", () => {
     const commands = invokeMock.mock.calls.slice(before).map(([command]) => command);
     expect(commands).toContain("save_ai_config");
     // The write precedes the request it applies to.
-    expect(commands.indexOf("save_ai_config")).toBeLessThan(commands.indexOf("ai_chat"));
+    expect(commands.indexOf("save_ai_config")).toBeLessThan(commands.indexOf("ai_turn_start"));
     expect(hasUnsavedConfig()).toBe(false);
   });
 
@@ -792,15 +802,6 @@ describe("composer: input and send", () => {
 });
 
 describe("composer: the approval card for a subtree edit", () => {
-  /** A replacement the first round proposes; later rounds answer the turn. */
-  const editOnce = () => {
-    let round = 0;
-    return async () => (round++ === 0
-      ? proposalReply()
-      : { role: "assistant", content: "The lead is in." });
-  };
-  const applyCalls = () => invokeMock.mock.calls.filter(([command]) => command === "ai_apply_edit");
-
   it("shows the tool, its arguments and the subtree it touches, and pauses before applying", async () => {
     await mount();
     backend.chat = async () => proposalReply();
@@ -808,9 +809,9 @@ describe("composer: the approval card for a subtree edit", () => {
     await send("add a lead");
     const card = await approvalCard();
 
-    // Paused, not applied: the turn asked once and nothing reached the project.
+    // Paused, not dispatched: the turn asked once and nothing ran.
     expect(chatCalls()).toBe(1);
-    expect(applyCalls()).toHaveLength(0);
+    expect(backend.dispatched).toEqual([]);
     const text = card.textContent ?? "";
     expect(text).toContain("edit_subtree");
     expect(text).toContain("Target: track:lead");
@@ -819,86 +820,7 @@ describe("composer: the approval card for a subtree edit", () => {
     expect(input().disabled).toBe(true);
   });
 
-  it("applies the replacement once after Approve and continues the same turn", async () => {
-    await mount();
-    backend.chat = editOnce();
-    await choosePermission("require_approval");
-    await send("add a lead");
-    await approvalCard();
-    fireEvent.click(cardApprove());
-
-    await waitFor(() => expect(applyCalls()).toHaveLength(1));
-    expect(applyCalls()[0][1]).toMatchObject({ targetPath: "track:lead" });
-    await waitFor(() => expect(document.querySelector(".ai-approval-card")).toBeNull());
-    await waitFor(() => expect(document.body.textContent).toContain("The lead is in."));
-    expect(chatCalls()).toBe(2);
-  });
-
-  it("sends a refusal after Reject and leaves the project untouched", async () => {
-    await mount();
-    backend.chat = editOnce();
-    await choosePermission("require_approval");
-    const before = store.dslSource();
-    await send("add a lead");
-    await approvalCard();
-    fireEvent.click(cardReject());
-
-    // The turn lives: the model is asked again, with the refusal in the history.
-    await waitFor(() => expect(chatCalls()).toBe(2));
-    const replay = backend.chatCalls.at(-1)!;
-    const messages = replay.messages as { role: string; content: string | null }[];
-    const declined = messages.find(message => message.role === "tool")!;
-    const payload = JSON.parse(declined.content!);
-    expect(payload).toMatchObject({ declined: true, tool: "edit_subtree", target: "track:lead" });
-    expect(payload.error).toContain("the user declined edit_subtree");
-    expect(payload.error).toContain("nothing in the project changed");
-    expect(applyCalls()).toHaveLength(0);
-    expect(store.dslSource()).toBe(before);
-    await waitFor(() => expect(document.querySelector(".ai-approval-card")).toBeNull());
-    await waitFor(() => expect(document.body.textContent).toContain("The lead is in."));
-  });
-
-  it("asks again for a second replacement after the first is approved", async () => {
-    await mount();
-    let round = 0;
-    backend.chat = async () => {
-      if (round++ > 0) return { role: "assistant", content: "Both applied." };
-      const reply = proposalReply();
-      reply.tool_calls.push({ ...reply.tool_calls[0], id: "later-edit" });
-      return reply;
-    };
-    await choosePermission("require_approval");
-    await send("improve both tracks");
-    await approvalCard();
-    fireEvent.click(cardApprove());
-    // The turn stayed alive: the second replacement asks for its own decision.
-    await waitFor(() => expect(applyCalls()).toHaveLength(1));
-    await approvalCard();
-    fireEvent.click(cardApprove());
-    await waitFor(() => expect(applyCalls()).toHaveLength(2));
-    await waitFor(() => expect(document.body.textContent).toContain("Both applied."));
-  });
-
-  it("reports an apply failure to the model and never pretends the edit landed", async () => {
-    await mount();
-    backend.chat = editOnce();
-    backend.apply = async () => { throw new Error("project changed"); };
-    await choosePermission("require_approval");
-    await send("add a lead");
-    await approvalCard();
-    fireEvent.click(cardApprove());
-    // The failure is the tool result the model reads, not an applied edit.
-    await waitFor(() => expect(chatCalls()).toBe(2));
-    const replay = backend.chatCalls.at(-1)!;
-    const tool = (replay.messages as { role: string; content: string | null }[])
-      .find(message => message.role === "tool")!;
-    expect(tool.content).toContain("project changed");
-    expect(applyCalls()).toHaveLength(1);
-    expect(document.body.textContent).not.toContain("Edit applied.");
-    expect(document.querySelector(".ai-approval-card")).toBeNull();
-  });
-
-  it("cancels while the card is open without applying the replacement", async () => {
+  it("cancels while the card is open without running the replacement", async () => {
     await mount();
     backend.chat = async () => proposalReply();
     await choosePermission("require_approval");
@@ -909,7 +831,7 @@ describe("composer: the approval card for a subtree edit", () => {
 
     await waitFor(() => expect(input().disabled).toBe(false));
     expect(document.querySelector(".ai-approval-card")).toBeNull();
-    expect(applyCalls()).toHaveLength(0);
+    expect(backend.dispatched).toEqual([]);
     expect(store.dslSource()).toBe(before);
     // The loop's own cancel path: nothing had been applied, and the notice says so.
     await waitFor(() => expect(document.body.textContent).toContain("Cancelled before any edit was applied"));
@@ -933,9 +855,7 @@ describe("composer: the approval card for a destructive call", () => {
       ? { role: "assistant", content: null, tool_calls: [REMOVE_BASS] }
       : { role: "assistant", content: "The bass track is still there." });
   };
-  const toolCalls = () => invokeMock.mock.calls
-    .filter(([command]) => command === "ai_call_tool")
-    .map(([, args]) => (args as { tool: string; args: Record<string, unknown> }).tool);
+  const toolCalls = () => backend.dispatched;
 
   it("names the tool, the track and the consequence, and pauses before running it", async () => {
     backend.snapshot = PROJECT();
@@ -970,76 +890,10 @@ describe("composer: the approval card for a destructive call", () => {
     await waitFor(() => expect(approveButton()).toBeTruthy());
     fireEvent.click(approveButton()!);
 
-    await waitFor(() => expect(chatCalls()).toBe(2));
+    await waitFor(() => expect(backend.chatCalls).toHaveLength(2));
     await waitFor(() => expect(card()).toBeNull());
     expect(toolCalls()).toContain("tracks_remove");
     await waitFor(() => expect(document.body.textContent).toContain("The bass track is still there."));
-  });
-
-  it("sends a readable decline after Reject and leaves the project untouched", async () => {
-    backend.snapshot = PROJECT();
-    const before = store.dslSource();
-    backend.chat = askingChat();
-    await mount();
-    // Every DSL-modifying call asks under this mode.
-    await choosePermission("require_approval");
-    await send("delete the bass track");
-    await waitFor(() => expect(rejectButton()).toBeTruthy());
-    fireEvent.click(rejectButton()!);
-
-    // The turn lives: the model is asked again, with the refusal in the history.
-    await waitFor(() => expect(chatCalls()).toBe(2));
-    const replay = backend.chatCalls.at(-1)!;
-    const messages = replay.messages as { role: string; content: string | null }[];
-    const declined = messages.find(message => message.role === "tool")!;
-    const payload = JSON.parse(declined.content!);
-    expect(payload).toMatchObject({ declined: true, tool: "tracks_remove", target: "Bass" });
-    expect(payload.error).toContain("the user declined tracks_remove for \"Bass\"");
-    expect(payload.error).toContain("nothing in the project changed");
-
-    // Nothing was dispatched and the project text is byte-identical.
-    expect(toolCalls()).toEqual([]);
-    expect(store.dslSource()).toBe(before);
-    await waitFor(() => expect(card()).toBeNull());
-    await waitFor(() => expect(document.body.textContent).toContain("The bass track is still there."));
-  });
-
-  it("asks before a model-issued rollback on a fresh conversation and answers declined", async () => {
-    backend.snapshot = PROJECT();
-    const before = store.dslSource();
-    let round = 0;
-    backend.chat = async () => (round++ === 0
-      ? {
-        role: "assistant",
-        content: null,
-        tool_calls: [{
-          id: "call-1",
-          type: "function",
-          function: { name: "transaction_rollback", arguments: "{}" },
-        }],
-      }
-      : { role: "assistant", content: "I left the turn as it was." });
-    await mount();
-    // Nothing was chosen: the session reads as `write`, and a rollback asks anyway.
-    expect(permissionOption("write")!.getAttribute("aria-pressed")).toBe("true");
-    await send("throw away what you did");
-    await waitFor(() => expect(card()).toBeTruthy());
-    expect(card()!.textContent).toContain("transaction_rollback");
-
-    fireEvent.click(rejectButton()!);
-    await waitFor(() => expect(chatCalls()).toBe(2));
-    const messages = backend.chatCalls.at(-1)!.messages as { role: string; content: string | null }[];
-    const declined = messages.find(message => message.role === "tool")!;
-    expect(JSON.parse(declined.content!)).toMatchObject({
-      declined: true,
-      tool: "transaction_rollback",
-    });
-
-    // Nothing reached the tool path and the document text is byte-identical.
-    expect(toolCalls()).toEqual([]);
-    expect(store.dslSource()).toBe(before);
-    await waitFor(() => expect(card()).toBeNull());
-    await waitFor(() => expect(document.body.textContent).toContain("I left the turn as it was."));
   });
 
   it("cancels while the card is open without dispatching the call", async () => {
@@ -1062,31 +916,6 @@ describe("composer: the approval card for a destructive call", () => {
   });
 
   const alwaysButton = () => document.querySelector(".ai-approval-always") as HTMLButtonElement | null;
-
-  it("asks on a fresh conversation whose stored permission is the default", async () => {
-    backend.snapshot = PROJECT();
-    backend.chat = askingChat();
-    await mount();
-    // Nothing was chosen: the session reads as `write`, and the card still asks.
-    expect(permissionOption("write")!.getAttribute("aria-pressed")).toBe("true");
-    await send("delete the bass track");
-    await waitFor(() => expect(card()).toBeTruthy());
-
-    // The card names the tool, the track and the consequence before anything runs.
-    const text = card()!.textContent ?? "";
-    expect(text).toContain("tracks_remove");
-    expect(text).toContain("Target: Bass");
-    expect(alwaysButton()!.textContent).toBe("Always allow");
-    expect(toolCalls()).toEqual([]);
-    expect(chatCalls()).toBe(1);
-
-    // Approve applies the call through the turn's batch and finishes the turn.
-    fireEvent.click(approveButton()!);
-    await waitFor(() => expect(chatCalls()).toBe(2));
-    await waitFor(() => expect(toolCalls()).toEqual(["transaction_begin", "tracks_remove", "transaction_commit"]));
-    await waitFor(() => expect(document.body.textContent).toContain("The bass track is still there."));
-    expect(card()).toBeNull();
-  });
 
   it("stops asking for a tool the conversation allowed, on the next turn", async () => {
     backend.snapshot = PROJECT();

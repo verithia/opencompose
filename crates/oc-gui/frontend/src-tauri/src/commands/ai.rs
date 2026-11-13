@@ -144,9 +144,10 @@ pub fn apply_edit_to_project(
     Ok(snapshot(inner))
 }
 
-/// Roll back a batch a panel turn left open, e.g. after a window reload killed
-/// the loop that would have closed it. Returns the restored document, or `None`
-/// when no panel batch was open.
+/// Commits a batch a panel turn left open, e.g. when the process that ran the
+/// turn died between its edits and its commit. The edits stay applied, as one
+/// undo entry; the saved conversation marks the calls that never reported.
+/// Returns the published document, or `None` when no panel batch was open.
 ///
 /// Only a panel-owned batch is recovered: a batch an external client opened is
 /// that client's to finish, so it is left alone. Calling this with no open batch
@@ -158,29 +159,33 @@ pub fn recover_panel_batch(state: &AppState) -> Result<Option<ProjectSnapshot>, 
     if !owner.starts_with(crate::state::PANEL_BATCH_OWNER_PREFIX) {
         return Ok(None);
     }
-    state.rollback_transaction()?;
+    state.commit_transaction()?;
+    if let Err(reason) = crate::project_persist::flush_state(state) {
+        log::error!("[ai] recovered batch not written to the project file: {reason}");
+    }
     let inner = state.lock_inner();
     Ok(Some(snapshot(&inner)))
 }
 
-/// The panel calls this once on mount, before its first turn. A recovered batch
-/// is reported to the saved conversation, so the model does not read the
-/// interrupted turn's results as applied.
+/// The panel calls this once on mount. A turn still running on the backend
+/// owns its batch and commits it itself, so recovery waits for it to end.
 #[tauri::command]
 pub fn ai_batch_recover(
-    app: tauri::AppHandle,
     state: State<AppState>,
+    requests: State<crate::ai_service::Requests>,
 ) -> Result<Option<ProjectSnapshot>, String> {
-    let recovered = recover_panel_batch(&state)?;
-    if recovered.is_some()
-        && let Err(error) = super::record_panel_rollback(&app)
-    {
-        // The rollback already succeeded: a transcript that could not record it
-        // must not turn into a failed recovery.
-        log::warn!("[ai] panel batch rolled back but its outcome was not saved: {error}");
-    }
-    Ok(recovered)
+    // Recovery holds the request slot, so no turn can open a batch between
+    // the check and the commit.
+    let Some(claim) = requests.claim(RECOVER_SLOT)? else {
+        return Ok(None);
+    };
+    let recovered = recover_panel_batch(&state);
+    let _ = requests.release_owned(RECOVER_SLOT, &claim.identity);
+    recovered
 }
+
+/// The request slot batch recovery holds while it commits.
+const RECOVER_SLOT: &str = "panel-batch-recover";
 
 /// Extract a subtree as DSL text (for inspection / AI context).
 #[tauri::command]

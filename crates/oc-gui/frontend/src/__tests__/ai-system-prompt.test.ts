@@ -6,7 +6,7 @@ import {
   PROJECT_NOTE_TOKEN_BUDGET,
   type SkillRef,
 } from "../ai/system-prompt";
-import type { ToolDef } from "../ai/agent";
+import type { ToolDef } from "../ai/wire";
 import type { ModelCapabilities } from "../ai/config";
 
 const capabilities: ModelCapabilities = {

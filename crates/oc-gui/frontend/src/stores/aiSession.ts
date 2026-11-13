@@ -12,9 +12,7 @@
  * a conversation's own attachments already live in its saved messages.
  */
 import { createSignal } from "solid-js";
-import type { Proposal } from "../ai/agent";
 import type { MediaAttachment } from "../ai/media";
-import type { DiffResult } from "../ai/transcript";
 
 /** A message composed while a turn ran; it goes out when that turn settles. */
 export interface QueuedMessage {
@@ -22,12 +20,6 @@ export interface QueuedMessage {
   media: MediaAttachment[];
   /** The project path this message reads, when the composer scoped it. */
   reference?: string;
-}
-
-/** A validated replacement waiting for Accept or Reject, with the diff shown. */
-export interface PendingProposal {
-  proposal: Proposal;
-  diff: DiffResult;
 }
 
 /** The turn this window was running, kept so a reloaded window can ask about it. */
@@ -164,7 +156,6 @@ const [draft, setDraftSignal] = createSignal("");
 const [attachments, setAttachmentsSignal] = createSignal<MediaAttachment[]>([]);
 const [queue, setQueueSignal] = createSignal<QueuedMessage[]>([]);
 const [goal, setGoalSignal] = createSignal("");
-const [pending, setPending] = createSignal<PendingProposal | null>(null);
 const [open, setOpenSignal] = createSignal<string | null>(null);
 const [openScope, setOpenScopeSignal] = createSignal<string | null>(null);
 const [turn, setTurnSignal] = createSignal<InFlightTurn | null>(null);
@@ -273,9 +264,6 @@ export const aiSession = {
     persist();
     return next;
   },
-  /** The proposal on screen; it survives an unmount like the draft does. */
-  pending,
-  setPending,
   /** Id of the conversation on screen; `null` before one is opened. */
   open,
   /** The workspace + project path the open conversation belongs to. */
@@ -334,7 +322,6 @@ export const aiSession = {
   reload() {
     flushPersist();
     stored = readState();
-    setPending(null);
     setOpenSignal(stored.open);
     setOpenScopeSignal(stored.openScope);
     install(stored.open);
@@ -353,7 +340,6 @@ export const aiSession = {
     setDraftSignal("");
     setAttachmentsSignal([]);
     setQueueSignal([]);
-    setPending(null);
     setOpenSignal(null);
     setOpenScopeSignal(null);
     setTurnSignal(null);
