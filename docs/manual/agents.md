@@ -23,6 +23,13 @@ The GUI starts the server when it launches:
 | `GET /ai/tools` | The panel's surface, narrowed by `?toolsets=a,b`. |
 | `GET /ai/toolsets` | The bundled and user tool sets. |
 | `POST /ai/complete` | One provider turn on the panel's behalf, for a headless driver. |
+| `POST /ai/turn` | One whole agent turn on the backend loop, with nobody to ask. |
+
+A client starts a full turn with `POST /ai/turn`: it carries `provider`,
+`messages` (the system prompt and the new user message), `session_id` and the
+absolute `project_path`, with optional `toolsets` and `label`. Nobody attends, so
+a `Confirm` call is refused and the turn continues, and a validated
+`edit_subtree` applies in the turn. The answer is the turn outcome with `ok`.
 
 `/call` answers `{"ok": true, "result": ...}` or
 `{"ok": false, "error": "..."}`. A refusal one of the bundled skills explains
@@ -103,7 +110,17 @@ Edits are guarded so a multi-step change is atomic to the user.
   `expected_revision` guards fail.
 - A failed mutation changes nothing and keeps the batch open: `dispatch` returns
   the error as the call's result, and the edits before it stay in the batch.
-  Only an explicit `transaction_rollback` discards a batch; a cancel, a stop or a failed commit leaves it open for the caller.
+  Only an explicit `transaction_rollback` discards a batch a client owns
+  directly; a failed commit leaves the batch open for its owner.
+- A panel or headless agent turn owns its batch: the loop commits it on every
+  ending (answer, cancel, failure, timeout and round cap), so a stop keeps the
+  edits that landed. `ai_batch_recover` commits a `panel:` batch a dead turn left
+  open rather than rolling it back.
+- Revert is `ai_revert_before {session_id, index}`, offered only from a person's
+  own message. It restores the project snapshot that message was sent against as
+  one undo entry (`Revert conversation`, only when the document differs) and
+  cuts the conversation before the message; if the cut fails the document is put
+  back. It is refused while a turn runs or a batch is open.
 - While a batch is open, save, undo and redo are refused, so a crash cannot leave
   a half-applied edit on disk or rewind history under the batch.
   `project_open` and `project_new` cancel the batch because they replace the
@@ -127,11 +144,11 @@ would escape the panel.
   paths, and host capability queries. `render_offline` and `render_stems` are
   excluded because an unbounded full-song render is too slow for the panel; use
   `render_range` (with `stems` when the parts are wanted).
-- `edit_subtree` proposes one complete subtree replacement. Nothing is applied
-  until you inspect the diff and press **Accept**; **Reject** discards it. Accept
-  is one undoable transaction. One edit is pending per turn, and changing the
-  project invalidates an old proposal. The panel is a session with a user, so it
-  always asks; a headless session with nobody to ask applies the validated
+- `edit_subtree` replaces one complete subtree. It validates the replacement
+  first, then the panel's permission decides: `require_approval` shows the change
+  as a diff row and asks on the card, `autoreview` records the diff row and
+  applies, and `write` applies. An applied replacement is one undo entry inside
+  the turn's batch. A headless turn with nobody to ask applies a validated
   replacement itself in the same turn (see
   [Agent feedback loop](../agent-loop.md)).
 - A turn is limited to sixty-four model rounds and thirty-two tool calls per
