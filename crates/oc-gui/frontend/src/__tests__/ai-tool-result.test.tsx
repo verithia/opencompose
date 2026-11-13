@@ -3,11 +3,13 @@ import { fireEvent, render, waitFor } from "@solidjs/testing-library";
 import { invoke } from "@tauri-apps/api/core";
 import { AiToolResult, autoOpenResult } from "../components/AiToolResult";
 import { i18n } from "../stores/i18n";
-import { rememberToolResult } from "../ai/agent";
+import { invokeMock } from "./setup";
 import { store } from "../stores/project";
 
-function mount(tool: string, value: unknown) {
-  return render(() => <AiToolResult tool={tool} content={JSON.stringify(value)} />);
+const baseInvoke = invokeMock.getMockImplementation()!;
+
+function mount(tool: string, value: unknown, sessionId?: string) {
+  return render(() => <AiToolResult tool={tool} content={JSON.stringify(value)} sessionId={sessionId} />);
 }
 
 function testWav() {
@@ -29,7 +31,11 @@ function testWav() {
   return btoa(String.fromCharCode(...bytes));
 }
 
-afterEach(() => i18n.setLocale("en"));
+afterEach(() => {
+  i18n.setLocale("en");
+  invokeMock.mockReset();
+  invokeMock.mockImplementation(baseInvoke);
+});
 
 describe("rich tool results", () => {
   it("shows each comparison passage in its own source time", () => {
@@ -239,7 +245,7 @@ describe("rich tool results", () => {
     expect(view.container.querySelectorAll(".ai-tool-table tbody tr")).toHaveLength(2);
   });
 
-  it("recovers a bounded snapshot result from this session's full copy", () => {
+  it("recovers a bounded snapshot result from this session's full copy", async () => {
     const full = {
       project: {
         name: "Session", properties: { tempo: 120, time_signature: { numerator: 4, denominator: 4 } },
@@ -249,13 +255,17 @@ describe("rich tool results", () => {
       dsl_source: '@project "Session"\n tempo: 120\n', file_path: "/tmp/session.ocp",
       dirty: true, track_count: 1, revision: 9, duration_seconds: 12,
     };
-    rememberToolResult("call-snapshot", JSON.stringify(full));
+    invokeMock.mockImplementation(async (command: string, args?: unknown) => {
+      if (command === "ai_tool_result") return JSON.stringify(full);
+      return baseInvoke(command, args);
+    });
     const view = mount("tracks_add", {
       result_truncated: true, tool_call_id: "call-snapshot", original_characters: 12000,
       preview: '{"project":{"tracks":[{"name":"pad"', tool_failed: false,
-    });
+    }, "s1");
+    await waitFor(() => expect(view.getByText("pad")).toBeTruthy());
     expect(view.container.querySelector(".ai-tool-table tbody tr")).toBeTruthy();
-    expect(view.getByText("pad")).toBeTruthy();
+    expect(invokeMock).toHaveBeenCalledWith("ai_tool_result", { sessionId: "s1", callId: "call-snapshot" });
   });
 
   it("keeps a bounded result's preview when the full copy is gone", () => {
@@ -275,14 +285,17 @@ describe("rich tool results", () => {
     expect(view.container.querySelector("pre")?.textContent).toContain('"project_ast_omitted": true');
   });
 
-  it("recovers a bounded top-level array from this session's full copy", () => {
-    rememberToolResult("call-params", JSON.stringify([{ id: 0, name: "Gain", current: -6, display: "-6 dB" }]));
+  it("recovers a bounded top-level array from this session's full copy", async () => {
+    invokeMock.mockImplementation(async (command: string, args?: unknown) => {
+      if (command === "ai_tool_result") return JSON.stringify([{ id: 0, name: "Gain", current: -6, display: "-6 dB" }]);
+      return baseInvoke(command, args);
+    });
     const view = mount("plugins_params", {
       result_truncated: true, tool_call_id: "call-params", original_characters: 12000,
       preview: '[{"id":0,"name":"Gain"', tool_failed: false,
-    });
+    }, "s1");
+    await waitFor(() => expect(view.getByText("Gain")).toBeTruthy());
     expect(view.container.querySelectorAll(".ai-tool-table tbody tr")).toHaveLength(1);
-    expect(view.getByText("Gain")).toBeTruthy();
   });
 
   it("renders a top-level array as a table", () => {

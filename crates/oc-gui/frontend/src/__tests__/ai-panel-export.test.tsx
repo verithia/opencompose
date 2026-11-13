@@ -10,7 +10,7 @@ import { AiPanel } from "../components/AiPanel";
 import { TooltipLayer } from "../components/Tooltip";
 import { i18n } from "../stores/i18n";
 import { aiSession } from "../stores/aiSession";
-import type { WireMessage } from "../ai/agent";
+import type { WireMessage } from "../ai/wire";
 import type { MediaAttachment } from "../ai/media";
 import type { SessionMeta } from "../ai/sessions";
 import type { ChatMessage } from "../ai/transcript";
@@ -21,6 +21,7 @@ import {
   exportJson,
   exportMarkdown,
 } from "../ai/export";
+import { answerFakeTurn, resetFakeTurns, runFakeTurn, type TurnStartArgs } from "./helpers/fakeTurn";
 
 const CAPABILITIES = { text: true, audio_in: false, audio_out: false, native_tool_calling: true, streaming: true };
 
@@ -260,8 +261,12 @@ function installBackend() {
       case "ai_toolsets": return [];
       case "ai_tools": return [];
       case "ai_build_context": return { dsl_context: '@project "Test Project"\n  tempo: 128\n' };
-      case "ai_chat": return backend.chat();
+      case "ai_turn_start": return runFakeTurn(typed as unknown as TurnStartArgs, { chat: async () => backend.chat() });
+      case "ai_turn_answer": return answerFakeTurn(String(typed.requestId), String(typed.callId), typed.decision as never);
+      case "ai_turn_questions": return [];
+      case "ai_batch_recover": return null;
       case "get_project": return { ...makeSnapshot(), file_path: null };
+      case "sessions_new": return { ...META, id: String(typed.title ?? META.id) };
       case "sessions_list": return backend.sessions.map((entry) => ({ ...entry }));
       case "sessions_load": {
         const meta = backend.sessions.find((entry) => entry.id === typed.id);
@@ -309,6 +314,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  resetFakeTurns();
   aiSession.reset();
   vi.restoreAllMocks();
 });

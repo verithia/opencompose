@@ -3,20 +3,57 @@ import { listen } from "@tauri-apps/api/event";
 import type { ProjectSnapshot } from "../types/project";
 import type { ModelLimits } from "../stores/aiLimits";
 import type { AuthKind, Wire } from "./config";
-import type { ToolDef, WireMessage } from "./agent";
+import type { ApprovalRequest, ToolDef, TurnStop, WireMessage } from "./wire";
 import type { PermissionMode } from "./permission";
 import type { CompactionResult, SessionMeta } from "./sessions";
 import type { SkillRef } from "./system-prompt";
 import { toolsetArg } from "./toolsets";
 import type { DiffResult } from "./transcript";
+import type { MediaNotice } from "./media";
 import { invoke } from "./transport";
 
 export function cancel(requestId: string) {
   return invoke<void>("ai_cancel", { requestId });
 }
 
-export function chat(
-  args: { providerId: string; requestId: string; sessionId?: string; messages: WireMessage[]; useTools: boolean },
+/** One saved message, a tool starting, a question, or a note, from a running turn. */
+export type TurnEvent =
+  | { type: "message"; message: WireMessage }
+  | { type: "running"; call_id: string; tool: string }
+  | { type: "ask"; request: ApprovalRequest }
+  | { type: "preview"; call_id: string; tool: string; path?: string; before: string; after: string }
+  | { type: "notice"; text: string; failed: boolean }
+  | { type: "media"; notices: MediaNotice[] };
+
+/** A turn event and the turn it belongs to. */
+export type TurnEnvelope = TurnEvent & { request_id: string; session_id: string };
+
+/** How a turn ended; `failed` marks a turn that did not answer. */
+export interface TurnOutcome {
+  text: string;
+  failed: boolean;
+  stop?: TurnStop;
+  error?: { kind: string; message: string; reauth?: boolean; retryable?: boolean };
+}
+
+/** A person's answer to a question a running turn asked. */
+export interface TurnDecision { approved: boolean; target?: string; always?: boolean }
+
+/**
+ * Runs one agent turn in the backend. `messages` is the system prompt and the
+ * new user message, or the system prompt alone to resume the saved
+ * conversation; the backend replays the history from the store.
+ */
+export function startTurn(
+  args: {
+    providerId: string;
+    requestId: string;
+    sessionId: string;
+    messages: WireMessage[];
+    toolsets: string[] | null;
+    label: string;
+    allowed: readonly string[];
+  },
   delta: (text: string) => void,
   thinking: (text: string) => void,
   preparing?: (name: string) => void,
@@ -27,9 +64,56 @@ export function chat(
   onThinking.onmessage = thinking;
   const onPreparing = new Channel<string>();
   onPreparing.onmessage = name => preparing?.(name);
-  return invoke<WireMessage>("ai_chat", { ...args, onDelta, onThinking, onPreparing });
+  return invoke<TurnOutcome>("ai_turn_start", {
+    providerId: args.providerId,
+    requestId: args.requestId,
+    sessionId: args.sessionId,
+    messages: args.messages,
+    ...(args.toolsets ? { toolsets: args.toolsets } : {}),
+    label: args.label,
+    allowed: [...args.allowed],
+    onDelta, onThinking, onPreparing,
+  });
 }
 
+export function answerTurn(requestId: string, callId: string, decision: TurnDecision) {
+  return invoke<void>("ai_turn_answer", { requestId, callId, decision });
+}
+
+/** The questions a running turn waits on, for a window that reloaded. */
+export function turnQuestions(requestId: string) {
+  return invoke<ApprovalRequest[]>("ai_turn_questions", { requestId });
+}
+
+export function listenTurn(handler: (event: TurnEnvelope) => void) {
+  return listen<TurnEnvelope>("ai_turn", (event) => handler(event.payload));
+}
+
+/** The document a turn this panel runs just changed. */
+export function listenTurnProject(handler: (snapshot: ProjectSnapshot) => void) {
+  return listen<ProjectSnapshot>("ai_turn_project", (event) => handler(event.payload));
+}
+
+/**
+ * Restores the project to the snapshot a person's message was sent against
+ * and cuts the conversation before it, as one undo step.
+ */
+export function revertBefore(sessionId: string, index: number) {
+  return invoke<{ kept: number; snapshot: ProjectSnapshot }>("ai_revert_before", { sessionId, index });
+}
+
+/** The full result behind a truncated preview, while the backend keeps it. */
+export function toolResult(sessionId: string, callId: string) {
+  return invoke<string | null>("ai_tool_result", { sessionId, callId });
+}
+
+/**
+ * Commits a batch a panel turn left open, e.g. after a window reload. Returns
+ * the document, or `null` when no panel batch was open.
+ */
+export function recoverBatch() {
+  return invoke<ProjectSnapshot | null>("ai_batch_recover");
+}
 
 /** Whether a saved key is usable; a cached refusal keeps its reason. */
 export function keyStatus(providerId: string) {
@@ -111,10 +195,6 @@ export function diffDsl(oldDsl: string, newDsl: string) {
   return invoke<DiffResult>("diff_dsl", { oldDsl, newDsl });
 }
 
-export function applyEdit(newDsl: string, targetPath: string, expectedDsl: string) {
-  return invoke<ProjectSnapshot>("ai_apply_edit", { newDsl, targetPath, expectedDsl });
-}
-
 export function listSessions() {
   return invoke<unknown>("sessions_list", {});
 }
@@ -161,22 +241,6 @@ export function originalSession(id: string) {
 
 export function saveSessionSnapshot(id: string, dsl: string) {
   return invoke<{ sha: string }>("sessions_snapshot", { id, dsl });
-}
-
-export function loadSessionSnapshot(id: string, sha: string) {
-  return invoke<{ dsl: string }>("sessions_version", { id, sha });
-}
-
-export function rewindSession(id: string, keep: number) {
-  return invoke<void>("sessions_rewind", { id, keep });
-}
-
-export function checkpointSession(
-  id: string,
-  messages: WireMessage[],
-  outcome?: { status: "applied" | "rejected"; path: string },
-) {
-  return invoke<void>("sessions_checkpoint", { id, messages, ...outcome });
 }
 
 export function listenSession(handler: (payload: unknown) => void) {

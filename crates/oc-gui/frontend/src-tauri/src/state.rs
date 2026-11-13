@@ -50,12 +50,39 @@ pub const HTTP_BATCH_OWNER: &str = "http";
 pub const TRANSACTION_BLOCKS_REPLACEMENT: &str =
     "commit or roll back the active project transaction before opening another project";
 
+/// Owner prefix of a batch an external client opened for a saved conversation.
+/// It is distinct from the panel's prefix, so a panel turn and a headless client
+/// bound to the same conversation never join, commit or recover each other's
+/// batch.
+pub const HTTP_SESSION_OWNER_PREFIX: &str = "http:";
+
 /// The owner a panel turn records on its batch.
 pub fn panel_batch_owner(conversation: Option<&str>) -> String {
     format!(
         "{PANEL_BATCH_OWNER_PREFIX}{}",
         conversation.unwrap_or("unsaved")
     )
+}
+
+/// The owner an external client's call bound to `conversation` runs as.
+pub fn http_session_owner(conversation: &str) -> String {
+    format!("{HTTP_SESSION_OWNER_PREFIX}{conversation}")
+}
+
+/// The saved conversation a caller acts for, on either surface. The panel's
+/// placeholder for a turn that has no conversation yet names none.
+pub fn caller_conversation(caller: &str) -> Option<&str> {
+    caller
+        .strip_prefix(PANEL_BATCH_OWNER_PREFIX)
+        .filter(|id| *id != "unsaved")
+        .or_else(|| caller.strip_prefix(HTTP_SESSION_OWNER_PREFIX))
+        .filter(|id| !id.is_empty())
+}
+
+/// A caller outside the panel, whose edits the panel learns about only through
+/// a published project snapshot.
+pub fn is_external_caller(caller: &str) -> bool {
+    caller == HTTP_BATCH_OWNER || caller.starts_with(HTTP_SESSION_OWNER_PREFIX)
 }
 
 /// One aspect of the project an edit can touch. Closed on purpose: a new
@@ -1354,6 +1381,21 @@ fn default_project() -> Project {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn batch_owners_name_their_surface_and_conversation() {
+        let panel = panel_batch_owner(Some("abc"));
+        let bound = http_session_owner("abc");
+        assert_ne!(panel, bound);
+        assert_eq!(caller_conversation(&panel), Some("abc"));
+        assert_eq!(caller_conversation(&bound), Some("abc"));
+        assert_eq!(caller_conversation(&panel_batch_owner(None)), None);
+        assert_eq!(caller_conversation(HTTP_BATCH_OWNER), None);
+        assert_eq!(caller_conversation("http:"), None);
+        assert!(is_external_caller(HTTP_BATCH_OWNER));
+        assert!(is_external_caller(&bound));
+        assert!(!is_external_caller(&panel));
+    }
 
     fn invalid_reorder_patch(project: &Project) -> Vec<u8> {
         let mut properties = project.properties.clone();

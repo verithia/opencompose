@@ -5,7 +5,7 @@
  * advertised panel surface, it never redefines it.
  */
 import type { ModelCapabilities } from "./config";
-import type { ToolDef } from "./agent";
+import type { ToolDef } from "./wire";
 import examplesFile from "./dsl-examples.json";
 
 /** One row of the backend's body-less skill index (`ai_skills`). */

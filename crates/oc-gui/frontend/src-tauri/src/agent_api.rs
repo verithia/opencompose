@@ -34,6 +34,7 @@ use crate::tool_registry::arguments::ToolArguments;
 use crate::tool_registry::{ToolId, is_mutation_tool, mcp_tools};
 
 mod access_token;
+mod saved_completion;
 use access_token::make_token;
 mod audition_media;
 mod dispatch_policy;
@@ -403,6 +404,13 @@ fn write_response(stream: &mut TcpStream, status: u16, body: &str) -> std::io::R
 }
 
 fn route(app: &AppHandle, request: &Request, token: &str) -> (u16, String) {
+    let path = request.path.split('?').next().unwrap_or(&request.path);
+    if request.method == "POST" && path == "/ai/turn" {
+        if !authorized(&request.headers, token) {
+            return (401, error_body("unauthorized"));
+        }
+        return handle_ai_turn(app, &request.body);
+    }
     route_with(
         request,
         token,
@@ -413,7 +421,7 @@ fn route(app: &AppHandle, request: &Request, token: &str) -> (u16, String) {
             if panel_turn_active(app) {
                 return complete_failure(AiError::new("busy", "Another AI request is active"));
             }
-            handle_ai_complete(body)
+            handle_ai_complete_for(body, Some(app))
         },
         |body| handle_mcp(app, body),
     )
@@ -492,7 +500,12 @@ fn panel_tools_body(path: &str) -> String {
 /// answer: the decoded wire message with `ok` beside it. A failure carries the
 /// class-derived status and the provider layer's verdict. The endpoint never logs
 /// the request or the credential.
+#[cfg(test)]
 fn handle_ai_complete(body: &[u8]) -> (u16, String) {
+    handle_ai_complete_for(body, None)
+}
+
+fn handle_ai_complete_for(body: &[u8], app: Option<&AppHandle>) -> (u16, String) {
     let request = match complete_request(body) {
         Ok(request) => request,
         Err(error) => return complete_failure(AiError::new("request", error)),
@@ -500,7 +513,7 @@ fn handle_ai_complete(body: &[u8]) -> (u16, String) {
     // Held until the turn ends, on every path including a panic. A malformed
     // request is refused above without waiting behind a running turn.
     let _turn = lock_ai_turn(&AI_TURN);
-    match block_on(complete_turn(&request)) {
+    match block_on(complete_turn(&request, app)) {
         Ok(message) => {
             let mut payload = match message {
                 Value::Object(object) => object,
@@ -513,21 +526,162 @@ fn handle_ai_complete(body: &[u8]) -> (u16, String) {
     }
 }
 
+/// `POST /ai/turn`: one whole agent turn on the backend loop the panel runs,
+/// with nobody to ask. Body: `{provider, session_id, project_path, messages,
+/// toolsets?, label?}`, where `messages` is the system prompt and the new user
+/// message; the history comes from the saved conversation. Calls that need a
+/// person are refused to the model; edits apply, and the turn's batch commits
+/// on every ending. Answer: the turn's outcome with `ok` beside it.
+fn handle_ai_turn(app: &AppHandle, body: &[u8]) -> (u16, String) {
+    let (start, owner) = match turn_request(app, body) {
+        Ok(request) => request,
+        Err(error) => return complete_failure(error),
+    };
+    match block_on(crate::ai::agent_loop::host::run(
+        app,
+        start,
+        crate::ai_service::TurnChannels::default(),
+        false,
+        owner,
+    )) {
+        Ok(outcome) => {
+            let mut payload = json!(outcome);
+            payload["ok"] = json!(!outcome.failed);
+            (200, payload.to_string())
+        }
+        Err(error) => complete_failure(error),
+    }
+}
+
+/// Parses and binds a headless turn. The binding is required: the loop
+/// saves every round, so a turn without a conversation has nowhere to go.
+fn turn_request(
+    app: &AppHandle,
+    body: &[u8],
+) -> Result<(crate::ai::agent_loop::host::TurnStart, String), AiError> {
+    let (start, binding) = parse_turn(body)?;
+    let owner = binding
+        .caller(app)
+        .map_err(|error| AiError::new("session_binding", error))?;
+    Ok((start, owner))
+}
+
+/// The request shape of `POST /ai/turn`, checked without an application.
+fn parse_turn(
+    body: &[u8],
+) -> Result<
+    (
+        crate::ai::agent_loop::host::TurnStart,
+        saved_completion::Binding,
+    ),
+    AiError,
+> {
+    let request = |message: String| AiError::new("request", message);
+    let value: Value =
+        serde_json::from_slice(body).map_err(|error| request(format!("invalid JSON: {error}")))?;
+    let provider = value
+        .get("provider")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|id| !id.is_empty() && id.len() <= 100)
+        .ok_or_else(|| request("missing 'provider'".into()))?
+        .to_owned();
+    let messages = match value.get("messages") {
+        Some(Value::Array(messages)) if !messages.is_empty() => messages.clone(),
+        _ => return Err(request("missing 'messages'".into())),
+    };
+    let toolsets = match value.get("toolsets") {
+        None | Some(Value::Null) => None,
+        Some(Value::Array(items)) if items.len() <= 64 => Some(
+            items
+                .iter()
+                .map(|item| {
+                    item.as_str()
+                        .filter(|name| !name.is_empty() && name.len() <= 100)
+                        .map(str::to_owned)
+                        .ok_or_else(|| request("'toolsets' must be a list of names".into()))
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+        ),
+        Some(_) => return Err(request("'toolsets' must be a list of names".into())),
+    };
+    let label = match value.get("label") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(label)) if label.len() <= 200 => Some(label.clone()),
+        Some(_) => return Err(request("'label' must be a short string".into())),
+    };
+    let binding = saved_completion::Binding::parse(&value)
+        .map_err(request)?
+        .ok_or_else(|| request("An agent turn requires session_id and project_path".into()))?;
+    let token =
+        access_token::make_token().map_err(|_| AiError::config("Request identity unavailable"))?;
+    let start = crate::ai::agent_loop::host::TurnStart {
+        provider_id: provider,
+        request_id: format!("turn-{}", &token[..token.len().min(48)]),
+        session_id: binding.id().to_owned(),
+        messages,
+        toolsets,
+        label,
+        allowed: Vec::new(),
+        project: Some(binding.project().to_path_buf()),
+    };
+    Ok((start, binding))
+}
+
 /// The HTTP status a failed `/ai/complete` answers with. Only a malformed
 /// request is 400; everything else names what the caller has to change.
 fn complete_status(kind: &str) -> u16 {
+    if let Some(code) = accounting_code(kind) {
+        return accounting_status(code);
+    }
     match kind {
         "request" => 400,
         "auth" | "auth_expired" => 401,
         "permission" => 403,
         "rate_limit" => 429,
         // Another turn already holds the slot, on either surface.
-        "busy" => 409,
+        "busy" | "cancelled" => 409,
         // The saved endpoint or provider has to change before a retry can work.
         "config" | "redirect" => 409,
+        // The request names a conversation or project this host does not have open.
+        "session_binding" => 409,
+        // The local conversation store failed; no provider was at fault.
+        "session_save" => 500,
         "timeout" | "network" | "server" => 503,
         "protocol" | "truncated" => 502,
         _ => 502,
+    }
+}
+
+/// Accounting codes travel as their serialized wire spelling.
+fn accounting_code(kind: &str) -> Option<crate::ai::session_usage::AccountingCode> {
+    serde_json::from_value(Value::String(kind.to_owned())).ok()
+}
+
+/// A saved turn is admitted to its conversation's accounting before any
+/// provider call, so every accounting refusal is this host's answer, never a
+/// provider's. The match is exhaustive so a new code chooses its status.
+fn accounting_status(code: crate::ai::session_usage::AccountingCode) -> u16 {
+    use crate::ai::session_usage::AccountingCode as Code;
+    match code {
+        // The conversation is gone, changed or busy: the caller has to change
+        // the binding or wait for the other turn.
+        Code::SessionMissing
+        | Code::Busy
+        | Code::SessionChanged
+        | Code::OwnerClosed
+        | Code::OwnerChanged
+        | Code::Conflict
+        | Code::Capacity
+        | Code::CurrencyCapacity
+        | Code::AttemptCapacity => 409,
+        // The host's own storage or bookkeeping failed.
+        Code::Storage
+        | Code::Entropy
+        | Code::Overflow
+        | Code::Format
+        | Code::Request
+        | Code::Cost => 500,
     }
 }
 
@@ -548,6 +702,7 @@ struct CompleteRequest {
     messages: Value,
     tools: bool,
     max_tokens: Option<u64>,
+    saved: Option<saved_completion::Binding>,
 }
 
 fn complete_request(body: &[u8]) -> Result<CompleteRequest, String> {
@@ -565,6 +720,8 @@ fn complete_request(body: &[u8]) -> Result<CompleteRequest, String> {
         .filter(|messages| messages.is_array())
         .cloned()
         .ok_or("missing 'messages'")?;
+    crate::ai_service::validate_chat_messages(&messages).map_err(|error| error.message)?;
+    crate::ai::turns_from_wire(&messages).map_err(|error| error.message)?;
     let tools = match value.get("tools") {
         None | Some(Value::Null) => false,
         Some(Value::Bool(tools)) => *tools,
@@ -585,27 +742,77 @@ fn complete_request(body: &[u8]) -> Result<CompleteRequest, String> {
         messages,
         tools,
         max_tokens,
+        saved: saved_completion::Binding::parse(&value)?,
     })
 }
 
-async fn complete_turn(request: &CompleteRequest) -> Result<Value, AiError> {
+async fn complete_turn(
+    request: &CompleteRequest,
+    app: Option<&AppHandle>,
+) -> Result<Value, AiError> {
     let entry = crate::ai_service::provider(&request.provider).map_err(AiError::config)?;
     crate::ai::endpoint(&entry.endpoint).map_err(AiError::config)?;
-    let credential = crate::ai_service::resolve_credential(&entry).await?;
-    // The message array is part of the request: a refusal here is malformed
-    // input, whatever internal class the decoder used.
-    let (mut turn, _notices) =
-        crate::ai::request_from_wire(&entry, request.messages.clone(), request.tools, None)
-            .map_err(|error| AiError::new("request", error.message))?;
-    if let Some(max_tokens) = request.max_tokens {
-        turn.max_tokens = max_tokens;
-    }
-    let provider = crate::ai::provider_for(&entry, credential).map_err(AiError::from)?;
     let stats = crate::ai::timing::TurnStatsHandle::new(&entry.id, &entry.model, entry.wire());
-    let mut emitted = false;
-    let mut message = crate::ai::run(provider.as_ref(), &turn, &None, &mut emitted, &stats)
-        .await
-        .map_err(AiError::from)?;
+    let token =
+        access_token::make_token().map_err(|_| AiError::config("Request identity unavailable"))?;
+    let request_id = format!("headless-{token}");
+    let requests = app.map(|app| app.state::<crate::ai_service::Requests>());
+    let mut guard = requests
+        .as_ref()
+        .map(|requests| {
+            requests.claim_headless(
+                &request_id,
+                request.saved.as_ref().map(saved_completion::Binding::id),
+            )
+        })
+        .transpose()?;
+    let mut saved = None;
+    let operation = async {
+        if let Some(binding) = request.saved.as_ref() {
+            saved = Some(
+                saved_completion::SavedTurn::prepare(
+                    app.ok_or_else(|| AiError::config("Saved turns require an application host"))?,
+                    binding,
+                    &entry,
+                    &request.messages,
+                    &stats,
+                    &request_id,
+                )
+                .await?,
+            );
+        }
+        let outbound = saved
+            .as_ref()
+            .map_or(&request.messages, |saved| &saved.messages);
+        let credential = crate::ai_service::resolve_credential(&entry).await?;
+        let (mut turn, _notices) =
+            crate::ai::request_from_wire(&entry, outbound.clone(), request.tools, None)
+                .map_err(|error| AiError::new("request", error.message))?;
+        if let Some(max_tokens) = request.max_tokens {
+            turn.max_tokens = max_tokens;
+        }
+        let provider = crate::ai::provider_for(&entry, credential).map_err(AiError::from)?;
+        let mut emitted = false;
+        crate::ai::run(provider.as_ref(), &turn, &None, &mut emitted, &stats)
+            .await
+            .map_err(AiError::from)
+    };
+    let mut result = match guard.as_mut() {
+        Some(guard) => guard.run(operation).await,
+        None => operation.await,
+    };
+    if let Some(saved) = saved {
+        saved.finish(&entry, &stats, result.as_mut().ok()).await;
+    } else if let Some(app) = app {
+        crate::ai::session_usage::checkpoint_final(
+            &stats,
+            app,
+            &request_id,
+            crate::ai::session_usage::Purpose::Chat,
+        )
+        .await;
+    }
+    let mut message = result?;
     // Our canonical turn keeps no raw finish string, so the outcome we decoded
     // is what this endpoint reports: a turn with calls asked for them.
     let reason = if message.get("tool_calls").is_some() {
@@ -694,7 +901,18 @@ fn handle_call(app: &AppHandle, body: &[u8]) -> (u16, String) {
         .or_else(|| value.get("arguments"))
         .cloned()
         .unwrap_or_else(|| json!({}));
-    match dispatch(app, tool, &args, HTTP_BATCH_OWNER) {
+    let binding = match saved_completion::Binding::parse(&value) {
+        Ok(binding) => binding,
+        Err(error) => return (400, error_body(error)),
+    };
+    let caller = match binding {
+        Some(binding) => match binding.caller(app) {
+            Ok(caller) => caller,
+            Err(error) => return (400, error_body(error)),
+        },
+        None => HTTP_BATCH_OWNER.to_owned(),
+    };
+    match dispatch(app, tool, &args, &caller) {
         Ok(result) => (200, ok_body(result)),
         Err(error) => (400, error_body(error)),
     }
@@ -1035,7 +1253,7 @@ fn external_project_notification(
     caller: &str,
     result: &Value,
 ) -> Option<Value> {
-    if caller != HTTP_BATCH_OWNER
+    if !crate::state::is_external_caller(caller)
         || !is_mutation_tool(tool)
         || inner.transaction.is_some()
         || result.get("ok").and_then(Value::as_bool) == Some(false)
@@ -2287,8 +2505,7 @@ fn conversation_audio_source(
     use std::path::Path;
 
     let refusal = "Use a local audio reference or saved render from the current conversation, or use clip_index";
-    let id = caller
-        .strip_prefix(crate::state::PANEL_BATCH_OWNER_PREFIX)
+    let id = crate::state::caller_conversation(caller)
         .filter(|_| Path::new(path).is_absolute())
         .ok_or(refusal)?;
     let find = |messages: &[Value]| {
@@ -3289,9 +3506,7 @@ fn dispatch_tool(
                 channel,
                 target_rate.clamp(8_000, 48_000),
                 &state(app),
-                caller
-                    .strip_prefix(crate::state::PANEL_BATCH_OWNER_PREFIX)
-                    .is_some_and(|id| id != "unsaved"),
+                crate::state::caller_conversation(caller).is_some(),
             )?)
         }
         ToolId::AudioAnalyze => audio_analyze_tool(args),
@@ -3741,18 +3956,48 @@ providers:
         );
     }
 
+    #[test]
+    fn saved_http_requests_validate_messages_before_session_admission() {
+        let absolute = std::env::temp_dir().join("song.ocp");
+        for messages in [
+            json!([]),
+            json!([{"role":"invalid","content":"bad role"}]),
+            json!([{"role":"user","content":"", "input_audio":{"format":"wav","data":"not-base64!"}}]),
+            json!([{"role":"user","content":"x".repeat(crate::ai::LIMIT + 1)}]),
+            json!(vec![
+                json!({"role":"user","content":"hi"});
+                crate::ai::MAX_WIRE_MESSAGES + 1
+            ]),
+        ] {
+            let (status, body) = complete(json!({
+                "provider":"not-configured",
+                "session_id":"missing-session",
+                "project_path":absolute,
+                "messages":messages,
+            }));
+            assert_eq!(status, 400, "{body}");
+            assert_eq!(body["kind"], "request");
+        }
+    }
+
     /// Every class the provider layer can produce maps to one of the six
     /// statuses; the two kinds a fake provider cannot stage quickly are here.
     #[test]
     fn every_error_class_has_a_status_and_reports_its_verdict() {
         for (kind, status) in [
             ("request", 400),
+            ("cancelled", 409),
             ("auth", 401),
             ("auth_expired", 401),
             ("permission", 403),
             ("rate_limit", 429),
             ("config", 409),
             ("redirect", 409),
+            ("session_binding", 409),
+            ("session_save", 500),
+            ("accounting_session_missing", 409),
+            ("accounting_busy", 409),
+            ("accounting_storage", 500),
             ("timeout", 503),
             ("network", 503),
             ("server", 503),
@@ -4010,6 +4255,7 @@ providers:
                 &incoming,
                 None,
                 crate::ai::sessions::PrepareContext {
+                    snapshot: None,
                     overhead: 0,
                     context_length: 1_000_000,
                     facts: &crate::ai::sessions::ProjectFacts::default(),
@@ -4077,6 +4323,7 @@ providers:
                 std::slice::from_ref(&row),
                 None,
                 crate::ai::sessions::PrepareContext {
+                    snapshot: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &facts,
@@ -4091,6 +4338,7 @@ providers:
                 &[json!({"role":"user", "source_render": path})],
                 None,
                 crate::ai::sessions::PrepareContext {
+                    snapshot: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &facts,
@@ -5924,6 +6172,50 @@ providers:
     }
 
     #[test]
+    fn a_headless_turn_request_is_bounded_and_bound() {
+        let project = if cfg!(windows) {
+            "C:/p/song.ocp"
+        } else {
+            "/p/song.ocp"
+        };
+        let body = |extra: Value| {
+            let mut value = json!({
+                "provider": "p",
+                "session_id": "s1",
+                "project_path": project,
+                "messages": [{ "role": "user", "content": "hi" }],
+            });
+            for (key, item) in extra.as_object().unwrap() {
+                value[key] = item.clone();
+            }
+            value.to_string().into_bytes()
+        };
+        let (start, binding) = parse_turn(&body(json!({ "toolsets": ["mix"] }))).unwrap();
+        assert_eq!(start.session_id, "s1");
+        assert_eq!(binding.id(), "s1");
+        assert_eq!(start.toolsets, Some(vec!["mix".to_owned()]));
+        assert!(start.request_id.starts_with("turn-") && start.request_id.len() <= 96);
+        assert!(
+            start.allowed.is_empty(),
+            "nobody granted anything to a headless turn"
+        );
+        for bad in [
+            json!({ "session_id": null, "project_path": null }),
+            json!({ "project_path": "relative.ocp" }),
+            json!({ "messages": [] }),
+            json!({ "provider": "" }),
+            json!({ "toolsets": "mix" }),
+            json!({ "toolsets": [1] }),
+            json!({ "label": "x".repeat(201) }),
+        ] {
+            let error = parse_turn(&body(bad.clone()))
+                .err()
+                .unwrap_or_else(|| panic!("{bad} is refused"));
+            assert_eq!(error.kind, "request", "{bad}");
+        }
+    }
+
+    #[test]
     fn recovery_closes_only_a_panel_batch() {
         let state = panel_state("@project \"Recover\"\n  tempo: 120\n");
 
@@ -5947,6 +6239,19 @@ providers:
         );
         transaction_rollback(&state, HTTP_BATCH_OWNER).unwrap();
 
+        // A client bound to the panel's conversation owns its batch as well:
+        // the panel can neither recover nor join it.
+        let bound = crate::state::http_session_owner("a");
+        transaction_begin(&state, Some("bound batch".into()), &bound).unwrap();
+        assert!(
+            crate::commands::recover_panel_batch(&state)
+                .unwrap()
+                .is_none()
+        );
+        assert!(transaction_commit(&state, "panel:a").is_err());
+        assert_eq!(state.batch_owner().as_deref(), Some(bound.as_str()));
+        transaction_rollback(&state, &bound).unwrap();
+
         // A panel batch is recovered, and a second recovery is a no-op.
         let base =
             transaction_begin(&state, Some("panel batch".into()), "panel:a").unwrap()["revision"]
@@ -5961,7 +6266,10 @@ providers:
         let recovered = crate::commands::recover_panel_batch(&state)
             .unwrap()
             .expect("the panel batch is recovered");
-        assert_eq!(recovered.project.properties.tempo, 120.0);
+        assert_eq!(
+            recovered.project.properties.tempo, 150.0,
+            "applied edits stay"
+        );
         assert_eq!(recovered.revision, base + 1);
         assert!(state.lock_inner().transaction.is_none());
         assert!(
@@ -7166,6 +7474,9 @@ providers:
             external_project_notification(&inner, "tracks_mix", HTTP_BATCH_OWNER, &ok).unwrap();
         assert_eq!(edit["snapshot"]["revision"], inner.revision);
         assert_eq!(edit["replaces_document"], false);
+        // A client bound to a saved conversation is still external to the panel.
+        let bound = crate::state::http_session_owner("abc123");
+        assert!(external_project_notification(&inner, "tracks_mix", &bound, &ok).is_some());
         assert_eq!(
             external_project_notification(&inner, "project_open", HTTP_BATCH_OWNER, &ok).unwrap()["replaces_document"],
             true

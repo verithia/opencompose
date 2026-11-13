@@ -13,6 +13,7 @@ import { getActiveProvider } from "../ai/config";
 import { i18n } from "../stores/i18n";
 import { AiThinking, lastToolOf, thinkingPhase, type ThinkingFacts } from "../components/AiThinking";
 import { AiPanel } from "../components/AiPanel";
+import { resetFakeTurns, runFakeTurn, type TurnStartArgs } from "./helpers/fakeTurn";
 
 const IDENTITY = "deepseek/deepseek-flash";
 
@@ -212,7 +213,8 @@ describe("the waiting row in the panel", () => {
   const chat = { promise: null as Promise<unknown> | null, resolve: null as ((value: unknown) => void) | null };
 
   function installBackend() {
-    invokeMock.mockImplementation(async (cmd: string) => {
+    invokeMock.mockImplementation(async (cmd: string, args?: unknown) => {
+      const typed = (args ?? {}) as Record<string, unknown>;
       switch (cmd) {
         case "load_ai_config": return aiConfigWire();
         case "save_ai_config": return { path: "/tmp/ai-providers.yaml", warnings: [] };
@@ -222,8 +224,18 @@ describe("the waiting row in the panel", () => {
         case "ai_toolsets": return [];
         case "ai_tools": return [];
         case "ai_build_context": return { dsl_context: '@project "Test Project"\n  tempo: 128\n' };
-        case "ai_chat": return chat.promise ?? { role: "assistant", content: "Hello." };
-        case "ai_call_tool": return { ok: true };
+        case "ai_turn_start": return runFakeTurn(typed as unknown as TurnStartArgs, {
+          chat: async () => chat.promise ?? { role: "assistant", content: "Hello." },
+          tool: async () => ({ ok: true }),
+        });
+        case "ai_turn_questions": return [];
+        case "ai_cancel": return undefined;
+        case "sessions_list": return [];
+        case "sessions_new": return {
+          id: "s1", title: "Test conversation", created: "2026-10-28T09:00:00.000Z",
+          updated: "2026-10-28T09:00:00.000Z", model: "deepseek-flash", provider: "deepseek",
+          workspace_key: "3f2a1b0c", workspace: "/Users/me/songs", turns: 1, tokens: 20,
+        };
         default: return makeSnapshot();
       }
     });
@@ -236,7 +248,10 @@ describe("the waiting row in the panel", () => {
     chat.promise = new Promise((resolve) => { chat.resolve = resolve; });
   });
 
-  afterEach(() => cleanup());
+  afterEach(() => {
+    cleanup();
+    resetFakeTurns();
+  });
 
   it("shows the row after sending and drops it once the reply lands", async () => {
     await store.initProject();

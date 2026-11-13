@@ -6,7 +6,6 @@
 use crate::ai::sessions::{
     self, Compaction, Fork, Loaded, ProjectFacts, Scope, SessionMeta, Store,
 };
-use crate::ai_service::{ActiveTurn, Requests};
 use crate::commands::AiProviderEntry;
 use crate::state::{AppState, AppStateInner};
 use serde_json::{Value, json};
@@ -168,34 +167,6 @@ pub fn sessions_drop_history(id: String, keep: u64) -> Result<Value, String> {
     store().drop_history(&id, keep)
 }
 
-/// Cut the conversation back to its first `keep` wire messages, at the start of
-/// a tool block the cut landed inside, closing any call the cut left without a
-/// result. Refused while a turn is still writing this conversation's history.
-#[tauri::command]
-pub fn sessions_rewind(
-    id: String,
-    keep: usize,
-    requests: State<'_, Requests>,
-) -> Result<Value, String> {
-    let active = requests.active()?;
-    refuse_while_running(active.as_ref(), &id)?;
-    let kept = store().rewind(&id, keep)?;
-    Ok(json!({ "kept": kept }))
-}
-
-/// Why a rewind cannot run: a turn that is still answering writes messages at
-/// the end of the very history the rewind rewrites. A request that has not named
-/// its conversation yet may be saving into this one, so it counts as running.
-fn refuse_while_running(active: Option<&ActiveTurn>, id: &str) -> Result<(), String> {
-    let Some(turn) = active else {
-        return Ok(());
-    };
-    match turn.session_id.as_deref() {
-        Some(session) if session != id => Ok(()),
-        _ => Err("A turn is still running in this conversation; stop it before reverting.".into()),
-    }
-}
-
 /// Save the project DSL as it stands before a message is sent, so that message
 /// can be rolled back to later.
 #[tauri::command]
@@ -273,6 +244,25 @@ pub struct PreparedTurn {
     pub saved_auditions: Vec<Value>,
 }
 
+/// Identity captured by the request owner, not the active panel selection.
+pub struct SavedTurnBinding<'a> {
+    pub id: &'a str,
+    pub incarnation: &'a str,
+    pub project: Option<&'a Path>,
+}
+
+pub(crate) fn validate_saved_project(expected: &Path, actual: Option<&Path>) -> Result<(), String> {
+    let expected = expected.canonicalize().map_err(|error| error.to_string())?;
+    let actual = actual
+        .ok_or("No project is open")?
+        .canonicalize()
+        .map_err(|error| error.to_string())?;
+    if expected != actual {
+        return Err("The saved turn belongs to another project".into());
+    }
+    Ok(())
+}
+
 /// Resolves the active session for the open workspace (creating one on the first
 /// turn), appends what the request adds, and returns what to send.
 ///
@@ -282,16 +272,19 @@ pub fn prepare_turn_for(
     app: &tauri::AppHandle,
     provider: &AiProviderEntry,
     messages: &Value,
-    session_id: &str,
-    incarnation: &str,
+    binding: SavedTurnBinding<'_>,
 ) -> Result<Option<PreparedTurn>, String> {
     let state = app.state::<AppState>();
-    let (project, place, facts) = {
+    let (project, place, facts, source) = {
         let inner = state.lock_inner();
+        if let Some(expected) = binding.project {
+            validate_saved_project(expected, inner.file_path.as_deref())?;
+        }
         let project = project_of(None, &inner);
         let place = crate::commands::workspace::scoped_workspace(&inner, None);
-        (project, place, facts(&inner))
+        (project, place, facts(&inner), inner.dsl_source.clone())
     };
+    let session_id = binding.id;
     let store = store();
     let key = store.workspace_key(place.as_deref());
     let (_, meta) = store.find(session_id)?;
@@ -315,13 +308,14 @@ pub fn prepare_turn_for(
         incoming,
         project.as_deref(),
         crate::ai::sessions::PrepareContext {
+            snapshot: Some(&source),
             overhead,
             context_length: context,
             facts: &facts,
             provider: &provider.id,
             model: &provider.model,
         },
-        Some(incarnation),
+        Some(binding.incarnation),
     )?;
     let saved = match prepared.live {
         Some(live) => live,
@@ -467,26 +461,4 @@ pub fn archive_event(turn: &PreparedTurn) -> Value {
         "session_id": turn.session_id,
         "evicted": turn.archive_evicted,
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn running(session: Option<&str>) -> ActiveTurn {
-        ActiveTurn {
-            request_id: "r1".into(),
-            session_id: session.map(str::to_owned),
-        }
-    }
-
-    #[test]
-    fn a_rewind_is_refused_while_a_turn_writes_the_conversation() {
-        assert!(refuse_while_running(None, "s1").is_ok());
-        // A turn saving into another conversation does not block this one.
-        assert!(refuse_while_running(Some(&running(Some("other"))), "s1").is_ok());
-        assert!(refuse_while_running(Some(&running(Some("s1"))), "s1").is_err());
-        // A request that has not named its conversation yet may be saving here.
-        assert!(refuse_while_running(Some(&running(None)), "s1").is_err());
-    }
 }

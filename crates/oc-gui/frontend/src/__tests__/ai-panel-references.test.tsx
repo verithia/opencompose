@@ -12,6 +12,7 @@ import { aiLimits } from "../stores/aiLimits";
 import { aiSession } from "../stores/aiSession";
 import { resetStats } from "../stores/aiStats";
 import { i18n } from "../stores/i18n";
+import { cancelFakeTurn, resetFakeTurns, runFakeTurn, type TurnStartArgs } from "./helpers/fakeTurn";
 
 const CAPABILITIES = { text: true, audio_in: false, audio_out: false, native_tool_calling: true, streaming: true };
 
@@ -53,6 +54,7 @@ const backend = {
   held: [] as { resolve: (value: unknown) => void; reject: (reason: unknown) => void }[],
   hold: false,
   chatCalls: 0,
+  chat: async (): Promise<unknown> => ({ role: "assistant", content: "Done." }),
   /** The path each `ai_build_context` call asked for, in order. */
   contexts: [] as string[],
 };
@@ -75,12 +77,19 @@ function installBackend() {
         backend.contexts.push(String(typed.targetPath));
         return { dsl_context: '@project "Test Project"\n  tempo: 128\n' };
       }
-      case "ai_chat": {
-        backend.chatCalls += 1;
-        if (!backend.hold) return { role: "assistant", content: "Done." };
-        return new Promise((resolve, reject) => backend.held.push({ resolve, reject }));
+      case "ai_turn_start": return runFakeTurn(typed as unknown as TurnStartArgs, {
+        chat: () => {
+          backend.chatCalls += 1;
+          if (!backend.hold) return backend.chat();
+          return new Promise((resolve, reject) => backend.held.push({ resolve, reject }));
+        },
+        tool: async () => ({ ok: true }),
+      });
+      case "ai_turn_questions": return [];
+      case "ai_cancel": {
+        cancelFakeTurn(String(typed.requestId));
+        return undefined;
       }
-      case "ai_cancel": return undefined;
       case "sessions_snapshot": return { sha: "a".repeat(64) };
       case "sessions_list": return [];
       case "sessions_new": return SESSION;
@@ -128,6 +137,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  resetFakeTurns();
   aiSession.reset();
   aiLimits.setActiveContext(null);
   resetStats();

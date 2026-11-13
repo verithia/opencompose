@@ -25,13 +25,13 @@ import {
   type SessionMeta,
   type SessionUsageSnapshot,
 } from "../ai/sessions";
-import { canContinue, canRetry, closedRound, restoredTranscript, savedWireIndex, RESULT_SUMMARY_CHARS, userTurnOf, type ChatMessage } from "../ai/transcript";
+import { canContinue, canRetry, restoredTranscript, savedWireIndex, RESULT_SUMMARY_CHARS, userTurnOf, type ChatMessage } from "../ai/transcript";
 import { ContextMenuLayer } from "../components/ContextMenu";
-import { rememberToolResult, storedToolResult } from "../ai/agent";
 import { contextMeter } from "../stores/aiContext";
 import { aiStats, hydrateSessionUsage, noteSentEstimate, recordTurn } from "../stores/aiStats";
-import type { WireMessage } from "../ai/agent";
+import type { WireMessage } from "../ai/wire";
 import type { MediaAttachment } from "../ai/media";
+import { answerFakeTurn, cancelFakeTurn, resetFakeTurns, runFakeTurn, type TurnStartArgs } from "./helpers/fakeTurn";
 
 const { handlers } = vi.hoisted(() => ({
   handlers: {} as Record<string, Array<(event: { payload: unknown }) => void>>,
@@ -125,9 +125,11 @@ const backend = {
   /** Whether the next `sessions_load` reports a compaction. */
   loadedCompacted: false,
   newCalls: [] as Record<string, unknown>[],
-  /** The rewinds the panel asked for, and the snapshots it read. */
-  rewinds: [] as { id: string; keep: number }[],
-  versions: [] as string[],
+  /** The reverts the panel asked for, and the document they restore. */
+  reverts: [] as { sessionId: string; index: number }[],
+  revertSnapshot: makeSnapshot(),
+  /** The request and conversation of the most recent turn start. */
+  lastTurn: null as { requestId: string; sessionId: string } | null,
   /** The turn the backend reports running, if any. */
   active: null as { request_id: string; session_id?: string | null } | null,
   /** Conversations the backend reports as compacted, and their earlier history. */
@@ -156,7 +158,14 @@ function installBackend() {
       case "get_transport_state": return { playing: backend.transportPlaying, native_monitoring: backend.nativeMonitoring, live_synth_sounding: backend.liveSynthSounding };
       case "ai_tools": return [];
       case "ai_build_context": return { dsl_context: '@project "Test Project"\n  tempo: 128\n' };
-      case "ai_chat": return backend.chat();
+      case "ai_turn_start": {
+        backend.lastTurn = { requestId: String(typed.requestId), sessionId: String(typed.sessionId) };
+        return runFakeTurn(typed as unknown as TurnStartArgs, { chat: async () => backend.chat() });
+      }
+      case "ai_turn_answer": return answerFakeTurn(String(typed.requestId), String(typed.callId), typed.decision as never);
+      case "ai_turn_questions": return [];
+      case "ai_cancel": cancelFakeTurn(String(typed.requestId ?? "")); return undefined;
+      case "ai_tool_result": return null;
       case "get_project": return { ...makeSnapshot(), file_path: backend.projectPath };
       case "workspace_current":
         return {
@@ -227,13 +236,11 @@ function installBackend() {
       case "sessions_delete":
         backend.sessions = backend.sessions.filter((entry) => entry.id !== typed.id);
         return undefined;
-      case "sessions_rewind": {
-        backend.rewinds.push({ id: String(typed.id), keep: Number(typed.keep) });
-        return { kept: Number(typed.keep) };
-      }
-      case "sessions_version": {
-        backend.versions.push(String(typed.sha));
-        return { dsl: "@project \"restored\"\n" };
+      case "ai_revert_before": {
+        const index = Number(typed.index);
+        backend.reverts.push({ sessionId: String(typed.sessionId), index });
+        backend.conversations[String(typed.sessionId)] = (backend.conversations[String(typed.sessionId)] ?? []).slice(0, index);
+        return { kept: index, snapshot: backend.revertSnapshot };
       }
       case "ai_active_turn": return backend.active;
       case "sessions_compact":
@@ -315,8 +322,9 @@ beforeEach(() => {
   backend.compacted = [];
   backend.loadedCompacted = false;
   backend.newCalls = [];
-  backend.rewinds = [];
-  backend.versions = [];
+  backend.reverts = [];
+  backend.revertSnapshot = makeSnapshot();
+  backend.lastTurn = null;
   backend.active = null;
   backend.compactedSessions = [];
   backend.original = {};
@@ -327,12 +335,14 @@ beforeEach(() => {
   i18n.setLocale("en");
   aiSession.reset();
   workspaceStore.reset();
+  resetFakeTurns();
   for (const name of Object.keys(handlers)) delete handlers[name];
   installBackend();
 });
 
 afterEach(() => {
   cleanup();
+  resetFakeTurns();
   aiSession.reset();
   vi.restoreAllMocks();
 });
@@ -462,7 +472,7 @@ describe("conversation switcher", () => {
     expect(document.querySelector(".ai-session-list")).toBeNull();
     expect(switcher().getAttribute("aria-expanded")).toBe("false");
     expect(document.activeElement).toBe(switcher());
-    expect(invokeMock.mock.calls.some(([command]) => command === "ai_chat")).toBe(false);
+    expect(invokeMock.mock.calls.some(([command]) => command === "ai_turn_start")).toBe(false);
 
     // A native keyboard activation also produces a detail-zero button click.
     fireEvent.click(switcher(), { detail: 0 });
@@ -797,8 +807,8 @@ describe("conversation switcher", () => {
     backend.chat = () => pending.promise;
     fireEvent.input(input(), { target: { value: "Listen to the mix" } });
     fireEvent.click(sendButton());
-    await waitFor(() => expect(invokeMock.mock.calls.some(([command]) => command === "ai_chat")).toBe(true));
-    const args = invokeMock.mock.calls.find(([command]) => command === "ai_chat")?.[1] as { requestId: string; sessionId?: string };
+    await waitFor(() => expect(backend.lastTurn).toBeTruthy());
+    const args = backend.lastTurn!;
     expect(args.sessionId).toBe(aiSession.open());
     const saved = {
       request_id: args.requestId,
@@ -1026,7 +1036,6 @@ describe("conversation switcher", () => {
       usage: { input: 120, cached_input: null, output: 40, reasoning: 0 },
       failed: false, cost: null,
     });
-    rememberToolResult("call_old", "x".repeat(200));
     expect(aiStats.session().turns).toBe(1);
     expect(contextMeter.reported()).toBe(120);
 
@@ -1034,11 +1043,9 @@ describe("conversation switcher", () => {
     openRow("two");
     await waitFor(() => expect(openTitle()).toBe("two"));
 
-    // The other conversation has no reported prompt, no turn, and no result the
-    // old rows could page.
+    // The other conversation has no reported prompt and no turn.
     expect(aiStats.session().turns).toBe(0);
     expect(contextMeter.reported()).toBe(0);
-    expect(storedToolResult("call_old")).toBeNull();
   });
 
   it("does not start a second conversation on the next message", async () => {
@@ -1051,7 +1058,7 @@ describe("conversation switcher", () => {
 
     fireEvent.input(input(), { target: { value: "one more thing" } });
     fireEvent.click(sendButton());
-    await waitFor(() => expect(invokeMock.mock.calls.some(([command]) => command === "ai_chat")).toBe(true));
+    await waitFor(() => expect(invokeMock.mock.calls.some(([command]) => command === "ai_turn_start")).toBe(true));
     expect(backend.newCalls).toHaveLength(0);
   });
 
@@ -1441,6 +1448,25 @@ describe("reverting before a message", () => {
     { role: "assistant", content: "Done." },
   ];
 
+  it("offers the revert only on a person's row", async () => {
+    backend.conversations = { s1: conversation };
+    await mountPanel();
+    await openSwitcher();
+    fireEvent.click(document.querySelector(".ai-session-row-title")!);
+    await waitFor(() => expect(messageRows()).toHaveLength(4));
+
+    // The answer and the tool row are not points a person asked from.
+    for (const index of [1, 3]) {
+      fireEvent.contextMenu(messageRows()[index]);
+      expect(screen.queryByRole("menuitem", { name: /Revert to before this message/ })).toBeNull();
+      fireEvent.keyDown(document, { key: "Escape" });
+    }
+
+    fireEvent.contextMenu(messageRows()[2]);
+    expect(screen.getByRole("menuitem", { name: /Revert to before this message/ })).toBeTruthy();
+    fireEvent.keyDown(document, { key: "Escape" });
+  });
+
   it("cuts at the wire message a restored row came from, not at its row index", async () => {
     backend.conversations = { s1: conversation };
     await mountPanel();
@@ -1451,53 +1477,53 @@ describe("reverting before a message", () => {
     // Row 2 is the second ask; its message is wire 3 because of the envelope.
     fireEvent.contextMenu(messageRows()[2]);
     fireEvent.click(screen.getByRole("menuitem", { name: /Revert to before this message/ }));
-    await waitFor(() => expect(backend.rewinds).toEqual([{ id: "s1", keep: 3 }]));
-    expect(backend.versions).toEqual(["b".repeat(64)]);
+    // One command does both halves: it keeps the wire prefix and returns the
+    // document that goes with it.
+    const reverts = () => invokeMock.mock.calls.filter(([command]) => command === "ai_revert_before");
+    await waitFor(() => expect(reverts()).toHaveLength(1));
+    expect(reverts()[0][1]).toEqual({ sessionId: "s1", index: 3 });
+    expect(backend.reverts).toEqual([{ sessionId: "s1", index: 3 }]);
   });
 
   it("cuts at the saved wire message a live row was painted from", async () => {
-    backend.conversations = { s1: [] };
+    backend.conversations = { s1: [
+      { role: "user", content: "first take" },
+      { role: "assistant", content: "Done." },
+    ] };
     await mountPanel();
     await openSwitcher();
     fireEvent.click(document.querySelector(".ai-session-row-title")!);
     await waitFor(() => expect(aiSession.open()).toBe("s1"));
 
-    let round = 0;
-    backend.chat = async () => {
-      round += 1;
-      if (round === 1) return hiddenCall;
-      return { role: "assistant", content: "Done." };
-    };
+    backend.chat = async () => ({ role: "assistant", content: "Done: the mix is quiet." });
     fireEvent.input(input(), { target: { value: "list the mix" } });
     fireEvent.click(sendButton());
-    await waitFor(() => expect(toolRows()).toHaveLength(1));
-    await waitFor(() => expect(document.querySelector(".ai-send-btn.cancel")).toBeNull());
+    await waitFor(() => expect(backend.lastTurn?.sessionId).toBe("s1"));
+    await waitFor(() => expect(document.querySelector(".ai-pending")).toBeNull());
 
-    // The store now holds the turn; the panel painted its rows live, without
-    // the envelope, so the tool row is row 1 and wire 2.
+    // The saved conversation holds the live row's message; the live row
+    // carries no wire index, so the panel matches it against the store.
     backend.conversations.s1 = [
-      { role: "user", content: "list the mix" },
-      hiddenCall,
-      { role: "tool", tool_call_id: "call-1", content: '{"ok":true}' },
+      { role: "user", content: "first take" },
       { role: "assistant", content: "Done." },
+      { role: "user", content: "list the mix" },
+      { role: "assistant", content: "Done: the mix is quiet." },
     ];
-    fireEvent.contextMenu(messageRows()[1]);
+    const liveUser = messageRows().find((row) => row.textContent?.includes("list the mix"))!;
+    fireEvent.contextMenu(liveUser);
     fireEvent.click(screen.getByRole("menuitem", { name: /Revert to before this message/ }));
-    await waitFor(() => expect(backend.rewinds).toEqual([{ id: "s1", keep: 2 }]));
+    await waitFor(() => expect(backend.reverts).toEqual([{ sessionId: "s1", index: 2 }]));
   });
 
-  it("puts the document back when the rewind is refused", async () => {
+  it("leaves the document alone when the revert is refused", async () => {
     backend.conversations = { s1: conversation };
     const base = invokeMock.getMockImplementation()!;
-    const applied: string[] = [];
+    let attempts = 0;
     invokeMock.mockImplementation(async (command: string, args?: unknown) => {
-      const typed = (args ?? {}) as Record<string, unknown>;
-      if (command === "sessions_version") return { dsl: '@project "older"\n' };
-      if (command === "ai_apply_edit") {
-        applied.push(String(typed.newDsl));
-        return { ...makeSnapshot(), dsl_source: String(typed.newDsl), revision: 9 };
+      if (command === "ai_revert_before") {
+        attempts += 1;
+        throw new Error("the session store refused the revert");
       }
-      if (command === "sessions_rewind") throw new Error("the session store refused the rewind");
       return base(command, args);
     });
     await mountPanel();
@@ -1508,12 +1534,12 @@ describe("reverting before a message", () => {
 
     fireEvent.contextMenu(messageRows()[2]);
     fireEvent.click(screen.getByRole("menuitem", { name: /Revert to before this message/ }));
+    await waitFor(() => expect(attempts).toBe(1));
 
-    // The document moved to the snapshot and came back, because the conversation
-    // never did: the two halves still describe one moment.
-    await waitFor(() => expect(applied).toHaveLength(2));
-    expect(applied[0]).toBe('@project "older"\n');
+    // Nothing is applied when the command refuses: the document and the
+    // conversation still describe one moment.
     expect(store.dslSource()).toBe(before);
+    expect(backend.reverts).toHaveLength(0);
   });
 
   it("withholds the revert in the history a compaction replaced", async () => {
@@ -1532,7 +1558,7 @@ describe("reverting before a message", () => {
     expect(item.getAttribute("aria-disabled")).toBe("true");
     expect(item.querySelector(".context-menu-hint")?.textContent).toBe(i18n.t("ai.revert.originalView"));
     fireEvent.click(item);
-    expect(backend.rewinds).toHaveLength(0);
+    expect(backend.reverts).toHaveLength(0);
   });
 
   it("withholds the revert while a turn is still writing the history", async () => {
@@ -1550,7 +1576,7 @@ describe("reverting before a message", () => {
     expect(item.getAttribute("aria-disabled")).toBe("true");
     expect(item.querySelector(".context-menu-hint")?.textContent).toBe(i18n.t("ai.revert.turnRunning"));
     fireEvent.click(item);
-    expect(backend.rewinds).toHaveLength(0);
+    expect(backend.reverts).toHaveLength(0);
   });
 
   it("withholds the revert while the panel is sending a message", async () => {
@@ -1583,32 +1609,22 @@ describe("a stopped turn", () => {
   const toolResult = (id: string): WireMessage => ({ role: "tool", tool_call_id: id, content: '{"ok":true}' });
   const question: WireMessage = { role: "user", content: "add a bass" };
 
-  it("closes a round the stop interrupted with one not-run result per missing call", () => {
-    const open = [{ role: "system", content: "prompt" }, question, assistantCall("a", "b", "c"), toolResult("a")];
-    const closed = closedRound(open);
-    expect(closed).toHaveLength(6);
-    expect(closed.slice(0, 4)).toEqual(open);
-    expect(closed.slice(4).map(message => message.tool_call_id)).toEqual(["b", "c"]);
-    expect(JSON.parse(String(closed[4].content)).error).toContain("stopped before this call ran");
-
-    // A complete round, and a wire with no open round, are left alone.
-    expect(closedRound([...open, toolResult("b"), toolResult("c")])).toHaveLength(6);
-    expect(closedRound([question])).toEqual([question]);
-  });
-
   it("offers Retry unless the user cancelled, and Continue only for a turn that went past its question", () => {
     expect(canRetry({ messages: [question], edits: 0 })).toBe(true);
     expect(canContinue({ messages: [question], edits: 0 })).toBe(false);
     // A cancel is deliberate: it can be continued but not resent as a failure.
-    const cancelling = { messages: [question], edits: 0, stop: { cancelled: true, done: 0, planned: 0, edits: 0 } };
+    const cancelling = { messages: [question], edits: 0, stop: { cancelled: true, done: 1, planned: 2, edits: 0 } };
     expect(canRetry(cancelling)).toBe(false);
     expect(canContinue(cancelling)).toBe(true);
-    // An unrestored snapshot leaves neither action safe.
-    const unknown = { messages: [question], edits: 2, restoreError: "another batch is open" };
-    expect(canRetry(unknown)).toBe(false);
-    expect(canContinue(unknown)).toBe(false);
+    // A cancel before any call returned leaves nothing to resume.
+    const beforeAnyCall = { messages: [question], edits: 0, stop: { cancelled: true, done: 0, planned: 0, edits: 0 } };
+    expect(canContinue(beforeAnyCall)).toBe(false);
     // A provider failure after a tool round is both.
-    expect(canContinue({ messages: [assistantCall("a"), toolResult("a")], edits: 0 })).toBe(true);
+    expect(canContinue({
+      messages: [assistantCall("a"), toolResult("a")],
+      edits: 0,
+      stop: { cancelled: false, done: 1, planned: 1, edits: 0, failure_kept: true },
+    })).toBe(true);
     // A batch the cap committed already landed: resending it would apply the
     // same edits twice, so only Continue is offered.
     const capped = { messages: [question], edits: 3, stop: { cancelled: false, done: 16, planned: 16, edits: 3, committed: true } };
@@ -1616,10 +1632,10 @@ describe("a stopped turn", () => {
     expect(canContinue(capped)).toBe(true);
     // A kept failure or timeout failed on the last request. Retry resends that
     // request over the same wire, so it does not replay the applied calls.
-    const keptFailure = { messages: [assistantCall("a"), toolResult("a")], edits: 1, stop: { cancelled: false, done: 1, planned: 1, edits: 1, committed: true, failureKept: true } };
+    const keptFailure = { messages: [assistantCall("a"), toolResult("a")], edits: 1, stop: { cancelled: false, done: 1, planned: 1, edits: 1, committed: true, failure_kept: true } };
     expect(canRetry(keptFailure)).toBe(true);
     expect(canContinue(keptFailure)).toBe(true);
-    const timedOut = { messages: [assistantCall("a"), toolResult("a")], edits: 1, stop: { cancelled: false, done: 1, planned: 1, edits: 1, committed: true, timedOut: true } };
+    const timedOut = { messages: [assistantCall("a"), toolResult("a")], edits: 1, stop: { cancelled: false, done: 1, planned: 1, edits: 1, committed: true, timed_out: true } };
     expect(canRetry(timedOut)).toBe(true);
     // The provider layer says the same request cannot work: no Retry.
     expect(canRetry({ messages: [question], edits: 0, retryable: false })).toBe(false);

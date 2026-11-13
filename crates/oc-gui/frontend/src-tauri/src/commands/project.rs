@@ -740,6 +740,40 @@ pub fn update_dsl(source: String, state: State<AppState>) -> Result<ProjectSnaps
     Ok(snapshot)
 }
 
+/// Replaces the whole document with saved DSL as one labelled undo entry,
+/// keeping the saved text exactly. A revert restores a conversation's
+/// snapshot through this, so one undo takes it back. Nothing is written to
+/// disk: the caller publishes with [`publish_restored`] once the rest of its
+/// step has succeeded, so a step that fails leaves the files as they were.
+pub(crate) fn restore_dsl_with_undo(
+    inner: &mut AppStateInner,
+    source: String,
+    label: &str,
+) -> Result<ProjectSnapshot, String> {
+    inner.refuse_in_preview()?;
+    let mut project = oc_dsl::parse(&source).map_err(|e| format!("{}", e))?;
+    oc_dsl::instruments::apply_defaults(&mut project);
+    let old_project = std::mem::replace(&mut inner.project, project);
+    if let Err(error) = resync_with_undo(
+        inner,
+        old_project.clone(),
+        UndoEdit::new(label, UndoScope::Project),
+    ) {
+        inner.project = old_project;
+        return Err(error);
+    }
+    inner.dsl_source = source;
+    Ok(snapshot(&*inner))
+}
+
+/// Writes a restored document to the autosave and the project file.
+pub(crate) fn publish_restored(inner: &mut AppStateInner) {
+    crate::autosave::flush_dirty(inner);
+    if let Err(reason) = crate::project_persist::flush(inner) {
+        log::error!("[ai] restored document not written to the project file: {reason}");
+    }
+}
+
 /// The command body: parse, apply defaults and keep the caller's exact text.
 ///
 /// Returns the snapshot and the resource root to warm after the lock is gone.

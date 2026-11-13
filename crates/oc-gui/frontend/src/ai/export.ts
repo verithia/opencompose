@@ -4,7 +4,7 @@
  * panel already holds, so exporting neither posts a request nor writes a file
  * the user did not ask for.
  */
-import type { WireMessage } from "./agent";
+import type { WireMessage } from "./wire";
 import { formatBytes } from "./media";
 import type { SessionMeta } from "./sessions";
 import type { ChatMessage } from "./transcript";

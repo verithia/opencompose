@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { WireMessage } from "../ai/agent";
+import type { WireMessage } from "../ai/wire";
 import { messageKind, messageMeta, tagNewMessage } from "../ai/messageProtocol";
 import { restoredTranscript, userTurnOf } from "../ai/transcript";
 import { auditionLabel, type MediaAttachment } from "../ai/media";

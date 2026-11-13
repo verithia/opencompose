@@ -65,6 +65,7 @@ fn accounting_queued_preparation_cannot_mutate_a_replaced_session_incarnation() 
                     &[serde_json::json!({"role":"user", "content":"Old queued request"})],
                     Some(Path::new("old-project.ocp")),
                     PrepareContext {
+                        snapshot: None,
                         overhead: 0,
                         context_length: 1,
                         facts: &ProjectFacts::default(),
@@ -111,6 +112,7 @@ fn accounting_queued_preparation_cannot_mutate_a_replaced_session_incarnation() 
             &[serde_json::json!({"role":"user", "content":"Current request"})],
             None,
             PrepareContext {
+                snapshot: None,
                 overhead: 0,
                 context_length: 100_000,
                 facts: &ProjectFacts::default(),
@@ -237,11 +239,22 @@ fn accounting_delete_and_reincarnation_reject_late_owners_without_resurrection()
 }
 
 #[test]
-fn accounting_rewind_and_fork_do_not_rewrite_incurred_spend() {
+fn accounting_cut_and_fork_do_not_rewrite_incurred_spend() {
     let (_root, store, id) = fixture();
     owner(&store, &id, "spent").commit(&[attempt(0, true)], true);
     let before = snapshot(&store, &id);
     let facts = super::super::sessions::ProjectFacts::default();
+    let sha = store.snapshot_dsl(&id, "@project \"Spend\"\n").unwrap();
+    store
+        .append_turn(
+            &id,
+            &[serde_json::json!({
+                "role": "user", "content": "Start", "dsl_sha": sha,
+                "message_meta": super::super::sessions::message_meta(super::super::sessions::MessageKind::User),
+            })],
+            None,
+        )
+        .unwrap();
     store
         .record_reply(
             &id,
@@ -260,7 +273,8 @@ fn accounting_rewind_and_fork_do_not_rewrite_incurred_spend() {
             "model",
         )
         .unwrap();
-    store.rewind(&id, 1).unwrap();
+    store.cut_before_user(&id, 0).unwrap();
+    assert!(store.view(&id).unwrap().is_empty(), "the cut ran");
     assert_eq!(snapshot(&store, &id), before);
     let fork = store
         .create(

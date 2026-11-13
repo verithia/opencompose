@@ -13,6 +13,7 @@ import { loadConfig } from "../ai/config";
 import { noteIsOverLimit } from "../ai/projectInstructions";
 import { i18n } from "../stores/i18n";
 import type { Catalog } from "../ai/catalog";
+import { resetFakeTurns, runFakeTurn, type TurnStartArgs } from "./helpers/fakeTurn";
 
 const PROJECT = "/tmp/panelg9/song.ocp";
 const SAVED = "Always print stems at -14 LUFS; this song is in D minor.";
@@ -78,8 +79,21 @@ function mockBackend() {
     if (cmd === "ai_toolsets") return SETS;
     if (cmd === "ai_tools") return TOOLS;
     if (cmd === "ai_build_context") return { dsl_context: '@project "Test Project"\n  tempo: 128\n' };
-    if (cmd === "ai_chat") { chats.push((args ?? {}) as Record<string, any>); return { role: "assistant", content: "Hello." }; }
+    if (cmd === "ai_turn_start") {
+      const typed = (args ?? {}) as Record<string, any>;
+      chats.push(typed);
+      return runFakeTurn(typed as TurnStartArgs, {
+        chat: async () => ({ role: "assistant", content: "Hello." }),
+      });
+    }
+    if (cmd === "ai_turn_questions") return [];
     if (cmd === "ai_cancel") return undefined;
+    if (cmd === "sessions_list") return [];
+    if (cmd === "sessions_new") return {
+      id: "s1", title: "Test conversation", created: "2026-10-28T09:00:00.000Z",
+      updated: "2026-10-28T09:00:00.000Z", model: "deepseek-flash", provider: "deepseek",
+      workspace_key: "3f2a1b0c", workspace: "/tmp/panelg9", turns: 1, tokens: 20,
+    };
     if (cmd === "get_project") return { ...makeSnapshot(), file_path: PROJECT };
     if (cmd === "ai_project_instructions_get") {
       return {
@@ -154,7 +168,10 @@ beforeEach(() => {
   mockBackend();
 });
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  resetFakeTurns();
+});
 
 describe("project instructions in AI settings", () => {
   it("loads the open project's note and counts its characters", async () => {

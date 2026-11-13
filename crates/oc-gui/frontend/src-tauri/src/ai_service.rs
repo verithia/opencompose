@@ -102,9 +102,9 @@ pub fn ai_cancel_separator(
     jobs.cancel(cancellation_id)
 }
 
-struct RequestClaim {
-    cancel_rx: oneshot::Receiver<()>,
-    identity: Arc<()>,
+pub(crate) struct RequestClaim {
+    pub(crate) cancel_rx: oneshot::Receiver<()>,
+    pub(crate) identity: Arc<()>,
 }
 
 struct ActiveRequest {
@@ -122,10 +122,64 @@ pub struct ActiveTurn {
     pub session_id: Option<String>,
 }
 
+/// Owns the shared provider slot through headless persistence and cleanup.
+pub(crate) struct HeadlessRequest<'a> {
+    requests: &'a Requests,
+    id: String,
+    owner: Arc<()>,
+    cancel: Option<oneshot::Receiver<()>>,
+}
+
+impl HeadlessRequest<'_> {
+    pub(crate) async fn run<T>(
+        &mut self,
+        operation: impl Future<Output = Result<T, AiError>>,
+    ) -> Result<T, AiError> {
+        let cancel = self
+            .cancel
+            .take()
+            .ok_or_else(|| AiError::config("Request already started"))?;
+        tokio::select! {
+            biased;
+            _ = cancel => Err(AiError::new("cancelled", "Request cancelled")),
+            result = operation => result,
+        }
+    }
+}
+
+impl Drop for HeadlessRequest<'_> {
+    fn drop(&mut self) {
+        let _ = self.requests.release_owned(&self.id, &self.owner);
+    }
+}
+
 impl Requests {
+    pub(crate) fn claim_headless(
+        &self,
+        id: &str,
+        session: Option<&str>,
+    ) -> Result<HeadlessRequest<'_>, AiError> {
+        let Some(RequestClaim {
+            cancel_rx,
+            identity,
+        }) = self.claim(id).map_err(AiError::config)?
+        else {
+            return Err(AiError::new("busy", "Another AI request is active"));
+        };
+        if let Some(session) = session {
+            self.set_session_owned(id, &identity, session);
+        }
+        Ok(HeadlessRequest {
+            requests: self,
+            id: id.into(),
+            owner: identity,
+            cancel: Some(cancel_rx),
+        })
+    }
+
     /// Claims the one slot. `Ok(None)` means another request is already running,
     /// so the caller must refuse with `busy` and claim nothing.
-    fn claim(&self, request_id: &str) -> Result<Option<RequestClaim>, String> {
+    pub(crate) fn claim(&self, request_id: &str) -> Result<Option<RequestClaim>, String> {
         let mut pending = self.0.lock().map_err(|_| "Request lock failed")?;
         if !pending.is_empty() {
             return Ok(None);
@@ -145,7 +199,7 @@ impl Requests {
             identity,
         }))
     }
-    fn release_owned(
+    pub(crate) fn release_owned(
         &self,
         id: &str,
         owner: &Arc<()>,
@@ -160,7 +214,7 @@ impl Requests {
             Ok(None)
         }
     }
-    fn set_session_owned(&self, id: &str, owner: &Arc<()>, session: &str) {
+    pub(crate) fn set_session_owned(&self, id: &str, owner: &Arc<()>, session: &str) {
         if let Ok(mut pending) = self.0.lock()
             && let Some(request) = pending.get_mut(id)
             && Arc::ptr_eq(&request.identity, owner)
@@ -871,20 +925,23 @@ async fn force_refresh(p: &AiProviderEntry) -> Result<Credential, AiError> {
         .map_err(AiError::from)
 }
 
-struct TurnRequest<'a> {
-    messages: Value,
-    use_tools: bool,
-    toolsets: Option<&'a [String]>,
+pub(crate) struct TurnRequest<'a> {
+    pub(crate) messages: Value,
+    pub(crate) use_tools: bool,
+    pub(crate) toolsets: Option<&'a [String]>,
+    /// Offers `read_toolcall` beside the registry's tools: the backend agent
+    /// loop keeps the full results its previews point to.
+    pub(crate) pager: bool,
 }
 
-#[derive(Default)]
-struct TurnChannels {
-    delta: Option<tauri::ipc::Channel<String>>,
-    thinking: Option<tauri::ipc::Channel<String>>,
-    preparing: Option<tauri::ipc::Channel<String>>,
+#[derive(Default, Clone)]
+pub(crate) struct TurnChannels {
+    pub(crate) delta: Option<tauri::ipc::Channel<String>>,
+    pub(crate) thinking: Option<tauri::ipc::Channel<String>>,
+    pub(crate) preparing: Option<tauri::ipc::Channel<String>>,
 }
 
-async fn send(
+pub(crate) async fn send(
     p: AiProviderEntry,
     request: TurnRequest<'_>,
     channels: TurnChannels,
@@ -937,6 +994,7 @@ where
         mut messages,
         use_tools,
         toolsets,
+        pager,
     } = request;
     // History the model cannot take degrades to a text line; only the turn's own
     // attachment can refuse the request below.
@@ -948,8 +1006,13 @@ where
         );
     }
     ai::limits::gate_input(&p, &messages).map_err(AiError::from)?;
-    let (request, notices) =
+    let (mut request, notices) =
         ai::request_from_wire(&p, messages, use_tools, toolsets).map_err(AiError::from)?;
+    if use_tools && pager {
+        request
+            .tools
+            .push(ai::agent_loop::wire::read_toolcall_spec());
+    }
     let is_oauth = matches!(credential, Credential::OAuth(_));
     let result = match run_once(&p, &request, &channels, credential, stats).await {
         Ok(value) => Ok(value),
@@ -1039,7 +1102,7 @@ async fn run_once(
 
 /// The text budget excludes validated listening payloads, which have their own
 /// bounded media budget. Audio remains structured media, never prompt text.
-fn validate_chat_messages(messages: &Value) -> Result<(), AiError> {
+pub(crate) fn validate_chat_messages(messages: &Value) -> Result<(), AiError> {
     let rows = messages
         .as_array()
         .filter(|rows| !rows.is_empty() && rows.len() <= MAX_WIRE_MESSAGES)
@@ -1129,6 +1192,7 @@ pub async fn ai_name_session(
             messages,
             use_tools: false,
             toolsets: None,
+            pager: false,
         },
         TurnChannels {
             delta: None,
@@ -1253,7 +1317,16 @@ pub async fn ai_chat(
                 .update()
                 .incarnation;
             move || {
-                crate::commands::prepare_turn_for(&app, &p, &messages, &session_id, &incarnation)
+                crate::commands::prepare_turn_for(
+                    &app,
+                    &p,
+                    &messages,
+                    crate::commands::SavedTurnBinding {
+                        id: &session_id,
+                        incarnation: &incarnation,
+                        project: None,
+                    },
+                )
             }
         })
         .await
@@ -1339,6 +1412,7 @@ pub async fn ai_chat(
                 messages: outbound,
                 use_tools,
                 toolsets: toolsets.as_deref(),
+                pager: false,
             },
             TurnChannels {
                 delta: Some(on_delta),
@@ -1405,8 +1479,87 @@ pub async fn ai_chat(
     let _ = requests.release_owned(&request_id, &owner);
     result
 }
+/// Runs one agent turn on the backend: provider rounds, tools and the saved
+/// conversation. The view hears `ai_turn` events and answers questions with
+/// [`ai_turn_answer`]; text streams through `on_delta` and `on_thinking`.
+#[tauri::command]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "The command keeps the flat IPC request fields and injected Tauri context"
+)]
+pub async fn ai_turn_start(
+    app: tauri::AppHandle,
+    provider_id: String,
+    request_id: String,
+    session_id: String,
+    messages: Vec<Value>,
+    toolsets: Option<Vec<String>>,
+    label: Option<String>,
+    allowed: Option<Vec<String>>,
+    on_delta: tauri::ipc::Channel<String>,
+    on_thinking: Option<tauri::ipc::JavaScriptChannelId>,
+    on_preparing: Option<tauri::ipc::JavaScriptChannelId>,
+    webview: tauri::Webview,
+) -> Result<ai::agent_loop::TurnOutcome, AiError> {
+    let channels = TurnChannels {
+        delta: Some(on_delta),
+        thinking: on_thinking.map(|id| id.channel_on(webview.clone())),
+        preparing: on_preparing.map(|id| id.channel_on(webview)),
+    };
+    let owner = crate::state::panel_batch_owner(Some(&session_id));
+    let start = ai::agent_loop::host::TurnStart {
+        provider_id,
+        request_id,
+        session_id,
+        messages,
+        toolsets,
+        label,
+        allowed: allowed.unwrap_or_default(),
+        project: None,
+    };
+    ai::agent_loop::host::run(&app, start, channels, true, owner).await
+}
+
+/// Answers the question a running turn asked about one call.
+#[tauri::command]
+pub fn ai_turn_answer(
+    request_id: String,
+    call_id: String,
+    decision: ai::agent_loop::Decision,
+) -> Result<(), String> {
+    ai::agent_loop::host::answer(&request_id, &call_id, decision)
+}
+
+/// Restores the project to before a person's message and cuts the
+/// conversation there, as one step. Refused while a turn runs.
+#[tauri::command]
+pub fn ai_revert_before(
+    app: tauri::AppHandle,
+    session_id: String,
+    index: usize,
+) -> Result<Value, String> {
+    ai::agent_loop::host::revert_before(&app, &session_id, index)
+}
+
+/// The questions a running turn waits on, for a window that reloaded mid-turn.
+#[tauri::command]
+pub fn ai_turn_questions(request_id: String) -> Vec<ai::agent_loop::ApprovalRequest> {
+    ai::agent_loop::host::questions(&request_id)
+}
+
+/// The full result behind a truncated preview, while this process still keeps it.
+#[tauri::command]
+pub fn ai_tool_result(session_id: String, call_id: String) -> Option<String> {
+    ai::agent_loop::results::with_results(|store| store.full(&session_id, &call_id))
+}
+
 #[tauri::command]
 pub fn ai_cancel(request_id: String, requests: State<Requests>) -> Result<(), String> {
+    // An agent turn keeps its slot until it has closed its round and committed
+    // its batch, so nothing else starts, reverts or recovers under it.
+    if ai::agent_loop::host::cancel(&request_id) {
+        return Ok(());
+    }
     if let Some(cancel) = requests.release(&request_id)? {
         let _ = cancel.send(());
     }
@@ -1559,7 +1712,11 @@ providers:
 ///
 /// The reply stays in the returned turn, so the live transcript keeps the
 /// answer; only a later request sees that the conversation lacks it.
-fn save_reply(session_id: &str, reply: &mut Value, save: impl FnOnce() -> Result<(), String>) {
+pub(crate) fn save_reply(
+    session_id: &str,
+    reply: &mut Value,
+    save: impl FnOnce() -> Result<(), String>,
+) {
     let Err(error) = save() else { return };
     log::error!("[ai] session {session_id}: the reply could not be saved: {error}");
     if let Some(message) = reply.as_object_mut() {
@@ -1981,6 +2138,7 @@ mod tests {
                 messages: json!([{"role":"user","content":"compose"}]),
                 use_tools: false,
                 toolsets: None,
+                pager: false,
             },
             TurnChannels {
                 delta: None,
@@ -1998,6 +2156,51 @@ mod tests {
         assert_eq!(result["content"], "Done.");
         assert_eq!(result["reasoning_content"], "Read the piano notes.");
         assert_eq!(result["thinking"][0]["text"], "Read the piano notes.");
+    }
+
+    /// The loop's own pager reaches the model only on the loop's requests.
+    #[tokio::test]
+    async fn the_result_pager_is_offered_only_to_the_agent_loop() {
+        async fn offered(pager: bool) -> bool {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let url = format!(
+                "http://{}/v1/chat/completions",
+                listener.local_addr().unwrap()
+            );
+            let server = std::thread::spawn(move || {
+                let (mut socket, _) = listener.accept().unwrap();
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let request = read_request(&mut socket);
+                respond(
+                    &mut socket,
+                    200,
+                    r#"{"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}"#,
+                );
+                request
+            });
+            let mut provider = fixture_provider(url);
+            provider.capabilities.streaming = false;
+            send_http_with_thinking(
+                provider,
+                TurnRequest {
+                    messages: json!([{"role":"user","content":"go"}]),
+                    use_tools: true,
+                    toolsets: None,
+                    pager,
+                },
+                TurnChannels::default(),
+                Credential::ApiKey(None),
+                |_| async { Err(AiError::config("unexpected refresh")) },
+                &turn_stats(),
+            )
+            .await
+            .unwrap();
+            server.join().unwrap().contains("\"read_toolcall\"")
+        }
+        assert!(offered(true).await);
+        assert!(!offered(false).await);
     }
 
     fn turn_stats() -> ai::timing::TurnStatsHandle {
@@ -2119,6 +2322,7 @@ mod tests {
                 messages,
                 use_tools: false,
                 toolsets: None,
+                pager: false,
             },
             TurnChannels {
                 delta: None,
@@ -2361,6 +2565,7 @@ mod tests {
                 messages: json!([{"role":"user","content":"hello"}]),
                 use_tools: false,
                 toolsets: None,
+                pager: false,
             },
             TurnChannels {
                 delta: None,
@@ -2466,6 +2671,7 @@ mod tests {
                     messages: json!([{"role":"user","content":"hello"}]),
                     use_tools: true,
                     toolsets: None,
+                    pager: false,
                 },
                 TurnChannels {
                     delta: None,
@@ -2521,6 +2727,7 @@ mod tests {
                 messages: json!([{"role":"user","content":"hello"}]),
                 use_tools: false,
                 toolsets: None,
+                pager: false,
             },
             TurnChannels {
                 delta: None,
@@ -2572,6 +2779,7 @@ mod tests {
                 messages: json!([{"role":"user","content":"hello"}]),
                 use_tools: false,
                 toolsets: None,
+                pager: false,
             },
             TurnChannels {
                 delta: None,
@@ -2604,6 +2812,7 @@ mod tests {
                 messages: json!([{"role":"user","content":"hello"}]),
                 use_tools: false,
                 toolsets: None,
+                pager: false,
             },
             TurnChannels {
                 delta: None,
@@ -2674,6 +2883,7 @@ mod tests {
                 messages,
                 use_tools: false,
                 toolsets: None,
+                pager: false,
             },
             TurnChannels {
                 delta: None,
@@ -2735,6 +2945,7 @@ mod tests {
                 messages,
                 use_tools: false,
                 toolsets: None,
+                pager: false,
             },
             TurnChannels {
                 delta: None,
@@ -3142,5 +3353,59 @@ mod wire_budget_tests {
             wire = Value::Array(next);
         }
         assert!(folds > 0, "the fixture never needed a fold");
+    }
+}
+
+#[cfg(test)]
+mod headless_request_tests {
+    use super::*;
+
+    #[test]
+    fn a_headless_request_owns_the_shared_slot_until_its_finalizer_drops() {
+        let requests = Requests::default();
+        let mut guard = requests
+            .claim_headless("http", Some("conversation"))
+            .unwrap();
+        assert_eq!(
+            requests.active().unwrap().unwrap().session_id.as_deref(),
+            Some("conversation")
+        );
+        assert!(requests.claim("panel").unwrap().is_none());
+        tauri::async_runtime::block_on(guard.run(async { Ok::<_, AiError>(()) })).unwrap();
+        assert!(
+            requests.claim("panel").unwrap().is_none(),
+            "reply persistence still owns the slot"
+        );
+        drop(guard);
+        assert!(requests.active().unwrap().is_none());
+    }
+
+    #[test]
+    fn cancelling_a_headless_request_does_not_release_its_replacement() {
+        let requests = Requests::default();
+        let mut guard = requests
+            .claim_headless("same-id", Some("conversation"))
+            .unwrap();
+        requests
+            .release("same-id")
+            .unwrap()
+            .unwrap()
+            .send(())
+            .unwrap();
+        let replacement = requests
+            .claim_headless("same-id", Some("next-conversation"))
+            .unwrap();
+        let error = tauri::async_runtime::block_on(
+            guard.run(std::future::pending::<Result<(), AiError>>()),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind, "cancelled");
+        drop(guard);
+        assert_eq!(
+            requests.active().unwrap().unwrap().session_id.as_deref(),
+            Some("next-conversation")
+        );
+        drop(replacement);
+        assert!(requests.active().unwrap().is_none());
     }
 }

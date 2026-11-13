@@ -5,7 +5,7 @@
  * panel can say what happened instead of silently losing history.
  */
 import type { TurnStats } from "../stores/aiStats";
-import type { WireMessage } from "./agent";
+import type { WireMessage } from "./wire";
 import type { PermissionMode } from "./permission";
 import { i18n } from "../stores/i18n";
 
