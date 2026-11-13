@@ -717,19 +717,116 @@ fn assert_streams(path: &str, samples: &Samples) {
     }
 }
 
-/// 50 ms is the contract on a quiet machine. This crate's lib tests run in
+/// The machine class the harness is measuring on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TimingHost {
+    /// A developer machine: the contract applies as written.
+    Quiet,
+    /// A GitHub-hosted Linux runner.
+    HostedLinux,
+    /// A GitHub-hosted macOS runner.
+    HostedMacos,
+    /// A GitHub-hosted Windows runner.
+    HostedWindows,
+}
+
+impl TimingHost {
+    /// GitHub Actions sets `GITHUB_ACTIONS` and `RUNNER_OS` on every hosted job.
+    fn detect() -> Self {
+        Self::from_env(
+            std::env::var("GITHUB_ACTIONS").ok().as_deref(),
+            std::env::var("RUNNER_OS").ok().as_deref(),
+        )
+    }
+
+    fn from_env(github_actions: Option<&str>, runner_os: Option<&str>) -> Self {
+        if github_actions != Some("true") {
+            return Self::Quiet;
+        }
+        match runner_os {
+            Some("Linux") => Self::HostedLinux,
+            Some("macOS") => Self::HostedMacos,
+            Some("Windows") => Self::HostedWindows,
+            _ => Self::Quiet,
+        }
+    }
+
+    /// How many times the quiet-machine budget this host gets.
+    ///
+    /// Every hop from the press to the device is a thread waking from a short
+    /// sleep, so the bound measures timer precision as much as playback. The
+    /// hosted Linux runner wakes threads on time and keeps the contract. The
+    /// hosted macOS runner is a virtual machine whose timer wakes sleepers in
+    /// coarse ticks, several milliseconds late on every hop, whatever the
+    /// thread's QoS class. Windows has not been measured, so it keeps the
+    /// contract until it is.
+    fn budget_ratio(self) -> f64 {
+        match self {
+            Self::Quiet | Self::HostedLinux | Self::HostedWindows => 1.0,
+            Self::HostedMacos => 2.0,
+        }
+    }
+}
+
+#[test]
+fn timing_host_reads_the_hosted_runner_and_scales_only_macos() {
+    use TimingHost::*;
+    assert_eq!(TimingHost::from_env(None, None), Quiet);
+    assert_eq!(TimingHost::from_env(None, Some("macOS")), Quiet);
+    assert_eq!(TimingHost::from_env(Some("false"), Some("macOS")), Quiet);
+    assert_eq!(
+        TimingHost::from_env(Some("true"), Some("Linux")),
+        HostedLinux
+    );
+    assert_eq!(
+        TimingHost::from_env(Some("true"), Some("macOS")),
+        HostedMacos
+    );
+    assert_eq!(
+        TimingHost::from_env(Some("true"), Some("Windows")),
+        HostedWindows
+    );
+    assert_eq!(TimingHost::from_env(Some("true"), Some("Plan9")), Quiet);
+    assert_eq!(Quiet.budget_ratio(), 1.0);
+    assert_eq!(HostedLinux.budget_ratio(), 1.0);
+    assert_eq!(HostedWindows.budget_ratio(), 1.0);
+    assert_eq!(HostedMacos.budget_ratio(), 2.0);
+}
+
+/// The first-block contract on a quiet machine, in milliseconds.
+const FIRST_BLOCK_BUDGET_MS: f64 = 50.0;
+/// Below this median a run is unloaded and its tail must meet the budget too.
+const UNLOADED_MEDIAN_MS: f64 = 10.0;
+/// The tail bound once the median shows the machine is loaded.
+const LOADED_TAIL_MS: f64 = 150.0;
+
+/// 50 ms is the contract on a quiet machine; a slower host scales every bound
+/// by its [`TimingHost::budget_ratio`]. This crate's lib tests run in
 /// parallel, so p95 also measures scheduler contention; when the median is
 /// already slow the machine is loaded and only the load bound applies.
 fn assert_first_block_bound(path: &str, samples: &Samples) {
+    let host = TimingHost::detect();
+    let ratio = host.budget_ratio();
+    let budget = FIRST_BLOCK_BUDGET_MS * ratio;
     let latencies = samples.latencies();
     let median = p50(&latencies);
     let tail = p95(&latencies);
-    assert!(median < 50.0, "{path} p50 {median:.2}ms");
-    if median < 10.0 {
-        assert!(tail < 50.0, "{path} p95 {tail:.2}ms");
+    assert!(
+        median < budget,
+        "{path} p50 {median:.2}ms (budget {budget:.0}ms on {host:?})"
+    );
+    if median < UNLOADED_MEDIAN_MS * ratio {
+        assert!(
+            tail < budget,
+            "{path} p95 {tail:.2}ms (budget {budget:.0}ms on {host:?})"
+        );
     } else {
-        eprintln!("[first-block] {path} loaded run p50={median:.2}ms p95={tail:.2}ms");
-        assert!(tail < 150.0, "{path} p95 {tail:.2}ms under load");
+        let loaded = LOADED_TAIL_MS * ratio;
+        eprintln!("[first-block] {path} loaded run p50={median:.2}ms p95={tail:.2}ms on {host:?}");
+        assert!(
+            tail < loaded,
+            "{path} p95 {tail:.2}ms under load (bound {loaded:.0}ms on {host:?})"
+        );
     }
 }
 

@@ -253,8 +253,9 @@ jobs:
 
       - name: Build the first-block tests
         # The latency contract is about the shipped app, so it is measured on
-        # the release profile. Compiled first so the timed step below measures
-        # playback, not rustc.
+        # the release profile. Hosted runners get the budget ratio from
+        # `TimingHost` (docs/playback-latency.md). Compiled first so the timed
+        # step below measures playback, not rustc.
         run: cargo test -p oc-gui --lib --release --locked --no-run
 
       - name: First-block latency (serial)
