@@ -522,6 +522,9 @@ fn handle_ai_complete_for(body: &[u8], app: Option<&AppHandle>) -> (u16, String)
 /// The HTTP status a failed `/ai/complete` answers with. Only a malformed
 /// request is 400; everything else names what the caller has to change.
 fn complete_status(kind: &str) -> u16 {
+    if let Some(code) = accounting_code(kind) {
+        return accounting_status(code);
+    }
     match kind {
         "request" => 400,
         "auth" | "auth_expired" => 401,
@@ -531,9 +534,45 @@ fn complete_status(kind: &str) -> u16 {
         "busy" | "cancelled" => 409,
         // The saved endpoint or provider has to change before a retry can work.
         "config" | "redirect" => 409,
+        // The request names a conversation or project this host does not have open.
+        "session_binding" => 409,
+        // The local conversation store failed; no provider was at fault.
+        "session_save" => 500,
         "timeout" | "network" | "server" => 503,
         "protocol" | "truncated" => 502,
         _ => 502,
+    }
+}
+
+/// Accounting codes travel as their serialized wire spelling.
+fn accounting_code(kind: &str) -> Option<crate::ai::session_usage::AccountingCode> {
+    serde_json::from_value(Value::String(kind.to_owned())).ok()
+}
+
+/// A saved turn is admitted to its conversation's accounting before any
+/// provider call, so every accounting refusal is this host's answer, never a
+/// provider's. The match is exhaustive so a new code chooses its status.
+fn accounting_status(code: crate::ai::session_usage::AccountingCode) -> u16 {
+    use crate::ai::session_usage::AccountingCode as Code;
+    match code {
+        // The conversation is gone, changed or busy: the caller has to change
+        // the binding or wait for the other turn.
+        Code::SessionMissing
+        | Code::Busy
+        | Code::SessionChanged
+        | Code::OwnerClosed
+        | Code::OwnerChanged
+        | Code::Conflict
+        | Code::Capacity
+        | Code::CurrencyCapacity
+        | Code::AttemptCapacity => 409,
+        // The host's own storage or bookkeeping failed.
+        Code::Storage
+        | Code::Entropy
+        | Code::Overflow
+        | Code::Format
+        | Code::Request
+        | Code::Cost => 500,
     }
 }
 
@@ -3847,6 +3886,11 @@ providers:
             ("rate_limit", 429),
             ("config", 409),
             ("redirect", 409),
+            ("session_binding", 409),
+            ("session_save", 500),
+            ("accounting_session_missing", 409),
+            ("accounting_busy", 409),
+            ("accounting_storage", 500),
             ("timeout", 503),
             ("network", 503),
             ("server", 503),

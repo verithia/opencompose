@@ -83,7 +83,12 @@ impl SavedTurn {
     ) -> Result<Self, AiError> {
         binding
             .validate_project(app.state::<AppState>().lock_inner().file_path.as_deref())
-            .map_err(|error| AiError::new("session_save", error))?;
+            .map_err(|error| AiError::new("session_binding", error))?;
+        // The same ownership check as a bound tool call, so a wrong binding is
+        // the caller's to fix and a later preparation failure is the store's.
+        binding
+            .validate_session(&sessions::Store::config())
+            .map_err(|error| AiError::new("session_binding", error))?;
         let lease = session_usage::SessionLease::admit(
             sessions::Store::config(),
             &binding.id,

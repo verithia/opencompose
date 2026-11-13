@@ -54,6 +54,9 @@ Malformed messages are refused before the conversation is changed. If a
 provider reply arrives but cannot be saved, the response still contains that
 reply and a `session_warning`; do not repeat a paid request merely to recover
 from a transcript write failure.
+A binding that names a conversation or project this host does not have open
+answers 409 with `kind` `session_binding`, before any provider call. A local
+conversation-store failure answers 500 with `kind` `session_save`.
 
 The store belongs to `OPENCOMPOSE_CONFIG_DIR`. A private profile's sessions do
 not appear in the default desktop profile. Use the intended profile when you
