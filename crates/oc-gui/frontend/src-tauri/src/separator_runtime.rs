@@ -1,10 +1,12 @@
 //! Managed, offline separator packages from the signed plugin index.
 use super::*;
 
+#[cfg(any(unix, test))]
+use oc_market::catalog_wire::POSIX_EXECUTABLES;
 pub use oc_market::catalog_wire::RuntimeDescriptor;
 #[cfg(test)]
 use oc_market::catalog_wire::{MODEL_FILES, WINDOWS_PYTHON, WINDOWS_REQUIRED};
-use oc_market::catalog_wire::{POSIX_EXECUTABLES, WINDOWS_RUNNER, runtime_path, safe_component};
+use oc_market::catalog_wire::{WINDOWS_RUNNER, runtime_path, safe_component};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Receipt {

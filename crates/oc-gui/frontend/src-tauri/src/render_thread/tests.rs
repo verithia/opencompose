@@ -2786,6 +2786,15 @@ fn expected_seek_block(frame: u64) -> Vec<f32> {
     state.render_chunk(128)
 }
 
+/// These cases check which position a press plays, so the seek preroll always
+/// finishes: past its budget the destination starts with released voices, and
+/// a slow runner would turn a timing difference into a different block.
+fn exact_seek_preroll(handle: &super::RenderThreadHandle) {
+    handle.send(super::RenderCommand::TestPrerollBudget(
+        std::time::Duration::from_secs(3600),
+    ));
+}
+
 fn consume_first_audible(handle: &super::RenderThreadHandle) -> Vec<f32> {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     loop {
@@ -2804,6 +2813,7 @@ fn consume_first_audible(handle: &super::RenderThreadHandle) -> Vec<f32> {
 
 fn paused_seek_callback_case(from: u64, target: u64, warm: bool) {
     let handle = super::RenderThreadHandle::spawn(8000);
+    exact_seek_preroll(&handle);
     handle.send(super::RenderCommand::ProjectChanged {
         root: None,
         project: Box::new(seek_callback_fixture()),
@@ -2855,6 +2865,7 @@ fn paused_seek_callback_case(from: u64, target: u64, warm: bool) {
 #[test]
 fn immediate_play_after_pause_does_not_consume_stale_audio_before_worker_applies_seek() {
     let handle = super::RenderThreadHandle::spawn(8000);
+    exact_seek_preroll(&handle);
     handle.send(super::RenderCommand::ProjectChanged {
         root: None,
         project: Box::new(seek_callback_fixture()),
@@ -2918,6 +2929,7 @@ fn consumed_warm_ring_pause_seek_zero_restarts_the_opening() {
 #[test]
 fn stopped_warm_seek_later_consumes_requested_audio_not_opening_ring() {
     let handle = super::RenderThreadHandle::spawn(8000);
+    exact_seek_preroll(&handle);
     handle.send(super::RenderCommand::ProjectChanged {
         root: None,
         project: Box::new(seek_callback_fixture()),

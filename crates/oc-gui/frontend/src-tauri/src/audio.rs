@@ -955,6 +955,7 @@ impl AudioState {
     }
 
     /// Gate for an open VST3 editor's preview monitor stream.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub fn monitor_gate(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.monitor_gate)
     }

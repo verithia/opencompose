@@ -63,6 +63,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use objc2::MainThreadOnly;
 
 use serde::{Deserialize, Serialize};
+// The editor path (macOS) and the test fixtures are the only users of these.
+#[cfg(any(target_os = "macos", test, feature = "test-support"))]
+use vst3::ComRef;
 #[cfg(any(test, feature = "test-support"))]
 use vst3::Steinberg::IPluginBaseTrait;
 use vst3::Steinberg::Vst::{
@@ -82,15 +85,17 @@ use vst3::Steinberg::Vst::{
 #[cfg(any(test, feature = "test-support"))]
 use vst3::Steinberg::Vst::{IComponentTrait, IConnectionPointTrait};
 use vst3::Steinberg::{
-    IBStream, IBStream_::IStreamSeekMode_, IBStreamTrait, IPlugView, IPluginFactory,
-    IPluginFactory2, char16, int32, int64, kNotImplemented, kResultFalse, kResultOk, tresult,
+    IBStream, IBStream_::IStreamSeekMode_, IBStreamTrait, IPluginFactory, IPluginFactory2, char16,
+    int32, int64, kNotImplemented, kResultOk, tresult,
 };
 #[cfg(target_os = "macos")]
 use vst3::Steinberg::{
     IPlugFrame, IPlugFrameTrait, IPlugViewContentScaleSupport, IPlugViewContentScaleSupportTrait,
     IPlugViewTrait, ViewRect, kInvalidArgument, kPlatformTypeNSView,
 };
-use vst3::{Class, ComPtr, ComRef, ComWrapper, Interface};
+#[cfg(any(target_os = "macos", test, feature = "test-support"))]
+use vst3::Steinberg::{IPlugView, kResultFalse};
+use vst3::{Class, ComPtr, ComWrapper, Interface};
 
 use crate::PluginTransport;
 use crate::host_app::Vst3Host;
@@ -2298,6 +2303,13 @@ impl Vst3Instance {
         if result != Ok(kResultOk) {
             return None;
         }
+        // VST3 enum constants are `c_int` on Windows and `c_uint` elsewhere, while the
+        // SDK's flag and event-type fields are `int32`: the casts are no-ops on
+        // Windows only.
+        #[allow(clippy::unnecessary_cast)]
+        const NOTE_EXPRESSION_BIPOLAR: i32 = NoteExpressionTypeFlags_::kIsBipolar as i32;
+        #[allow(clippy::unnecessary_cast)]
+        const NOTE_EXPRESSION_ONE_SHOT: i32 = NoteExpressionTypeFlags_::kIsOneShot as i32;
         Some(Vst3NoteExpression {
             type_id: info.typeId,
             name: char16_to_string(&info.title),
@@ -2309,8 +2321,8 @@ impl Vst3Instance {
             maximum: info.valueDesc.maximum,
             step_count: info.valueDesc.stepCount,
             associated_parameter: info.associatedParameterId,
-            bipolar: info.flags & NoteExpressionTypeFlags_::kIsBipolar as i32 != 0,
-            one_shot: info.flags & NoteExpressionTypeFlags_::kIsOneShot as i32 != 0,
+            bipolar: info.flags & NOTE_EXPRESSION_BIPOLAR != 0,
+            one_shot: info.flags & NOTE_EXPRESSION_ONE_SHOT != 0,
         })
     }
 

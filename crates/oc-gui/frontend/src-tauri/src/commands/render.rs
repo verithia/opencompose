@@ -475,13 +475,10 @@ pub(crate) fn move_into_place(staged: &Path, target: &Path) -> Result<(), String
         format!("failed to publish '{}': {error}", target.display())
     }
     #[cfg(windows)]
-    {
-        return replace_existing_file(staged, target).map_err(|error| failed(target, error));
-    }
+    let published = replace_existing_file(staged, target);
     #[cfg(not(windows))]
-    {
-        std::fs::rename(staged, target).map_err(|error| failed(target, error))
-    }
+    let published = std::fs::rename(staged, target);
+    published.map_err(|error| failed(target, error))
 }
 
 /// Replace `target` with `staged` in one step on Windows.

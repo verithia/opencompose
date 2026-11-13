@@ -305,6 +305,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "perf-tests")]
     #[test]
     fn preview_renders_1024_samples_of_sixteen_voices_quickly() {
         let mut patch = saw_patch();

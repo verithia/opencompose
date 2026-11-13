@@ -1104,6 +1104,33 @@ pub(crate) mod test_support {
     use std::thread::JoinHandle;
     use std::time::Duration;
 
+    /// How long a canned server waits for its client. A request that never
+    /// leaves (an error before the socket) fails the test instead of hanging
+    /// the test binary.
+    const ACCEPT_DEADLINE: Duration = Duration::from_secs(30);
+
+    fn accept_within(listener: &TcpListener) -> TcpStream {
+        listener.set_nonblocking(true).unwrap();
+        let deadline = std::time::Instant::now() + ACCEPT_DEADLINE;
+        loop {
+            match listener.accept() {
+                Ok((socket, _)) => {
+                    // BSD sockets inherit the listener's non-blocking flag.
+                    socket.set_nonblocking(false).unwrap();
+                    return socket;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "no request reached the canned server within {ACCEPT_DEADLINE:?}"
+                    );
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(error) => panic!("canned server accept failed: {error}"),
+            }
+        }
+    }
+
     /// Serves one canned HTTP response on loopback and returns the raw request.
     pub fn canned(status: u16, body: &'static str) -> (String, JoinHandle<String>) {
         let (base, server) = canned_bytes(status, body.as_bytes().to_vec());
@@ -1118,7 +1145,7 @@ pub(crate) mod test_support {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}/", listener.local_addr().unwrap());
         let server = std::thread::spawn(move || {
-            let (mut socket, _) = listener.accept().unwrap();
+            let mut socket = accept_within(&listener);
             let request = read_request(&mut socket);
             write_response(&mut socket, status, &body);
             request
@@ -1136,7 +1163,7 @@ pub(crate) mod test_support {
         let server = std::thread::spawn(move || {
             let mut requests = Vec::new();
             for (status, body) in responses {
-                let (mut socket, _) = listener.accept().unwrap();
+                let mut socket = accept_within(&listener);
                 let request = read_request(&mut socket);
                 write_response(&mut socket, status, body.as_bytes());
                 requests.push(String::from_utf8(request).unwrap());
@@ -1158,7 +1185,7 @@ pub(crate) mod test_support {
         let server = std::thread::spawn(move || {
             let mut requests = Vec::new();
             for _ in 0..count {
-                let (mut socket, _) = listener.accept().unwrap();
+                let mut socket = accept_within(&listener);
                 let request = read_request(&mut socket);
                 let text = String::from_utf8_lossy(&request).to_string();
                 let (status, body) = respond(&text);

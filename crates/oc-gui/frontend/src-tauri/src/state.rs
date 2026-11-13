@@ -749,6 +749,7 @@ impl AppState {
     /// The editor keep-alive refreshes its clock through this: a preview block
     /// must never wait for the document, so a busy document means the block
     /// keeps the values it already has.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub fn try_lock_inner(&self) -> Option<MutexGuard<'_, AppStateInner>> {
         self.inner.try_lock().ok()
     }

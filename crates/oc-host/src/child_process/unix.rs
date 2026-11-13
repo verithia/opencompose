@@ -65,7 +65,7 @@ impl Process {
             }
         }
         command.stderr(Stdio::piped());
-        let child = match command.spawn() {
+        let child = match spawn_past_busy_executable(&mut command) {
             Ok(child) => child,
             Err(error) => {
                 release_slot(slot);
@@ -330,6 +330,28 @@ impl Drop for Process {
         } else {
             Slot::Retired(owner)
         };
+    }
+}
+
+/// Spawns, retrying while the executable is busy.
+///
+/// Exec fails with `ETXTBSY` while any process holds the file open for
+/// writing. A helper that was just installed or updated hits this when another
+/// thread forks before the writer's descriptor closes in that child (it closes
+/// on the child's own exec), so the condition clears within milliseconds.
+fn spawn_past_busy_executable(command: &mut Command) -> io::Result<Child> {
+    const ATTEMPTS: u32 = 20;
+    let mut attempt = 0;
+    loop {
+        match command.spawn() {
+            Err(error)
+                if error.kind() == io::ErrorKind::ExecutableFileBusy && attempt + 1 < ATTEMPTS =>
+            {
+                attempt += 1;
+                std::thread::sleep(std::time::Duration::from_millis(5 * u64::from(attempt)));
+            }
+            result => return result,
+        }
     }
 }
 

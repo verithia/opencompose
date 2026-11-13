@@ -14,6 +14,39 @@ pub(super) struct ScratchRender {
     _lock: File,
     staging: PathBuf,
     output: PathBuf,
+    #[cfg(test)]
+    _turn: Option<test_turn::Turn>,
+}
+
+/// One test process shares one scratch pool, and a second writer there is
+/// refused as busy by design. Tests that render through the shared pool take
+/// turns instead; tests of the refusal use their own directories.
+#[cfg(test)]
+mod test_turn {
+    use std::sync::{Condvar, Mutex};
+
+    static TAKEN: Mutex<bool> = Mutex::new(false);
+    static FREED: Condvar = Condvar::new();
+
+    pub(super) struct Turn;
+
+    impl Turn {
+        pub(super) fn take() -> Self {
+            let mut taken = TAKEN.lock().unwrap_or_else(|error| error.into_inner());
+            while *taken {
+                taken = FREED.wait(taken).unwrap_or_else(|error| error.into_inner());
+            }
+            *taken = true;
+            Self
+        }
+    }
+
+    impl Drop for Turn {
+        fn drop(&mut self) {
+            *TAKEN.lock().unwrap_or_else(|error| error.into_inner()) = false;
+            FREED.notify_one();
+        }
+    }
 }
 
 impl ScratchRender {
@@ -22,7 +55,18 @@ impl ScratchRender {
     }
 
     pub(super) fn reserve(bytes: u64) -> Result<Self, String> {
-        Self::reserve_in(&scratch_dir()?, BUDGET, bytes)
+        #[cfg(test)]
+        let turn = test_turn::Turn::take();
+        let render = Self::reserve_in(&scratch_dir()?, BUDGET, bytes)?;
+        #[cfg(test)]
+        let render = render.holding(turn);
+        Ok(render)
+    }
+
+    #[cfg(test)]
+    fn holding(mut self, turn: test_turn::Turn) -> Self {
+        self._turn = Some(turn);
+        self
     }
 
     fn reserve_in(dir: &Path, cap: u64, bytes: u64) -> Result<Self, String> {
@@ -50,6 +94,8 @@ impl ScratchRender {
             _lock: lock,
             staging,
             output,
+            #[cfg(test)]
+            _turn: None,
         })
     }
 
@@ -158,14 +204,35 @@ fn check_size(bytes: u64, cap: u64) -> Result<(), String> {
     Ok(())
 }
 
+/// Takes the pool lock. A reader waits for the writer; a writer reports busy.
+///
+/// The lock is also held, for a moment, by any process another thread is
+/// spawning: the child shares every open descriptor until its exec closes
+/// them. A writer rides that out with a short bounded wait, while a real second
+/// writer still reports busy.
 fn directory_lock(dir: &Path, reading: bool) -> Result<File, String> {
-    crate::private_fs::lock(&dir.join(".pool.lock"), reading, !reading).map_err(|error| {
-        if error.kind() == io::ErrorKind::WouldBlock {
-            "Audition scratch space is busy. Try again or choose an explicit output path.".into()
-        } else {
-            scratch_error(error)
+    const ATTEMPTS: u32 = 20;
+    let path = dir.join(".pool.lock");
+    if reading {
+        return crate::private_fs::lock(&path, true, false).map_err(scratch_error);
+    }
+    let mut attempt = 0;
+    loop {
+        match crate::private_fs::lock(&path, false, true) {
+            Ok(file) => return Ok(file),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock && attempt + 1 < ATTEMPTS => {
+                attempt += 1;
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                return Err(
+                    "Audition scratch space is busy. Try again or choose an explicit output path."
+                        .into(),
+                );
+            }
+            Err(error) => return Err(scratch_error(error)),
         }
-    })
+    }
 }
 
 fn make_room(dir: &Path, cap: u64, bytes: u64) -> Result<(), String> {

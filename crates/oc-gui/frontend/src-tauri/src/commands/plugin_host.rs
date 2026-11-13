@@ -1513,6 +1513,9 @@ pub(crate) enum CapturedPluginStateFormat {
     Clap,
     Vst3,
     Vst2,
+    // Audio Units exist only on macOS; the variant stays so the format list
+    // and its wire names are the same on every platform.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     Au,
     Lv2,
 }
@@ -2217,6 +2220,8 @@ pub async fn open_plugin_gui(
         // Resolve pointers here, not before dispatch: a queued project replacement
         // may have destroyed the old instance in the meantime.
         let state = handle.state::<AppState>();
+        // Only the macOS VST3 editor branch below records a keep-alive.
+        #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
         let mut inner = state.lock_inner();
         let result = (|| {
             #[cfg(target_os = "macos")]

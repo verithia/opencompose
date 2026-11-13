@@ -17,6 +17,11 @@
 //!
 //! The monitor stream is registered with the audio-IO owner, so a device change
 //! rebuilds it with every other stream instead of leaving it on the old device.
+//!
+//! Only macOS hosts VST3 editors in-process, so only it starts the worker. The
+//! worker is platform-neutral and its tests run everywhere, so elsewhere its
+//! unused items are allowed rather than compiled out.
+#![cfg_attr(not(target_os = "macos"), allow(dead_code))]
 
 use std::cell::UnsafeCell;
 use std::sync::atomic::{AtomicBool, Ordering};
