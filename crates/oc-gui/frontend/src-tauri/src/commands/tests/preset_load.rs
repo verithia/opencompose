@@ -42,6 +42,99 @@ fn batch() -> Vec<(String, Option<String>)> {
     ]
 }
 
+#[test]
+fn malformed_parameter_keys_cannot_corrupt_a_saved_project() {
+    for key in [
+        "\"amp.attack\"",
+        "osc.a.level, injected",
+        "osc.a.level\n@track other",
+        "mod..source",
+    ] {
+        let (state, dir) = state();
+        let before = state.lock_inner().dsl_source.clone();
+        let error = set_preset_params_blocking(
+            &state,
+            "lead".into(),
+            vec![
+                ("osc.a.level".into(), Some("0.2".into())),
+                (key.into(), Some("0.5".into())),
+            ],
+            false,
+            Vec::new(),
+            None,
+            None,
+        )
+        .unwrap_err();
+        assert!(error.contains("Invalid preset parameter key"), "{error}");
+        let inner = state.lock_inner();
+        assert_eq!(inner.dsl_source, before);
+        assert_eq!(inner.revision, 0);
+        assert!(inner.undo.undo.is_empty());
+        assert!(oc_dsl::parse(&inner.dsl_source).is_ok());
+        assert!(dir.path().is_dir());
+    }
+}
+
+#[test]
+fn unknown_synth_parameters_are_refused_by_batches_and_dsl_edits_atomically() {
+    let (state, _dir) = state();
+    let before = state.lock_inner().dsl_source.clone();
+    let error = set_preset_params_blocking(
+        &state,
+        "lead".into(),
+        vec![("env.3.decay".into(), Some("0.035".into()))],
+        false,
+        Vec::new(),
+        None,
+        None,
+    )
+    .unwrap_err();
+    assert!(
+        error.contains("Unknown OpenSynth parameter 'env.3.decay'"),
+        "{error}"
+    );
+    let mut inner = state.lock_inner();
+    let source = before.replace("osc.a.level: 0.5", "osc.a.level: 0.2, env.3.decay: 0.035");
+    let validation =
+        crate::commands::validate_edit_in_project(&inner, source.clone(), "project".into());
+    assert!(!validation.valid);
+    assert!(
+        validation
+            .errors
+            .iter()
+            .any(|error| error.contains("env.3.decay"))
+    );
+    let error = crate::commands::apply_edit_to_project(
+        &mut inner,
+        source.clone(),
+        "project".into(),
+        before.clone(),
+    )
+    .unwrap_err();
+    assert!(error.contains("env.3.decay"), "{error}");
+    let error = crate::commands::update_dsl_inner(source, &mut inner).unwrap_err();
+    assert!(error.contains("env.3.decay"), "{error}");
+    assert_eq!(inner.dsl_source, before);
+    assert_eq!(inner.revision, 0);
+    assert!(inner.undo.undo.is_empty());
+    assert_eq!(oc_dsl::serialize(&inner.project), before);
+}
+
+#[test]
+fn restoring_a_saved_state_preserves_its_legacy_keys_and_stays_undoable() {
+    let (state, _dir) = state();
+    let mut inner = state.lock_inner();
+    let before = inner.dsl_source.clone();
+    let source = before.replace("osc.a.level: 0.5", "osc.a.level: 0.5, env.3.decay: 0.035");
+    crate::commands::restore_dsl_with_undo(&mut inner, source.clone(), "Restore saved turn")
+        .unwrap();
+    assert_eq!(inner.dsl_source, source);
+    assert_eq!(inner.undo.undo.len(), 1);
+    let mut current = inner.project.clone();
+    inner.undo.undo(&mut current).unwrap();
+    assert_eq!(oc_dsl::serialize(&current), before);
+}
+
 fn state() -> (crate::state::AppState, TempDir) {
     let dir = TempDir::new("preset-load");
     std::fs::create_dir_all(dir.path().join("media")).unwrap();

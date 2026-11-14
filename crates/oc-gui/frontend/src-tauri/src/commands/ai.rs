@@ -72,10 +72,14 @@ pub fn validate_edit_in_project(
         return result;
     };
     let existing = oc_engine::graph::validate_effect_parameters(&inner.project, 48_000);
-    let introduced: Vec<String> = oc_engine::graph::validate_effect_parameters(&candidate, 48_000)
-        .into_iter()
-        .filter(|error| !existing.contains(error))
-        .collect();
+    let mut introduced: Vec<String> =
+        oc_engine::graph::validate_effect_parameters(&candidate, 48_000)
+            .into_iter()
+            .filter(|error| !existing.contains(error))
+            .collect();
+    if let Err(error) = crate::device_catalog::validate_synth_changes(&inner.project, &candidate) {
+        introduced.push(error);
+    }
     if !introduced.is_empty() {
         result.valid = false;
         result.parsed_dsl = None;

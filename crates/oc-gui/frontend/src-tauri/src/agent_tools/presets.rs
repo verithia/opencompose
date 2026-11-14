@@ -8,7 +8,7 @@ use crate::tool_registry::ToolId;
 use crate::tool_registry::arguments::{ProjectRevision, ToolArguments};
 
 #[derive(Debug, Deserialize, JsonSchema)]
-/// Create a preset. For a local SoundFont use source=soundfont, file=<absolute SF2/SF3 path from soundfonts_list.discovered or content_libraries.discovered_soundfonts>, program=0 (or another program), then tracks_preset to assign it. Use source=clap|vst3|lv2 with plugin=<scanned plugin id> for instrument plugins.
+/// Create a preset. For OpenSynth use source=builtin, plugin=builtin.open_synth explicitly before presets_set_params. For a local SoundFont use source=soundfont, file=<absolute SF2/SF3 path from soundfonts_list.discovered or content_libraries.discovered_soundfonts>, program=0 (or another program), then tracks_preset to assign it. Use source=clap|vst3|lv2 with plugin=<scanned plugin id> for instrument plugins.
 pub struct PresetsAddArgs {
     #[schemars(description = "Preset name")]
     pub name: String,

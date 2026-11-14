@@ -222,8 +222,60 @@ pub(crate) fn builtin_parameter_hint(project: &oc_dsl::ast::Project, name: &str)
     ))
 }
 
-/// Validate described controls before mutation; opaque state/assets and open
-/// extension fields keep their existing loader-specific validation.
+/// Parameter names the patch loader would silently ignore.
+pub(crate) fn unknown_synth_params(params: &[(String, Option<String>)]) -> Vec<String> {
+    let mut probe = oc_synth::synth::SynthPatch::default();
+    let mut unknown = std::collections::BTreeSet::new();
+    for (key, _) in params {
+        let file_key = matches!(
+            key.as_str(),
+            "wavetable.file" | "open_synth_state_file" | "serum_file" | "serum_root"
+        );
+        if !file_key && !oc_synth::synth::is_array_param(key) && !probe.set_param(key, 0.0) {
+            unknown.insert(key.clone());
+        }
+    }
+    unknown.into_iter().collect()
+}
+
+/// Validate changed effective parameters without blocking repair of old opaque keys.
+pub(crate) fn validate_synth_changes(
+    before: &oc_dsl::ast::Project,
+    after: &oc_dsl::ast::Project,
+) -> Result<(), String> {
+    if before.presets == after.presets {
+        return Ok(());
+    }
+    for preset in &after.presets {
+        if !is_open_synth_preset(after, &preset.name) {
+            continue;
+        }
+        let old = oc_dsl::preset::resolve_preset(&before.presets, &preset.name)
+            .ok()
+            .filter(|preset| preset.plugin.as_deref() == Some("builtin.open_synth"));
+        let effective = match oc_dsl::preset::resolve_preset(&after.presets, &preset.name) {
+            Ok(preset) => preset,
+            Err(_) if before.presets.iter().any(|item| item == preset) => continue,
+            Err(error) => return Err(error),
+        };
+        for (key, value) in &effective.params {
+            if old.as_ref().is_some_and(|preset| {
+                preset
+                    .params
+                    .iter()
+                    .any(|(name, previous)| name == key && previous == value)
+            }) {
+                continue;
+            }
+            validate_synth_value(key, value)
+                .map_err(|error| format!("Preset '{}': {error}", preset.name))?;
+        }
+    }
+    Ok(())
+}
+
+/// Validate controls before mutation; recognized state and assets keep their
+/// loader-specific validation. Unsupported names are refused.
 pub(crate) fn validate_synth_value(
     key: &str,
     value: &oc_dsl::ast::ParamValue,
@@ -235,7 +287,13 @@ pub(crate) fn validate_synth_value(
     } else if let Some((_, p)) = synth::find_family_field(key) {
         (p.unit, p.kind, p.min, p.max, p.enum_id)
     } else {
-        return Ok(());
+        return if unknown_synth_params(&[(key.to_string(), None)]).is_empty() {
+            Ok(())
+        } else {
+            Err(format!(
+                "Unknown OpenSynth parameter '{key}'. Use devices_catalog with instrument builtin.open_synth for supported parameter names."
+            ))
+        };
     };
     let expected = if matches!(unit, U::Percent | U::Fraction) {
         format!("unitless linear value in {min}..{max} (not dB or a percent suffix)")
@@ -320,6 +378,26 @@ pub(crate) fn validate_synth_value(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn inherited_synth_edits_reject_unknown_keys_and_allow_legacy_repairs() {
+        let before = oc_dsl::parse("@project\n@preset base\n  params: {env.3.decay: 0.2}\n@preset child\n  source: builtin\n  plugin: \"builtin.open_synth\"\n  extends: base\n").unwrap();
+        let mut next = before.clone();
+        next.presets[0]
+            .params
+            .push(("env.3.attack".into(), oc_dsl::ast::ParamValue::Number(0.01)));
+        assert!(
+            validate_synth_changes(&before, &next)
+                .unwrap_err()
+                .contains("env.3.attack")
+        );
+        next.presets[0].params =
+            vec![("env3.decay".into(), oc_dsl::ast::ParamValue::Number(0.035))];
+        validate_synth_changes(&before, &next).unwrap();
+        let mut unchanged = before.clone();
+        unchanged.properties.tempo = 138.0;
+        validate_synth_changes(&before, &unchanged).unwrap();
+    }
+
     #[test]
     fn synth_value_validation_rejects_wrong_units_ranges_and_nonfinite() {
         use oc_dsl::ast::ParamValue as V;

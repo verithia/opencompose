@@ -754,7 +754,7 @@ pub(crate) fn restore_dsl_with_undo(
     let mut project = oc_dsl::parse(&source).map_err(|e| format!("{}", e))?;
     oc_dsl::instruments::apply_defaults(&mut project);
     let old_project = std::mem::replace(&mut inner.project, project);
-    if let Err(error) = resync_with_undo(
+    if let Err(error) = super::shared::resync_restored_with_undo(
         inner,
         old_project.clone(),
         UndoEdit::new(label, UndoScope::Project),

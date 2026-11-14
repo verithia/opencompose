@@ -593,21 +593,7 @@ pub(crate) fn replace_synth_patch(
     Ok(())
 }
 
-/// Reject a factory batch naming keys the synth would silently ignore.
-pub(crate) fn unknown_synth_params(params: &[(String, Option<String>)]) -> Vec<String> {
-    let mut probe = oc_synth::synth::SynthPatch::default();
-    let mut unknown = std::collections::BTreeSet::new();
-    for (key, _) in params {
-        let file_key = matches!(
-            key.as_str(),
-            "wavetable.file" | "open_synth_state_file" | "serum_file" | "serum_root"
-        );
-        if !file_key && !oc_synth::synth::is_array_param(key) && !probe.set_param(key, 0.0) {
-            unknown.insert(key.clone());
-        }
-    }
-    unknown.into_iter().collect()
-}
+pub(crate) use crate::device_catalog::unknown_synth_params;
 
 pub(crate) fn apply_preset_params(
     project: &mut ast::Project,
@@ -625,6 +611,11 @@ pub(crate) fn apply_preset_params(
             Some(value) if !value.trim().is_empty() => Some(parse_param_value(&value)?),
             _ => None,
         };
+        if parsed.is_some() && !oc_dsl::parser::is_parameter_key(key) {
+            return Err(format!(
+                "Invalid preset parameter key {key:?}: use an unquoted DSL identifier such as amp.attack or mod.1.source"
+            ));
+        }
         parsed_params.push((key.to_string(), parsed));
     }
 

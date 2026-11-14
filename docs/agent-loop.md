@@ -393,6 +393,13 @@ Use `picture_clock_set` with `clock: {rate, origin}` and the latest
 `clock: null` to clear it. The edit is undoable and is saved with the project.
 [Timecode reference](https://pub.smpte.org/latest/st12-1/st0012-1-2014.pdf)
 
+For OpenSynth, declare `source: builtin` and `plugin: "builtin.open_synth"`.
+New or changed parameters are checked against the supported controls before
+GUI or agent edits are published, including inherited values and subtree
+preflight. Unsupported names fail without changing the document or undo history.
+Unchanged legacy keys do not block unrelated repairs; restoring a saved turn
+preserves that historical snapshot.
+
 Use `preset_bundle_export` to share one existing OpenSynth preset into a new,
 numbered `.ocppatch` file under the saved project's `handoff/` folder. Pass the
 preset `name` and `expected_revision`. Finish the active transaction first;

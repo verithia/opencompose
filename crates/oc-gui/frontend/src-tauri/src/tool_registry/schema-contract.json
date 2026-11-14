@@ -1881,10 +1881,10 @@
     "name": "preset_bundle_import"
   },
   {
-    "description": "Create a preset. For a local SoundFont use source=soundfont, file=<absolute SF2/SF3 path from soundfonts_list.discovered or content_libraries.discovered_soundfonts>, program=0 (or another program), then tracks_preset to assign it. Use source=clap|vst3|lv2 with plugin=<scanned plugin id> for instrument plugins.",
+    "description": "Create a preset. For OpenSynth use source=builtin, plugin=builtin.open_synth explicitly before presets_set_params. For a local SoundFont use source=soundfont, file=<absolute SF2/SF3 path from soundfonts_list.discovered or content_libraries.discovered_soundfonts>, program=0 (or another program), then tracks_preset to assign it. Use source=clap|vst3|lv2 with plugin=<scanned plugin id> for instrument plugins.",
     "inputSchema": {
       "additionalProperties": false,
-      "description": "Create a preset. For a local SoundFont use source=soundfont, file=<absolute SF2/SF3 path from soundfonts_list.discovered or content_libraries.discovered_soundfonts>, program=0 (or another program), then tracks_preset to assign it. Use source=clap|vst3|lv2 with plugin=<scanned plugin id> for instrument plugins.",
+      "description": "Create a preset. For OpenSynth use source=builtin, plugin=builtin.open_synth explicitly before presets_set_params. For a local SoundFont use source=soundfont, file=<absolute SF2/SF3 path from soundfonts_list.discovered or content_libraries.discovered_soundfonts>, program=0 (or another program), then tracks_preset to assign it. Use source=clap|vst3|lv2 with plugin=<scanned plugin id> for instrument plugins.",
       "properties": {
         "expected_revision": {
           "description": "Project revision guard; the call fails if the project moved to another revision",
