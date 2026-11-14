@@ -712,6 +712,9 @@ transcript points at the user message's context menu for a deliberate revert.
   already landed; a kept failure or timeout offers Retry for the failed request.
   A commit that fails leaves the batch open and says so; it is never rolled
   back automatically.
+  A working-file save failure is also reported, even if the in-memory batch
+  committed successfully. The edited project remains available in memory;
+  the loop does not report a successful file publication.
   The notice points at the user message's context menu for a deliberate revert.
 * **The round cap is the same rule.** The cap is a budget stop, not a failure:
   when the loop reaches its last round it commits the open batch like an answer

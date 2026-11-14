@@ -211,12 +211,7 @@ impl Host for AppHost {
         let result = self
             .blocking(move |app| {
                 let state = app.state::<AppState>();
-                crate::agent_api::transaction_commit(&state, &owner)?;
-                // The commit publishes the document; the file is its durable record.
-                if let Err(reason) = crate::project_persist::flush_state(&state) {
-                    log::error!("[ai] committed batch not written to the project file: {reason}");
-                }
-                Ok(())
+                commit_batch_and_save(&state, &owner)
             })
             .await?;
         self.publish();
@@ -396,6 +391,18 @@ impl Host for AppHost {
         self.publish();
         result
     }
+}
+
+/// A turn reports success only after its committed edits reach the working file.
+fn commit_batch_and_save(state: &AppState, owner: &str) -> Result<(), String> {
+    crate::agent_api::transaction_commit(state, owner)?;
+    crate::project_persist::flush_state(state)
+        .map(|_| ())
+        .map_err(|reason| {
+            format!(
+                "The edits are committed in memory but the project file was not written: {reason}"
+            )
+        })
 }
 
 /// The audio a provider's selected model takes in, or `None`.
@@ -772,6 +779,39 @@ mod tests {
     use super::*;
     use crate::ai::sessions;
     use serde_json::Map;
+
+    #[test]
+    fn a_committed_turn_reports_a_working_file_failure_and_keeps_its_edits() {
+        let root = tempfile::tempdir().unwrap();
+        let parent = root.path().join("blocked");
+        std::fs::write(&parent, "not a directory").unwrap();
+        let state = AppState::new();
+        state
+            .begin_transaction("Fixture".into(), "owner".into())
+            .unwrap();
+        {
+            let mut inner = state.lock_inner();
+            inner.file_path = Some(parent.join("song.ocp"));
+            inner.project.properties.tempo = 138.0;
+            inner.dsl_source = oc_dsl::serialize(&inner.project);
+            inner.dirty = true;
+        }
+        let error = commit_batch_and_save(&state, "owner").unwrap_err();
+        assert!(error.contains("project file was not written"), "{error}");
+        assert!(state.lock_inner().transaction.is_none());
+        assert_eq!(state.lock_inner().project.properties.tempo, 138.0);
+        assert!(!parent.join("song.ocp").exists());
+        let working = root.path().join("song.ocp");
+        state
+            .begin_transaction("Retry publication".into(), "owner".into())
+            .unwrap();
+        state.lock_inner().file_path = Some(working.clone());
+        commit_batch_and_save(&state, "owner").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(working).unwrap(),
+            state.lock_inner().dsl_source
+        );
+    }
 
     const BEFORE: &str = "@project \"Revert\"\n  tempo: 120\n";
     const AFTER: &str = "@project \"Revert\"\n  tempo: 150\n";
