@@ -37,6 +37,16 @@ const { handlers } = vi.hoisted(() => ({
   handlers: {} as Record<string, Array<(event: { payload: unknown }) => void>>,
 }));
 
+async function openAuditions() {
+  openStepGroups();
+  await waitFor(() => expect(document.querySelector(".ai-audition-detail")).not.toBeNull());
+  for (const details of document.querySelectorAll<HTMLDetailsElement>(".ai-audition-detail")) {
+    expect(details.open).toBe(false);
+    details.open = true;
+    fireEvent(details, new Event("toggle"));
+  }
+}
+
 vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn(async (name: string, handler: (event: { payload: unknown }) => void) => {
     (handlers[name] ??= []).push(handler);
@@ -653,7 +663,7 @@ describe("conversation switcher", () => {
     backend.loadedCompacted = true;
     const summary = "Conversation summary written 2026-11-03T08:07:21.775Z.\nStanding intent: mix the song.";
     const media: MediaAttachment = {
-      kind: "audio", name: "audition.wav", path: "/archive/audition-media/audition.wav",
+      kind: "audio", name: `${"b".repeat(64)}.wav`, path: `/archive/audition-media/${"b".repeat(64)}.wav`,
       mime: "audio/mpeg", bytes: 1024, duration_secs: 13, sha256: "b".repeat(64),
     };
     backend.conversations = {
@@ -682,7 +692,8 @@ describe("conversation switcher", () => {
     expect(document.querySelectorAll(".ai-message.context.audition")).toHaveLength(1);
     const audition = document.querySelector(".ai-message.context.audition") as HTMLElement;
     expect(audition.textContent).toContain("Audition");
-    expect(audition.querySelector(".ai-media-tag")).toBeTruthy();
+    expect(audition.querySelector<HTMLDetailsElement>(".ai-audition-detail")!.open).toBe(false);
+    expect(audition.querySelector("button")).toBeNull();
     // Host context offers no revert entry.
     fireEvent.contextMenu(audition);
     expect(isContextMenuOpen()).toBe(false);
@@ -705,6 +716,7 @@ describe("conversation switcher", () => {
     await mountPanel();
     await openSwitcher();
     fireEvent.click(document.querySelector(".ai-session-row-title")!);
+    await openAuditions();
     const load = await screen.findByRole("button", { name: "Load audio" });
     const row = load.closest(".ai-message.context.audition")!;
     expect(row.textContent).toContain("Source 1.25–2.5 s");
@@ -732,6 +744,7 @@ describe("conversation switcher", () => {
     await mountPanel();
     await openSwitcher();
     fireEvent.click(document.querySelector(".ai-session-row-title")!);
+    await openAuditions();
     await screen.findByText("The full render is unavailable.");
     expect(screen.queryByText(/The saved excerpt is still playable/)).toBeNull();
     expect(screen.queryByRole("button", { name: "Load audio" })).toBeNull();
@@ -750,6 +763,7 @@ describe("conversation switcher", () => {
     await mountPanel();
     await openSwitcher();
     fireEvent.click(document.querySelector(".ai-session-row-title")!);
+    await openAuditions();
     const load = await screen.findByRole("button", { name: "Load full render" });
     expect(invokeMock).not.toHaveBeenCalledWith("open_saved_audition_render", { path });
     fireEvent.click(load);
@@ -787,6 +801,7 @@ describe("conversation switcher", () => {
     await mountPanel();
     await openSwitcher();
     fireEvent.click(document.querySelector(".ai-session-row-title")!);
+    await openAuditions();
     fireEvent.click(await screen.findByRole("button", { name: "Load full render" }));
     const group = await screen.findByRole("group", { name: "Load full render" });
     const audio = document.querySelector("audio")!;
@@ -822,6 +837,7 @@ describe("conversation switcher", () => {
     emitSession({ ...saved, request_id: "old-request" });
     expect(screen.queryByRole("button", { name: "Load full render" })).toBeNull();
     emitSession(saved);
+    await openAuditions();
     expect(await screen.findByRole("button", { name: "Load full render" })).toBeEnabled();
     pending.resolve({ role: "assistant", content: "Done." });
     await waitFor(() => expect(document.querySelector(".ai-send-btn.cancel")).toBeNull());
@@ -1467,6 +1483,21 @@ describe("reverting before a message", () => {
     fireEvent.keyDown(document, { key: "Escape" });
   });
 
+  it("can rewind the first prompt and restores it to the composer", async () => {
+    backend.conversations = { s1: conversation };
+    await mountPanel();
+    await openSwitcher();
+    fireEvent.click(document.querySelector(".ai-session-row-title")!);
+    await waitFor(() => expect(messageRows()).toHaveLength(4));
+    fireEvent.contextMenu(messageRows()[0]);
+    const rewind = screen.getByRole("menuitem", { name: /Revert to before this message/ });
+    expect(rewind.getAttribute("aria-disabled")).not.toBe("true");
+    fireEvent.click(rewind);
+    await waitFor(() => expect(backend.reverts).toEqual([{ sessionId: "s1", index: 0 }]));
+    await waitFor(() => expect(input().value).toBe("first take"));
+    expect(messageRows()).toHaveLength(0);
+  });
+
   it("cuts at the wire message a restored row came from, not at its row index", async () => {
     backend.conversations = { s1: conversation };
     await mountPanel();
@@ -1483,6 +1514,7 @@ describe("reverting before a message", () => {
     await waitFor(() => expect(reverts()).toHaveLength(1));
     expect(reverts()[0][1]).toEqual({ sessionId: "s1", index: 3 });
     expect(backend.reverts).toEqual([{ sessionId: "s1", index: 3 }]);
+    await waitFor(() => expect(input().value).toBe("second take"));
   });
 
   it("cuts at the saved wire message a live row was painted from", async () => {

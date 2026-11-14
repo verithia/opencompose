@@ -9,6 +9,20 @@ function row(role: ChatMessage["role"], timestamp?: number, content = ""): ChatM
 }
 
 describe("transcript step groups", () => {
+  it("keeps listening deliveries in the tool step without counting them as calls", () => {
+    const entries = stepTranscript([
+      row("user", 1000, "Improve the mix"), row("tool", 1100),
+      { ...row("context", 1200, "Audition"), context: "audition" },
+      { ...row("context", 1300, "A/B reference"), context: "audition" },
+      row("tool", 1400), row("assistant", 1600, "Improved."),
+    ], false);
+    expect(entries.map(entry => entry.kind)).toEqual(["message", "step", "message"]);
+    const step = entries[1];
+    if (step.kind !== "step") throw new Error("expected a step");
+    expect(step.rows).toHaveLength(4);
+    expect(step.toolCalls).toBe(2);
+    expect(step.running).toBe(false);
+  });
   it("restores exposed thinking in order with tool work and omits private provider state", () => {
     const rows = restoredTranscript([
       { role: "user", content: "Find a drum loop" },
@@ -67,6 +81,23 @@ describe("transcript step groups", () => {
     if (step.kind !== "step") return;
     expect(step.running).toBe(true);
     expect(step.start).toBe(1000);
+  });
+
+  it("does not reopen completed history while a new human turn waits for its first reply", () => {
+    for (const boundary of [row("user", 2000, "Continue"), row("system", 2000, "Provider failed")]) {
+      const entries = stepTranscript([row("user", 1000), row("tool", 1100), boundary], true);
+      const group = entries.find(entry => entry.kind === "step");
+      expect(group?.kind === "step" && group.running).toBe(false);
+    }
+  });
+
+  it("keeps the active group running while its audition delivery awaits a model reply", () => {
+    const entries = stepTranscript([
+      row("user", 1000), row("tool", 1100),
+      { ...row("context", 1200, "Audition"), context: "audition" },
+    ], true);
+    const group = entries.find(entry => entry.kind === "step");
+    expect(group?.kind === "step" && group.running).toBe(true);
   });
 
   it("starts the next group after an assistant preamble and closes it at the final answer", () => {

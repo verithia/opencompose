@@ -251,6 +251,19 @@ export const aiSession = {
     setQueueSignal(value);
     persist();
   },
+  /** A delivery belongs to its conversation even if its originating panel closed. */
+  acknowledgeQueued(id: string, message: QueuedMessage) {
+    if (open() === id) {
+      setQueueSignal(previous => previous.filter(item => item !== message));
+      persist();
+      return;
+    }
+    const conversation = stored.conversations[slot(id)];
+    if (!conversation?.queue) return;
+    conversation.queue = conversation.queue.filter(item => item !== message);
+    if (!conversation.queue.length) delete conversation.queue;
+    writeState(stored);
+  },
   /** The composer clears so every send has an effect. */
   clearQueue() {
     setQueueSignal([]);
@@ -298,9 +311,13 @@ export const aiSession = {
   },
   /** Switches the transcript and records it against this workspace + project. */
   setOpenScoped(scope: string, value: string | null) {
-    setOpenSignal(value);
-    setOpenScopeSignal(value ? scope : null);
-    install(value);
+    const same = open() === value && openScope() === (value ? scope : null);
+    if (!same) {
+      flushPersist();
+      setOpenSignal(value);
+      setOpenScopeSignal(value ? scope : null);
+      install(value);
+    }
     if (value) {
       this.rememberOpen(scope, value);
     } else {

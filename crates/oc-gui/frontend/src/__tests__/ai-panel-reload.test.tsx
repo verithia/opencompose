@@ -10,7 +10,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { cleanup, fireEvent, render, waitFor } from "@solidjs/testing-library";
-import { invokeMock, makeSnapshot, aiConfigWire } from "./setup";
+import { invokeMock, makeSnapshot, makeTrack, aiConfigWire } from "./setup";
 import { store } from "../stores/project";
 import { AiPanel } from "../components/AiPanel";
 import { aiLimits } from "../stores/aiLimits";
@@ -21,7 +21,7 @@ import type { ActiveTurn, SessionMeta } from "../ai/sessions";
 import type { ProjectSnapshot } from "../types/project";
 import type { WireMessage } from "../ai/wire";
 import type { MediaAttachment } from "../ai/media";
-import { answerFakeTurn, cancelFakeTurn, resetFakeTurns, runFakeTurn, type TurnStartArgs } from "./helpers/fakeTurn";
+import { answerFakeTurn, cancelFakeTurn, emitTurnProject, resetFakeTurns, runFakeTurn, type TurnStartArgs } from "./helpers/fakeTurn";
 
 const CAPABILITIES = { text: true, audio_in: false, audio_out: false, native_tool_calling: true, streaming: true };
 
@@ -111,6 +111,7 @@ const backend = {
   loadedIds: [] as string[],
   /** What `ai_batch_recover` answers: the restored document, or null. */
   recovered: null as ProjectSnapshot | null,
+  project: makeSnapshot() as ProjectSnapshot,
   /** The questions the inherited turn waits on. */
   questions: [] as { call_id: string; tool: string; args: Record<string, unknown> }[],
   /** Every `ai_turn_answer`, in order. */
@@ -130,6 +131,7 @@ function installBackend() {
       case "ai_toolsets": return SETS;
       case "ai_tools": return [];
       case "ai_batch_recover": return backend.recovered;
+      case "get_project": return backend.project;
       case "ai_build_context": return { dsl_context: '@project "Test Project"\n  tempo: 128\n' };
       case "ai_active_turn": {
         const answer = backend.active;
@@ -151,6 +153,12 @@ function installBackend() {
         return answerFakeTurn(String(typed.requestId), String(typed.callId), typed.decision as never);
       }
       case "ai_turn_questions": return backend.questions;
+      case "ai_turn_steer": {
+        expect(typed.requestId).toBe(backend.active?.request_id);
+        expect(typed.sessionId).toBe(backend.active?.session_id);
+        backend.loaded.push({ role: "user", ...(typed.message as {content: string}) });
+        return undefined;
+      }
       case "ai_cancel": {
         backend.cancels.push({ requestId: String(typed.requestId ?? "") });
         cancelFakeTurn(String(typed.requestId ?? ""));
@@ -261,6 +269,7 @@ beforeEach(() => {
   backend.loads = [];
   backend.loadedIds = [];
   backend.recovered = null;
+  backend.project = makeSnapshot();
   i18n.setLocale("en");
   aiLimits.setActiveContext(null);
   resetStats();
@@ -277,6 +286,80 @@ afterEach(() => {
 });
 
 describe("a reloaded window", () => {
+  it("fits draft text inside the composer borders and caps long drafts without sending", async () => {
+    await mount();
+    const field = input();
+    field.style.borderTopWidth = "1px";
+    field.style.borderBottomWidth = "1px";
+    let contentHeight = 31;
+    Object.defineProperty(HTMLTextAreaElement.prototype, "scrollHeight", { configurable: true, get: () => contentHeight });
+    fireEvent.input(field, { target: { value: "An unsent draft" } });
+    await waitFor(() => expect(field.style.height).toBe("33px"));
+    contentHeight = 280;
+    const draft = "A long draft line.\n".repeat(20);
+    fireEvent.input(field, { target: { value: draft } });
+    await waitFor(() => expect(field.style.height).toBe("160px"));
+    expect(field.value).toBe(draft);
+    contentHeight = 31;
+    fireEvent.input(field, { target: { value: "" } });
+    await waitFor(() => expect(field.style.height).toBe("33px"));
+    expect(backend.chatCalls).toHaveLength(0);
+    Reflect.deleteProperty(HTMLTextAreaElement.prototype, "scrollHeight");
+  });
+
+  it("keeps saved listening clips inside the step, with tool and audio controls folded", async () => {
+    reloadWith({ open: "s1" });
+    const sha = "a".repeat(64);
+    backend.loaded = [
+      { role: "user", content: "Listen to the ending" },
+      { role: "assistant", content: null, tool_calls: [{ id: "listen", type: "function", function: { name: "audition_range", arguments: '{"start_s":98.8235,"end_s":120}' } }] },
+      { role: "tool", tool_call_id: "listen", content: '{"duration_s":16.3835}' },
+      { role: "user", context: "audition", content: "You asked to hear 98.8235–120 s: this is that render.",
+        message_meta: { version: 1, kind: "audition", audio_range: { start_seconds: 98.8235, end_seconds: 120, source: false } },
+        source_render: "/sessions/render.wav",
+        media: [{ kind: "audio", path: `/sessions/audition-media/${sha}.wav`, name: `${sha}.wav`, mime: "audio/wav", bytes: 128044, duration_secs: 16.3835, sha256: sha }] },
+      { role: "assistant", content: "The ending needs another listen." },
+    ];
+    await mount();
+    const group = document.querySelector<HTMLDetailsElement>(".ai-step-group")!;
+    expect(group.open).toBe(false);
+    expect(document.querySelector(".ai-audition-detail")).toBeNull();
+    group.open = true;
+    fireEvent(group, new Event("toggle"));
+    const clip = document.querySelector<HTMLDetailsElement>(".ai-audition-detail")!;
+    expect(group.contains(clip)).toBe(true);
+    expect(clip.open).toBe(false);
+    expect(clip.querySelector("summary")?.textContent).toContain("Audition 98.82–115.21 s");
+    expect(document.querySelector<HTMLDetailsElement>(".ai-tool-result")!.open).toBe(false);
+    expect(clip.querySelector("button")).toBeNull();
+    expect(clip.textContent).not.toContain("You asked to hear");
+    clip.open = true;
+    fireEvent(clip, new Event("toggle"));
+    expect([...clip.querySelectorAll("button")].map(button => button.textContent)).toEqual(["Load audio", "Load full render"]);
+    expect(backend.calls).not.toContain("preview_saved_audition");
+    expect(backend.calls).not.toContain("open_saved_audition_render");
+  });
+
+  it("refreshes project edits made with no view and follows later edits of the inherited turn", async () => {
+    reloadWith({ open: "s1", turn: { session: "s1", started: Date.now() } });
+    backend.active = { request_id: "r1", session_id: "s1" };
+    backend.project = makeSnapshot({ tracks: [makeTrack("Background piano", 0)] });
+    backend.loaded = [
+      { role: "user", content: "Compose" },
+      { role: "assistant", content: null, tool_calls: [{ id: "read", type: "function", function: { name: "tracks_list", arguments: "{}" } }] },
+      { role: "tool", tool_call_id: "read", content: "{}" },
+    ];
+    await mount();
+    await waitFor(() => expect(orphanBanner()).not.toBeNull());
+    await waitFor(() => expect(store.project.tracks.map(track => track.name)).toEqual(["Background piano"]));
+    expect((document.querySelector(".ai-step-group") as HTMLDetailsElement).open).toBe(true);
+    const updated = makeSnapshot({ tracks: [makeTrack("Background piano", 0), makeTrack("Cello", 1)] });
+    emitTurnProject(updated);
+    await waitFor(() => expect(store.project.tracks).toHaveLength(2));
+    const foreign = { ...makeSnapshot({ tracks: [] }), file_path: "/other/song.ocp" };
+    emitTurnProject(foreign);
+    expect(store.project.tracks).toHaveLength(2);
+  });
   it("recovers a stranded panel batch once on mount and shows the document it committed", async () => {
     reloadWith({ open: "s1" });
     backend.loaded = [{ role: "user", content: "first" }];
@@ -309,12 +392,14 @@ describe("a reloaded window", () => {
     expect(before.conversations.s1.queue?.map((row) => row.text)).toEqual(["next", "third"]);
     expect(before.turn?.session).toBe("s1");
 
-    // The window goes away. The panel cancels its own turn on the way out, so
-    // the marker it kept is spent; the draft and the queue are not.
+    // Detaching preserves the marker and queue. This fixture then ends the
+    // backend turn while the view is gone; the remount confirms it is settled.
     cleanup();
-    await waitFor(() => expect(storedState().turn).toBeNull());
+    expect(storedState().turn).toEqual(before.turn);
+    cancelFakeTurn(String(backend.chatCalls[0].requestId));
     aiSession.reload();
     await mount();
+    await waitFor(() => expect(storedState().turn).toBeNull());
 
     expect(input().value).toBe("half-typed ask");
     expect(queueTexts()).toEqual(["next", "third"]);
@@ -346,13 +431,16 @@ describe("a reloaded window", () => {
     expect(rows().map((row) => row.className)).toEqual(["ai-message user"]);
     expect(storedState().turn?.session).toBe("s1");
 
-    // Stop is the honest action, and it reaches the request the backend named.
+    // Repainting after Stop must not reinstall a cached prompt over this draft.
+    fireEvent.input(input(), { target: { value: "My unsent next instruction" } });
+    // Stop reaches the request the backend named.
     fireEvent.click(document.querySelector(".ai-turn-orphan-stop")!);
     await waitFor(() => expect(backend.cancels).toEqual([{ requestId: "r1" }]));
     await waitFor(() => expect(orphanBanner()).toBeNull());
     expect(runningRow()).toBeNull();
     expect(storedState().turn).toBeNull();
     await waitFor(() => expect(rows().at(-1)?.textContent).toContain("was stopped"));
+    expect(input().value).toBe("My unsent next instruction");
   });
 
   it("shows the card the inherited turn waits on and answers that turn", async () => {
@@ -437,7 +525,7 @@ describe("a reloaded window", () => {
     expect(backend.loadedIds).toEqual(["s1", "s1"]);
   });
 
-  it("steers a queued message by stopping the turn the window inherited", async () => {
+  it("steers a queued message into the turn the window inherited without stopping it", async () => {
     reloadWith({ open: "s1", queue: [{ text: "next" }], turn: { session: "s1", started: Date.now() } });
     backend.active = { request_id: "r1", session_id: "s1" };
     await mount();
@@ -448,14 +536,13 @@ describe("a reloaded window", () => {
     expect(queueButton("steer")).toBeTruthy();
     expect(queueButton("send")).toBeNull();
 
-    backend.hold = false;
     fireEvent.click(queueButton("steer")!);
-    await waitFor(() => expect(backend.cancels).toEqual([{ requestId: "r1" }]));
-    await waitFor(() => expect(backend.chatCalls).toHaveLength(1));
-    expect(backend.chatCalls[0].messages.at(-1)?.content).toBe("next");
     await waitFor(() => expect(queueRows()).toHaveLength(0));
-    expect(orphanBanner()).toBeNull();
-    expect(storedState().turn).toBeNull();
+    expect(backend.cancels).toEqual([]);
+    expect(backend.chatCalls).toHaveLength(0);
+    expect(backend.active).toEqual({ request_id: "r1", session_id: "s1" });
+    expect(orphanBanner()).toBeTruthy();
+    expect(storedState().turn).not.toBeNull();
   });
 
   it("does not restore or control a stored turn outside the current workspace", async () => {

@@ -362,7 +362,8 @@ export function stepTranscript(rows: ChatMessage[], loading: boolean): Transcrip
   for (const row of rows) {
     const reasoning = row.role === "assistant" && !!row.reasoning && !row.content.trim()
       && !row.diff && !row.warning;
-    if (row.role === "tool" || reasoning) {
+    const delivery = row.role === "context" && row.context === "audition";
+    if (row.role === "tool" || reasoning || (delivery && step.length > 0)) {
       if (step.length === 0) {
         // The group starts at the user (or assistant) message that opened it,
         // so its clock includes the model's thinking before the first call.
@@ -391,7 +392,10 @@ export function stepTranscript(rows: ChatMessage[], loading: boolean): Transcrip
         entry.running = true;
         break;
       }
-      if (entry.kind === "message" && entry.message.role === "assistant") break;
+      // A new human turn cannot reactivate an earlier completed tool group.
+      // Audition deliveries alone stay inside the turn that is still listening.
+      if (entry.kind === "message"
+        && !(entry.message.role === "context" && entry.message.context === "audition")) break;
     }
   }
   return entries;

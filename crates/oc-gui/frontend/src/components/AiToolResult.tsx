@@ -19,11 +19,6 @@ type Column = { key: string; label?: string; numeric?: boolean };
 
 const MAX_ROWS = 80;
 
-/** A listening delivery opens itself; a render result stays folded like the rest. */
-export function autoOpenResult(tool: string): boolean {
-  return tool === "audition_range";
-}
-
 function record(value: unknown): RecordValue | null {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? value as RecordValue

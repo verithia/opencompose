@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, waitFor } from "@solidjs/testing-library";
 import { invoke } from "@tauri-apps/api/core";
-import { AiToolResult, autoOpenResult } from "../components/AiToolResult";
+import { AiToolResult } from "../components/AiToolResult";
 import { i18n } from "../stores/i18n";
 import { invokeMock } from "./setup";
 import { store } from "../stores/project";
@@ -327,12 +327,6 @@ describe("rich tool results", () => {
     expect(view.getByText("96 BPM")).toBeTruthy();
     expect(view.container.querySelector(".ai-tool-table tbody tr")).toBeTruthy();
     expect(view.container.querySelectorAll(".ai-tool-timeline-span")).toHaveLength(1);
-  });
-
-  it("opens a listening delivery by default but leaves renders folded", () => {
-    expect(autoOpenResult("audition_range")).toBe(true);
-    expect(autoOpenResult("render_range")).toBe(false);
-    expect(autoOpenResult("render_offline")).toBe(false);
   });
 
   it("plays an audition clip with a custom player and its waveform", () => {

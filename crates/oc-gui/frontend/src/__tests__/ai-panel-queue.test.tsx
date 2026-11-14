@@ -15,7 +15,7 @@ import { resetStats } from "../stores/aiStats";
 import { i18n } from "../stores/i18n";
 import type { SessionMeta } from "../ai/sessions";
 import type { MediaAttachment } from "../ai/media";
-import { cancelFakeTurn, resetFakeTurns, runFakeTurn, type TurnStartArgs } from "./helpers/fakeTurn";
+import { cancelFakeTurn, resetFakeTurns, runFakeTurn, steerFakeTurn, type TurnStartArgs } from "./helpers/fakeTurn";
 
 const CAPABILITIES = { text: true, audio_in: false, audio_out: false, native_tool_calling: true, streaming: true };
 
@@ -102,6 +102,7 @@ function installBackend() {
         tool: async () => ({ ok: true }),
       });
       case "ai_turn_questions": return [];
+      case "ai_turn_steer": backend.calls.push("ai_turn_steer"); return steerFakeTurn(String(typed.requestId), String(typed.sessionId), typed.message as never);
       case "ai_cancel": {
         backend.calls.push("ai_cancel");
         cancelFakeTurn(String(typed.requestId));
@@ -135,7 +136,6 @@ const queueTexts = () => queueRows().map((row) => row.querySelector(".ai-queue-t
 const queueText = () => document.querySelector(".ai-queue-text")?.textContent ?? "";
 const queueField = () => document.querySelector(".ai-queue-field") as HTMLInputElement | null;
 const queueButton = (name: string) => document.querySelector(`.ai-queue-${name}`) as HTMLButtonElement | null;
-const queueButtons = (name: string) => [...document.querySelectorAll(`.ai-queue-${name}`)] as HTMLButtonElement[];
 
 async function mount() {
   await store.initProject();
@@ -325,30 +325,42 @@ describe("a message composed while a turn runs", () => {
     expect(sentContents()).not.toContain("next");
   });
 
-  it("steers: cancels the running turn first, then sends the oldest message", async () => {
+  it("steers into the same request after the provider finishes, without cancelling", async () => {
     await mount();
     await startTurn();
     await typeAndSend("steer this");
     await typeAndSend("and this");
-    await waitFor(() => expect(queueRows()).toHaveLength(2));
-
-    // The label says what it does to the running turn, and only the oldest row
-    // carries it: the one behind it keeps waiting.
-    expect(queueButtons("steer")).toHaveLength(1);
-    expect(queueButton("steer")!.getAttribute("title")).toBe("Stops the current turn, then sends this message.");
-    expect(backend.chatCalls).toHaveLength(1);
-
-    // The cancel rejects the held turn and the steered one is held open too, so
-    // the row behind the head is still waiting when the smoke clears.
+    expect(queueRows()).toHaveLength(2);
+    expect(queueButton("steer")!.getAttribute("title")).toBe(i18n.t("ai.queue.steerHint"));
     fireEvent.click(queueButton("steer")!);
-    await waitFor(() => expect(backend.calls).toContain("ai_cancel"));
+    await waitFor(() => expect(backend.calls).toContain("ai_turn_steer"));
+    expect(backend.calls).not.toContain("ai_cancel");
+    expect(queueTexts()).toEqual(["steer this", "and this"]);
+    expect(queueButton("steer")!.disabled).toBe(true);
+    fireEvent.click(queueButton("steer")!);
+    expect(backend.calls.filter(call => call === "ai_turn_steer")).toHaveLength(1);
+    backend.held.shift()!.resolve({ role: "assistant", content: "First answer." });
     await waitFor(() => expect(backend.chatCalls).toHaveLength(2));
-
-    // The cancel came before the send, never after it, and only the head left.
-    expect(backend.calls.indexOf("ai_cancel")).toBeLessThan(backend.calls.lastIndexOf("ai_turn_start"));
+    expect(backend.chatCalls[1].requestId).toBe(backend.chatCalls[0].requestId);
     expect(backend.chatCalls[1].messages.at(-1)?.content).toBe("steer this");
-    expect(sentContents().filter((text) => text === "steer this")).toHaveLength(1);
     await waitFor(() => expect(queueTexts()).toEqual(["and this"]));
+    expect(sentContents().filter(text => text === "steer this")).toHaveLength(1);
+    expect(document.body.textContent).not.toContain("Cancelled");
+    expect(document.body.textContent).not.toContain("Applied edits kept");
+  });
+
+  it("acknowledges a delivered steer even after its panel closes", async () => {
+    const view = await mount();
+    await startTurn();
+    await typeAndSend("steer before closing");
+    fireEvent.click(queueButton("steer")!);
+    await waitFor(() => expect(backend.calls).toContain("ai_turn_steer"));
+    view.unmount();
+    backend.hold = false;
+    backend.held.shift()!.resolve({ role: "assistant", content: "Round complete." });
+    await waitFor(() => expect(aiSession.queued()).toHaveLength(0));
+    expect(backend.calls).not.toContain("ai_cancel");
+    expect(backend.chatCalls[1].messages.at(-1)?.content).toBe("steer before closing");
   });
 
   it("clears the queue when another conversation opens", async () => {

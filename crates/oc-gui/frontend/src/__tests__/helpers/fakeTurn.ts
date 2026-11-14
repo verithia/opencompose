@@ -36,6 +36,8 @@ export interface FakeTurnBackend {
 
 interface Running {
   cancelled: boolean;
+  pending: { message: WireMessage; saved: () => void }[];
+  sessionId: string;
   answers: Map<string, (decision: TurnDecision) => void>;
   stop: () => void;
 }
@@ -68,6 +70,12 @@ export function cancelFakeTurn(requestId: string): boolean {
   turn.cancelled = true;
   turn.stop();
   return true;
+}
+
+export function steerFakeTurn(requestId: string, sessionId: string, message: { content: string; media?: WireMessage["media"] }): Promise<void> {
+  const turn = running.get(requestId);
+  if (!turn || turn.sessionId !== sessionId) return Promise.reject({ kind: "steer_closed", message: "Turn finished" });
+  return new Promise(resolve => turn.pending.push({ message: { role: "user", ...message }, saved: resolve }));
 }
 
 /** `ai_turn_answer` for a fake turn. */
@@ -111,7 +119,7 @@ const NOT_RUN = JSON.stringify({ error: "the turn stopped before this call ran; 
 export async function runFakeTurn(args: TurnStartArgs, backend: FakeTurnBackend): Promise<TurnOutcome> {
   const { requestId, sessionId } = args;
   let stopRound: () => void = () => {};
-  const turn: Running = { cancelled: false, answers: new Map(), stop: () => stopRound() };
+  const turn: Running = { cancelled: false, pending: [], sessionId, answers: new Map(), stop: () => stopRound() };
   running.set(requestId, turn);
   const wire: WireMessage[] = [...args.messages];
   let done = 0;
@@ -129,6 +137,7 @@ export async function runFakeTurn(args: TurnStartArgs, backend: FakeTurnBackend)
   try {
     for (let round = 0; round < 64; round++) {
       if (turn.cancelled) return cancelled();
+      for (const pending of turn.pending.splice(0)) { save(pending.message); pending.saved(); }
       let reply: WireMessage;
       try {
         reply = await new Promise<WireMessage>((resolve, reject) => {
@@ -152,6 +161,7 @@ export async function runFakeTurn(args: TurnStartArgs, backend: FakeTurnBackend)
       if (notices?.length) emit({ type: "media", notices });
       save(saved);
       if (!calls.length) {
+        if (turn.pending.length) continue;
         const text = typeof reply.content === "string" ? reply.content : "";
         return text.trim()
           ? { text, failed: false }

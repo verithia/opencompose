@@ -95,3 +95,16 @@ describe("the draft write", () => {
     expect(typedDraft()).toBeUndefined();
   });
 });
+
+it("repainting the same conversation preserves an unsaved draft and its empty state", () => {
+  vi.useFakeTimers();
+  aiSession.setOpenScoped("workspace/project", "session");
+  aiSession.setDraft("A sent prompt");
+  vi.advanceTimersByTime(500);
+  aiSession.setDraft("");
+  aiSession.setOpenScoped("workspace/project", "session");
+  expect(aiSession.draft()).toBe("");
+  aiSession.setDraft("An unsent next instruction");
+  aiSession.setOpenScoped("workspace/project", "session");
+  expect(aiSession.draft()).toBe("An unsent next instruction");
+});

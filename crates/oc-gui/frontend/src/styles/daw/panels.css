@@ -905,6 +905,7 @@
   line-height: 1.45;
   resize: none;
   max-height: 160px;
+  overflow-x: hidden;
   overflow-y: auto;
   outline: none;
 }

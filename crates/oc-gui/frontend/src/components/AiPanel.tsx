@@ -1,15 +1,17 @@
+import { composerSizer } from "../ai/composerSize";
 import { AiComposer } from "./AiComposer";
 import { ProposalReviewBar } from "./ProposalReviewBar";
 import { followTranscript } from "../ai/transcriptScroll";
 import { AiMarkdown } from "./AiMarkdown";
 import { ToolIcon } from "./ToolIcon";
 import { AiToolContent } from "./AiToolContent";
-import { AiToolArguments, AiToolResult, autoOpenResult } from "./AiToolResult";
+import { AiToolArguments, AiToolResult } from "./AiToolResult";
 import { AiStepGroup } from "./AiStepGroup";
+import { AiAudition } from "./AiAudition";
 import { LazyDetails } from "./LazyDetails";
 import { openContextMenu } from "./ContextMenu";
 import { For, Index, Show, createEffect, createSignal, createMemo, on, onMount, onCleanup } from "solid-js";
-import { aiApi, openSavedAuditionRender, previewSavedAudition } from "../stores/api";
+import { aiApi } from "../stores/api";
 import { store } from "../stores/project";
 import { previewStore } from "../stores/preview";
 import { log } from "../stores/log";
@@ -29,8 +31,7 @@ import { readProjectInstructions } from "../ai/projectInstructions";
 import { aiConfig, DEFAULT_THINKING_LEVEL, getActiveProvider, hasProvider, loadConfig, hasAnyKeyDraft, hasUnsavedConfig, wireOf } from "../ai/config";
 import { modelFor } from "../ai/catalog";
 import { activeModelGroup, activeModelKnown, applyModelChoice, listModelChoices, modelIdentity, modelKey, modelLevels } from "../ai/modelPicker";
-import { InlineAudioPreview } from "./InlineAudioPreview";
-import { MEDIA_EXTENSIONS, attachMedia, audioAccepted, acceptedModalities, formatBytes, formatDuration, auditionLabel, legacyAuditionText, imageAccepted, type MediaAttachment, type MediaNotice } from "../ai/media";
+import { MEDIA_EXTENSIONS, attachMedia, audioAccepted, acceptedModalities, formatBytes, formatDuration, legacyAuditionText, imageAccepted, type MediaAttachment, type MediaNotice } from "../ai/media";
 import { copyToClipboard, downloadText, exportFileName, exportJson, exportMarkdown } from "../ai/export";
 import { errorKind, errorMessage } from "../ai/errors";
 import {
@@ -196,7 +197,7 @@ export function AiPanel(props: { onClose?: () => void }) {
   const transcriptEntries = createMemo(() => stepTranscript([
     ...visibleMessages(),
     ...(loading() && reasoning().trim() ? [liveReasoningMessage] : []),
-  ], loading()));
+  ], loading() || reattached() !== null));
   /** What the running step says when folded: the tool, else the latest thinking. */
   const liveActivity = createMemo(() => {
     if (toolPreparation()) return preparingActivity(toolPreparation()!);
@@ -251,8 +252,8 @@ export function AiPanel(props: { onClose?: () => void }) {
    * second flush, which would take the next row and supersede the first turn.
    */
   let flushing = false;
-  /** A steer asked for the cancel: the turn's own flush waits for the send. */
-  let steering = false;
+  /** Delivery holds its queue row until the backend confirms it was saved. */
+  const [steering, setSteering] = createSignal(false);
   /** The id of the turn this panel runs; `ai_cancel` and the events name it. */
   let requestId: string | null = null;
   const cancel = async () => {
@@ -321,7 +322,8 @@ export function AiPanel(props: { onClose?: () => void }) {
     pendingUsageRead = null;
     aiWorkspace.setPanelBusy(false);
     aiWorkspace.setContextEstimate(0);
-    void cancel();
+    // The backend owns the turn; closing this view only detaches its listeners.
+    // Keep its marker so a reopened panel can recover progress and approvals.
     stopFollowing();
     stopSessionEvents?.();
     stopTurnEvents?.();
@@ -778,7 +780,8 @@ export function AiPanel(props: { onClose?: () => void }) {
    */
   const revertToBefore = async (msg: ChatMessage): Promise<void> => {
     const id = openId();
-    if (!id || msg.role !== "user" || messages().indexOf(msg) === 0) return;
+    if (!id || msg.role !== "user") return;
+    const epoch = scopeEpoch;
     // A running turn keeps writing into the history this would rewrite.
     if (loading() || reattached()) {
       notify(i18n.t("ai.revert.turnRunning"), "error");
@@ -798,9 +801,12 @@ export function AiPanel(props: { onClose?: () => void }) {
         return;
       }
       const reverted = await aiApi.revertBefore(id, keep);
+      if (disposed || epoch !== scopeEpoch || openId() !== id) return;
       store.applyAiSnapshot(reverted.snapshot);
       setOriginalView(false);
-      await paintSession(id);
+      if (!(await paintSession(id)) || disposed || epoch !== scopeEpoch || openId() !== id) return;
+      setInput(msg.content);
+      setAttachments(msg.media ?? []);
       notify(i18n.t("ai.revert.beforeDone"), "success");
     } catch (error) {
       notify(i18n.t("ai.revert.beforeFailed", { error: errorMessage(error) }), "error");
@@ -836,6 +842,18 @@ export function AiPanel(props: { onClose?: () => void }) {
     if (inherited && approval()?.requestId === inherited.requestId) setApproval(null);
     setReattached(null);
   };
+  /** Edits made without this view still belong on the visible project. */
+  const refreshTurnProject = async (epoch: number) => {
+    const file = store.filePath();
+    try {
+      const snapshot = await aiApi.getProject();
+      if (!disposed && epoch === scopeEpoch && store.filePath() === file && snapshot.file_path === file) {
+        store.applyAiSnapshot(snapshot);
+      }
+    } catch (error) {
+      log.warn("ai", `background project could not be refreshed: ${errorMessage(error)}`);
+    }
+  };
   /**
    * The turn this window was running when it went away. The store kept a marker
    * for it; only the backend's own answer keeps that marker alive, because a
@@ -848,6 +866,8 @@ export function AiPanel(props: { onClose?: () => void }) {
     if (!marker || !sessions().some(session => session.id === marker.session)) return;
     const epoch = scopeEpoch;
     const active = await readActiveTurn();
+    if (disposed || epoch !== scopeEpoch) return;
+    await refreshTurnProject(epoch);
     if (disposed || epoch !== scopeEpoch) return;
     if (!active || active.session_id !== marker.session) {
       // Nothing is running: the marker is cleared so it cannot lie later.
@@ -874,9 +894,11 @@ export function AiPanel(props: { onClose?: () => void }) {
   };
   /** The inherited turn finished: its answer is in the saved conversation. */
   const settleInheritedTurn = async (session: string) => {
+    const epoch = scopeEpoch;
     aiSession.setTurn(null);
     const painted = await paintSession(session).catch(() => false);
-    if (disposed) return;
+    await refreshTurnProject(epoch);
+    if (disposed || epoch !== scopeEpoch || openId() !== session) return;
     setReloadNotice(null);
     setMessages(prev => [...prev, {
       role: "system",
@@ -886,10 +908,9 @@ export function AiPanel(props: { onClose?: () => void }) {
     void flushQueued();
   };
   /**
-   * Stops the turn the reloaded window inherited, through the same honest
-   * cancel as Stop. The loop that would have used the answer died with the
-   * window, so the turn is ended rather than left to write into nothing. A
-   * steer flushes the queue itself, so it asks for no flush here.
+   * Stops the backend turn this view follows, then waits for its saved results
+   * and batch to settle. A steer flushes the queue itself, so it asks for no
+   * flush here.
    */
   const stopInheritedTurn = async (flush = true) => {
     const current = reattached();
@@ -1169,7 +1190,9 @@ export function AiPanel(props: { onClose?: () => void }) {
     });
     stopTurnEvents = await aiApi.listenTurn(onTurnEvent);
     stopProjectEvents = await aiApi.listenTurnProject((snapshot) => {
-      if (!disposed && loading()) store.applyAiSnapshot(snapshot);
+      if (!disposed && (loading() || reattached()) && snapshot.file_path === store.filePath()) {
+        store.applyAiSnapshot(snapshot);
+      }
     });
     // A panel unmounted while the listeners registered ran its cleanup with
     // nothing to remove; they are removed here instead.
@@ -1317,7 +1340,7 @@ export function AiPanel(props: { onClose?: () => void }) {
       : i18n.t("ai.cap.keptNone");
   };
 
-  /** The composer gets back the message a failed or stopped turn used. */
+  /** A request refused before admission returns its unsent draft. */
   const restoreComposer = (question: ChatMessage | null) => {
     if (!question) return;
     if (!input().trim()) setInput(question.content);
@@ -1338,7 +1361,7 @@ export function AiPanel(props: { onClose?: () => void }) {
    * message the turn saved; a stop or a failure says what happened and offers
    * Retry or Continue.
    */
-  const settleOutcome = (outcome: TurnOutcome, sent: WireMessage[], question: ChatMessage) => {
+  const settleOutcome = (outcome: TurnOutcome, sent: WireMessage[]) => {
     const error = outcome.error;
     if (error && errorKind(error) === "auth_expired") setAuthError(errorMessage(error));
     if (!outcome.failed) return;
@@ -1353,7 +1376,6 @@ export function AiPanel(props: { onClose?: () => void }) {
       ...(outcome.stop ? {} : { error: true }),
       resume: stoppedTurn(sent, outcome.stop, error?.retryable),
     }]);
-    restoreComposer(question);
   };
 
   /**
@@ -1361,7 +1383,7 @@ export function AiPanel(props: { onClose?: () => void }) {
    * token, so a panel that moved on (another workspace, a fresh conversation)
    * never receives the rows of a turn it abandoned.
    */
-  const liveTurn = (token: number) => token === turnToken;
+  const liveTurn = (token: number) => !disposed && token === turnToken;
   /** A turn that may still act: its token is live and nobody stopped it. */
   const cancelledFor = (token: number) => stoppedTokens.has(token) || !liveTurn(token);
 
@@ -1556,7 +1578,7 @@ export function AiPanel(props: { onClose?: () => void }) {
         (name) => { if (!cancelledFor(token)) setPreparingTool(name); },
       );
       if (!liveTurn(token)) return posted;
-      settleOutcome(outcome, sent, question);
+      settleOutcome(outcome, sent);
     } catch (e) {
       if (cancelledFor(token)) return posted;
       // A failure before the turn started saved nothing, so the message goes
@@ -1584,7 +1606,7 @@ export function AiPanel(props: { onClose?: () => void }) {
         void refreshSessions();
         // A message composed while the turn ran goes out now, exactly once. A
         // steer owns its own send, so this path stands aside for it.
-        if (!steering) void flushQueued();
+        if (!steering()) void flushQueued();
       }
     }
     return posted;
@@ -1646,11 +1668,9 @@ export function AiPanel(props: { onClose?: () => void }) {
 
   /** The composer field, grown to fit a multi-line draft up to a fixed cap. */
   let inputElement: HTMLTextAreaElement | undefined;
-  const growInput = (element: HTMLTextAreaElement | undefined) => {
-    if (!element || !element.scrollHeight) return;
-    element.style.height = "auto";
-    element.style.height = `${Math.min(element.scrollHeight, 160)}px`;
-  };
+  const composerSize = composerSizer();
+  const growInput = composerSize.resize;
+  onCleanup(() => composerSize.dispose());
   // A restored draft is longer than the empty field the panel mounted with.
   createEffect(() => { input(); queueMicrotask(() => growInput(inputElement)); });
 
@@ -1819,7 +1839,7 @@ export function AiPanel(props: { onClose?: () => void }) {
     // One flush holds the row it took until its turn sets `loading`; without
     // this, two calls in that window take two rows and the first turn is
     // abandoned with its message gone.
-    if (flushing) return;
+    if (flushing || steering()) return;
     const next: QueuedMessage | undefined = aiSession.queued()[0];
     if (disposed || !next || loading() || reattached() || !getActiveProvider().model.trim()) return;
     // A refused image keeps the row queued instead of losing the message.
@@ -1853,20 +1873,36 @@ export function AiPanel(props: { onClose?: () => void }) {
     }
   };
 
-  /** Steer: stop the current turn through the honest cancel, then send. */
+  /** Deliver into the running loop; keep the durable queue row until saved. */
   const steerQueued = async (): Promise<void> => {
-    if (!aiSession.queued().length) return;
-    // The turn this window inherited is one it cannot see; stopping it is the
-    // only honest way to send the message now.
-    if (reattached()) {
-      await stopInheritedTurn(false);
-      await flushQueued();
-      return;
+    const next = aiSession.queued()[0];
+    const id = reattached()?.requestId ?? requestId;
+    const session = openId();
+    if (!next || !id || !session || steering()) return;
+    const refusal = imageRefusal(next.media);
+    if (refusal) { setMediaError(refusal); return; }
+    const origin = scopeEpoch;
+    setSteering(true);
+    try {
+      const reference = knownReference(next.reference ?? null);
+      const context = reference ? await aiApi.buildContext(reference, next.text) : null;
+      if (disposed || origin !== scopeEpoch || session !== openId()) return;
+      await aiApi.steerTurn(id, session, {
+        content: context ? `${next.text}\n\n${context.dsl_context}` : next.text,
+        media: next.media.map(item => usesLocalReference(item) ? { ...item, local_reference: true } : item),
+      });
+      aiSession.acknowledgeQueued(session, next);
+      if (disposed || origin !== scopeEpoch || session !== openId()) return;
+      setQueuedEditing(null);
+      setMediaError(null);
+    } catch (error) {
+      // A final answer can close admission first; the row stays queued and
+      // goes out normally after that turn settles.
+      if (!disposed && origin === scopeEpoch && errorKind(error) !== "steer_closed") setMediaError(errorMessage(error));
+    } finally {
+      setSteering(false);
+      if (!disposed && origin === scopeEpoch) void flushQueued();
     }
-    if (!loading()) return;
-    steering = true;
-    try { await cancel(); } finally { steering = false; }
-    await flushQueued();
   };
 
   /** Retry resends the stopped turn; Continue resumes it where it stopped. */
@@ -1998,14 +2034,12 @@ export function AiPanel(props: { onClose?: () => void }) {
                     label: i18n.t("ai.revert.before"),
                     // A running turn keeps writing into the history this
                     // rewrites, so the item is withheld until it settles.
-                    disabled: messages().indexOf(msg) === 0 || busy || originalView(),
+                    disabled: busy || originalView(),
                     hint: busy
                       ? i18n.t("ai.revert.turnRunning")
                       : originalView()
                         ? i18n.t("ai.revert.originalView")
-                        : messages().indexOf(msg) === 0
-                          ? i18n.t("ai.revert.beforeFirst")
-                          : i18n.t("ai.revert.actionHint"),
+                        : i18n.t("ai.revert.actionHint"),
                     onSelect: () => void revertToBefore(msg),
                   }] : []),
                 ];
@@ -2031,10 +2065,7 @@ export function AiPanel(props: { onClose?: () => void }) {
                     </LazyDetails>
                   </Show>
                 }>
-                  <div class="ai-context-caption">
-                    <span class="ai-context-label">{i18n.t("ai.context.audition")}</span>
-                    <span>{legacyAuditionText(msg.content, i18n.t("ai.media.legacyAudition"))}</span>
-                  </div>
+                  <AiAudition message={msg} />
                 </Show>
               }>
                 {/* A restored tool row: the call's name, what it was asked and what came back. */}
@@ -2050,7 +2081,6 @@ export function AiPanel(props: { onClose?: () => void }) {
                   <LazyDetails
                     class="ai-tool-result"
                     classList={{ error: msg.error }}
-                    open={autoOpenResult(msg.tool!.name)}
                     summary={<>
                       <span class="ai-tool-icon"><ToolIcon name={msg.tool!.name} /></span>
                       <span class="ai-tool-name">{activitySummary(msg.tool!, msg.content)}</span>
@@ -2073,38 +2103,18 @@ export function AiPanel(props: { onClose?: () => void }) {
               <Show when={msg.warning}>
                 <div class="ai-session-warning" role="status">{msg.warning}</div>
               </Show>
-              <Show when={msg.auditionRenderUnavailable}>
-                <div class="ai-session-warning" role="status">{i18n.t(
-                  msg.context === "audition" && msg.media?.some(attachment => !attachment.missing && auditionLabel(attachment, msg.content, msg.messageMeta))
-                    ? "ai.media.auditionRenderUnavailable"
-                    : "ai.media.auditionRenderMissing",
-                )}</div>
-              </Show>
-              <Show when={msg.media?.length}>
+              <Show when={msg.context !== "audition" && msg.media?.length}>
                 <div class="ai-message-media">
                   <For each={msg.media}>
-                    {(attachment) => {
-                      const label = () => auditionLabel(attachment, msg.content, msg.messageMeta);
-                      return (
-                        <>
+                    {(attachment) => (
                           <span class="ai-media-tag" title={attachment.path} classList={{ missing: !!attachment.missing }}>
-                            {label() ? i18n.t(label()!.key, label()!.params) : attachment.name} · {attachment.missing
+                            {attachment.name} · {attachment.missing
                               ? i18n.t("ai.media.missingState")
                               : <>{attachment.local_reference ? i18n.t("ai.media.localReference") : attachment.mime} · {formatDuration(attachment.duration_secs) ?? i18n.t("ai.media.unknownDuration")} · {formatBytes(attachment.bytes)}</>}
                           </span>
-                          <Show when={msg.context === "audition" && label() && !attachment.missing}>
-                            <InlineAudioPreview label={i18n.t("ai.media.loadAudition")}
-                              resetKey={attachment.path} load={() => previewSavedAudition(attachment.path)} />
-                          </Show>
-                        </>
-                      );
-                    }}
+                    )}
                   </For>
                 </div>
-              </Show>
-              <Show when={msg.auditionRenderPath}>
-                {(path) => <InlineAudioPreview label={i18n.t("ai.media.loadAuditionRender")}
-                  resetKey={path()} load={() => openSavedAuditionRender(path())} />}
               </Show>
 
               {/* Diff viewer */}
@@ -2552,11 +2562,13 @@ export function AiPanel(props: { onClose?: () => void }) {
                   <button
                     type="button"
                     class="ai-queue-edit"
+                    disabled={steering() && index() === 0}
                     onClick={() => beginQueuedEdit(item)}
                   >{i18n.t("ai.queue.edit")}</button>
                   <button
                     type="button"
                     class="ai-queue-remove"
+                    disabled={steering() && index() === 0}
                     onClick={() => removeQueued(item)}
                   >{i18n.t("ai.queue.remove")}</button>
                   <Show when={index() === 0 && (loading() || reattached())}>
@@ -2565,7 +2577,7 @@ export function AiPanel(props: { onClose?: () => void }) {
                       class="ai-queue-steer"
                       title={i18n.t("ai.queue.steerHint")}
                       aria-label={i18n.t("ai.queue.steerHint")}
-                      onClick={() => void steerQueued()}
+                      disabled={steering()} onClick={() => void steerQueued()}
                     >{i18n.t("ai.queue.steer")}</button>
                   </Show>
                   <Show when={index() === 0 && !loading() && !reattached()}>
@@ -2637,7 +2649,7 @@ export function AiPanel(props: { onClose?: () => void }) {
         input={input()}
         inputDisabled={!!approval() || previewStore.open()}
         inputRef={(element) => { inputElement = element; queueMicrotask(() => growInput(element)); }}
-        onInput={(element) => { setInput(element.value); growInput(element); }}
+        onInput={(element) => setInput(element.value)}
         onInputKey={onComposerKey}
         sendAction={sendAction()}
         sendLabel={sendLabel()}

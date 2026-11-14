@@ -18,7 +18,7 @@ import { aiWorkspace } from "../stores/aiWorkspace";
 import { aiConfig, getActiveProvider, hasUnsavedConfig } from "../ai/config";
 import { elapsedLabel, stopStalled, STOP_STALLED_SECONDS } from "../ai/transcript";
 import type { SessionMeta } from "../ai/sessions";
-import { answerFakeTurn, cancelFakeTurn, emitTurnProject, resetFakeTurns, runFakeTurn, type TurnStartArgs } from "./helpers/fakeTurn";
+import { answerFakeTurn, cancelFakeTurn, emitTurnProject, fakeTurnRunning, resetFakeTurns, runFakeTurn, type TurnStartArgs } from "./helpers/fakeTurn";
 
 const CAPABILITIES = { text: true, audio_in: false, audio_out: false, native_tool_calling: true, streaming: true };
 
@@ -197,6 +197,27 @@ afterEach(() => {
 });
 
 describe("the turn in flight", () => {
+  it("keeps the waiting row mounted while the next message is typed", async () => {
+    const pending = held();
+    backend.chat = () => pending.promise;
+    await mount();
+    await startTurn("work on the song");
+    const status = pendingRow()!.querySelector(".ai-thinking")!;
+    const label = status.querySelector(".ai-thinking-label")!;
+    const original = label.textContent;
+    for (const draft of ["a", "ab", "abc", "a next instruction", ""]) {
+      fireEvent.input(input(), { target: { value: draft } });
+      await Promise.resolve();
+      expect(pendingRow()!.querySelector(".ai-thinking")).toBe(status);
+      expect(status.querySelector(".ai-thinking-label")).toBe(label);
+      expect(label.textContent).toBe(original);
+      expect(status.isConnected).toBe(true);
+    }
+    expect(backend.chatCalls).toHaveLength(1);
+    pending.resolve({ role: "assistant", content: "Done." });
+    await waitFor(() => expect(pendingRow()).toBeNull());
+  });
+
   it("is the transcript's last row, with the phase, the model, the clock and the way out", async () => {
     const pending = held();
     backend.chat = () => pending.promise;
@@ -266,23 +287,41 @@ describe("the turn in flight", () => {
     stop.resolve(undefined);
     await waitFor(() => expect(pendingRow()).toBeNull());
     await waitFor(() => expect(input().disabled).toBe(false));
-    expect(document.body.textContent).toContain("Cancelled before any edit was applied");
+    expect(document.body.textContent).toContain("Cancelled. Right-click a message to rewind.");
     expect(answers()).toHaveLength(0);
   });
 
-  it("clears the composer on Send and gives the draft back when the credential read fails", async () => {
+  it.each(["", "My unsent next instruction"])("cancel preserves the composer as %j instead of restoring the sent prompt", async (draft) => {
+    const pending = held();
+    backend.chat = () => pending.promise;
+    await mount();
+    await startTurn("the prompt already sent");
+    fireEvent.input(input(), { target: { value: draft } });
+    // A nonempty draft changes the send button, so invoke the same cancel
+    // action through the backend and settle the existing turn.
+    if (draft) {
+      const id = String(backend.chatCalls[0].requestId);
+      cancelFakeTurn(id);
+    } else fireEvent.click(cancelButton()!);
+    await waitFor(() => expect(pendingRow()).toBeNull());
+    expect(input().value).toBe(draft);
+    expect(document.body.textContent).toContain("Right-click a message to rewind");
+    expect(document.body.textContent).not.toContain("Applied edits kept");
+  });
+
+  it("keeps the sent composer clear when the credential read fails", async () => {
     backend.chat = async () => {
       throw { kind: "auth", message: "The API key could not be read from the keychain", retryable: true };
     };
     await mount();
     await typeAndSend("add a bass line");
 
-    // The send cleared the composer at once, and the failure put the text back.
+    // A failure leaves the sent composer clear; Retry carries the saved request.
     await waitFor(() => expect(pendingRow()).toBeNull());
     await waitFor(() => expect(systemRows()).toHaveLength(1));
     expect(systemRows()[0].textContent).toContain("The API key could not be read");
     expect(retryButton()).toBeTruthy();
-    expect(input().value).toBe("add a bass line");
+    expect(input().value).toBe("");
     expect(pendingRow()).toBeNull();
     expect(answers()).toHaveLength(0);
   });
@@ -297,7 +336,7 @@ describe("the turn in flight", () => {
     expect(systemRows()[0].textContent).toContain("Provider returned no text.");
     expect(retryButton()).toBeTruthy();
     expect(answers()).toHaveLength(0);
-    expect(input().value).toBe("describe the mix");
+    expect(input().value).toBe("");
   });
 
   it("abandons the turn when a new conversation starts, so no stale row lands", async () => {
@@ -388,15 +427,41 @@ describe("the turn in flight", () => {
     await waitFor(() => expect(document.querySelector(".ai-approval-card")).toBeTruthy());
     const applied = () => invokeMock.mock.calls.some(([command]) => command === "ai_apply_edit");
     expect(applied()).toBe(false);
-    // The window goes away while the card waits: the turn is cancelled, and
-    // nothing is applied without an answer.
+    // The view goes away while the backend question waits. Detaching the
+    // listeners neither cancels the turn nor supplies an approval.
     first.unmount();
     await waitFor(() => expect(applied()).toBe(false));
+    expect(backend.cancelIds).toEqual([]);
 
     await mount();
-    // A remounted panel does not pretend the decision is still open.
+    // This fixture reports no inherited question; it cannot invent an answer.
     await waitFor(() => expect(document.querySelector(".ai-approval-card")).toBeFalsy());
     expect(applied()).toBe(false);
+  });
+
+  it("leaves a backend turn running when the panel closes and ignores its late view callbacks", async () => {
+    const pending = held();
+    let rounds = 0;
+    let toolEntered = false;
+    backend.chat = async () => ++rounds === 1
+      ? { role: "assistant", content: null, tool_calls: [{ id: "read", type: "function", function: { name: "tracks_list", arguments: "{}" } }] }
+      : { role: "assistant", content: "Finished while the panel was closed." };
+    backend.tool = () => { toolEntered = true; return pending.promise; };
+    const first = await mount();
+    await typeAndSend("inspect the song");
+    await waitFor(() => expect(rounds).toBe(1));
+    await waitFor(() => expect(toolEntered).toBe(true));
+    const requestId = backend.chatCalls[0].requestId!;
+    const marker = aiSession.turn();
+    first.unmount();
+    expect(backend.cancelIds).toEqual([]);
+    expect(fakeTurnRunning(requestId)).toBe(true);
+    expect(aiSession.turn()).toEqual(marker);
+    pending.resolve({ tracks: [] });
+    await waitFor(() => expect(rounds).toBe(2));
+    await waitFor(() => expect(fakeTurnRunning(requestId)).toBe(false));
+    expect(aiSession.turn()).toEqual(marker);
+    expect(document.body.textContent).not.toContain("Finished while the panel was closed.");
   });
 
   it("keeps a pasted multi-line draft and does not send on Shift+Enter", async () => {

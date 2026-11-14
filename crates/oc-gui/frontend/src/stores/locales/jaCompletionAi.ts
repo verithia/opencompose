@@ -99,7 +99,6 @@ export const jaCompletionAi = {
   "ai.sessions.rowHint": "右クリックで操作を表示",
   "ai.sessions.original": "元の履歴を表示",
   "ai.revert.before": "このメッセージの直前に戻す",
-  "ai.revert.beforeFirst": "最初のメッセージより前の履歴はありません。",
   "ai.revert.beforeDone": "元に戻しました。このメッセージ以降を削除し、プロジェクトを直前の状態に戻しました。",
   "ai.revert.beforeFailed": "元に戻せませんでした: {error}",
   "ai.revert.turnRunning": "この会話は処理中です。停止してから元に戻してください。",

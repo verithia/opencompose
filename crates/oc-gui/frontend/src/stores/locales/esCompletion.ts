@@ -77,7 +77,6 @@ export const esCompletion = {
   "ai.revert.before": "Volver al estado anterior a este mensaje",
   "ai.revert.beforeDone": "Se restauró el proyecto a ese momento y se retiraron este mensaje y los posteriores.",
   "ai.revert.beforeFailed": "No se pudo restaurar: {error}",
-  "ai.revert.beforeFirst": "Este es el primer mensaje.",
   "ai.revert.originalView": "Estás viendo el historial anterior al resumen. Vuelve a la conversación actual para restaurar un estado.",
   "ai.revert.turnRunning": "Detén el turno activo antes de restaurar la conversación.",
   "ai.revert.unsaved": "Guarda este mensaje antes de usarlo como punto de restauración.",

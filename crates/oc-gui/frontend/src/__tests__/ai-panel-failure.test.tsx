@@ -201,8 +201,8 @@ describe("the stop facts the backend reports", () => {
     await settle();
     expect(lastRow()?.textContent).toContain("Error: bad key");
     expect(document.querySelector(".ai-turn-retry")).toBeNull();
-    // The message goes back to the composer so nothing typed is lost.
-    expect(input().value).toBe("describe the mix");
+    // The sent message remains in the transcript; the composer stays clear.
+    expect(input().value).toBe("");
   });
 });
 
@@ -238,11 +238,11 @@ describe("a cancelled turn", () => {
     await mount();
     await send("add five tracks");
 
-    await waitFor(() => expect(document.body.textContent).toContain("Cancelled. Applied edits kept: 2"));
+    await waitFor(() => expect(document.body.textContent).toContain("Cancelled. Right-click a message to rewind."));
     await waitFor(() => expect(input().disabled).toBe(false));
     expect(systemRows()).toHaveLength(1);
     const notice = systemRows()[0].textContent ?? "";
-    expect(notice).toContain("Cancelled. Applied edits kept: 2");
+    expect(notice).toContain("Cancelled. Right-click a message to rewind.");
     // A cancelled turn is a notice, not an answer, and not an error bubble.
     expect(answers()).toHaveLength(0);
     expect(document.body.textContent).not.toContain("Request cancelled");
@@ -275,10 +275,10 @@ describe("a cancelled turn", () => {
     await provider;
     fireEvent.click(cancel);
 
-    await waitFor(() => expect(document.body.textContent).toContain("Cancelled before any edit was applied"));
+    await waitFor(() => expect(document.body.textContent).toContain("Cancelled. Right-click a message to rewind."));
     await waitFor(() => expect(input().disabled).toBe(false));
     expect(systemRows()).toHaveLength(1);
-    expect(systemRows()[0].querySelector(".ai-message-content")?.textContent).toBe("Cancelled before any edit was applied; the project is unchanged.");
+    expect(systemRows()[0].querySelector(".ai-message-content")?.textContent).toBe("Cancelled. Right-click a message to rewind.");
     expect(answers()).toHaveLength(0);
     expect(document.body.textContent).not.toContain("Request cancelled");
     expect(dispatched).toEqual([]);
@@ -317,9 +317,9 @@ describe("retry and continue", () => {
     expect(document.querySelectorAll(".ai-turn-retry")).toHaveLength(1);
     expect(lastSystemRow()?.textContent).toContain("Error: connection reset");
     expect(userRows()).toHaveLength(1);
-    // The composer kept what the failure ate: the same text and the same chip.
-    expect(input().value).toBe("add a bass line");
-    expect(document.querySelector(".ai-attachment-chip")?.getAttribute("data-media-path")).toBe("/tmp/take.wav");
+    // Retry replays the saved attachment without putting it back in the composer.
+    expect(input().value).toBe("");
+    expect(document.querySelector(".ai-attachment-chip")).toBeNull();
 
     backend.chat = async () => ({ role: "assistant", content: "The bass line is in." });
     fireEvent.click(retryButton()!);
@@ -329,7 +329,7 @@ describe("retry and continue", () => {
     // saved conversation, so the question is not sent twice.
     expect(backend.chatCalls.at(-1)!.messages.map((message) => message.role)).toEqual(["system"]);
     expect(userRows()).toHaveLength(1);
-    expect(input().value).toBe("add a bass line");
+    expect(input().value).toBe("");
     // One shot: the row it came from stops offering it.
     expect(retryButton()).toBeNull();
   });
@@ -406,8 +406,8 @@ describe("retry and continue", () => {
     expect(retryButton()).toBeTruthy();
     expect(document.querySelector(".ai-turn-note")?.textContent).toContain("last request");
     expect(dispatched).toEqual(["tracks_add"]);
-    expect(lastSystemRow()?.textContent).toContain("The turn failed. Applied edits kept: 1");
-    expect(lastSystemRow()?.textContent).toContain("Right-click the user message to roll back this turn.");
+    expect(lastSystemRow()?.textContent).toContain("The turn failed. Continue to resume.");
+    expect(lastSystemRow()?.textContent).not.toContain("Applied edits kept");
 
     // Continue sends only the system prompt; the backend replays the saved
     // conversation, so the edit is not applied a second time.

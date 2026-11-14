@@ -76,6 +76,11 @@ export function startTurn(
   });
 }
 
+/** Resolves once the running turn has saved the message at a round boundary. */
+export function steerTurn(requestId: string, sessionId: string, message: { content: string; media: WireMessage["media"] }) {
+  return invoke<void>("ai_turn_steer", { requestId, sessionId, message });
+}
+
 export function answerTurn(requestId: string, callId: string, decision: TurnDecision) {
   return invoke<void>("ai_turn_answer", { requestId, callId, decision });
 }
