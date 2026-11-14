@@ -1520,6 +1520,16 @@ pub async fn ai_turn_start(
     ai::agent_loop::host::run(&app, start, channels, true, owner).await
 }
 
+/// Delivers a user message to an existing turn without stopping its work.
+#[tauri::command]
+pub async fn ai_turn_steer(
+    request_id: String,
+    session_id: String,
+    message: ai::agent_loop::host::SteerMessage,
+) -> Result<(), AiError> {
+    ai::agent_loop::host::steer(&request_id, &session_id, message).await
+}
+
 /// Answers the question a running turn asked about one call.
 #[tauri::command]
 pub fn ai_turn_answer(

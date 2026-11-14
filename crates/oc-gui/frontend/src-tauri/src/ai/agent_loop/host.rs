@@ -42,8 +42,80 @@ struct Question {
 }
 /// Questions waiting for a person.
 static PENDING: LazyLock<Mutex<HashMap<QuestionKey, Question>>> = LazyLock::new(Mutex::default);
-/// Cancel handles of running turns, keyed by request id.
-static RUNNING: LazyLock<Mutex<HashMap<String, Cancel>>> = LazyLock::new(Mutex::default);
+/// Running turn controls, keyed by request id.
+static RUNNING: LazyLock<Mutex<HashMap<String, RunningTurn>>> = LazyLock::new(Mutex::default);
+
+#[derive(Clone)]
+struct RunningTurn {
+    session_id: String,
+    cancel: Cancel,
+    steering: super::steering::Steering,
+}
+
+/// Registration owns the inbox lifetime even when preparation fails or its
+/// future is dropped before the loop starts.
+struct RegisteredTurn {
+    request_id: String,
+    control: RunningTurn,
+}
+
+impl Drop for RegisteredTurn {
+    fn drop(&mut self) {
+        lock(&RUNNING).remove(&self.request_id);
+        self.control.steering.close();
+        lock(&PENDING).retain(|(turn, _), _| turn != &self.request_id);
+    }
+}
+
+/// The adapter accepts user content only; host metadata and roles cannot be forged.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SteerMessage {
+    pub content: String,
+    #[serde(default)]
+    pub media: Vec<Value>,
+}
+
+/// Resolves after durable delivery at a complete round boundary. It never
+/// cancels a provider request, tool call or transaction.
+pub async fn steer(
+    request_id: &str,
+    session_id: &str,
+    message: SteerMessage,
+) -> Result<(), AiError> {
+    let turn = lock(&RUNNING)
+        .get(request_id)
+        .filter(|turn| turn.session_id == session_id && !turn.cancel.is_cancelled())
+        .cloned()
+        .ok_or_else(|| AiError::new("steer_closed", "No matching turn is accepting messages"))?;
+    if message.content.trim().is_empty() && message.media.is_empty() {
+        return Err(AiError::config("A steering message cannot be empty"));
+    }
+    let mut user = json!({"role":"user", "content":message.content,
+        "message_meta": crate::ai::sessions::message_meta(crate::ai::sessions::MessageKind::User)});
+    if !message.media.is_empty() {
+        user["media"] = json!(message.media);
+    }
+    crate::ai_service::validate_chat_messages(&json!([user.clone()]))?;
+    if user.to_string().len() > crate::ai::LIMIT {
+        return Err(AiError::config("The steering message is too large"));
+    }
+    let receipt = turn
+        .steering
+        .enqueue(user)
+        .map_err(|refusal| match refusal {
+            super::steering::Refusal::Closed => {
+                AiError::new("steer_closed", "The turn has finished accepting messages")
+            }
+            super::steering::Refusal::Full => {
+                AiError::new("steer_full", "The turn's steering queue is full")
+            }
+        })?;
+    receipt
+        .await
+        .map_err(|_| AiError::new("steer_closed", "The turn ended before delivery"))?
+        .map_err(|error| AiError::new("steer_closed", error))
+}
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex
@@ -83,6 +155,7 @@ pub struct Envelope {
 
 /// The application host for one turn.
 pub struct AppHost {
+    steering: super::steering::Steering,
     app: AppHandle,
     provider: AiProviderEntry,
     request_id: String,
@@ -148,6 +221,9 @@ impl AppHost {
 }
 
 impl Host for AppHost {
+    fn steering(&self) -> Option<&super::steering::Steering> {
+        Some(&self.steering)
+    }
     async fn send(&self, wire: &[Value], round: usize) -> Result<Value, AiError> {
         let admitted = lock(&self.round_stats).clone();
         let stats = match admitted {
@@ -315,6 +391,25 @@ impl Host for AppHost {
             .await?
     }
 
+    async fn record_steering(&self, messages: &[Value]) -> Result<Vec<Value>, String> {
+        let (id, incarnation, messages, dsl) = (
+            self.session_id.clone(),
+            self.incarnation.clone(),
+            messages.to_vec(),
+            self.document().dsl,
+        );
+        self.blocking(move |_| {
+            super::steering::record(
+                &Store::config(),
+                &id,
+                &messages,
+                incarnation.as_deref(),
+                &dsl,
+            )
+        })
+        .await?
+    }
+
     async fn started(&self, call_id: &str) -> Result<(), String> {
         let (id, call) = (self.session_id.clone(), call_id.to_owned());
         self.blocking(move |_| Store::config().mark_started(&id, &call))
@@ -467,17 +562,25 @@ pub async fn run(
     // The cancel handle is published before the slot is claimed, so a cancel
     // that arrives at any point reaches the turn instead of freeing its slot.
     let cancel = Cancel::default();
+    let control = RunningTurn {
+        session_id: start.session_id.clone(),
+        cancel: cancel.clone(),
+        steering: super::steering::Steering::default(),
+    };
     {
         let mut running = lock(&RUNNING);
         if running.contains_key(&start.request_id) {
             return Err(AiError::new("busy", "Another AI request is active"));
         }
-        running.insert(start.request_id.clone(), cancel.clone());
+        running.insert(start.request_id.clone(), control.clone());
     }
+    let _registration = RegisteredTurn {
+        request_id: start.request_id.clone(),
+        control: control.clone(),
+    };
     let claim = match requests.claim(&start.request_id) {
         Ok(Some(claim)) => claim,
         refused => {
-            lock(&RUNNING).remove(&start.request_id);
             return Err(match refused {
                 Err(error) => AiError::config(error),
                 _ => AiError::new("busy", "Another AI request is active"),
@@ -496,9 +599,16 @@ pub async fn run(
             }
         });
     }
-    let outcome = run_claimed(app, &start, &provider, channels, attended, owner, cancel).await;
-    lock(&RUNNING).remove(&start.request_id);
-    lock(&PENDING).retain(|(turn, _), _| turn != &start.request_id);
+    let outcome = run_claimed(
+        app,
+        &start,
+        &provider,
+        channels,
+        attended,
+        owner,
+        control.clone(),
+    )
+    .await;
     drop(release);
     outcome
 }
@@ -530,7 +640,7 @@ async fn run_claimed(
     channels: TurnChannels,
     attended: bool,
     owner: String,
-    cancel: Cancel,
+    control: RunningTurn,
 ) -> Result<TurnOutcome, AiError> {
     let stats = admit_round(provider, &start.session_id, &start.request_id)?;
     let incarnation = stats
@@ -589,6 +699,7 @@ async fn run_claimed(
         .map(|(_, meta)| meta.permission)
         .unwrap_or_default();
     let host = AppHost {
+        steering: control.steering,
         app: app.clone(),
         provider: provider.clone(),
         request_id: start.request_id.clone(),
@@ -613,7 +724,7 @@ async fn run_claimed(
         scope: start.session_id.clone(),
         toolsets: start.toolsets.clone(),
     };
-    let outcome = super::run_turn(&host, spec, cancel).await;
+    let outcome = super::run_turn(&host, spec, control.cancel).await;
     // A round cancelled mid-request, or a first round never sent, still
     // closes its accounting.
     let unfinished = lock(&host.round_stats).take();
@@ -672,8 +783,8 @@ pub fn answer(request_id: &str, call_id: &str, decision: Decision) -> Result<(),
 /// Stops a running turn. Completed calls keep their results.
 pub fn cancel(request_id: &str) -> bool {
     match lock(&RUNNING).get(request_id) {
-        Some(cancel) => {
-            cancel.cancel();
+        Some(turn) => {
+            turn.cancel.cancel();
             true
         }
         None => false,
@@ -1026,7 +1137,14 @@ mod tests {
 
         assert!(!cancel("t-none"));
         let running = Cancel::default();
-        lock(&RUNNING).insert("t-run".into(), running.clone());
+        lock(&RUNNING).insert(
+            "t-run".into(),
+            RunningTurn {
+                session_id: "s".into(),
+                cancel: running.clone(),
+                steering: super::super::steering::Steering::default(),
+            },
+        );
         assert!(cancel("t-run"));
         assert!(running.is_cancelled());
         lock(&RUNNING).remove("t-run");
@@ -1039,5 +1157,77 @@ mod tests {
         let last = round_request_id(&id, super::super::wire::MAX_TOOL_ROUNDS - 1);
         assert!(last.len() <= 100, "ledger ids stay within 100 bytes");
         assert_ne!(round_request_id("t", 1), round_request_id("t", 2));
+    }
+    #[tokio::test]
+    async fn steering_is_scoped_bounded_and_rejects_cancelled_turns() {
+        let control = RunningTurn {
+            session_id: "steer-session".into(),
+            cancel: Cancel::default(),
+            steering: super::super::steering::Steering::default(),
+        };
+        lock(&RUNNING).insert("scoped-steering-test".into(), control.clone());
+        let message = || SteerMessage {
+            content: "continue".into(),
+            media: Vec::new(),
+        };
+        assert_eq!(
+            steer("scoped-steering-test", "foreign", message())
+                .await
+                .unwrap_err()
+                .kind,
+            "steer_closed"
+        );
+        assert!(steer("missing", "steer-session", message()).await.is_err());
+        assert!(
+            steer(
+                "scoped-steering-test",
+                "steer-session",
+                SteerMessage {
+                    content: "x".repeat(crate::ai::LIMIT + 1),
+                    media: Vec::new()
+                }
+            )
+            .await
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<SteerMessage>(json!({"content":"test", "role":"system"}))
+                .is_err()
+        );
+        assert!(
+            control
+                .steering
+                .take(super::super::steering::Boundary::Continue)
+                .is_empty()
+        );
+        control.cancel.cancel();
+        assert!(
+            steer("scoped-steering-test", "steer-session", message())
+                .await
+                .is_err()
+        );
+        lock(&RUNNING).remove("scoped-steering-test");
+    }
+    #[tokio::test]
+    async fn a_dropped_registration_refuses_pending_steering_and_releases_its_identity() {
+        let control = RunningTurn {
+            session_id: "unprepared".into(),
+            cancel: Cancel::default(),
+            steering: super::super::steering::Steering::default(),
+        };
+        let id = "unprepared-steering-test";
+        lock(&RUNNING).insert(id.into(), control.clone());
+        let registration = RegisteredTurn {
+            request_id: id.into(),
+            control: control.clone(),
+        };
+        let receipt = control
+            .steering
+            .enqueue(json!({"role":"user", "content":"continue"}))
+            .unwrap();
+        drop(registration);
+        assert!(receipt.await.unwrap().is_err());
+        assert!(!lock(&RUNNING).contains_key(id));
+        assert!(control.steering.enqueue(json!({})).is_err());
     }
 }

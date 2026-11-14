@@ -24,6 +24,8 @@ struct World {
     /// Fail the store write after this many records.
     record_budget: Option<usize>,
     invalid: bool,
+    steer_on_tool: Option<String>,
+    steer_on_send: bool,
 }
 
 struct Fake {
@@ -31,6 +33,7 @@ struct Fake {
     store: Store,
     session: String,
     cancel: Cancel,
+    steering: steering::Steering,
     _root: tempfile::TempDir,
 }
 
@@ -48,6 +51,7 @@ impl Fake {
             store,
             session,
             cancel: Cancel::default(),
+            steering: steering::Steering::default(),
             _root: root,
         }
     }
@@ -97,6 +101,9 @@ impl Fake {
 }
 
 impl Host for Fake {
+    fn steering(&self) -> Option<&steering::Steering> {
+        Some(&self.steering)
+    }
     async fn begin_batch(&self, label: &str) -> Result<(), String> {
         self.call(
             "transaction_begin",
@@ -118,6 +125,10 @@ impl Host for Fake {
     async fn send(&self, wire: &[Value], _round: usize) -> Result<Value, AiError> {
         let mut world = self.world();
         world.sent.push(wire.to_vec());
+        if std::mem::take(&mut world.steer_on_send) {
+            // The fake reads no receipt; the loop's delivery is checked on the wire.
+            drop(self.steering.enqueue(json!({"role":"user", "content":"make the drop longer", "message_meta":message_meta(MessageKind::User)})).unwrap());
+        }
         world
             .replies
             .pop_front()
@@ -127,6 +138,11 @@ impl Host for Fake {
     async fn call(&self, tool: &str, args: &Value, _cancel: &Cancel) -> Result<Value, Value> {
         let mut world = self.world();
         world.calls.push(tool.to_owned());
+        if world.steer_on_tool.as_deref() == Some(tool) {
+            world.steer_on_tool = None;
+            // The fake reads no receipt; the loop's delivery is checked on the wire.
+            drop(self.steering.enqueue(json!({"role":"user", "content":"soften the highs", "message_meta":message_meta(MessageKind::User)})).unwrap());
+        }
         if world.cancel_on.as_deref() == Some(tool) {
             self.cancel.cancel();
         }
@@ -647,4 +663,76 @@ fn an_unoffered_replacement_is_refused_by_its_toolset() {
             .unwrap()
             .contains("edit_subtree")
     );
+}
+
+#[tokio::test]
+async fn steering_finishes_all_tool_results_without_cancelling_or_splitting_batch() {
+    let fake = Fake::new(vec![
+        json!({"role":"assistant", "content":null,"tool_calls":[
+            {"id":"a","type":"function","function":{"name":"tracks_add","arguments":"{\"name\":\"bass\"}"}},
+            {"id":"b","type":"function","function":{"name":"project_set_tempo","arguments":"{\"tempo\":138}"}}
+        ]}),
+        json!({"role":"assistant","content":"done"}),
+    ]);
+    fake.world().steer_on_tool = Some("tracks_add".into());
+    let outcome = fake.run(SessionPermission::Write).await;
+    assert!(!outcome.failed, "{outcome:?}");
+    assert!(!fake.cancel.is_cancelled());
+    let world = fake.world();
+    assert_eq!(world.committed, 1);
+    assert_eq!(world.sent.len(), 2);
+    let second = &world.sent[1];
+    let steer = second
+        .iter()
+        .position(|row| row["content"] == "soften the highs")
+        .unwrap();
+    assert_eq!(second[steer - 1]["tool_call_id"], "b");
+    assert_eq!(second[steer - 2]["tool_call_id"], "a");
+    drop(world);
+    check_pairing(&fake.saved()).unwrap();
+    assert_eq!(
+        fake.saved()
+            .iter()
+            .filter(|row| row["content"] == "soften the highs")
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn steering_arriving_during_a_final_reply_continues_the_same_turn() {
+    let fake = Fake::new(vec![
+        json!({"role":"assistant","content":"first answer"}),
+        json!({"role":"assistant","content":"revised answer"}),
+    ]);
+    fake.world().steer_on_send = true;
+    let outcome = fake.run(SessionPermission::Write).await;
+    assert!(!outcome.failed, "{outcome:?}");
+    assert_eq!(outcome.text, "revised answer");
+    assert_eq!(fake.world().sent.len(), 2);
+    assert_eq!(
+        fake.saved()
+            .iter()
+            .map(|row| row["role"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["user", "assistant", "user", "assistant"]
+    );
+    assert!(fake.steering.enqueue(json!({})).is_err());
+}
+
+#[tokio::test]
+async fn steering_save_failure_rejects_delivery_and_does_not_send_the_message() {
+    let fake = Fake::new(vec![json!({"role":"assistant","content":"first answer"})]);
+    fake.world().steer_on_send = true;
+    fake.world().record_budget = Some(1);
+    let outcome = fake.run(SessionPermission::Write).await;
+    assert!(outcome.failed);
+    assert_eq!(fake.world().sent.len(), 1);
+    assert!(
+        !fake
+            .saved()
+            .iter()
+            .any(|row| row["content"] == "make the drop longer")
+    );
+    assert!(fake.steering.enqueue(json!({})).is_err());
 }

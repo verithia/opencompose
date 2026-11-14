@@ -23,6 +23,7 @@
 pub mod gate;
 pub mod host;
 pub mod results;
+pub mod steering;
 pub mod wire;
 
 use crate::ai::sessions::{MessageKind, SessionPermission, message_meta};
@@ -196,6 +197,10 @@ pub struct TurnSpec {
 /// Everything outside the loop. Every method that touches the project or
 /// the store is the same domain operation the panel and `/call` use.
 pub trait Host: Sync {
+    /// A running turn may accept user messages without interrupting its work.
+    fn steering(&self) -> Option<&steering::Steering> {
+        None
+    }
     /// One provider round over exactly this wire.
     fn send(
         &self,
@@ -221,6 +226,13 @@ pub trait Host: Sync {
     /// and returns their saved form: that is what the next request sends.
     fn record(&self, messages: &[Value])
     -> impl Future<Output = Result<Vec<Value>, String>> + Send;
+    /// Saves admitted human steering messages with their rewind snapshot.
+    fn record_steering(
+        &self,
+        messages: &[Value],
+    ) -> impl Future<Output = Result<Vec<Value>, String>> + Send {
+        self.record(messages)
+    }
     /// Marks a call as dispatched, before it runs.
     fn started(&self, call_id: &str) -> impl Future<Output = Result<(), String>> + Send;
     /// Answers the open calls of the last round and returns those results.
@@ -318,6 +330,9 @@ pub async fn run_turn<H: Host>(host: &H, spec: TurnSpec, cancel: Cancel) -> Turn
     let ending = match turn.rounds().await {
         Ok(ending) | Err(ending) => ending,
     };
+    if let Some(inbox) = host.steering() {
+        inbox.close();
+    }
     turn.close(ending).await
 }
 
@@ -325,6 +340,7 @@ impl<H: Host> Turn<'_, H> {
     async fn rounds(&mut self) -> Result<Ending, Ending> {
         for round in 0..MAX_TOOL_ROUNDS {
             self.stop_if_cancelled()?;
+            self.deliver_steering(steering::Boundary::Continue).await?;
             self.fit_wire()?;
             let reply = tokio::select! {
                 biased;
@@ -368,6 +384,10 @@ impl<H: Host> Turn<'_, H> {
             let assistant = assistant_message(&reply, native.then_some(&calls));
             self.push(vec![assistant]).await?;
             if calls.is_empty() {
+                self.stop_if_cancelled()?;
+                if self.deliver_steering(steering::Boundary::Finish).await? {
+                    continue;
+                }
                 let text = reply["content"].as_str().unwrap_or_default();
                 return Ok(if text.trim().is_empty() {
                     Ending::Empty
@@ -420,6 +440,34 @@ impl<H: Host> Turn<'_, H> {
         Ok(Ending::Cap)
     }
 
+    async fn deliver_steering(&mut self, boundary: steering::Boundary) -> Result<bool, Ending> {
+        let pending = self
+            .host
+            .steering()
+            .map(|inbox| inbox.take(boundary))
+            .unwrap_or_default();
+        if pending.is_empty() {
+            return Ok(false);
+        }
+        let messages: Vec<Value> = pending.iter().map(|row| row.message.clone()).collect();
+        let result = self
+            .host
+            .record_steering(&messages)
+            .await
+            .map(|saved| self.extend_saved(saved));
+        for row in pending {
+            let _ = row.receipt.send(if result.is_ok() {
+                Ok(())
+            } else {
+                Err("The steering message could not be saved".into())
+            });
+        }
+        result.map_err(|error| Ending::Failed(AiError::new("session_save", error)))?;
+        // A new instruction may intentionally revisit the previous edit.
+        self.previous.clear();
+        Ok(true)
+    }
+
     fn stop_if_cancelled(&self) -> Result<(), Ending> {
         if self.cancel.is_cancelled() {
             Err(Ending::Cancelled)
@@ -437,13 +485,17 @@ impl<H: Host> Turn<'_, H> {
             .record(&messages)
             .await
             .map_err(|error| Ending::Failed(AiError::new("session_save", error)))?;
+        self.extend_saved(saved);
+        Ok(())
+    }
+
+    fn extend_saved(&mut self, saved: Vec<Value>) {
         for message in saved {
             self.host.emit(TurnEvent::Message {
                 message: without_inline_bytes(&message),
             });
             self.wire.push(message);
         }
-        Ok(())
     }
 
     /// Keeps the request under the provider bounds by folding the oldest

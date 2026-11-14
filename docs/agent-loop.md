@@ -1175,3 +1175,17 @@ read the bank, and apply one entry to an effect insert.
   reports that turn, clears it (painting nothing as running) when the backend
   reports none or another conversation's, and paints an answer that arrives
   after the reload into the conversation the marker named.
+
+### Steering a running turn
+
+`ai_turn_steer` (desktop) and authenticated `POST /ai/steer` (headless) accept
+`request_id`, `session_id` and a `message` with `content` and optional `media`.
+They deliver into that existing turn, without cancelling its provider request,
+tools or transaction. The loop saves the message with a project snapshot after
+all results and audio deliveries of the current round, before its next request.
+A message arriving during a final answer causes another round in the same turn.
+
+A successful response confirms the message was saved. Callers retain their
+queued message until then. A closed, foreign or full turn refuses delivery;
+a stopped or failed turn rejects pending receipts instead of discarding them
+silently. Stop remains a separate cancellation action.

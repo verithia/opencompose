@@ -405,6 +405,32 @@ fn write_response(stream: &mut TcpStream, status: u16, body: &str) -> std::io::R
 
 fn route(app: &AppHandle, request: &Request, token: &str) -> (u16, String) {
     let path = request.path.split('?').next().unwrap_or(&request.path);
+    if request.method == "POST" && path == "/ai/steer" {
+        if !authorized(&request.headers, token) {
+            return (401, error_body("unauthorized"));
+        }
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Steer {
+            request_id: String,
+            session_id: String,
+            message: crate::ai::agent_loop::host::SteerMessage,
+        }
+        let steer: Steer = match serde_json::from_slice(&request.body) {
+            Ok(steer) => steer,
+            Err(error) => {
+                return complete_failure(crate::ai_service::AiError::config(error.to_string()));
+            }
+        };
+        return match block_on(crate::ai::agent_loop::host::steer(
+            &steer.request_id,
+            &steer.session_id,
+            steer.message,
+        )) {
+            Ok(()) => (200, json!({"ok":true}).to_string()),
+            Err(error) => complete_failure(error),
+        };
+    }
     if request.method == "POST" && path == "/ai/turn" {
         if !authorized(&request.headers, token) {
             return (401, error_body("unauthorized"));
@@ -638,9 +664,9 @@ fn complete_status(kind: &str) -> u16 {
         "request" => 400,
         "auth" | "auth_expired" => 401,
         "permission" => 403,
-        "rate_limit" => 429,
+        "rate_limit" | "steer_full" => 429,
         // Another turn already holds the slot, on either surface.
-        "busy" | "cancelled" => 409,
+        "busy" | "cancelled" | "steer_closed" => 409,
         // The saved endpoint or provider has to change before a retry can work.
         "config" | "redirect" => 409,
         // The request names a conversation or project this host does not have open.
@@ -3986,6 +4012,8 @@ providers:
         for (kind, status) in [
             ("request", 400),
             ("cancelled", 409),
+            ("steer_closed", 409),
+            ("steer_full", 429),
             ("auth", 401),
             ("auth_expired", 401),
             ("permission", 403),
