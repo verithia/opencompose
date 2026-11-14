@@ -71,6 +71,9 @@ describe("panel system prompt", () => {
     expect(prompt).toContain("transaction_begin(label?)");
     expect(prompt).toContain("edit_subtree(path, new_dsl)");
     expect(prompt).toContain("expected_revision");
+    expect(prompt).toContain("reuse its base revision for every edit");
+    expect(prompt).toContain("saves the working file when the turn ends");
+    expect(prompt).toContain("transaction_commit is deferred");
     expect(prompt).toContain("### Not available here");
     expect(prompt).toContain("edit_subtree` proposes a replacement");
     expect(prompt).not.toContain("render_offline(");
