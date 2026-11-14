@@ -319,12 +319,17 @@ pub fn delivered_audio(result: &Value, source: bool) -> Option<Value> {
         .as_str()
         .filter(|data| !data.is_empty())?;
     let from = result["start_s"].as_f64().unwrap_or(0.0);
-    let to = result["end_s"].as_f64().unwrap_or(0.0);
+    let requested_to = result["end_s"].as_f64().unwrap_or(0.0);
+    let to = result["duration_s"]
+        .as_f64()
+        .filter(|duration| duration.is_finite() && *duration > 0.0)
+        .map(|duration| requested_to.min(from + duration))
+        .unwrap_or(requested_to);
     let mut meta = message_meta(MessageKind::Audition);
     if from.is_finite() && to.is_finite() && to > from && from >= 0.0 {
         meta["audio_range"] = json!({"start_seconds": from, "end_seconds": to, "source": source});
     }
-    let text = if source {
+    let mut text = if source {
         let what = if result["archived_render"] == true {
             "this is the saved arrangement render."
         } else {
@@ -334,8 +339,18 @@ pub fn delivered_audio(result: &Value, source: bool) -> Option<Value> {
     } else {
         format!("You asked to hear {from}\u{2013}{to} s: this is that render.")
     };
+    if result["truncated"] == true || to + 0.0001 < requested_to {
+        text.push_str(&format!(
+            " The listening clip ends at {to} s; the requested range ends at {requested_to} s. Request the remaining passage to hear it."
+        ));
+    }
     let mut audio = json!({"data": data, "format": "wav"});
-    if let Some(path) = result["path"].as_str() {
+    if result["source_render_unavailable"] == true {
+        audio["source_render_unavailable"] = json!(true);
+    } else if let Some(path) = result["source_render"]
+        .as_str()
+        .or_else(|| result["path"].as_str())
+    {
         audio["source_path"] = json!(path);
     }
     Some(json!({
@@ -526,6 +541,44 @@ pub fn read_toolcall_spec() -> crate::ai::ToolSpec {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn audition_delivery_names_only_the_passage_the_clip_contains() {
+        let value = json!({"start_s":98.0,"end_s":120.0,"duration_s":16.0,"truncated":true,"audio":{"base64":"fixture"}});
+        let delivery = delivered_audio(&value, false).unwrap();
+        assert_eq!(
+            delivery["message_meta"]["audio_range"]["end_seconds"],
+            114.0
+        );
+        assert!(
+            delivery["content"]
+                .as_str()
+                .unwrap()
+                .contains("98\u{2013}114")
+        );
+        assert!(
+            delivery["content"]
+                .as_str()
+                .unwrap()
+                .contains("requested range ends at 120")
+        );
+        let source = delivered_audio(&value, true).unwrap();
+        assert_eq!(source["message_meta"]["audio_range"]["end_seconds"], 114.0);
+        assert_eq!(source["message_meta"]["audio_range"]["source"], true);
+    }
+
+    #[test]
+    fn audition_delivery_uses_its_immutable_source_and_fails_closed_when_missing() {
+        let mut value = json!({"path":"/export/reused.wav","source_render":"/scratch/immutable.wav","audio":{"base64":"fixture"}});
+        assert_eq!(
+            delivered_audio(&value, false).unwrap()["input_audio"]["source_path"],
+            "/scratch/immutable.wav"
+        );
+        value["source_render_unavailable"] = json!(true);
+        let delivery = delivered_audio(&value, false).unwrap();
+        assert!(delivery["input_audio"].get("source_path").is_none());
+        assert_eq!(delivery["input_audio"]["source_render_unavailable"], true);
+    }
 
     #[test]
     fn finds_a_text_call_whole_fenced_or_inside_prose() {

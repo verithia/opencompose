@@ -143,6 +143,10 @@ fn waiting_for_archive(path: &Path, now: SystemTime) -> Result<bool, String> {
 }
 
 fn scratch_dir() -> Result<PathBuf, String> {
+    #[cfg(test)]
+    return Ok(crate::private_fs::config_dir().join("audition-scratch"));
+
+    #[cfg(not(test))]
     oc_engine::media_cache::default_cache_dir()
         .and_then(|media| media.parent().map(|root| root.join("audition-scratch")))
         .ok_or_else(|| "Cannot find the audition scratch directory".into())

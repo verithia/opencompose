@@ -340,9 +340,14 @@ same full-rate WAV, and additionally returns a mono 16 kHz 16-bit WAV inline:
   `path`. The session archive keeps the full render in the format selected in
   Preferences → Storage and preserves the bounded model excerpt as the exact WAV
   delivered to the model. The clip is capped at 30 s and 2 MiB
-  of base64; a longer window returns its first 30 s with `"truncated": true`,
-  while `path` still holds the whole window. `duration_s` is the length of the
-  returned clip.
+  of base64; either limit can shorten a window and sets `"truncated": true`,
+  while `path` still holds the whole window. `duration_s` and the delivered
+  message's audio range describe the returned clip, not the requested window.
+  Request the remainder separately when a complete ending matters. For agent
+  auditions, `source_render` identifies an immutable full-rate stereo snapshot,
+  including when the chosen `path` is later overwritten. If the scratch budget
+  cannot retain that snapshot, `source_render_unavailable` reports the loss;
+  the exact bounded excerpt remains available for the session archive.
 * **What each provider accepts.** The clip is shaped for the model in front of
   it. The row in the bundled catalog (`ai-catalog.json`) may carry an
   `audio_input` block — `channels` (1 or 2, default 1), `sample_rate` (default

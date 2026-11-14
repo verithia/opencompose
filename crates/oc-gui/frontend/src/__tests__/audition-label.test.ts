@@ -3,6 +3,14 @@ import { auditionLabel, legacyAuditionText, type MediaAttachment } from "../ai/m
 import { i18n } from "../stores/i18n";
 const attachment: MediaAttachment = { kind: "audio", path: `/sessions/audition-media/${"a".repeat(64)}.wav`, name: `${"a".repeat(64)}.wav`, mime: "audio/wav", bytes: 128044, duration_secs: 4, sha256: "a".repeat(64) };
 describe("saved audition display", () => {
+  it("bounds legacy and typed range labels to the audio that was actually saved", () => {
+    const clip = { ...attachment, duration_secs: 16.3835 };
+    const content = "You asked to hear 98.8235–120 s: this is that render.";
+    const legacy = auditionLabel(clip, content)!;
+    const typed = auditionLabel(clip, content, { version: 1, kind: "audition", audio_range: { start_seconds: 98.8235, end_seconds: 120, source: false } })!;
+    expect(i18n.t(legacy.key, legacy.params)).toBe("Audition 98.82–115.21 s");
+    expect(typed).toEqual(legacy);
+  });
   it("uses the known range without modifying the descriptor", () => {
     const before = JSON.stringify(attachment);
     const label = auditionLabel(attachment, "You asked to hear 208–212 s: this is that render.")!;

@@ -3,7 +3,7 @@ id: audition-and-listen
 title: Audition and listen
 when: You need to know how a section sounds, not only how loud it measures.
 category: render
-version: 7
+version: 8
 tools: [render_range, audition_range, audio_clips_list, audition_clip_source, audio_analyze, audio_compare, plugin_search, plugin_pull, separate_stems]
 ---
 Start with the full mix. Name one audible issue and the section where it occurs.
@@ -17,8 +17,10 @@ Match an attack or lyric across source and project time.
 Use `audition_range({start: 12, end: 28})` to hear the processed arrangement.
 Use `start_bar`/`end_bar` for bars and `tracks` for a track subset. A bus return
 has no track index: ask `render_range` for it with `bus` and audition that file.
-Hear the suspect track alone, then with its nearest competitor and in the mix.
-Include the event and its tail within 30 s. Check `truncated` on the excerpt.
+Hear the suspect alone, with its competitor and in the mix; include its tail
+within 30 s and check `truncated`.
+The inline byte budget may shorten delivery. Check its actual duration/end, then
+request the remainder. A requested window does not prove its ending was delivered.
 
 Omit `path` for reclaimable scratch. For repeatable A/B, name distinct WAVs.
 After reopening, pass the exact saved render path from this conversation to
@@ -27,7 +29,6 @@ After reopening, pass the exact saved render path from this conversation to
 64 s is file 12 s. If the archive expired, attach a retained copy or render the current project and label it new.
 
 ## Splitting a part out of the mix
-
 Find the separator with plugin_search. Install once with plugin_pull and dry_run: false.
 Pass its catalog runtime_id to separate_stems. Check method and vocals/accompaniment outputs.
 Band filtering is not source separation and neither promises a dry vocal. Place
@@ -39,7 +40,6 @@ After eight windows shorter than one bar (and under 4 s) on one project revision
 `render_range` refuses with `narrow-window loop: ...`. Audition the section.
 
 ## Evidence and delivery
-
 Match playback levels where possible. Metric normalization alone does not
 level-match the delivered audio. 16 kHz mono cannot certify stereo width or
 full-band detail. Check stereo if the model keeps both channels, then mono.

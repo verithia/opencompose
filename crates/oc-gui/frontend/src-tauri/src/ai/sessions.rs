@@ -1156,9 +1156,12 @@ fn persist_auditions(
         let descriptor = super::media::to_wire(clip.kind, &clip.media);
         // Keep the render by path. A later audition may request another
         // passage, but normal replay sends only the bounded delivery.
-        let mut render_unavailable = false;
+        let mut render_unavailable = audio["source_render_unavailable"]
+            .as_bool()
+            .unwrap_or(false);
         let render = audio
             .get("source_path")
+            .filter(|_| !render_unavailable)
             .and_then(Value::as_str)
             .filter(|path| !path.is_empty())
             .map(PathBuf::from)
@@ -3271,6 +3274,35 @@ mod tests {
     use crate::ai::test_support::canned_by_request;
     use crate::ai::{self, provider_for, request_from_wire};
     use crate::commands::{AiCapabilities, AiProviderEntry, AuthKind, ProviderKind, Wire};
+
+    #[test]
+    fn unavailable_handoff_retains_the_clip_without_archiving_a_reused_export() {
+        use crate::gui_settings::{SessionAudioFormat, SessionAudioSettings};
+        let root = tempfile::tempdir().unwrap();
+        let stale = root.path().join("reused.wav");
+        std::fs::write(
+            &stale,
+            oc_engine::wav::mono_wav_bytes(&[0.75; 800], 16_000).unwrap(),
+        )
+        .unwrap();
+        let mut messages = vec![json!({
+            "role":"user", "message_meta":{"version":1,"kind":"audition"}, "content":"Audition",
+            "input_audio":{"data":audition_clip(),"format":"wav","source_render_unavailable":true,"source_path":stale}
+        })];
+        persist_auditions(
+            root.path(),
+            &mut messages,
+            &SessionAudioSettings {
+                format: SessionAudioFormat::Wav,
+                mp3_kbps: 128,
+            },
+        )
+        .unwrap();
+        assert!(messages[0].get("input_audio").is_none());
+        assert_eq!(messages[0]["media"].as_array().unwrap().len(), 1);
+        assert_eq!(messages[0]["source_render_unavailable"], true);
+        assert!(messages[0].get("source_render").is_none());
+    }
 
     fn user(text: &str) -> Value {
         json!({ "role": "user", "content": text })

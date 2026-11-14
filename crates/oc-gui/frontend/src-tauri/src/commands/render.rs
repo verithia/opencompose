@@ -1707,6 +1707,11 @@ pub struct AuditionAudio {
 #[derive(Debug, Serialize)]
 pub struct AuditionRangeResult {
     pub path: String,
+    /// Immutable full-rate source reserved for the conversation archive.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_render: Option<String>,
+    #[serde(skip_serializing_if = "is_false")]
+    pub source_render_unavailable: bool,
     pub start_s: f64,
     pub end_s: f64,
     /// Length of the returned clip, which is shorter than the window when the
@@ -1753,11 +1758,28 @@ fn audition_range_with_handoff(
     let (clip, channels, truncated) =
         audition_clip(&samples, rendered.sample_rate, channel, target_rate)?;
     let bytes = oc_engine::wav::pcm_wav_bytes(&clip, target_rate, channels)?;
+    let implicit = scratch.is_some();
     if let Some(scratch) = scratch {
         rendered.path = scratch.publish(archive_handoff)?.display().to_string();
     }
+    let retained = if !archive_handoff {
+        Ok(None)
+    } else if implicit {
+        Ok(Some(PathBuf::from(&rendered.path)))
+    } else {
+        retain_audition_source(&samples, rendered.sample_rate, Path::new(&rendered.path)).map(Some)
+    };
+    let (source_render, source_render_unavailable) = match retained {
+        Ok(path) => (path.map(|path| path.display().to_string()), false),
+        Err(error) => {
+            log::warn!("audition source handoff unavailable: {error}");
+            (None, true)
+        }
+    };
     Ok(AuditionRangeResult {
         path: rendered.path,
+        source_render,
+        source_render_unavailable,
         start_s: rendered.start_s,
         end_s: rendered.end_s,
         duration_s: clip.len() as f64 / (f64::from(target_rate) * f64::from(channels)),
@@ -1774,6 +1796,24 @@ fn audition_range_with_handoff(
         },
         truncated,
     })
+}
+
+fn retain_audition_source(
+    samples: &[f32],
+    sample_rate: u32,
+    output: &Path,
+) -> Result<PathBuf, String> {
+    let bytes = u64::try_from(samples.len())
+        .ok()
+        .and_then(|count| count.checked_mul(4))
+        .and_then(|bytes| bytes.checked_add(4096))
+        .ok_or("Audition source exceeds its storage bound")?;
+    let scratch = ScratchRender::reserve(bytes)?;
+    oc_engine::wav::write_stereo_f32_wav(scratch.path(), samples, sample_rate)?;
+    if let Some(grid) = crate::render_grid::read(output) {
+        crate::render_grid::write(scratch.path(), &grid);
+    }
+    scratch.publish(true)
 }
 
 #[derive(Debug, Serialize)]
