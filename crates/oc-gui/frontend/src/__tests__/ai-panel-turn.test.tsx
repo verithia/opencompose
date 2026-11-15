@@ -18,7 +18,8 @@ import { aiWorkspace } from "../stores/aiWorkspace";
 import { aiConfig, getActiveProvider, hasUnsavedConfig } from "../ai/config";
 import { elapsedLabel, stopStalled, STOP_STALLED_SECONDS } from "../ai/transcript";
 import type { SessionMeta } from "../ai/sessions";
-import { answerFakeTurn, cancelFakeTurn, emitTurnProject, fakeTurnRunning, resetFakeTurns, runFakeTurn, type TurnStartArgs } from "./helpers/fakeTurn";
+import type { WireMessage } from "../ai/wire";
+import { answerFakeTurn, cancelFakeTurn, emitTurnEvent, emitTurnProject, fakeTurnRunning, resetFakeTurns, runFakeTurn, type TurnStartArgs } from "./helpers/fakeTurn";
 
 const CAPABILITIES = { text: true, audio_in: false, audio_out: false, native_tool_calling: true, streaming: true };
 
@@ -81,6 +82,8 @@ const backend = {
   cancelIds: [] as string[],
   snapshot: makeSnapshot() as unknown,
   sessions: [] as SessionMeta[],
+  /** Saved messages whose event the fake sends after the turn's reply. */
+  late: undefined as ((message: WireMessage) => boolean) | undefined,
 };
 
 function installBackend() {
@@ -102,6 +105,7 @@ function installBackend() {
         },
         tool: (call) => backend.tool(call),
         ask: (call) => call.tool === "edit_subtree" || call.tool === "tracks_remove",
+        late: (message) => backend.late?.(message) ?? false,
       });
       case "ai_turn_answer": return answerFakeTurn(String(typed.requestId), String(typed.callId), typed.decision as never);
       case "ai_turn_questions": return [];
@@ -179,6 +183,7 @@ beforeEach(() => {
   backend.cancelIds = [];
   backend.snapshot = makeSnapshot();
   backend.sessions = [];
+  backend.late = undefined;
   i18n.setLocale("en");
   aiLimits.setActiveContext(null);
   resetStats();
@@ -336,6 +341,70 @@ describe("the turn in flight", () => {
     expect(retryButton()).toBeTruthy();
     expect(answers()).toHaveLength(0);
     expect(input().value).toBe("");
+  });
+
+  it("words a folded wire from its numbers in the interface language", async () => {
+    backend.chat = async () => {
+      const round = backend.chatCalls.at(-1)! as unknown as { requestId: string; sessionId: string };
+      emitTurnEvent(round.requestId, round.sessionId, {
+        type: "wire_folded", before_rows: 900, before_bytes: 9_000_000,
+        after_rows: 120, after_bytes: 800_000, folded: 390, kept: 40,
+      });
+      return { role: "assistant", content: "Done." };
+    };
+    await mount();
+    await typeAndSend("describe the mix");
+    await waitFor(() => expect(answers()).toHaveLength(1));
+    expect(systemRows().map((row) => row.textContent).join(" ")).toContain(
+      i18n.t("ai.turn.wireFolded", { folded: 390, before: 900, after: 120 }),
+    );
+  });
+
+  it("paints an answer whose event arrives after the turn's reply, once and in order", async () => {
+    backend.late = (message) => message.role === "assistant";
+    backend.chat = async () => ({ role: "assistant", content: "Saved, then announced." });
+    await mount();
+    await typeAndSend("describe the mix");
+
+    await waitFor(() => expect(pendingRow()).toBeNull());
+    await waitFor(() => expect(answers()).toHaveLength(1));
+    expect(answers()[0].textContent).toContain("Saved, then announced.");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(answers()).toHaveLength(1);
+    expect([...document.querySelectorAll(".ai-messages .ai-message")].map((row) => row.className))
+      .toEqual(["ai-message user", "ai-message assistant"]);
+  });
+
+  it("places late saved rows ahead of the failure row the reply already added", async () => {
+    let round = 0;
+    backend.late = () => true;
+    backend.chat = async () => {
+      round += 1;
+      if (round === 1) {
+        return {
+          role: "assistant", content: null,
+          tool_calls: [{ id: "call-1", type: "function", function: { name: "tracks_list", arguments: "{}" } }],
+        };
+      }
+      throw { kind: "provider", message: "connection reset", retryable: true };
+    };
+    await mount();
+    await typeAndSend("describe the mix");
+
+    await waitFor(() => expect(systemRows()).toHaveLength(1));
+    expect(systemRows()[0].textContent).toContain("Error: connection reset");
+    await waitFor(() => {
+      openStepGroups();
+      expect(document.querySelectorAll(".ai-message.tool")).toHaveLength(1);
+    });
+    openStepGroups();
+    const tool = document.querySelector(".ai-message.tool")!;
+    const failure = systemRows()[0];
+    // The saved call and its result precede the failure the reply reported.
+    expect(failure.compareDocumentPosition(tool) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
+    expect(document.querySelectorAll(".ai-message.tool")).toHaveLength(1);
+    expect(systemRows()).toHaveLength(1);
+    expect(retryButton()).toBeTruthy();
   });
 
   it("abandons the turn when a new conversation starts, so no stale row lands", async () => {

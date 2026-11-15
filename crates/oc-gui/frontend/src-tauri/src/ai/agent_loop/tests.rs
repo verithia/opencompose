@@ -24,8 +24,18 @@ struct World {
     /// Fail the store write after this many records.
     record_budget: Option<usize>,
     invalid: bool,
+    /// Documents from this revision on do not validate.
+    invalid_from: Option<u64>,
+    /// Mutations succeed without changing the document.
+    noop: bool,
+    /// The model writes its calls in text.
+    text_protocol: bool,
+    undos: usize,
     steer_on_tool: Option<String>,
-    steer_on_send: bool,
+    /// Enqueue a steer during this send (1 is the first).
+    steer_on_send: Option<usize>,
+    /// Make the batch close fail at this step.
+    commit_failure: Option<CommitFailure>,
 }
 
 struct Fake {
@@ -46,6 +56,7 @@ impl Fake {
             world: Mutex::new(World {
                 replies: replies.into_iter().map(Ok).collect(),
                 dsl: "@project".into(),
+                text_protocol: true,
                 ..World::default()
             }),
             store,
@@ -73,6 +84,7 @@ impl Fake {
             audio: None,
             scope: self.session.clone(),
             toolsets: None,
+            text_protocol: self.world().text_protocol,
         }
     }
 
@@ -115,17 +127,29 @@ impl Host for Fake {
         .map_err(|refusal| refusal.to_string())
     }
 
-    async fn commit_batch(&self) -> Result<(), String> {
+    async fn commit_batch(&self) -> Result<(), CommitError> {
+        let failure = self.world().commit_failure;
+        if let Some(failure) = failure {
+            // A save failure is a commit that landed and a file that did not.
+            if failure == CommitFailure::Save {
+                self.world().committed += 1;
+            }
+            return Err(CommitError {
+                failure,
+                message: "the disk is full".into(),
+            });
+        }
         self.call("transaction_commit", &json!({}), &Cancel::default())
             .await
             .map(|_| ())
-            .map_err(|refusal| refusal.to_string())
+            .map_err(|refusal| CommitError::commit(refusal.to_string()))
     }
 
     async fn send(&self, wire: &[Value], _round: usize) -> Result<Value, AiError> {
         let mut world = self.world();
         world.sent.push(wire.to_vec());
-        if std::mem::take(&mut world.steer_on_send) {
+        if world.steer_on_send == Some(world.sent.len()) {
+            world.steer_on_send = None;
             // The fake reads no receipt; the loop's delivery is checked on the wire.
             drop(self.steering.enqueue(json!({"role":"user", "content":"make the drop longer", "message_meta":message_meta(MessageKind::User)})).unwrap());
         }
@@ -167,6 +191,9 @@ impl Host for Fake {
                 if world.batch.is_none() {
                     return Err(json!({"error":"outside the turn's batch"}));
                 }
+                if world.noop {
+                    return Ok(json!({"ok": true}));
+                }
                 world.revision += 1;
                 world.dsl = format!("@project r{}", world.revision);
                 Ok(
@@ -206,8 +233,8 @@ impl Host for Fake {
         self.store.mark_started(&self.session, call_id)
     }
 
-    async fn close_round(&self) -> Result<Vec<Value>, String> {
-        self.store.close_round(&self.session)
+    async fn close_round(&self) -> Result<Vec<crate::ai::sessions::turns::Closed>, String> {
+        self.store.close_round_typed(&self.session)
     }
 
     fn emit(&self, event: TurnEvent) {
@@ -223,8 +250,13 @@ impl Host for Fake {
         }
     }
 
-    async fn validate_edit(&self, _path: &str, _dsl: &str) -> Result<(), Vec<String>> {
-        if self.world().invalid {
+    async fn validate_edit(&self, _path: &str, dsl: &str) -> Result<(), Vec<String>> {
+        let world = self.world();
+        let revision = dsl
+            .strip_prefix("@project r")
+            .and_then(|n| n.parse::<u64>().ok())
+            .unwrap_or(0);
+        if world.invalid || world.invalid_from.is_some_and(|from| revision >= from) {
             Err(vec!["bad".into()])
         } else {
             Ok(())
@@ -253,6 +285,7 @@ impl Host for Fake {
     }
 
     async fn undo(&self) -> Result<(), String> {
+        self.world().undos += 1;
         Ok(())
     }
 }
@@ -643,7 +676,7 @@ fn a_reply_after_cancel_is_saved_and_none_of_its_calls_run() {
         async fn begin_batch(&self, label: &str) -> Result<(), String> {
             self.0.begin_batch(label).await
         }
-        async fn commit_batch(&self) -> Result<(), String> {
+        async fn commit_batch(&self) -> Result<(), CommitError> {
             self.0.commit_batch().await
         }
         async fn call(&self, tool: &str, args: &Value, cancel: &Cancel) -> Result<Value, Value> {
@@ -661,7 +694,7 @@ fn a_reply_after_cancel_is_saved_and_none_of_its_calls_run() {
         async fn started(&self, call: &str) -> Result<(), String> {
             self.0.started(call).await
         }
-        async fn close_round(&self) -> Result<Vec<Value>, String> {
+        async fn close_round(&self) -> Result<Vec<crate::ai::sessions::turns::Closed>, String> {
             self.0.close_round().await
         }
         fn emit(&self, event: TurnEvent) {
@@ -759,7 +792,7 @@ async fn steering_arriving_during_a_final_reply_continues_the_same_turn() {
         json!({"role":"assistant","content":"first answer"}),
         json!({"role":"assistant","content":"revised answer"}),
     ]);
-    fake.world().steer_on_send = true;
+    fake.world().steer_on_send = Some(1);
     let outcome = fake.run(SessionPermission::Write).await;
     assert!(!outcome.failed, "{outcome:?}");
     assert_eq!(outcome.text, "revised answer");
@@ -777,7 +810,7 @@ async fn steering_arriving_during_a_final_reply_continues_the_same_turn() {
 #[tokio::test]
 async fn steering_save_failure_rejects_delivery_and_does_not_send_the_message() {
     let fake = Fake::new(vec![json!({"role":"assistant","content":"first answer"})]);
-    fake.world().steer_on_send = true;
+    fake.world().steer_on_send = Some(1);
     fake.world().record_budget = Some(1);
     let outcome = fake.run(SessionPermission::Write).await;
     assert!(outcome.failed);
@@ -789,4 +822,90 @@ async fn steering_save_failure_rejects_delivery_and_does_not_send_the_message() 
             .any(|row| row["content"] == "make the drop longer")
     );
     assert!(fake.steering.enqueue(json!({})).is_err());
+}
+
+#[test]
+fn a_turn_tells_a_failed_commit_from_a_committed_batch_its_file_missed() {
+    for failure in [CommitFailure::Commit, CommitFailure::Save] {
+        let fake = Fake::new(vec![
+            round(&[("a", "tracks_add")]),
+            json!({"role":"assistant","content":"done"}),
+        ]);
+        fake.world().commit_failure = Some(failure);
+        let outcome = block_on(fake.run(SessionPermission::Write));
+        assert!(outcome.failed, "{outcome:?}");
+        let stop = outcome.stop.unwrap();
+        assert_eq!(stop.commit_failure, Some(failure));
+        assert_eq!(stop.edits, 1);
+        // Only a commit that failed leaves the edits outside the project.
+        assert_eq!(
+            stop.committed,
+            failure == CommitFailure::Save,
+            "{failure:?}"
+        );
+        let expected = match failure {
+            CommitFailure::Save => "committed, but the project file was not written",
+            CommitFailure::Commit => "could not be committed",
+        };
+        assert!(outcome.text.contains(expected), "{}", outcome.text);
+    }
+}
+
+#[tokio::test]
+async fn a_steer_during_the_last_round_s_answer_is_refused_and_the_answer_stands() {
+    let mut replies: Vec<Value> = (0..MAX_TOOL_ROUNDS - 1)
+        .map(|n| round(&[(&format!("c{n}"), "tracks_list")]))
+        .collect();
+    replies.push(json!({"role":"assistant","content":"final answer"}));
+    let fake = Fake::new(replies);
+    fake.world().steer_on_send = Some(MAX_TOOL_ROUNDS);
+    let outcome = fake.run(SessionPermission::Write).await;
+    assert!(!outcome.failed, "{outcome:?}");
+    assert_eq!(outcome.text, "final answer");
+    assert!(
+        !fake
+            .saved()
+            .iter()
+            .any(|row| row["content"] == "make the drop longer"),
+        "a message with no round to answer it is not saved"
+    );
+}
+
+#[test]
+fn a_review_takes_back_only_an_edit_the_call_made_and_only_for_its_own_errors() {
+    // The call writes a document that does not validate: it is taken back.
+    let fake = Fake::new(vec![round(&[("a", "tracks_add")])]);
+    fake.world().invalid_from = Some(1);
+    block_on(fake.run(SessionPermission::Autoreview));
+    assert_eq!(fake.world().undos, 1);
+    assert_eq!(fake.results()[0].1["undone"], true);
+
+    // A call that changed nothing never undoes an earlier edit, even when the
+    // project does not validate.
+    let fake = Fake::new(vec![round(&[("a", "project_set_tempo")])]);
+    {
+        let mut world = fake.world();
+        world.invalid = true;
+        world.noop = true;
+    }
+    block_on(fake.run(SessionPermission::Autoreview));
+    assert_eq!(fake.world().undos, 0);
+
+    // Errors the project already had are not the call's.
+    let fake = Fake::new(vec![round(&[("a", "tracks_add")])]);
+    fake.world().invalid = true;
+    block_on(fake.run(SessionPermission::Autoreview));
+    assert_eq!(fake.world().undos, 0);
+    assert!(fake.results()[0].1.get("undone").is_none());
+}
+
+#[test]
+fn a_call_quoted_in_a_native_model_s_answer_never_runs() {
+    let fake = Fake::new(vec![json!({"role":"assistant",
+        "content":"You could run {\"tool\":\"tracks_add\",\"args\":{\"name\":\"x\"}} yourself."})]);
+    fake.world().text_protocol = false;
+    let outcome = block_on(fake.run(SessionPermission::Write));
+    assert!(!outcome.failed, "{outcome:?}");
+    assert!(outcome.text.starts_with("You could run"));
+    assert!(fake.world().calls.is_empty(), "{:?}", fake.world().calls);
 }

@@ -148,23 +148,31 @@ fn create_session(
     };
     let store = store();
     let meta = store.create(place.as_deref(), project.as_deref(), title, fork)?;
-    sessions::set_active(&meta.workspace_key, &meta.id);
     Ok(meta)
 }
 
 /// The saved wire messages of one session, ready to replay.
 #[tauri::command]
 pub fn sessions_load(id: String) -> Result<Loaded, String> {
-    let loaded = store().load(&id)?;
-    sessions::set_active(&loaded.meta.workspace_key, &loaded.meta.id);
-    Ok(loaded)
+    store().load(&id)
 }
 
 /// Drop all history before the `keep`-th compaction, then collect assets no
 /// remaining message refers to.
 #[tauri::command]
 pub fn sessions_drop_history(id: String, keep: u64) -> Result<Value, String> {
+    refuse_while_running(&id)?;
     store().drop_history(&id, keep)
+}
+
+/// A conversation a turn is writing keeps its shape until the turn ends.
+fn refuse_while_running(id: &str) -> Result<(), String> {
+    if crate::ai::agent_loop::host::session_running(id) {
+        return Err(
+            "A turn is running in this conversation; stop it or wait for it to finish.".into(),
+        );
+    }
+    Ok(())
 }
 
 /// Save the project DSL as it stands before a message is sent, so that message
@@ -208,6 +216,7 @@ pub fn sessions_set_permission(
 #[tauri::command]
 /// Delete one saved session.
 pub fn sessions_delete(id: String) -> Result<(), String> {
+    refuse_while_running(&id)?;
     store().delete(&id)
 }
 
@@ -227,6 +236,7 @@ pub fn compact_for(
     id: &str,
     target_tokens: Option<u64>,
 ) -> Result<Compaction, String> {
+    refuse_while_running(id)?;
     let facts = {
         let inner = state.lock_inner();
         facts(&inner)
@@ -368,47 +378,6 @@ pub fn prepare_turn_for(
         archive_evicted: prepared.evicted_auditions,
         saved_auditions: prepared.saved_auditions,
     }))
-}
-
-/// Persists panel-local proposal results without making another provider request.
-#[tauri::command]
-pub fn sessions_checkpoint(
-    id: String,
-    messages: Vec<Value>,
-    status: Option<String>,
-    path: Option<String>,
-) -> Result<(), String> {
-    if messages.len() > 100
-        || serde_json::to_vec(&messages)
-            .map_err(|e| e.to_string())?
-            .len()
-            > 2_000_000
-    {
-        return Err("Session checkpoint exceeds its bounded tool-result budget".into());
-    }
-    let outcome = match (status.as_deref(), path.as_deref()) {
-        (None, None) => None,
-        (Some(status), Some(path)) => Some((status, path)),
-        _ => return Err("Proposal outcome requires both status and path".into()),
-    };
-    store().checkpoint_tools(&id, &messages, outcome)
-}
-
-/// Persists the host outcome, even when the provider failed before replying.
-pub fn record_panel_rollback(app: &tauri::AppHandle) -> Result<(), String> {
-    let state = app.state::<AppState>();
-    let (place, facts) = {
-        let inner = state.lock_inner();
-        (
-            crate::commands::workspace::scoped_workspace(&inner, None),
-            facts(&inner),
-        )
-    };
-    let store = store();
-    if let Some(id) = sessions::active(&store.workspace_key(place.as_deref())) {
-        store.record_rollback(&id, &facts)?;
-    }
-    Ok(())
 }
 
 /// Saves the assistant message a finished turn produced.

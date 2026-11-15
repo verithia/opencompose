@@ -62,10 +62,16 @@ pub(super) fn attach(
     dir: &Path,
     messages: &mut [Value],
     snapshot: Option<&str>,
+    project: Option<&Path>,
 ) -> Result<(), String> {
     let Some(snapshot) = snapshot else {
         return Ok(());
     };
+    // The file the snapshot belongs to, so a revert never writes it into
+    // another file of the same workspace.
+    let project = project
+        .map(|path| super::canonical_path(path).to_string_lossy().into_owned())
+        .filter(|path| path.chars().count() <= super::MAX_PROJECT_PATH);
     let mut hash = None;
     for message in messages {
         if message_protocol::for_new(message).map(|meta| meta.kind) != Some(MessageKind::User) {
@@ -76,6 +82,9 @@ pub(super) fn attach(
             None => hash.insert(save(dir, snapshot)?),
         };
         message["dsl_sha"] = json!(hash);
+        if let Some(project) = &project {
+            message["dsl_project"] = json!(project);
+        }
     }
     Ok(())
 }
@@ -160,7 +169,7 @@ mod tests {
             json!({"role":"user","context":"audition","content":"Clip"}),
             json!({"role":"user","message_meta":{"version":1,"kind":"round_budget"},"content":"Continue"}),
         ];
-        attach(dir.path(), &mut messages, Some("document")).unwrap();
+        attach(dir.path(), &mut messages, Some("document"), None).unwrap();
         assert!(messages[0].get("dsl_sha").is_some());
         assert!(messages[1..].iter().all(|row| row.get("dsl_sha").is_none()));
     }

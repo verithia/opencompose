@@ -13,6 +13,7 @@ import { TooltipLayer } from "../components/Tooltip";
 import { isContextMenuOpen } from "../components/ContextMenu";
 import { i18n } from "../stores/i18n";
 import { aiSession } from "../stores/aiSession";
+import { aiWorkspace } from "../stores/aiWorkspace";
 import { workspaceStore } from "../stores/workspace";
 import {
   compactionNotice,
@@ -1547,6 +1548,30 @@ describe("reverting before a message", () => {
     await waitFor(() => expect(backend.reverts).toEqual([{ sessionId: "s1", index: 2 }]));
   });
 
+  it("applies a revert the file did not take and says the file is behind", async () => {
+    backend.conversations = { s1: conversation };
+    const base = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation(async (command: string, args?: unknown) => {
+      const answer = await base(command, args);
+      return command === "ai_revert_before" ? { ...(answer as object), unsaved: "disk full" } : answer;
+    });
+    await mountPanel();
+    await openSwitcher();
+    fireEvent.click(document.querySelector(".ai-session-row-title")!);
+    await waitFor(() => expect(messageRows()).toHaveLength(4));
+
+    fireEvent.contextMenu(messageRows()[2]);
+    fireEvent.click(screen.getByRole("menuitem", { name: /Revert to before this message/ }));
+    await waitFor(() => expect(backend.reverts).toHaveLength(1));
+    // The panel settles on the reverted conversation, and the warning stays.
+    await waitFor(() => expect(messageRows()).toHaveLength(2));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(aiWorkspace.notice()).toEqual({
+      text: i18n.t("ai.revert.fileUnsaved", { error: "disk full" }),
+      tone: "error",
+    });
+  });
+
   it("leaves the document alone when the revert is refused", async () => {
     backend.conversations = { s1: conversation };
     const base = invokeMock.getMockImplementation()!;
@@ -1574,6 +1599,45 @@ describe("reverting before a message", () => {
     expect(backend.reverts).toHaveLength(0);
   });
 
+  it("holds the conversation while a revert is in flight, and applies its document after the panel moved", async () => {
+    backend.conversations = { s1: conversation };
+    const base = invokeMock.getMockImplementation()!;
+    let release!: () => void;
+    const replied = new Promise<void>((resolve) => { release = resolve; });
+    invokeMock.mockImplementation(async (command: string, args?: unknown) => {
+      if (command === "ai_revert_before") {
+        await replied;
+      }
+      return base(command, args);
+    });
+    await mountPanel();
+    await openSwitcher();
+    fireEvent.click(document.querySelector(".ai-session-row-title")!);
+    await waitFor(() => expect(messageRows()).toHaveLength(4));
+
+    fireEvent.contextMenu(messageRows()[2]);
+    fireEvent.click(screen.getByRole("menuitem", { name: /Revert to before this message/ }));
+    await waitFor(() => expect(invokeMock.mock.calls.some(([command]) => command === "ai_revert_before")).toBe(true));
+    // The revert rewrites this conversation: no other one opens meanwhile.
+    expect(switcher().disabled).toBe(true);
+    fireEvent.click(document.querySelector(".ai-session-new")!);
+    expect(aiSession.open()).toBe("s1");
+    expect(messageRows()).toHaveLength(4);
+
+    // The panel moves to another workspace before the reply lands. The backend
+    // already restored the document, so it is published; the conversation it
+    // belonged to is off screen, so nothing is repainted into this one.
+    await workspaceStore.open("/Users/me/other");
+    await waitFor(() => expect(aiSession.open()).toBeNull());
+    const restored = '@project "Reverted"\n  tempo: 90\n';
+    backend.revertSnapshot = { ...makeSnapshot(), dsl_source: restored };
+    release();
+    await waitFor(() => expect(store.dslSource()).toBe(restored));
+    expect(aiSession.open()).toBeNull();
+    expect(input().value).toBe("");
+    expect(messageRows()).toHaveLength(0);
+  });
+
   it("withholds the revert in the history a compaction replaced", async () => {
     backend.conversations = { s1: conversation };
     backend.compactedSessions = ["s1"];
@@ -1595,11 +1659,12 @@ describe("reverting before a message", () => {
 
   it("withholds the revert while a turn is still writing the history", async () => {
     backend.conversations = { s1: conversation };
+    // The conversation the inherited turn writes is the one on screen: while
+    // the turn runs, the panel does not switch to another one.
+    aiSession.setOpen("s1");
     aiSession.setTurn({ session: "s1", started: Date.now() });
     backend.active = { request_id: "r1", session_id: "s1" };
     await mountPanel();
-    await openSwitcher();
-    fireEvent.click(document.querySelector(".ai-session-row-title")!);
     await waitFor(() => expect(messageRows()).toHaveLength(4));
     await waitFor(() => expect(document.querySelector(".ai-turn-orphan")).toBeTruthy());
 

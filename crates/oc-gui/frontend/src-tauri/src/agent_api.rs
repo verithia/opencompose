@@ -419,7 +419,10 @@ fn route(app: &AppHandle, request: &Request, token: &str) -> (u16, String) {
         let steer: Steer = match serde_json::from_slice(&request.body) {
             Ok(steer) => steer,
             Err(error) => {
-                return complete_failure(crate::ai_service::AiError::config(error.to_string()));
+                return complete_failure(crate::ai_service::AiError::new(
+                    "request",
+                    error.to_string(),
+                ));
             }
         };
         return match block_on(crate::ai::agent_loop::host::steer(
@@ -430,6 +433,12 @@ fn route(app: &AppHandle, request: &Request, token: &str) -> (u16, String) {
             Ok(()) => (200, json!({"ok":true}).to_string()),
             Err(error) => complete_failure(error),
         };
+    }
+    if request.method == "POST" && path == "/ai/cancel" {
+        if !authorized(&request.headers, token) {
+            return (401, error_body("unauthorized"));
+        }
+        return cancel_turn(&request.body);
     }
     if request.method == "POST" && path == "/ai/turn" {
         if !authorized(&request.headers, token) {
@@ -558,6 +567,29 @@ fn handle_ai_complete_for(body: &[u8], app: Option<&AppHandle>) -> (u16, String)
 /// message; the history comes from the saved conversation. Calls that need a
 /// person are refused to the model; edits apply, and the turn's batch commits
 /// on every ending. Answer: the turn's outcome with `ok` beside it.
+/// `POST /ai/cancel`: stops the named turn of the named conversation. Its
+/// completed calls keep their results and its batch commits, as for any stop;
+/// the turn's own `/ai/turn` request answers with the stop facts.
+fn cancel_turn(body: &[u8]) -> (u16, String) {
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Cancel {
+        request_id: String,
+        session_id: String,
+    }
+    let cancel: Cancel = match serde_json::from_slice(body) {
+        Ok(cancel) => cancel,
+        Err(error) => {
+            return complete_failure(AiError::new("request", error.to_string()));
+        }
+    };
+    if crate::ai::agent_loop::host::cancel_in(&cancel.request_id, &cancel.session_id) {
+        (200, json!({"ok": true, "cancelled": true}).to_string())
+    } else {
+        complete_failure(AiError::new("not_running", "No matching turn is running"))
+    }
+}
+
 fn handle_ai_turn(app: &AppHandle, body: &[u8]) -> (u16, String) {
     let (start, owner) = match turn_request(app, body) {
         Ok(request) => request,
@@ -586,9 +618,12 @@ fn turn_request(
     body: &[u8],
 ) -> Result<(crate::ai::agent_loop::host::TurnStart, String), AiError> {
     let (start, binding) = parse_turn(body)?;
-    let owner = binding
+    binding
         .caller(app)
         .map_err(|error| AiError::new("session_binding", error))?;
+    // The turn's batch is its own: a `/call` client bound to the same
+    // conversation runs as another owner and cannot commit or roll it back.
+    let owner = crate::state::turn_batch_owner(&start.request_id, &start.session_id);
     Ok((start, owner))
 }
 
@@ -639,11 +674,23 @@ fn parse_turn(
     let binding = saved_completion::Binding::parse(&value)
         .map_err(request)?
         .ok_or_else(|| request("An agent turn requires session_id and project_path".into()))?;
-    let token =
-        access_token::make_token().map_err(|_| AiError::config("Request identity unavailable"))?;
+    // A caller that names its turn can steer and cancel it while it runs.
+    let request_id = match value.get("request_id") {
+        None | Some(Value::Null) => {
+            let token = access_token::make_token()
+                .map_err(|_| AiError::config("Request identity unavailable"))?;
+            format!("turn-{}", &token[..token.len().min(48)])
+        }
+        Some(Value::String(id)) if crate::ai::agent_loop::host::valid_request_id(id) => id.clone(),
+        Some(_) => {
+            return Err(request(
+                "'request_id' must be up to 96 letters, digits, '-', '_' or '.'".into(),
+            ));
+        }
+    };
     let start = crate::ai::agent_loop::host::TurnStart {
         provider_id: provider,
-        request_id: format!("turn-{}", &token[..token.len().min(48)]),
+        request_id,
         session_id: binding.id().to_owned(),
         messages,
         toolsets,
@@ -666,7 +713,7 @@ fn complete_status(kind: &str) -> u16 {
         "permission" => 403,
         "rate_limit" | "steer_full" => 429,
         // Another turn already holds the slot, on either surface.
-        "busy" | "cancelled" | "steer_closed" => 409,
+        "busy" | "cancelled" | "steer_closed" | "not_running" => 409,
         // The saved endpoint or provider has to change before a retry can work.
         "config" | "redirect" => 409,
         // The request names a conversation or project this host does not have open.
@@ -4013,6 +4060,7 @@ providers:
             ("request", 400),
             ("cancelled", 409),
             ("steer_closed", 409),
+            ("not_running", 409),
             ("steer_full", 429),
             ("auth", 401),
             ("auth_expired", 401),
@@ -6226,6 +6274,9 @@ providers:
             start.allowed.is_empty(),
             "nobody granted anything to a headless turn"
         );
+        // A caller that names its turn can steer and cancel it by that name.
+        let (named, _) = parse_turn(&body(json!({ "request_id": "my-turn.1" }))).unwrap();
+        assert_eq!(named.request_id, "my-turn.1");
         for bad in [
             json!({ "session_id": null, "project_path": null }),
             json!({ "project_path": "relative.ocp" }),
@@ -6234,6 +6285,8 @@ providers:
             json!({ "toolsets": "mix" }),
             json!({ "toolsets": [1] }),
             json!({ "label": "x".repeat(201) }),
+            json!({ "request_id": "has:colon" }),
+            json!({ "request_id": 7 }),
         ] {
             let error = parse_turn(&body(bad.clone()))
                 .err()
@@ -6294,10 +6347,10 @@ providers:
             .unwrap()
             .expect("the panel batch is recovered");
         assert_eq!(
-            recovered.project.properties.tempo, 150.0,
+            recovered.snapshot.project.properties.tempo, 150.0,
             "applied edits stay"
         );
-        assert_eq!(recovered.revision, base + 1);
+        assert_eq!(recovered.snapshot.revision, base + 1);
         assert!(state.lock_inner().transaction.is_none());
         assert!(
             crate::commands::recover_panel_batch(&state)

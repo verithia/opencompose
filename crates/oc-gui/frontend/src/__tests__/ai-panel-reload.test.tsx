@@ -8,13 +8,15 @@
  * from `localStorage` without the unmounted panel's cleanup having cleared it,
  * which is what a new page instance sees.
  */
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, waitFor } from "@solidjs/testing-library";
 import { invokeMock, makeSnapshot, makeTrack, aiConfigWire } from "./setup";
 import { store } from "../stores/project";
 import { AiPanel } from "../components/AiPanel";
 import { aiLimits } from "../stores/aiLimits";
 import { aiSession } from "../stores/aiSession";
+import { aiWorkspace } from "../stores/aiWorkspace";
+import { workspaceStore } from "../stores/workspace";
 import { resetStats } from "../stores/aiStats";
 import { i18n } from "../stores/i18n";
 import type { ActiveTurn, SessionMeta } from "../ai/sessions";
@@ -109,14 +111,30 @@ const backend = {
   loads: [] as WireMessage[][],
   /** The conversation each `sessions_load` asked for, in order. */
   loadedIds: [] as string[],
-  /** What `ai_batch_recover` answers: the restored document, or null. */
-  recovered: null as ProjectSnapshot | null,
+  /** What `ai_batch_recover` answers: the committed document, or null. */
+  recovered: null as { snapshot: ProjectSnapshot; unsaved?: string } | null,
   project: makeSnapshot() as ProjectSnapshot,
   /** The questions the inherited turn waits on. */
   questions: [] as { call_id: string; tool: string; args: Record<string, unknown> }[],
   /** Every `ai_turn_answer`, in order. */
   answers: [] as Record<string, unknown>[],
+  /** Held `ai_turn_questions` reply, when a test races it. */
+  questionsReply: null as Promise<unknown> | null,
+  /** True when `ai_cancel` leaves the inherited turn running for a while. */
+  cancelKeepsActive: false,
+  /** Held `ai_turn_steer` replies, oldest first, when a test holds them. */
+  holdSteer: false,
+  steers: [] as { resolve: () => void }[],
 };
+
+function deferred<T = unknown>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((ok) => { resolve = ok; });
+  return { promise, resolve };
+}
+
+/** Lets the inherited turn's poll run a few times. */
+const pollRounds = (count = 2) => new Promise((resolve) => setTimeout(resolve, 400 * count + 100));
 
 function installBackend() {
   invokeMock.mockImplementation(async (cmd: string, args?: unknown) => {
@@ -152,20 +170,23 @@ function installBackend() {
         if (backend.active && typed.requestId === backend.active.request_id) return undefined;
         return answerFakeTurn(String(typed.requestId), String(typed.callId), typed.decision as never);
       }
-      case "ai_turn_questions": return backend.questions;
+      case "ai_turn_questions": return backend.questionsReply ?? backend.questions;
       case "ai_turn_steer": {
         expect(typed.requestId).toBe(backend.active?.request_id);
         expect(typed.sessionId).toBe(backend.active?.session_id);
-        backend.loaded.push({ role: "user", ...(typed.message as {content: string}) });
-        return undefined;
+        const save = () => { backend.loaded.push({ role: "user", ...(typed.message as {content: string}) }); };
+        if (!backend.holdSteer) { save(); return undefined; }
+        return new Promise<void>((resolve) => backend.steers.push({ resolve: () => { save(); resolve(); } }));
       }
       case "ai_cancel": {
         backend.cancels.push({ requestId: String(typed.requestId ?? "") });
         cancelFakeTurn(String(typed.requestId ?? ""));
         // The inherited turn closes and lets go of its slot.
-        if (backend.active?.request_id === typed.requestId) backend.active = null;
+        if (!backend.cancelKeepsActive && backend.active?.request_id === typed.requestId) backend.active = null;
         return undefined;
       }
+      case "workspace_open": return { path: String(typed.path ?? ""), name: "other", detached: false, projects: [] };
+      case "workspaces_list": return [];
       case "sessions_list": return backend.sessions.map((entry) => ({ ...entry }));
       case "sessions_new": {
         const meta = session({ id: `s${backend.sessions.length + 1}`, title: String(typed.title ?? "new") });
@@ -270,17 +291,24 @@ beforeEach(() => {
   backend.loadedIds = [];
   backend.recovered = null;
   backend.project = makeSnapshot();
+  backend.questionsReply = null;
+  backend.cancelKeepsActive = false;
+  backend.holdSteer = false;
+  backend.steers = [];
   i18n.setLocale("en");
   aiLimits.setActiveContext(null);
   resetStats();
   aiSession.reset();
+  workspaceStore.reset();
   installBackend();
 });
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   resetFakeTurns();
   aiSession.reset();
+  workspaceStore.reset();
   aiLimits.setActiveContext(null);
   resetStats();
 });
@@ -364,13 +392,26 @@ describe("a reloaded window", () => {
     reloadWith({ open: "s1" });
     backend.loaded = [{ role: "user", content: "first" }];
     const restored = { ...makeSnapshot(), dsl_source: '@project "Committed"\n  tempo: 120\n' };
-    backend.recovered = restored;
+    backend.recovered = { snapshot: restored };
     await mount();
 
     // The panel recovers the orphan exactly once, before its first turn.
     expect(backend.calls.filter((command) => command === "ai_batch_recover")).toHaveLength(1);
     // What is on screen is the document the recovery committed.
     expect(store.dslSource()).toBe(restored.dsl_source);
+  });
+
+  it("says so when a recovered batch did not reach the project file", async () => {
+    reloadWith({ open: "s1" });
+    backend.loaded = [{ role: "user", content: "first" }];
+    const restored = { ...makeSnapshot(), dsl_source: '@project "Committed"\n  tempo: 120\n' };
+    backend.recovered = { snapshot: restored, unsaved: "disk full" };
+    await mount();
+    expect(store.dslSource()).toBe(restored.dsl_source);
+    await waitFor(() => expect(aiWorkspace.notice()).toEqual({
+      text: i18n.t("ai.recover.unsaved", { error: "disk full" }),
+      tone: "error",
+    }));
   });
 
   it("keeps the draft and the queued messages with their conversation, in order", async () => {
@@ -537,7 +578,7 @@ describe("a reloaded window", () => {
       "ai-message system",
     ]));
     expect(rows()[1].textContent).toContain("the kick is now at -3 dB");
-    expect(rows()[2].textContent).toContain("outlived the reload finished");
+    expect(rows()[2].textContent).toContain(i18n.t("ai.reload.settled"));
     expect(storedState().turn).toBeNull();
     // The answer landed in the conversation the marker named, not in a new one.
     expect(backend.loadedIds).toEqual(["s1", "s1"]);
@@ -594,5 +635,259 @@ describe("a reloaded window", () => {
     fireEvent.click(sendButton());
     await waitFor(() => expect(backend.chatCalls).toHaveLength(1));
     expect(backend.chatCalls[0].messages.at(-1)?.content).toBe("left over from the reload");
+  });
+
+  it("says a turn finished while the panel was away when its answer is saved", async () => {
+    reloadWith({ open: "s1", turn: { session: "s1", started: Date.now() } });
+    backend.active = null;
+    backend.loaded = [
+      { role: "user", content: "first" },
+      { role: "assistant", content: "Here is the answer." },
+    ];
+    await mount();
+
+    await waitFor(() => expect(lostBanner()).toBeTruthy());
+    expect(lostBanner()!.textContent).toContain(i18n.t("ai.reload.finished"));
+    expect(lostBanner()!.textContent).not.toContain(i18n.t("ai.reload.lost"));
+    // Nothing is missing, so the banner offers no reload of the conversation.
+    expect(document.querySelector(".ai-turn-reloaded-open")).toBeNull();
+    expect(rows().map((row) => row.className)).toEqual(["ai-message user", "ai-message assistant"]);
+    expect(storedState().turn).toBeNull();
+  });
+
+  it("keeps an inherited turn out of the workspace the panel moves to", async () => {
+    reloadWith({ open: "s1", turn: { session: "s1", started: Date.now() } });
+    backend.active = { request_id: "r1", session_id: "s1" };
+    backend.loaded = [{ role: "user", content: "first" }];
+    backend.questions = [{ call_id: "c7", tool: "tracks_remove", args: { track: "Bass" } }];
+    await mount();
+    await waitFor(() => expect(orphanBanner()).toBeTruthy());
+    await waitFor(() => expect(document.querySelector(".ai-approval-card")).toBeTruthy());
+    const loads = backend.loadedIds.length;
+
+    await workspaceStore.open("/Users/me/other");
+    await waitFor(() => expect(aiSession.open()).toBeNull());
+    expect(orphanBanner()).toBeNull();
+    expect(document.querySelector(".ai-approval-card")).toBeNull();
+
+    // The turn ends in the workspace it belongs to; nothing of it lands here.
+    backend.active = null;
+    await pollRounds();
+    expect(backend.loadedIds).toHaveLength(loads);
+    expect(aiSession.open()).toBeNull();
+    expect(rows()).toHaveLength(0);
+    expect(document.body.textContent).not.toContain(i18n.t("ai.reload.settled"));
+  });
+
+  it("does not paint a stopped inherited turn into the workspace the panel moved to", async () => {
+    reloadWith({ open: "s1", turn: { session: "s1", started: Date.now() } });
+    backend.active = { request_id: "r1", session_id: "s1" };
+    backend.cancelKeepsActive = true;
+    backend.loaded = [{ role: "user", content: "first" }];
+    await mount();
+    await waitFor(() => expect(orphanBanner()).toBeTruthy());
+
+    fireEvent.click(document.querySelector(".ai-turn-orphan-stop")!);
+    await waitFor(() => expect(backend.cancels).toEqual([{ requestId: "r1" }]));
+    const loads = backend.loadedIds.length;
+    await workspaceStore.open("/Users/me/other");
+    await waitFor(() => expect(aiSession.open()).toBeNull());
+
+    backend.active = null;
+    await pollRounds();
+    expect(backend.loadedIds).toHaveLength(loads);
+    expect(aiSession.open()).toBeNull();
+    expect(rows()).toHaveLength(0);
+    expect(document.body.textContent).not.toContain(i18n.t("ai.reload.stopped"));
+  });
+
+  it("refuses to change the conversation while it follows an inherited turn", async () => {
+    reloadWith({ open: "s1", turn: { session: "s1", started: Date.now() } });
+    backend.sessions = [session({ id: "s1" }), session({ id: "s2", title: "second" })];
+    backend.active = { request_id: "r1", session_id: "s1" };
+    backend.loaded = [{ role: "user", content: "first" }];
+    await mount();
+    await waitFor(() => expect(orphanBanner()).toBeTruthy());
+
+    fireEvent.click(document.querySelector(".ai-session-new")!);
+    expect(aiSession.open()).toBe("s1");
+    expect(rows().map((row) => row.className)).toEqual(["ai-message user"]);
+    // The list, and with it switching and forking, waits for the turn too.
+    expect((document.querySelector(".ai-session-current") as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("offers no Steer for a queue that belongs to another conversation than the inherited turn", async () => {
+    reloadWith({ open: "s2", queue: [{ text: "for s2" }], turn: { session: "s1", started: Date.now() } });
+    backend.sessions = [session({ id: "s1" }), session({ id: "s2", title: "second" })];
+    backend.active = { request_id: "r1", session_id: "s1" };
+    await mount();
+    await waitFor(() => expect(orphanBanner()).toBeTruthy());
+
+    expect(queueTexts()).toEqual(["for s2"]);
+    expect(queueButton("steer")).toBeNull();
+    expect(queueButton("send")).toBeNull();
+    expect(backend.calls).not.toContain("ai_turn_steer");
+  });
+
+  it("guards the panel while an inherited turn's stop settles, then refreshes and sends", async () => {
+    reloadWith({ open: "s1", queue: [{ text: "waiting" }], turn: { session: "s1", started: Date.now() } });
+    backend.active = { request_id: "r1", session_id: "s1" };
+    backend.cancelKeepsActive = true;
+    backend.hold = false;
+    backend.loaded = [{ role: "user", content: "first" }];
+    await mount();
+    await waitFor(() => expect(orphanBanner()).toBeTruthy());
+
+    fireEvent.click(document.querySelector(".ai-turn-orphan-stop")!);
+    await waitFor(() => expect(backend.cancels).toEqual([{ requestId: "r1" }]));
+    // The turn still writes until the backend lets go of it: nothing is sent,
+    // the conversation stays, and its edits still reach the project.
+    expect(orphanBanner()!.textContent).toContain(i18n.t("ai.turn.stopping"));
+    expect(queueButton("send")).toBeNull();
+    expect(queueButton("steer")).toBeNull();
+    expect(document.querySelector(".ai-queue-hint")?.textContent).toBe(i18n.t("ai.queue.waitingReload"));
+    await queue("typed while stopping");
+    expect(backend.chatCalls).toHaveLength(0);
+    fireEvent.click(document.querySelector(".ai-session-new")!);
+    expect(aiSession.open()).toBe("s1");
+    emitTurnProject(makeSnapshot({ tracks: [makeTrack("Late cello", 0)] }));
+    await waitFor(() => expect(store.project.tracks.map((track) => track.name)).toEqual(["Late cello"]));
+
+    const reads = backend.calls.filter((command) => command === "get_project").length;
+    backend.project = makeSnapshot({ tracks: [makeTrack("Committed", 0)] });
+    backend.active = null;
+    await waitFor(() => expect(rows().at(-1)?.textContent).toContain(i18n.t("ai.reload.stopped")), { timeout: 3000 });
+    // The project is read once more after the turn let go, for its last commit.
+    expect(backend.calls.filter((command) => command === "get_project").length).toBeGreaterThan(reads);
+    expect(store.project.tracks.map((track) => track.name)).toEqual(["Committed"]);
+    await waitFor(() => expect(backend.chatCalls).toHaveLength(1));
+    expect(backend.chatCalls[0].messages.at(-1)?.content).toBe("waiting");
+  });
+
+  it("keeps following, and holds the queue, when the turn outlasts its stop", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    reloadWith({ open: "s1", queue: [{ text: "waiting" }], turn: { session: "s1", started: Date.now() } });
+    backend.active = { request_id: "r1", session_id: "s1" };
+    backend.cancelKeepsActive = true;
+    backend.loaded = [{ role: "user", content: "first" }];
+    await mount();
+    await waitFor(() => expect(orphanBanner()).toBeTruthy());
+
+    fireEvent.click(document.querySelector(".ai-turn-orphan-stop")!);
+    await waitFor(() => expect(backend.cancels).toEqual([{ requestId: "r1" }]));
+    await vi.advanceTimersByTimeAsync(11_000);
+    await waitFor(() => expect(orphanBanner()?.textContent).toContain(i18n.t("ai.reload.running")));
+    expect(backend.chatCalls).toHaveLength(0);
+    expect(queueTexts()).toEqual(["waiting"]);
+    expect(queueButton("steer")).toBeTruthy();
+    expect(storedState().turn?.session).toBe("s1");
+    expect(document.body.textContent).not.toContain(i18n.t("ai.reload.stopped"));
+    cleanup();
+  });
+
+  it("does not show a question whose wait ran out before the questions reply", async () => {
+    reloadWith({ open: "s1", turn: { session: "s1", started: Date.now() } });
+    backend.active = { request_id: "r1", session_id: "s1" };
+    backend.loaded = [{ role: "user", content: "remove the bass" }];
+    const reply = deferred();
+    backend.questionsReply = reply.promise;
+    await mount();
+    await waitFor(() => expect(backend.calls).toContain("ai_turn_questions"));
+
+    emitTurnEvent("r1", "s1", { type: "expired", call_id: "c7" });
+    reply.resolve([
+      { call_id: "c7", tool: "tracks_remove", args: { track: "Bass" } },
+      { call_id: "c8", tool: "tracks_remove", args: { track: "Lead" } },
+    ]);
+    await waitFor(() => expect(document.querySelector(".ai-approval-card")).toBeTruthy());
+    expect(document.querySelector(".ai-approval-arguments")?.textContent).toContain("Lead");
+    expect(document.querySelector(".ai-approval-arguments")?.textContent).not.toContain("Bass");
+  });
+
+  it("does not steer a row again from a panel reopened while its steer is in flight", async () => {
+    reloadWith({ open: "s1", queue: [{ text: "next" }], turn: { session: "s1", started: Date.now() } });
+    backend.active = { request_id: "r1", session_id: "s1" };
+    backend.holdSteer = true;
+    await mount();
+    await waitFor(() => expect(queueButton("steer")).toBeTruthy());
+    fireEvent.click(queueButton("steer")!);
+    await waitFor(() => expect(backend.steers).toHaveLength(1));
+
+    cleanup();
+    await mount();
+    await waitFor(() => expect(queueButton("steer")).toBeTruthy());
+    expect(queueButton("steer")!.disabled).toBe(true);
+    expect(queueButton("edit")!.disabled).toBe(true);
+    fireEvent.click(queueButton("steer")!);
+    await settleMount();
+    expect(backend.calls.filter((command) => command === "ai_turn_steer")).toHaveLength(1);
+
+    backend.steers[0].resolve();
+    await waitFor(() => expect(queueRows()).toHaveLength(0));
+    expect(backend.calls.filter((command) => command === "ai_turn_steer")).toHaveLength(1);
+  });
+
+  it("acknowledges a steered row after the store was read again", async () => {
+    reloadWith({ open: "s1", queue: [{ text: "next" }, { text: "after" }], turn: { session: "s1", started: Date.now() } });
+    backend.active = { request_id: "r1", session_id: "s1" };
+    backend.holdSteer = true;
+    await mount();
+    await waitFor(() => expect(queueButton("steer")).toBeTruthy());
+    fireEvent.click(queueButton("steer")!);
+    await waitFor(() => expect(backend.steers).toHaveLength(1));
+
+    // The store is read again: every row is a new object with the same id.
+    aiSession.reload();
+    await waitFor(() => expect(queueTexts()).toEqual(["next", "after"]));
+    backend.steers[0].resolve();
+    await waitFor(() => expect(queueTexts()).toEqual(["after"]));
+    expect(storedState().conversations.s1?.queue?.map((row) => row.text)).toEqual(["after"]);
+  });
+
+  it("settles a steer whose reply a closed page lost from the saved conversation", async () => {
+    // Delivered: the saved conversation holds the message, so the row goes.
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      v: 1, open: "s1", turn: null,
+      conversations: { s1: { queue: [{ id: "q1", text: "next", media: [] }], steering: { id: "q1" } } },
+    }));
+    backend.sessions = [session({ id: "s1" })];
+    aiSession.reload();
+    backend.loaded = [
+      { role: "user", content: "first" },
+      { role: "user", content: "next", message_meta: { version: 1, kind: "user", steer_id: "q1" } },
+      { role: "assistant", content: "Both done." },
+    ];
+    await mount();
+    await waitFor(() => expect(queueRows()).toHaveLength(0));
+    expect(backend.chatCalls).toHaveLength(0);
+    cleanup();
+
+    // The same words sent as an ordinary message are not this steer: only
+    // the id the backend saved with the delivery settles it.
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      v: 1, open: "s1", turn: null,
+      conversations: { s1: { queue: [{ id: "q3", text: "same words", media: [] }], steering: { id: "q3" } } },
+    }));
+    aiSession.reload();
+    backend.hold = false;
+    backend.loaded = [{ role: "user", content: "same words" }, { role: "assistant", content: "Done." }];
+    await mount();
+    await waitFor(() => expect(backend.chatCalls).toHaveLength(1));
+    expect(backend.chatCalls[0].messages.at(-1)?.content).toBe("same words");
+    cleanup();
+    backend.chatCalls.length = 0;
+    backend.hold = true;
+
+    // Not delivered: the row is an ordinary queued message again and goes out.
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      v: 1, open: "s1", turn: null,
+      conversations: { s1: { queue: [{ id: "q2", text: "again", media: [] }], steering: { id: "q2" } } },
+    }));
+    aiSession.reload();
+    backend.hold = false;
+    backend.loaded = [{ role: "user", content: "first" }, { role: "assistant", content: "Done." }];
+    await mount();
+    await waitFor(() => expect(backend.chatCalls).toHaveLength(1));
+    expect(backend.chatCalls[0].messages.at(-1)?.content).toBe("again");
   });
 });

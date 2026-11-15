@@ -40,6 +40,9 @@ pub(super) struct MessageMeta {
     /// `tool_calls` and `tool_call_id` instead.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text_call: Option<TextCall>,
+    /// The caller's id for a person's message delivered into a running turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub steer_id: Option<String>,
 }
 
 /// The id and tool of a text-protocol call, so the store can pair its result
@@ -73,6 +76,7 @@ impl MessageMeta {
             proposal_notice: None,
             audio_range: None,
             text_call: None,
+            steer_id: None,
         }
     }
 }
@@ -106,6 +110,13 @@ pub(super) fn read(message: &Value) -> Option<MessageMeta> {
         return None;
     }
     if meta.audio_range.is_some() && !is_audition(meta.kind) {
+        return None;
+    }
+    if meta
+        .steer_id
+        .as_ref()
+        .is_some_and(|id| meta.kind != MessageKind::User || id.is_empty() || id.len() > 64)
+    {
         return None;
     }
     if let Some(call) = &meta.text_call

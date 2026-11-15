@@ -341,9 +341,9 @@ fn a_batch_a_dead_turn_left_open_is_committed_and_the_file_saves() {
         .unwrap()
         .expect("the panel's orphan is recovered");
     assert!(fixture.state.lock_inner().transaction.is_none());
-    assert_ne!(recovered.dsl_source, baseline);
-    assert!(recovered.project.tracks[0].mix.mute);
-    assert_eq!(fixture.bytes(), recovered.dsl_source.as_bytes());
+    assert_ne!(recovered.snapshot.dsl_source, baseline);
+    assert!(recovered.snapshot.project.tracks[0].mix.mute);
+    assert_eq!(fixture.bytes(), recovered.snapshot.dsl_source.as_bytes());
 
     // Save works immediately, and a second recovery is a no-op.
     assert_eq!(

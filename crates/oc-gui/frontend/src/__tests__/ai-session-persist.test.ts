@@ -108,3 +108,49 @@ it("repainting the same conversation preserves an unsaved draft and its empty st
   aiSession.setOpenScoped("workspace/project", "session");
   expect(aiSession.draft()).toBe("An unsent next instruction");
 });
+
+describe("queued rows", () => {
+  it("gives a stored row without an id one, and keeps it across reads", () => {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      v: 1, open: "s1", conversations: { s1: { queue: [{ text: "older row", media: [] }] } }, turn: null,
+    }));
+    aiSession.reload();
+    const [row] = aiSession.queued();
+    expect(row.text).toBe("older row");
+    expect(typeof row.id).toBe("string");
+    expect(row.id).not.toBe("");
+
+    // The next write stores the id, so a later read names the same row.
+    aiSession.setGoal("keep the id");
+    aiSession.reload();
+    expect(aiSession.queued().map((entry) => entry.id)).toEqual([row.id]);
+  });
+
+  it("acknowledges a steered row by id after the store was read again", () => {
+    aiSession.setOpen("s1");
+    aiSession.setQueued([{ text: "steer me", media: [] }, { text: "after it", media: [] }]);
+    const [steered] = aiSession.queued();
+    aiSession.beginSteer("s1", { id: steered.id });
+    aiSession.reload();
+    // The read gives new objects; the mark and the ids survive it.
+    expect(aiSession.queued()[0]).not.toBe(steered);
+    expect(aiSession.steering()).toEqual({ id: steered.id });
+
+    aiSession.acknowledgeQueued("s1", steered.id);
+    expect(aiSession.queued().map((entry) => entry.text)).toEqual(["after it"]);
+    expect(aiSession.steering()).toBeNull();
+    expect(aiSession.steerLive(steered.id)).toBe(false);
+  });
+
+  it("acknowledges a row of a conversation that is not open", () => {
+    aiSession.setOpen("s1");
+    aiSession.setQueued([{ text: "for s1", media: [] }]);
+    const [row] = aiSession.queued();
+    aiSession.beginSteer("s1", { id: row.id });
+    aiSession.setOpen("s2");
+    aiSession.acknowledgeQueued("s1", row.id);
+    aiSession.setOpen("s1");
+    expect(aiSession.queued()).toEqual([]);
+    expect(aiSession.steering()).toBeNull();
+  });
+});

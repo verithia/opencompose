@@ -125,6 +125,10 @@ pub fn answered_call(message: &Value) -> Option<String> {
 /// Checks the invariant every saved conversation keeps: each call is answered
 /// exactly once, by a result that follows it, before any other kind of message
 /// except host deliveries of the same round. The last round may still be open.
+///
+/// Ids are scoped to their round. A provider may number its calls per reply or
+/// per process (`call_0`, `gemini_call_1`), so the same id in a later round is
+/// a new call; within one round an id is unique and answered once.
 pub fn check_pairing(view: &[Value]) -> Result<(), PairingError> {
     let mut seen_calls: HashSet<String> = HashSet::new();
     let mut answered: HashSet<String> = HashSet::new();
@@ -148,6 +152,9 @@ pub fn check_pairing(view: &[Value]) -> Result<(), PairingError> {
         if !open.is_empty() {
             return Err(PairingError::OpenRound(open));
         }
+        // Any other message ends the previous round: its ids are spent.
+        seen_calls.clear();
+        answered.clear();
         for (id, _) in calls_of(message) {
             if !seen_calls.insert(id.clone()) {
                 return Err(PairingError::DuplicateCall(id));
@@ -201,9 +208,24 @@ fn is_round_delivery(message: &Value) -> bool {
         )
 }
 
+/// A result the store wrote for a call that had none, with why.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Closed {
+    pub message: Value,
+    pub state: Unanswered,
+}
+
 /// Answers every open call of the last round. Calls named in the started file
 /// get "outcome unknown"; the rest were never dispatched.
 pub fn close_open(view: &[Value], started: &HashSet<String>) -> Vec<Value> {
+    close_open_typed(view, started)
+        .into_iter()
+        .map(|closed| closed.message)
+        .collect()
+}
+
+/// [`close_open`] with each closing's state.
+pub fn close_open_typed(view: &[Value], started: &HashSet<String>) -> Vec<Closed> {
     let text_calls: HashSet<String> = view
         .iter()
         .rev()
@@ -228,7 +250,7 @@ pub fn close_open(view: &[Value], started: &HashSet<String>) -> Vec<Value> {
                     "content": content,
                 });
                 message_protocol::tag(&mut message, MessageMeta::new(MessageKind::Tool));
-                return message;
+                return Closed { message, state };
             }
             let mut message = json!({
                 "role": "user",
@@ -237,15 +259,20 @@ pub fn close_open(view: &[Value], started: &HashSet<String>) -> Vec<Value> {
             let mut meta = MessageMeta::new(MessageKind::ApplicationResult);
             meta.text_call = Some(message_protocol::TextCall { id, tool });
             message_protocol::tag(&mut message, meta);
-            message
+            Closed { message, state }
         })
         .collect()
 }
 
 /// The calls of the open round that were dispatched, so a closing caller
-/// can tell a lost result from a call that never ran.
-pub fn started_in(dir: &Path) -> HashSet<String> {
-    read_started(dir)
+/// can tell a lost result from a call that never ran. A marker file that
+/// cannot be read says nothing about which call ran, so every open call
+/// counts as dispatched: "outcome unknown" never claims a call did nothing.
+pub fn started_in(dir: &Path, view: &[Value]) -> HashSet<String> {
+    match read_started(dir) {
+        Some(started) => started,
+        None => open_calls(view).into_iter().map(|(id, _)| id).collect(),
+    }
 }
 
 /// Forgets every started marker, once the round they belong to is closed.
@@ -253,12 +280,19 @@ pub fn clear_started(dir: &Path) -> Result<(), String> {
     write_started(dir, &HashSet::new())
 }
 
-fn read_started(dir: &Path) -> HashSet<String> {
-    std::fs::read(dir.join(STARTED_FILE))
+/// The marker file's ids; `None` when it exists but cannot be read or parsed.
+fn read_started(dir: &Path) -> Option<HashSet<String>> {
+    let bytes = match std::fs::read(dir.join(STARTED_FILE)) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Some(HashSet::new());
+        }
+        Err(_) => return None,
+    };
+    serde_json::from_slice::<Vec<String>>(&bytes)
         .ok()
-        .and_then(|bytes| serde_json::from_slice::<Vec<String>>(&bytes).ok())
-        .map(|ids| ids.into_iter().take(MAX_STARTED).collect())
-        .unwrap_or_default()
+        .filter(|ids| ids.len() <= MAX_STARTED)
+        .map(|ids| ids.into_iter().collect())
 }
 
 fn write_started(dir: &Path, started: &HashSet<String>) -> Result<(), String> {
@@ -282,6 +316,8 @@ fn write_started(dir: &Path, started: &HashSet<String>) -> Result<(), String> {
 pub struct RevertPoint {
     pub keep: usize,
     pub dsl_sha: String,
+    /// The project file the message was sent against, when it was recorded.
+    pub project: Option<std::path::PathBuf>,
 }
 
 impl Store {
@@ -293,34 +329,71 @@ impl Store {
         messages: &[Value],
         incarnation: Option<&str>,
     ) -> Result<Vec<Value>, String> {
+        self.append_turn_at(id, messages, incarnation, None)
+    }
+
+    /// Appends a person's messages with the project they were sent against.
+    /// The snapshot and the messages naming it are written under one store
+    /// lock, so collection cannot remove the version between the two.
+    pub fn append_turn_with_snapshot(
+        &self,
+        id: &str,
+        messages: &[Value],
+        incarnation: Option<&str>,
+        dsl: &str,
+        project: Option<&Path>,
+    ) -> Result<Vec<Value>, String> {
+        self.append_turn_at(id, messages, incarnation, Some((dsl, project)))
+    }
+
+    fn append_turn_at(
+        &self,
+        id: &str,
+        messages: &[Value],
+        incarnation: Option<&str>,
+        snapshot: Option<(&str, Option<&Path>)>,
+    ) -> Result<Vec<Value>, String> {
         let _lock = self.mutation_lock()?;
         let (dir, mut meta) = self.find(id)?;
         super::super::session_usage::verify_at(&dir, incarnation).map_err(|error| error.message)?;
         let (mut view, _) = read_view(&dir)?;
+        // Pairing depends only on roles, ids and kinds, which archiving keeps;
+        // checking first means a refused append archives and consumes nothing.
+        let mut probe = view.clone();
+        probe.extend(messages.iter().filter_map(saved_message));
+        check_pairing(&probe).map_err(|error| format!("sessions: {error}"))?;
         // A delivered clip is archived by content and saved as a reference, so
         // a reload replays the audio the model heard.
         let mut archived = messages.to_vec();
         let settings = crate::gui_settings::load().session_audio;
         super::persist_auditions(&self.root, &mut archived, &settings)?;
-        let added: Vec<Value> = archived.iter().filter_map(saved_message).collect();
+        let mut added: Vec<Value> = archived.iter().filter_map(saved_message).collect();
         if added.is_empty() {
             return Ok(added);
+        }
+        if let Some((dsl, project)) = snapshot {
+            super::versions::attach(&dir, &mut added, Some(dsl), project)?;
         }
         let start = view.len();
         view.extend(added.iter().cloned());
         check_pairing(&view).map_err(|error| format!("sessions: {error}"))?;
-        // A result answers a started call: the marker for it is spent.
-        let mut started = read_started(&dir);
+        // A result answers a started call: the marker for it is spent. A new
+        // round means the previous one is answered, so all its markers are.
+        let mut started = started_in(&dir, &view[..start]);
         let before = started.len();
+        let mut rewrite = false;
         for message in &view[start..] {
             if let Some(call) = answered_call(message) {
                 started.remove(&call);
+            } else if has_calls(message) {
+                started.clear();
+                rewrite = true;
             }
         }
         let record = super::turn_record(&now(), added);
         let saved = record.messages.clone();
         append_records(&dir, &[record])?;
-        if started.len() != before {
+        if rewrite || started.len() != before {
             write_started(&dir, &started)?;
         }
         let (view, _) = read_view(&dir)?;
@@ -340,14 +413,24 @@ impl Store {
         if !open_calls(&view).iter().any(|(open, _)| open == call) {
             return Err(format!("sessions: call {call} is not open"));
         }
-        let mut started = read_started(&dir);
+        let mut started = started_in(&dir, &view);
         started.insert(call.to_owned());
         write_started(&dir, &started)
     }
 
     /// Closes a round a stopped or dead loop left open, so the conversation
     /// can take its next message. Returns the results it wrote.
+    #[cfg(test)]
     pub fn close_round(&self, id: &str) -> Result<Vec<Value>, String> {
+        Ok(self
+            .close_round_typed(id)?
+            .into_iter()
+            .map(|closed| closed.message)
+            .collect())
+    }
+
+    /// [`Self::close_round`] with each closing's state.
+    pub fn close_round_typed(&self, id: &str) -> Result<Vec<Closed>, String> {
         let _lock = self.mutation_lock()?;
         let (dir, mut meta) = self.find(id)?;
         self.close_round_locked(&dir, &mut meta)
@@ -357,12 +440,13 @@ impl Store {
         &self,
         dir: &Path,
         meta: &mut super::SessionMeta,
-    ) -> Result<Vec<Value>, String> {
+    ) -> Result<Vec<Closed>, String> {
         let (view, _) = read_view(dir)?;
-        let started = read_started(dir);
-        let closed = close_open(&view, &started);
+        let started = started_in(dir, &view);
+        let closed = close_open_typed(&view, &started);
         if !closed.is_empty() {
-            append_records(dir, &[super::turn_record(&now(), closed.clone())])?;
+            let messages = closed.iter().map(|closed| closed.message.clone()).collect();
+            append_records(dir, &[super::turn_record(&now(), messages)])?;
             let (view, _) = read_view(dir)?;
             meta.tokens = super::estimate_tokens(&view);
             meta.updated = now();
@@ -383,11 +467,18 @@ impl Store {
     /// Cuts the conversation just before the user message at `index`. The cut
     /// lands on a user message, so it never separates a call from its result,
     /// and the compaction history behind the view is kept.
-    pub fn cut_before_user(&self, id: &str, index: usize) -> Result<usize, String> {
+    pub fn cut_before_user(
+        &self,
+        id: &str,
+        index: usize,
+        expected_sha: &str,
+    ) -> Result<usize, String> {
         let _lock = self.mutation_lock()?;
         let (dir, mut meta) = self.find(id)?;
         let (view, _) = read_view(&dir)?;
-        revert_point_in(&view, index)?;
+        if revert_point_in(&view, index)?.dsl_sha != expected_sha {
+            return Err("The conversation changed since this revert was chosen; try again.".into());
+        }
         let kept: Vec<Value> = view[..index].to_vec();
         // A trim record replaces the view and keeps the turns before it on
         // disk, as a compaction does, so the original history stays readable.
@@ -424,9 +515,13 @@ fn revert_point_in(view: &[Value], index: usize) -> Result<RevertPoint, String> 
         .as_str()
         .ok_or("This message has no project snapshot to restore")?
         .to_owned();
+    let project = message["dsl_project"]
+        .as_str()
+        .map(std::path::PathBuf::from);
     Ok(RevertPoint {
         keep: index,
         dsl_sha,
+        project,
     })
 }
 
@@ -519,7 +614,7 @@ mod tests {
             Err(PairingError::DuplicateResult("a".into()))
         );
         assert_eq!(
-            check_pairing(&[round(&["a"]), result("a"), round(&["a"])]),
+            check_pairing(&[round(&["a", "a"])]),
             Err(PairingError::DuplicateCall("a".into()))
         );
         assert_eq!(
@@ -634,12 +729,6 @@ mod tests {
         assert!(store.append_turn(&id, &[text_result("zzz")], None).is_err());
         store.append_turn(&id, &[text_result("t1")], None).unwrap();
         assert!(store.append_turn(&id, &[text_result("t1")], None).is_err());
-        assert!(
-            store
-                .append_turn(&id, &[user("next"), text_round("t1")], None)
-                .is_err(),
-            "an id is never reused"
-        );
         assert_eq!(store.view(&id).unwrap().len(), before.len() + 1);
 
         // A round saved without the metadata has no call to close.
@@ -649,6 +738,156 @@ mod tests {
         assert!(open_calls(&view).is_empty());
         assert_eq!(check_pairing(&view), Ok(()));
         assert!(close_open(&view, &HashSet::new()).is_empty());
+    }
+
+    #[test]
+    fn preparation_refuses_a_request_that_would_break_pairing_and_writes_nothing() {
+        let (_root, store, id) = fixture();
+        store.append_turn(&id, &[user("go")], None).unwrap();
+        let before = store.view(&id).unwrap();
+        let facts = super::super::ProjectFacts::default();
+        let context = || super::super::PrepareContext {
+            snapshot: None,
+            overhead: 0,
+            context_length: 0,
+            facts: &facts,
+            provider: "p",
+            model: "m",
+        };
+        // A client's orphan result would refuse every later append.
+        let error = store
+            .prepare(&id, &[user("go"), result("x")], None, context())
+            .unwrap_err();
+        assert!(error.contains("has no call"), "{error}");
+        assert_eq!(store.view(&id).unwrap(), before);
+
+        // A text-protocol result the request brings answers its own call; the
+        // round is not also closed as "not run".
+        store.append_turn(&id, &[text_round("t1")], None).unwrap();
+        let prepared = store
+            .prepare(&id, &[text_round("t1"), text_result("t1")], None, context())
+            .unwrap();
+        let view = store.view(&id).unwrap();
+        assert_eq!(check_pairing(&view), Ok(()));
+        let answers = view
+            .iter()
+            .filter(|message| answered_call(message).as_deref() == Some("t1"))
+            .count();
+        assert_eq!(answers, 1, "{:?}", prepared.messages);
+    }
+
+    #[test]
+    fn a_call_id_is_unique_within_its_round_and_free_in_the_next() {
+        // A provider that numbers calls per process starts again after a
+        // restart: the same id in a later round is a new call.
+        let (_root, store, id) = fixture();
+        store
+            .append_turn(&id, &[user("go"), round(&["gemini_call_1"])], None)
+            .unwrap();
+        store
+            .append_turn(&id, &[result("gemini_call_1")], None)
+            .unwrap();
+        store
+            .append_turn(&id, &[user("again"), round(&["gemini_call_1"])], None)
+            .unwrap();
+        store.mark_started(&id, "gemini_call_1").unwrap();
+        let closed = store.close_round(&id).unwrap();
+        assert_eq!(closed.len(), 1, "only the open round's call is owed");
+        assert_eq!(check_pairing(&store.view(&id).unwrap()), Ok(()));
+
+        // Within a round an id is one call, answered once, and a result for
+        // an earlier round's call is an orphan.
+        let twice = vec![user("go"), round(&["a", "a"])];
+        assert_eq!(
+            check_pairing(&twice),
+            Err(PairingError::DuplicateCall("a".into()))
+        );
+        let answered_twice = vec![user("go"), round(&["a"]), result("a"), result("a")];
+        assert_eq!(
+            check_pairing(&answered_twice),
+            Err(PairingError::DuplicateResult("a".into()))
+        );
+        let stale = vec![
+            user("go"),
+            round(&["a"]),
+            result("a"),
+            user("next"),
+            result("a"),
+        ];
+        assert_eq!(
+            check_pairing(&stale),
+            Err(PairingError::OrphanResult("a".into()))
+        );
+    }
+
+    #[test]
+    fn an_unreadable_marker_file_reads_every_open_call_as_outcome_unknown() {
+        let (_root, store, id) = fixture();
+        store
+            .append_turn(&id, &[user("go"), round(&["a", "b"])], None)
+            .unwrap();
+        let (dir, _) = store.find(&id).unwrap();
+        std::fs::write(dir.join(STARTED_FILE), b"not json").unwrap();
+        let closed = store.close_round(&id).unwrap();
+        assert_eq!(closed.len(), 2);
+        for message in &closed {
+            let body: Value = serde_json::from_str(message["content"].as_str().unwrap()).unwrap();
+            assert_eq!(body["outcome_unknown"], true, "{body}");
+        }
+        assert!(
+            !dir.join(STARTED_FILE).exists(),
+            "the closed round's markers are spent"
+        );
+    }
+
+    #[test]
+    fn a_new_round_spends_the_markers_of_the_round_before() {
+        let (_root, store, id) = fixture();
+        store
+            .append_turn(&id, &[user("go"), round(&["a"])], None)
+            .unwrap();
+        store.mark_started(&id, "a").unwrap();
+        store.append_turn(&id, &[result("a")], None).unwrap();
+        // A stale marker for a reused id must not mark the next round's call.
+        let (dir, _) = store.find(&id).unwrap();
+        std::fs::write(dir.join(STARTED_FILE), b"[\"a\"]").unwrap();
+        store.append_turn(&id, &[round(&["a"])], None).unwrap();
+        let closed = store.close_round(&id).unwrap();
+        let body: Value = serde_json::from_str(closed[0]["content"].as_str().unwrap()).unwrap();
+        assert_eq!(body["not_run"], true, "{body}");
+    }
+
+    #[test]
+    fn a_refused_append_archives_no_audio() {
+        let (_root, store, id) = fixture();
+        store
+            .append_turn(&id, &[user("go"), round(&["a"])], None)
+            .unwrap();
+        let clip_again = || {
+            let samples = vec![0.1_f32; 1_600];
+            let wav = oc_engine::wav::mono_wav_bytes(&samples, 16_000).unwrap();
+            use base64::Engine as _;
+            json!({
+                "role":"user", "content":"Audition",
+                "message_meta":{"version":1,"kind":"audition"},
+                "input_audio":{"data":base64::engine::general_purpose::STANDARD.encode(&wav),"format":"wav"}
+            })
+        };
+        let clip = clip_again();
+        // The orphan result refuses the append before the clip is archived.
+        assert!(
+            store
+                .append_turn(&id, &[result("a"), result("zzz"), clip], None)
+                .is_err()
+        );
+        let media = store.root().join("audition-media");
+        let archived = || std::fs::read_dir(&media).map_or(0, |entries| entries.count());
+        assert_eq!(archived(), 0);
+        // The same clip in a well-formed append is archived where this looks.
+        store
+            .append_turn(&id, &[result("a"), clip_again()], None)
+            .unwrap();
+        assert!(archived() > 0);
     }
 
     #[test]
@@ -749,7 +988,12 @@ mod tests {
         );
         let point = store.revert_point(&id, 4).unwrap();
         assert_eq!(point.dsl_sha, "b".repeat(64));
-        assert_eq!(store.cut_before_user(&id, 4).unwrap(), 4);
+        // A cut chosen against another snapshot (the conversation moved under
+        // the revert) changes nothing.
+        let before = store.view(&id).unwrap();
+        assert!(store.cut_before_user(&id, 4, &"a".repeat(64)).is_err());
+        assert_eq!(store.view(&id).unwrap(), before);
+        assert_eq!(store.cut_before_user(&id, 4, &point.dsl_sha).unwrap(), 4);
         let view = store.view(&id).unwrap();
         assert_eq!(view.len(), 4);
         assert_eq!(check_pairing(&view), Ok(()));

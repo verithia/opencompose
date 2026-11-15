@@ -38,7 +38,7 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const AUDITION_RENDER_STAGE: &str = ".audition-render.part";
@@ -89,7 +89,6 @@ const MAX_INTENT_CHARS: usize = 600;
 
 const VERSION: u32 = 1;
 
-static ACTIVE: LazyLock<Mutex<HashMap<String, String>>> = LazyLock::new(Default::default);
 static TEST_ROOT: Mutex<Option<PathBuf>> = Mutex::new(None);
 #[cfg(test)]
 static TEST_ROOT_LOCK: Mutex<()> = Mutex::new(());
@@ -859,23 +858,27 @@ impl Store {
             .filter(|message| message["role"] != "system")
             .cloned()
             .collect();
-        let audio_settings = crate::gui_settings::load().session_audio;
-        let evicted_auditions = persist_auditions(&self.root, &mut filtered, &audio_settings)?;
         // A window that reloaded mid-turn, or any client that died, leaves the
         // model's last round without results. Closing it here keeps the rule
         // that the store never holds a call no request may carry. A call the
         // request itself answers is not a debt, so the loop's own rounds are
         // left exactly as it sends them.
-        let answered: Vec<&str> = filtered
-            .iter()
-            .filter_map(|message| message["tool_call_id"].as_str())
-            .collect();
+        let answered: Vec<String> = filtered.iter().filter_map(turns::answered_call).collect();
+        let answered: Vec<&str> = answered.iter().map(String::as_str).collect();
         let closed = close_unanswered_round(&dir, &mut pending, &answered);
+        // What a client sends must leave a well-formed conversation, checked
+        // before anything is archived or written: one orphan result would
+        // refuse every later append of this conversation.
+        let mut probe = pending.clone();
+        absorb(&mut probe, &filtered);
+        turns::check_pairing(&probe).map_err(|error| format!("sessions: {error}"))?;
+        let audio_settings = crate::gui_settings::load().session_audio;
+        let evicted_auditions = persist_auditions(&self.root, &mut filtered, &audio_settings)?;
         let start = pending.len();
         let (appended, absorbed) = absorb(&mut pending, &filtered);
         // A version and its first transcript reference share the store lock,
         // so collection cannot remove the version between the two writes.
-        versions::attach(&dir, &mut pending[start..], snapshot)?;
+        versions::attach(&dir, &mut pending[start..], snapshot, project)?;
         let inline_audio = filtered
             .iter()
             .any(|message| message.get("input_audio").is_some());
@@ -944,98 +947,6 @@ impl Store {
             evicted_auditions,
             saved_auditions,
         })
-    }
-
-    /// Saves locally completed tool results before returning control to the user.
-    /// Only outstanding saved call IDs are accepted; repeated checkpoints are idempotent.
-    pub fn checkpoint_tools(
-        &self,
-        id: &str,
-        results: &[Value],
-        outcome: Option<(&str, &str)>,
-    ) -> Result<(), String> {
-        let _lock = self.mutation_lock()?;
-        let (dir, mut meta) = self.find(id)?;
-        let (view, _) = read_view(&dir)?;
-        let mut pending = std::collections::HashSet::new();
-        for message in &view {
-            for call in message["tool_calls"].as_array().into_iter().flatten() {
-                if let Some(id) = call["id"].as_str() {
-                    pending.insert(id.to_owned());
-                }
-            }
-            if message["role"] == "tool"
-                && let Some(id) = message["tool_call_id"].as_str()
-            {
-                pending.remove(id);
-            }
-        }
-        let mut added = Vec::new();
-        for message in results {
-            if message["role"] == "tool"
-                && message["tool_call_id"]
-                    .as_str()
-                    .is_some_and(|id| pending.remove(id))
-                && let Some(saved) = saved_message(message)
-            {
-                added.push(saved);
-            }
-        }
-        if let Some((status, path)) = outcome {
-            if !matches!(status, "applied" | "rejected") || path.len() > 1024 {
-                return Err("Invalid proposal outcome".into());
-            }
-            // Answer the call that proposed it: a provider requires the tool
-            // result to follow its call immediately, and a user message in
-            // between makes the next request invalid. With no pending call the
-            // outcome stays a note.
-            let body = format!(
-                "Host proposal outcome: {}",
-                json!({"status":status,"path":path,"other_deferred_calls_applied":false})
-            );
-            let mut message = match pending.iter().next() {
-                Some(call) => json!({
-                    "role": "tool",
-                    "tool_call_id": call,
-                    "content": body,
-                }),
-                None => json!({"role": "user", "content": body}),
-            };
-            message_protocol::tag(&mut message, MessageMeta::new(MessageKind::ProposalOutcome));
-            if view.last() != Some(&message) {
-                added.push(message);
-            }
-        }
-        if !added.is_empty() {
-            append_records(&dir, &[turn_record(&now(), added)])?;
-            let (view, _) = read_view(&dir)?;
-            meta.tokens = estimate_tokens(&view);
-            meta.updated = now();
-            write_meta(&dir, &meta)?;
-        }
-        Ok(())
-    }
-
-    /// Records a host transaction outcome independently of the panel's stale wire history.
-    pub fn record_rollback(&self, id: &str, facts: &ProjectFacts) -> Result<(), String> {
-        let _lock = self.mutation_lock()?;
-        let (dir, mut meta) = self.find(id)?;
-        let (mut view, _) = read_view(&dir)?;
-        let mut messages = close_unanswered_round(&dir, &mut view, &[]);
-        let mut rollback = json!({"role": "user", "content": format!(
-            "Host transaction rollback: all project edits in the interrupted transaction were reverted. Earlier successful mutation results describe historical intermediate states, not the current project. Current project DSL sha256 {}; track count {}. Inspect current project before further edits. External rendered or separated audio files are not reverted.",
-            facts.dsl_digest, facts.track_count
-        )});
-        message_protocol::tag(
-            &mut rollback,
-            MessageMeta::new(MessageKind::TransactionRollback),
-        );
-        messages.push(rollback);
-        append_records(&dir, &[turn_record(&now(), messages)])?;
-        let (view, _) = read_view(&dir)?;
-        meta.tokens = estimate_tokens(&view);
-        meta.updated = now();
-        write_meta(&dir, &meta)
     }
 
     /// Appends the assistant message a turn produced, so an answer survives the
@@ -1947,6 +1858,12 @@ fn saved_message(message: &Value) -> Option<Value> {
     {
         saved.insert("dsl_sha".into(), json!(sha));
     }
+    if let Some(project) = message["dsl_project"]
+        .as_str()
+        .filter(|path| !path.is_empty() && path.chars().count() <= MAX_PROJECT_PATH)
+    {
+        saved.insert("dsl_project".into(), json!(project));
+    }
     // The signed reasoning of an assistant turn is provider state: a restored
     // conversation that dropped it would replay an unsigned tool round.
     for key in ["tool_calls", "tool_call_id", "provider_state", "thinking"] {
@@ -2124,11 +2041,9 @@ fn tool_blocks(view: &[Value]) -> Vec<(usize, usize)> {
 /// block is complete and is left alone.
 fn close_unanswered_round(dir: &Path, view: &mut Vec<Value>, answered: &[&str]) -> Vec<Value> {
     // A call the request itself answers is not a debt.
-    let mut closed = turns::close_open(view, &turns::started_in(dir));
+    let mut closed = turns::close_open(view, &turns::started_in(dir, view));
     closed.retain(|message| {
-        !message["tool_call_id"]
-            .as_str()
-            .is_some_and(|id| answered.contains(&id))
+        !turns::answered_call(message).is_some_and(|id| answered.contains(&id.as_str()))
     });
     view.extend(closed.iter().cloned());
     closed
@@ -3062,6 +2977,11 @@ fn newest_that_fit(view: &[Value], budget: u64) -> Vec<Value> {
         kept.push(message.clone());
     }
     kept.reverse();
+    // A cut inside a round can keep results whose call fell off the front;
+    // dropping them keeps the conversation one every later append accepts.
+    while !kept.is_empty() && turns::check_pairing(&kept).is_err() {
+        kept.remove(0);
+    }
     kept
 }
 
@@ -3087,7 +3007,10 @@ fn canonical_dir(path: &Path) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
-fn canonical_path(path: &Path) -> PathBuf {
+/// Longest project path a saved message records with its snapshot.
+const MAX_PROJECT_PATH: usize = 4096;
+
+pub(crate) fn canonical_path(path: &Path) -> PathBuf {
     if let Ok(resolved) = std::fs::canonicalize(path) {
         return resolved;
     }
@@ -3164,21 +3087,6 @@ fn clip(text: &str, limit: usize) -> String {
 }
 
 // ---- test support -------------------------------------------------------
-
-/// The panel's process-wide active session per project key, so a turn can
-/// autosave without the panel naming a session.
-pub fn active(key: &str) -> Option<String> {
-    ACTIVE
-        .lock()
-        .ok()
-        .and_then(|active| active.get(key).cloned())
-}
-
-pub fn set_active(key: &str, id: &str) {
-    if let Ok(mut active) = ACTIVE.lock() {
-        active.insert(key.to_owned(), id.to_owned());
-    }
-}
 
 #[cfg(test)]
 pub(crate) struct TestRootGuard {
@@ -3274,6 +3182,24 @@ mod tests {
     use crate::ai::test_support::canned_by_request;
     use crate::ai::{self, provider_for, request_from_wire};
     use crate::commands::{AiCapabilities, AiProviderEntry, AuthKind, ProviderKind, Wire};
+
+    #[test]
+    fn a_trimmed_conversation_never_starts_with_an_orphan_result() {
+        let call = json!({"role":"assistant","content":null,"tool_calls":[
+            {"id":"a","type":"function","function":{"name":"tracks_add","arguments":"{}"}}
+        ]});
+        let big = "x".repeat(400);
+        let view = vec![
+            user("go"),
+            call,
+            json!({"role":"tool","tool_call_id":"a","content":big}),
+            user("next"),
+        ];
+        // The budget fits the result and the last message, not the call.
+        let kept = newest_that_fit(&view, 500);
+        assert_eq!(turns::check_pairing(&kept), Ok(()));
+        assert_eq!(kept.first().unwrap()["content"], "next");
+    }
 
     #[test]
     fn unavailable_handoff_retains_the_clip_without_archiving_a_reused_export() {
@@ -3379,166 +3305,6 @@ mod tests {
         }
         view.push(user("now the bass"));
         view
-    }
-
-    #[test]
-    fn proposal_checkpoint_preserves_pending_deferred_and_applied_on_continue() {
-        let (store, project) = fixture("proposal-checkpoint");
-        let meta = store
-            .create(None, Some(&project), Some("Goal"), None)
-            .unwrap();
-        let mut call = tool_call("edit_subtree", "{}", "sig");
-        let second = json!({"id":"later","type":"function","function":{"name":"edit_subtree","arguments":"{}"}});
-        call["tool_calls"].as_array_mut().unwrap().push(second);
-        let history = vec![user("Improve the song"), call];
-        let current = facts(&project);
-        store
-            .prepare(
-                &meta.id,
-                &history,
-                Some(&project),
-                crate::ai::sessions::PrepareContext {
-                    snapshot: None,
-                    overhead: 0,
-                    context_length: 1_000_000,
-                    facts: &current,
-                    provider: "fixture",
-                    model: "model",
-                },
-            )
-            .unwrap();
-        let results = vec![
-            tool_result(
-                "edit_subtree",
-                "{\"status\":\"pending_user_confirmation\",\"applied\":false}",
-            ),
-            json!({"role":"tool","tool_call_id":"later","content":"{\"deferred\":true,\"applied\":false}"}),
-            tool_result("unknown", "ignore"),
-        ];
-        store.checkpoint_tools(&meta.id, &results, None).unwrap();
-        store.checkpoint_tools(&meta.id, &results, None).unwrap();
-        store
-            .checkpoint_tools(&meta.id, &[], Some(("applied", "track:lead_chop")))
-            .unwrap();
-        let prepared = store
-            .prepare(
-                &meta.id,
-                &[user("Continue")],
-                Some(&project),
-                crate::ai::sessions::PrepareContext {
-                    snapshot: None,
-                    overhead: 0,
-                    context_length: 1_000_000,
-                    facts: &current,
-                    provider: "fixture",
-                    model: "model",
-                },
-            )
-            .unwrap();
-        let text = serde_json::to_string(&prepared.messages).unwrap();
-        assert!(!text.contains("Not run:"));
-        assert!(text.contains("pending_user_confirmation"));
-        assert!(text.contains("deferred"));
-        assert!(text.contains("Host proposal outcome:"));
-        assert_eq!(
-            prepared
-                .messages
-                .iter()
-                .filter(|m| m["role"] == "tool")
-                .count(),
-            2
-        );
-        let summary = summary_text(
-            &prepared.messages,
-            prepared.messages.len(),
-            &[],
-            &current,
-            1000,
-            "now",
-        );
-        assert!(summary.contains("Host proposal outcome:"));
-        let reopened = Store::new(store.root().to_owned()).load(&meta.id).unwrap();
-        assert_eq!(reopened.messages, prepared.messages);
-        store
-            .checkpoint_tools(&meta.id, &[], Some(("rejected", "track:bass")))
-            .unwrap();
-        assert!(
-            store.load(&meta.id).unwrap().messages.last().unwrap()["content"]
-                .as_str()
-                .unwrap()
-                .contains("rejected")
-        );
-    }
-
-    #[test]
-    fn rollback_survives_reopen_continue_and_repeated_compaction() {
-        let (store, project) = fixture("rollback-continuity");
-        let meta = store
-            .create(None, Some(&project), Some("Goal"), None)
-            .unwrap();
-        let history = vec![
-            user("Build an editable song"),
-            tool_call("tracks_create", "{}", "sig"),
-            tool_result("tracks_create", "{\"track_count\":16}"),
-            tool_call("tracks_mix", "{}", "sig2"),
-        ];
-        let current = ProjectFacts {
-            track_count: 1,
-            ..facts(&project)
-        };
-        store
-            .prepare(
-                &meta.id,
-                &history,
-                Some(&project),
-                crate::ai::sessions::PrepareContext {
-                    snapshot: None,
-                    overhead: 0,
-                    context_length: 1_000_000,
-                    facts: &current,
-                    provider: "fixture",
-                    model: "model",
-                },
-            )
-            .unwrap();
-        store.record_rollback(&meta.id, &current).unwrap();
-        let reopened = Store::new(store.root().to_owned());
-        let loaded = reopened.load(&meta.id).unwrap();
-        let notice = loaded.messages.last().unwrap()["content"].as_str().unwrap();
-        assert!(notice.starts_with("Host transaction rollback:"));
-        assert!(notice.contains("track count 1"));
-        let mut stale = history;
-        stale.push(user("Continue"));
-        let prepared = reopened
-            .prepare(
-                &meta.id,
-                &stale,
-                Some(&project),
-                crate::ai::sessions::PrepareContext {
-                    snapshot: None,
-                    overhead: 0,
-                    context_length: 1_000_000,
-                    facts: &current,
-                    provider: "fixture",
-                    model: "model",
-                },
-            )
-            .unwrap();
-        assert_eq!(prepared.appended, 1);
-        let first = summary_text(
-            &prepared.messages,
-            prepared.messages.len(),
-            &[],
-            &current,
-            2000,
-            "first",
-        );
-        assert!(first.contains(notice));
-        assert!(!first.contains("tracks_create applied"));
-        let second_view = vec![user(&first), user("Continue")];
-        let second = summary_text(&second_view, 2, &[], &current, 1000, "second");
-        assert!(second.contains(notice));
-        assert!(second.contains("Standing intent: Build an editable song"));
     }
 
     #[test]

@@ -148,27 +148,43 @@ pub fn apply_edit_to_project(
     Ok(snapshot(inner))
 }
 
-/// Commits a batch a panel turn left open, e.g. when the process that ran the
-/// turn died between its edits and its commit. The edits stay applied, as one
-/// undo entry; the saved conversation marks the calls that never reported.
-/// Returns the published document, or `None` when no panel batch was open.
+/// What a recovery committed, and whether the file took it.
+#[derive(Debug, serde::Serialize)]
+pub struct RecoveredBatch {
+    pub snapshot: ProjectSnapshot,
+    /// Why the committed edits are not in the project file yet.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unsaved: Option<String>,
+}
+
+/// Commits a batch a backend turn left open, e.g. when the process that ran
+/// the turn died between its edits and its commit. The edits stay applied, as
+/// one undo entry; the saved conversation marks the calls that never reported.
+/// Returns the published document, or `None` when no such batch was open.
 ///
-/// Only a panel-owned batch is recovered: a batch an external client opened is
-/// that client's to finish, so it is left alone. Calling this with no open batch
-/// and calling it twice are both no-ops.
-pub fn recover_panel_batch(state: &AppState) -> Result<Option<ProjectSnapshot>, String> {
+/// Recovery holds the request slot, and a turn holds it for as long as its
+/// batch is open, so a loop-owned batch found here has no live turn, in any
+/// conversation; committing it only keeps edits that already landed. A batch
+/// an external client opened is that client's to finish, so it is left alone.
+/// Calling this with no open batch and calling it twice are both no-ops.
+pub fn recover_panel_batch(state: &AppState) -> Result<Option<RecoveredBatch>, String> {
     let Some(owner) = state.batch_owner() else {
         return Ok(None);
     };
-    if !owner.starts_with(crate::state::PANEL_BATCH_OWNER_PREFIX) {
+    if !crate::state::loop_batch_owner(&owner) {
         return Ok(None);
     }
     state.commit_transaction()?;
-    if let Err(reason) = crate::project_persist::flush_state(state) {
-        log::error!("[ai] recovered batch not written to the project file: {reason}");
-    }
+    let unsaved = crate::project_persist::flush_state(state)
+        .err()
+        .map(|reason| {
+            format!("The recovered edits were not written to the project file: {reason}")
+        });
     let inner = state.lock_inner();
-    Ok(Some(snapshot(&inner)))
+    Ok(Some(RecoveredBatch {
+        snapshot: snapshot(&inner),
+        unsaved,
+    }))
 }
 
 /// The panel calls this once on mount. A turn still running on the backend
@@ -177,10 +193,10 @@ pub fn recover_panel_batch(state: &AppState) -> Result<Option<ProjectSnapshot>, 
 pub fn ai_batch_recover(
     state: State<AppState>,
     requests: State<crate::ai_service::Requests>,
-) -> Result<Option<ProjectSnapshot>, String> {
+) -> Result<Option<RecoveredBatch>, String> {
     // Recovery holds the request slot, so no turn can open a batch between
     // the check and the commit.
-    let Some(claim) = requests.claim(RECOVER_SLOT)? else {
+    let Some(claim) = requests.claim_internal(RECOVER_SLOT)? else {
         return Ok(None);
     };
     let recovered = recover_panel_batch(&state);

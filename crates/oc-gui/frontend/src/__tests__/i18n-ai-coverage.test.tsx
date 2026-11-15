@@ -471,13 +471,6 @@ describe("AI edit permission", () => {
     expect(argumentsText.startsWith(zh("ai.approval.arguments"))).toBe(true);
     expect(argumentsText).not.toContain(english("ai.approval.arguments"));
   });
-
-  it("translates a re-validation failure the loop's own check let through", () => {
-    // The loop validates a replacement before it hands one over, so this line only
-    // appears when the project changed between the two checks; it is asserted
-    // through the table rather than by racing a turn.
-    translated("ai.edit.validationFailed", { errors: "bad path" });
-  });
 });
 
 describe("AI tool rows", () => {

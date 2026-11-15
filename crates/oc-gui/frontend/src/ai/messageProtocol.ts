@@ -12,6 +12,8 @@ export interface MessageMeta {
   audio_range?: { start_seconds: number; end_seconds: number; source: boolean };
   /** A text-protocol call, on its assistant round and on the result answering it. */
   text_call?: { id: string; tool: string };
+  /** The queued row a steered message came from. */
+  steer_id?: string;
 }
 interface MessageLike {
   role: string;

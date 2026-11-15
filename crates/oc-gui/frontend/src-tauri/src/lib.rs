@@ -118,7 +118,6 @@ pub fn run_with_options(path: Option<String>, diag: DiagOptions) {
         .manage(startup::StartupProject(std::sync::Mutex::new(path)))
         .manage(AppState::new())
         .manage(ai_service::Requests::default())
-        .manage(ai_service::SeparatorJobs::default())
         .manage(ai::oauth::Attempts::default())
         .setup(move |app| {
             clap_runtime::ClapRuntime::install(app.handle())
@@ -237,7 +236,6 @@ pub fn run_with_options(path: Option<String>, diag: DiagOptions) {
             ai_service::ai_toolsets,
             ai_service::ai_skills,
             ai_service::ai_attach_media,
-            ai_service::ai_call_tool,
             ai_service::ai_oauth_status,
             ai_service::ai_oauth_begin,
             ai_service::ai_oauth_poll,
@@ -252,7 +250,6 @@ pub fn run_with_options(path: Option<String>, diag: DiagOptions) {
             ai_service::ai_revert_before,
             ai_service::ai_turn_questions,
             ai_service::ai_tool_result,
-            ai_service::ai_cancel_separator,
             ai_service::ai_active_turn,
             commands::ai_model_limits,
             commands::ai_save_model_limits,
@@ -271,7 +268,6 @@ pub fn run_with_options(path: Option<String>, diag: DiagOptions) {
             commands::sessions_set_permission,
             commands::sessions_delete,
             commands::sessions_compact,
-            commands::sessions_checkpoint,
             // Workspaces
             commands::workspaces_list,
             commands::workspace_current,

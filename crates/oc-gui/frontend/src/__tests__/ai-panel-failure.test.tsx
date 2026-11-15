@@ -194,6 +194,23 @@ describe("the stop facts the backend reports", () => {
     expect(answers()).toHaveLength(0);
   });
 
+  it("tells committed edits whose file was not written from a failed commit", async () => {
+    outcome({
+      text: "stopped", failed: true,
+      stop: {
+        cancelled: false, done: 1, planned: 1, edits: 2, committed: true,
+        commit_error: "disk full", commit_failure: "save",
+      },
+    });
+    await mount();
+    await send("rename the bass");
+    await settle();
+    const row = lastRow()?.textContent ?? "";
+    expect(row).toContain(i18n.t("ai.failure.saveFailed", { edits: 2, error: "disk full" }));
+    expect(row).not.toContain(i18n.t("ai.failure.commitFailed", { error: "disk full" }));
+    expect(document.querySelector(".ai-turn-retry")).toBeNull();
+  });
+
   it("names a provider failure and withholds Retry when resending cannot help", async () => {
     outcome({ text: "bad key", failed: true, error: { kind: "auth", message: "bad key", retryable: false } });
     await mount();
@@ -238,7 +255,7 @@ describe("a cancelled turn", () => {
     await mount();
     await send("add five tracks");
 
-    await waitFor(() => expect(document.body.textContent).toContain("Right-click a message to rewind."));
+    await waitFor(() => expect(document.body.textContent).toContain("Right-click your message to rewind."));
     await waitFor(() => expect(input().disabled).toBe(false));
     expect(systemRows()).toHaveLength(1);
     const notice = systemRows()[0].textContent ?? "";

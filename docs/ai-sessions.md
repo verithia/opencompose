@@ -331,7 +331,7 @@ Each row offers, for that conversation:
 
 | action | command | behaviour |
 | --- | --- | --- |
-| select | `sessions_load` | paints the saved transcript and makes it the autosave target; the composer and its chips are cleared |
+| select | `sessions_load` | paints the saved transcript and opens it for the next turn; the composer and its chips are cleared |
 | Rename | `sessions_rename` | inline field; Enter or blur saves, Escape cancels, an empty title is refused |
 | Fork | `sessions_new(parent:)` | copies the conversation and opens the copy; the parent is unchanged |
 | Compact | `sessions_compact` | folds the conversation and adds one transcript line stating what it dropped |
@@ -362,8 +362,8 @@ and level cards for an analysis, a waveform and player for a render or audition,
 a diff for an edit, or a status card for a refusal. Raw JSON stays one toggle
 away. A result bounded for the model wire recovers its full payload through
 `ai_tool_result` while the backend still keeps it; the backend keeps the newest
-64 results, scoped to their conversations, and drops a result over 2,000,000
-characters. Otherwise the view keeps the recovered counters and shows the
+64 results, scoped to their conversations, at most 32 per conversation and
+32 MiB in all, and drops a result over 2,000,000 characters. Otherwise the view keeps the recovered counters and shows the
 preview the wire carried.
 
 The composer draft, its attachment chips and the messages queued behind a running
@@ -416,7 +416,7 @@ ignored.
 | --- | --- |
 | Edit | turns that row's text into a field; Enter or blur commits the edit, Escape closes it uncommitted. The edit is what gets sent |
 | Remove | drops that queued message and the chips with it; nothing is sent |
-| Steer | on the oldest row only, while a turn runs: stops that turn, then sends the message |
+| Steer | on the oldest row only, while a turn runs: delivers the message into that turn once its current tools finish, without stopping it. The row stays until the backend confirms the message was saved, and a row that reads a project path is sent when the turn finishes instead |
 | Send now | on the oldest row when no turn runs: sends it immediately |
 
 The hint under the rows says what the queue is waiting for: the running turn, the
@@ -479,16 +479,21 @@ typing is not lost merely because the first message was never sent.
 
 An open approval card is not part of this: it belongs to the running turn, and
 `ai_turn_questions` returns it on mount. The panel also calls `ai_batch_recover`
-once on mount; it commits a `panel:` batch a dead turn left open, writes the
-project file and returns the document, or answers null while a turn is running.
-A batch an external client owns is left alone.
+once on mount; it commits a batch a gone turn left open, writes the project file
+and returns `{snapshot, unsaved?}`, or answers null while a turn is running. The
+panel shows `unsaved` as an error, because the edits are then only in memory. A
+batch an external client owns is left alone.
 
 ### The turn that was running
 
-The agent loop runs in the backend, so the window can be reloaded under a turn
-and the answer is still saved into the conversation. The reloaded window asks
-`ai_active_turn` for the turn the backend still runs and follows its `ai_turn`
-events again; when the turn ends it repaints the conversation from the saved one.
+The agent loop runs in the backend, so the panel can be closed or the window
+reloaded under a turn and the answer is still saved into the conversation.
+Closing the panel only detaches its listeners; the turn keeps running and keeps
+its open question. The reopened or reloaded panel asks `ai_active_turn` for the
+turn the backend still runs and follows its `ai_turn` events again; when the
+turn ends it repaints the conversation from the saved one. While it follows such
+a turn, and while that turn's stop settles, the panel does not switch, start or
+fork a conversation, and a workspace change stops following it.
 
 `ai_active_turn` reports the one request in flight — its id and the conversation
 its reply will be saved into. `session_id` is absent until the backend has
@@ -496,19 +501,22 @@ resolved the conversation, so a window never claims a session it was not told.
 The panel asks on mount, and the marker is kept only when the backend reports
 the turn the marker names:
 
-* **The backend still has it.** A banner says a turn was running when the window
-  was reloaded and that the backend still has it. It offers **Stop the turn**,
+* **The backend still has it.** A banner says a turn was running when the panel
+  was closed or the window reloaded, and that the backend still has it. It offers **Stop the turn**,
   which is the same cancel as Stop. The window follows the request until it
   ends, repaints the conversation from the saved one, where the answer was
   written, and adds one line saying the inherited turn finished. An approval
   card the turn was waiting on is painted again from `ai_turn_questions`. The
   composer stays usable: a send while that turn runs joins the queue, because
   the backend still admits one turn at a time.
-* **The backend has no such turn.** The marker is cleared, and a banner states
-  that a turn was running when the window was reloaded and that nothing is
-  running now. It offers **Reload conversation** — the stored answer may have
-  arrived between the mount and the question — and **Dismiss**. No row is
-  painted as running and no strip appears.
+* **The backend has no such turn.** The marker is cleared and the saved
+  conversation is read again. When it ends on an answer, a banner says the turn
+  finished while the panel was away and offers **Dismiss**. Otherwise the banner
+  says the turn stopped and how it ended is unknown, and offers **Reload
+  conversation** and **Dismiss**. No row is painted as running and no strip
+  appears. A steer the closed page sent is settled from the saved conversation:
+  it arrived when a saved message carries its row's id as `steer_id`; otherwise
+  the row is an ordinary queued message again.
 * **The backend has a turn for another conversation.** This conversation has
   none, so its marker is cleared exactly as above.
 

@@ -63,15 +63,24 @@ conversation-store failure answers 500 with `kind` `session_save`.
 
 `POST /ai/turn` runs one whole agent turn on the same backend loop the panel
 uses. Its body carries `provider` (required, non-empty, at most 100
-characters), `messages` (non-empty: the system prompt and the new user message),
-`session_id` and the absolute `project_path` (both required and bound as for
-`/ai/complete`), and optional `toolsets` (at most 64 names) and `label` (at most
-200 characters). The route requires the same token as the other routes. Nobody
-attends a headless turn: a `Confirm` call is refused with a readable result and
-the turn continues, a validated `edit_subtree` applies in the turn, and the
-session's permission reads as `write`. The answer is the turn's outcome JSON
-with `ok`. The window hears the document once the batch closes, as for any
-external edit.
+characters), `messages`, `session_id` and the absolute `project_path` (both
+required and bound as for `/ai/complete`), and optional `toolsets` (at most 64
+names), `label` (at most 200 characters) and `request_id`. `messages` holds up
+to eight system messages and at most one message of the person, last; history
+comes from the saved conversation, so a tool result, an assistant message or a
+host message kind is refused with 400 `request`. The person's message carries at
+most four attachments, each a valid descriptor. `request_id` names the turn (up
+to 96 letters, digits, `-`, `_` or `.`); without it the host picks one. A named
+turn can be steered with `POST /ai/steer` and stopped with `POST /ai/cancel`
+(`{request_id, session_id}`; 409 `not_running` when no such turn runs). The
+route requires the same token as the other routes. Nobody attends a headless
+turn: a `Confirm` call is refused with a readable result and the turn
+continues, a validated `edit_subtree` applies in the turn, and the session's
+permission reads as `write`. The turn's batch owner is
+`turn:<request_id>:<conversation>`, so a `/call` client bound to the same
+conversation cannot join, commit or roll it back. The answer is the turn's
+outcome JSON with `ok`. The window hears the document once the batch closes, as
+for any external edit.
 
 The store belongs to `OPENCOMPOSE_CONFIG_DIR`. A private profile's sessions do
 not appear in the default desktop profile. Use the intended profile when you
@@ -655,16 +664,21 @@ drops the batch's undo/redo entries and moves the revision forward so stale
 but is not counted as an edit.
 
 * **One owner per batch.** A batch records the caller that opened it: a panel
-  turn is `panel:<conversation>`, and an HTTP or MCP client is `http`. A
-  mutation from any other caller is refused before it writes, and only the
+  turn is `panel:<conversation>`, a headless turn `turn:<request>:<conversation>`,
+  a bound client `http:<conversation>` and an unbound HTTP or MCP client `http`.
+  A mutation from any other caller is refused before it writes, and only the
   owner may commit or roll it back. An external `/call` therefore cannot join a
   turn's batch, and the turn's commit never includes it.
-* **A reloaded panel recovers its own orphan.** The panel calls
-  `ai_batch_recover` once on mount; it commits a `panel:` batch a dead turn left
-  open, writes the project file and returns the document, so `project_save`,
-  `redo` and preview work immediately. It answers null while a turn is running.
-  A batch an external client owns is left alone, and a call with no batch open
-  is a no-op.
+* **A stranded turn batch commits.** A turn holds the request slot for as long
+  as its batch is open, so a `panel:` or `turn:` batch found while the slot is
+  free belongs to a turn that is gone: one whose commit failed, or one that
+  died. The next turn commits it before it opens its own, in any conversation.
+  The panel also calls `ai_batch_recover` once on mount; it holds the slot,
+  commits such a batch, writes the project file and returns
+  `{snapshot, unsaved?}`, so `project_save`, `redo` and preview work
+  immediately. `unsaved` says why the file did not take the edits. It answers
+  null while a turn is running. A batch a client owns is left alone, and a call
+  with no batch open is a no-op.
 
 ### The panel turn is one transaction
 
@@ -674,18 +688,27 @@ caller alike. `ai_turn_start` starts a turn and answers with the outcome
 `{request_id, session_id, type}` with types `message` (a message the turn just
 saved, in saved form), `running` (a call is about to run), `ask` (a call waits
 for a person), `expired` (a question's wait ran out), `preview` (an autoreview
-replacement about to apply), `notice` and `media`, plus `ai_turn_project` for
-the document a panel turn changed.
+replacement about to apply), `wire_folded` (the request was folded to fit;
+the numbers before and after, which the view words) and `media`, plus
+`ai_turn_project` for the document a panel turn changed.
 `ai_turn_answer` answers a question by call id with `{approved, target?,
 always}`. `ai_turn_questions` lists the open questions of a running turn so a
 reloaded or reopened window shows the card again. Closing the panel leaves the
 turn running and its question open. A question nobody answers within 30
 minutes is refused: the call reads `"expired": true`, nothing changes, and the
-turn goes on without it. An expiry is never the nobody-attends answer, so it
-cannot let an `edit_subtree` apply. `ai_cancel` stops a turn. `ai_tool_result`
-returns the full text behind a truncated result while the process keeps it,
-scoped to the conversation; the newest 64 results are kept, and a result over
+turn goes on without it. A question whose wait is dropped unanswered is refused
+too. Neither is the nobody-attends answer, so neither lets an `edit_subtree`
+apply. `ai_cancel` stops a turn; the slot a revert or a recovery holds is the
+host's own, so `ai_cancel` cannot release it and `ai_active_turn` does not
+report it. `ai_tool_result` returns the full text behind a truncated result
+while the process keeps it, scoped to the conversation; the newest 64 results
+are kept, at most 32 per conversation and 32 MiB in all, and a result over
 2,000,000 characters is not.
+
+A model without native tool calling writes a call as one `{tool, args}` object
+in its text. The loop reads such a call only when the provider's
+`native_tool_calling` capability is off: for a native model a text reply is an
+answer, and a call quoted in it never runs.
 
 A turn is one undo step. No stop discards it: cancel, provider failure, timeout
 and the round cap all keep the batch and report how many edits stayed. The
@@ -716,10 +739,12 @@ transcript points at the user message's context menu for a deliberate revert.
   or a committed stop offers no Retry: the person chose to stop, or the edits
   already landed; a kept failure or timeout offers Retry for the failed request.
   A commit that fails leaves the batch open and says so; it is never rolled
-  back automatically.
+  back automatically, and the next turn commits it.
   A working-file save failure is also reported, even if the in-memory batch
-  committed successfully. The edited project remains available in memory;
-  the loop does not report a successful file publication.
+  committed successfully: the stop carries `commit_failure` `save` (the edits
+  are committed in memory and in undo, and only the file is behind) or
+  `commit` (the batch did not commit), with the host's reason in
+  `commit_error`.
   The notice points at the user message's context menu for a deliberate revert.
 * **The round cap is the same rule.** The cap is a budget stop, not a failure:
   when the loop reaches its last round it commits the open batch like an answer
@@ -808,7 +833,20 @@ This holds for both call protocols. A native call is paired by its call id. A
 text-protocol call (a `{tool, args}` object in a text reply) gets an id that is
 unique within the conversation; the assistant round and its application result
 both carry it in `message_meta.text_call`, which is local and never sent to a
-provider.
+provider. A call id is scoped to its round: a provider that numbers calls per
+reply or per process may use the same id again in a later round, and within
+one round an id names one call, answered once.
+
+The started markers fail toward caution: a marker file that cannot be read
+counts every open call as dispatched, so a lost result never reads as "not
+run". Markers are spent when their round is answered, when a new round opens
+and when a rollback closes the round.
+
+What a caller sends is checked against the saved conversation before anything
+is written or archived: a request that would leave a result without its call,
+a second result for one call, or a message inside an open round is refused,
+and nothing changes. A conversation trimmed to its size cap starts at a message
+every later append accepts.
 
 The transcript line is built from the loop's counts: the calls the model had
 requested, the calls that returned, and the applied edits that were kept. A
@@ -874,9 +912,11 @@ the panel's provider layer decides that and the error carries `retryable`.
 * **Where it resumed.** Continue names what it continues from, both on its row
   (`Continue resumes after 2 of 5 requested calls`) and in the transcript line
   the click writes.
-* **A failure does not eat the composer.** The draft and its attachment chips go
-  back to the composer when a turn fails or stops, and Retry and Continue leave
-  them there, so a failed turn costs the typing once.
+* **A failure does not eat the composer.** A request refused before the turn
+  starts saved nothing, so its message and attachment chips go back to the
+  composer, or a queued row goes back to the head of the queue. A turn that
+  started has saved the message: Retry and Continue resend it, and **Revert to
+  before this message** puts it back in the composer.
 
 ### Reverting a turn
 
@@ -885,13 +925,24 @@ before this message**. It is one backend operation, `ai_revert_before`
 `{session_id, index}`. It restores the project snapshot the message was sent
 against as one undo entry labelled `Revert conversation`, only when the document
 differs, and cuts the conversation just before that message. If the cut fails,
-the document is put back. It also forgets that conversation's stored full
-results.
+the project, its text, the dirty flag and both history stacks are put back
+exactly, so no redo entry is lost and no undo entry is evicted. The cut checks
+that the message still names the snapshot that was restored, so a compaction
+from another window in between refuses the revert instead of cutting elsewhere.
+It also forgets that conversation's stored full results. The answer is
+`{kept, snapshot, unsaved?}`: the revert stands in the document either way, and
+`unsaved` says why the project file was not written.
+
+A message records the project file its snapshot came from. A conversation
+follows its workspace, so a revert to a message sent against another file of
+that workspace is refused rather than written into the open one.
 
 The operation is refused while any turn runs with `A turn is still running;
 stop it before reverting.` and while a batch is open with `A batch of edits is
 still open; finish it before reverting.` No other row offers revert; there is no
-per-call revert and no roll-back item for a turn.
+per-call revert and no roll-back item for a turn. While a turn runs, its
+conversation also cannot be compacted, have its history dropped or be deleted:
+those would move the round the turn is writing.
 
 ## 5. `render_offline` — full-song export
 
@@ -1189,13 +1240,22 @@ read the bank, and apply one entry to an effect insert.
 ### Steering a running turn
 
 `ai_turn_steer` (desktop) and authenticated `POST /ai/steer` (headless) accept
-`request_id`, `session_id` and a `message` with `content` and optional `media`.
-They deliver into that existing turn, without cancelling its provider request,
-tools or transaction. The loop saves the message with a project snapshot after
-all results and audio deliveries of the current round, before its next request.
-A message arriving during a final answer causes another round in the same turn.
+`request_id`, `session_id` and a `message` with `content`, optional `media`
+(at most four valid attachment descriptors) and an optional `id` (up to 64
+letters, digits, `-`, `_` or `.`). They deliver into that existing turn,
+without cancelling its provider request, tools or transaction. The loop saves
+the message with a project snapshot after all results and audio deliveries of
+the current round, before its next request; the snapshot and the message are
+written under one store lock. The saved message keeps `id` as
+`message_meta.steer_id`, so a caller that lost the response can find out from
+the saved conversation whether the message arrived. A message arriving during
+a final answer causes another round in the same turn, unless that answer came
+in the last round: then the message is refused, and the caller still holds it.
 
 A successful response confirms the message was saved. Callers retain their
-queued message until then. A closed, foreign or full turn refuses delivery;
-a stopped or failed turn rejects pending receipts instead of discarding them
-silently. Stop remains a separate cancellation action.
+queued message until then. A malformed body, an empty or oversized message or
+a bad attachment answers 400 `request`. A closed, foreign or cancelled turn
+answers 409 `steer_closed`, and a full inbox 429 `steer_full`. When the store
+cannot save the message the turn fails on it, and the steer answers 500
+`session_save`. A stopped or failed turn rejects pending receipts instead of
+discarding them silently. Stop remains a separate cancellation action.

@@ -9,8 +9,13 @@ use std::sync::{LazyLock, Mutex};
 
 /// Results kept across every conversation; the oldest is evicted first.
 pub const MAX_STORED_RESULTS: usize = 64;
+/// Results one conversation keeps, so one busy conversation cannot evict the
+/// pages every other one is still reading.
+pub const MAX_RESULTS_PER_CONVERSATION: usize = 32;
 /// A result larger than this is not kept; its preview says to query narrower.
 pub const MAX_STORED_CHARS: usize = 2_000_000;
+/// The memory every kept result shares, in bytes of text.
+pub const MAX_STORED_BYTES: usize = 32 * 1024 * 1024;
 
 #[derive(Default)]
 pub struct ResultStore {
@@ -26,9 +31,29 @@ impl ResultStore {
             .retain(|(owner, id, _)| !(owner == scope && id == call));
         self.entries
             .push_back((scope.to_owned(), call.to_owned(), text));
-        while self.entries.len() > MAX_STORED_RESULTS {
+        // The conversation's own oldest result goes first, then the oldest of
+        // all, until every bound holds.
+        while self
+            .entries
+            .iter()
+            .filter(|(owner, _, _)| owner == scope)
+            .count()
+            > MAX_RESULTS_PER_CONVERSATION
+        {
+            let oldest = self
+                .entries
+                .iter()
+                .position(|(owner, _, _)| owner == scope)
+                .unwrap_or(0);
+            self.entries.remove(oldest);
+        }
+        while self.entries.len() > MAX_STORED_RESULTS || self.bytes() > MAX_STORED_BYTES {
             self.entries.pop_front();
         }
+    }
+
+    fn bytes(&self) -> usize {
+        self.entries.iter().map(|(_, _, text)| text.len()).sum()
     }
 
     /// One page of a stored result, or the refusal the model reads.
@@ -116,11 +141,37 @@ mod tests {
             (past["text"].as_str(), past["limit"].as_u64()),
             (Some(""), Some(MAX_READ_CHARS as u64))
         );
-        for index in 0..MAX_STORED_RESULTS {
+        for index in 0..MAX_RESULTS_PER_CONVERSATION {
             store.remember("s1", &format!("n{index}"), "x".into());
         }
         assert!(store.page("s1", "c1", None, None).is_err());
         store.forget("s1");
-        assert!(store.page("s1", "n63", None, None).is_err());
+        assert!(store.page("s1", "n31", None, None).is_err());
+    }
+
+    #[test]
+    fn one_conversation_cannot_evict_another_and_memory_is_bounded_in_bytes() {
+        let mut store = ResultStore::default();
+        store.remember("quiet", "kept", "q".into());
+        for index in 0..MAX_STORED_RESULTS * 2 {
+            store.remember("busy", &format!("n{index}"), "x".into());
+        }
+        assert!(store.full("quiet", "kept").is_some());
+        assert_eq!(
+            store
+                .entries
+                .iter()
+                .filter(|(owner, _, _)| owner == "busy")
+                .count(),
+            MAX_RESULTS_PER_CONVERSATION
+        );
+        // Multi-byte text is counted in bytes, not characters.
+        let mut store = ResultStore::default();
+        let wide = "\u{4e2d}".repeat(MAX_STORED_CHARS);
+        for index in 0..MAX_STORED_RESULTS {
+            store.remember(&format!("s{index}"), "c", wide.clone());
+        }
+        assert!(store.bytes() <= MAX_STORED_BYTES);
+        assert!(!store.entries.is_empty());
     }
 }

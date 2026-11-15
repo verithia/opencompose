@@ -32,6 +32,12 @@ export interface FakeTurnBackend {
   ask?: (call: { tool: string; args: Record<string, unknown> }) => boolean;
   /** Tools whose successful result counts as an edit. */
   mutation?: (tool: string) => boolean;
+  /**
+   * Saved messages whose `message` event arrives only after `ai_turn_start`
+   * has answered. Tauri does not order events with command replies, so a
+   * view has to place such a message where it belongs.
+   */
+  late?: (message: WireMessage) => boolean;
 }
 
 interface Running {
@@ -72,10 +78,17 @@ export function cancelFakeTurn(requestId: string): boolean {
   return true;
 }
 
-export function steerFakeTurn(requestId: string, sessionId: string, message: { content: string; media?: WireMessage["media"] }): Promise<void> {
+export function steerFakeTurn(requestId: string, sessionId: string, message: { id?: string; content: string; media?: WireMessage["media"] }): Promise<void> {
   const turn = running.get(requestId);
   if (!turn || turn.sessionId !== sessionId) return Promise.reject({ kind: "steer_closed", message: "Turn finished" });
-  return new Promise(resolve => turn.pending.push({ message: { role: "user", ...message }, saved: resolve }));
+  // As the backend does, the caller's id is saved with the message.
+  const { id, ...body } = message;
+  const saved: WireMessage = {
+    role: "user",
+    ...body,
+    message_meta: { version: 1, kind: "user", ...(id ? { steer_id: id } : {}) },
+  };
+  return new Promise(resolve => turn.pending.push({ message: saved, saved: resolve }));
 }
 
 /** `ai_turn_answer` for a fake turn. */
@@ -126,9 +139,11 @@ export async function runFakeTurn(args: TurnStartArgs, backend: FakeTurnBackend)
   let planned = 0;
   let edits = 0;
   const emit = (event: TurnEvent) => emitTurnEvent(requestId, sessionId, event);
+  const overdue: WireMessage[] = [];
   const save = (message: WireMessage) => {
     wire.push(message);
-    emit({ type: "message", message });
+    if (backend.late?.(message)) overdue.push(message);
+    else emit({ type: "message", message });
   };
   const stop = (extra: Partial<TurnStop> = {}): TurnStop => ({
     cancelled: turn.cancelled, done, planned, edits, committed: edits > 0, ...extra,
@@ -213,5 +228,7 @@ export async function runFakeTurn(args: TurnStartArgs, backend: FakeTurnBackend)
     return { text: "stopped after 64 tool rounds", failed: true, stop: stop() };
   } finally {
     running.delete(requestId);
+    // A macrotask runs after the reply has reached the view and settled there.
+    if (overdue.length) setTimeout(() => { for (const message of overdue) emit({ type: "message", message }); }, 0);
   }
 }

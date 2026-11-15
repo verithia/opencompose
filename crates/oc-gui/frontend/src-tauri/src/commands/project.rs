@@ -767,11 +767,13 @@ pub(crate) fn restore_dsl_with_undo(
 }
 
 /// Writes a restored document to the autosave and the project file.
-pub(crate) fn publish_restored(inner: &mut AppStateInner) {
+/// Writes a restored document to autosave and the project file. The restore
+/// itself stands either way; the error says the file still holds the old text.
+pub(crate) fn publish_restored(inner: &mut AppStateInner) -> Result<(), String> {
     crate::autosave::flush_dirty(inner);
-    if let Err(reason) = crate::project_persist::flush(inner) {
-        log::error!("[ai] restored document not written to the project file: {reason}");
-    }
+    crate::project_persist::flush(inner)
+        .map(|_| ())
+        .map_err(|reason| format!("The restored project was not written to its file: {reason}"))
 }
 
 /// The command body: parse, apply defaults and keep the caller's exact text.

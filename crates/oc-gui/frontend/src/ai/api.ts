@@ -23,7 +23,7 @@ export type TurnEvent =
   | { type: "ask"; request: ApprovalRequest }
   | { type: "expired"; call_id: string }
   | { type: "preview"; call_id: string; tool: string; path?: string; before: string; after: string }
-  | { type: "notice"; text: string; failed: boolean }
+  | { type: "wire_folded"; before_rows: number; before_bytes: number; after_rows: number; after_bytes: number; folded: number; kept: number }
   | { type: "media"; notices: MediaNotice[] };
 
 /** A turn event and the turn it belongs to. */
@@ -78,7 +78,7 @@ export function startTurn(
 }
 
 /** Resolves once the running turn has saved the message at a round boundary. */
-export function steerTurn(requestId: string, sessionId: string, message: { content: string; media: WireMessage["media"] }) {
+export function steerTurn(requestId: string, sessionId: string, message: { id?: string; content: string; media: WireMessage["media"] }) {
   return invoke<void>("ai_turn_steer", { requestId, sessionId, message });
 }
 
@@ -105,7 +105,7 @@ export function listenTurnProject(handler: (snapshot: ProjectSnapshot) => void) 
  * and cuts the conversation before it, as one undo step.
  */
 export function revertBefore(sessionId: string, index: number) {
-  return invoke<{ kept: number; snapshot: ProjectSnapshot }>("ai_revert_before", { sessionId, index });
+  return invoke<{ kept: number; snapshot: ProjectSnapshot; unsaved?: string }>("ai_revert_before", { sessionId, index });
 }
 
 /** The full result behind a truncated preview, while the backend keeps it. */
@@ -114,11 +114,12 @@ export function toolResult(sessionId: string, callId: string) {
 }
 
 /**
- * Commits a batch a panel turn left open, e.g. after a window reload. Returns
- * the document, or `null` when no panel batch was open.
+ * Commits a batch a turn left open, e.g. after a window reload. Returns the
+ * document and, when the file did not take it, why; `null` when no such
+ * batch was open.
  */
 export function recoverBatch() {
-  return invoke<ProjectSnapshot | null>("ai_batch_recover");
+  return invoke<{ snapshot: ProjectSnapshot; unsaved?: string } | null>("ai_batch_recover");
 }
 
 /** Whether a saved key is usable; a cached refusal keeps its reason. */

@@ -78,6 +78,38 @@ pub struct SteerMessage {
     pub content: String,
     #[serde(default)]
     pub media: Vec<Value>,
+    /// The caller's own name for the message, kept with it in the saved
+    /// conversation, so a caller that lost the reply can find it by id.
+    #[serde(default)]
+    pub id: Option<String>,
+}
+
+/// Longest steer id a caller may choose.
+const MAX_STEER_ID: usize = 64;
+
+/// A person's attachments: bounded in number, and each one a valid
+/// descriptor, so a malformed one never reaches the saved conversation.
+fn check_person_media(media: &Value) -> Result<(), AiError> {
+    let Some(items) = media.as_array() else {
+        return match media {
+            Value::Null => Ok(()),
+            _ => Err(AiError::new(
+                "request",
+                "'media' must be a list of attachments",
+            )),
+        };
+    };
+    if items.len() > crate::ai::media::MAX_ATTACHMENTS_PER_MESSAGE {
+        return Err(AiError::new(
+            "request",
+            "Too many attachments on one message",
+        ));
+    }
+    for item in items {
+        crate::ai::media::from_wire(item)
+            .map_err(|error| AiError::new("request", AiError::from(error).message))?;
+    }
+    Ok(())
 }
 
 /// Resolves after durable delivery at a complete round boundary. It never
@@ -92,17 +124,28 @@ pub async fn steer(
         .filter(|turn| turn.session_id == session_id && !turn.cancel.is_cancelled())
         .cloned()
         .ok_or_else(|| AiError::new("steer_closed", "No matching turn is accepting messages"))?;
+    let refuse = |text: &str| AiError::new("request", text);
     if message.content.trim().is_empty() && message.media.is_empty() {
-        return Err(AiError::config("A steering message cannot be empty"));
+        return Err(refuse("A steering message cannot be empty"));
     }
-    let mut user = json!({"role":"user", "content":message.content,
-        "message_meta": crate::ai::sessions::message_meta(crate::ai::sessions::MessageKind::User)});
+    let mut meta = crate::ai::sessions::message_meta(crate::ai::sessions::MessageKind::User);
+    if let Some(id) = &message.id {
+        if !valid_request_id(id) || id.len() > MAX_STEER_ID {
+            return Err(refuse(
+                "A steer id is up to 64 letters, digits, '-', '_' or '.'",
+            ));
+        }
+        meta["steer_id"] = json!(id);
+    }
+    let mut user = json!({"role":"user", "content":message.content, "message_meta": meta});
     if !message.media.is_empty() {
         user["media"] = json!(message.media);
     }
-    crate::ai_service::validate_chat_messages(&json!([user.clone()]))?;
+    check_person_media(&user["media"])?;
+    crate::ai_service::validate_chat_messages(&json!([user.clone()]))
+        .map_err(|error| refuse(&error.message))?;
     if user.to_string().len() > crate::ai::LIMIT {
-        return Err(AiError::config("The steering message is too large"));
+        return Err(refuse("The steering message is too large"));
     }
     let receipt = turn
         .steering
@@ -115,10 +158,29 @@ pub async fn steer(
                 AiError::new("steer_full", "The turn's steering queue is full")
             }
         })?;
-    receipt
-        .await
-        .map_err(|_| AiError::new("steer_closed", "The turn ended before delivery"))?
-        .map_err(|error| AiError::new("steer_closed", error))
+    match receipt.await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(super::steering::Undelivered::Save(error))) => {
+            Err(AiError::new("session_save", error))
+        }
+        Ok(Err(super::steering::Undelivered::Closed)) | Err(_) => Err(AiError::new(
+            "steer_closed",
+            "The turn ended before delivery",
+        )),
+    }
+}
+
+/// Stops a running turn for a caller that names its conversation too, so a
+/// client cannot stop another conversation's turn by guessing its id.
+pub fn cancel_in(request_id: &str, session_id: &str) -> bool {
+    let turn = lock(&RUNNING)
+        .get(request_id)
+        .filter(|turn| turn.session_id == session_id)
+        .cloned();
+    turn.is_some_and(|turn| {
+        turn.cancel.cancel();
+        true
+    })
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -233,11 +295,16 @@ impl Host for AppHost {
         let stats = match admitted {
             Some(stats) => stats,
             None => {
-                let stats = admit_round(
-                    &self.provider,
-                    &self.session_id,
-                    &round_request_id(&self.request_id, round),
-                )?;
+                // Admission writes the usage ledger; it runs off the executor.
+                let (provider, session, request) = (
+                    self.provider.clone(),
+                    self.session_id.clone(),
+                    round_request_id(&self.request_id, round),
+                );
+                let stats = self
+                    .blocking(move |_| admit_round(&provider, &session, &request))
+                    .await
+                    .map_err(AiError::config)??;
                 *lock(&self.round_stats) = Some(stats.clone());
                 stats
             }
@@ -274,26 +341,29 @@ impl Host for AppHost {
         let label = label.to_owned();
         self.blocking(move |app| {
             let state = app.state::<AppState>();
-            // A panel batch a dead turn stranded is this conversation's own;
-            // it commits, so its applied edits stay. A headless owner's open
-            // batch belongs to a client's live transaction, so it is refused
-            // by the begin below instead of committed under the client.
-            if stranded_panel_batch(state.batch_owner().as_deref(), &owner) {
-                state.commit_transaction()?;
+            // A batch a gone turn stranded commits, so its applied edits stay
+            // and reach the file. A `/call` client's open batch is its live
+            // transaction, so it is refused by the begin below instead.
+            if let Some(stranded) = state
+                .batch_owner()
+                .filter(|open| stranded_loop_batch(Some(open)))
+            {
+                commit_batch_and_save(&state, &stranded).map_err(|error| error.message)?;
             }
             state.begin_transaction(label, owner).map(|_| ())
         })
         .await?
     }
 
-    async fn commit_batch(&self) -> Result<(), String> {
+    async fn commit_batch(&self) -> Result<(), super::CommitError> {
         let owner = self.owner.clone();
         let result = self
             .blocking(move |app| {
                 let state = app.state::<AppState>();
                 commit_batch_and_save(&state, &owner)
             })
-            .await?;
+            .await
+            .map_err(super::CommitError::commit)?;
         self.publish();
         result
     }
@@ -361,10 +431,13 @@ impl Host for AppHost {
                 },
             );
         }
+        // The question leaves the list however the wait ends, including when
+        // a cancel drops this future, so a reloaded window never repaints a
+        // card nobody waits on.
+        let _asked = AskedQuestion(key.clone());
         let tool = request.tool.clone();
         self.emit(TurnEvent::Ask { request });
-        let decision = await_answer(receiver, QUESTION_TIMEOUT).await;
-        lock(&PENDING).remove(&key);
+        let decision = Some(await_answer(receiver, QUESTION_TIMEOUT).await);
         if decision.as_ref().is_some_and(|decision| decision.expired) {
             self.emit(TurnEvent::Expired {
                 call_id: key.1.clone(),
@@ -397,12 +470,16 @@ impl Host for AppHost {
     }
 
     async fn record_steering(&self, messages: &[Value]) -> Result<Vec<Value>, String> {
-        let (id, incarnation, messages, dsl) = (
+        let (id, incarnation, messages) = (
             self.session_id.clone(),
             self.incarnation.clone(),
             messages.to_vec(),
-            self.document().dsl,
         );
+        let (dsl, project) = {
+            let state = self.state();
+            let inner = state.lock_inner();
+            (inner.dsl_source.clone(), inner.file_path.clone())
+        };
         self.blocking(move |_| {
             super::steering::record(
                 &Store::config(),
@@ -410,6 +487,7 @@ impl Host for AppHost {
                 &messages,
                 incarnation.as_deref(),
                 &dsl,
+                project.as_deref(),
             )
         })
         .await?
@@ -421,9 +499,9 @@ impl Host for AppHost {
             .await?
     }
 
-    async fn close_round(&self) -> Result<Vec<Value>, String> {
+    async fn close_round(&self) -> Result<Vec<crate::ai::sessions::turns::Closed>, String> {
         let id = self.session_id.clone();
-        self.blocking(move |_| Store::config().close_round(&id))
+        self.blocking(move |_| Store::config().close_round_typed(&id))
             .await?
     }
 
@@ -493,28 +571,75 @@ impl Host for AppHost {
     }
 }
 
-/// A person's answer, or the refusal a question gets when nobody answers in
-/// time. A dropped sender means the turn is going away; the loop's own cancel
-/// decides what that call reads.
-async fn await_answer(
-    receiver: oneshot::Receiver<Decision>,
-    wait: std::time::Duration,
-) -> Option<Decision> {
-    match tokio::time::timeout(wait, receiver).await {
-        Ok(answer) => answer.ok(),
-        Err(_) => Some(Decision::expired()),
+/// Removes its question from [`PENDING`] when the wait ends or is dropped.
+struct AskedQuestion(QuestionKey);
+
+impl Drop for AskedQuestion {
+    fn drop(&mut self) {
+        lock(&PENDING).remove(&self.0);
     }
 }
 
+/// A person's answer, or a refusal: when nobody answers in time, and when
+/// the question was dropped unanswered. A person was asked, so this is never
+/// the "nobody attends" answer that lets a replacement apply.
+async fn await_answer(
+    receiver: oneshot::Receiver<Decision>,
+    wait: std::time::Duration,
+) -> Decision {
+    match tokio::time::timeout(wait, receiver).await {
+        Ok(Ok(decision)) => decision,
+        Ok(Err(_)) => Decision::default(),
+        Err(_) => Decision::expired(),
+    }
+}
+
+/// A turn id a caller may choose: bounded for the accounting ledger, and
+/// without `:`, which separates it from the conversation in a batch owner.
+pub fn valid_request_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= MAX_REQUEST_ID
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+}
+
+/// What a turn may bring: system messages, then at most one message of the
+/// person. History comes from the store, and results and host messages are the
+/// loop's to write, so a caller cannot add a result or claim a host kind.
+fn check_turn_messages(messages: &[Value]) -> Result<(), AiError> {
+    let refuse = |message: &str| Err(AiError::new("request", message));
+    let (last, system) = match messages.split_last() {
+        Some((last, rest)) if last["role"] != "system" => (Some(last), rest),
+        _ => (None, messages),
+    };
+    if system.len() > MAX_SYSTEM_MESSAGES
+        || system.iter().any(|message| message["role"] != "system")
+    {
+        return refuse("A turn carries system messages and at most one message of the person");
+    }
+    if let Some(last) = last {
+        let kind = last["message_meta"]["kind"].as_str();
+        if last["role"] != "user" || !matches!(kind, None | Some("user")) {
+            return refuse("The turn's last message must be the person's own message");
+        }
+        check_person_media(&last["media"])?;
+    }
+    Ok(())
+}
+
+/// The system messages one turn may send.
+const MAX_SYSTEM_MESSAGES: usize = 8;
+
 /// A turn reports success only after its committed edits reach the working file.
-fn commit_batch_and_save(state: &AppState, owner: &str) -> Result<(), String> {
-    crate::agent_api::transaction_commit(state, owner)?;
+fn commit_batch_and_save(state: &AppState, owner: &str) -> Result<(), super::CommitError> {
+    crate::agent_api::transaction_commit(state, owner).map_err(super::CommitError::commit)?;
     crate::project_persist::flush_state(state)
         .map(|_| ())
         .map_err(|reason| {
-            format!(
+            super::CommitError::save(format!(
                 "The edits are committed in memory but the project file was not written: {reason}"
-            )
+            ))
         })
 }
 
@@ -570,9 +695,10 @@ pub async fn run(
     owner: String,
 ) -> Result<TurnOutcome, AiError> {
     // Round suffixes keep later rounds' accounting ids within the ledger's 100.
-    if start.request_id.is_empty() || start.request_id.len() > MAX_REQUEST_ID {
-        return Err(AiError::config("Invalid AI request identifier"));
+    if !valid_request_id(&start.request_id) {
+        return Err(AiError::new("request", "Invalid AI request identifier"));
     }
+    check_turn_messages(&start.messages)?;
     let messages = Value::Array(start.messages.clone());
     crate::ai_service::validate_chat_messages(&messages)?;
     let provider = crate::ai_service::provider(&start.provider_id).map_err(AiError::config)?;
@@ -660,7 +786,16 @@ async fn run_claimed(
     owner: String,
     control: RunningTurn,
 ) -> Result<TurnOutcome, AiError> {
-    let stats = admit_round(provider, &start.session_id, &start.request_id)?;
+    let stats = {
+        let (provider, session, request) = (
+            provider.clone(),
+            start.session_id.clone(),
+            start.request_id.clone(),
+        );
+        tauri::async_runtime::spawn_blocking(move || admit_round(&provider, &session, &request))
+            .await
+            .map_err(|error| AiError::config(format!("background task failed: {error}")))??
+    };
     let incarnation = stats
         .accounting()
         .map(|lease| lease.update().incarnation)
@@ -741,6 +876,7 @@ async fn run_claimed(
         audio: audio_shape(provider),
         scope: start.session_id.clone(),
         toolsets: start.toolsets.clone(),
+        text_protocol: !provider.capabilities.native_tool_calling,
     };
     let outcome = super::run_turn(&host, spec, control.cancel).await;
     // A round cancelled mid-request, or a first round never sent, still
@@ -780,11 +916,13 @@ async fn finish_accounting(app: &AppHandle, stats: &TurnStatsHandle, request_id:
     }
 }
 
-/// Whether the open batch is a panel turn's batch that a dead turn of the
-/// same conversation left behind. Only panel turns strand batches: every
-/// other owner's batch is a client's own, still in use.
-fn stranded_panel_batch(open: Option<&str>, owner: &str) -> bool {
-    open == Some(owner) && owner.starts_with(crate::state::PANEL_BATCH_OWNER_PREFIX)
+/// Whether the open batch was left by a backend turn that is gone. It is
+/// asked by a turn that holds the request slot, and a turn holds the slot for
+/// as long as its batch is open, so every loop-owned batch it sees is
+/// stranded, whatever conversation it belongs to. A `/call` client's batch is
+/// still in use.
+fn stranded_loop_batch(open: Option<&str>) -> bool {
+    open.is_some_and(crate::state::loop_batch_owner)
 }
 
 /// Answers a question a running turn asked. A stale answer changes nothing.
@@ -796,6 +934,14 @@ pub fn answer(request_id: &str, call_id: &str, decision: Decision) -> Result<(),
         .answer
         .send(decision)
         .map_err(|_| "The turn stopped before the answer arrived".to_string())
+}
+
+/// Whether a backend turn is running in this conversation. A compaction,
+/// history drop or delete under it would move the round it is writing.
+pub fn session_running(session_id: &str) -> bool {
+    lock(&RUNNING)
+        .values()
+        .any(|turn| turn.session_id == session_id)
 }
 
 /// Stops a running turn. Completed calls keep their results.
@@ -831,8 +977,8 @@ fn revert_in(
     session_id: &str,
     index: usize,
 ) -> Result<Value, String> {
-    revert_with(requests, state, store, session_id, index, |store| {
-        store.cut_before_user(session_id, index)
+    revert_with(requests, state, store, session_id, index, |store, sha| {
+        store.cut_before_user(session_id, index, sha)
     })
 }
 
@@ -847,11 +993,11 @@ fn revert_with(
     store: &Store,
     session_id: &str,
     index: usize,
-    cut: impl FnOnce(&Store) -> Result<usize, String>,
+    cut: impl FnOnce(&Store, &str) -> Result<usize, String>,
 ) -> Result<Value, String> {
     // Holding the slot for the whole revert keeps a turn from starting in it.
     let slot = format!("revert-{session_id}");
-    let Some(claim) = requests.claim(&slot)? else {
+    let Some(claim) = requests.claim_internal(&slot)? else {
         return Err("A turn is still running; stop it before reverting.".into());
     };
     let _release = scopeguard(requests, &slot, &claim.identity);
@@ -861,36 +1007,60 @@ fn revert_with(
     if inner.transaction.is_some() {
         return Err("A batch of edits is still open; finish it before reverting.".into());
     }
-    let before = (inner.undo.mark(), inner.dsl_source.clone(), inner.dirty);
+    // A conversation follows its workspace, not one file: a snapshot taken
+    // against another file never overwrites the one that is open.
+    let open = inner
+        .file_path
+        .as_deref()
+        .map(crate::ai::sessions::canonical_path);
+    if let Some(sent) = &point.project
+        && open.as_deref() != Some(sent.as_path())
+    {
+        return Err(
+            "This message was sent against another project file; open that file to revert to it."
+                .into(),
+        );
+    }
     let restored = inner.dsl_source != dsl;
+    // Everything the restore touches, so a failed cut puts it back exactly:
+    // both history stacks, the project, its text and the dirty flag.
+    let before = restored.then(|| {
+        (
+            inner.project.clone(),
+            inner.dsl_source.clone(),
+            inner.dirty,
+            inner.undo.take_copy(),
+        )
+    });
     if restored {
         crate::commands::restore_dsl_with_undo(&mut inner, dsl, "Revert conversation")?;
     }
     // The session store never takes the document lock, so holding it here
-    // cannot deadlock.
-    if let Err(error) = cut(store) {
-        if restored {
-            let (mark, source, dirty) = before;
-            match inner.undo_step() {
-                Ok(_) => {
-                    // The undo leaves the restore as a redo entry; the step
-                    // never happened, so it goes, and the exact text returns.
-                    inner.undo.restore(mark);
-                    inner.dsl_source = source;
-                    inner.dirty = dirty;
-                }
-                Err(undo) => log::error!("[ai] revert could not put the document back: {undo}"),
-            }
+    // cannot deadlock. The cut checks that the message still names the same
+    // snapshot, so a compaction in between cannot move it.
+    if let Err(error) = cut(store, &point.dsl_sha) {
+        if let Some((project, source, dirty, history)) = before {
+            inner.project = project;
+            inner.undo.put_back(history);
+            inner.resync_after_history();
+            inner.dsl_source = source;
+            inner.dirty = dirty;
         }
         return Err(error);
     }
-    if restored {
-        crate::commands::publish_restored(&mut inner);
-    }
+    let unsaved = if restored {
+        crate::commands::publish_restored(&mut inner).err()
+    } else {
+        None
+    };
     let snapshot = crate::commands::shared::snapshot(&inner);
     drop(inner);
     super::results::with_results(|results| results.forget(session_id));
-    Ok(json!({ "kept": index, "snapshot": snapshot }))
+    let mut answer = json!({ "kept": index, "snapshot": snapshot });
+    if let Some(reason) = unsaved {
+        answer["unsaved"] = json!(reason);
+    }
+    Ok(answer)
 }
 
 /// The questions a running turn is waiting on, for a window that reloaded
@@ -926,7 +1096,11 @@ mod tests {
             inner.dirty = true;
         }
         let error = commit_batch_and_save(&state, "owner").unwrap_err();
-        assert!(error.contains("project file was not written"), "{error}");
+        assert_eq!(error.failure, super::super::CommitFailure::Save);
+        assert!(
+            error.message.contains("project file was not written"),
+            "{error:?}"
+        );
         assert!(state.lock_inner().transaction.is_none());
         assert_eq!(state.lock_inner().project.properties.tempo, 138.0);
         assert!(!parent.join("song.ocp").exists());
@@ -1054,19 +1228,21 @@ mod tests {
     }
 
     #[test]
-    fn only_a_panel_batch_of_the_same_conversation_counts_as_stranded() {
+    fn a_loop_owned_batch_counts_as_stranded_and_a_client_batch_never_does() {
         let panel = crate::state::panel_batch_owner(Some("s1"));
+        let other = crate::state::panel_batch_owner(Some("s2"));
+        let turn = crate::state::turn_batch_owner("turn-1", "s1");
         let http = crate::state::http_session_owner("s1");
-        assert!(stranded_panel_batch(Some(&panel), &panel));
+        // The asking turn holds the slot, so a loop batch has no live turn.
+        assert!(stranded_loop_batch(Some(&panel)));
+        assert!(stranded_loop_batch(Some(&other)));
+        assert!(stranded_loop_batch(Some(&turn)));
         assert!(
-            !stranded_panel_batch(Some(&http), &http),
+            !stranded_loop_batch(Some(&http)),
             "a headless client's open transaction is its own"
         );
-        assert!(!stranded_panel_batch(
-            Some(&crate::state::panel_batch_owner(Some("s2"))),
-            &panel
-        ));
-        assert!(!stranded_panel_batch(None, &panel));
+        assert!(!stranded_loop_batch(Some(crate::state::HTTP_BATCH_OWNER)));
+        assert!(!stranded_loop_batch(None));
     }
 
     #[test]
@@ -1081,7 +1257,7 @@ mod tests {
             )
         };
         let requests = Requests::default();
-        let error = revert_with(&requests, &state, &store, &id, 0, |_| {
+        let error = revert_with(&requests, &state, &store, &id, 0, |_, _| {
             Err("the session store is read-only".into())
         })
         .unwrap_err();
@@ -1102,6 +1278,91 @@ mod tests {
             "the conversation is whole"
         );
         assert!(requests.active().unwrap().is_none(), "the slot is released");
+    }
+
+    #[test]
+    fn a_failed_cut_keeps_a_full_history_and_its_redo_entries_exactly() {
+        let (_root, store, id, state) = fixture();
+        {
+            let mut inner = state.lock_inner();
+            // A full undo stack and two redo entries: the restore's push would
+            // evict the oldest entry and clear the redo stack.
+            for tempo in 0..crate::state::MAX_UNDO + 2 {
+                let source = AFTER.replace("150", &(151 + tempo).to_string());
+                crate::commands::update_dsl_inner(source, &mut inner).unwrap();
+            }
+            inner.undo_step().unwrap();
+            inner.undo_step().unwrap();
+        }
+        let (source, undo, redo, tempo) = {
+            let inner = state.lock_inner();
+            (
+                inner.dsl_source.clone(),
+                inner.undo.undo_labels(),
+                inner.undo.redo_labels(),
+                inner.project.properties.tempo,
+            )
+        };
+        assert_eq!(redo.len(), 2);
+        let requests = Requests::default();
+        revert_with(&requests, &state, &store, &id, 0, |_, _| {
+            Err("the session store is read-only".into())
+        })
+        .unwrap_err();
+        let mut inner = state.lock_inner();
+        assert_eq!(inner.dsl_source, source);
+        assert_eq!(inner.project.properties.tempo, tempo);
+        assert_eq!(inner.undo.undo_labels(), undo, "no entry was evicted");
+        assert_eq!(inner.undo.redo_labels(), redo, "redo is kept");
+        // The kept redo still works.
+        let mut project = inner.project.clone();
+        inner.undo.redo(&mut project).unwrap();
+        assert_ne!(project.properties.tempo, tempo);
+    }
+
+    #[test]
+    fn a_revert_refuses_a_snapshot_of_another_file_and_reports_an_unwritten_file() {
+        let (root, store, _, state) = fixture();
+        let a = root.path().join("a.ocp");
+        let b = root.path().join("b.ocp");
+        std::fs::write(&a, AFTER).unwrap();
+        std::fs::write(&b, AFTER).unwrap();
+        let id = store.create(None, None, Some("Files"), None).unwrap().id;
+        let first =
+            json!({"role":"user","content":"first","message_meta":{"version":1,"kind":"user"}});
+        store
+            .append_turn_with_snapshot(&id, &[first], None, BEFORE, Some(&a))
+            .unwrap();
+        let requests = Requests::default();
+        state.lock_inner().file_path = Some(b.clone());
+        let error = revert_in(&requests, &state, &store, &id, 0).unwrap_err();
+        assert!(error.contains("another project file"), "{error}");
+        assert_eq!(state.lock_inner().project.properties.tempo, 150.0);
+        assert_eq!(store.view(&id).unwrap().len(), 1);
+
+        // The file it was sent against: the revert lands even when the file
+        // cannot be written, and says so.
+        let blocked = root.path().join("blocked");
+        std::fs::write(&blocked, "not a directory").unwrap();
+        state.lock_inner().file_path = Some(a.clone());
+        let id_blocked = {
+            let id = store.create(None, None, Some("Blocked"), None).unwrap().id;
+            let first =
+                json!({"role":"user","content":"first","message_meta":{"version":1,"kind":"user"}});
+            store
+                .append_turn_with_snapshot(&id, &[first], None, BEFORE, None)
+                .unwrap();
+            id
+        };
+        state.lock_inner().file_path = Some(blocked.join("song.ocp"));
+        let answer = revert_in(&requests, &state, &store, &id_blocked, 0).unwrap();
+        assert!(
+            answer["unsaved"]
+                .as_str()
+                .is_some_and(|reason| reason.contains("not written")),
+            "{answer}"
+        );
+        assert_eq!(state.lock_inner().project.properties.tempo, 120.0);
     }
 
     #[test]
@@ -1186,6 +1447,7 @@ mod tests {
         let message = || SteerMessage {
             content: "continue".into(),
             media: Vec::new(),
+            id: None,
         };
         assert_eq!(
             steer("scoped-steering-test", "foreign", message())
@@ -1201,7 +1463,8 @@ mod tests {
                 "steer-session",
                 SteerMessage {
                     content: "x".repeat(crate::ai::LIMIT + 1),
-                    media: Vec::new()
+                    media: Vec::new(),
+                    id: None,
                 }
             )
             .await
@@ -1252,8 +1515,13 @@ mod tests {
     async fn an_unanswered_question_expires_as_a_refusal_and_an_answer_wins_before_it() {
         let wait = std::time::Duration::from_millis(20);
         let (_sender, receiver) = oneshot::channel::<Decision>();
-        let expired = await_answer(receiver, wait).await.unwrap();
+        let expired = await_answer(receiver, wait).await;
         assert!(expired.expired && !expired.approved);
+        // A question dropped unanswered is refused, never taken as approval.
+        let (sender, receiver) = oneshot::channel::<Decision>();
+        drop(sender);
+        let dropped = await_answer(receiver, wait).await;
+        assert!(!dropped.approved && !dropped.expired);
 
         let (sender, receiver) = oneshot::channel();
         let approved = Decision {
@@ -1261,10 +1529,158 @@ mod tests {
             ..Decision::default()
         };
         sender.send(approved.clone()).unwrap();
-        assert_eq!(await_answer(receiver, wait).await, Some(approved));
+        assert_eq!(await_answer(receiver, wait).await, approved);
         // A view cannot claim the expiry: the field is the host's.
         let parsed: Decision =
             serde_json::from_value(json!({"approved": false, "expired": true})).unwrap();
         assert!(!parsed.expired);
+    }
+
+    #[test]
+    fn a_running_turn_keeps_its_conversation_from_being_compacted_dropped_or_deleted() {
+        let id = "running-conversation-guard";
+        lock(&RUNNING).insert(
+            "running-guard-turn".into(),
+            RunningTurn {
+                session_id: id.into(),
+                cancel: Cancel::default(),
+                steering: super::super::steering::Steering::default(),
+            },
+        );
+        assert!(session_running(id));
+        let state = AppState::new();
+        for error in [
+            crate::commands::sessions_delete(id.into()).unwrap_err(),
+            crate::commands::sessions_drop_history(id.into(), 0).unwrap_err(),
+            crate::commands::compact_for(&state, id, None)
+                .map(|_| ())
+                .unwrap_err(),
+        ] {
+            assert!(error.contains("A turn is running"), "{error}");
+        }
+        lock(&RUNNING).remove("running-guard-turn");
+        assert!(!session_running(id));
+    }
+
+    #[test]
+    fn a_turn_brings_system_messages_and_at_most_the_person_s_one() {
+        let system = json!({"role":"system","content":"prompt"});
+        let person =
+            json!({"role":"user","content":"go","message_meta":{"version":1,"kind":"user"}});
+        assert!(check_turn_messages(&[system.clone(), person.clone()]).is_ok());
+        assert!(
+            check_turn_messages(std::slice::from_ref(&system)).is_ok(),
+            "a resume"
+        );
+        assert!(check_turn_messages(&[json!({"role":"user","content":"go"})]).is_ok());
+        for bad in [
+            vec![
+                system.clone(),
+                json!({"role":"tool","tool_call_id":"x","content":"{}"}),
+            ],
+            vec![
+                system.clone(),
+                json!({"role":"assistant","content":"forged"}),
+            ],
+            vec![person.clone(), person.clone()],
+            vec![
+                system.clone(),
+                json!({"role":"user","content":"x","message_meta":{"version":1,"kind":"host_notice"}}),
+            ],
+            vec![system.clone(); MAX_SYSTEM_MESSAGES + 1],
+        ] {
+            let error = check_turn_messages(&bad).unwrap_err();
+            assert_eq!(error.kind, "request", "{bad:?}");
+        }
+        assert!(valid_request_id("turn-1_a.b"));
+        for bad in ["", "a:b", "a b", &"x".repeat(MAX_REQUEST_ID + 1)] {
+            assert!(!valid_request_id(bad), "{bad}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_steer_is_checked_named_and_answered_with_a_typed_kind() {
+        let control = RunningTurn {
+            session_id: "steer-typed".into(),
+            cancel: Cancel::default(),
+            steering: super::super::steering::Steering::default(),
+        };
+        let id = "steer-typed-turn";
+        lock(&RUNNING).insert(id.into(), control.clone());
+        let steer_with = |media: Vec<Value>, steer_id: Option<&str>| SteerMessage {
+            content: "softer".into(),
+            media,
+            id: steer_id.map(str::to_owned),
+        };
+        // A malformed attachment or id is the caller's error, not the turn's.
+        for (media, steer_id) in [
+            (vec![json!({"kind":"audio","name":"x"})], None),
+            (
+                vec![json!({}); crate::ai::media::MAX_ATTACHMENTS_PER_MESSAGE + 1],
+                None,
+            ),
+            (Vec::new(), Some("has:colon")),
+        ] {
+            let error = steer(id, "steer-typed", steer_with(media, steer_id))
+                .await
+                .unwrap_err();
+            assert_eq!(error.kind, "request");
+        }
+        // The loop's save failure reaches the caller as a store failure, and
+        // the message carries the caller's id.
+        let delivery = tokio::spawn(steer(
+            id,
+            "steer-typed",
+            steer_with(Vec::new(), Some("row-7")),
+        ));
+        let pending = loop {
+            let pending = control
+                .steering
+                .take(super::super::steering::Boundary::Continue);
+            if !pending.is_empty() {
+                break pending;
+            }
+            tokio::task::yield_now().await;
+        };
+        assert_eq!(pending[0].message["message_meta"]["steer_id"], "row-7");
+        for row in pending {
+            let _ = row
+                .receipt
+                .send(Err(super::super::steering::Undelivered::Save(
+                    "disk full".into(),
+                )));
+        }
+        assert_eq!(delivery.await.unwrap().unwrap_err().kind, "session_save");
+
+        // Cancel names the conversation too.
+        assert!(!cancel_in(id, "another-conversation"));
+        assert!(!control.cancel.is_cancelled());
+        assert!(cancel_in(id, "steer-typed"));
+        assert!(control.cancel.is_cancelled());
+        lock(&RUNNING).remove(id);
+    }
+
+    #[test]
+    fn a_question_leaves_the_list_when_its_wait_is_dropped() {
+        let key: QuestionKey = ("asked-guard-turn".into(), "c1".into());
+        let (sender, _receiver) = oneshot::channel();
+        lock(&PENDING).insert(
+            key.clone(),
+            Question {
+                answer: sender,
+                request: ApprovalRequest {
+                    call_id: "c1".into(),
+                    tool: "tracks_remove".into(),
+                    args: Map::new(),
+                    path: None,
+                    before: None,
+                    after: None,
+                },
+            },
+        );
+        let guard = AskedQuestion(key.clone());
+        assert_eq!(questions("asked-guard-turn").len(), 1);
+        drop(guard);
+        assert!(questions("asked-guard-turn").is_empty());
     }
 }

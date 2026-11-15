@@ -24,12 +24,16 @@ The GUI starts the server when it launches:
 | `GET /ai/toolsets` | The bundled and user tool sets. |
 | `POST /ai/complete` | One provider turn on the panel's behalf, for a headless driver. |
 | `POST /ai/turn` | One whole agent turn on the backend loop, with nobody to ask. |
+| `POST /ai/steer` | Deliver a person's message into a running turn. |
+| `POST /ai/cancel` | Stop a running turn: `{request_id, session_id}`. |
 
 A client starts a full turn with `POST /ai/turn`: it carries `provider`,
-`messages` (the system prompt and the new user message), `session_id` and the
-absolute `project_path`, with optional `toolsets` and `label`. Nobody attends, so
-a `Confirm` call is refused and the turn continues, and a validated
-`edit_subtree` applies in the turn. The answer is the turn outcome with `ok`.
+`messages` (system messages and at most one message of the person),
+`session_id` and the absolute `project_path`, with optional `toolsets`, `label`
+and `request_id`. A turn the client names can be steered and stopped while it
+runs. Nobody attends, so a `Confirm` call is refused and the turn continues,
+and a validated `edit_subtree` applies in the turn. The answer is the turn
+outcome with `ok`.
 
 `/call` answers `{"ok": true, "result": ...}` or
 `{"ok": false, "error": "..."}`. A refusal one of the bundled skills explains
@@ -114,13 +118,15 @@ Edits are guarded so a multi-step change is atomic to the user.
   directly; a failed commit leaves the batch open for its owner.
 - A panel or headless agent turn owns its batch: the loop commits it on every
   ending (answer, cancel, failure, timeout and round cap), so a stop keeps the
-  edits that landed. `ai_batch_recover` commits a `panel:` batch a dead turn left
-  open rather than rolling it back.
+  edits that landed. A turn batch a gone turn left open (`panel:` or `turn:`)
+  commits rather than rolling back: the next turn commits it, and so does
+  `ai_batch_recover`.
 - Revert is `ai_revert_before {session_id, index}`, offered only from a person's
   own message. It restores the project snapshot that message was sent against as
   one undo entry (`Revert conversation`, only when the document differs) and
-  cuts the conversation before the message; if the cut fails the document is put
-  back. It is refused while a turn runs or a batch is open.
+  cuts the conversation before the message; if the cut fails the document and
+  its history are put back exactly. It is refused while a turn runs or a batch
+  is open, and for a message sent against another project file.
 - While a batch is open, save, undo and redo are refused, so a crash cannot leave
   a half-applied edit on disk or rewind history under the batch.
   `project_open` and `project_new` cancel the batch because they replace the

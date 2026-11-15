@@ -65,6 +65,8 @@ export interface TurnStop {
   failure_kept?: boolean;
   /** The batch could not be committed. */
   commit_error?: string;
+  /** `save`: the edits committed and only the file is behind; `commit`: the batch did not commit. */
+  commit_failure?: "commit" | "save";
   /** The call that was running when the cancel arrived. */
   in_flight?: string;
 }

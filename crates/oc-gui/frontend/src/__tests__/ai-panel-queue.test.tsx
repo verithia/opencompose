@@ -4,7 +4,7 @@
  * and Steer stops the running turn first.
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { cleanup, fireEvent, render, waitFor } from "@solidjs/testing-library";
+import { cleanup, fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import { aiConfigWire, invokeMock, makeSnapshot } from "./setup";
 import { store } from "../stores/project";
 import { AiPanel } from "../components/AiPanel";
@@ -71,6 +71,14 @@ const backend = {
   sessions: [] as SessionMeta[],
   /** Held to keep a flush between taking its row and starting its turn. */
   snapshot: null as Promise<unknown> | null,
+  /** What `ai_active_turn` reports; a test sets it to the turn it keeps running. */
+  active: null as { request_id: string; session_id: string } | null,
+  /** Every `ai_turn_start`, including one the backend refuses. */
+  starts: 0,
+  /** When set, the next `ai_turn_start` is refused before the turn starts. */
+  refuseStart: null as unknown,
+  /** Context paths `ai_build_context` was asked for, in order. */
+  contexts: [] as string[],
 };
 
 function deferred<T = unknown>() {
@@ -91,8 +99,18 @@ function installBackend() {
       case "ai_model_limits": return { provider_id: "x", model_id: "y", bundled: null, overridden: null };
       case "ai_toolsets": return SETS;
       case "ai_tools": return [];
-      case "ai_build_context": return { dsl_context: '@project "Test Project"\n  tempo: 128\n' };
-      case "ai_turn_start": return runFakeTurn(typed as unknown as TurnStartArgs, {
+      case "ai_build_context":
+        backend.contexts.push(String(typed.targetPath ?? typed.path ?? ""));
+        return { dsl_context: '@project "Test Project"\n  tempo: 128\n' };
+      case "ai_active_turn": return backend.active;
+      case "ai_turn_start": {
+        backend.starts += 1;
+        if (backend.refuseStart) {
+          const refusal = backend.refuseStart;
+          backend.refuseStart = null;
+          throw refusal;
+        }
+        return runFakeTurn(typed as unknown as TurnStartArgs, {
         chat: async (round) => {
           backend.calls.push("ai_turn_start");
           backend.chatCalls.push({ ...round, messages: JSON.parse(JSON.stringify(round.messages)) } as ChatCall);
@@ -101,6 +119,7 @@ function installBackend() {
         },
         tool: async () => ({ ok: true }),
       });
+      }
       case "ai_turn_questions": return [];
       case "ai_turn_steer": backend.calls.push("ai_turn_steer"); return steerFakeTurn(String(typed.requestId), String(typed.sessionId), typed.message as never);
       case "ai_cancel": {
@@ -170,6 +189,10 @@ beforeEach(() => {
   backend.calls = [];
   backend.sessions = [];
   backend.snapshot = null;
+  backend.active = null;
+  backend.starts = 0;
+  backend.refuseStart = null;
+  backend.contexts = [];
   i18n.setLocale("en");
   aiLimits.setActiveContext(null);
   resetStats();
@@ -332,6 +355,7 @@ describe("a message composed while a turn runs", () => {
     await typeAndSend("and this");
     expect(queueRows()).toHaveLength(2);
     expect(queueButton("steer")!.getAttribute("title")).toBe(i18n.t("ai.queue.steerHint"));
+    expect(screen.getByRole("button", { name: "Steer" })).toBe(queueButton("steer"));
     fireEvent.click(queueButton("steer")!);
     await waitFor(() => expect(backend.calls).toContain("ai_turn_steer"));
     expect(backend.calls).not.toContain("ai_cancel");
@@ -377,29 +401,99 @@ describe("a message composed while a turn runs", () => {
     expect(document.querySelector(".ai-queue-row")).toBeNull();
   });
 
-  it("keeps the queued message across an unmount and offers to send it, not Steer", async () => {
+  it("keeps the queued message across an unmount and re-attaches to the turn still running", async () => {
     const first = await mount();
     await startTurn();
     await typeAndSend("next");
     await waitFor(() => expect(queueText()).toBe("next"));
     first.unmount();
+    // Closing the panel leaves the backend turn running, and the backend says so.
+    const turn = backend.chatCalls[0] as unknown as { requestId: string; sessionId: string };
+    backend.active = { request_id: turn.requestId, session_id: turn.sessionId };
 
     await mount();
-    await waitFor(() => expect(queueText()).toBe("next"));
-    // Leaving the panel cancelled the turn; the queued message did not go out on its own.
+    await waitFor(() => expect(document.querySelector(".ai-turn-orphan")).toBeTruthy());
+    expect(queueText()).toBe("next");
     expect(sentContents()).not.toContain("next");
-    // Nothing is running, so the row says so and offers a way to send it: the
-    // message is not stranded with only Edit and Remove.
+    expect(backend.calls).not.toContain("ai_cancel");
+    // The reopened panel follows that turn: the row waits behind it and offers
+    // Steer, not a Send now that would race it.
+    expect(document.querySelector(".ai-queue-hint")?.textContent).toBe(i18n.t("ai.queue.waitingReload"));
+    expect(queueButton("steer")).toBeTruthy();
+    expect(queueButton("send")).toBeNull();
+
+    // The turn ends; the queued message goes out once, after it.
+    backend.hold = false;
+    backend.held.shift()!.resolve({ role: "assistant", content: "First answer." });
+    backend.active = null;
+    await waitFor(() => expect(backend.chatCalls).toHaveLength(2), { timeout: 3000 });
+    expect(backend.chatCalls[1].messages.at(-1)?.content).toBe("next");
+    await waitFor(() => expect(document.querySelector(".ai-queue-row")).toBeNull());
+    expect(sentContents().filter((text) => text === "next")).toHaveLength(1);
+  });
+
+  it("offers Send now for a queued message when nothing is running", async () => {
+    backend.sessions = [session()];
+    aiSession.setOpen("s1");
+    aiSession.setQueued([{ text: "left over", media: [] }]);
+    await mount();
+    await waitFor(() => expect(queueText()).toBe("left over"));
     expect(document.querySelector(".ai-queue-hint")?.textContent).toBe("No turn is running.");
     expect(queueButton("steer")).toBeNull();
-    const sendNow = queueButton("send")!;
-    expect(sendNow.textContent).toBe("Send now");
+    // The visible word is the accessible name; the hint is the title.
+    const sendNow = screen.getByRole("button", { name: "Send now" });
+    expect(sendNow).toBe(queueButton("send"));
+    expect(sendNow.getAttribute("title")).toBe(i18n.t("ai.queue.sendNowHint"));
+    expect(sendNow.hasAttribute("aria-label")).toBe(false);
 
     backend.hold = false;
     fireEvent.click(sendNow);
+    await waitFor(() => expect(backend.chatCalls).toHaveLength(1));
+    expect(backend.chatCalls[0].messages.at(-1)?.content).toBe("left over");
+  });
+
+  it("puts a flushed row back at the head of the queue when its turn fails to start", async () => {
+    await mount();
+    await startTurn("first");
+    await typeAndSend("next");
+    await typeAndSend("third");
+    await waitFor(() => expect(queueTexts()).toEqual(["next", "third"]));
+    // The composer holds a draft, so it cannot take the message back.
+    fireEvent.input(input(), { target: { value: "half typed" } });
+    backend.refuseStart = { kind: "provider", message: "start refused" };
+
+    backend.held.shift()!.resolve({ role: "assistant", content: "First answer." });
+    await waitFor(() => expect(backend.starts).toBe(2));
+    await waitFor(() => expect(document.body.textContent).toContain("Error: start refused"));
+    expect(queueTexts()).toEqual(["next", "third"]);
+    expect(input().value).toBe("half typed");
+    // The failed row waits for the person instead of being retried at once.
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(backend.starts).toBe(2);
+    expect(sentContents()).not.toContain("next");
+  });
+
+  it("does not steer a row that reads a project path, and sends it with its context afterwards", async () => {
+    await mount();
+    await startTurn();
+    aiSession.setQueued([{ text: "tune the project", media: [], reference: "project" }]);
+    await waitFor(() => expect(queueText()).toBe("tune the project"));
+
+    const steer = screen.getByRole("button", { name: "Steer" }) as HTMLButtonElement;
+    expect(steer).toBe(queueButton("steer"));
+    expect(steer.disabled).toBe(true);
+    expect(steer.getAttribute("title")).toBe(i18n.t("ai.queue.steerReference"));
+    fireEvent.click(steer);
+    expect(backend.calls).not.toContain("ai_turn_steer");
+
+    const contexts = backend.contexts.length;
+    backend.hold = false;
+    backend.held.shift()!.resolve({ role: "assistant", content: "First answer." });
     await waitFor(() => expect(backend.chatCalls).toHaveLength(2));
-    expect(backend.chatCalls[1].messages.at(-1)?.content).toBe("next");
-    await waitFor(() => expect(document.querySelector(".ai-queue-row")).toBeNull());
+    // The person's own words are the message; the path is read as the context.
+    expect(backend.chatCalls[1].messages.at(-1)?.content).toBe("tune the project");
+    expect(backend.contexts.slice(contexts)).toEqual(["project"]);
+    expect([...document.querySelectorAll(".ai-message.user")].at(-1)?.textContent).toBe("tune the project");
   });
 
   it("queues the composer's attachment chips with the message", async () => {

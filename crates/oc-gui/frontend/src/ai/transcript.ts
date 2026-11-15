@@ -222,6 +222,8 @@ export function restoredTranscript(messages: WireMessage[] | null | undefined): 
       content,
       wireIndex,
       ...(message.media?.length ? { media: message.media } : {}),
+      // A steered message names the queued row it came from.
+      ...(message.message_meta?.steer_id ? { messageMeta: message.message_meta } : {}),
       ...snapshot,
     });
   }

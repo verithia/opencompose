@@ -15,12 +15,12 @@ describe("agent transport", () => {
   it("hands the same command and arguments to an installed transport, and restores the app path", async () => {
     const headless = vi.fn().mockResolvedValue({ok: true});
     setInvoke(headless);
-    await expect(invoke("ai_call_tool", {tool: "tracks_list", args: {}})).resolves.toEqual({ok: true});
-    expect(headless).toHaveBeenCalledWith("ai_call_tool", {tool: "tracks_list", args: {}});
+    await expect(invoke("tracks_list_command", {tool: "tracks_list", args: {}})).resolves.toEqual({ok: true});
+    expect(headless).toHaveBeenCalledWith("tracks_list_command", {tool: "tracks_list", args: {}});
     expect(mock).not.toHaveBeenCalled();
     setInvoke(null);
     mock.mockResolvedValue({ok: true});
-    await invoke("ai_call_tool", {tool: "tracks_list", args: {}});
+    await invoke("tracks_list_command", {tool: "tracks_list", args: {}});
     expect(mock).toHaveBeenCalledTimes(1);
   });
 });

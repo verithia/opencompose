@@ -147,10 +147,52 @@ pub enum TurnEvent {
         before: String,
         after: String,
     },
-    /// Host prose about the turn itself, such as a wire fold.
-    Notice { text: String, failed: bool },
+    /// The request grew past the provider bounds, so its oldest tool pairs
+    /// were folded into one summary row before the send.
+    WireFolded {
+        before_rows: usize,
+        before_bytes: usize,
+        after_rows: usize,
+        after_bytes: usize,
+        /// Tool pairs folded into the summary, and pairs kept whole.
+        folded: usize,
+        kept: usize,
+    },
     /// Attachments the provider layer found changed or missing.
     Media { notices: Value },
+}
+
+/// Which step of closing a turn's batch failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CommitFailure {
+    /// The batch did not commit; it stays open.
+    Commit,
+    /// The batch committed; the project file was not written.
+    Save,
+}
+
+/// A failed batch close: the step and the host's reason.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommitError {
+    pub failure: CommitFailure,
+    pub message: String,
+}
+
+impl CommitError {
+    pub fn commit(message: impl Into<String>) -> Self {
+        Self {
+            failure: CommitFailure::Commit,
+            message: message.into(),
+        }
+    }
+
+    pub fn save(message: impl Into<String>) -> Self {
+        Self {
+            failure: CommitFailure::Save,
+            message: message.into(),
+        }
+    }
 }
 
 /// Facts about a turn that stopped early. The loop reports numbers; a view
@@ -171,8 +213,14 @@ pub struct TurnStop {
     pub timed_out: bool,
     /// A failure ended the turn after it had edited; the edits stayed.
     pub failure_kept: bool,
+    /// Why the batch did not end in the project file, in the host's words.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub commit_error: Option<String>,
+    /// Which step failed: a `save` failure committed the edits in memory and
+    /// in undo, and only the file is behind; a `commit` failure left the
+    /// batch open, and the next turn commits it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub commit_failure: Option<CommitFailure>,
     /// The call that was running when the cancel arrived.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub in_flight: Option<String>,
@@ -205,6 +253,10 @@ pub struct TurnSpec {
     pub scope: String,
     /// The conversation's toolset selection; `None` offers the whole panel.
     pub toolsets: Option<Vec<String>>,
+    /// The model calls tools by writing `{tool, args}` in its text, because
+    /// it has no native tool calling. Off, a text reply is only an answer:
+    /// a call quoted in prose never runs.
+    pub text_protocol: bool,
 }
 
 /// Everything outside the loop. Every method that touches the project or
@@ -222,8 +274,8 @@ pub trait Host: Sync {
     ) -> impl Future<Output = Result<Value, AiError>> + Send;
     /// Opens the turn's batch under the turn's own owner.
     fn begin_batch(&self, label: &str) -> impl Future<Output = Result<(), String>> + Send;
-    /// Commits the turn's batch as one undo entry.
-    fn commit_batch(&self) -> impl Future<Output = Result<(), String>> + Send;
+    /// Commits the turn's batch as one undo entry and writes the project file.
+    fn commit_batch(&self) -> impl Future<Output = Result<(), CommitError>> + Send;
     /// Dispatches one registry tool. A refusal is the payload the model reads.
     fn call(
         &self,
@@ -249,7 +301,9 @@ pub trait Host: Sync {
     /// Marks a call as dispatched, before it runs.
     fn started(&self, call_id: &str) -> impl Future<Output = Result<(), String>> + Send;
     /// Answers the open calls of the last round and returns those results.
-    fn close_round(&self) -> impl Future<Output = Result<Vec<Value>, String>> + Send;
+    fn close_round(
+        &self,
+    ) -> impl Future<Output = Result<Vec<crate::ai::sessions::turns::Closed>, String>> + Send;
     fn emit(&self, event: TurnEvent);
     /// The current document; a host with a view publishes it too.
     fn refresh(&self) -> impl Future<Output = Document> + Send;
@@ -382,11 +436,13 @@ impl<H: Host> Turn<'_, H> {
                     )));
                 }
                 calls
-            } else {
+            } else if self.spec.text_protocol {
                 let id = wire::text_call_id(&self.nonce, round);
                 wire::text_tool_call(reply["content"].as_str().unwrap_or_default(), &id)
                     .into_iter()
                     .collect()
+            } else {
+                Vec::new()
             };
             if calls.len() > crate::ai::MAX_TOOL_CALLS_PER_BATCH {
                 return Err(Ending::Failed(AiError::new(
@@ -406,7 +462,11 @@ impl<H: Host> Turn<'_, H> {
             self.push(vec![assistant]).await?;
             if calls.is_empty() {
                 self.stop_if_cancelled()?;
-                if self.deliver_steering(steering::Boundary::Finish).await? {
+                // A message needs a round to be answered in. The last round has
+                // none left, so its inbox is not drained: closing the turn
+                // refuses what waits, and the caller still holds it.
+                let rounds_left = round + 1 < MAX_TOOL_ROUNDS;
+                if rounds_left && self.deliver_steering(steering::Boundary::Finish).await? {
                     continue;
                 }
                 let text = reply["content"].as_str().unwrap_or_default();
@@ -477,10 +537,9 @@ impl<H: Host> Turn<'_, H> {
             .await
             .map(|saved| self.extend_saved(saved));
         for row in pending {
-            let _ = row.receipt.send(if result.is_ok() {
-                Ok(())
-            } else {
-                Err("The steering message could not be saved".into())
+            let _ = row.receipt.send(match &result {
+                Ok(()) => Ok(()),
+                Err(error) => Err(steering::Undelivered::Save(error.clone())),
             });
         }
         result.map_err(|error| Ending::Failed(AiError::new("session_save", error)))?;
@@ -538,12 +597,13 @@ impl<H: Host> Turn<'_, H> {
             )));
         };
         let (after_rows, after_bytes) = wire::wire_budget(&self.wire);
-        self.host.emit(TurnEvent::Notice {
-            text: format!(
-                "wire compacted before send: {rows} messages / {bytes} bytes became {after_rows} / {after_bytes}; folded {} older tool pairs into a summary and kept {}",
-                fold.dropped, fold.pairs
-            ),
-            failed: false,
+        self.host.emit(TurnEvent::WireFolded {
+            before_rows: rows,
+            before_bytes: bytes,
+            after_rows,
+            after_bytes,
+            folded: fold.dropped,
+            kept: fold.pairs,
         });
         Ok(())
     }
@@ -672,7 +732,13 @@ impl<H: Host> Turn<'_, H> {
             return Ok(ran);
         }
         self.mark_started(call).await?;
-        let before = self.expected.clone();
+        // The document just before this call: a review takes back only what
+        // the call itself wrote.
+        let before = if gate.need == Need::Review {
+            Some(self.host.refresh().await)
+        } else {
+            None
+        };
         match self
             .host
             .call(name, &Value::Object(shaped), &self.cancel)
@@ -690,8 +756,7 @@ impl<H: Host> Turn<'_, H> {
                 ran.failed = true;
             }
         }
-        if gate.need == Need::Review
-            && !ran.failed
+        if let Some(before) = before.filter(|_| !ran.failed)
             && let Some(refusal) = self.check_written(&before).await
         {
             ran.result = refusal;
@@ -792,10 +857,15 @@ impl<H: Host> Turn<'_, H> {
     }
 
     /// Validates the document a reviewed call wrote, and takes the call back
-    /// as one undo step when it does not validate.
-    async fn check_written(&mut self, before: &str) -> Option<Value> {
+    /// as one undo step when it introduced errors. Only a call that moved the
+    /// revision wrote an undo entry, so a call that changed nothing never
+    /// undoes an earlier edit; errors the project already had are not its own.
+    async fn check_written(&mut self, before: &Document) -> Option<Value> {
         let document = self.host.refresh().await;
-        if document.dsl == before || document.track_count == 0 {
+        if document.revision == before.revision
+            || document.dsl == before.dsl
+            || document.track_count == 0
+        {
             return None;
         }
         let errors = self
@@ -803,6 +873,19 @@ impl<H: Host> Turn<'_, H> {
             .validate_edit("project", &document.dsl)
             .await
             .err()?;
+        let existing = self
+            .host
+            .validate_edit("project", &before.dsl)
+            .await
+            .err()
+            .unwrap_or_default();
+        let errors: Vec<String> = errors
+            .into_iter()
+            .filter(|error| !existing.contains(error))
+            .collect();
+        if errors.is_empty() {
+            return None;
+        }
         if let Err(error) = self.host.undo().await {
             return Some(json!({
                 "errors": errors,
@@ -903,9 +986,9 @@ impl<H: Host> Turn<'_, H> {
                 // it may have run, so only the calls never started count.
                 not_run = closed
                     .iter()
-                    .filter(|message| closed_not_run(message))
+                    .filter(|closed| closed.state == crate::ai::sessions::turns::Unanswered::NotRun)
                     .count();
-                for message in closed {
+                for message in closed.into_iter().map(|closed| closed.message) {
                     self.host.emit(TurnEvent::Message {
                         message: message.clone(),
                     });
@@ -914,26 +997,31 @@ impl<H: Host> Turn<'_, H> {
             }
             Err(error) => save_error = Some(error),
         }
-        let commit_error = if self.batch {
-            match self.host.commit_batch().await {
-                Ok(()) => {
-                    self.batch = false;
-                    self.host.refresh().await;
-                    None
-                }
-                Err(error) => Some(error),
+        let commit_result = if self.batch {
+            let result = self.host.commit_batch().await;
+            // A save failure still committed: the batch is closed either way
+            // except when the commit itself failed.
+            if !matches!(&result, Err(error) if error.failure == CommitFailure::Commit) {
+                self.batch = false;
+                self.host.refresh().await;
             }
+            result.err()
         } else {
             None
         };
+        let commit_error = commit_result.as_ref().map(|error| error.message.clone());
+        let committed_in_memory = !commit_result
+            .as_ref()
+            .is_some_and(|error| error.failure == CommitFailure::Commit);
         let mut stop = TurnStop {
             cancelled: false,
             done: self.done,
             planned: self.planned,
             not_run,
             edits: self.edits,
-            committed: self.edits > 0 && commit_error.is_none(),
+            committed: self.edits > 0 && committed_in_memory,
             commit_error: commit_error.clone(),
+            commit_failure: commit_result.as_ref().map(|error| error.failure),
             in_flight: self.in_flight.take(),
             ..TurnStop::default()
         };
@@ -1023,23 +1111,16 @@ fn turn_nonce() -> String {
     format!("{nanos:x}{count:x}")
 }
 
-/// Whether a closing result says its call never started.
-fn closed_not_run(message: &Value) -> bool {
-    message["content"]
-        .as_str()
-        .map(|content| {
-            content
-                .strip_prefix(APPLICATION_RESULT_PREFIX)
-                .unwrap_or(content)
-        })
-        .and_then(|content| serde_json::from_str::<Value>(content).ok())
-        .is_some_and(|result| result["not_run"] == true)
-}
-
 /// The English line a headless caller reads; a view localizes the facts.
 pub fn stop_text(stop: &TurnStop) -> String {
     if let Some(error) = &stop.commit_error {
-        return format!("the turn stopped and its edits could not be committed: {error}");
+        return match stop.commit_failure {
+            Some(CommitFailure::Save) => format!(
+                "{} applied edits are committed, but the project file was not written: {error}",
+                stop.edits
+            ),
+            _ => format!("the turn stopped and its edits could not be committed: {error}"),
+        };
     }
     let verb = if stop.cancelled {
         "cancelled"

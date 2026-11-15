@@ -19,7 +19,16 @@ struct State {
 
 pub struct Pending {
     pub message: Value,
-    pub receipt: oneshot::Sender<Result<(), String>>,
+    pub receipt: oneshot::Sender<Result<(), Undelivered>>,
+}
+
+/// Why a message the inbox admitted was not delivered.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Undelivered {
+    /// The turn ended first; the caller still holds the message.
+    Closed,
+    /// The conversation store refused it; the turn stops on that failure.
+    Save(String),
 }
 
 #[derive(Clone, Copy)]
@@ -38,7 +47,7 @@ impl Steering {
     pub fn enqueue(
         &self,
         message: Value,
-    ) -> Result<oneshot::Receiver<Result<(), String>>, Refusal> {
+    ) -> Result<oneshot::Receiver<Result<(), Undelivered>>, Refusal> {
         let mut state = self.0.lock().unwrap_or_else(|error| error.into_inner());
         if state.closed {
             return Err(Refusal::Closed);
@@ -65,9 +74,7 @@ impl Steering {
         let mut state = self.0.lock().unwrap_or_else(|error| error.into_inner());
         state.closed = true;
         for pending in state.pending.drain(..) {
-            let _ = pending
-                .receipt
-                .send(Err("The turn ended before the message was delivered".into()));
+            let _ = pending.receipt.send(Err(Undelivered::Closed));
         }
     }
 }
@@ -80,13 +87,9 @@ pub fn record(
     messages: &[Value],
     incarnation: Option<&str>,
     dsl: &str,
+    project: Option<&std::path::Path>,
 ) -> Result<Vec<Value>, String> {
-    let sha = store.snapshot_dsl(id, dsl)?;
-    let mut messages = messages.to_vec();
-    for message in &mut messages {
-        message["dsl_sha"] = serde_json::json!(sha);
-    }
-    store.append_turn(id, &messages, incarnation)
+    store.append_turn_with_snapshot(id, messages, incarnation, dsl, project)
 }
 
 #[cfg(test)]
@@ -134,7 +137,7 @@ mod tests {
         let messages = [
             json!({"role":"user", "content":"soften highs", "message_meta":crate::ai::sessions::message_meta(crate::ai::sessions::MessageKind::User)}),
         ];
-        let saved = record(&store, &id, &messages, None, dsl).unwrap();
+        let saved = record(&store, &id, &messages, None, dsl, None).unwrap();
         let point = store.revert_point(&id, 0).unwrap();
         assert_eq!(point.dsl_sha, saved[0]["dsl_sha"].as_str().unwrap());
         assert_eq!(store.dsl_version(&id, &point.dsl_sha).unwrap(), dsl);
