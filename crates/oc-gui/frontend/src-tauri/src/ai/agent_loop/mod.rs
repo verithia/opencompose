@@ -257,6 +257,9 @@ pub struct TurnSpec {
     /// it has no native tool calling. Off, a text reply is only an answer:
     /// a call quoted in prose never runs.
     pub text_protocol: bool,
+    /// The model's input window in tokens; 0 when unknown. The loop folds
+    /// the wire to stay inside it and refuses a send that cannot fit.
+    pub context_length: u64,
 }
 
 /// Everything outside the loop. Every method that touches the project or
@@ -358,6 +361,10 @@ struct Turn<'a, H: Host> {
     in_flight: Option<String>,
     /// Unique per turn; names its text-protocol calls.
     nonce: String,
+    /// The token budget, calibrated by each round's reported input, and
+    /// where the turn's ask sits in the wire.
+    budget: Option<wire::TokenBudget>,
+    ask: Option<usize>,
 }
 
 /// Runs one turn to its end. Never returns with the batch open unless its
@@ -396,7 +403,14 @@ pub async fn run_turn<H: Host>(host: &H, spec: TurnSpec, cancel: Cancel) -> Turn
         last_action: "none".into(),
         in_flight: None,
         nonce: turn_nonce(),
+        budget: None,
+        ask: None,
     };
+    turn.budget = wire::TokenBudget::new(
+        turn.spec.context_length,
+        wire::offered_tool_tokens(turn.spec.toolsets.as_deref(), true),
+    );
+    turn.ask = wire::turn_ask(&turn.wire);
     let ending = match turn.rounds().await {
         Ok(ending) | Err(ending) => ending,
     };
@@ -418,7 +432,10 @@ impl<H: Host> Turn<'_, H> {
                 reply = self.host.send(&self.wire, round) => reply,
             };
             let reply = match reply {
-                Ok(reply) => reply,
+                Ok(reply) => {
+                    self.observe_usage(&reply);
+                    reply
+                }
                 Err(_) if self.cancel.is_cancelled() => return Err(Ending::Cancelled),
                 Err(error) => return Err(Ending::Failed(error)),
             };
@@ -579,13 +596,32 @@ impl<H: Host> Turn<'_, H> {
     }
 
     /// Keeps the request under the provider bounds by folding the oldest
-    /// rows into one summary row.
+    /// rows into one summary row: the row and byte bounds the request
+    /// validator enforces, and the model's window measured as the larger of
+    /// the estimate and what the provider reported for the last round.
     fn fit_wire(&mut self) -> Result<(), Ending> {
-        let (rows, bytes) = wire::wire_budget(&self.wire);
-        if rows <= wire::WIRE_MESSAGE_BUDGET && bytes <= wire::WIRE_TEXT_BUDGET {
+        let limits = wire::FoldLimits::round(self.budget);
+        if limits.fits(&self.wire) {
             return Ok(());
         }
-        let Some(fold) = wire::fold_wire(&mut self.wire) else {
+        let (rows, bytes) = wire::wire_budget(&self.wire);
+        // A window no cut can reach still leaves the row and byte bounds to
+        // meet, so the shape-only fold is the fallback.
+        let fold = wire::fold_wire(&mut self.wire, &limits, self.ask)
+            .or_else(|| wire::fold_wire(&mut self.wire, &wire::FoldLimits::round(None), self.ask));
+        if let Some(tokens) = self.budget
+            && tokens.measure(&self.wire) > tokens.window
+        {
+            return Err(Ending::Failed(AiError::new(
+                "context_overflow",
+                format!(
+                    "the request is about {} tokens and the model's window is {}; folding it cannot make it fit",
+                    tokens.measure(&self.wire),
+                    tokens.window
+                ),
+            )));
+        }
+        let Some(fold) = fold else {
             if rows <= crate::ai::MAX_WIRE_MESSAGES && bytes <= crate::ai::LIMIT {
                 return Ok(());
             }
@@ -596,6 +632,7 @@ impl<H: Host> Turn<'_, H> {
                 ),
             )));
         };
+        self.ask = fold.ask;
         let (after_rows, after_bytes) = wire::wire_budget(&self.wire);
         self.host.emit(TurnEvent::WireFolded {
             before_rows: rows,
@@ -606,6 +643,16 @@ impl<H: Host> Turn<'_, H> {
             kept: fold.pairs,
         });
         Ok(())
+    }
+
+    /// Calibrates the token budget from the input the provider reported for
+    /// the wire it was just sent, so the next fold measures what it counts.
+    fn observe_usage(&mut self, reply: &Value) {
+        if let Some(budget) = self.budget.as_mut()
+            && let Some(input) = reply["usage"]["input"].as_u64()
+        {
+            budget.calibrate(&self.wire, input);
+        }
     }
 
     /// Opens the turn's batch before its first edit.

@@ -169,7 +169,8 @@ fn has_calls(message: &Value) -> bool {
     !calls_of(message).is_empty()
 }
 
-fn calls_of(message: &Value) -> Vec<(String, String)> {
+/// The calls an assistant round opens, `(id, tool)`, for either protocol.
+pub fn calls_of(message: &Value) -> Vec<(String, String)> {
     if message["role"] != "assistant" {
         return Vec::new();
     }
@@ -193,7 +194,7 @@ fn calls_of(message: &Value) -> Vec<(String, String)> {
 }
 
 /// Host context the loop attaches after a round's results.
-fn is_round_delivery(message: &Value) -> bool {
+pub fn is_round_delivery(message: &Value) -> bool {
     message["role"] == "user"
         && matches!(
             message_protocol::kind(message),

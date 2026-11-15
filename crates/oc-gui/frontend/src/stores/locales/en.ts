@@ -2100,6 +2100,7 @@ export const en = {
     "ai.provider.createdNoKey": "{id} was added, but its key was not saved: {error} (press Create provider again to retry the key)",
     "ai.sessions.toggle": "Conversations",
     "ai.sessions.new": "New conversation",
+    "ai.sessions.newBlocked": "Available once the running turn or conversation action finishes",
     "ai.sessions.workspace": "Workspace",
     "ai.sessions.detached": "No workspace",
     "ai.sessions.empty": "No saved conversations in this workspace yet.",

@@ -2124,6 +2124,7 @@ export const zhHant = {
   "ai.provider.createdNoKey": "{id} 已新增，但金鑰未儲存：{error}（再按一次「建立服務商」可重試儲存金鑰）",
   "ai.sessions.toggle": "工作階段",
   "ai.sessions.new": "新增工作階段",
+  "ai.sessions.newBlocked": "正在執行的輪次或對話操作結束後可用",
   "ai.sessions.workspace": "工作目錄",
   "ai.sessions.detached": "無工作目錄",
   "ai.sessions.empty": "此工作目錄尚無儲存的工作階段。",

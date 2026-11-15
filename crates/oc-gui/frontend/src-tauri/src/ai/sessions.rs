@@ -21,6 +21,9 @@
 //! constants below and enforced in `append`.
 #[path = "session_artifacts.rs"]
 mod artifacts;
+#[cfg(test)]
+#[path = "session_compaction_tests.rs"]
+mod compaction_tests;
 #[path = "session_lookup.rs"]
 pub(super) mod lookup;
 #[path = "session_message.rs"]
@@ -249,6 +252,58 @@ pub struct Compaction {
     pub retained_pairs: usize,
 }
 
+/// What a refused reshaping of a conversation (compact, drop history, delete)
+/// is about. The panel tells the cases apart by this, never by the message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionErrorKind {
+    /// A turn is writing this conversation.
+    Busy,
+    /// The conversation changed under the request: another window already
+    /// did what this one asked for.
+    Conflict,
+    /// The store refused or failed for any other reason.
+    SessionStore,
+}
+
+/// A typed refusal of a session command, serialized as `{kind, message}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SessionError {
+    pub kind: SessionErrorKind,
+    pub message: String,
+}
+
+impl SessionError {
+    pub fn new(kind: SessionErrorKind, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for SessionError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl From<String> for SessionError {
+    fn from(message: String) -> Self {
+        Self::new(SessionErrorKind::SessionStore, message)
+    }
+}
+
+impl From<SessionError> for String {
+    fn from(error: SessionError) -> Self {
+        error.message
+    }
+}
+
+/// A check the store runs while it holds its mutation lock, right before a
+/// reshaping write, so the condition it tests cannot change in between.
+pub type Guard<'a> = &'a dyn Fn() -> Result<(), SessionError>;
+
 /// Shared context for saving and compacting one model turn.
 pub struct PrepareContext<'a> {
     /// The current document, captured with the request's project identity.
@@ -271,6 +326,9 @@ pub struct Prepared {
     pub live: Option<Vec<Value>>,
     pub appended: usize,
     pub compacted: Option<Compaction>,
+    /// Why the automatic compaction this turn needed did not happen. The turn
+    /// still goes out; the caller tells the panel.
+    pub compaction_error: Option<String>,
     /// Archive files this turn's auditions evicted to stay inside the budget.
     pub evicted_auditions: Vec<EvictedAudition>,
     /// Audition rows added by this request, for the live operator transcript.
@@ -679,8 +737,16 @@ impl Store {
         Ok(meta)
     }
 
+    #[cfg(test)]
     pub fn delete(&self, id: &str) -> Result<(), String> {
+        self.delete_guarded(id, &|| Ok(()))
+            .map_err(|error| error.message)
+    }
+
+    /// [`Self::delete`] after `guard` admits it under the store lock.
+    pub fn delete_guarded(&self, id: &str, guard: Guard<'_>) -> Result<(), SessionError> {
         let _lock = self.mutation_lock()?;
+        guard()?;
         self.delete_inner(id)?;
         self.collect_unreferenced_locked();
         Ok(())
@@ -718,10 +784,23 @@ impl Store {
     /// Drop every record before the `keep`-th compaction, then remove assets no
     /// remaining message refers to. `keep = 1` keeps only the first compaction
     /// and what followed it.
+    #[cfg(test)]
     pub fn drop_history(&self, id: &str, keep: u64) -> Result<Value, String> {
+        self.drop_history_guarded(id, keep, &|| Ok(()))
+            .map_err(|error| error.message)
+    }
+
+    /// [`Self::drop_history`] after `guard` admits it under the store lock.
+    pub fn drop_history_guarded(
+        &self,
+        id: &str,
+        keep: u64,
+        guard: Guard<'_>,
+    ) -> Result<Value, SessionError> {
         let _lock = self.mutation_lock()?;
+        guard()?;
         if keep == 0 {
-            return Err("drop_history needs a count of at least 1".into());
+            return Err("drop_history needs a count of at least 1".to_owned().into());
         }
         let (dir, mut meta) = self.find(id)?;
         let records = read_records(&dir)?;
@@ -736,7 +815,8 @@ impl Store {
             return Err(format!(
                 "drop_history {keep}: this session has {} compaction(s)",
                 compactions.len()
-            ));
+            )
+            .into());
         }
         let from = compactions[keep - 1];
         let dropped = records.len() - from;
@@ -833,6 +913,7 @@ impl Store {
 
     /// Admits transcript preparation against the same saved-session incarnation
     /// as the request's accounting owner, before any transcript or archive write.
+    #[cfg(test)]
     pub fn prepare_owned(
         &self,
         id: &str,
@@ -841,6 +922,24 @@ impl Store {
         context: PrepareContext<'_>,
         incarnation: Option<&str>,
     ) -> Result<Prepared, String> {
+        self.prepare_admitted(id, incoming, project, context, incarnation, |_| {
+            Ok::<(), String>(())
+        })
+    }
+
+    /// [`Self::prepare_owned`] with an admission check: `admit` sees the
+    /// conversation the request would send (after the compaction it would
+    /// get) before the archive, the snapshot or the transcript is written, so
+    /// a refused request leaves the store exactly as it was.
+    pub fn prepare_admitted<E: From<String>>(
+        &self,
+        id: &str,
+        incoming: &[Value],
+        project: Option<&Path>,
+        context: PrepareContext<'_>,
+        incarnation: Option<&str>,
+        admit: impl FnOnce(&[Value]) -> Result<(), E>,
+    ) -> Result<Prepared, E> {
         let PrepareContext {
             snapshot,
             overhead,
@@ -872,6 +971,16 @@ impl Store {
         let mut probe = pending.clone();
         absorb(&mut probe, &filtered);
         turns::check_pairing(&probe).map_err(|error| format!("sessions: {error}"))?;
+        admit(&planned_request(
+            &pending,
+            &filtered,
+            &PlanInputs {
+                overhead,
+                context_length,
+                facts,
+                id,
+            },
+        ))?;
         let audio_settings = crate::gui_settings::load().session_audio;
         let evicted_auditions = persist_auditions(&self.root, &mut filtered, &audio_settings)?;
         let start = pending.len();
@@ -919,13 +1028,24 @@ impl Store {
             merged
         });
         let mut compacted = None;
+        let mut compaction_error = None;
         if !inline_audio && should_compact(&view, overhead, context_length) {
             let target = (context_length as f64 * AUTO_COMPACT_TARGET_FRACTION) as u64;
-            if let Ok(outcome) = self.compact_locked(id, Some(target), facts) {
-                view = outcome.messages.clone();
-                meta.compacted_at = Some(outcome.compacted_at.clone());
-                meta.tokens = outcome.tokens_after;
-                compacted = Some(outcome);
+            // A failed compaction does not fail the turn: the conversation is
+            // sent as saved and the admission above already bounded it. The
+            // failure is still reported, so a window that keeps growing is
+            // not silent.
+            match self.compact_locked(id, Some(target), facts) {
+                Ok(outcome) => {
+                    view = outcome.messages.clone();
+                    meta.compacted_at = Some(outcome.compacted_at.clone());
+                    meta.tokens = outcome.tokens_after;
+                    compacted = Some(outcome);
+                }
+                Err(error) => {
+                    log::warn!("[ai] session {id} auto-compaction failed: {error}");
+                    compaction_error = Some(error);
+                }
             }
         }
         if appended > 0 || compacted.is_some() || meta.provider != provider || meta.model != model {
@@ -944,6 +1064,7 @@ impl Store {
             live,
             appended,
             compacted,
+            compaction_error,
             evicted_auditions,
             saved_auditions,
         })
@@ -994,6 +1115,7 @@ impl Store {
     /// Folds the older turns into one plain-text message that also carries the
     /// most recent tool pairs as text. No assistant tool call, provider state or
     /// signature survives.
+    #[cfg(test)]
     pub fn compact(
         &self,
         id: &str,
@@ -1002,6 +1124,33 @@ impl Store {
     ) -> Result<Compaction, String> {
         let _lock = self.mutation_lock()?;
         self.compact_locked(id, target_tokens, facts)
+    }
+
+    /// A compaction a person asked for. `guard` runs under the store lock.
+    ///
+    /// Two windows can ask at once; both run under this lock, one after the
+    /// other, and each plans from the view it reads under the lock. The second
+    /// would then fold the first one's fresh summary into a summary of a
+    /// summary, so a view whose newest record already is a compaction is a
+    /// conflict: the conversation is in the state the request asked for.
+    pub fn compact_requested(
+        &self,
+        id: &str,
+        target_tokens: Option<u64>,
+        facts: &ProjectFacts,
+        guard: Guard<'_>,
+    ) -> Result<Compaction, SessionError> {
+        let _lock = self.mutation_lock()?;
+        guard()?;
+        let (dir, _) = self.find(id)?;
+        let newest = read_records(&dir)?.last().map(|record| record.kind);
+        if newest == Some(RecordKind::Compaction) {
+            return Err(SessionError::new(
+                SessionErrorKind::Conflict,
+                "This conversation was just compacted; nothing new has been added since.",
+            ));
+        }
+        Ok(self.compact_locked(id, target_tokens, facts)?)
     }
 
     fn compact_locked(
@@ -1031,10 +1180,17 @@ impl Store {
         // Append, never rewrite: the turns this summary replaces stay on disk so
         // the user can still read them (the panel's original view).
         append_records(&dir, &[record])?;
+        // The record is the compaction; the metadata only caches what the
+        // records already say (the token estimate is recomputed on the next
+        // write). Once the record landed the compaction happened, so a cache
+        // write failure is reported in the log rather than as a failure the
+        // caller would take to mean nothing changed.
         meta.compacted_at = Some(at);
         meta.tokens = outcome.tokens_after;
         meta.updated = now();
-        write_meta(&dir, &meta)?;
+        if let Err(error) = write_meta(&dir, &meta) {
+            log::warn!("[ai] session {id} compacted, but its metadata was not updated: {error}");
+        }
         Ok(outcome)
     }
 }
@@ -2007,21 +2163,18 @@ fn turn_record(at: &str, mut messages: Vec<Value>) -> Record {
 }
 
 /// The tool blocks of a conversation: each assistant message that asks for tools
-/// plus the tool results (and any attached delivery) that follow it.
+/// (natively or through the text protocol) plus the results and host deliveries
+/// that follow it. Pairing decides what belongs to a round, so a person's next
+/// message, attachments included, is never taken for part of the round.
 fn tool_blocks(view: &[Value]) -> Vec<(usize, usize)> {
     let mut blocks = Vec::new();
     let mut index = 0;
     while index < view.len() {
-        let calls = view[index]["tool_calls"]
-            .as_array()
-            .map(|calls| !calls.is_empty())
-            .unwrap_or(false);
-        if view[index]["role"] == "assistant" && calls {
+        if !turns::calls_of(&view[index]).is_empty() {
             let mut end = index + 1;
             while end < view.len()
-                && (view[end]["role"] == "tool"
-                    || view[end].get("input_audio").is_some()
-                    || view[end].get("media").is_some())
+                && (turns::answered_call(&view[end]).is_some()
+                    || turns::is_round_delivery(&view[end]))
             {
                 end += 1;
             }
@@ -2069,6 +2222,10 @@ fn is_audition(message: &Value) -> bool {
     message_protocol::kind(message).is_some_and(message_protocol::is_audition)
 }
 
+/// The replay-free form of a prose message. A person's message keeps what is
+/// theirs, verbatim: the text, the attachments as canonical descriptors, the
+/// snapshot a revert restores (`dsl_sha`, `dsl_project`) and the steering id.
+/// Calls, provider state and inline audio never survive.
 fn plain_message(message: &Value) -> Option<Value> {
     let role = message["role"].as_str()?;
     if role != "user" && role != "assistant" {
@@ -2076,39 +2233,68 @@ fn plain_message(message: &Value) -> Option<Value> {
     }
     if message.get("tool_calls").is_some()
         || message.get("provider_state").is_some()
-        || message.get("media").is_some()
         || message.get("input_audio").is_some()
         || context_of(message).is_some()
     {
         return None;
     }
     let content = message["content"].as_str()?;
-    if content.trim().is_empty()
-        || !matches!(
-            message_protocol::kind(message),
-            Some(MessageKind::User | MessageKind::Assistant)
-        )
+    let kind = message_protocol::kind(message)?;
+    let media = match message.get("media") {
+        Some(media) if role == "user" => canonical_media(media),
+        Some(_) => return None,
+        None => Value::Array(Vec::new()),
+    };
+    let has_media = media.as_array().is_some_and(|entries| !entries.is_empty());
+    if (content.trim().is_empty() && !has_media)
+        || !matches!(kind, MessageKind::User | MessageKind::Assistant)
     {
         return None;
     }
     let mut plain = json!({ "role": role, "content": content });
-    message_protocol::tag_new(&mut plain);
+    let mut meta = MessageMeta::new(kind);
+    if kind == MessageKind::User {
+        meta.steer_id = message_protocol::read(message).and_then(|meta| meta.steer_id);
+        if has_media {
+            plain["media"] = media;
+        }
+        for key in ["dsl_sha", "dsl_project"] {
+            if let Some(value) = message.get(key).filter(|value| value.is_string()) {
+                plain[key] = value.clone();
+            }
+        }
+    }
+    message_protocol::tag(&mut plain, meta);
     Some(plain)
 }
 
-/// Compacted messages retain prose and validated file descriptors, never tool
-/// calls, provider state or signatures. Audio content remains available on disk.
+/// Compacted messages retain prose, validated file descriptors and a person's
+/// revert snapshot, never tool calls, provider state or signatures. Audio
+/// content remains available on disk.
 pub fn strips_replay_state(messages: &[Value]) -> bool {
     messages.iter().all(|message| {
         message.as_object().is_some_and(|object| {
             object.keys().all(|key| {
                 matches!(
                     key.as_str(),
-                    "role" | "content" | "media" | "context" | "source_render" | "message_meta"
+                    "role"
+                        | "content"
+                        | "media"
+                        | "context"
+                        | "source_render"
+                        | "message_meta"
+                        | "dsl_sha"
+                        | "dsl_project"
                 )
             }) && object
                 .get("message_meta")
                 .is_none_or(|_| message_protocol::read(message).is_some())
+                && message_protocol::text_call(message).is_none()
+                && ["dsl_sha", "dsl_project"].iter().all(|key| {
+                    object
+                        .get(*key)
+                        .is_none_or(|_| message_protocol::kind(message) == Some(MessageKind::User))
+                })
                 && object.get("context").is_none_or(is_context_marker)
                 && object
                     .get("source_render")
@@ -2123,6 +2309,38 @@ pub fn strips_replay_state(messages: &[Value]) -> bool {
                 )
         })
     })
+}
+
+/// What deciding a compaction needs, apart from the conversation.
+struct PlanInputs<'a> {
+    overhead: u64,
+    context_length: u64,
+    facts: &'a ProjectFacts,
+    id: &'a str,
+}
+
+/// The conversation a preparation would send, computed without writing:
+/// the saved view plus what the request adds, compacted as the preparation
+/// would compact it. An inline clip is sent from the client's own messages,
+/// as the preparation sends it.
+fn planned_request(pending: &[Value], incoming: &[Value], plan: &PlanInputs<'_>) -> Vec<Value> {
+    let mut view = pending.to_vec();
+    let (_, absorbed) = absorb(&mut view, incoming);
+    if incoming
+        .iter()
+        .any(|message| message.get("input_audio").is_some())
+    {
+        let mut merged = pending.to_vec();
+        merged.extend_from_slice(&incoming[absorbed.min(incoming.len())..]);
+        return merged;
+    }
+    if should_compact(&view, plan.overhead, plan.context_length) {
+        let target = (plan.context_length as f64 * AUTO_COMPACT_TARGET_FRACTION) as u64;
+        if let Ok(outcome) = plan_compaction(&view, target, plan.facts, plan.id) {
+            return outcome.messages;
+        }
+    }
+    view
 }
 
 fn plan_compaction(
@@ -2240,8 +2458,9 @@ fn plan_compaction(
     }
 }
 
-/// The messages after `split` that are safe to keep: plain text only, never a
-/// message of a retained tool block, and always the pending user message.
+/// The messages after `split` that are safe to keep: prose only, never a
+/// message of a retained tool block, and always the pending user message with
+/// its attachments, so the ask the model is about to answer survives intact.
 fn tail_messages(view: &[Value], split: usize, retained: &[(usize, usize)]) -> Vec<Value> {
     let in_block = |index: usize| {
         retained
@@ -2547,28 +2766,27 @@ fn summary_text(
         text.push_str("- none retained\n");
     }
     for (offset, (start, end)) in retained.iter().enumerate() {
-        let name = view[*start]["tool_calls"]
-            .as_array()
-            .and_then(|calls| calls.first())
-            .and_then(|call| call["function"]["name"].as_str())
-            .unwrap_or("tool")
-            .to_owned();
-        let arguments = view[*start]["tool_calls"]
-            .as_array()
-            .and_then(|calls| calls.first())
-            .and_then(|call| call["function"]["arguments"].as_str())
-            .map(|arguments| clip(&collapse(arguments), MAX_SUMMARY_ITEM_CHARS))
-            .unwrap_or_default();
-        let result = view
-            .get(*start + 1)
-            .filter(|message| message["role"] == "tool")
-            .map(summary_of_result)
-            .unwrap_or_else(|| "no result recorded".into());
-        let _ = end;
-        text.push_str(&format!(
-            "{}. {name} → {arguments} → {result}\n",
-            offset + 1
-        ));
+        // Every call of a parallel batch, each with the result that answers it.
+        let lines: Vec<String> = turns::calls_of(&view[*start])
+            .into_iter()
+            .map(|(id, name)| {
+                let arguments = view[*start]["tool_calls"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .find(|call| call["id"].as_str() == Some(id.as_str()))
+                    .and_then(|call| call["function"]["arguments"].as_str())
+                    .map(|arguments| clip(&collapse(arguments), MAX_SUMMARY_ITEM_CHARS))
+                    .unwrap_or_default();
+                let result = view[*start + 1..*end]
+                    .iter()
+                    .find(|message| turns::answered_call(message).as_deref() == Some(id.as_str()))
+                    .map(summary_of_result)
+                    .unwrap_or_else(|| "no result recorded".into());
+                format!("{name} \u{2192} {arguments} \u{2192} {result}")
+            })
+            .collect();
+        text.push_str(&format!("{}. {}\n", offset + 1, lines.join("; ")));
     }
     let kept = retained_media(view, retained);
     if !kept.is_empty() {
@@ -2711,13 +2929,14 @@ fn should_compact(view: &[Value], overhead: u64, context_length: u64) -> bool {
     if view.len() > MAX_AUTO_COMPACT_MESSAGES {
         return true;
     }
-    if context_length == 0 {
+    // A window of 0 or 1 is a placeholder for "unknown", not a size.
+    if context_length <= 1 {
         return false;
     }
     let tokens = estimate_tokens(view);
     let limit = (context_length as f64 * AUTO_COMPACT_FRACTION) as u64;
     let floor = (context_length as f64 * AUTO_COMPACT_CONVERSATION_FLOOR) as u64;
-    tokens + overhead > limit.max(1) && tokens > floor
+    tokens + media_tokens(view) + overhead > limit.max(1) && tokens > floor
 }
 
 /// Versioned metadata for a host message of `kind`, as saved on the wire.
@@ -2761,6 +2980,72 @@ fn text_tokens(text: &str) -> u64 {
         units += if character.is_ascii() { 1 } else { 4 };
     }
     units.div_ceil(4)
+}
+
+/// Tokens of any serialized payload under the same rule as the conversation,
+/// for parts of a request the store does not save, such as the tool list.
+pub fn value_tokens(value: &Value) -> u64 {
+    text_tokens(&value.to_string())
+}
+
+/// What one image costs a provider, about a full-resolution tile set. Images
+/// carry no size the store can read, so every image counts the same.
+pub const IMAGE_TOKENS: u64 = 1_600;
+/// Audio input tokens per second of sound, a common provider rate.
+pub const AUDIO_TOKENS_PER_SECOND: f64 = 32.0;
+/// Bytes per second assumed for compressed audio whose duration is unknown.
+const COMPRESSED_AUDIO_BYTES_PER_SECOND: u64 = 16_000;
+/// Bytes per second of the 16-bit stereo 44.1 kHz WAV an inline clip carries.
+const WAV_BYTES_PER_SECOND: u64 = 176_400;
+
+/// The attachments a request carries, estimated apart from the text because
+/// their cost depends on their kind and length, not on their descriptor. A
+/// disk-only reference is not sent and costs nothing.
+pub fn media_tokens(messages: &[Value]) -> u64 {
+    let audio = |seconds: f64| (seconds.max(0.0) * AUDIO_TOKENS_PER_SECOND).ceil() as u64;
+    let mut tokens = 0u64;
+    for message in messages {
+        for entry in message["media"].as_array().into_iter().flatten() {
+            if entry["local_reference"].as_bool() == Some(true) {
+                continue;
+            }
+            tokens += match entry["kind"].as_str() {
+                Some("image") => IMAGE_TOKENS,
+                _ => match entry["duration_secs"].as_f64().filter(|s| s.is_finite()) {
+                    Some(seconds) => audio(seconds),
+                    None => {
+                        let rate = if entry["mime"] == "audio/wav" {
+                            WAV_BYTES_PER_SECOND
+                        } else {
+                            COMPRESSED_AUDIO_BYTES_PER_SECOND
+                        };
+                        audio(entry["bytes"].as_u64().unwrap_or(0) as f64 / rate as f64)
+                    }
+                },
+            };
+        }
+        if let Some(data) = message["input_audio"]["data"].as_str() {
+            let bytes = data.len() as u64 / 4 * 3;
+            tokens += audio(bytes as f64 / WAV_BYTES_PER_SECOND as f64);
+        }
+    }
+    tokens
+}
+
+/// The versioned kind of a saved or wire message.
+pub fn message_kind(message: &Value) -> Option<MessageKind> {
+    message_protocol::kind(message)
+}
+
+/// A summary the store's compaction wrote. It carries the conversation's
+/// structured state (standing intent, discarded auditions); a fold row the
+/// loop writes into one request carries none, so a later fold or trim can
+/// keep the one and drop the other.
+pub fn is_compaction_summary(message: &Value) -> bool {
+    message_protocol::legacy(message).is_some_and(|meta| {
+        meta.kind == MessageKind::Summary
+            && (meta.standing_intent.is_some() || meta.discarded_auditions.is_some())
+    })
 }
 
 // ---- file I/O -----------------------------------------------------------
@@ -2962,15 +3247,22 @@ fn append_records_under(dir: &Path, records: &[Record], cap: u64) -> Result<(), 
 }
 
 /// The newest messages of a conversation that fit in `budget` bytes, in order.
+/// The latest compaction summary leads them when the cut fell after it: it
+/// holds the standing intent and the decisions the dropped turns made.
 fn newest_that_fit(view: &[Value], budget: u64) -> Vec<Value> {
+    let size_of = |message: &Value| {
+        serde_json::to_vec(message)
+            .map(|bytes| bytes.len())
+            .unwrap_or(0) as u64
+            + 1
+    };
+    let summary = view.iter().rposition(is_compaction_summary);
+    let reserved = summary.map_or(0, |index| size_of(&view[index]));
     let mut kept: Vec<Value> = Vec::new();
     let mut used = 0u64;
     for message in view.iter().rev() {
-        let size = serde_json::to_vec(message)
-            .map(|bytes| bytes.len())
-            .unwrap_or(0) as u64
-            + 1;
-        if used + size > budget && !kept.is_empty() {
+        let size = size_of(message);
+        if used + size + reserved > budget && !kept.is_empty() {
             break;
         }
         used += size;
@@ -2981,6 +3273,14 @@ fn newest_that_fit(view: &[Value], budget: u64) -> Vec<Value> {
     // dropping them keeps the conversation one every later append accepts.
     while !kept.is_empty() && turns::check_pairing(&kept).is_err() {
         kept.remove(0);
+    }
+    // The summary is a user row, so it opens no call and answers none: in
+    // front of a well-paired tail the conversation stays well paired.
+    if let Some(index) = summary
+        && view.len() - kept.len() > index
+        && !kept.is_empty()
+    {
+        kept.insert(0, view[index].clone());
     }
     kept
 }

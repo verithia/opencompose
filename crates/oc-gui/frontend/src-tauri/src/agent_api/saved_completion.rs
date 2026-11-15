@@ -95,14 +95,10 @@ impl SavedTurn {
                 id: &binding.id,
                 incarnation: &incarnation,
                 project: Some(&binding.project),
+                tool_tokens: 0,
             },
         )
-        .map_err(|error| AiError::new("session_save", error))
-        .and_then(|prepared| {
-            prepared.ok_or_else(|| {
-                AiError::new("session_save", "The saved conversation cannot be replayed")
-            })
-        });
+        .map_err(AiError::from);
         let prepared = match prepared {
             Ok(prepared) => prepared,
             Err(error) => {

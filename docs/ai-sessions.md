@@ -637,12 +637,21 @@ project's DSL **digest** rather than carrying the DSL, which would defeat the
 purpose.
 
 Compaction leaves nothing to replay: the output is one `user` message plus any
-trailing plain-text messages, each carrying only `role` and `content`. There is
-no assistant message with `tool_calls`, no `provider_state`, and no signature
+trailing prose messages. Those carry their `role`, `content` and message kind;
+a person's message also keeps its attachments as canonical descriptors, the
+snapshot a revert restores (`dsl_sha`, `dsl_project`) and its steering id. The
+pending message, the one the model is about to answer, is always carried this
+way, even when it directly follows a tool round. There is no assistant message
+with `tool_calls` or a text-protocol call, no `provider_state`, and no signature
 field (`extra_content`, `thought_signature`, `signature`) — a provider that
 rejects a replayed signature accepts a compacted conversation because there is
 no assistant tool-call turn left to replay. The store refuses to write a
 compaction that would violate this.
+
+The retained tool lines name every call of a round, so a parallel batch lists
+each call with the result that answers it. A round is its assistant message
+plus the results and host deliveries that pairing assigns to it, for native and
+text-protocol calls alike.
 
 `retained_pairs` states how many tool calls the summary carries as text. If the
 result is still above `target_tokens`, the transcript drops pairs from the
@@ -677,11 +686,12 @@ The estimate has three parts:
    assumes. One sample cannot move the average, and an absurd report is ignored.
 
 The panel also counts the **system prompt and the tool schemas**, which ride on
-every request and are the largest part of a small conversation. The store's
-compaction estimate covers the saved conversation only, because the store is
-reached without a request in hand; the 75 % / 15 % thresholds therefore describe
-the conversation, and a request that still overflows is left to the provider's
-own error.
+every request and are the largest part of a small conversation. The backend
+counts them too when a turn is prepared: the system prompt and the serialized
+tool list of the conversation's toolsets are the overhead the 75 % threshold
+adds to the conversation, and attachments are estimated by kind (1,600 tokens
+per image, 32 tokens per second of audio; a disk-only reference costs nothing).
+The 15 % floor still describes the conversation alone.
 
 The figure under the composer is labelled an estimate, and the pre-send guard
 warns rather than refuses: only the provider can reject a request for size.
@@ -713,10 +723,21 @@ saved id first and the id without one leading `<vendor>/` segment or a trailing
 `gemini-4-argon` window rather than the entry's guess. The panel shows that
 number next to the provider default when the two differ.
 
-Only a request that ends with the user's message is compacted: folding the
-conversation in the middle of a tool round would take away the result the model
-is about to answer from. A mid-turn overflow is left to the provider's own
-limit, as before.
+A window the entry stores as 0 or 1 is unknown, not tiny: the size thresholds
+are skipped and only the 80-message rule applies.
+
+Whether a turn can be sent is decided before anything is saved. The request is
+measured as it would go out, compacted if it would be: when the system prompt,
+the tool list and the conversation still exceed the whole window, the turn is
+refused with the error kind `context_overflow`, and the message, its snapshot
+and its attachments are not saved. A conversation that no cut can bring under
+the row bound is refused the same way, as `session_save`. A request over 96
+rows is folded like a running turn's wire (see the agent loop's request
+budget), keeping the latest compaction summary and the turn's ask.
+
+An automatic compaction that fails does not fail the turn: the conversation is
+sent as saved, the failure is logged, and `ai_session` carries
+`{session_id, notice: "compaction_failed", message}`.
 
 The panel is told: an auto-compaction emits `ai_session` with `compacted: true`,
 the dropped range, the token counts before and after, the retained pair count and
@@ -731,7 +752,11 @@ the messages that were sent. The panel writes one line into the transcript.
 | `sessions_load` | `id` | metadata plus the wire messages to replay |
 | `sessions_rename` | `id`, `title` | the updated metadata |
 | `sessions_delete` | `id` | removes the directory |
-| `sessions_compact` | `id`, `target_tokens?` | the summary, the dropped range and the token counts |
+| `sessions_compact` | `id`, `target_tokens?` | the summary, the dropped range and the token counts; a refusal is `{kind, message}` with `busy` or `conflict` |
+
+A requested compaction whose conversation already ends in a compaction is a
+`conflict`: when two windows ask at once, both run under the store lock one
+after the other, and the second finds the state the first produced.
 
 `sessions_list` covers the open workspace; `all` covers every workspace, and each
 entry names its workspace so a client can group the answer. A `project` argument
@@ -750,7 +775,8 @@ conversation. No command here writes to the project.
   short summary of it.
 - `provider_state`, thought signatures and reasoning items. A conversation that
   needs them to continue on the same provider continues as a fresh context.
-- Attachments and inline audio clips, which compaction drops rather than
-  carrying into the summary.
+- Attachments of the folded turns and inline audio clips, which compaction
+  drops rather than carrying into the summary. The person's messages it keeps
+  keep their attachments.
 - The message range itself: the summary states the range and the token counts,
   not the messages.

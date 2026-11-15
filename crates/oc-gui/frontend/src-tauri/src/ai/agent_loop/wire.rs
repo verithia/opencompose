@@ -2,7 +2,7 @@
 //! reply, shaping a tool result for the model, the audio a result delivers, and
 //! folding an over-budget wire. Nothing here touches the project or the store.
 
-use crate::ai::sessions::{MessageKind, message_meta};
+use crate::ai::sessions::{MessageKind, message_meta, turns};
 use serde_json::{Map, Value, json};
 
 /// Tool rounds one turn may run. Each round costs one provider turn; the cap
@@ -424,38 +424,185 @@ pub fn wire_budget(messages: &[Value]) -> (usize, usize) {
     (messages.len(), bytes)
 }
 
-/// What a fold dropped: `from..to` became one summary row.
+/// What a fold dropped: `from..to` became one summary row. `ask` is where the
+/// turn's ask sits in the folded wire.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Fold {
     pub from: usize,
     pub to: usize,
     pub dropped: usize,
     pub pairs: usize,
+    pub ask: Option<usize>,
 }
 
-/// Folds the oldest rows into one summary row so the wire fits the budget.
-/// System prompts, the turn's first ask and the newest tool pairs stay whole;
-/// a cut lands only on a user or assistant row, so a call and its results are
-/// never separated. `None` when no cut brings the wire under budget.
-pub fn fold_wire(messages: &mut Vec<Value>) -> Option<Fold> {
-    let mut head = messages
+/// The token side of a wire's budget, sized from the model's context window
+/// with the same estimator the store's compaction uses.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TokenBudget {
+    /// The model's input window. A wire measured above it is not sent.
+    pub window: u64,
+    /// Tokens every request carries beside the wire: the tool list.
+    pub fixed: u64,
+    /// Reported over estimated input of the last request, at least 1, so a
+    /// provider whose tokenizer counts more than the estimate is measured by
+    /// what it reported.
+    pub scale: f64,
+}
+
+/// The highest scale a report may set; anything above is a broken report.
+const MAX_SCALE: f64 = 4.0;
+
+impl TokenBudget {
+    /// `None` when the window is unknown (0 or 1).
+    pub fn new(window: u64, fixed: u64) -> Option<Self> {
+        (window > 1).then_some(Self {
+            window,
+            fixed,
+            scale: 1.0,
+        })
+    }
+
+    /// The estimate before calibration: text, attachments and the fixed part.
+    fn estimate(&self, wire: &[Value]) -> u64 {
+        crate::ai::sessions::estimate_tokens(wire)
+            + crate::ai::sessions::media_tokens(wire)
+            + self.fixed
+    }
+
+    /// The wire's size in tokens: the estimate, or what the provider reported
+    /// for the same wire when that is larger.
+    pub fn measure(&self, wire: &[Value]) -> u64 {
+        (self.estimate(wire) as f64 * self.scale).ceil() as u64
+    }
+
+    /// Learns from a provider's reported input for exactly `wire`. A report
+    /// below the estimate leaves the estimate in charge.
+    pub fn calibrate(&mut self, wire: &[Value], reported: u64) {
+        let estimate = self.estimate(wire).max(1);
+        let scale = reported as f64 / estimate as f64;
+        if scale.is_finite() {
+            self.scale = scale.clamp(1.0, MAX_SCALE);
+        }
+    }
+
+    /// The share of the window above which a wire is folded, the same share
+    /// that triggers the store's compaction.
+    pub fn limit(&self) -> u64 {
+        (self.window as f64 * crate::ai::sessions::AUTO_COMPACT_FRACTION) as u64
+    }
+
+    /// The share a fold aims for, so the next rounds do not fold again at once.
+    fn target(&self) -> u64 {
+        (self.window as f64 * crate::ai::sessions::AUTO_COMPACT_TARGET_FRACTION) as u64
+    }
+}
+
+/// The bounds a fold brings a wire under.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FoldLimits {
+    pub rows: usize,
+    pub bytes: usize,
+    pub tokens: Option<TokenBudget>,
+}
+
+impl FoldLimits {
+    /// The loop's bounds before every send.
+    pub fn round(tokens: Option<TokenBudget>) -> Self {
+        Self {
+            rows: WIRE_MESSAGE_BUDGET,
+            bytes: WIRE_TEXT_BUDGET,
+            tokens,
+        }
+    }
+
+    fn fits_shape(&self, wire: &[Value]) -> bool {
+        let (rows, bytes) = wire_budget(wire);
+        rows <= self.rows && bytes <= self.bytes
+    }
+
+    /// Whether the wire is inside every bound.
+    pub fn fits(&self, wire: &[Value]) -> bool {
+        self.fits_shape(wire)
+            && self
+                .tokens
+                .is_none_or(|tokens| tokens.measure(wire) <= tokens.limit())
+    }
+}
+
+/// Tokens the tool list of one request costs: the registry tools the
+/// selection offers, plus the result pager when the request carries it.
+pub fn offered_tool_tokens(toolsets: Option<&[String]>, pager: bool) -> u64 {
+    let mut specs = crate::ai::tool_specs_for(toolsets);
+    if pager {
+        specs.push(read_toolcall_spec());
+    }
+    specs
+        .iter()
+        .map(|spec| {
+            crate::ai::sessions::value_tokens(&json!({
+                "name": spec.name,
+                "description": spec.description,
+                "parameters": spec.parameters,
+            }))
+        })
+        .sum()
+}
+
+/// The turn's ask: the newest message a person wrote that is not steering.
+/// User-kind rows after it are steering delivered into the running turn.
+pub fn turn_ask(messages: &[Value]) -> Option<usize> {
+    messages.iter().rposition(|message| {
+        message["role"] == "user" && message_kind(message) == Some(MessageKind::User)
+    })
+}
+
+/// Where a fold may resume the wire: a person's message or an assistant
+/// round, never a result or a delivery that belongs to the round before it.
+fn is_boundary(message: &Value) -> bool {
+    matches!(message["role"].as_str(), Some("user" | "assistant"))
+        && turns::answered_call(message).is_none()
+        && !turns::is_round_delivery(message)
+}
+
+fn has_calls(message: &Value) -> bool {
+    !turns::calls_of(message).is_empty()
+}
+
+fn message_kind(message: &Value) -> Option<MessageKind> {
+    crate::ai::sessions::message_kind(message)
+}
+
+/// Folds the oldest rows into one summary row so the wire fits `limits`.
+/// System prompts, the turn's ask, the steering delivered after it, the
+/// store's latest compaction summary and the newest tool pairs stay whole; a
+/// cut lands only where the pairing rules allow a new message, so a call and
+/// its results, native or text protocol, are never separated. `ask` is the
+/// index of the turn's ask. `None` when no cut brings the wire under budget.
+pub fn fold_wire(
+    messages: &mut Vec<Value>,
+    limits: &FoldLimits,
+    ask: Option<usize>,
+) -> Option<Fold> {
+    let head = messages
         .iter()
         .take_while(|message| message["role"] == "system")
         .count();
-    if let Some(user) = messages[head..]
+    let ask = ask.filter(|&index| index >= head && index < messages.len());
+    let summary = messages[head..ask.unwrap_or(messages.len())]
         .iter()
-        .position(|message| message["role"] == "user" && kind_of(message) == "user")
-    {
-        head += user + 1;
-    }
-    let starts: Vec<usize> = messages
-        .iter()
-        .enumerate()
-        .filter(|(_, message)| has_calls(message))
-        .map(|(index, _)| index)
+        .rposition(crate::ai::sessions::is_compaction_summary)
+        .map(|offset| head + offset);
+    let pinned = |index: usize| {
+        Some(index) == summary
+            || ask.is_some_and(|ask| {
+                index >= ask && message_kind(&messages[index]) == Some(MessageKind::User)
+            })
+    };
+    let starts: Vec<usize> = (head..messages.len())
+        .filter(|&index| has_calls(&messages[index]))
         .collect();
     let boundaries: Vec<usize> = (head + 1..messages.len())
-        .filter(|&index| matches!(messages[index]["role"].as_str(), Some("user" | "assistant")))
+        .filter(|&index| is_boundary(&messages[index]))
         .collect();
     let keep = WIRE_KEPT_TOOL_PAIRS.min(starts.len());
     let wanted = if keep > 0 {
@@ -464,45 +611,53 @@ pub fn fold_wire(messages: &mut Vec<Value>) -> Option<Fold> {
         *boundaries.first()?
     };
     let first = wanted.max(head + 1);
+    // A wire that pairs is folded only into one that still pairs.
+    let paired = turns::check_pairing(&messages[head..]).is_ok();
+    let mut fallback = None;
     for &cut in boundaries.iter().filter(|&&cut| cut >= first) {
-        let dropped = messages[head..cut]
-            .iter()
-            .filter(|message| has_calls(message))
-            .count();
-        let summary = fold_summary(dropped, cut - head);
-        let mut folded = messages[..head].to_vec();
-        folded.push(summary.clone());
-        folded.extend_from_slice(&messages[cut..]);
-        let (rows, bytes) = wire_budget(&folded);
-        if rows > WIRE_MESSAGE_BUDGET || bytes > WIRE_TEXT_BUDGET {
+        let kept: Vec<usize> = (head..cut).filter(|&index| pinned(index)).collect();
+        let rows = cut - head - kept.len();
+        if rows == 0 {
             continue;
         }
-        *messages = folded;
-        return Some(Fold {
-            from: head,
+        let dropped = (head..cut)
+            .filter(|&index| !pinned(index) && has_calls(&messages[index]))
+            .count();
+        let mut folded = messages[..head].to_vec();
+        folded.extend(kept.iter().map(|&index| messages[index].clone()));
+        let from = folded.len();
+        folded.push(fold_summary(dropped, rows));
+        folded.extend_from_slice(&messages[cut..]);
+        if (paired && turns::check_pairing(&folded[head..]).is_err()) || !limits.fits(&folded) {
+            continue;
+        }
+        let fold = Fold {
+            from,
             to: cut,
             dropped,
             pairs: starts.iter().filter(|&&index| index >= cut).count(),
-        });
+            ask: ask.map(|ask| match kept.iter().position(|&index| index == ask) {
+                Some(position) => head + position,
+                None => ask - cut + from + 1,
+            }),
+        };
+        // The first cut inside every bound wins when it also reaches the
+        // token target; otherwise a later cut may, and the first is kept in
+        // case none does.
+        let on_target = limits
+            .tokens
+            .is_none_or(|tokens| tokens.measure(&folded) <= tokens.target());
+        if on_target {
+            *messages = folded;
+            return Some(fold);
+        }
+        if fallback.is_none() {
+            fallback = Some((folded, fold));
+        }
     }
-    None
-}
-
-fn has_calls(message: &Value) -> bool {
-    message["role"] == "assistant"
-        && message["tool_calls"]
-            .as_array()
-            .is_some_and(|calls| !calls.is_empty())
-}
-
-fn kind_of(message: &Value) -> &str {
-    message["message_meta"]["kind"]
-        .as_str()
-        .unwrap_or(match message["role"].as_str() {
-            Some("assistant") => "assistant",
-            Some("tool") => "tool",
-            _ => "user",
-        })
+    let (folded, fold) = fallback?;
+    *messages = folded;
+    Some(fold)
 }
 
 fn fold_summary(dropped: usize, rows: usize) -> Value {
@@ -652,7 +807,8 @@ mod tests {
             wire.push(json!({"role":"assistant","content":null,"tool_calls":[{"id":format!("c{round}"),"type":"function","function":{"name":"tracks_list","arguments":"{}"}}]}));
             wire.push(json!({"role":"tool","tool_call_id":format!("c{round}"),"content":"{}"}));
         }
-        let fold = fold_wire(&mut wire).unwrap();
+        let ask = turn_ask(&wire);
+        let fold = fold_wire(&mut wire, &FoldLimits::round(None), ask).unwrap();
         assert_eq!(fold.from, 2);
         assert_eq!(wire[1]["content"], "ask");
         assert_eq!(wire[2]["context"], "summary");
@@ -669,5 +825,91 @@ mod tests {
             wire[3]["role"], "assistant",
             "the wire resumes at a call, not a result"
         );
+    }
+
+    fn user(text: &str) -> Value {
+        json!({"role":"user","content":text,"message_meta":{"version":1,"kind":"user"}})
+    }
+
+    fn native_round(wire: &mut Vec<Value>, id: &str, payload: usize) {
+        wire.push(json!({"role":"assistant","content":null,"message_meta":{"version":1,"kind":"assistant"},
+            "tool_calls":[{"id":id,"type":"function","function":{"name":"tracks_list","arguments":"{}"}}]}));
+        wire.push(
+            json!({"role":"tool","tool_call_id":id,"message_meta":{"version":1,"kind":"tool"},
+            "content":"r".repeat(payload)}),
+        );
+    }
+
+    #[test]
+    fn a_fold_keeps_this_turn_s_ask_and_its_steering_not_the_first_ask() {
+        let mut wire = vec![
+            json!({"role":"system","content":"s"}),
+            user("an older ask"),
+            json!({"role":"assistant","content":"older answer","message_meta":{"version":1,"kind":"assistant"}}),
+            user("the current ask"),
+        ];
+        for round in 0..120 {
+            native_round(&mut wire, &format!("c{round}"), 2);
+            if round == 10 {
+                let mut steer = user("make the drop longer");
+                steer["message_meta"]["steer_id"] = json!("row-1");
+                wire.push(steer);
+            }
+        }
+        let ask = turn_ask(&wire[..4]);
+        assert_eq!(ask, Some(3));
+        let fold = fold_wire(&mut wire, &FoldLimits::round(None), ask).unwrap();
+        let texts: Vec<&str> = wire
+            .iter()
+            .filter_map(|row| row["content"].as_str())
+            .collect();
+        assert!(!texts.contains(&"an older ask"));
+        assert!(texts.contains(&"make the drop longer"), "steering survives");
+        assert_eq!(wire[fold.ask.unwrap()]["content"], "the current ask");
+        assert_eq!(turns::check_pairing(&wire[1..]), Ok(()));
+    }
+
+    #[test]
+    fn a_fold_never_resumes_on_a_text_protocol_result() {
+        let mut wire = vec![json!({"role":"system","content":"s"}), user("ask")];
+        for round in 0..120 {
+            let id = format!("text-call-t-{round}");
+            wire.push(json!({"role":"assistant","content":"{\"tool\":\"tracks_list\",\"args\":{}}",
+                "message_meta":{"version":1,"kind":"assistant","text_call":{"id":id,"tool":"tracks_list"}}}));
+            wire.push(json!({"role":"user","content":format!("{}{{}}", turns::APPLICATION_RESULT_PREFIX),
+                "message_meta":{"version":1,"kind":"application_result","text_call":{"id":id,"tool":"tracks_list"}}}));
+        }
+        let ask = turn_ask(&wire);
+        let fold = fold_wire(&mut wire, &FoldLimits::round(None), ask).unwrap();
+        assert_eq!(turns::check_pairing(&wire[1..]), Ok(()));
+        let resumed = &wire[fold.from + 1];
+        assert!(turns::answered_call(resumed).is_none(), "{resumed}");
+        assert!(fold.pairs <= WIRE_KEPT_TOOL_PAIRS);
+    }
+
+    #[test]
+    fn a_fold_bounds_tokens_by_the_reported_input() {
+        let mut wire = vec![json!({"role":"system","content":"s"}), user("ask")];
+        for round in 0..20 {
+            native_round(&mut wire, &format!("c{round}"), 4_000);
+        }
+        let mut tokens = TokenBudget::new(60_000, 0).unwrap();
+        let limits = FoldLimits::round(Some(tokens));
+        assert!(limits.fits(&wire), "the estimate alone fits the window");
+        // The provider counted three times what the estimate says.
+        tokens.calibrate(&wire, tokens.measure(&wire) * 3);
+        let limits = FoldLimits::round(Some(tokens));
+        assert!(!limits.fits(&wire));
+        let ask = turn_ask(&wire);
+        fold_wire(&mut wire, &limits, ask).unwrap();
+        assert!(tokens.measure(&wire) <= tokens.limit());
+        assert_eq!(wire[1]["content"], "ask");
+    }
+
+    #[test]
+    fn an_unknown_window_has_no_token_budget() {
+        assert!(TokenBudget::new(0, 10).is_none());
+        assert!(TokenBudget::new(1, 10).is_none());
+        assert!(offered_tool_tokens(None, true) > offered_tool_tokens(None, false));
     }
 }

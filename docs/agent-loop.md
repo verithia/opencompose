@@ -877,12 +877,19 @@ the panel's provider layer decides that and the error carries `retryable`.
 * **The wire stays inside the request budget.** Before every provider request
   the loop counts its messages and prompt-text bytes against the bounds `ai_chat`
   enforces: 100 messages and 2 MiB, with a margin so one round of results cannot
-  reach them. When either bound is near, the oldest part of the wire is folded
-  into one summary row: the turn's first user message and the newest six
-  call/result pairs stay whole, and a call is never separated from its result.
-  The fold is reported as its own transcript line, the summary row is marked
-  `summary`, and a Retry refolds the replayed conversation rather than sending
-  the oversized one.
+  reach them. It also measures the wire in tokens against the model's window,
+  with the estimator the store's compaction uses plus the tool list, and takes
+  the larger of that estimate and what the provider reported for the previous
+  round. When any bound is near (75 % of the window for tokens), the oldest part
+  of the wire is folded into one summary row, aiming for half the window: the
+  turn's ask, the steering delivered after it, the latest compaction summary
+  and the newest six call/result pairs stay whole. A cut lands only where the
+  pairing rules allow a new message, never on a tool or text-protocol result
+  or a delivery, so a call is never separated from its result. A wire that
+  still exceeds the whole window is not sent; the turn fails with
+  `context_overflow`. The fold is reported as its own transcript line, the
+  summary row is marked `summary`, and a Retry refolds the replayed
+  conversation rather than sending the oversized one.
 * **No second question.** The store already holds the turn's user message; a
   request whose tail the conversation has appends nothing (`absorb` in
   `ai/sessions.rs`), so `sessions_load` keeps one user row for the turn.
@@ -942,7 +949,10 @@ stop it before reverting.` and while a batch is open with `A batch of edits is
 still open; finish it before reverting.` No other row offers revert; there is no
 per-call revert and no roll-back item for a turn. While a turn runs, its
 conversation also cannot be compacted, have its history dropped or be deleted:
-those would move the round the turn is writing.
+those would move the round the turn is writing. The check runs under the store
+lock every write of the turn takes, and a turn is registered as running before
+its first write, so a turn that starts during the command waits for the command
+and then reads what it left.
 
 ## 5. `render_offline` — full-song export
 

@@ -1218,6 +1218,7 @@ export const ja = {
   "ai.provider.added": "{name} を追加しました。",
   "ai.sessions.toggle": "会話",
   "ai.sessions.new": "新しい会話",
+  "ai.sessions.newBlocked": "実行中のターンまたは会話の操作が終わると使えます",
   "ai.sessions.workspace": "作業ディレクトリ",
   "ai.sessions.detached": "作業ディレクトリなし",
   "ai.sessions.empty": "この作業ディレクトリには保存された会話がありません。",

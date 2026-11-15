@@ -143,8 +143,8 @@ export function AiPanel(props: { onClose?: () => void }) {
   const [stopRequestedAt, setStopRequestedAt] = createSignal<number | null>(null);
   /**
    * The turn the backend still runs after this window was reloaded, named by
-   * the backend itself. The pending row needs a loop this window no longer
-   * has, so this turn is reported instead of imitated.
+   * the backend itself. The pending row needs the loop of the window that
+   * started the turn, so this turn is reported instead of imitated.
    */
   const [reattached, setReattached] = createSignal<InheritedTurn | null>(null);
   /**
@@ -273,6 +273,8 @@ export function AiPanel(props: { onClose?: () => void }) {
   /** Delivery holds its queue row until the backend confirms it was saved; the
    * mark lives in the store, so a reopened panel sees a steer still in flight. */
   const steering = () => aiSession.steering() !== null;
+  /** Steer marks this panel cleared without a steer reply; their end sends nothing. */
+  const quietSteerEnds = new Set<string>();
   /**
    * Anything that would change the open conversation waits while a turn,
    * inherited or not, still writes it, or while a session action such as a
@@ -432,6 +434,8 @@ export function AiPanel(props: { onClose?: () => void }) {
     const id = openId();
     if (id === shownConversation) return;
     shownConversation = id;
+    // A late message of the last turn belongs to the conversation it ran in.
+    finishedTurn = null;
     resetContextCalibration();
     selectStatsSession(id);
   });
@@ -861,10 +865,15 @@ export function AiPanel(props: { onClose?: () => void }) {
 
   /** Paint the history before compaction, including the turns it replaced. */
   const paintOriginal = async (id: string): Promise<void> => {
+    // A turn or a session action still writes the transcript this would
+    // replace, and a late row anchors on the rows it shows.
+    if (conversationLocked()) return;
     const epoch = scopeEpoch;
+    // One paint owns the transcript: a later paint of either kind supersedes it.
+    const request = ++paintRequest;
     try {
       const loaded = await aiApi.originalSession(id);
-      if (disposed || epoch !== scopeEpoch) return;
+      if (disposed || epoch !== scopeEpoch || request !== paintRequest) return;
       setMessages(restoredTranscript(loaded.messages));
       setOriginalView(true);
       queueMicrotask(() => transcriptFollow?.resume());
@@ -929,6 +938,9 @@ export function AiPanel(props: { onClose?: () => void }) {
     const mark = aiSession.steering();
     const session = openId();
     if (!mark || !session || aiSession.steerLive(mark.id)) return;
+    // Settling a lost mark is bookkeeping, not a reply: the rows it leaves wait
+    // for Send now, unless the caller settled a turn and flushes on its own.
+    quietSteerEnds.add(mark.id);
     if (painted && steerDelivered(mark.id)) aiSession.acknowledgeQueued(session, mark.id);
     else aiSession.endSteer(session, mark.id);
   };
@@ -1019,7 +1031,8 @@ export function AiPanel(props: { onClose?: () => void }) {
     if (!current) return;
     stopFollowing();
     setStoppingInherited(current);
-    aiSession.setTurn(null);
+    // The marker stays until the backend lets go of the turn: a window that
+    // reloads during the wait still finds a turn that writes the conversation.
     const stale = () => disposed || current.epoch !== scopeEpoch || stoppingInherited() !== current;
     try {
       await aiApi.cancel(current.requestId).catch(() => {});
@@ -1034,6 +1047,8 @@ export function AiPanel(props: { onClose?: () => void }) {
         await new Promise((resolve) => setTimeout(resolve, TURN_POLL_MS));
         if (stale()) return;
       }
+      // The backend has let go of the turn, so no window may report it.
+      if (!running) aiSession.setTurn(null);
       await refreshTurnProject(current.epoch);
       if (stale()) return;
       const painted = await paintSession(current.session).catch(() => false);
@@ -1043,7 +1058,6 @@ export function AiPanel(props: { onClose?: () => void }) {
       if (running) {
         // The backend still holds the turn after the wait: the panel follows it
         // again, so the queue keeps waiting behind it and Stop stays offered.
-        aiSession.setTurn({ session: current.session, started: Date.now() });
         follow(current);
         return;
       }
@@ -1096,8 +1110,9 @@ export function AiPanel(props: { onClose?: () => void }) {
    * running is stopped first: a fresh conversation is a way out of one that
    * will not settle. A turn this view inherited has its own Stop, and a session
    * action in flight finishes first, so both refuse a new conversation. */
+  const newConversationBlocked = () => !!reattached() || !!stoppingInherited() || sessionBusy();
   const startConversation = () => {
-    if (reattached() || stoppingInherited() || sessionBusy()) return;
+    if (newConversationBlocked()) return;
     if (loading()) {
       void cancel();
       abandonTurn();
@@ -1114,8 +1129,21 @@ export function AiPanel(props: { onClose?: () => void }) {
     aiSession.clearQueue();
     setSessionsOpen(false);
   };
+  /**
+   * Forks a conversation from the list and opens the fork. While the open
+   * conversation is locked, its own fork waits, and a fork of another one is
+   * created and listed without leaving the conversation on screen.
+   */
   const forkSession = async (id: string) => {
-    if (conversationLocked()) return;
+    if (conversationLocked()) {
+      if (id === openId()) return;
+      setSessionError(null);
+      try {
+        await aiApi.newSession(undefined, id);
+        await refreshSessions();
+      } catch (e) { setSessionError(errorMessage(e)); }
+      return;
+    }
     setSessionBusy(true);
     setSessionError(null);
     try {
@@ -1367,9 +1395,11 @@ export function AiPanel(props: { onClose?: () => void }) {
    */
   let turnEvents: { id: string; token: number; live: WireMessage[]; last: ChatMessage | undefined } | null = null;
   /**
-   * The turn this panel ran last, until the next one starts. Tauri does not
+   * The turn this panel ran last, until the next one settles, the panel
+   * abandons it, or another conversation or workspace opens. Tauri does not
    * order events with command replies, so a message the turn saved can arrive
-   * after `ai_turn_start` answered; it still belongs right after that turn's rows.
+   * after `ai_turn_start` answered, even after the next turn posted; it still
+   * belongs right after that turn's rows.
    */
   let finishedTurn: { id: string; session: string; live: WireMessage[]; last: ChatMessage | undefined } | null = null;
   /**
@@ -1750,8 +1780,8 @@ export function AiPanel(props: { onClose?: () => void }) {
       const outbound = resumed ? sent.filter(message => message.role === "system") : sent;
       posted = true;
       noteSentEstimate(textTokens(JSON.stringify(outbound)), id, sessionId);
-      // The previous turn's late messages stop here: later rows are this turn's.
-      finishedTurn = null;
+      // The previous turn's late messages keep their place: they carry that
+      // turn's request id and land after its last row, ahead of this question.
       turnEvents = { id, token, live: [], last: messages().at(-1) };
       const outcome = await aiApi.startTurn(
         {
@@ -2120,11 +2150,14 @@ export function AiPanel(props: { onClose?: () => void }) {
       if (!disposed && origin === scopeEpoch && errorKind(error) !== "steer_closed") setMediaError(errorMessage(error));
     }
   };
-  // A steer that ends hands the queue back, and the turn it waited for may have
-  // settled meanwhile: the queue goes on from here, whichever panel sent it.
+  // A steer whose reply ends it hands the queue back, and the turn it waited
+  // for may have settled meanwhile: the queue goes on from here, whichever
+  // panel sent it. A lost mark this panel settled hands nothing back: its row
+  // waits for Send now like any row found with nothing running.
   createEffect<{ open: string | null; mark: string | null }>((before) => {
     const now = { open: aiSession.open(), mark: aiSession.steering()?.id ?? null };
-    if (before.mark && !now.mark && before.open === now.open) untrack(() => void flushQueued());
+    const quiet = before.mark !== null && quietSteerEnds.delete(before.mark);
+    if (before.mark && !now.mark && before.open === now.open && !quiet) untrack(() => void flushQueued());
     return now;
   }, { open: aiSession.open(), mark: aiSession.steering()?.id ?? null });
 
@@ -2443,7 +2476,8 @@ export function AiPanel(props: { onClose?: () => void }) {
         sessions={sessions()}
         workspacePath={workspacePath()}
         open={sessionsOpen()}
-        busy={conversationLocked()}
+        locked={conversationLocked()}
+        newBlocked={newConversationBlocked() ? i18n.t("ai.sessions.newBlocked") : null}
         exportOpen={exportOpen()}
         exportDisabled={sessionBusy() || !openId()}
         permission={permission()}

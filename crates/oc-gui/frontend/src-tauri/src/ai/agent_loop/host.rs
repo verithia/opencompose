@@ -801,6 +801,7 @@ async fn run_claimed(
         .map(|lease| lease.update().incarnation)
         .ok_or_else(|| AiError::new("accounting_request", "The turn has no accounting owner"))?;
     let messages = Value::Array(start.messages.clone());
+    let tool_tokens = super::wire::offered_tool_tokens(start.toolsets.as_deref(), true);
     // Preparation closes any round a dead turn left open, saves the new user
     // message with its snapshot, and compacts when the window needs it.
     let prepared = {
@@ -820,25 +821,25 @@ async fn run_claimed(
                     id: &id,
                     incarnation: &incarnation,
                     project: project.as_deref(),
+                    tool_tokens,
                 },
             )
+            .map_err(AiError::from)
         })
         .await
-        .map_err(|error| format!("Session persistence task failed: {error}"))
+        .map_err(|error| {
+            AiError::new(
+                "session_save",
+                format!("Session persistence task failed: {error}"),
+            )
+        })
         .and_then(|result| result)
     };
     let prepared = match prepared {
-        Ok(Some(prepared)) => prepared,
-        Ok(None) => {
-            finish_accounting(app, &stats, &start.request_id).await;
-            return Err(AiError::new(
-                "session_save",
-                "The saved conversation cannot be replayed",
-            ));
-        }
+        Ok(prepared) => prepared,
         Err(error) => {
             finish_accounting(app, &stats, &start.request_id).await;
-            return Err(AiError::new("session_save", error));
+            return Err(error);
         }
     };
     if let Some(compaction) = prepared.compacted.as_ref() {
@@ -877,6 +878,7 @@ async fn run_claimed(
         scope: start.session_id.clone(),
         toolsets: start.toolsets.clone(),
         text_protocol: !provider.capabilities.native_tool_calling,
+        context_length: crate::ai::limits::context_length(provider),
     };
     let outcome = super::run_turn(&host, spec, control.cancel).await;
     // A round cancelled mid-request, or a first round never sent, still

@@ -124,7 +124,21 @@ const backend = {
   cancelKeepsActive: false,
   /** Held `ai_turn_steer` replies, oldest first, when a test holds them. */
   holdSteer: false,
-  steers: [] as { resolve: () => void }[],
+  steers: [] as { resolve: () => void; reject: (reason: unknown) => void }[],
+  /** The message of every `ai_turn_steer`, in order. */
+  steerMessages: [] as Record<string, unknown>[],
+  /** Held `ai_active_turn` replies: one test holds the next answers until it releases them. */
+  activeReply: null as Promise<ActiveTurn | null> | null,
+  /** Held `sessions_load` replies: the next load waits on this once. */
+  loadReply: null as Promise<void> | null,
+  /** Every `sessions_new`, in order. */
+  newCalls: [] as Record<string, unknown>[],
+  /** Every `sessions_delete`, in order. */
+  deletes: [] as string[],
+  /** Every `sessions_compact`, in order. */
+  compacts: [] as string[],
+  /** Every `sessions_original`, in order. */
+  originals: [] as string[],
 };
 
 function deferred<T = unknown>() {
@@ -152,6 +166,7 @@ function installBackend() {
       case "get_project": return backend.project;
       case "ai_build_context": return { dsl_context: '@project "Test Project"\n  tempo: 128\n' };
       case "ai_active_turn": {
+        if (backend.activeReply) return backend.activeReply;
         const answer = backend.active;
         if (backend.activeOnce) backend.active = null;
         return answer;
@@ -174,9 +189,10 @@ function installBackend() {
       case "ai_turn_steer": {
         expect(typed.requestId).toBe(backend.active?.request_id);
         expect(typed.sessionId).toBe(backend.active?.session_id);
+        backend.steerMessages.push(typed.message as Record<string, unknown>);
         const save = () => { backend.loaded.push({ role: "user", ...(typed.message as {content: string}) }); };
         if (!backend.holdSteer) { save(); return undefined; }
-        return new Promise<void>((resolve) => backend.steers.push({ resolve: () => { save(); resolve(); } }));
+        return new Promise<void>((resolve, reject) => backend.steers.push({ resolve: () => { save(); resolve(); }, reject }));
       }
       case "ai_cancel": {
         backend.cancels.push({ requestId: String(typed.requestId ?? "") });
@@ -189,11 +205,20 @@ function installBackend() {
       case "workspaces_list": return [];
       case "sessions_list": return backend.sessions.map((entry) => ({ ...entry }));
       case "sessions_new": {
+        backend.newCalls.push(typed);
         const meta = session({ id: `s${backend.sessions.length + 1}`, title: String(typed.title ?? "new") });
         backend.sessions = [meta, ...backend.sessions];
         return meta;
       }
+      case "sessions_delete": backend.deletes.push(String(typed.id)); return undefined;
+      case "sessions_compact": backend.compacts.push(String(typed.id)); return null;
+      case "sessions_original": backend.originals.push(String(typed.id)); return { messages: [], compactions: 1 };
       case "sessions_load": {
+        const hold = backend.loadReply;
+        if (hold) {
+          backend.loadReply = null;
+          await hold;
+        }
         const id = String(typed.id ?? "s1");
         backend.loadedIds.push(id);
         const next = backend.loads.length > 0 ? backend.loads.shift()! : backend.loaded;
@@ -213,6 +238,20 @@ const orphanBanner = () => document.querySelector(".ai-turn-orphan");
 const lostBanner = () => document.querySelector(".ai-turn-reloaded");
 const runningRow = () => document.querySelector(".ai-pending");
 const rows = () => [...document.querySelectorAll(".ai-message")];
+const sessionRow = (id: string) => document.querySelector(`.ai-session-row[data-session-row="${id}"]`) as HTMLElement | null;
+/** Opens the row menu of one listed conversation and returns its item. */
+function menuItem(id: string, label: string): HTMLButtonElement {
+  fireEvent.contextMenu(sessionRow(id)!);
+  const item = [...document.querySelectorAll<HTMLButtonElement>('.ai-session-menu [role="menuitem"]')]
+    .find((button) => button.textContent === label);
+  if (!item) throw new Error(`no menu item ${label}`);
+  return item;
+}
+/** Clicks a control the view disabled, as a click that raced the lock would. */
+function forceClick(button: HTMLButtonElement) {
+  button.disabled = false;
+  fireEvent.click(button);
+}
 
 /** The stored panel state, as a reloaded window would read it. */
 function storedState(): {
@@ -295,6 +334,13 @@ beforeEach(() => {
   backend.cancelKeepsActive = false;
   backend.holdSteer = false;
   backend.steers = [];
+  backend.steerMessages = [];
+  backend.activeReply = null;
+  backend.loadReply = null;
+  backend.newCalls = [];
+  backend.deletes = [];
+  backend.compacts = [];
+  backend.originals = [];
   i18n.setLocale("en");
   aiLimits.setActiveContext(null);
   resetStats();
@@ -409,7 +455,8 @@ describe("a reloaded window", () => {
     await mount();
     expect(store.dslSource()).toBe(restored.dsl_source);
     await waitFor(() => expect(aiWorkspace.notice()).toEqual({
-      text: i18n.t("ai.recover.unsaved", { error: "disk full" }),
+      // The backend sends only the reason; the sentence around it is the panel's.
+      text: "Edits from an interrupted turn were kept, but the project file was not written: disk full. Save the project to keep them.",
       tone: "error",
     }));
   });
@@ -595,8 +642,11 @@ describe("a reloaded window", () => {
     expect(queueButton("steer")).toBeTruthy();
     expect(queueButton("send")).toBeNull();
 
+    const row = aiSession.queued()[0].id;
     fireEvent.click(queueButton("steer")!);
     await waitFor(() => expect(queueRows()).toHaveLength(0));
+    // The steer names its row, so the saved message says which row it delivered.
+    expect(backend.steerMessages).toEqual([expect.objectContaining({ id: row, content: "next" })]);
     expect(backend.cancels).toEqual([]);
     expect(backend.chatCalls).toHaveLength(0);
     expect(backend.active).toEqual({ request_id: "r1", session_id: "s1" });
@@ -701,19 +751,239 @@ describe("a reloaded window", () => {
     expect(document.body.textContent).not.toContain(i18n.t("ai.reload.stopped"));
   });
 
-  it("refuses to change the conversation while it follows an inherited turn", async () => {
+  it("refuses to change the conversation while it follows an inherited turn, and keeps the rest usable", async () => {
     reloadWith({ open: "s1", turn: { session: "s1", started: Date.now() } });
     backend.sessions = [session({ id: "s1" }), session({ id: "s2", title: "second" })];
+    backend.active = { request_id: "r1", session_id: "s1" };
+    backend.loaded = [{ role: "user", content: "first" }];
+    backend.questions = [{ call_id: "c7", tool: "tracks_remove", args: { track: "Bass" } }];
+    await mount();
+    await waitFor(() => expect(orphanBanner()).toBeTruthy());
+    await waitFor(() => expect(document.querySelector(".ai-approval-card")).toBeTruthy());
+
+    // "New conversation" says why it waits instead of ignoring the click.
+    const fresh = document.querySelector(".ai-session-new") as HTMLButtonElement;
+    expect(fresh.disabled).toBe(true);
+    expect(fresh.getAttribute("title")).toBe(i18n.t("ai.sessions.newBlocked"));
+    // The handler refuses on its own, for a click the button let through.
+    fresh.disabled = false;
+    fireEvent.click(fresh);
+    expect(aiSession.open()).toBe("s1");
+    expect(rows().map((row) => row.className)).toEqual(["ai-message user"]);
+
+    // Stop, the card's answers, the permission and the list stay usable.
+    expect((document.querySelector(".ai-turn-orphan-stop") as HTMLButtonElement).disabled).toBe(false);
+    expect((document.querySelector(".ai-approval-approve") as HTMLButtonElement).disabled).toBe(false);
+    expect([...document.querySelectorAll<HTMLButtonElement>(".ai-permission-option")].every((option) => !option.disabled)).toBe(true);
+    const toggle = document.querySelector(".ai-session-current") as HTMLButtonElement;
+    expect(toggle.disabled).toBe(false);
+    fireEvent.click(toggle);
+    await waitFor(() => expect(sessionRow("s2")).toBeTruthy());
+
+    // Opening another conversation leaves this one: the row waits, and so
+    // does the handler behind it.
+    const away = sessionRow("s2")!.querySelector(".ai-session-row-main") as HTMLButtonElement;
+    expect(away.disabled).toBe(true);
+    away.disabled = false;
+    fireEvent.click(away);
+    await settleMount();
+    expect(aiSession.open()).toBe("s1");
+    expect(backend.loadedIds).not.toContain("s2");
+
+    // The open conversation's fork, compact and delete wait, in the menu and in
+    // their handlers.
+    const loads = backend.loadedIds.length;
+    expect(menuItem("s1", "Fork").disabled).toBe(true);
+    forceClick(menuItem("s1", "Fork"));
+    expect(menuItem("s1", "Compact").disabled).toBe(true);
+    forceClick(menuItem("s1", "Compact"));
+    expect(menuItem("s1", "View original history").disabled).toBe(true);
+    forceClick(menuItem("s1", "View original history"));
+    expect(menuItem("s1", "Delete").disabled).toBe(true);
+    forceClick(menuItem("s1", "Delete"));
+    const confirm = sessionRow("s1")!.querySelector(".ai-session-action-delete") as HTMLButtonElement;
+    expect(confirm.disabled).toBe(true);
+    forceClick(confirm);
+    await settleMount();
+    expect(backend.newCalls).toEqual([]);
+    expect(backend.compacts).toEqual([]);
+    expect(backend.originals).toEqual([]);
+    expect(backend.deletes).toEqual([]);
+    expect(backend.loadedIds).toHaveLength(loads);
+    expect(aiSession.open()).toBe("s1");
+
+    // Another conversation is not locked: it is renamed, forked and deleted
+    // while the conversation on screen stays where it is.
+    expect(menuItem("s2", "Rename").disabled).toBe(false);
+    expect(menuItem("s2", "Fork").disabled).toBe(false);
+    fireEvent.click(menuItem("s2", "Fork"));
+    await waitFor(() => expect(backend.newCalls).toEqual([expect.objectContaining({ parent: "s2" })]));
+    await settleMount();
+    expect(aiSession.open()).toBe("s1");
+    expect(backend.loadedIds).toHaveLength(loads);
+    expect(menuItem("s2", "Delete").disabled).toBe(false);
+    fireEvent.click(menuItem("s2", "Delete"));
+    const other = sessionRow("s2")!.querySelector(".ai-session-action-delete") as HTMLButtonElement;
+    expect(other.disabled).toBe(false);
+    fireEvent.click(other);
+    await waitFor(() => expect(backend.deletes).toEqual(["s2"]));
+    expect(aiSession.open()).toBe("s1");
+    expect(orphanBanner()).toBeTruthy();
+  });
+
+  it("keeps the conversation locked while an inherited turn's stop settles", async () => {
+    reloadWith({ open: "s1", turn: { session: "s1", started: Date.now() } });
+    backend.sessions = [session({ id: "s1" }), session({ id: "s2", title: "second" })];
+    backend.active = { request_id: "r1", session_id: "s1" };
+    backend.cancelKeepsActive = true;
+    backend.loaded = [{ role: "user", content: "first" }];
+    await mount();
+    await waitFor(() => expect(orphanBanner()).toBeTruthy());
+    fireEvent.click(document.querySelector(".ai-turn-orphan-stop")!);
+    await waitFor(() => expect(orphanBanner()!.textContent).toContain(i18n.t("ai.turn.stopping")));
+
+    fireEvent.click(document.querySelector(".ai-session-current")!);
+    await waitFor(() => expect(sessionRow("s2")).toBeTruthy());
+    const away = sessionRow("s2")!.querySelector(".ai-session-row-main") as HTMLButtonElement;
+    expect(away.disabled).toBe(true);
+    forceClick(away);
+    forceClick(menuItem("s1", "Fork"));
+    await settleMount();
+    expect(backend.loadedIds).not.toContain("s2");
+    expect(backend.newCalls).toEqual([]);
+    expect(aiSession.open()).toBe("s1");
+  });
+
+  it("keeps the turn marker until the backend lets go of a stopped inherited turn", async () => {
+    reloadWith({ open: "s1", turn: { session: "s1", started: Date.now() } });
+    backend.active = { request_id: "r1", session_id: "s1" };
+    backend.cancelKeepsActive = true;
+    backend.loaded = [{ role: "user", content: "first" }];
+    await mount();
+    await waitFor(() => expect(orphanBanner()).toBeTruthy());
+    fireEvent.click(document.querySelector(".ai-turn-orphan-stop")!);
+    await waitFor(() => expect(backend.cancels).toEqual([{ requestId: "r1" }]));
+    expect(storedState().turn?.session).toBe("s1");
+
+    // A window reloaded during the wait finds the turn and stays guarded.
+    cleanup();
+    aiSession.reload();
+    await mount();
+    await waitFor(() => expect(orphanBanner()).toBeTruthy());
+    expect((document.querySelector(".ai-session-new") as HTMLButtonElement).disabled).toBe(true);
+    expect(storedState().turn?.session).toBe("s1");
+
+    // Once the backend stops reporting it, the marker goes.
+    fireEvent.click(document.querySelector(".ai-turn-orphan-stop")!);
+    backend.active = null;
+    await waitFor(() => expect(rows().at(-1)?.textContent).toContain(i18n.t("ai.reload.stopped")), { timeout: 3000 });
+    expect(storedState().turn).toBeNull();
+  });
+
+  it("keeps a steer this page still waits on when the inherited turn ends, then sends the row once", async () => {
+    reloadWith({ open: "s1", queue: [{ text: "next" }], turn: { session: "s1", started: Date.now() } });
+    backend.active = { request_id: "r1", session_id: "s1" };
+    backend.holdSteer = true;
+    backend.hold = false;
+    backend.loaded = [{ role: "user", content: "first" }];
+    await mount();
+    await waitFor(() => expect(queueButton("steer")).toBeTruthy());
+    fireEvent.click(queueButton("steer")!);
+    await waitFor(() => expect(backend.steers).toHaveLength(1));
+
+    // The turn ends before the steer answers: the saved conversation does not
+    // hold the message yet, but the steer is not lost, so the row is not sent.
+    backend.active = null;
+    await waitFor(() => expect(rows().at(-1)?.textContent).toContain(i18n.t("ai.reload.settled")), { timeout: 3000 });
+    await settleMount();
+    expect(backend.chatCalls).toHaveLength(0);
+    expect(queueTexts()).toEqual(["next"]);
+    expect(queueButton("edit")!.disabled).toBe(true);
+
+    // Admission closed: the steer's own reply hands the row back, and it goes out once.
+    backend.steers[0].reject({ kind: "steer_closed", message: "Turn finished" });
+    await waitFor(() => expect(backend.chatCalls).toHaveLength(1));
+    expect(backend.chatCalls[0].messages.at(-1)?.content).toBe("next");
+    await waitFor(() => expect(queueRows()).toHaveLength(0));
+  });
+
+  it("does not settle an inherited turn whose poll answered after Stop was pressed", async () => {
+    reloadWith({ open: "s1", turn: { session: "s1", started: Date.now() } });
     backend.active = { request_id: "r1", session_id: "s1" };
     backend.loaded = [{ role: "user", content: "first" }];
     await mount();
     await waitFor(() => expect(orphanBanner()).toBeTruthy());
 
-    fireEvent.click(document.querySelector(".ai-session-new")!);
-    expect(aiSession.open()).toBe("s1");
+    // A poll is on its way when Stop is pressed; both answers arrive after it.
+    const reply = deferred<ActiveTurn | null>();
+    backend.activeReply = reply.promise;
+    const asked = backend.calls.filter((command) => command === "ai_active_turn").length;
+    await waitFor(() => expect(backend.calls.filter((command) => command === "ai_active_turn").length).toBeGreaterThan(asked), { timeout: 2000 });
+    fireEvent.click(document.querySelector(".ai-turn-orphan-stop")!);
+    await waitFor(() => expect(backend.cancels).toEqual([{ requestId: "r1" }]));
+    backend.activeReply = null;
+    reply.resolve(null);
+
+    await waitFor(() => expect(rows().at(-1)?.textContent).toContain(i18n.t("ai.reload.stopped")), { timeout: 3000 });
+    await settleMount();
+    expect(document.body.textContent).not.toContain(i18n.t("ai.reload.settled"));
+    expect(document.body.textContent).not.toContain(i18n.t("ai.reload.settledUnpainted"));
+  });
+
+  it("does not report an inherited turn's end into the workspace the panel came back to", async () => {
+    await workspaceStore.open("/Users/me/songs");
+    reloadWith({ open: "s1", turn: { session: "s1", started: Date.now() } });
+    backend.active = { request_id: "r1", session_id: "s1" };
+    backend.loaded = [{ role: "user", content: "first" }];
+    await mount();
+    await waitFor(() => expect(orphanBanner()).toBeTruthy());
+
+    // The turn ends, and the repaint that reports it is held.
+    const gate = deferred<void>();
+    backend.loadReply = gate.promise;
+    const loads = backend.calls.filter((command) => command === "sessions_load").length;
+    backend.active = null;
+    await waitFor(() => expect(backend.calls.filter((command) => command === "sessions_load").length).toBeGreaterThan(loads), { timeout: 2000 });
+
+    // The panel leaves and comes back: the same conversation is open again, in
+    // another visit of the workspace.
+    await workspaceStore.open("/Users/me/other");
+    await waitFor(() => expect(aiSession.open()).toBeNull());
+    await workspaceStore.open("/Users/me/songs");
+    await waitFor(() => expect(aiSession.open()).toBe("s1"));
+    await waitFor(() => expect(rows().map((row) => row.className)).toEqual(["ai-message user"]));
+
+    gate.resolve();
+    await pollRounds(1);
+    expect(document.body.textContent).not.toContain(i18n.t("ai.reload.settled"));
+    expect(document.body.textContent).not.toContain(i18n.t("ai.reload.settledUnpainted"));
     expect(rows().map((row) => row.className)).toEqual(["ai-message user"]);
-    // The list, and with it switching and forking, waits for the turn too.
-    expect((document.querySelector(".ai-session-current") as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("holds a row a closed steer hands back until the inherited turn's stop settles", async () => {
+    reloadWith({ open: "s1", queue: [{ text: "waiting" }], turn: { session: "s1", started: Date.now() } });
+    backend.active = { request_id: "r1", session_id: "s1" };
+    backend.cancelKeepsActive = true;
+    backend.holdSteer = true;
+    backend.hold = false;
+    backend.loaded = [{ role: "user", content: "first" }];
+    await mount();
+    await waitFor(() => expect(queueButton("steer")).toBeTruthy());
+    fireEvent.click(queueButton("steer")!);
+    await waitFor(() => expect(backend.steers).toHaveLength(1));
+    fireEvent.click(document.querySelector(".ai-turn-orphan-stop")!);
+    await waitFor(() => expect(orphanBanner()!.textContent).toContain(i18n.t("ai.turn.stopping")));
+
+    // The steer is refused while the stopped turn still writes: the row waits.
+    backend.steers[0].reject({ kind: "steer_closed", message: "Turn finished" });
+    await waitFor(() => expect(aiSession.steering()).toBeNull());
+    await settleMount();
+    expect(backend.chatCalls).toHaveLength(0);
+    expect(queueTexts()).toEqual(["waiting"]);
+
+    backend.active = null;
+    await waitFor(() => expect(backend.chatCalls).toHaveLength(1), { timeout: 3000 });
+    expect(backend.chatCalls[0].messages.at(-1)?.content).toBe("waiting");
   });
 
   it("offers no Steer for a queue that belongs to another conversation than the inherited turn", async () => {
@@ -844,49 +1114,59 @@ describe("a reloaded window", () => {
     expect(storedState().conversations.s1?.queue?.map((row) => row.text)).toEqual(["after"]);
   });
 
-  it("settles a steer whose reply a closed page lost from the saved conversation", async () => {
-    // Delivered: the saved conversation holds the message, so the row goes.
+  it("settles a steer whose reply a closed page lost from the saved conversation, and sends nothing on its own", async () => {
+    // Delivered: the saved conversation holds the message, so the row goes,
+    // and the row behind it waits for Send now as any row found idle does.
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify({
       v: 1, open: "s1", turn: null,
-      conversations: { s1: { queue: [{ id: "q1", text: "next", media: [] }], steering: { id: "q1" } } },
+      conversations: { s1: { queue: [{ id: "q1", text: "next", media: [] }, { id: "q4", text: "later", media: [] }], steering: { id: "q1" } } },
     }));
     backend.sessions = [session({ id: "s1" })];
     aiSession.reload();
+    backend.hold = false;
     backend.loaded = [
       { role: "user", content: "first" },
       { role: "user", content: "next", message_meta: { version: 1, kind: "user", steer_id: "q1" } },
       { role: "assistant", content: "Both done." },
     ];
     await mount();
-    await waitFor(() => expect(queueRows()).toHaveLength(0));
+    await waitFor(() => expect(queueTexts()).toEqual(["later"]));
+    await settleMount();
     expect(backend.chatCalls).toHaveLength(0);
+    expect(queueButton("send")).toBeTruthy();
     cleanup();
 
     // The same words sent as an ordinary message are not this steer: only
-    // the id the backend saved with the delivery settles it.
+    // the id the backend saved with the delivery settles it, and the row is
+    // an ordinary queued message again.
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify({
       v: 1, open: "s1", turn: null,
       conversations: { s1: { queue: [{ id: "q3", text: "same words", media: [] }], steering: { id: "q3" } } },
     }));
     aiSession.reload();
-    backend.hold = false;
     backend.loaded = [{ role: "user", content: "same words" }, { role: "assistant", content: "Done." }];
     await mount();
-    await waitFor(() => expect(backend.chatCalls).toHaveLength(1));
-    expect(backend.chatCalls[0].messages.at(-1)?.content).toBe("same words");
+    await waitFor(() => expect(aiSession.steering()).toBeNull());
+    await settleMount();
+    expect(queueTexts()).toEqual(["same words"]);
+    expect(backend.chatCalls).toHaveLength(0);
     cleanup();
-    backend.chatCalls.length = 0;
-    backend.hold = true;
 
-    // Not delivered: the row is an ordinary queued message again and goes out.
+    // Not delivered: the row waits for Send now instead of starting a turn
+    // nobody asked for, and goes out once it is clicked.
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify({
       v: 1, open: "s1", turn: null,
       conversations: { s1: { queue: [{ id: "q2", text: "again", media: [] }], steering: { id: "q2" } } },
     }));
     aiSession.reload();
-    backend.hold = false;
     backend.loaded = [{ role: "user", content: "first" }, { role: "assistant", content: "Done." }];
     await mount();
+    await waitFor(() => expect(aiSession.steering()).toBeNull());
+    await settleMount();
+    expect(backend.chatCalls).toHaveLength(0);
+    expect(queueTexts()).toEqual(["again"]);
+    expect(queueButton("send")!.disabled).toBe(false);
+    fireEvent.click(queueButton("send")!);
     await waitFor(() => expect(backend.chatCalls).toHaveLength(1));
     expect(backend.chatCalls[0].messages.at(-1)?.content).toBe("again");
   });

@@ -23,7 +23,14 @@ export function SessionSwitcher(props: {
   sessions: readonly SessionMeta[];
   workspacePath: string | null;
   open: boolean;
-  busy: boolean;
+  /**
+   * A turn or a session action still writes the open conversation: actions on
+   * it, and switching away from it, wait. The list, rename, the permission and
+   * other conversations' fork and delete stay available.
+   */
+  locked: boolean;
+  /** Why "New conversation" is unavailable, or `null` when it is available. */
+  newBlocked: string | null;
   exportOpen: boolean;
   exportDisabled: boolean;
   permission: PermissionMode;
@@ -48,6 +55,10 @@ export function SessionSwitcher(props: {
   onOriginal: (id: string) => Promise<void>;
 }) {
   let trigger: HTMLButtonElement | undefined;
+  /** An action on the open conversation, refused while it is locked. */
+  const lockedOpen = (id: string) => props.locked && id === props.activeSessionId;
+  /** Opening another conversation leaves the open one, so it waits as well. */
+  const lockedAway = (id: string) => props.locked && id !== props.activeSessionId;
   const listId = createUniqueId();
   createEffect(() => {
     if (!props.open) return;
@@ -75,7 +86,6 @@ export function SessionSwitcher(props: {
         aria-expanded={props.open}
         aria-controls={props.open ? listId : undefined}
         ref={trigger}
-        disabled={props.busy}
         onClick={props.onToggle}
       >
         <span class="ai-session-current-title">{props.title}</span>
@@ -85,8 +95,10 @@ export function SessionSwitcher(props: {
         type="button"
         class="ai-session-new"
         aria-label={i18n.t("ai.sessions.new")}
+        disabled={props.newBlocked !== null}
+        title={props.newBlocked ?? undefined}
         onClick={props.onNew}
-        {...useTooltip(() => i18n.t("ai.sessions.new"))}
+        {...useTooltip(() => props.newBlocked ?? i18n.t("ai.sessions.new"))}
       >{"+"}</button>
       <button
         type="button"
@@ -103,7 +115,6 @@ export function SessionSwitcher(props: {
       <AiPermissionSelect
         value={props.permission}
         onChange={props.onPermissionChange}
-        disabled={props.busy}
       />
       <Show when={props.open}>
         <div id={listId} class="ai-session-list" role="list" aria-label={i18n.t("ai.sessions.toggle")}>
@@ -136,7 +147,12 @@ export function SessionSwitcher(props: {
                 >
                   <Show when={props.renaming?.id === session.id} fallback={
                     <>
-                      <button type="button" class="ai-session-row-main" onClick={() => void props.onSwitch(session.id)}>
+                      <button
+                        type="button"
+                        class="ai-session-row-main"
+                        disabled={lockedAway(session.id)}
+                        onClick={() => void props.onSwitch(session.id)}
+                      >
                         <span class="ai-session-row-title">{session.title}</span>
                         <Show when={updatedLabel(session.updated)}>
                           <time class="ai-session-row-time" datetime={session.updated} title={session.updated}>
@@ -152,7 +168,7 @@ export function SessionSwitcher(props: {
                           <button
                             type="button"
                             class="ai-session-action ai-session-action-delete"
-                            disabled={props.busy}
+                            disabled={lockedOpen(session.id)}
                             onClick={() => void props.onDelete(session.id)}
                           >{i18n.t("ai.sessions.delete")}</button>
                           <button
@@ -232,31 +248,31 @@ export function SessionSwitcher(props: {
               <button
                 type="button"
                 role="menuitem"
-                disabled={props.busy}
                 onClick={() => { props.onRename(menu().session); props.onShowMenu(null); }}
               >{i18n.t("ai.sessions.rename")}</button>
               <button
                 type="button"
                 role="menuitem"
-                disabled={props.busy}
+                disabled={lockedOpen(menu().session.id)}
                 onClick={() => { void props.onFork(menu().session.id); props.onShowMenu(null); }}
               >{i18n.t("ai.sessions.fork")}</button>
               <button
                 type="button"
                 role="menuitem"
-                disabled={props.busy}
+                disabled={props.locked}
                 onClick={() => { void props.onCompact(menu().session.id); props.onShowMenu(null); }}
               >{i18n.t("ai.sessions.compact")}</button>
             <button
               type="button"
               role="menuitem"
+              disabled={props.locked}
               onClick={() => { void props.onOriginal(menu().session.id); props.onShowMenu(null); }}
             >{i18n.t("ai.sessions.original")}</button>
               <button
                 type="button"
                 role="menuitem"
                 class="ai-session-menu-delete"
-                disabled={props.busy}
+                disabled={lockedOpen(menu().session.id)}
                 onClick={() => { props.onConfirmDelete(menu().session.id); props.onShowMenu(null); }}
               >{i18n.t("ai.sessions.delete")}</button>
             </div>

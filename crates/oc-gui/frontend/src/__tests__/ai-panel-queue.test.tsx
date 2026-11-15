@@ -483,7 +483,10 @@ describe("a message composed while a turn runs", () => {
     expect(steer).toBe(queueButton("steer"));
     expect(steer.disabled).toBe(true);
     expect(steer.getAttribute("title")).toBe(i18n.t("ai.queue.steerReference"));
+    // The handler refuses too, for a click that reaches it past the button.
+    steer.disabled = false;
     fireEvent.click(steer);
+    await Promise.resolve();
     expect(backend.calls).not.toContain("ai_turn_steer");
 
     const contexts = backend.contexts.length;

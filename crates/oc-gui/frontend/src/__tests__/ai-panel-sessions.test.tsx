@@ -1567,7 +1567,8 @@ describe("reverting before a message", () => {
     await waitFor(() => expect(messageRows()).toHaveLength(2));
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(aiWorkspace.notice()).toEqual({
-      text: i18n.t("ai.revert.fileUnsaved", { error: "disk full" }),
+      // The backend sends only the reason; the sentence around it is the panel's.
+      text: "Reverted, but the project file was not written: disk full. Save the project to keep the reverted version.",
       tone: "error",
     });
   });
@@ -1618,9 +1619,14 @@ describe("reverting before a message", () => {
     fireEvent.contextMenu(messageRows()[2]);
     fireEvent.click(screen.getByRole("menuitem", { name: /Revert to before this message/ }));
     await waitFor(() => expect(invokeMock.mock.calls.some(([command]) => command === "ai_revert_before")).toBe(true));
-    // The revert rewrites this conversation: no other one opens meanwhile.
-    expect(switcher().disabled).toBe(true);
-    fireEvent.click(document.querySelector(".ai-session-new")!);
+    // The revert rewrites this conversation: no other one opens meanwhile, and
+    // "New conversation" says why. The list itself still opens.
+    expect(switcher().disabled).toBe(false);
+    const fresh = document.querySelector(".ai-session-new") as HTMLButtonElement;
+    expect(fresh.disabled).toBe(true);
+    expect(fresh.getAttribute("title")).toBe(i18n.t("ai.sessions.newBlocked"));
+    fresh.disabled = false;
+    fireEvent.click(fresh);
     expect(aiSession.open()).toBe("s1");
     expect(messageRows()).toHaveLength(4);
 
@@ -1693,6 +1699,102 @@ describe("reverting before a message", () => {
     const item = screen.getByRole("menuitem", { name: /Revert to before this message/ });
     expect(item.getAttribute("aria-disabled")).toBe("true");
     expect(item.querySelector(".context-menu-hint")?.textContent).toBe(i18n.t("ai.revert.turnRunning"));
+    pending.resolve({ role: "assistant", content: "Done." });
+    await waitFor(() => expect(document.querySelector(".ai-send-btn.cancel")).toBeNull());
+  });
+});
+
+describe("the history a compaction replaced", () => {
+  const original: WireMessage[] = [
+    { role: "user", content: "the replaced question" },
+    { role: "assistant", content: "The replaced answer." },
+  ];
+  const earlier = () => document.querySelector(".ai-transcript-earlier") as HTMLButtonElement;
+  const banner = () => document.querySelector(".ai-original-banner");
+  const originals = () => invokeMock.mock.calls.filter(([command]) => command === "sessions_original").length;
+  /** Holds the next answer of one command until the test releases it. */
+  function holdNext(name: string) {
+    const gate = held();
+    const base = invokeMock.getMockImplementation()!;
+    let armed = true;
+    invokeMock.mockImplementation(async (command: string, args?: unknown) => {
+      if (armed && command === name) {
+        armed = false;
+        await gate.promise;
+      }
+      return base(command, args);
+    });
+    return gate;
+  }
+
+  beforeEach(() => {
+    backend.sessions = [
+      session({ id: "s1", title: "intro idea" }),
+      session({ id: "s2", title: "verse idea", updated: "2026-10-27T09:00:00.000Z" }),
+    ];
+    backend.conversations = {
+      s1: [{ role: "user", content: "an intro" }, { role: "assistant", content: "Here is an intro." }],
+      s2: [{ role: "user", content: "a verse" }, { role: "assistant", content: "Here is a verse." }],
+    };
+    backend.compactedSessions = ["s1"];
+    backend.original = { s1: original };
+  });
+
+  async function openFirst() {
+    await mountPanel();
+    await openSwitcher();
+    fireEvent.click(screen.getByText("intro idea"));
+    await waitFor(() => expect(document.body.textContent).toContain("Here is an intro."));
+  }
+
+  it("drops an original-history reply that a later paint superseded", async () => {
+    await openFirst();
+    const gate = holdNext("sessions_original");
+    fireEvent.click(earlier());
+    await waitFor(() => expect(originals()).toBe(1));
+    await openSwitcher();
+    fireEvent.click(screen.getByText("verse idea"));
+    await waitFor(() => expect(document.body.textContent).toContain("Here is a verse."));
+
+    gate.resolve(undefined);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(banner()).toBeNull();
+    expect(document.body.textContent).not.toContain("The replaced answer.");
+    expect(document.body.textContent).toContain("Here is a verse.");
+  });
+
+  it("keeps the original history over a repaint it superseded", async () => {
+    await openFirst();
+    fireEvent.click(earlier());
+    await waitFor(() => expect(banner()).toBeTruthy());
+
+    // Back starts a repaint the test holds; the original is asked for again.
+    const gate = holdNext("sessions_load");
+    fireEvent.click(document.querySelector(".ai-original-back")!);
+    await waitFor(() => expect(earlier()).toBeTruthy());
+    fireEvent.click(earlier());
+    await waitFor(() => expect(banner()).toBeTruthy());
+    expect(document.body.textContent).toContain("The replaced answer.");
+
+    gate.resolve(undefined);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(banner()).toBeTruthy();
+    expect(document.body.textContent).toContain("The replaced answer.");
+  });
+
+  it("refuses the original history while a turn writes the conversation", async () => {
+    await openFirst();
+    const pending = held();
+    backend.chat = () => pending.promise;
+    fireEvent.input(input(), { target: { value: "and now?" } });
+    fireEvent.click(sendButton());
+    await waitFor(() => expect(document.querySelector(".ai-send-btn.cancel")).toBeTruthy());
+
+    fireEvent.click(earlier());
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(originals()).toBe(0);
+    expect(banner()).toBeNull();
+    expect(document.body.textContent).toContain("and now?");
     pending.resolve({ role: "assistant", content: "Done." });
     await waitFor(() => expect(document.querySelector(".ai-send-btn.cancel")).toBeNull());
   });

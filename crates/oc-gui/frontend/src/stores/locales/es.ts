@@ -1212,6 +1212,7 @@ export const es = {
   "ai.provider.added": "Se añadió {name}.",
   "ai.sessions.toggle": "Conversaciones",
   "ai.sessions.new": "Nueva conversación",
+  "ai.sessions.newBlocked": "Disponible cuando termine el turno en curso o la acción sobre la conversación",
   "ai.sessions.workspace": "Carpeta de trabajo",
   "ai.sessions.detached": "Sin carpeta de trabajo",
   "ai.sessions.empty": "Esta carpeta de trabajo aún no tiene conversaciones guardadas.",

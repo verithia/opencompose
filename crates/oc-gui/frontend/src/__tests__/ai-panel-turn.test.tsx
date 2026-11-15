@@ -375,6 +375,35 @@ describe("the turn in flight", () => {
       .toEqual(["ai-message user", "ai-message assistant"]);
   });
 
+  it("paints a late answer ahead of the queued message its turn sent next", async () => {
+    const first = held();
+    let round = 0;
+    backend.late = (message) => message.content === "First answer, announced late.";
+    backend.chat = () => {
+      round += 1;
+      return round === 1 ? first.promise : new Promise(() => {});
+    };
+    await mount();
+    await startTurn("first");
+    fireEvent.input(input(), { target: { value: "next" } });
+    fireEvent.click(sendButton());
+    await waitFor(() => expect(queuedTexts()).toEqual(["next"]));
+
+    // The first turn settles and its flush starts the queued one before the
+    // first turn's answer is announced.
+    first.resolve({ role: "assistant", content: "First answer, announced late." });
+    await waitFor(() => expect(backend.chatCalls).toHaveLength(2));
+    await waitFor(() => expect(answers()).toHaveLength(1));
+    expect(answers()[0].textContent).toContain("First answer, announced late.");
+    const rows = [...document.querySelectorAll(".ai-messages .ai-message:not(.ai-pending)")]
+      .map((row) => `${row.className}:${row.querySelector(".ai-message-content")?.textContent ?? ""}`);
+    expect(rows).toEqual([
+      "ai-message user:first",
+      "ai-message assistant:First answer, announced late.",
+      "ai-message user:next",
+    ]);
+  });
+
   it("places late saved rows ahead of the failure row the reply already added", async () => {
     let round = 0;
     backend.late = () => true;

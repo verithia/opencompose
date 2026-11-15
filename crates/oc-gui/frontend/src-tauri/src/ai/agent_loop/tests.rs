@@ -85,6 +85,7 @@ impl Fake {
             scope: self.session.clone(),
             toolsets: None,
             text_protocol: self.world().text_protocol,
+            context_length: 0,
         }
     }
 
@@ -908,4 +909,21 @@ fn a_call_quoted_in_a_native_model_s_answer_never_runs() {
     assert!(!outcome.failed, "{outcome:?}");
     assert!(outcome.text.starts_with("You could run"));
     assert!(fake.world().calls.is_empty(), "{:?}", fake.world().calls);
+}
+
+#[test]
+fn a_reported_input_past_the_window_stops_the_turn_before_the_next_send() {
+    let window = wire::offered_tool_tokens(None, true) + 5_000;
+    let mut first = round(&[("a", "project_get")]);
+    // The estimate of this small wire is far below the window; the provider's
+    // own count for it is not.
+    first["usage"] = json!({"input": window + 1});
+    let fake = Fake::new(vec![first, json!({"role":"assistant","content":"done"})]);
+    let mut spec = fake.spec(SessionPermission::Write);
+    spec.context_length = window;
+    let outcome = block_on(run_turn(&fake, spec, fake.cancel.clone()));
+    assert!(outcome.failed);
+    assert_eq!(outcome.error.unwrap().kind, "context_overflow");
+    assert_eq!(fake.world().sent.len(), 1, "the oversized wire is not sent");
+    assert_eq!(check_pairing(&fake.saved()), Ok(()));
 }

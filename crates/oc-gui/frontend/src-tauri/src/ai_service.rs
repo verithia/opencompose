@@ -1203,6 +1203,11 @@ pub async fn ai_chat(
     }
     // A legacy caller that omits sessionId is explicitly ephemeral. Never
     // recapture whichever conversation happened to become active meanwhile.
+    let tool_tokens = if use_tools {
+        ai::agent_loop::wire::offered_tool_tokens(toolsets.as_deref(), false)
+    } else {
+        0
+    };
     let preparation = match session_id.as_ref() {
         Some(session_id) => tauri::async_runtime::spawn_blocking({
             let app = app.clone();
@@ -1223,12 +1228,18 @@ pub async fn ai_chat(
                         id: &session_id,
                         incarnation: &incarnation,
                         project: None,
+                        tool_tokens,
                     },
                 )
+                .map(Some)
             }
         })
         .await
-        .map_err(|error| format!("Session persistence task failed: {error}"))
+        .map_err(|error| {
+            crate::commands::PrepareTurnError::Store(format!(
+                "Session persistence task failed: {error}"
+            ))
+        })
         .and_then(|result| result),
         None => Ok(None),
     };
@@ -1253,10 +1264,10 @@ pub async fn ai_chat(
             );
         }
         let _ = requests.release_owned(&request_id, &owner);
-        return Err(AiError::new("session_save", error));
+        return Err(error.into());
     }
     let prepared = saved_audio_or_fallback(
-        preparation,
+        preparation.map_err(|error| error.to_string()),
         messages.as_array().map(Vec::as_slice).unwrap_or_default(),
         &requests,
         &request_id,

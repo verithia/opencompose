@@ -2124,6 +2124,7 @@ export const zhHans = {
   "ai.provider.createdNoKey": "{id} 已添加，但密钥未保存：{error}（再按一次“创建服务商”可重试保存密钥）",
   "ai.sessions.toggle": "对话",
   "ai.sessions.new": "新对话",
+  "ai.sessions.newBlocked": "正在运行的轮次或对话操作结束后可用",
   "ai.sessions.workspace": "工作区",
   "ai.sessions.detached": "无工作区",
   "ai.sessions.empty": "此工作区还没有保存的对话。",
