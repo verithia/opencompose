@@ -673,11 +673,16 @@ caller alike. `ai_turn_start` starts a turn and answers with the outcome
 `{text, failed, stop?, error?}`. The panel hears `ai_turn` events
 `{request_id, session_id, type}` with types `message` (a message the turn just
 saved, in saved form), `running` (a call is about to run), `ask` (a call waits
-for a person), `preview` (an autoreview replacement about to apply), `notice`
-and `media`, plus `ai_turn_project` for the document a panel turn changed.
+for a person), `expired` (a question's wait ran out), `preview` (an autoreview
+replacement about to apply), `notice` and `media`, plus `ai_turn_project` for
+the document a panel turn changed.
 `ai_turn_answer` answers a question by call id with `{approved, target?,
 always}`. `ai_turn_questions` lists the open questions of a running turn so a
-reloaded window shows the card again. `ai_cancel` stops a turn. `ai_tool_result`
+reloaded or reopened window shows the card again. Closing the panel leaves the
+turn running and its question open. A question nobody answers within 30
+minutes is refused: the call reads `"expired": true`, nothing changes, and the
+turn goes on without it. An expiry is never the nobody-attends answer, so it
+cannot let an `edit_subtree` apply. `ai_cancel` stops a turn. `ai_tool_result`
 returns the full text behind a truncated result while the process keeps it,
 scoped to the conversation; the newest 64 results are kept, and a result over
 2,000,000 characters is not.
@@ -799,6 +804,11 @@ commits them as the turn's one undo entry.
 A completed call keeps its saved result; a call that was dispatched but whose
 result was lost reads `outcome unknown` when the conversation is next prepared;
 a call that never started reads `not run`. The stop facts include `not_run`.
+This holds for both call protocols. A native call is paired by its call id. A
+text-protocol call (a `{tool, args}` object in a text reply) gets an id that is
+unique within the conversation; the assistant round and its application result
+both carry it in `message_meta.text_call`, which is local and never sent to a
+provider.
 
 The transcript line is built from the loop's counts: the calls the model had
 requested, the calls that returned, and the applied edits that were kept. A

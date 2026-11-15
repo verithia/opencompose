@@ -15,7 +15,6 @@ export function composerSizer() {
       }
       const style = getComputedStyle(element);
       // Keep the same inherited font and box metrics at every UI scale.
-      measure.style.cssText = style.cssText;
       for (const property of ["font", "font-size", "font-family", "font-weight", "line-height", "letter-spacing", "padding", "border-width", "box-sizing", "width", "word-break", "overflow-wrap"]) {
         measure.style.setProperty(property, style.getPropertyValue(property));
       }

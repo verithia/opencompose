@@ -9,6 +9,11 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const BUDGET: u64 = 256 * 1024 * 1024;
 const HANDOFF_WINDOW: Duration = Duration::from_secs(15 * 60);
+/// How long a reservation waits for another audition to release the pool.
+/// A reservation holds the pool through its render, so two auditions that
+/// overlap queue briefly instead of failing at once.
+const LOCK_WAIT: Duration = Duration::from_secs(5);
+const LOCK_RETRY: Duration = Duration::from_millis(20);
 
 pub(super) struct ScratchRender {
     _lock: File,
@@ -22,13 +27,13 @@ impl ScratchRender {
     }
 
     pub(super) fn reserve(bytes: u64) -> Result<Self, String> {
-        Self::reserve_in(&scratch_dir()?, BUDGET, bytes)
+        Self::reserve_in(&scratch_dir()?, BUDGET, bytes, LOCK_WAIT)
     }
 
-    fn reserve_in(dir: &Path, cap: u64, bytes: u64) -> Result<Self, String> {
+    fn reserve_in(dir: &Path, cap: u64, bytes: u64, wait: Duration) -> Result<Self, String> {
         check_size(bytes, cap)?;
         crate::private_fs::ensure_dir(dir).map_err(scratch_error)?;
-        let lock = directory_lock(dir, false)?;
+        let lock = writer_lock(dir, wait)?;
         make_room(dir, cap, bytes)?;
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let now = SystemTime::now()
@@ -172,6 +177,24 @@ fn directory_lock(dir: &Path, reading: bool) -> Result<File, String> {
     })
 }
 
+/// The exclusive pool lock, waiting up to `wait` while another reservation
+/// holds it.
+fn writer_lock(dir: &Path, wait: Duration) -> Result<File, String> {
+    let deadline = std::time::Instant::now() + wait;
+    loop {
+        match crate::private_fs::lock(&dir.join(".pool.lock"), false, true) {
+            Ok(lock) => return Ok(lock),
+            Err(error)
+                if error.kind() == io::ErrorKind::WouldBlock
+                    && std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(LOCK_RETRY);
+            }
+            Err(_) => return directory_lock(dir, false),
+        }
+    }
+}
+
 fn make_room(dir: &Path, cap: u64, bytes: u64) -> Result<(), String> {
     let mut used = bytes;
     let now = SystemTime::now();
@@ -277,7 +300,7 @@ mod tests {
 
         const CHILD_DIR: &str = "OCP_TEST_AUDITION_LOCK_CHILD";
         if let Some(dir) = std::env::var_os(CHILD_DIR).map(PathBuf::from) {
-            let scratch = ScratchRender::reserve_in(&dir, 100, 60).unwrap();
+            let scratch = ScratchRender::reserve_in(&dir, 100, 60, Duration::ZERO).unwrap();
             fs::write(scratch.path(), [0; 60]).unwrap();
             fs::write(dir.join("ready"), b"ready").unwrap();
             let _ = io::stdin().read(&mut [0_u8]);
@@ -323,7 +346,7 @@ mod tests {
         child.kill().unwrap();
         child.wait().unwrap();
         assert!(stage.is_file(), "the crash left a partial file to reclaim");
-        let next = ScratchRender::reserve_in(&dir, 100, 60).unwrap();
+        let next = ScratchRender::reserve_in(&dir, 100, 60, Duration::ZERO).unwrap();
         assert!(!stage.exists());
         drop(next);
     }
@@ -331,16 +354,31 @@ mod tests {
     #[test]
     fn audition_handoff_protects_completed_output_until_release_or_expiry() {
         let dir = scratch_dir().unwrap().join("handoff-budget-fixture");
-        let first = ScratchRender::reserve_in(&dir, 100, 60).unwrap();
+        let first = ScratchRender::reserve_in(&dir, 100, 60, Duration::ZERO).unwrap();
         fs::write(first.path(), [0; 60]).unwrap();
         let first_path = first.publish(true).unwrap();
-        assert!(ScratchRender::reserve_in(&dir, 100, 60).is_err());
+        assert!(ScratchRender::reserve_in(&dir, 100, 60, Duration::ZERO).is_err());
         assert!(first_path.is_file());
         assert!(waiting_for_archive(&first_path, SystemTime::now()).unwrap());
         assert!(!waiting_for_archive(&first_path, SystemTime::now() + HANDOFF_WINDOW).unwrap());
-        let next = ScratchRender::reserve_in(&dir, 100, 60).unwrap();
+        let next = ScratchRender::reserve_in(&dir, 100, 60, Duration::ZERO).unwrap();
         assert!(!first_path.exists());
         drop(next);
+    }
+
+    #[test]
+    fn a_reservation_waits_for_an_overlapping_one_and_reports_busy_past_its_bound() {
+        let dir = oc_audio::private_fs::test_root().join("audition-scratch-wait");
+        crate::private_fs::ensure_dir(&dir).unwrap();
+        let held = writer_lock(&dir, Duration::ZERO).unwrap();
+        let busy = writer_lock(&dir, Duration::from_millis(60)).unwrap_err();
+        assert!(busy.contains("busy"), "{busy}");
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            drop(held);
+        });
+        writer_lock(&dir, Duration::from_secs(5)).unwrap();
+        release.join().unwrap();
     }
 
     #[test]
@@ -350,9 +388,9 @@ mod tests {
         let unrelated = dir.join("my-render.wav");
         fs::write(&unrelated, [0; 100]).unwrap();
 
-        let first = ScratchRender::reserve_in(&dir, 100, 60).unwrap();
+        let first = ScratchRender::reserve_in(&dir, 100, 60, Duration::ZERO).unwrap();
         assert!(!first.output.exists());
-        assert!(ScratchRender::reserve_in(&dir, 100, 60).is_err());
+        assert!(ScratchRender::reserve_in(&dir, 100, 60, Duration::ZERO).is_err());
         fs::write(first.path(), [0; 60]).unwrap();
         fs::write(crate::render_grid::sidecar_path(first.path()), b"grid").unwrap();
         let first_path = first.publish(false).unwrap();
@@ -360,7 +398,7 @@ mod tests {
         assert!(grid.is_file());
 
         let read = directory_lock(&dir, true).unwrap();
-        assert!(ScratchRender::reserve_in(&dir, 100, 60).is_err());
+        assert!(ScratchRender::reserve_in(&dir, 100, 60, Duration::ZERO).is_err());
         assert!(first_path.is_file());
         drop(read);
 
@@ -368,7 +406,7 @@ mod tests {
         fs::write(&orphan, [0; 60]).unwrap();
         let orphan_grid = dir.join("audition-1-2-3.wav.grid.json");
         fs::write(&orphan_grid, b"grid").unwrap();
-        let second = ScratchRender::reserve_in(&dir, 100, 60).unwrap();
+        let second = ScratchRender::reserve_in(&dir, 100, 60, Duration::ZERO).unwrap();
         assert!(!first_path.exists());
         assert!(!grid.exists());
         assert!(!orphan.exists());
@@ -377,6 +415,6 @@ mod tests {
         let abandoned = second.path().to_path_buf();
         drop(second);
         assert!(!abandoned.exists());
-        assert!(ScratchRender::reserve_in(&dir, 100, 101).is_err());
+        assert!(ScratchRender::reserve_in(&dir, 100, 101, Duration::ZERO).is_err());
     }
 }

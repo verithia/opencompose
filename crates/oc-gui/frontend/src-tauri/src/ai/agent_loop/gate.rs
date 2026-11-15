@@ -109,6 +109,21 @@ pub fn declined(tool: &str, args: &Map<String, Value>, target: Option<&str>) -> 
 }
 
 /// A call that needs a person in a session with nobody to ask.
+/// The result of a call whose question nobody answered in time.
+pub fn expired(tool: &str, args: &Map<String, Value>) -> Value {
+    json!({
+        "declined": false,
+        "refused": true,
+        "expired": true,
+        "tool": tool,
+        "arguments": args,
+        "error": format!(
+            "nobody answered the approval for {tool} (arguments: {}) in time, so it did not run and nothing in the project changed. Do not send the same call again; say in your reply what you would change and why.",
+            argument_summary(args)
+        ),
+    })
+}
+
 pub fn unapproved(tool: &str, args: &Map<String, Value>) -> Value {
     json!({
         "declined": false,

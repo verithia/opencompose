@@ -287,7 +287,7 @@ describe("the turn in flight", () => {
     stop.resolve(undefined);
     await waitFor(() => expect(pendingRow()).toBeNull());
     await waitFor(() => expect(input().disabled).toBe(false));
-    expect(document.body.textContent).toContain("Cancelled. Right-click a message to rewind.");
+    expect(document.body.textContent).toContain("Cancelled before any edit; the project is unchanged.");
     expect(answers()).toHaveLength(0);
   });
 
@@ -305,8 +305,7 @@ describe("the turn in flight", () => {
     } else fireEvent.click(cancelButton()!);
     await waitFor(() => expect(pendingRow()).toBeNull());
     expect(input().value).toBe(draft);
-    expect(document.body.textContent).toContain("Right-click a message to rewind");
-    expect(document.body.textContent).not.toContain("Applied edits kept");
+    expect(document.body.textContent).toContain("Cancelled before any edit; the project is unchanged.");
   });
 
   it("keeps the sent composer clear when the credential read fails", async () => {

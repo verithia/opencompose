@@ -10,6 +10,8 @@ export interface MessageMeta {
   rollback_notice?: string;
   proposal_notice?: string;
   audio_range?: { start_seconds: number; end_seconds: number; source: boolean };
+  /** A text-protocol call, on its assistant round and on the result answering it. */
+  text_call?: { id: string; tool: string };
 }
 interface MessageLike {
   role: string;

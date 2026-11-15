@@ -88,22 +88,23 @@ pub fn canonical_json(value: &Value) -> String {
     }
 }
 
-/// The id a text-protocol call gets: one call per reply, numbered by round so
-/// the saved conversation never reuses an id.
-pub fn text_call_id(round: usize) -> String {
-    format!("text-call-{round}")
+/// The id a text-protocol call gets: one call per reply. `turn` is unique per
+/// turn and `round` per reply within it, so the saved conversation never
+/// reuses an id across turns.
+pub fn text_call_id(turn: &str, round: usize) -> String {
+    format!("text-call-{turn}-{round}")
 }
 
 /// A `{tool, args}` object anywhere in a text-only reply: the whole reply, a
 /// fenced block, or a balanced object inside prose.
-pub fn text_tool_call(content: &str, round: usize) -> Option<Call> {
+pub fn text_tool_call(content: &str, id: &str) -> Option<Call> {
     let text = content.trim();
     let parse = |candidate: &str| -> Option<Call> {
         let value: Value = serde_json::from_str(candidate.trim()).ok()?;
         let name = value["tool"].as_str()?;
         let args = value.get("args").filter(|args| args.is_object())?;
         Some(Call {
-            id: text_call_id(round),
+            id: id.to_owned(),
             name: name.to_owned(),
             arguments: args.to_string(),
         })
@@ -582,18 +583,22 @@ mod tests {
 
     #[test]
     fn finds_a_text_call_whole_fenced_or_inside_prose() {
-        let whole = text_tool_call(r#"{"tool":"tracks_list","args":{}}"#, 3).unwrap();
+        let whole =
+            text_tool_call(r#"{"tool":"tracks_list","args":{}}"#, &text_call_id("t", 3)).unwrap();
         assert_eq!(
             (whole.name.as_str(), whole.id.as_str()),
-            ("tracks_list", "text-call-3")
+            ("tracks_list", "text-call-t-3")
         );
         let fenced = "Let me look.\n```json\n{\"tool\":\"project_get\",\"args\":{}}\n```";
-        assert_eq!(text_tool_call(fenced, 0).unwrap().name, "project_get");
+        assert_eq!(
+            text_tool_call(fenced, "text-call-0").unwrap().name,
+            "project_get"
+        );
         let prose = r#"I will call {"tool":"tracks_add","args":{"name":"a}b \"q\""}} now"#;
-        let call = text_tool_call(prose, 0).unwrap();
+        let call = text_tool_call(prose, "text-call-0").unwrap();
         assert_eq!(call.args().unwrap()["name"], "a}b \"q\"");
-        assert!(text_tool_call("no calls here {not json}", 0).is_none());
-        assert!(text_tool_call(r#"{"tool":"x","args":[]}"#, 0).is_none());
+        assert!(text_tool_call("no calls here {not json}", "text-call-0").is_none());
+        assert!(text_tool_call(r#"{"tool":"x","args":[]}"#, "text-call-0").is_none());
     }
 
     #[test]

@@ -1240,6 +1240,12 @@ export function AiPanel(props: { onClose?: () => void }) {
    */
   const onTurnEvent = (event: TurnEnvelope) => {
     if (disposed) return;
+    // A question nobody answered in time was refused; its card goes away.
+    if (event.type === "expired") {
+      const open = approval();
+      if (open && open.requestId === event.request_id && open.call_id === event.call_id) setApproval(null);
+      return;
+    }
     const inherited = reattached();
     if (inherited && event.request_id === inherited.requestId) {
       if (event.type === "ask") showQuestion(event.request_id, event.request);
@@ -1940,7 +1946,8 @@ export function AiPanel(props: { onClose?: () => void }) {
     if (resume.stop?.failure_kept || resume.stop?.timed_out) {
       return i18n.t(resume.edits === 1 ? "ai.retry.keptOne" : "ai.retry.kept", { edits: resume.edits });
     }
-    return i18n.t(resume.edits === 1 ? "ai.retry.noteOne" : "ai.retry.note", { edits: resume.edits });
+    // Any applied edit is committed, which withholds this Retry; so none landed.
+    return i18n.t("ai.retry.note");
   };
 
   /** Where a Continue picks the conversation up. */

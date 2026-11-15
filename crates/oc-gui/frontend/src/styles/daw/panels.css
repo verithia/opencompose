@@ -492,7 +492,7 @@
 }
 
 /* A stopped turn: one row carries Retry and Continue, plus the lines saying what
-   rolled back and where Continue resumes. */
+   was kept and where Continue resumes. */
 .ai-turn-actions {
   display: flex;
   flex-wrap: wrap;

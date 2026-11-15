@@ -439,7 +439,7 @@ fn a_declined_confirm_call_never_opens_the_batch() {
     fake.world().decisions.push_back(Some(Decision {
         approved: false,
         target: Some("Bass".into()),
-        always: false,
+        ..Decision::default()
     }));
     let outcome = block_on(fake.run(SessionPermission::Write));
     assert!(!outcome.failed);
@@ -452,6 +452,31 @@ fn a_declined_confirm_call_never_opens_the_batch() {
     );
     drop(world);
     assert_eq!(fake.results()[0].1["declined"], true);
+}
+
+#[test]
+fn an_expired_question_refuses_its_call_and_never_applies_a_replacement() {
+    let replace = json!({"role":"assistant","content":null,"tool_calls":[
+        {"id":"r","type":"function","function":{"name":"tracks_remove","arguments":"{\"index\":0}"}},
+        {"id":"e","type":"function","function":{"name":"edit_subtree","arguments":"{\"path\":\"project\",\"new_dsl\":\"@new\"}"}}
+    ]});
+    let fake = Fake::new(vec![replace, json!({"role":"assistant","content":"ok"})]);
+    fake.world().decisions.push_back(Some(Decision::expired()));
+    fake.world().decisions.push_back(Some(Decision::expired()));
+    let outcome = block_on(fake.run(SessionPermission::RequireApproval));
+    assert!(!outcome.failed, "{outcome:?}");
+    let results = fake.results();
+    for (_, result) in &results[..2] {
+        assert_eq!(result["expired"], true);
+        assert_eq!(result["declined"], false);
+    }
+    let world = fake.world();
+    assert!(world.calls.is_empty(), "{:?}", world.calls);
+    assert_ne!(
+        world.dsl, "@new",
+        "an expiry is not the nobody-attends path"
+    );
+    assert_eq!(world.committed, 0);
 }
 
 #[test]
@@ -527,8 +552,7 @@ fn a_model_rollback_is_saved_as_a_host_notice() {
     ]);
     fake.world().decisions.push_back(Some(Decision {
         approved: true,
-        target: None,
-        always: false,
+        ..Decision::default()
     }));
     block_on(fake.run(SessionPermission::Write));
     let world = fake.world();
@@ -574,6 +598,36 @@ fn a_text_protocol_call_runs_and_its_result_is_a_user_message() {
             .any(|m| m["message_meta"]["kind"] == "application_result")
     );
     assert_eq!(check_pairing(&saved), Ok(()));
+}
+
+#[test]
+fn text_protocol_calls_are_named_and_paired_across_turns_of_one_conversation() {
+    let call = json!({"role":"assistant","content":"{\"tool\":\"project_get\",\"args\":{}}"});
+    let fake = Fake::new(vec![
+        call.clone(),
+        json!({"role":"assistant","content":"first"}),
+        call,
+        json!({"role":"assistant","content":"second"}),
+    ]);
+    for _ in 0..2 {
+        let outcome = block_on(fake.run(SessionPermission::Write));
+        assert!(!outcome.failed, "{outcome:?}");
+    }
+    let saved = fake.saved();
+    assert_eq!(check_pairing(&saved), Ok(()));
+    let asked: Vec<&str> = saved
+        .iter()
+        .filter(|m| m["role"] == "assistant")
+        .filter_map(|m| m["message_meta"]["text_call"]["id"].as_str())
+        .collect();
+    let answered: Vec<&str> = saved
+        .iter()
+        .filter(|m| m["message_meta"]["kind"] == "application_result")
+        .filter_map(|m| m["message_meta"]["text_call"]["id"].as_str())
+        .collect();
+    assert_eq!(asked.len(), 2);
+    assert_ne!(asked[0], asked[1], "each turn names its own calls");
+    assert_eq!(asked, answered);
 }
 
 #[test]

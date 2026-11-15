@@ -29,6 +29,10 @@ pub const TURN_EVENT: &str = "ai_turn";
 pub const PROJECT_EVENT: &str = "ai_turn_project";
 /// Pending questions one turn may hold; a running turn asks one at a time.
 const MAX_PENDING: usize = 4;
+/// How long a question waits for a person. A closed panel leaves the card
+/// for a reopened one; past this the call is refused, so a turn nobody
+/// returns to does not hold its slot forever.
+const QUESTION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
 /// Longest turn id a client may choose; see [`round_request_id`].
 const MAX_REQUEST_ID: usize = 96;
 
@@ -347,11 +351,7 @@ impl Host for AppHost {
             {
                 // A person is there but cannot be asked: that is a refusal,
                 // never the "nobody attends" answer that lets a call apply.
-                return Some(Decision {
-                    approved: false,
-                    target: None,
-                    always: false,
-                });
+                return Some(Decision::default());
             }
             pending.insert(
                 key.clone(),
@@ -363,8 +363,13 @@ impl Host for AppHost {
         }
         let tool = request.tool.clone();
         self.emit(TurnEvent::Ask { request });
-        let decision = receiver.await.ok();
+        let decision = await_answer(receiver, QUESTION_TIMEOUT).await;
         lock(&PENDING).remove(&key);
+        if decision.as_ref().is_some_and(|decision| decision.expired) {
+            self.emit(TurnEvent::Expired {
+                call_id: key.1.clone(),
+            });
+        }
         if decision
             .as_ref()
             .is_some_and(|decision| decision.approved && decision.always)
@@ -485,6 +490,19 @@ impl Host for AppHost {
             .await?;
         self.publish();
         result
+    }
+}
+
+/// A person's answer, or the refusal a question gets when nobody answers in
+/// time. A dropped sender means the turn is going away; the loop's own cancel
+/// decides what that call reads.
+async fn await_answer(
+    receiver: oneshot::Receiver<Decision>,
+    wait: std::time::Duration,
+) -> Option<Decision> {
+    match tokio::time::timeout(wait, receiver).await {
+        Ok(answer) => answer.ok(),
+        Err(_) => Some(Decision::expired()),
     }
 }
 
@@ -1102,8 +1120,7 @@ mod tests {
     fn a_stale_answer_changes_nothing_and_cancel_reaches_a_running_turn() {
         let decision = Decision {
             approved: true,
-            target: None,
-            always: false,
+            ..Decision::default()
         };
         assert!(answer("nobody", "c1", decision.clone()).is_err());
         let (sender, receiver) = oneshot::channel();
@@ -1229,5 +1246,25 @@ mod tests {
         assert!(receipt.await.unwrap().is_err());
         assert!(!lock(&RUNNING).contains_key(id));
         assert!(control.steering.enqueue(json!({})).is_err());
+    }
+
+    #[tokio::test]
+    async fn an_unanswered_question_expires_as_a_refusal_and_an_answer_wins_before_it() {
+        let wait = std::time::Duration::from_millis(20);
+        let (_sender, receiver) = oneshot::channel::<Decision>();
+        let expired = await_answer(receiver, wait).await.unwrap();
+        assert!(expired.expired && !expired.approved);
+
+        let (sender, receiver) = oneshot::channel();
+        let approved = Decision {
+            approved: true,
+            ..Decision::default()
+        };
+        sender.send(approved.clone()).unwrap();
+        assert_eq!(await_answer(receiver, wait).await, Some(approved));
+        // A view cannot claim the expiry: the field is the host's.
+        let parsed: Decision =
+            serde_json::from_value(json!({"approved": false, "expired": true})).unwrap();
+        assert!(!parsed.expired);
     }
 }

@@ -834,7 +834,7 @@ describe("composer: the approval card for a subtree edit", () => {
     expect(backend.dispatched).toEqual([]);
     expect(store.dslSource()).toBe(before);
     // The loop's own cancel path: nothing had been applied, and the notice says so.
-    await waitFor(() => expect(document.body.textContent).toContain("Cancelled. Right-click a message to rewind."));
+    await waitFor(() => expect(document.body.textContent).toContain("Cancelled before any edit; the project is unchanged."));
   });
 });
 
@@ -911,7 +911,7 @@ describe("composer: the approval card for a destructive call", () => {
     expect(toolCalls()).toEqual([]);
     expect(chatCalls()).toBe(1);
     // The loop's own cancel path: nothing had been applied, and the notice says so.
-    await waitFor(() => expect(document.body.textContent).toContain("Cancelled. Right-click a message to rewind."));
+    await waitFor(() => expect(document.body.textContent).toContain("Cancelled before any edit; the project is unchanged."));
     expect(document.querySelector(".ai-message.assistant")).toBeFalsy();
   });
 

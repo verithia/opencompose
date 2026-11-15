@@ -21,6 +21,7 @@ export type TurnEvent =
   | { type: "message"; message: WireMessage }
   | { type: "running"; call_id: string; tool: string }
   | { type: "ask"; request: ApprovalRequest }
+  | { type: "expired"; call_id: string }
   | { type: "preview"; call_id: string; tool: string; path?: string; before: string; after: string }
   | { type: "notice"; text: string; failed: boolean }
   | { type: "media"; notices: MediaNotice[] };

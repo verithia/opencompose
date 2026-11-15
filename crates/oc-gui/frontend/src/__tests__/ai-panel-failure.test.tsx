@@ -238,11 +238,12 @@ describe("a cancelled turn", () => {
     await mount();
     await send("add five tracks");
 
-    await waitFor(() => expect(document.body.textContent).toContain("Cancelled. Right-click a message to rewind."));
+    await waitFor(() => expect(document.body.textContent).toContain("Right-click a message to rewind."));
     await waitFor(() => expect(input().disabled).toBe(false));
     expect(systemRows()).toHaveLength(1);
     const notice = systemRows()[0].textContent ?? "";
-    expect(notice).toContain("Cancelled. Right-click a message to rewind.");
+    // The stop names what it kept: nothing is undone behind the reader's back.
+    expect(notice).toContain("Cancelled. Edits applied: 2; they stay in the project.");
     // A cancelled turn is a notice, not an answer, and not an error bubble.
     expect(answers()).toHaveLength(0);
     expect(document.body.textContent).not.toContain("Request cancelled");
@@ -275,10 +276,10 @@ describe("a cancelled turn", () => {
     await provider;
     fireEvent.click(cancel);
 
-    await waitFor(() => expect(document.body.textContent).toContain("Cancelled. Right-click a message to rewind."));
+    await waitFor(() => expect(document.body.textContent).toContain("Cancelled before any edit; the project is unchanged."));
     await waitFor(() => expect(input().disabled).toBe(false));
     expect(systemRows()).toHaveLength(1);
-    expect(systemRows()[0].querySelector(".ai-message-content")?.textContent).toBe("Cancelled. Right-click a message to rewind.");
+    expect(systemRows()[0].querySelector(".ai-message-content")?.textContent).toBe("Cancelled before any edit; the project is unchanged.");
     expect(answers()).toHaveLength(0);
     expect(document.body.textContent).not.toContain("Request cancelled");
     expect(dispatched).toEqual([]);
@@ -406,7 +407,7 @@ describe("retry and continue", () => {
     expect(retryButton()).toBeTruthy();
     expect(document.querySelector(".ai-turn-note")?.textContent).toContain("last request");
     expect(dispatched).toEqual(["tracks_add"]);
-    expect(lastSystemRow()?.textContent).toContain("The turn failed. Continue to resume.");
+    expect(lastSystemRow()?.textContent).toContain("The turn failed. Edits applied: 1; they stay in the project. Continue to resume.");
     expect(lastSystemRow()?.textContent).not.toContain("Applied edits kept");
 
     // Continue sends only the system prompt; the backend replays the saved
@@ -457,7 +458,6 @@ describe("retry and continue", () => {
     const keys: I18nKey[] = [
       "ai.retry.action",
       "ai.retry.note",
-      "ai.retry.noteOne",
       "ai.retry.kept",
       "ai.retry.keptOne",
       "ai.continue.action",

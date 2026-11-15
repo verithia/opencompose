@@ -21,7 +21,7 @@ import type { ActiveTurn, SessionMeta } from "../ai/sessions";
 import type { ProjectSnapshot } from "../types/project";
 import type { WireMessage } from "../ai/wire";
 import type { MediaAttachment } from "../ai/media";
-import { answerFakeTurn, cancelFakeTurn, emitTurnProject, resetFakeTurns, runFakeTurn, type TurnStartArgs } from "./helpers/fakeTurn";
+import { answerFakeTurn, cancelFakeTurn, emitTurnEvent, emitTurnProject, resetFakeTurns, runFakeTurn, type TurnStartArgs } from "./helpers/fakeTurn";
 
 const CAPABILITIES = { text: true, audio_in: false, audio_out: false, native_tool_calling: true, streaming: true };
 
@@ -462,6 +462,24 @@ describe("a reloaded window", () => {
       decision: { approved: false, always: false },
     });
     expect(document.querySelector(".ai-approval-card")).toBeNull();
+  });
+
+  it("drops the card of a question whose wait ran out, and only that one", async () => {
+    reloadWith({ open: "s1", turn: { session: "s1", started: Date.now() } });
+    backend.active = { request_id: "r1", session_id: "s1" };
+    backend.loaded = [{ role: "user", content: "remove the bass" }];
+    backend.questions = [{ call_id: "c7", tool: "tracks_remove", args: { track: "Bass" } }];
+    await mount();
+    await waitFor(() => expect(document.querySelector(".ai-approval-card")).toBeTruthy());
+
+    // Another turn's or another call's expiry leaves this card alone.
+    emitTurnEvent("r9", "s1", { type: "expired", call_id: "c7" });
+    emitTurnEvent("r1", "s1", { type: "expired", call_id: "c8" });
+    expect(document.querySelector(".ai-approval-card")).toBeTruthy();
+
+    emitTurnEvent("r1", "s1", { type: "expired", call_id: "c7" });
+    await waitFor(() => expect(document.querySelector(".ai-approval-card")).toBeNull());
+    expect(backend.answers).toHaveLength(0);
   });
 
   it("clears the marker when the backend reports no turn, and paints none", async () => {
