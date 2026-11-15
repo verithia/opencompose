@@ -561,12 +561,6 @@ fn handle_ai_complete_for(body: &[u8], app: Option<&AppHandle>) -> (u16, String)
     }
 }
 
-/// `POST /ai/turn`: one whole agent turn on the backend loop the panel runs,
-/// with nobody to ask. Body: `{provider, session_id, project_path, messages,
-/// toolsets?, label?}`, where `messages` is the system prompt and the new user
-/// message; the history comes from the saved conversation. Calls that need a
-/// person are refused to the model; edits apply, and the turn's batch commits
-/// on every ending. Answer: the turn's outcome with `ok` beside it.
 /// `POST /ai/cancel`: stops the named turn of the named conversation. Its
 /// completed calls keep their results and its batch commits, as for any stop;
 /// the turn's own `/ai/turn` request answers with the stop facts.
@@ -590,6 +584,14 @@ fn cancel_turn(body: &[u8]) -> (u16, String) {
     }
 }
 
+/// `POST /ai/turn`: one whole agent turn on the backend loop the panel runs,
+/// with nobody to ask. Body: `{provider, session_id, project_path, messages,
+/// toolsets?, label?, request_id?}`, where `messages` is system messages and at
+/// most one message of the person; the history comes from the saved
+/// conversation. A `request_id` names the turn for `/ai/steer` and
+/// `/ai/cancel`. Calls that need a person are refused to the model; edits
+/// apply, and the turn's batch commits on every ending. Answer: the turn's
+/// outcome with `ok` beside it.
 fn handle_ai_turn(app: &AppHandle, body: &[u8]) -> (u16, String) {
     let (start, owner) = match turn_request(app, body) {
         Ok(request) => request,
@@ -697,6 +699,7 @@ fn parse_turn(
         label,
         allowed: Vec::new(),
         project: Some(binding.project().to_path_buf()),
+        text_protocol: None,
     };
     Ok((start, binding))
 }
@@ -718,6 +721,8 @@ fn complete_status(kind: &str) -> u16 {
         "config" | "redirect" => 409,
         // The request names a conversation or project this host does not have open.
         "session_binding" => 409,
+        // The conversation does not fit the model's window even compacted.
+        "context_overflow" => 413,
         // The local conversation store failed; no provider was at fault.
         "session_save" => 500,
         "timeout" | "network" | "server" => 503,
@@ -850,6 +855,7 @@ async fn complete_turn(
                     &request.messages,
                     &stats,
                     &request_id,
+                    request.tools,
                 )
                 .await?,
             );
@@ -4070,6 +4076,7 @@ providers:
             ("redirect", 409),
             ("session_binding", 409),
             ("session_save", 500),
+            ("context_overflow", 413),
             ("accounting_session_missing", 409),
             ("accounting_busy", 409),
             ("accounting_storage", 500),

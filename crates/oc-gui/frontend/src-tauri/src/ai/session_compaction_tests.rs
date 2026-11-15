@@ -135,12 +135,7 @@ fn revert_to_the_newest_message_works_after_auto_compaction_with_a_snapshot() {
         store.dsl_version(&session.id, &point.dsl_sha).unwrap(),
         "@project\n  tempo: 120\n"
     );
-    assert_eq!(
-        store
-            .cut_before_user(&session.id, index, &point.dsl_sha)
-            .unwrap(),
-        index
-    );
+    assert_eq!(store.cut_before_user(&session.id, &point).unwrap(), index);
     std::fs::remove_dir_all(store.root().parent().unwrap()).unwrap();
 }
 

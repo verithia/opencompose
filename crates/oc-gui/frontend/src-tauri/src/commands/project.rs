@@ -766,7 +766,6 @@ pub(crate) fn restore_dsl_with_undo(
     Ok(snapshot(&*inner))
 }
 
-/// Writes a restored document to the autosave and the project file.
 /// Writes a restored document to autosave and the project file. The restore
 /// itself stands either way; the error says the file still holds the old text.
 pub(crate) fn publish_restored(inner: &mut AppStateInner) -> Result<(), String> {

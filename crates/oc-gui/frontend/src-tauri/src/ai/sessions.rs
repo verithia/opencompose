@@ -962,7 +962,18 @@ impl Store {
         // that the store never holds a call no request may carry. A call the
         // request itself answers is not a debt, so the loop's own rounds are
         // left exactly as it sends them.
-        let answered: Vec<String> = filtered.iter().filter_map(turns::answered_call).collect();
+        //
+        // Only the results the request appends count: a client that rebuilds
+        // its history resends earlier rounds' results, and a provider that
+        // numbers calls per reply reuses their ids for the open round.
+        let fresh = {
+            let mut probe = pending.clone();
+            absorb(&mut probe, &filtered).1
+        };
+        let answered: Vec<String> = filtered[fresh.min(filtered.len())..]
+            .iter()
+            .filter_map(turns::answered_call)
+            .collect();
         let answered: Vec<&str> = answered.iter().map(String::as_str).collect();
         let closed = close_unanswered_round(&dir, &mut pending, &answered);
         // What a client sends must leave a well-formed conversation, checked
@@ -985,6 +996,10 @@ impl Store {
         let evicted_auditions = persist_auditions(&self.root, &mut filtered, &audio_settings)?;
         let start = pending.len();
         let (appended, absorbed) = absorb(&mut pending, &filtered);
+        // Archiving rewrites auditions, which can move where the request
+        // joins the saved conversation, so what is written is checked again.
+        // Clips archived for a refused request are collected like any orphan.
+        turns::check_pairing(&pending).map_err(|error| format!("sessions: {error}"))?;
         // A version and its first transcript reference share the store lock,
         // so collection cannot remove the version between the two writes.
         versions::attach(&dir, &mut pending[start..], snapshot, project)?;
@@ -1001,7 +1016,7 @@ impl Store {
             // The round is answered on disk, so its started markers are spent.
             // Cleared only after the write: a failed write keeps them, and the
             // next preparation still tells a lost result from a call never run.
-            turns::clear_started(&dir)?;
+            turns::spend_started(&dir, &Default::default());
         }
         let saved_auditions = pending[start..]
             .iter()
@@ -3142,6 +3157,7 @@ fn read_view(dir: &Path) -> Result<(Vec<Value>, u64), String> {
     canonicalize_media(&mut view);
     message_protocol::migrate(&mut view);
     artifacts::repair(&mut view);
+    turns::repair_pairing(&mut view);
     Ok((view, skipped))
 }
 
@@ -6602,6 +6618,75 @@ mod tests {
             })
             .count();
         assert_eq!(closings, 1);
+    }
+
+    /// A provider that numbers calls per reply reuses an id in a later round.
+    /// A client that resends the earlier round's result does not answer the
+    /// open one, so the open one is closed and the turn goes out.
+    #[test]
+    fn a_resent_earlier_result_does_not_answer_an_open_round_with_the_same_id() {
+        let (store, project) = fixture("reused-id-round");
+        let session = store
+            .create(Some(&workspace(&project)), Some(&project), None, None)
+            .unwrap();
+        let context = facts(&project);
+        let system = json!({ "role": "system", "content": "you are the panel" });
+        let context_for = || crate::ai::sessions::PrepareContext {
+            snapshot: None,
+            overhead: 0,
+            context_length: 0,
+            facts: &context,
+            provider: "fixture-provider",
+            model: "fixture-model",
+        };
+        let ask = user("make it punchy");
+        let call = tool_call("tracks_mix", "{\"track\":\"kick\"}", "sig-0");
+        let result = tool_result("tracks_mix", "{\"ok\":true}");
+        store
+            .prepare(
+                &session.id,
+                &[system.clone(), ask.clone()],
+                Some(&project),
+                context_for(),
+            )
+            .unwrap();
+        store
+            .append_turn(&session.id, &[call.clone(), result.clone()], None)
+            .unwrap();
+        let again = user("once more");
+        store
+            .prepare(
+                &session.id,
+                &[system.clone(), again.clone()],
+                Some(&project),
+                context_for(),
+            )
+            .unwrap();
+        // The next round reuses the id for another call, and the client dies
+        // before its result.
+        let reused = tool_call("tracks_mix", "{\"track\":\"snare\"}", "sig-1");
+        store
+            .record_reply(
+                &session.id,
+                &reused,
+                &context,
+                "fixture-provider",
+                "fixture-model",
+            )
+            .unwrap();
+
+        let rebuilt = [system, ask, call, result, again, user("and now?")];
+        let prepared = store
+            .prepare(&session.id, &rebuilt, Some(&project), context_for())
+            .expect("the open round is closed and the turn goes out");
+        assert_eq!(turns::check_pairing(&prepared.messages), Ok(()));
+        let closed = &prepared.messages[prepared.messages.len() - 2];
+        assert_eq!(closed["role"], "tool");
+        assert!(
+            closed["content"].as_str().unwrap().contains("not run"),
+            "{closed}"
+        );
+        assert_eq!(prepared.messages.last().unwrap()["content"], "and now?");
     }
 
     /// A round whose results all arrived is history, not a debt: nothing is

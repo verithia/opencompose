@@ -69,6 +69,7 @@ impl SavedTurn {
         messages: &Value,
         stats: &crate::ai::timing::TurnStatsHandle,
         request_id: &str,
+        tools: bool,
     ) -> Result<Self, AiError> {
         binding
             .validate_project(app.state::<AppState>().lock_inner().file_path.as_deref())
@@ -95,7 +96,13 @@ impl SavedTurn {
                 id: &binding.id,
                 incarnation: &incarnation,
                 project: Some(&binding.project),
-                tool_tokens: 0,
+                // The panel surface `/ai/complete` offers when it sends tools,
+                // counted as the window it takes.
+                tool_tokens: if tools {
+                    crate::ai::agent_loop::wire::offered_tool_tokens(None, false)
+                } else {
+                    0
+                },
             },
         )
         .map_err(AiError::from);

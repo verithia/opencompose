@@ -41,6 +41,12 @@ export interface StoppedTurn {
    * Retry. Absent keeps Retry available.
    */
   retryable?: boolean;
+  /**
+   * Whether the system prompt in `messages` asks for calls written as text,
+   * so a resumed turn reads them the way its prompt asked. Absent reads the
+   * provider's current capability.
+   */
+  textProtocol?: boolean;
 }
 
 /**

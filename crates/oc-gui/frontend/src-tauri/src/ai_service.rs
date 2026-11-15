@@ -1405,6 +1405,7 @@ pub async fn ai_turn_start(
     toolsets: Option<Vec<String>>,
     label: Option<String>,
     allowed: Option<Vec<String>>,
+    text_protocol: Option<bool>,
     on_delta: tauri::ipc::Channel<String>,
     on_thinking: Option<tauri::ipc::JavaScriptChannelId>,
     on_preparing: Option<tauri::ipc::JavaScriptChannelId>,
@@ -1425,6 +1426,7 @@ pub async fn ai_turn_start(
         label,
         allowed: allowed.unwrap_or_default(),
         project: None,
+        text_protocol,
     };
     ai::agent_loop::host::run(&app, start, channels, true, owner).await
 }

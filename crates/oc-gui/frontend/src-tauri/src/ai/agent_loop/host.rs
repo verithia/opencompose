@@ -208,6 +208,11 @@ pub struct TurnStart {
     /// refuses when the open project is another one.
     #[serde(skip)]
     pub project: Option<std::path::PathBuf>,
+    /// Whether the system prompt asks for tool calls written as text. The
+    /// window that built the prompt says so, so the prompt and the parser
+    /// never disagree; absent, the provider's saved capability decides.
+    #[serde(default)]
+    pub text_protocol: Option<bool>,
 }
 
 /// The envelope every turn event travels in.
@@ -339,20 +344,16 @@ impl Host for AppHost {
     async fn begin_batch(&self, label: &str) -> Result<(), String> {
         let owner = self.owner.clone();
         let label = label.to_owned();
-        self.blocking(move |app| {
-            let state = app.state::<AppState>();
-            // A batch a gone turn stranded commits, so its applied edits stay
-            // and reach the file. A `/call` client's open batch is its live
-            // transaction, so it is refused by the begin below instead.
-            if let Some(stranded) = state
-                .batch_owner()
-                .filter(|open| stranded_loop_batch(Some(open)))
-            {
-                commit_batch_and_save(&state, &stranded).map_err(|error| error.message)?;
+        let stranded = self
+            .blocking(move |app| begin_loop_batch(&app.state::<AppState>(), label, owner))
+            .await??;
+        if let Some(stranded) = stranded {
+            if let Err(reason) = stranded {
+                log::warn!("[ai] a stranded batch committed but was not saved: {reason}");
             }
-            state.begin_transaction(label, owner).map(|_| ())
-        })
-        .await?
+            self.publish();
+        }
+        Ok(())
     }
 
     async fn commit_batch(&self) -> Result<(), super::CommitError> {
@@ -562,9 +563,26 @@ impl Host for AppHost {
             .unwrap_or_default()
     }
 
-    async fn undo(&self) -> Result<(), String> {
+    async fn introduced_errors(&self, before: &str, after: &str) -> Result<Vec<String>, String> {
+        let (before, after) = (before.to_owned(), after.to_owned());
+        self.blocking(move |app| {
+            let state = app.state::<AppState>();
+            let inner = state.lock_inner();
+            crate::commands::introduced_by_change(&inner, &before, &after)
+        })
+        .await?
+    }
+
+    async fn undo(&self, written: u64) -> Result<(), String> {
         let result = self
-            .blocking(|app| app.state::<AppState>().lock_inner().undo_step().map(|_| ()))
+            .blocking(move |app| {
+                let state = app.state::<AppState>();
+                let mut inner = state.lock_inner();
+                if inner.revision != written {
+                    return Err("the project changed after the edit".to_owned());
+                }
+                inner.undo_step().map(|_| ())
+            })
             .await?;
         self.publish();
         result
@@ -632,6 +650,35 @@ fn check_turn_messages(messages: &[Value]) -> Result<(), AiError> {
 const MAX_SYSTEM_MESSAGES: usize = 8;
 
 /// A turn reports success only after its committed edits reach the working file.
+/// Commits a batch a gone turn left open, so the edits that landed stay, and
+/// then writes the project file. `None` means no loop-owned batch is open; a
+/// `/call` client's open batch is its live transaction and is left alone. The
+/// inner `Err` is why the file was not written; the commit stands either way.
+pub(crate) fn commit_stranded(state: &AppState) -> Result<Option<Result<(), String>>, String> {
+    let Some(owner) = state
+        .batch_owner()
+        .filter(|open| stranded_loop_batch(Some(open)))
+    else {
+        return Ok(None);
+    };
+    crate::agent_api::transaction_commit(state, &owner)?;
+    Ok(Some(crate::project_persist::flush_state(state).map(|_| ())))
+}
+
+/// Opens a turn's batch, committing a stranded one first. A stranded batch
+/// whose file write fails still closed, so the new batch opens: the turn's own
+/// commit writes the whole project again and reports a file it cannot write.
+/// Returns what happened to a stranded batch, if there was one.
+pub(crate) fn begin_loop_batch(
+    state: &AppState,
+    label: String,
+    owner: String,
+) -> Result<Option<Result<(), String>>, String> {
+    let stranded = commit_stranded(state)?;
+    state.begin_transaction(label, owner)?;
+    Ok(stranded)
+}
+
 fn commit_batch_and_save(state: &AppState, owner: &str) -> Result<(), super::CommitError> {
     crate::agent_api::transaction_commit(state, owner).map_err(super::CommitError::commit)?;
     crate::project_persist::flush_state(state)
@@ -877,7 +924,9 @@ async fn run_claimed(
         audio: audio_shape(provider),
         scope: start.session_id.clone(),
         toolsets: start.toolsets.clone(),
-        text_protocol: !provider.capabilities.native_tool_calling,
+        text_protocol: start
+            .text_protocol
+            .unwrap_or(!provider.capabilities.native_tool_calling),
         context_length: crate::ai::limits::context_length(provider),
     };
     let outcome = super::run_turn(&host, spec, control.cancel).await;
@@ -962,13 +1011,32 @@ pub fn cancel(request_id: &str) -> bool {
 /// project change is one undo entry, and a cut that fails puts the document
 /// back. Refused while any turn runs.
 pub fn revert_before(app: &AppHandle, session_id: &str, index: usize) -> Result<Value, String> {
-    revert_in(
+    let state = app.state::<AppState>();
+    let revision = state.lock_inner().revision;
+    let reverted = revert_in(
         &app.state::<Requests>(),
-        &app.state::<AppState>(),
+        &state,
         &Store::config(),
         session_id,
         index,
-    )
+    );
+    // A failed cut puts the document back under a new revision; the window
+    // hears it, so its next edit is not refused as stale.
+    if reverted.is_err()
+        && let Some(snapshot) = moved_since(&state, revision)
+    {
+        let _ = app.emit(PROJECT_EVENT, snapshot);
+    }
+    reverted
+}
+
+/// The document, when its revision moved past `revision`.
+fn moved_since(
+    state: &AppState,
+    revision: u64,
+) -> Option<crate::commands::shared::ProjectSnapshot> {
+    let inner = state.lock_inner();
+    (inner.revision != revision).then(|| crate::commands::shared::snapshot(&inner))
 }
 
 /// [`revert_before`] over its parts.
@@ -979,8 +1047,8 @@ fn revert_in(
     session_id: &str,
     index: usize,
 ) -> Result<Value, String> {
-    revert_with(requests, state, store, session_id, index, |store, sha| {
-        store.cut_before_user(session_id, index, sha)
+    revert_with(requests, state, store, session_id, index, |store, point| {
+        store.cut_before_user(session_id, point)
     })
 }
 
@@ -995,7 +1063,7 @@ fn revert_with(
     store: &Store,
     session_id: &str,
     index: usize,
-    cut: impl FnOnce(&Store, &str) -> Result<usize, String>,
+    cut: impl FnOnce(&Store, &crate::ai::sessions::turns::RevertPoint) -> Result<usize, String>,
 ) -> Result<Value, String> {
     // Holding the slot for the whole revert keeps a turn from starting in it.
     let slot = format!("revert-{session_id}");
@@ -1040,7 +1108,7 @@ fn revert_with(
     // The session store never takes the document lock, so holding it here
     // cannot deadlock. The cut checks that the message still names the same
     // snapshot, so a compaction in between cannot move it.
-    if let Err(error) = cut(store, &point.dsl_sha) {
+    if let Err(error) = cut(store, &point) {
         if let Some((project, source, dirty, history)) = before {
             inner.project = project;
             inner.undo.put_back(history);
@@ -1259,11 +1327,15 @@ mod tests {
             )
         };
         let requests = Requests::default();
+        let revision = state.lock_inner().revision;
         let error = revert_with(&requests, &state, &store, &id, 0, |_, _| {
             Err("the session store is read-only".into())
         })
         .unwrap_err();
         assert!(error.contains("read-only"), "{error}");
+        // The text is back under a new revision, which the window is told.
+        let moved = moved_since(&state, revision).expect("the revision moved");
+        assert_eq!(moved.dsl_source, source);
         let inner = state.lock_inner();
         assert_eq!(inner.dsl_source, source, "the exact text is back");
         assert_eq!(inner.project.properties.tempo, 150.0);
@@ -1614,11 +1686,15 @@ mod tests {
             media,
             id: steer_id.map(str::to_owned),
         };
-        // A malformed attachment or id is the caller's error, not the turn's.
+        // A malformed attachment or id is the caller's error, not the turn's,
+        // and so is one valid attachment too many.
+        let image = json!({"kind":"image","name":"a.png","path":"/tmp/a.png","mime":"image/png",
+            "bytes":10,"sha256":"a".repeat(64)});
+        assert!(check_person_media(&json!([image.clone()])).is_ok());
         for (media, steer_id) in [
             (vec![json!({"kind":"audio","name":"x"})], None),
             (
-                vec![json!({}); crate::ai::media::MAX_ATTACHMENTS_PER_MESSAGE + 1],
+                vec![image; crate::ai::media::MAX_ATTACHMENTS_PER_MESSAGE + 1],
                 None,
             ),
             (Vec::new(), Some("has:colon")),

@@ -323,8 +323,16 @@ pub trait Host: Sync {
     ) -> impl Future<Output = Result<Document, String>> + Send;
     /// A subtree's DSL, or an empty string when it is not there yet.
     fn subtree(&self, path: &str) -> impl Future<Output = String> + Send;
-    /// Takes back the last edit as one undo step.
-    fn undo(&self) -> impl Future<Output = Result<(), String>> + Send;
+    /// The errors the document `after` has that `before` did not. `Err` means
+    /// there is no baseline to compare against.
+    fn introduced_errors(
+        &self,
+        before: &str,
+        after: &str,
+    ) -> impl Future<Output = Result<Vec<String>, String>> + Send;
+    /// Takes back the last edit as one undo step, only while the document is
+    /// still at `written`: a change after the reviewed one owns the top entry.
+    fn undo(&self, written: u64) -> impl Future<Output = Result<(), String>> + Send;
 }
 
 /// Why the rounds ended; the turn closes the same way for each.
@@ -906,7 +914,9 @@ impl<H: Host> Turn<'_, H> {
     /// Validates the document a reviewed call wrote, and takes the call back
     /// as one undo step when it introduced errors. Only a call that moved the
     /// revision wrote an undo entry, so a call that changed nothing never
-    /// undoes an earlier edit; errors the project already had are not its own.
+    /// undoes an earlier edit. Errors are compared between the document just
+    /// before the call and the one after it, without their positions, so
+    /// errors the project already had are not the call's.
     async fn check_written(&mut self, before: &Document) -> Option<Value> {
         let document = self.host.refresh().await;
         if document.revision == before.revision
@@ -917,23 +927,13 @@ impl<H: Host> Turn<'_, H> {
         }
         let errors = self
             .host
-            .validate_edit("project", &document.dsl)
+            .introduced_errors(&before.dsl, &document.dsl)
             .await
-            .err()?;
-        let existing = self
-            .host
-            .validate_edit("project", &before.dsl)
-            .await
-            .err()
-            .unwrap_or_default();
-        let errors: Vec<String> = errors
-            .into_iter()
-            .filter(|error| !existing.contains(error))
-            .collect();
+            .ok()?;
         if errors.is_empty() {
             return None;
         }
-        if let Err(error) = self.host.undo().await {
+        if let Err(error) = self.host.undo(document.revision).await {
             return Some(json!({
                 "errors": errors,
                 "error": format!("the edit did not validate and could not be undone: {error}"),

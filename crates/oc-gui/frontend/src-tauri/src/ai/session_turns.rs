@@ -165,6 +165,55 @@ pub fn check_pairing(view: &[Value]) -> Result<(), PairingError> {
     Ok(())
 }
 
+/// Makes a conversation saved before pairing was enforced well-formed, the
+/// way a reader sees it: a result without its call and a second result for one
+/// call are dropped, a round with two calls of one id is dropped with its
+/// results, and a round left open before a later message is closed with
+/// `outcome unknown`, since nothing records whether it ran. The round open at
+/// the end is left alone: the loop or the next preparation answers it. A
+/// well-formed conversation is returned unchanged; the repair is a pure
+/// function of the messages, so every read repairs them the same way.
+pub fn repair_pairing(view: &mut Vec<Value>) {
+    if check_pairing(view).is_ok() {
+        return;
+    }
+    let mut out: Vec<Value> = Vec::with_capacity(view.len());
+    let mut seen_calls: HashSet<String> = HashSet::new();
+    let mut answered: HashSet<String> = HashSet::new();
+    let mut open: Vec<String> = Vec::new();
+    for message in view.drain(..) {
+        if let Some(id) = answered_call(&message) {
+            if seen_calls.contains(&id) && answered.insert(id.clone()) {
+                open.retain(|call| call != &id);
+                out.push(message);
+            }
+            continue;
+        }
+        if is_round_delivery(&message) && open.is_empty() {
+            out.push(message);
+            continue;
+        }
+        if !open.is_empty() {
+            let unknown: HashSet<String> = open.drain(..).collect();
+            let closings = close_open(&out, &unknown);
+            out.extend(closings);
+        }
+        seen_calls.clear();
+        answered.clear();
+        let calls = calls_of(&message);
+        let mut ids = HashSet::new();
+        if calls.iter().any(|(id, _)| !ids.insert(id.clone())) {
+            continue;
+        }
+        for (id, _) in calls {
+            seen_calls.insert(id.clone());
+            open.push(id);
+        }
+        out.push(message);
+    }
+    *view = out;
+}
+
 fn has_calls(message: &Value) -> bool {
     !calls_of(message).is_empty()
 }
@@ -276,9 +325,15 @@ pub fn started_in(dir: &Path, view: &[Value]) -> HashSet<String> {
     }
 }
 
-/// Forgets every started marker, once the round they belong to is closed.
-pub fn clear_started(dir: &Path) -> Result<(), String> {
-    write_started(dir, &HashSet::new())
+/// Writes the markers left after a saved record spent some. Best effort: the
+/// record is already durable, and a stale marker errs toward "outcome unknown".
+pub fn spend_started(dir: &Path, started: &HashSet<String>) {
+    if let Err(error) = write_started(dir, started) {
+        log::warn!(
+            "[ai] started markers not updated in {}: {error}",
+            dir.display()
+        );
+    }
 }
 
 /// The marker file's ids; `None` when it exists but cannot be read or parsed.
@@ -317,6 +372,9 @@ fn write_started(dir: &Path, started: &HashSet<String>) -> Result<(), String> {
 pub struct RevertPoint {
     pub keep: usize,
     pub dsl_sha: String,
+    /// The saved message itself: a cut checks it is still the message at
+    /// `keep`, so a compaction in between refuses the cut instead of moving it.
+    pub message: Value,
     /// The project file the message was sent against, when it was recorded.
     pub project: Option<std::path::PathBuf>,
 }
@@ -394,8 +452,11 @@ impl Store {
         let record = super::turn_record(&now(), added);
         let saved = record.messages.clone();
         append_records(&dir, &[record])?;
-        if rewrite || started.len() != before {
-            write_started(&dir, &started)?;
+        // The round is saved, so the append succeeded whatever happens to the
+        // markers. A marker that outlives its call only makes that call read
+        // as "outcome unknown" if it is ever left open, the cautious side.
+        if (rewrite && before > 0) || started.len() != before {
+            spend_started(&dir, &started);
         }
         let (view, _) = read_view(&dir)?;
         meta.tokens = super::estimate_tokens(&view);
@@ -465,19 +526,17 @@ impl Store {
         revert_point_in(&view, index)
     }
 
-    /// Cuts the conversation just before the user message at `index`. The cut
-    /// lands on a user message, so it never separates a call from its result,
-    /// and the compaction history behind the view is kept.
-    pub fn cut_before_user(
-        &self,
-        id: &str,
-        index: usize,
-        expected_sha: &str,
-    ) -> Result<usize, String> {
+    /// Cuts the conversation just before the user message `expected` names.
+    /// The cut lands on a user message, so it never separates a call from its
+    /// result, and the compaction history behind the view is kept. Two messages
+    /// sent against one document share a snapshot, so the whole message is
+    /// compared, not only its snapshot.
+    pub fn cut_before_user(&self, id: &str, expected: &RevertPoint) -> Result<usize, String> {
+        let index = expected.keep;
         let _lock = self.mutation_lock()?;
         let (dir, mut meta) = self.find(id)?;
         let (view, _) = read_view(&dir)?;
-        if revert_point_in(&view, index)?.dsl_sha != expected_sha {
+        if revert_point_in(&view, index)?.message != expected.message {
             return Err("The conversation changed since this revert was chosen; try again.".into());
         }
         let kept: Vec<Value> = view[..index].to_vec();
@@ -523,6 +582,7 @@ fn revert_point_in(view: &[Value], index: usize) -> Result<RevertPoint, String> 
         keep: index,
         dsl_sha,
         project,
+        message: message.clone(),
     })
 }
 
@@ -842,6 +902,79 @@ mod tests {
     }
 
     #[test]
+    fn a_conversation_saved_without_pairing_reads_well_formed_and_accepts_appends() {
+        let tail = vec![user("go"), round(&["a"]), result("a")];
+        let mut clean = tail.clone();
+        repair_pairing(&mut clean);
+        assert_eq!(clean, tail, "a well-formed conversation is unchanged");
+
+        let mut twice = round(&["d"]);
+        let call = twice["tool_calls"][0].clone();
+        twice["tool_calls"].as_array_mut().unwrap().push(call);
+        let mut damaged = vec![
+            user("go"),
+            result("ghost"),
+            round(&["a", "b"]),
+            result("a"),
+            result("a"),
+            user("next"),
+            twice,
+            result("d"),
+            user("last"),
+            round(&["c"]),
+        ];
+        repair_pairing(&mut damaged);
+        assert_eq!(check_pairing(&damaged), Ok(()), "{damaged:#?}");
+        let unknown = damaged
+            .iter()
+            .find(|message| answered_call(message).as_deref() == Some("b"))
+            .expect("the open round before `next` is closed");
+        let body: Value = serde_json::from_str(unknown["content"].as_str().unwrap()).unwrap();
+        assert_eq!(body["outcome_unknown"], true, "{body}");
+        assert!(
+            !damaged
+                .iter()
+                .any(|message| answered_call(message).as_deref() == Some("d")),
+            "a round with a repeated id goes with its results"
+        );
+        assert!(
+            open_calls(&damaged).iter().any(|(id, _)| id == "c"),
+            "the round open at the end is the loop's to answer"
+        );
+
+        // Saved that way, the conversation still accepts the next round.
+        let (_root, store, id) = fixture();
+        let (dir, _) = store.find(&id).unwrap();
+        super::super::append_records(
+            &dir,
+            &[super::super::turn_record(
+                &now(),
+                vec![user("go"), round(&["a"]), result("a"), result("a")],
+            )],
+        )
+        .unwrap();
+        store
+            .append_turn(&id, &[user("again"), round(&["a"])], None)
+            .expect("an old duplicate does not block the conversation");
+        assert_eq!(check_pairing(&store.view(&id).unwrap()), Ok(()));
+    }
+
+    #[test]
+    fn a_saved_round_succeeds_even_when_its_markers_cannot_be_spent() {
+        let (_root, store, id) = fixture();
+        store
+            .append_turn(&id, &[user("go"), round(&["a"])], None)
+            .unwrap();
+        // A directory where the marker file belongs: reading and writing fail.
+        let (dir, _) = store.find(&id).unwrap();
+        std::fs::create_dir(dir.join(STARTED_FILE)).unwrap();
+        store
+            .append_turn(&id, &[result("a")], None)
+            .expect("the result is saved, so the append succeeds");
+        assert_eq!(store.view(&id).unwrap().len(), 3);
+    }
+
+    #[test]
     fn a_new_round_spends_the_markers_of_the_round_before() {
         let (_root, store, id) = fixture();
         store
@@ -989,12 +1122,15 @@ mod tests {
         );
         let point = store.revert_point(&id, 4).unwrap();
         assert_eq!(point.dsl_sha, "b".repeat(64));
-        // A cut chosen against another snapshot (the conversation moved under
-        // the revert) changes nothing.
+        // A cut chosen against another message (the conversation moved under
+        // the revert) changes nothing, even when that message names the same
+        // snapshot.
         let before = store.view(&id).unwrap();
-        assert!(store.cut_before_user(&id, 4, &"a".repeat(64)).is_err());
+        let mut moved = point.clone();
+        moved.message["content"] = json!("an earlier message on the same document");
+        assert!(store.cut_before_user(&id, &moved).is_err());
         assert_eq!(store.view(&id).unwrap(), before);
-        assert_eq!(store.cut_before_user(&id, 4, &point.dsl_sha).unwrap(), 4);
+        assert_eq!(store.cut_before_user(&id, &point).unwrap(), 4);
         let view = store.view(&id).unwrap();
         assert_eq!(view.len(), 4);
         assert_eq!(check_pairing(&view), Ok(()));

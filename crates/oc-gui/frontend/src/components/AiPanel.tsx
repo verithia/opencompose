@@ -1564,11 +1564,12 @@ export function AiPanel(props: { onClose?: () => void }) {
   };
 
   /** The anchor a stopped row keeps: what the turn sent and how it ended. */
-  const stoppedTurn = (sent: WireMessage[], stop: TurnStop | undefined, retryable?: boolean): StoppedTurn => ({
+  const stoppedTurn = (sent: WireMessage[], stop: TurnStop | undefined, retryable: boolean | undefined, textProtocol: boolean): StoppedTurn => ({
     messages: sent,
     edits: stop?.edits ?? 0,
     ...(stop ? { stop } : {}),
     ...(retryable === false ? { retryable: false } : {}),
+    textProtocol,
   });
 
   /**
@@ -1576,7 +1577,7 @@ export function AiPanel(props: { onClose?: () => void }) {
    * message the turn saved; a stop or a failure says what happened and offers
    * Retry or Continue.
    */
-  const settleOutcome = (outcome: TurnOutcome, sent: WireMessage[]) => {
+  const settleOutcome = (outcome: TurnOutcome, sent: WireMessage[], textProtocol: boolean) => {
     const error = outcome.error;
     if (error && errorKind(error) === "auth_expired") setAuthError(errorMessage(error));
     if (!outcome.failed) return;
@@ -1589,7 +1590,7 @@ export function AiPanel(props: { onClose?: () => void }) {
       content,
       timestamp: Date.now(),
       ...(outcome.stop ? {} : { error: true }),
-      resume: stoppedTurn(sent, outcome.stop, error?.retryable),
+      resume: stoppedTurn(sent, outcome.stop, error?.retryable, textProtocol),
     }]);
   };
 
@@ -1739,6 +1740,9 @@ export function AiPanel(props: { onClose?: () => void }) {
       // A resumed turn sends the system prompt it stopped with; a fresh turn
       // reads the project and builds one for the model's capabilities.
       let sent = resumed?.messages;
+      // The prompt and the backend's parser read one fact: the protocol the
+      // prompt was built for travels with the turn.
+      const textProtocol = (sent && resumed?.textProtocol) ?? !provider.capabilities.nativeToolCalling;
       if (!sent) {
         const tools = await aiApi.listTools(selectedSets());
         if (!liveTurn(token)) return posted;
@@ -1794,13 +1798,14 @@ export function AiPanel(props: { onClose?: () => void }) {
           // Destructive tools this conversation already answered "always
           // allow" for; the backend adds the answers given during the turn.
           allowed: allowed(),
+          textProtocol,
         },
         (text) => { if (!cancelledFor(token)) setPartial(value => value + text); },
         (text) => { if (!cancelledFor(token)) setReasoning(value => appendThinking(value, text)); },
         (name) => { if (!cancelledFor(token)) setPreparingTool(name); },
       );
       if (!liveTurn(token)) return posted;
-      settleOutcome(outcome, sent);
+      settleOutcome(outcome, sent, textProtocol);
     } catch (e) {
       if (cancelledFor(token)) return posted;
       // A failure before the turn started saved nothing, so the message goes

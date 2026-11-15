@@ -693,6 +693,11 @@ describe("composer: input and send", () => {
     expect(sendButton().disabled).toBe(false);
     fireEvent.click(sendButton());
     await waitFor(() => expect(sendCalls()).toBe(1));
+    // The prompt asked for calls written as text, and the turn says so, so
+    // the backend reads them the way the prompt asked.
+    const start = invokeMock.mock.calls.find(([command]) => command === "ai_turn_start")![1] as { textProtocol?: boolean; messages: { role: string; content: string }[] };
+    expect(start.textProtocol).toBe(true);
+    expect(start.messages[0].content).toContain('{"tool":"NAME","args":{...}}');
   });
 
   it("locks both model selectors while a request runs and keeps the composer ready to queue", async () => {

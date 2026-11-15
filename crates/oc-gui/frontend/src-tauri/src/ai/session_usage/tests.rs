@@ -274,7 +274,7 @@ fn accounting_cut_and_fork_do_not_rewrite_incurred_spend() {
         )
         .unwrap();
     let point = store.revert_point(&id, 0).unwrap();
-    store.cut_before_user(&id, 0, &point.dsl_sha).unwrap();
+    store.cut_before_user(&id, &point).unwrap();
     assert!(store.view(&id).unwrap().is_empty(), "the cut ran");
     assert_eq!(snapshot(&store, &id), before);
     let fork = store

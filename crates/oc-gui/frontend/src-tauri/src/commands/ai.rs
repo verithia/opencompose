@@ -71,21 +71,52 @@ pub fn validate_edit_in_project(
     let Ok(candidate) = oc_dsl::ai::candidate_project(&edit, &inner.project) else {
         return result;
     };
-    let existing = oc_engine::graph::validate_effect_parameters(&inner.project, 48_000);
-    let mut introduced: Vec<String> =
-        oc_engine::graph::validate_effect_parameters(&candidate, 48_000)
-            .into_iter()
-            .filter(|error| !existing.contains(error))
-            .collect();
-    if let Err(error) = crate::device_catalog::validate_synth_changes(&inner.project, &candidate) {
-        introduced.push(error);
-    }
+    let introduced = introduced_engine_errors(&inner.project, &candidate);
     if !introduced.is_empty() {
         result.valid = false;
         result.parsed_dsl = None;
         result.errors.extend(introduced);
     }
     result
+}
+
+/// Effect parameters and synth changes `candidate` gets wrong that `base` got
+/// right: the checks above the DSL crate, compared the same way for a proposed
+/// edit and for a change a tool already wrote.
+fn introduced_engine_errors(
+    base: &oc_dsl::ast::Project,
+    candidate: &oc_dsl::ast::Project,
+) -> Vec<String> {
+    let existing = oc_engine::graph::validate_effect_parameters(base, 48_000);
+    let mut introduced: Vec<String> =
+        oc_engine::graph::validate_effect_parameters(candidate, 48_000)
+            .into_iter()
+            .filter(|error| !existing.contains(error))
+            .collect();
+    if let Err(error) = crate::device_catalog::validate_synth_changes(base, candidate) {
+        introduced.push(error);
+    }
+    introduced
+}
+
+/// The errors the document `after` has that `before` did not, for a change a
+/// tool already wrote. A document that does not parse reports its parse error.
+/// `Err` means `before` itself does not parse, so there is nothing to compare
+/// against.
+pub fn introduced_by_change(
+    inner: &crate::state::AppStateInner,
+    before: &str,
+    after: &str,
+) -> Result<Vec<String>, String> {
+    let base = oc_dsl::parse(before).map_err(|error| error.to_string())?;
+    let candidate = match oc_dsl::parse(after) {
+        Ok(candidate) => candidate,
+        Err(error) => return Ok(vec![error.to_string()]),
+    };
+    let root = super::shared::project_root(inner);
+    let mut errors = oc_dsl::ai::introduced_errors(&base, &candidate, root.as_deref());
+    errors.extend(introduced_engine_errors(&base, &candidate));
+    Ok(errors)
 }
 
 /// Apply a validated AI edit to the project.
@@ -168,18 +199,10 @@ pub struct RecoveredBatch {
 /// an external client opened is that client's to finish, so it is left alone.
 /// Calling this with no open batch and calling it twice are both no-ops.
 pub fn recover_panel_batch(state: &AppState) -> Result<Option<RecoveredBatch>, String> {
-    let Some(owner) = state.batch_owner() else {
+    let Some(saved) = crate::ai::agent_loop::host::commit_stranded(state)? else {
         return Ok(None);
     };
-    if !crate::state::loop_batch_owner(&owner) {
-        return Ok(None);
-    }
-    state.commit_transaction()?;
-    let unsaved = crate::project_persist::flush_state(state)
-        .err()
-        .map(|reason| {
-            format!("The recovered edits were not written to the project file: {reason}")
-        });
+    let unsaved = saved.err();
     let inner = state.lock_inner();
     Ok(Some(RecoveredBatch {
         snapshot: snapshot(&inner),

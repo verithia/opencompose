@@ -31,14 +31,15 @@ impl ResultStore {
             .retain(|(owner, id, _)| !(owner == scope && id == call));
         self.entries
             .push_back((scope.to_owned(), call.to_owned(), text));
-        // The conversation's own oldest result goes first, then the oldest of
-        // all, until every bound holds.
-        while self
-            .entries
-            .iter()
-            .filter(|(owner, _, _)| owner == scope)
-            .count()
-            > MAX_RESULTS_PER_CONVERSATION
+        // The conversation's own oldest result goes first while it holds more
+        // than its share of the count or of the memory, so one busy
+        // conversation pays for its own results; then the oldest of all goes,
+        // until every bound holds. The result just kept is the last to go.
+        let share = MAX_STORED_BYTES / (MAX_STORED_RESULTS / MAX_RESULTS_PER_CONVERSATION);
+        while self.count_of(scope) > MAX_RESULTS_PER_CONVERSATION
+            || (self.bytes() > MAX_STORED_BYTES
+                && self.bytes_of(scope) > share
+                && self.count_of(scope) > 1)
         {
             let oldest = self
                 .entries
@@ -50,6 +51,21 @@ impl ResultStore {
         while self.entries.len() > MAX_STORED_RESULTS || self.bytes() > MAX_STORED_BYTES {
             self.entries.pop_front();
         }
+    }
+
+    fn count_of(&self, scope: &str) -> usize {
+        self.entries
+            .iter()
+            .filter(|(owner, _, _)| owner == scope)
+            .count()
+    }
+
+    fn bytes_of(&self, scope: &str) -> usize {
+        self.entries
+            .iter()
+            .filter(|(owner, _, _)| owner == scope)
+            .map(|(_, _, text)| text.len())
+            .sum()
     }
 
     fn bytes(&self) -> usize {
@@ -173,5 +189,20 @@ mod tests {
         }
         assert!(store.bytes() <= MAX_STORED_BYTES);
         assert!(!store.entries.is_empty());
+    }
+
+    #[test]
+    fn a_conversation_over_its_share_of_memory_evicts_its_own_results_first() {
+        let mut store = ResultStore::default();
+        store.remember("quiet", "c", "small".into());
+        // Six results of about 6 MB each pass the 32 MiB bound.
+        let large = "\u{4e2d}".repeat(MAX_STORED_CHARS);
+        for index in 0..6 {
+            store.remember("busy", &format!("c{index}"), large.clone());
+        }
+        assert!(store.bytes() <= MAX_STORED_BYTES);
+        assert_eq!(store.full("quiet", "c").as_deref(), Some("small"));
+        assert!(store.full("busy", "c5").is_some(), "the newest stays");
+        assert!(store.full("busy", "c0").is_none(), "the busy one pays");
     }
 }

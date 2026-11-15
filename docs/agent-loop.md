@@ -146,6 +146,13 @@ Then the conversation's permission decides what happens:
 * **Require approval.** The card asks before the replacement runs and shows the
   change as a diff row. An approved replacement applies in the turn's batch.
 * **Autoreview.** The loop records the diff row and applies the replacement.
+  After any reviewed mutation it compares the document just before the call
+  with the one after it, and takes the call back as one undo step only when
+  the call moved the revision and introduced an error, the project is still at
+  the revision it wrote, and the error is not one the project already had.
+  Errors are compared without their line positions, so an edit that only moves
+  an existing error, such as a missing sample below an added track, is not
+  blamed for it.
 * **Write.** The replacement applies directly.
 * **Nobody to ask.** A headless turn applies a validated replacement in the turn.
 
@@ -673,7 +680,9 @@ but is not counted as an edit.
   as its batch is open, so a `panel:` or `turn:` batch found while the slot is
   free belongs to a turn that is gone: one whose commit failed, or one that
   died. The next turn commits it before it opens its own, in any conversation.
-  The panel also calls `ai_batch_recover` once on mount; it holds the slot,
+  When the file cannot be written then, the stranded batch still closes and
+  the new batch opens; the new turn's own commit writes the whole project and
+  reports a file it cannot write. The panel also calls `ai_batch_recover` once on mount; it holds the slot,
   commits such a batch, writes the project file and returns
   `{snapshot, unsaved?}`, so `project_save`, `redo` and preview work
   immediately. `unsaved` says why the file did not take the edits. It answers
@@ -703,12 +712,18 @@ host's own, so `ai_cancel` cannot release it and `ai_active_turn` does not
 report it. `ai_tool_result` returns the full text behind a truncated result
 while the process keeps it, scoped to the conversation; the newest 64 results
 are kept, at most 32 per conversation and 32 MiB in all, and a result over
-2,000,000 characters is not.
+2,000,000 characters is not. A conversation over its share of that memory
+evicts its own oldest results first, so a busy conversation never takes the
+pages another one is reading.
 
 A model without native tool calling writes a call as one `{tool, args}` object
-in its text. The loop reads such a call only when the provider's
-`native_tool_calling` capability is off: for a native model a text reply is an
-answer, and a call quoted in it never runs.
+in its text. The loop reads such a call only when the system prompt asked for
+it: the panel sends `text_protocol` with the prompt it built, and a resumed
+turn sends the value its prompt was built with, so a model switched in between
+cannot leave the prompt and the parser disagreeing. A headless turn, which
+builds no prompt here, reads the provider's `native_tool_calling` capability.
+For a native model a text reply is an answer, and a call quoted in it never
+runs.
 
 A turn is one undo step. No stop discards it: cancel, provider failure, timeout
 and the round cap all keep the batch and report how many edits stayed. The
@@ -845,8 +860,13 @@ and when a rollback closes the round.
 What a caller sends is checked against the saved conversation before anything
 is written or archived: a request that would leave a result without its call,
 a second result for one call, or a message inside an open round is refused,
-and nothing changes. A conversation trimmed to its size cap starts at a message
-every later append accepts.
+and nothing changes. Only the results a request appends answer the open
+round: a client that resends an earlier round's result with a reused id does
+not answer the open one. A conversation trimmed to its size cap starts at a
+message every later append accepts. A conversation saved before these rules
+reads well-formed: an orphan or repeated result is dropped, a round with a
+repeated call id goes with its results, and a round left open before a later
+message reads `outcome unknown`. The round open at the end is left to the loop.
 
 The transcript line is built from the loop's counts: the calls the model had
 requested, the calls that returned, and the applied edits that were kept. A
@@ -933,9 +953,11 @@ before this message**. It is one backend operation, `ai_revert_before`
 against as one undo entry labelled `Revert conversation`, only when the document
 differs, and cuts the conversation just before that message. If the cut fails,
 the project, its text, the dirty flag and both history stacks are put back
-exactly, so no redo entry is lost and no undo entry is evicted. The cut checks
-that the message still names the snapshot that was restored, so a compaction
-from another window in between refuses the revert instead of cutting elsewhere.
+exactly, so no redo entry is lost and no undo entry is evicted, and the window
+is sent the document under its new revision. The cut checks that the saved
+message is still the one that was chosen, not only its snapshot: two messages
+sent against one document share a snapshot, and a compaction from another
+window in between refuses the revert instead of cutting elsewhere.
 It also forgets that conversation's stored full results. The answer is
 `{kept, snapshot, unsaved?}`: the revert stands in the document either way, and
 `unsaved` says why the project file was not written.

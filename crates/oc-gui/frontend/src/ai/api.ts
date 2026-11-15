@@ -54,6 +54,8 @@ export function startTurn(
     toolsets: string[] | null;
     label: string;
     allowed: readonly string[];
+    /** Whether the system prompt asks for tool calls written as text. */
+    textProtocol: boolean;
   },
   delta: (text: string) => void,
   thinking: (text: string) => void,
@@ -73,6 +75,7 @@ export function startTurn(
     ...(args.toolsets ? { toolsets: args.toolsets } : {}),
     label: args.label,
     allowed: [...args.allowed],
+    textProtocol: args.textProtocol,
     onDelta, onThinking, onPreparing,
   });
 }

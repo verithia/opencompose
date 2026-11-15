@@ -358,6 +358,30 @@ fn a_batch_a_dead_turn_left_open_is_committed_and_the_file_saves() {
 }
 
 #[test]
+fn a_stranded_batch_that_cannot_be_saved_still_lets_the_next_turn_begin() {
+    let fixture = Fixture::new("agent-batch-stranded-unsaved");
+    {
+        let mut inner = fixture.state.lock_inner();
+        inner
+            .begin_transaction("turn".into(), "panel:s1".into())
+            .unwrap();
+    }
+    set_mute(&fixture.state, true);
+    // A directory where the project file belongs makes every write fail.
+    std::fs::remove_file(&fixture.path).unwrap();
+    std::fs::create_dir(&fixture.path).unwrap();
+
+    let next = crate::state::turn_batch_owner("turn-2", "s1");
+    let stranded =
+        crate::ai::agent_loop::host::begin_loop_batch(&fixture.state, "next".into(), next.clone())
+            .expect("the next turn's batch opens");
+    assert!(matches!(stranded, Some(Err(_))), "{stranded:?}");
+    assert_eq!(fixture.state.batch_owner().as_deref(), Some(next.as_str()));
+    let inner = fixture.state.lock_inner();
+    assert!(inner.project.tracks[0].mix.mute, "the stranded edit stays");
+}
+
+#[test]
 fn a_project_with_no_path_stays_unsaved() {
     let dir = TempDir::new("agent-untitled");
     std::fs::create_dir_all(dir.path()).unwrap();

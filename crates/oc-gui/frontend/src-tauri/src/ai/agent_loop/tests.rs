@@ -36,6 +36,8 @@ struct World {
     steer_on_send: Option<usize>,
     /// Make the batch close fail at this step.
     commit_failure: Option<CommitFailure>,
+    /// Someone else edits the project while this tool runs.
+    edit_elsewhere_on: Option<String>,
 }
 
 struct Fake {
@@ -48,6 +50,21 @@ struct Fake {
 }
 
 impl Fake {
+    /// The fake validator: every document is invalid with `invalid`, and
+    /// documents from revision `invalid_from` on are too.
+    fn errors_of(&self, dsl: &str) -> Vec<String> {
+        let world = self.world();
+        let revision = dsl
+            .strip_prefix("@project r")
+            .and_then(|n| n.parse::<u64>().ok())
+            .unwrap_or(0);
+        if world.invalid || world.invalid_from.is_some_and(|from| revision >= from) {
+            vec!["bad".into()]
+        } else {
+            Vec::new()
+        }
+    }
+
     fn new(replies: Vec<Value>) -> Self {
         let root = tempfile::tempdir().unwrap();
         let store = Store::new(root.path().join("sessions"));
@@ -171,6 +188,11 @@ impl Host for Fake {
         if world.cancel_on.as_deref() == Some(tool) {
             self.cancel.cancel();
         }
+        if world.edit_elsewhere_on.as_deref() == Some(tool) {
+            world.edit_elsewhere_on = None;
+            world.revision += 1;
+            world.dsl = format!("@project r{}", world.revision);
+        }
         match tool {
             "transaction_begin" => {
                 world.batch = Some(args["label"].as_str().unwrap_or_default().to_owned());
@@ -252,15 +274,11 @@ impl Host for Fake {
     }
 
     async fn validate_edit(&self, _path: &str, dsl: &str) -> Result<(), Vec<String>> {
-        let world = self.world();
-        let revision = dsl
-            .strip_prefix("@project r")
-            .and_then(|n| n.parse::<u64>().ok())
-            .unwrap_or(0);
-        if world.invalid || world.invalid_from.is_some_and(|from| revision >= from) {
-            Err(vec!["bad".into()])
-        } else {
+        let errors = self.errors_of(dsl);
+        if errors.is_empty() {
             Ok(())
+        } else {
+            Err(errors)
         }
     }
 
@@ -285,8 +303,21 @@ impl Host for Fake {
         "old".into()
     }
 
-    async fn undo(&self) -> Result<(), String> {
-        self.world().undos += 1;
+    async fn introduced_errors(&self, before: &str, after: &str) -> Result<Vec<String>, String> {
+        let errors = |dsl: &str| self.errors_of(dsl);
+        let existing = errors(before);
+        Ok(errors(after)
+            .into_iter()
+            .filter(|error| !existing.contains(error))
+            .collect())
+    }
+
+    async fn undo(&self, written: u64) -> Result<(), String> {
+        let mut world = self.world();
+        if world.revision != written {
+            return Err("moved".into());
+        }
+        world.undos += 1;
         Ok(())
     }
 }
@@ -718,8 +749,15 @@ fn a_reply_after_cancel_is_saved_and_none_of_its_calls_run() {
         async fn subtree(&self, path: &str) -> String {
             self.0.subtree(path).await
         }
-        async fn undo(&self) -> Result<(), String> {
-            self.0.undo().await
+        async fn introduced_errors(
+            &self,
+            before: &str,
+            after: &str,
+        ) -> Result<Vec<String>, String> {
+            self.0.introduced_errors(before, after).await
+        }
+        async fn undo(&self, written: u64) -> Result<(), String> {
+            self.0.undo(written).await
         }
     }
     let spec = fake.spec(SessionPermission::Write);
@@ -891,6 +929,26 @@ fn a_review_takes_back_only_an_edit_the_call_made_and_only_for_its_own_errors() 
     }
     block_on(fake.run(SessionPermission::Autoreview));
     assert_eq!(fake.world().undos, 0);
+
+    // A change someone else made earlier in the turn is not the call's either,
+    // though it moved the text away from the turn's last edit.
+    let fake = Fake::new(vec![
+        round(&[("r", "tracks_list")]),
+        round(&[("a", "project_set_tempo")]),
+    ]);
+    {
+        let mut world = fake.world();
+        world.invalid_from = Some(1);
+        world.noop = true;
+        world.edit_elsewhere_on = Some("tracks_list".into());
+    }
+    block_on(fake.run(SessionPermission::Autoreview));
+    assert_eq!(fake.world().undos, 0);
+    assert!(
+        fake.results()
+            .iter()
+            .all(|(_, result)| result.get("undone").is_none())
+    );
 
     // Errors the project already had are not the call's.
     let fake = Fake::new(vec![round(&[("a", "tracks_add")])]);
