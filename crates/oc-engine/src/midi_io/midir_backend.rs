@@ -280,6 +280,7 @@ impl MidiBackend for MidirBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "macos")]
     use std::time::{Duration, Instant};
 
     #[test]

@@ -3450,7 +3450,10 @@ fn lsd_score_term(level_matched_db: f64) -> f64 {
     if ratio.is_nan() {
         1.0
     } else {
-        ratio.clamp(0.0, 1.0).max(0.0)
+        let clamped = ratio.clamp(0.0, 1.0);
+        // `clamp` and `max` leave the sign of a zero unspecified (x86 keeps
+        // -0.0), so the zero is normalised explicitly.
+        if clamped == 0.0 { 0.0 } else { clamped }
     }
 }
 

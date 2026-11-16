@@ -70,6 +70,7 @@ fn last_error_line(stderr: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::time::Instant;
 
     #[test]

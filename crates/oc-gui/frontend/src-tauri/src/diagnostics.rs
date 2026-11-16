@@ -216,16 +216,15 @@ fn os_version() -> String {
     }
     #[cfg(target_os = "linux")]
     {
-        if let Ok(contents) = std::fs::read_to_string("/etc/os-release") {
-            if let Some(line) = contents
+        if let Ok(contents) = std::fs::read_to_string("/etc/os-release")
+            && let Some(line) = contents
                 .lines()
                 .find(|line| line.starts_with("PRETTY_NAME="))
-            {
-                return line
-                    .trim_start_matches("PRETTY_NAME=")
-                    .trim_matches('"')
-                    .to_string();
-            }
+        {
+            return line
+                .trim_start_matches("PRETTY_NAME=")
+                .trim_matches('"')
+                .to_string();
         }
     }
     String::new()

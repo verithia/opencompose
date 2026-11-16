@@ -2035,6 +2035,9 @@ mod tests {
 
     // ---- Host install selection ----
 
+    // The bundled catalog pins archives for Apple silicon only, and the Store
+    // response always answers for the host platform.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     #[test]
     fn the_store_response_reports_installability() {
         let response = catalog_response(&catalog());
@@ -3509,7 +3512,8 @@ mod tests {
     #[test]
     fn search_reports_installability_for_pinned_page_only_and_unpinned_entries() {
         let entries = catalog();
-        let platform = host_platform().to_string();
+        // The bundled catalog pins its archives for Apple silicon.
+        let platform = "macos-aarch64".to_string();
         let result = search_entries(
             &entries,
             &SearchFilters {
@@ -3555,6 +3559,8 @@ mod tests {
         // happens to carry one, so the fixture supplies it.
         let catalog = fixture_catalog("https://example.com/fixture.zip", None, Some(1024));
         let unpinned_entries = parse_remote_catalog(catalog.as_bytes()).expect("fixture catalog");
+        // The fixture catalog lists its install for the host platform.
+        let platform = host_platform().to_string();
         let unpinned = search_entries(
             &unpinned_entries.plugins,
             &SearchFilters {

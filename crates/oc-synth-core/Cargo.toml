@@ -8,6 +8,11 @@ rust-version.workspace = true
 license.workspace = true
 description = "OpenSynth engine core: voices, routing, sampler, and the patch types shared by the importer and the facade"
 
+[features]
+# Timing/throughput harnesses. Off by default so a plain `cargo test` neither
+# compiles nor runs them; see AGENTS-testing.md for the command.
+perf-tests = []
+
 [dependencies]
 oc-audio = { path = "../oc-audio", default-features = false }
 oc-device-schema = { path = "../oc-device-schema" }

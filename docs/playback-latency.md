@@ -862,8 +862,28 @@ path costs.
   song before it can sound.
 
 The bound is measured on the production worker, ring and callback, with the
-simulated sink standing in for the device (128-frame blocks). The debug profile
-is the gate: a number under the bound here is under it in the `perf` build too.
+simulated sink standing in for the device (128-frame blocks). CI gates on the
+release profile, the build that ships; the debug profile meets the same bound
+on a quiet machine.
+
+Every hop from the command to the device is a thread waking from a short
+sleep: the producer's lookahead wait, the simulated sink's period and the
+generation handshake. The bound therefore measures the host's timer precision
+as much as the playback path, and a host whose timer wakes sleepers late gets a
+budget ratio (`TimingHost::budget_ratio` in `first_block_tests.rs`) that scales
+every bound of the contract:
+
+| Host | Detected by | Ratio | First-block budget |
+|---|---|---|---|
+| Developer machine | no `GITHUB_ACTIONS` | 1.0 | 50 ms |
+| GitHub-hosted Linux runner | `RUNNER_OS=Linux` | 1.0 | 50 ms |
+| GitHub-hosted macOS runner | `RUNNER_OS=macOS` | 2.0 | 100 ms |
+| GitHub-hosted Windows runner | `RUNNER_OS=Windows` | 1.0 (not measured) | 50 ms |
+
+The hosted macOS runner is a virtual machine whose timer wakes a sleeping
+thread in coarse ticks, several milliseconds late on every hop, whatever the
+thread's QoS class. The ratio covers the runner, not the product: the contract
+for the app is the 50 ms row.
 
 ### Instrumentation
 
@@ -973,7 +993,9 @@ already filled the ring.
 - `first_block::tests::*` — the trace arithmetic: press, block, frames, the
   splice gate, a silent callback and a superseded start.
 - `first_block_tests::play_from_stop_streams_and_reaches_the_device` — p95 under
-  50 ms and at most 16 384 frames before the first block.
+  the host's budget and at most 16 384 frames before the first block.
+- `first_block_tests::timing_host_reads_the_hosted_runner_and_scales_only_macos`:
+  the host table above.
 - `first_block_tests::press_during_the_warm_up_reaches_the_device` and
   `first_block_tests::press_right_after_a_structural_edit_reaches_the_device` —
   the two paths that wait behind a build.
@@ -1000,6 +1022,7 @@ Run them with:
 ```sh
 export CARGO_TARGET_DIR=target/firstblock-verify
 cargo test -p oc-gui --lib -- first_block_tests::
+cargo test -p oc-gui --lib --release -- first_block_tests:: --ignored --test-threads=1 --skip review_
 cargo test -p oc-gui --lib -- first_block_tests::review_first_block_latency --ignored --nocapture
 ```
 

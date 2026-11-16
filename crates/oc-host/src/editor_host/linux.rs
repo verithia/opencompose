@@ -107,6 +107,7 @@ impl IPlugFrameTrait for PlugFrame {
         if !view.is_null() {
             // SAFETY: the caller passes its own live view and rect.
             let view = unsafe { ComRef::<IPlugView>::from_raw_unchecked(view) };
+            // SAFETY: `view` wraps the caller's live view, and `new_size` is the caller's rect.
             let _ = unsafe { view.onSize(new_size) };
         }
         kResultOk
@@ -217,6 +218,7 @@ fn serve(state: &FrameState, slice: Duration) {
             let handler = unsafe {
                 ComRef::<ITimerHandler>::from_raw_unchecked(handler as *mut ITimerHandler)
             };
+            // SAFETY: `handler` is live (see above) and the run loop calls it on the UI thread.
             unsafe { handler.onTimer() };
         }
         if fds.is_empty() {
@@ -252,6 +254,7 @@ fn serve(state: &FrameState, slice: Duration) {
             let handler = unsafe {
                 ComRef::<IEventHandler>::from_raw_unchecked(handler as *mut IEventHandler)
             };
+            // SAFETY: `handler` is live (see above), and `fd` is the descriptor it registered.
             unsafe { handler.onFDIsSet(fd) };
         }
     }
@@ -284,6 +287,7 @@ pub fn run() {
     eprintln!("oc-vst3-editor-host: creating editor");
     // SAFETY: the controller is live and this is the thread that will own the view.
     let raw_view = unsafe { controller.createView(c"editor".as_ptr()) };
+    // SAFETY: `createView` returns an owned reference or null; `from_raw` takes it over.
     let Some(view) = (unsafe { ComPtr::<IPlugView>::from_raw(raw_view) }) else {
         super::fail("the plugin did not create an editor view");
     };

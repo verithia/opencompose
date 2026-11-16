@@ -5,9 +5,11 @@ use std::sync::Arc;
 
 use oc_dsl::ast;
 
+#[cfg(target_os = "macos")]
+use crate::commands::plugin_host::apply_plugin_state_value;
 use crate::commands::plugin_host::{
-    apply_plugin_state_value, load_plugin_for_preset_blocking, read_plugin_state_value,
-    save_plugin_state_embedded_inner, save_plugin_state_file_inner,
+    load_plugin_for_preset_blocking, read_plugin_state_value, save_plugin_state_embedded_inner,
+    save_plugin_state_file_inner,
 };
 use crate::commands::project::replace_project;
 

@@ -143,6 +143,10 @@ pub enum RenderCommand {
         entered: Sender<()>,
         release: Receiver<()>,
     },
+    /// Replaces the seek preroll budget, so a test that checks which position
+    /// plays does not depend on how fast this machine reconstructs the gap.
+    #[cfg(test)]
+    TestPrerollBudget(std::time::Duration),
     /// Start/resume rendering from a given sample position.
     Play {
         start_frame: u64,
@@ -1022,6 +1026,8 @@ struct RenderState {
     /// Wall-clock deadline for an exact seek preroll. Only set for a seek that
     /// arrives while the transport is playing.
     preroll_deadline: Option<std::time::Instant>,
+    /// How long a playing seek may reconstruct the gap; [`SEEK_PREROLL_BUDGET`].
+    preroll_budget: std::time::Duration,
     /// Warm-up staging: pre-render into `rendered_ahead` while playback is idle.
     warm_fill: bool,
     /// Independent pattern/track instrument instances; the SoundFont player is one adapter.
@@ -1150,6 +1156,7 @@ impl RenderState {
             root: None,
             seek_target: None,
             preroll_deadline: None,
+            preroll_budget: SEEK_PREROLL_BUDGET,
             warm_fill: false,
             renderers: Vec::new(),
             source_specs: Vec::new(),
@@ -1317,6 +1324,7 @@ impl RenderState {
         }
         replacement.touch.clone_from(&self.touch);
         replacement.click_settings = self.click_settings;
+        replacement.preroll_budget = self.preroll_budget;
         replacement.clock = ProjectClock::new(&project.properties).ok();
         replacement.mono_check = self.mono_check;
         replacement
@@ -2823,7 +2831,7 @@ impl RenderState {
         self.preroll_deadline = self
             .seek_target
             .filter(|_| self.playing)
-            .map(|_| std::time::Instant::now() + SEEK_PREROLL_BUDGET);
+            .map(|_| std::time::Instant::now() + self.preroll_budget);
     }
 
     /// Return every lane to the project origin while keeping its instrument.
@@ -2937,7 +2945,7 @@ impl RenderState {
         };
         log::debug!(
             "[render_thread] seek preroll spent its {:?} budget; starting at frame {target} with released voices",
-            SEEK_PREROLL_BUDGET
+            self.preroll_budget
         );
         self.preroll_deadline = None;
         self.rendered_ahead.clear();
@@ -3491,6 +3499,10 @@ fn render_loop(
                 RenderCommand::TestBarrier { entered, release } => {
                     let _ = entered.send(());
                     let _ = release.recv();
+                }
+                #[cfg(test)]
+                RenderCommand::TestPrerollBudget(budget) => {
+                    state.preroll_budget = budget;
                 }
                 RenderCommand::Play {
                     start_frame,

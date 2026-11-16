@@ -3712,6 +3712,7 @@ mod tests {
             "a detached conversation has no workspace to record"
         );
 
+        #[cfg(unix)]
         let first_dir = store.root().join(&key).join(&first.id);
         let context = facts(&project);
         for (session, text) in [(&first, "first"), (&second, "second")] {
