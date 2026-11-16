@@ -18,6 +18,7 @@ mod content_library;
 mod device_catalog;
 mod device_presets;
 mod diagnostics;
+pub use diagnostics::profile_log_dir;
 mod edit_history;
 mod editor_helper;
 mod first_block;
@@ -152,6 +153,12 @@ pub fn run_with_options(path: Option<String>, diag: DiagOptions) {
                 };
                 app.handle().plugin(
                     tauri_plugin_log::Builder::default()
+                        // The same folder the diagnostics logger and the
+                        // Storage page use, inside a selected profile.
+                        .targets([
+                            tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout),
+                            tauri_plugin_log::Target::new(diagnostics::app_log_target()),
+                        ])
                         .level(log_level)
                         // `debug` is about this application. A decoder or a
                         // windowing crate printing every internal step buries

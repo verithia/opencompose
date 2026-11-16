@@ -60,7 +60,7 @@ Storage page can show what an item belongs to.
   plugin-index/scopes/          cached signed plugin catalogs
   presets/                      the preset library
   sample-providers/             sample provider plugins
-  logs/                         diagnostic logs, in a selected profile
+  logs/                         app and diagnostic logs, in a selected profile
 ```
 
 ## Edit history
@@ -119,8 +119,8 @@ workspace directory, not to one `.ocp`, and lives under the workspace key:
 - `<session id>/results/<sha256>.txt` holds a full tool result that is too large
   for its message row. The row keeps `result_sha` in place of the text. The
   sweep removes a result file no saved line of its session names, a fork copies
-  the files its inherited rows name, and a read validates the hash and bounds
-  the bytes it loads.
+  the files its inherited rows name, and a read validates the hash, bounds the
+  bytes it loads and refuses a file whose text does not hash to its name.
 - `<session id>/versions/<sha256>.ocp` holds a content-addressed project version
   attached to a human turn.
 - `detached/<session id>/` holds a conversation with no workspace, such as one
@@ -155,10 +155,11 @@ and the derived cache each have their own on-disk bound.
 | `<config>/plugin-index/scopes/` | Cached signed plugin catalogs, one scope per signing authority and origin. `OCP_PLUGIN_INDEX_DIR` moves the root without changing trust. |
 | `<config>/presets/` | The preset library, including patches saved from the patch editor. |
 | `<config>/sample-providers/` | Installed sample provider plugins. `OPENCOMPOSE_SAMPLE_PLUGIN_DIR` overrides the directory. |
-| `<config>/logs/` | Diagnostic logs of a selected profile. Without a profile, logs use the platform log directory (`~/Library/Logs/OpenCompose` on macOS). |
+| `<config>/logs/` | The logs of a selected profile: `opencompose-app.log` from every run and the diagnostics logs of a run started with diagnostics flags. Without a profile, both use the platform log directory (`~/Library/Logs/OpenCompose` on macOS). The Storage page reports the same folder. |
 
-A log directory keeps at most 20 logs per program. A new run removes the oldest
-beyond that bound, so diagnostics never grow without limit.
+A log directory keeps at most 20 diagnostics logs per program. A new run
+removes the oldest beyond that bound, so diagnostics never grow without limit.
+The app log starts over once it passes 40 KB.
 
 ## Stale data
 

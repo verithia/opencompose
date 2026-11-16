@@ -125,13 +125,19 @@ pub struct AppFolder {
     pub bytes: u64,
 }
 
+/// The folder the log row reports: the one this run's diagnostics log is in,
+/// otherwise the folder the ordinary logger writes for `profile`.
+fn logs_folder(profile: Option<&Path>) -> PathBuf {
+    oc_diag::log_path()
+        .and_then(|path| path.parent().map(Path::to_path_buf))
+        .unwrap_or_else(|| crate::diagnostics::log_dir_in(profile))
+}
+
 fn app_folders() -> Vec<AppFolder> {
     let config = crate::private_fs::config_dir();
     let cache_root = oc_engine::media_cache::default_cache_dir()
         .and_then(|media| media.parent().map(Path::to_path_buf));
-    let logs = oc_diag::log_path()
-        .and_then(|path| path.parent().map(Path::to_path_buf))
-        .unwrap_or_else(oc_diag::log_dir);
+    let logs = logs_folder(oc_audio::private_fs::explicit_config_dir().as_deref());
     let samples = std::env::var_os("OPENCOMPOSE_SAMPLE_PLUGIN_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| config.join("sample-providers"));
@@ -742,6 +748,26 @@ mod tests {
         assert!(report.total_bytes > 0);
         let ids: Vec<AppFolderId> = app_folders().iter().map(|folder| folder.id).collect();
         assert_eq!(ids.len(), 7, "{ids:?}");
+    }
+
+    #[test]
+    fn the_log_row_names_the_folder_the_ordinary_logger_writes() {
+        // A run without diagnostics flags has no session log file.
+        assert_eq!(oc_diag::log_path(), None);
+        let profile = Path::new("profile-root");
+        assert_eq!(logs_folder(Some(profile)), profile.join("logs"));
+        assert_eq!(logs_folder(None), oc_diag::log_dir());
+        let folders = app_folders();
+        let logs = folders
+            .iter()
+            .find(|folder| folder.id == AppFolderId::Logs)
+            .unwrap();
+        let tauri_plugin_log::TargetKind::Folder { path, .. } =
+            crate::diagnostics::app_log_target()
+        else {
+            panic!("the ordinary logger writes a file");
+        };
+        assert_eq!(logs.path, path.display().to_string());
     }
 
     #[test]
