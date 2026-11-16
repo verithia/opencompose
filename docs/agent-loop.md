@@ -635,7 +635,8 @@ to the reference rate, compare the aligned overlap) and records a warning.
 `transaction_begin` snapshots the project, DSL text, dirty flag, file path and
 undo mark, and returns the base revision. `transaction_commit` keeps the batch,
 publishes exactly one revision and squashes the batch into one undo entry
-labelled `Transaction: <label>`. `transaction_rollback` restores the snapshot,
+that records the typed changes between the batch base and its final state.
+`transaction_rollback` restores the snapshot,
 drops the batch's undo/redo entries and moves the revision forward so stale
 `expected_revision` guards fail.
 
@@ -1101,7 +1102,7 @@ unchanged; six of the seven are panel-enabled.
 | `tracks_duplicate` | yes (Project + Preset) | enabled | `project-edit` | new index, name, preset, revision |
 | `presets_rename` | yes (Preset) | enabled | `project-edit` | new name, the tracks and patterns that moved |
 | `presets_duplicate` | yes (Preset) | enabled | `project-edit` | new name, whether references moved |
-| `undo_history` | no | enabled | `project-edit` | the stack entries plus applied/redo counts |
+| `undo_history` | no | enabled | `project-edit` | each entry's typed `changes`, `cause`, author, scopes and timestamp, plus applied/redo counts |
 | `render_stems` | no (writes files) | excluded | — | the manifest path and every file with its levels |
 
 * **Tempo and meter maps.** Both carry the map, not one point, and hand back
@@ -1127,8 +1128,10 @@ unchanged; six of the seven are panel-enabled.
   Duplicate does: the references move to the copy, so the original stays free
   to edit or delete.
 * **History read.** `undo_history` is read-only and never moves the cursor; it
-  exists so a model can describe what happened. `undo`/`redo` are the only
-  cursor movers, and neither is hidden behind the history tool.
+  exists so a model can describe what happened. Each entry carries the typed
+  facts its patches describe and a `cause` (`edit` or `conversation_revert`),
+  never caller-written English. `undo`/`redo` are the only cursor movers, and
+  neither is hidden behind the history tool.
 * **Stems.** `render_stems` is the toolbar's Export stems: mix + every track
   and bus + `stems.json` into an existing directory. The reply includes the set's
   format, sample rate and channel count, plus each file's frame count, peak,

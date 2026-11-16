@@ -183,7 +183,7 @@ fn selecting_a_program_writes_state_the_renderer_obeys() {
     // Selection carries the same undo scope as the GUI's plugin-state save.
     let inner = state.lock_inner();
     let entry = inner.undo.undo.last().expect("selection is undoable");
-    assert_eq!(entry.label, "plugin state");
+    assert_eq!(entry.tag, "plugin state");
     assert!(
         entry
             .scopes
@@ -398,7 +398,7 @@ fn a_state_value_round_trips_into_a_fresh_project() {
     );
     let inner = target.lock_inner();
     let entry = inner.undo.undo.last().expect("apply is undoable");
-    assert_eq!(entry.label, "plugin state");
+    assert_eq!(entry.tag, "plugin state");
     assert!(
         entry
             .scopes

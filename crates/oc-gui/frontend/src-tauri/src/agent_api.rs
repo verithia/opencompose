@@ -1297,6 +1297,50 @@ pub(crate) fn dispatch_panel(
     dispatch_with_policy(app, tool, args, caller, InstallPolicy::Panel)
 }
 
+/// The document a call starts from, cloned only for a call that may change it.
+/// A batch commit leaves the document as it is, so it describes its base.
+fn tool_before_project(state: &AppState, tool: &str) -> Option<oc_dsl::ast::Project> {
+    if tool == "transaction_commit" {
+        return state.lock_inner().transaction_base_project().cloned();
+    }
+    is_mutation_tool(tool).then(|| state.lock_inner().project.clone())
+}
+
+/// Attach the typed facts between `before` and the current document to the
+/// tool result. The loop moves them onto the saved message row, where they are
+/// local-only; the model never reads them.
+fn attach_tool_changes(
+    state: &AppState,
+    before: Option<&oc_dsl::ast::Project>,
+    result: &mut Value,
+) {
+    let Some(before) = before else {
+        return;
+    };
+    let changes = describe_edit(before, &state.lock_inner().project);
+    if let Some(changes) = changes.and_then(|changes| serde_json::to_value(changes).ok())
+        && let Some(object) = result.as_object_mut()
+    {
+        object.insert("changes".into(), changes);
+    }
+}
+
+/// The typed facts of the mutation from `before` to `after`, described from
+/// the patch's subtree changes with the meter `after` has. `None` when nothing
+/// changed. Every tool row that edits the project describes itself here.
+pub(crate) fn describe_edit(
+    before: &oc_dsl::ast::Project,
+    after: &oc_dsl::ast::Project,
+) -> Option<oc_dsl::change::ChangeSet> {
+    let patch = oc_dsl::diff::diff(before, after).ok()??;
+    let inverse = oc_dsl::diff::invert_patch(before, after, &patch);
+    Some(oc_dsl::change::describe_patches_with_properties(
+        &patch,
+        &inverse,
+        &after.properties,
+    ))
+}
+
 fn dispatch_with_policy(
     app: &AppHandle,
     tool: &str,
@@ -1307,9 +1351,11 @@ fn dispatch_with_policy(
     let tool = tool.replace('.', "_");
     let state = state(app);
     guard_mutation(&state, &tool, args, caller)?;
+    let before = tool_before_project(&state, &tool);
     let acting = crate::edit_history::act_as(crate::edit_history::Author::from_caller(caller));
     let mut result = dispatch_tool(app, &tool, args, caller, install_policy)?;
     drop(acting);
+    attach_tool_changes(&state, before.as_ref(), &mut result);
     // A call that published a document leaves the project file stale, and the
     // file is the durable record the next process reads. A write that failed is
     // put into the result, so the model does not report a save that did not happen.
@@ -2387,7 +2433,7 @@ pub fn undo_history(state: &AppState) -> Result<Value, String> {
     let (entries, applied, total) = {
         let inner = state.lock_inner();
         (
-            inner.undo.history(),
+            inner.undo.history(&inner.project.properties),
             inner.undo.applied_level(),
             inner.undo.total_levels(),
         )
@@ -5941,6 +5987,44 @@ providers:
         state
     }
 
+    #[test]
+    fn a_mutating_tool_result_carries_typed_changes_and_a_read_only_one_does_not() {
+        let state = panel_state(PRODUCER_PROJECT);
+        let before = state.lock_inner().project.clone();
+        {
+            let mut inner = state.lock_inner();
+            let old = inner.project.clone();
+            inner.project.properties.tempo = 132.0;
+            crate::commands::shared::resync_with_undo(
+                &mut inner,
+                old,
+                crate::state::UndoEdit::new("tempo", crate::state::UndoScope::Transport),
+            )
+            .unwrap();
+        }
+        let mut changed = json!({"revision": 1});
+        attach_tool_changes(&state, Some(&before), &mut changed);
+        assert_eq!(
+            changed["changes"]["changes"],
+            json!([{"kind": "tempo", "from": 120.0, "to": 132.0}])
+        );
+
+        let mut read = json!({"tracks": []});
+        attach_tool_changes(&state, None, &mut read);
+        assert!(read.get("changes").is_none(), "{read}");
+        assert!(tool_before_project(&state, "tracks_list").is_none());
+        assert!(tool_before_project(&state, "project_set_tempo").is_some());
+
+        // A batch commit leaves the document as it is; its base is what the
+        // commit's typed facts compare against.
+        state
+            .begin_transaction("turn".into(), crate::state::panel_batch_owner(Some("s1")))
+            .unwrap();
+        let base = tool_before_project(&state, "transaction_commit").unwrap();
+        assert_eq!(base.properties.tempo, 132.0);
+        state.rollback_transaction().unwrap();
+    }
+
     /// A preview fixture: one pattern, one clip, and a proposal that bumps a note.
     const PREVIEW_SONG: &str = r#"@ocp "0.2.0"
 
@@ -7711,7 +7795,16 @@ providers:
                 "{}",
                 inner.dsl_source
             );
-            assert_eq!(inner.undo.undo_labels(), vec!["tempo map"]);
+            assert_eq!(
+                inner
+                    .undo
+                    .history(&inner.project.properties)
+                    .last()
+                    .unwrap()
+                    .changes
+                    .changes,
+                vec![oc_dsl::change::Change::TempoMap]
+            );
             assert_eq!(inner.revision, saved["revision"].as_u64().unwrap());
         }
         // An empty list returns the song to the project tempo.
@@ -7765,7 +7858,16 @@ providers:
             let inner = state.lock_inner();
             assert_eq!(inner.project.properties.time_sig_map.len(), 1);
             assert!(inner.dsl_source.contains("time_sig_map:"));
-            assert_eq!(inner.undo.undo_labels(), vec!["time signature map"]);
+            assert_eq!(
+                inner
+                    .undo
+                    .history(&inner.project.properties)
+                    .last()
+                    .unwrap()
+                    .changes
+                    .changes,
+                vec![oc_dsl::change::Change::TimeSignatureMap]
+            );
             assert_eq!(inner.revision, saved["revision"].as_u64().unwrap());
         }
     }
@@ -7813,7 +7915,20 @@ providers:
         assert!(inner.project.presets.iter().any(|p| p.name == "lead copy"));
         // An empty copy, exactly like the GUI's duplicate.
         assert!(copy.pattern_clip_count() == 0 && copy.effects.is_empty());
-        assert_eq!(inner.undo.undo_labels(), vec!["duplicate track"]);
+        assert!(
+            inner
+                .undo
+                .history(&inner.project.properties)
+                .last()
+                .unwrap()
+                .changes
+                .changes
+                .iter()
+                .any(|change| matches!(
+                    change,
+                    oc_dsl::change::Change::TrackAdded { track } if track == "lead 2"
+                ))
+        );
         assert_eq!(inner.revision, saved["revision"].as_u64().unwrap());
     }
 
@@ -7850,7 +7965,20 @@ providers:
         assert!(inner.project.presets.iter().any(|p| p.name == "lead warm"));
         assert!(!inner.project.presets.iter().any(|p| p.name == "lead"));
         assert_eq!(inner.project.tracks[0].preset.as_deref(), Some("lead warm"));
-        assert_eq!(inner.undo.undo_labels(), vec!["preset rename"]);
+        assert!(
+            inner
+                .undo
+                .history(&inner.project.properties)
+                .last()
+                .unwrap()
+                .changes
+                .changes
+                .iter()
+                .any(|change| matches!(
+                    change,
+                    oc_dsl::change::Change::PresetAdded { preset } if preset == "lead warm"
+                ))
+        );
         assert_eq!(inner.revision, saved["revision"].as_u64().unwrap());
     }
 
@@ -7888,7 +8016,20 @@ providers:
             let inner = state.lock_inner();
             assert_eq!(inner.project.tracks[0].preset.as_deref(), Some("lead copy"));
             assert!(inner.project.presets.iter().any(|p| p.name == "lead"));
-            assert_eq!(inner.undo.undo_labels(), vec!["preset duplicate"]);
+            assert!(
+                inner
+                    .undo
+                    .history(&inner.project.properties)
+                    .last()
+                    .unwrap()
+                    .changes
+                    .changes
+                    .iter()
+                    .any(|change| matches!(
+                        change,
+                        oc_dsl::change::Change::PresetAdded { preset } if preset == "lead copy"
+                    ))
+            );
         }
         // reassign=false leaves the references where they were.
         let state = panel_state(PRODUCER_PROJECT);
@@ -7923,7 +8064,7 @@ providers:
     }
 
     #[test]
-    fn the_undo_history_lists_labels_and_scopes_without_moving_the_cursor() {
+    fn the_undo_history_lists_typed_changes_and_scopes_without_moving_the_cursor() {
         let state = panel_state(PRODUCER_PROJECT);
         tempo_map_set_request(&state, &json!({"points": [{"bar": 5, "bpm": 100.0}]})).unwrap();
         presets_rename_json(&state, &json!({"name": "lead", "new_name": "lead warm"})).unwrap();
@@ -7931,11 +8072,19 @@ providers:
         let entries = history["entries"].as_array().unwrap();
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0]["index"], json!(1));
-        assert_eq!(entries[0]["name"], json!("tempo map"));
+        assert_eq!(
+            entries[0]["changes"]["changes"],
+            json!([{"kind": "tempo_map"}])
+        );
+        assert_eq!(entries[0]["cause"], json!("edit"));
         assert_eq!(entries[0]["scopes"], json!(["transport"]));
         assert_eq!(entries[0]["applied"], json!(true));
+        assert!(entries[0].get("name").is_none());
+        assert!(entries[0].get("subject").is_none());
         assert_eq!(entries[1]["index"], json!(2));
-        assert_eq!(entries[1]["name"], json!("preset rename"));
+        let facts = entries[1]["changes"]["changes"].as_array().unwrap();
+        assert!(facts.contains(&json!({"kind": "preset_removed", "preset": "lead"})));
+        assert!(facts.contains(&json!({"kind": "preset_added", "preset": "lead warm"})));
         assert_eq!(entries[1]["scopes"], json!(["preset"]));
         assert_eq!(history["applied"], json!(2));
         assert_eq!(history["redoable"], json!(0));

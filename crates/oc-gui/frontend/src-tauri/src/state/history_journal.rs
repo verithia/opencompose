@@ -8,12 +8,12 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 
-use oc_dsl::ast::Project;
+use oc_dsl::ast::{Project, ProjectProperties};
 use oc_dsl::diff::{self, compressed};
 
 use super::{
     AppStateInner, HISTORY_PAGE, MAX_UNDO, NEXT_ENTRY_ID, UndoEdit, UndoEntry, UndoHistoryEntry,
-    UndoScope, UndoStack,
+    UndoScope, UndoStack, entry_changes,
 };
 use crate::edit_history::journal::{self, Journal, StoredEntry};
 use crate::edit_history::{Author, Brief};
@@ -61,12 +61,7 @@ fn stored(entry: &UndoEntry, redo_side: bool) -> StoredEntry {
     StoredEntry {
         id: entry.id,
         at_ms: millis(entry.timestamp),
-        label: entry
-            .label
-            .strip_prefix("Redo: ")
-            .unwrap_or(&entry.label)
-            .to_owned(),
-        subject: entry.subject.clone(),
+        cause: entry.cause,
         author: entry.author.clone(),
         scopes: entry.scopes,
         forward,
@@ -75,32 +70,34 @@ fn stored(entry: &UndoEntry, redo_side: bool) -> StoredEntry {
 }
 
 fn from_stored(entry: StoredEntry, redo_side: bool) -> UndoEntry {
-    let (forward, inverse, label) = if redo_side {
-        (
-            entry.inverse,
-            entry.forward,
-            format!("Redo: {}", entry.label),
-        )
+    let (forward, inverse) = if redo_side {
+        (entry.inverse, entry.forward)
     } else {
-        (entry.forward, entry.inverse, entry.label)
+        (entry.forward, entry.inverse)
     };
     UndoEntry {
         id: entry.id,
         author: entry.author,
-        subject: entry.subject,
+        cause: entry.cause,
         forward,
         inverse,
-        label,
+        // A stored entry carries no display text; the tag only feeds logs.
+        tag: "history entry".into(),
         scopes: entry.scopes,
         timestamp: UNIX_EPOCH + Duration::from_millis(entry.at_ms),
     }
 }
 
-fn page_entry(position: usize, applied: usize, entry: StoredEntry) -> UndoHistoryEntry {
+fn page_entry(
+    position: usize,
+    applied: usize,
+    entry: StoredEntry,
+    properties: &ProjectProperties,
+) -> UndoHistoryEntry {
     UndoHistoryEntry {
         index: position + 1,
-        name: entry.label,
-        subject: entry.subject,
+        changes: entry_changes(&entry.forward, &entry.inverse, properties),
+        cause: entry.cause,
         author: entry.author,
         scopes: entry.scopes,
         timestamp: entry.at_ms,
@@ -150,24 +147,20 @@ impl UndoStack {
         }
     }
 
-    /// The entry the last undo took back, as the footer names it.
-    pub fn undone_brief(&self) -> Option<Brief> {
+    /// The entry the last undo took back, as the footer describes it.
+    pub fn undone_brief(&self, properties: &ProjectProperties) -> Option<Brief> {
         self.redo.last().map(|entry| Brief {
-            label: entry
-                .label
-                .strip_prefix("Redo: ")
-                .unwrap_or(&entry.label)
-                .to_owned(),
-            subject: entry.subject.clone(),
+            changes: entry_changes(&entry.inverse, &entry.forward, properties),
+            cause: entry.cause,
             author: entry.author.clone(),
         })
     }
 
     /// The entry the last redo applied again.
-    pub fn redone_brief(&self) -> Option<Brief> {
+    pub fn redone_brief(&self, properties: &ProjectProperties) -> Option<Brief> {
         self.undo.last().map(|entry| Brief {
-            label: entry.label.clone(),
-            subject: entry.subject.clone(),
+            changes: entry_changes(&entry.forward, &entry.inverse, properties),
+            cause: entry.cause,
             author: entry.author.clone(),
         })
     }
@@ -298,9 +291,10 @@ impl UndoStack {
             return Err("the edit history is not saved yet; try again".into());
         }
         let mut candidate = project.clone();
-        let decode = |bytes: &[u8], label: &str| {
-            compressed::decode_patch(bytes)
-                .map_err(|reason| format!("could not restore history at \"{label}\": {reason}"))
+        let decode = |bytes: &[u8]| {
+            compressed::decode_patch(bytes).map_err(|reason| {
+                format!("could not restore history at \"history entry\": {reason}")
+            })
         };
         if level < current {
             let mut end = current;
@@ -310,7 +304,7 @@ impl UndoStack {
                 let patches = entries
                     .iter()
                     .rev()
-                    .map(|entry| decode(&entry.inverse, &entry.label))
+                    .map(|entry| decode(&entry.inverse))
                     .collect::<Result<Vec<_>, _>>()?;
                 diff::apply_patches(&mut candidate, &patches)
                     .map_err(|reason| format!("could not restore history: {reason}"))?;
@@ -323,7 +317,7 @@ impl UndoStack {
                 let entries = journal.read_range(start..end).map_err(io_text)?;
                 let patches = entries
                     .iter()
-                    .map(|entry| decode(&entry.forward, &entry.label))
+                    .map(|entry| decode(&entry.forward))
                     .collect::<Result<Vec<_>, _>>()?;
                 diff::apply_patches(&mut candidate, &patches)
                     .map_err(|reason| format!("could not restore history: {reason}"))?;
@@ -332,12 +326,18 @@ impl UndoStack {
         }
         self.reload_window(level)?;
         *project = candidate;
-        Ok(self.undo.last().map(|entry| entry.label.clone()))
+        Ok(self.undo.last().map(|entry| entry.tag.clone()))
     }
 
     /// Up to `limit` (at most one page) entries older than level `before`,
-    /// newest first. With a journal the window must be synced.
-    pub fn history_page(&self, before: Option<usize>, limit: usize) -> Result<HistoryPage, String> {
+    /// newest first. With a journal the window must be synced. Only the
+    /// returned entries decode their patches.
+    pub fn history_page(
+        &self,
+        before: Option<usize>,
+        limit: usize,
+        properties: &ProjectProperties,
+    ) -> Result<HistoryPage, String> {
         let total = self.total_levels();
         let applied = self.applied_level();
         let end = before.unwrap_or(total).min(total);
@@ -348,11 +348,11 @@ impl UndoStack {
                 .map_err(io_text)?
                 .into_iter()
                 .enumerate()
-                .map(|(offset, entry)| page_entry(start + offset, applied, entry))
+                .map(|(offset, entry)| page_entry(start + offset, applied, entry, properties))
                 .rev()
                 .collect(),
             None => {
-                let all = self.history();
+                let all = self.history(properties);
                 all[start..end].iter().rev().cloned().collect()
             }
         };

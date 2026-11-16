@@ -686,7 +686,7 @@ mod tests {
         let outcome = commit(&mut inner, prepared, None).unwrap();
         assert_eq!((outcome.stem_count, outcome.midi_track_count), (2, 2));
         assert_eq!(inner.undo.undo.len(), 1);
-        assert_eq!(inner.undo.undo[0].label, "Import aligned stems");
+        assert_eq!(inner.undo.undo[0].tag, "Import aligned stems");
         assert!(inner.project.tracks[0].mix.mute);
         assert!(inner.project.tracks[1].mix.mute);
         assert!(!inner.project.tracks[2].mix.mute);

@@ -354,7 +354,7 @@ pub fn rename_track(
     resync_with_undo(
         &mut inner,
         old_project,
-        UndoEdit::new("track rename", UndoScope::Project).about(new_name),
+        UndoEdit::new("track rename", UndoScope::Project),
     )?;
     Ok(snapshot(&inner))
 }
@@ -1139,7 +1139,7 @@ pub fn add_bus(
     resync_with_undo(
         &mut inner,
         old_project,
-        UndoEdit::new("add bus", UndoScope::MixerRouting).about(name),
+        UndoEdit::new("add bus", UndoScope::MixerRouting),
     )?;
     Ok(snapshot(&inner))
 }

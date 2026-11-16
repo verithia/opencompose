@@ -859,6 +859,7 @@ pub(crate) fn is_local_message_field(key: &str) -> bool {
             | "dsl_project"
             | "result_sha"
             | "full_result"
+            | "changes"
     )
 }
 

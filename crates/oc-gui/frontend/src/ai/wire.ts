@@ -3,6 +3,7 @@
  * descriptions and the facts a turn reports when it stops. The agent loop
  * itself runs in the backend.
  */
+import type { ChangeSet } from "../types/change";
 import type { MediaAttachment, MediaNotice } from "./media";
 import type { MessageMeta } from "./messageProtocol";
 
@@ -19,6 +20,8 @@ export interface WireThinking { text: string; signature?: string; redacted?: str
 export interface WireMessage {
   role: string;
   content: string | null;
+  /** The project facts a mutating tool produced, beside its result. */
+  changes?: ChangeSet;
   /** Host-owned semantics; stripped by provider adapters. */
   message_meta?: MessageMeta;
   media?: MediaAttachment[];

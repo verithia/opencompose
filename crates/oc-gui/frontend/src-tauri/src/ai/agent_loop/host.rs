@@ -8,7 +8,8 @@
 //! which the loop commits on every ending.
 
 use super::{
-    ApprovalRequest, AudioShape, Cancel, Decision, Document, Host, TurnEvent, TurnOutcome, TurnSpec,
+    ApprovalRequest, AudioShape, Cancel, Decision, Document, Edited, Host, TurnEvent, TurnOutcome,
+    TurnSpec,
 };
 use crate::ai::sessions::{SessionPermission, Store};
 use crate::ai::timing::TurnStatsHandle;
@@ -547,20 +548,27 @@ impl Host for AppHost {
         }
     }
 
-    async fn apply_edit(&self, path: &str, dsl: &str, expected: &str) -> Result<Document, String> {
+    async fn apply_edit(&self, path: &str, dsl: &str, expected: &str) -> Result<Edited, String> {
         let (path, dsl, expected) = (path.to_owned(), dsl.to_owned(), expected.to_owned());
-        let snapshot = self
+        let (snapshot, changes) = self
             .blocking(move |app| {
                 let state = app.state::<AppState>();
                 let mut inner = state.lock_inner();
-                crate::commands::apply_edit_to_project(&mut inner, dsl, path, expected)
+                let before = inner.project.clone();
+                let snapshot =
+                    crate::commands::apply_edit_to_project(&mut inner, dsl, path, expected)?;
+                let changes = crate::agent_api::describe_edit(&before, &inner.project);
+                Ok::<_, String>((snapshot, changes))
             })
             .await??;
         self.publish();
-        Ok(Document {
-            dsl: snapshot.dsl_source,
-            revision: snapshot.revision,
-            track_count: snapshot.track_count,
+        Ok(Edited {
+            document: Document {
+                dsl: snapshot.dsl_source,
+                revision: snapshot.revision,
+                track_count: snapshot.track_count,
+            },
+            changes,
         })
     }
 
@@ -1112,7 +1120,12 @@ fn revert_with(
         )
     });
     if restored {
-        crate::commands::restore_dsl_with_undo(&mut inner, dsl, "Revert conversation")?;
+        crate::commands::restore_dsl_with_undo(
+            &mut inner,
+            dsl,
+            "revert conversation",
+            crate::edit_history::EditCause::ConversationRevert,
+        )?;
     }
     // The session store never takes the document lock, so holding it here
     // cannot deadlock. The cut checks that the message still names the same
@@ -1327,12 +1340,12 @@ mod tests {
     #[test]
     fn a_failed_cut_leaves_the_document_and_its_history_as_they_were() {
         let (_root, store, id, state) = fixture();
-        let (source, revision_labels, redo) = {
+        let (source, history, redo) = {
             let inner = state.lock_inner();
             (
                 inner.dsl_source.clone(),
-                inner.undo.undo_labels(),
-                inner.undo.redo_labels(),
+                serde_json::to_value(inner.undo.history(&inner.project.properties)).unwrap(),
+                inner.undo.redo.len(),
             )
         };
         let requests = Requests::default();
@@ -1349,11 +1362,11 @@ mod tests {
         assert_eq!(inner.dsl_source, source, "the exact text is back");
         assert_eq!(inner.project.properties.tempo, 150.0);
         assert_eq!(
-            inner.undo.undo_labels(),
-            revision_labels,
+            serde_json::to_value(inner.undo.history(&inner.project.properties)).unwrap(),
+            history,
             "no undo entry stays"
         );
-        assert_eq!(inner.undo.redo_labels(), redo, "and no redo entry appears");
+        assert_eq!(inner.undo.redo.len(), redo, "and no redo entry appears");
         drop(inner);
         assert_eq!(
             store.view(&id).unwrap().len(),
@@ -1381,12 +1394,12 @@ mod tests {
             let inner = state.lock_inner();
             (
                 inner.dsl_source.clone(),
-                inner.undo.undo_labels(),
-                inner.undo.redo_labels(),
+                serde_json::to_value(inner.undo.history(&inner.project.properties)).unwrap(),
+                inner.undo.redo.len(),
                 inner.project.properties.tempo,
             )
         };
-        assert_eq!(redo.len(), 2);
+        assert_eq!(redo, 2);
         let requests = Requests::default();
         revert_with(&requests, &state, &store, &id, 0, |_, _| {
             Err("the session store is read-only".into())
@@ -1395,8 +1408,12 @@ mod tests {
         let mut inner = state.lock_inner();
         assert_eq!(inner.dsl_source, source);
         assert_eq!(inner.project.properties.tempo, tempo);
-        assert_eq!(inner.undo.undo_labels(), undo, "no entry was evicted");
-        assert_eq!(inner.undo.redo_labels(), redo, "redo is kept");
+        assert_eq!(
+            serde_json::to_value(inner.undo.history(&inner.project.properties)).unwrap(),
+            undo,
+            "no entry was evicted"
+        );
+        assert_eq!(inner.undo.redo.len(), redo, "redo is kept");
         // The kept redo still works.
         let mut project = inner.project.clone();
         inner.undo.redo(&mut project).unwrap();

@@ -78,6 +78,13 @@ pub struct Document {
     pub track_count: usize,
 }
 
+/// An applied edit: the document it left and the typed facts of what it
+/// changed, which the call's row shows.
+pub struct Edited {
+    pub document: Document,
+    pub changes: Option<oc_dsl::change::ChangeSet>,
+}
+
 /// The audio a model can take in; `None` in [`TurnSpec`] means it cannot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AudioShape {
@@ -326,7 +333,7 @@ pub trait Host: Sync {
         path: &str,
         dsl: &str,
         expected: &str,
-    ) -> impl Future<Output = Result<Document, String>> + Send;
+    ) -> impl Future<Output = Result<Edited, String>> + Send;
     /// A subtree's DSL, or an empty string when it is not there yet.
     fn subtree(&self, path: &str) -> impl Future<Output = String> + Send;
     /// The errors the document `after` has that `before` did not. `Err` means
@@ -908,16 +915,19 @@ impl<H: Host> Turn<'_, H> {
         }
         self.mark_started(call).await?;
         match self.host.apply_edit(path, dsl, &self.expected).await {
-            Ok(document) => {
+            Ok(Edited { document, changes }) => {
                 self.expected = document.dsl.clone();
-                Ok((
-                    json!({
-                        "status": "applied", "applied": true, "path": path,
-                        "revision": document.revision, "track_count": document.track_count,
-                    }),
-                    false,
-                    false,
-                ))
+                let mut result = json!({
+                    "status": "applied", "applied": true, "path": path,
+                    "revision": document.revision, "track_count": document.track_count,
+                });
+                // `finish_call` moves the facts onto the row, out of the result.
+                if let Some(changes) =
+                    changes.and_then(|changes| serde_json::to_value(changes).ok())
+                {
+                    result["changes"] = changes;
+                }
+                Ok((result, false, false))
             }
             Err(error) => Ok((json!({ "error": error }), true, false)),
         }
@@ -968,12 +978,15 @@ impl<H: Host> Turn<'_, H> {
     ) -> Result<(), Ending> {
         let name = call.name.as_str();
         let Ran {
-            result,
+            mut result,
             failed,
             declined,
             mutates,
             deferred,
         } = ran;
+        // Typed edit facts are local message data: they describe the row in
+        // the panel and are never part of the tool result the model reads.
+        let changes = take_changes(&mut result);
         let transaction = TRANSACTION_TOOLS.contains(&name);
         if result["revision"].is_u64() {
             self.expected = self.host.refresh().await.dsl;
@@ -1015,6 +1028,9 @@ impl<H: Host> Turn<'_, H> {
             content
         };
         let mut message = result_message(call, native, &content);
+        if let Some(changes) = changes {
+            message["changes"] = changes;
+        }
         if let Some(text) = full {
             // The append saves this text beside the conversation and keeps
             // only its hash on the row, so a restart still reads it.
@@ -1243,6 +1259,14 @@ fn assistant_message(reply: &Value, calls: Option<&Vec<Call>>, text_call: Option
         }
     }
     message
+}
+
+/// Remove the typed edit facts from a tool result so the model's content stays
+/// unchanged; the caller sets them on the saved row instead.
+fn take_changes(result: &mut Value) -> Option<Value> {
+    result
+        .as_object_mut()
+        .and_then(|object| object.remove("changes"))
 }
 
 fn result_message(call: &Call, native: bool, content: &str) -> Value {

@@ -52,6 +52,29 @@ fn fresh_entry_id() -> u64 {
     NEXT_ENTRY_ID.fetch_add(1, Ordering::Relaxed)
 }
 
+/// Typed facts for one entry, both patches in their stored forward direction.
+///
+/// A patch that cannot be decoded yields an empty set, so a damaged entry still
+/// lists and the caller reports the undo failure when it applies one.
+pub(crate) fn entry_changes(
+    forward: &[u8],
+    inverse: &[u8],
+    properties: &oc_dsl::ast::ProjectProperties,
+) -> oc_dsl::change::ChangeSet {
+    match (
+        compressed::decode_patch(forward),
+        compressed::decode_patch(inverse),
+    ) {
+        (Ok(forward), Ok(inverse)) => {
+            oc_dsl::change::describe_patches_with_properties(&forward, &inverse, properties)
+        }
+        _ => oc_dsl::change::ChangeSet {
+            changes: Vec::new(),
+            more: 0,
+        },
+    }
+}
+
 /// Owner prefix of a batch an AI panel turn opened. The suffix names the
 /// conversation, so a window that reloaded can find and recover its own orphan.
 pub const PANEL_BATCH_OWNER_PREFIX: &str = "panel:";
@@ -208,12 +231,13 @@ impl<'de> Deserialize<'de> for UndoScopes {
     }
 }
 
-/// What one edit touched and how the history names it.
+/// What one edit touched and how the history records it.
 #[derive(Debug, Clone)]
 pub struct UndoEdit {
-    pub name: String,
-    /// What the edit acted on or set, e.g. the new name; shown after the name.
-    pub subject: Option<String>,
+    /// A developer tag for logs; never shown, stored or sent.
+    pub tag: String,
+    /// Why the edit exists when the patches cannot say it.
+    pub cause: crate::edit_history::EditCause,
     /// Who made it; `None` takes the thread's acting author.
     pub author: Option<Author>,
     pub scopes: UndoScopes,
@@ -223,20 +247,20 @@ pub struct UndoEdit {
 }
 
 impl UndoEdit {
-    /// A named edit in one scope.
-    pub fn new(name: impl Into<String>, scope: UndoScope) -> Self {
+    /// An edit in one scope with a developer tag for logs.
+    pub fn new(tag: impl Into<String>, scope: UndoScope) -> Self {
         Self {
-            name: name.into(),
-            subject: None,
+            tag: tag.into(),
+            cause: crate::edit_history::EditCause::Edit,
             author: None,
             scopes: UndoScopes::one(scope),
             merge: false,
         }
     }
 
-    /// Name what the edit acted on or set.
-    pub fn about(mut self, subject: impl Into<String>) -> Self {
-        self.subject = Some(subject.into());
+    /// Record why the edit exists, beyond what its patches describe.
+    pub fn cause(mut self, cause: crate::edit_history::EditCause) -> Self {
+        self.cause = cause;
         self
     }
 
@@ -266,13 +290,14 @@ pub struct UndoEntry {
     /// Identity in the journal; a merge into the entry gives it a new one.
     pub id: u64,
     pub author: Author,
-    pub subject: Option<String>,
+    /// Why the entry exists when the patches cannot say it.
+    pub cause: crate::edit_history::EditCause,
     /// Compressed forward patch (old → new). Stored for potential re-apply (redo).
     pub forward: Vec<u8>,
     /// Compressed inverse patch (new → old). Applied to undo.
     pub inverse: Vec<u8>,
-    /// Human-readable name supplied by the caller.
-    pub label: String,
+    /// A developer tag for logs; never shown, stored or sent.
+    pub tag: String,
     /// Scopes this entry touched.
     pub scopes: UndoScopes,
     /// When the gesture that produced this entry started.
@@ -284,9 +309,10 @@ pub struct UndoEntry {
 pub struct UndoHistoryEntry {
     /// Undo level: 1 is the oldest kept edit; levels above `applied` are redo.
     pub index: usize,
-    pub name: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub subject: Option<String>,
+    /// The typed facts the entry's patches describe.
+    pub changes: oc_dsl::change::ChangeSet,
+    /// Why the entry exists when the patches cannot say it.
+    pub cause: crate::edit_history::EditCause,
     pub author: Author,
     pub scopes: UndoScopes,
     /// Milliseconds since the Unix epoch.
@@ -498,20 +524,19 @@ impl UndoStack {
         let inverse = compressed::decode_patch(&entry.inverse).map_err(|reason| {
             log::error!(
                 "[undo] cannot decode the inverse patch for \"{}\": {reason}",
-                entry.label
+                entry.tag
             );
-            format!("could not undo \"{}\": {reason}", entry.label)
+            format!("could not undo \"{}\": {reason}", entry.tag)
         })?;
         diff::apply_patch(project, &inverse)
-            .map_err(|reason| format!("could not undo \"{}\": {reason}", entry.label))?;
+            .map_err(|reason| format!("could not undo \"{}\": {reason}", entry.tag))?;
         let entry = self.undo.pop().expect("the entry was just read");
-        let label = entry.label.clone();
+        let tag = entry.tag.clone();
 
         // Move to redo stack (swap forward/inverse for redo)
         self.redo.push(UndoEntry {
             forward: entry.inverse,
             inverse: entry.forward,
-            label: format!("Redo: {}", label),
             ..entry
         });
 
@@ -519,7 +544,7 @@ impl UndoStack {
         self.merge_base = None;
         self.invalidate_gestures();
 
-        Ok(label)
+        Ok(tag)
     }
 
     /// Redo: apply the forward patch (which is stored as inverse in redo entry).
@@ -529,27 +554,26 @@ impl UndoStack {
             .last()
             .ok_or_else(|| "Nothing to redo".to_string())?;
         let forward = compressed::decode_patch(&entry.inverse)
-            .map_err(|reason| format!("could not redo \"{}\": {reason}", entry.label))?;
+            .map_err(|reason| format!("could not redo \"{}\": {reason}", entry.tag))?;
         diff::apply_patch(project, &forward)
-            .map_err(|reason| format!("could not redo \"{}\": {reason}", entry.label))?;
+            .map_err(|reason| format!("could not redo \"{}\": {reason}", entry.tag))?;
         let entry = self
             .redo
             .pop()
             .expect("the entry was decoded before removal");
-        let label = entry.label.clone();
+        let tag = entry.tag.clone();
 
         // Move back to undo stack
         self.undo.push(UndoEntry {
             forward: entry.inverse,
             inverse: entry.forward,
-            label: label.strip_prefix("Redo: ").unwrap_or(&label).to_string(),
             ..entry
         });
 
         self.merge_base = None;
         self.invalidate_gestures();
 
-        Ok(label)
+        Ok(tag)
     }
 
     /// Move the cursor to `level` applied edits (0 = state before the first
@@ -588,7 +612,7 @@ impl UndoStack {
             .into_iter()
             .map(|entry| {
                 compressed::decode_patch(&entry.inverse).map_err(|reason| {
-                    format!("could not restore history at \"{}\": {reason}", entry.label)
+                    format!("could not restore history at \"{}\": {reason}", entry.tag)
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;
@@ -596,60 +620,58 @@ impl UndoStack {
             .map_err(|reason| format!("could not restore history: {reason}"))?;
         while self.undo.len() > level {
             let entry = self.undo.pop().expect("history length was checked");
-            let label = format!("Redo: {}", entry.label);
             self.redo.push(UndoEntry {
                 forward: entry.inverse,
                 inverse: entry.forward,
-                label,
                 ..entry
             });
         }
         while self.undo.len() < level {
             let entry = self.redo.pop().expect("history length was checked");
-            let label = entry
-                .label
-                .strip_prefix("Redo: ")
-                .unwrap_or(&entry.label)
-                .to_string();
             self.undo.push(UndoEntry {
                 forward: entry.inverse,
                 inverse: entry.forward,
-                label,
                 ..entry
             });
         }
         self.merge_base = None;
         self.invalidate_gestures();
-        Ok(self.undo.last().map(|entry| entry.label.clone()))
+        Ok(self.undo.last().map(|entry| entry.tag.clone()))
     }
 
     /// Ordered history of the in-memory window: applied entries oldest first,
     /// then the redo levels. Levels count from the oldest kept entry.
-    pub fn history(&self) -> Vec<UndoHistoryEntry> {
+    pub fn history(&self, properties: &oc_dsl::ast::ProjectProperties) -> Vec<UndoHistoryEntry> {
         let applied = self.below + self.undo.len();
         self.undo
             .iter()
             .enumerate()
-            .map(|(offset, entry)| Self::history_entry(self.below + offset + 1, entry, true))
-            .chain(
-                self.redo
-                    .iter()
-                    .rev()
-                    .enumerate()
-                    .map(|(offset, entry)| Self::history_entry(applied + offset + 1, entry, false)),
-            )
+            .map(|(offset, entry)| {
+                Self::history_entry(self.below + offset + 1, entry, true, properties)
+            })
+            .chain(self.redo.iter().rev().enumerate().map(|(offset, entry)| {
+                Self::history_entry(applied + offset + 1, entry, false, properties)
+            }))
             .collect()
     }
 
-    fn history_entry(index: usize, entry: &UndoEntry, applied: bool) -> UndoHistoryEntry {
+    fn history_entry(
+        index: usize,
+        entry: &UndoEntry,
+        applied: bool,
+        properties: &oc_dsl::ast::ProjectProperties,
+    ) -> UndoHistoryEntry {
+        // A redo entry stores its patches swapped, so normalize them to the
+        // forward direction before describing either side.
+        let changes = if applied {
+            entry_changes(&entry.forward, &entry.inverse, properties)
+        } else {
+            entry_changes(&entry.inverse, &entry.forward, properties)
+        };
         UndoHistoryEntry {
             index,
-            name: entry
-                .label
-                .strip_prefix("Redo: ")
-                .unwrap_or(&entry.label)
-                .to_string(),
-            subject: entry.subject.clone(),
+            changes,
+            cause: entry.cause,
             author: entry.author.clone(),
             scopes: entry.scopes,
             timestamp: entry
@@ -659,16 +681,6 @@ impl UndoStack {
                 .unwrap_or(0),
             applied,
         }
-    }
-
-    /// Get labels for the undo history (most recent first).
-    pub fn undo_labels(&self) -> Vec<String> {
-        self.undo.iter().rev().map(|e| e.label.clone()).collect()
-    }
-
-    /// Get labels for the redo history (most recent first).
-    pub fn redo_labels(&self) -> Vec<String> {
-        self.redo.iter().rev().map(|e| e.label.clone()).collect()
     }
 
     pub fn can_undo(&self) -> bool {
@@ -734,10 +746,10 @@ impl UndoStack {
                         self.undo.push(UndoEntry {
                             id: fresh_entry_id(),
                             author: edit.author.unwrap_or_else(crate::edit_history::acting),
-                            subject: edit.subject,
+                            cause: edit.cause,
                             forward,
                             inverse,
-                            label: edit.name,
+                            tag: edit.tag,
                             scopes,
                             timestamp: SystemTime::now(),
                         });
@@ -1359,6 +1371,14 @@ impl AppStateInner {
         Ok(())
     }
 
+    /// The project an open batch started from. The commit leaves the document
+    /// as it is, so the batch is described from this base to the document.
+    pub(crate) fn transaction_base_project(&self) -> Option<&Project> {
+        self.transaction
+            .as_ref()
+            .map(|transaction| &transaction.project)
+    }
+
     /// Claim the newest render slot; an older render must not publish over it.
     pub fn begin_offline_render(&mut self) -> u64 {
         self.render_generation = self.render_generation.wrapping_add(1);
@@ -1400,11 +1420,8 @@ impl AppStateInner {
             transaction.undo_mark,
             transaction.project,
             &self.project,
-            UndoEdit::new(
-                format!("Transaction: {}", transaction.label),
-                UndoScope::Project,
-            )
-            .by(Author::from_caller(&transaction.owner)),
+            UndoEdit::new(transaction.label.clone(), UndoScope::Project)
+                .by(Author::from_caller(&transaction.owner)),
         );
         if transaction.changed {
             self.revision = self.revision.saturating_add(1);
@@ -1538,6 +1555,7 @@ fn default_project() -> Project {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use oc_dsl::change::Change;
 
     #[test]
     fn batch_owners_name_their_surface_and_conversation() {
@@ -1597,7 +1615,7 @@ mod tests {
             }
             stack.begin_gesture(UndoScope::Project);
             let before = project.clone();
-            let history = serde_json::to_value(stack.history()).unwrap();
+            let history = serde_json::to_value(stack.history(&project.properties)).unwrap();
             let result = if redo {
                 stack.redo(&mut project)
             } else {
@@ -1605,7 +1623,10 @@ mod tests {
             };
             assert!(result.is_err());
             assert_eq!(project, before);
-            assert_eq!(serde_json::to_value(stack.history()).unwrap(), history);
+            assert_eq!(
+                serde_json::to_value(stack.history(&project.properties)).unwrap(),
+                history
+            );
             assert!(stack.is_in_gesture());
             let entry = if redo {
                 stack.redo.last().unwrap()
@@ -1640,14 +1661,17 @@ mod tests {
                 stack.undo[0].inverse = bad;
             }
             let before = project.clone();
-            let history = serde_json::to_value(stack.history()).unwrap();
+            let history = serde_json::to_value(stack.history(&project.properties)).unwrap();
             assert!(
                 stack
                     .restore_undo_level(if redo { 2 } else { 0 }, &mut project)
                     .is_err()
             );
             assert_eq!(project, before);
-            assert_eq!(serde_json::to_value(stack.history()).unwrap(), history);
+            assert_eq!(
+                serde_json::to_value(stack.history(&project.properties)).unwrap(),
+                history
+            );
         }
     }
 
@@ -1732,18 +1756,47 @@ mod tests {
         assert!(!inner.undo.undo.is_empty());
         inner.commit_transaction().unwrap();
         assert_eq!(inner.undo.undo.len(), 1);
-        assert_eq!(
-            inner.undo.undo.last().unwrap().label,
-            "Transaction: three edits"
-        );
+        assert_eq!(inner.undo.undo.last().unwrap().tag, "three edits");
         let mut project = inner.project.clone();
         let label = inner.undo.undo(&mut project).expect("one undo entry");
-        assert_eq!(label, "Transaction: three edits");
+        assert_eq!(label, "three edits");
         assert_eq!(project.properties.tempo, 120.0);
         let mut redone = project.clone();
         let label = inner.undo.redo(&mut redone).expect("one redo entry");
-        assert_eq!(label, "Redo: Transaction: three edits");
+        assert_eq!(label, "three edits");
         assert_eq!(redone.properties.tempo, 140.0);
+    }
+
+    #[test]
+    fn a_committed_batch_describes_the_whole_batch_with_no_display_text() {
+        let mut inner = test_inner();
+        let start = inner.project.properties.tempo;
+        inner
+            .begin_transaction("turn".into(), crate::state::panel_batch_owner(Some("s1")))
+            .unwrap();
+        edit_tempo(&mut inner, 130.0);
+        edit_tempo(&mut inner, 142.0);
+        inner.commit_transaction().unwrap();
+        let history = inner.undo.history(&inner.project.properties);
+        assert_eq!(history.len(), 1);
+        assert_eq!(
+            history[0].changes.changes,
+            vec![Change::Tempo {
+                from: start,
+                to: 142.0
+            }]
+        );
+        assert_eq!(
+            history[0].author,
+            Author::Agent {
+                session: Some("s1".into())
+            }
+        );
+        assert!(
+            !serde_json::to_string(&history[0])
+                .unwrap()
+                .contains("Transaction")
+        );
     }
 
     #[test]
@@ -1771,7 +1824,7 @@ mod tests {
         assert_eq!(revision, revision_before_batch + 1);
         assert_eq!(inner.project.properties.tempo, 142.0);
         assert_eq!(inner.undo.undo.len(), 2);
-        assert_eq!(inner.undo.undo.last().unwrap().label, "Transaction: batch");
+        assert_eq!(inner.undo.undo.last().unwrap().tag, "batch");
         assert!(inner.transaction.is_none());
         assert!(
             inner
@@ -1852,9 +1905,12 @@ mod tests {
         assert!(!stack.is_in_gesture());
 
         assert_eq!(stack.undo.len(), 1, "2 s of updates is still one entry");
-        let history = stack.history();
+        let history = stack.history(&project.properties);
         assert_eq!(history.len(), 1);
-        assert_eq!(history[0].name, "mixer levels");
+        assert!(history[0].changes.changes.iter().any(|change| matches!(
+            change,
+            Change::Tempo { to, .. } if (*to - 101.99).abs() < 1e-9
+        )));
         assert_eq!(history[0].scopes, UndoScopes::one(UndoScope::MixerLevels));
         assert_eq!(history[0].timestamp, 1_700_000_000_000);
         assert!(history[0].applied);
@@ -1879,7 +1935,9 @@ mod tests {
             122.0,
         );
         assert_eq!(stack.undo.len(), 2, "different scopes never merge");
-        assert_eq!(stack.history()[1].name, "clip move");
+        assert!(stack.history(&project.properties)[1].changes.changes.iter().any(
+            |change| matches!(change, Change::ProjectRenamed { to: Some(to), .. } if to == "clip move")
+        ));
     }
 
     #[test]
@@ -1959,8 +2017,21 @@ mod tests {
         );
         stack.end_gesture();
 
-        let labels: Vec<String> = stack.history().into_iter().map(|e| e.name).collect();
-        assert_eq!(labels, ["move clip 1", "move clip 2"]);
+        let history = stack.history(&project.properties);
+        let names: Vec<&str> = history
+            .iter()
+            .filter_map(|entry| {
+                entry
+                    .changes
+                    .changes
+                    .iter()
+                    .find_map(|change| match change {
+                        Change::ProjectRenamed { to: Some(name), .. } => Some(name.as_str()),
+                        _ => None,
+                    })
+            })
+            .collect();
+        assert_eq!(names, ["move clip 1", "move clip 2"]);
 
         let mut reverted = project.clone();
         assert_eq!(stack.undo(&mut reverted).unwrap(), "move clip 2");
@@ -1993,8 +2064,21 @@ mod tests {
         stack.end_gesture();
 
         assert_eq!(stack.undo.len(), 2, "the drag opened its own entry");
-        let labels: Vec<String> = stack.history().into_iter().map(|e| e.name).collect();
-        assert_eq!(labels, ["add clip", "clip move"]);
+        let history = stack.history(&project.properties);
+        let names: Vec<&str> = history
+            .iter()
+            .filter_map(|entry| {
+                entry
+                    .changes
+                    .changes
+                    .iter()
+                    .find_map(|change| match change {
+                        Change::ProjectRenamed { to: Some(name), .. } => Some(name.as_str()),
+                        _ => None,
+                    })
+            })
+            .collect();
+        assert_eq!(names, ["add clip", "clip move"]);
 
         let mut reverted = project.clone();
         assert_eq!(stack.undo(&mut reverted).unwrap(), "clip move");
@@ -2086,7 +2170,7 @@ mod tests {
         stack.end_gesture();
 
         assert_eq!(stack.undo.len(), 1, "the empty gesture added nothing");
-        assert_eq!(stack.undo[0].label, "add clip", "and removed nothing");
+        assert_eq!(stack.undo[0].tag, "add clip", "and removed nothing");
     }
 
     #[test]
@@ -2150,7 +2234,7 @@ mod tests {
             forward[2],
             "level 2 must be byte-identical to replaying two edits"
         );
-        let history = stack.history();
+        let history = stack.history(&jumped.properties);
         assert_eq!(history.len(), 4);
         assert!(history[0].applied && history[1].applied);
         assert!(!history[2].applied && !history[3].applied);
@@ -2158,7 +2242,12 @@ mod tests {
 
         stack.restore_undo_level(4, &mut jumped).unwrap();
         assert_eq!(oc_dsl::serialize(&jumped).into_bytes(), forward[4]);
-        assert!(stack.history().iter().all(|entry| entry.applied));
+        assert!(
+            stack
+                .history(&jumped.properties)
+                .iter()
+                .all(|entry| entry.applied)
+        );
 
         stack.restore_undo_level(0, &mut jumped).unwrap();
         assert_eq!(oc_dsl::serialize(&jumped).into_bytes(), forward[0]);
@@ -2189,8 +2278,8 @@ mod tests {
             history_before + 1,
             "the turn publishes exactly one entry"
         );
-        assert_eq!(inner.undo.undo.last().unwrap().label, "Transaction: turn");
-        assert_eq!(inner.undo_step().unwrap(), "Transaction: turn");
+        assert_eq!(inner.undo.undo.last().unwrap().tag, "turn");
+        assert_eq!(inner.undo_step().unwrap(), "turn");
         assert_eq!(
             inner.project.properties.tempo, 100.0,
             "the turn's entry undoes the two edits it survived with"
@@ -2214,7 +2303,7 @@ mod tests {
         assert_eq!(inner.project, base_project, "rollback restores the project");
         assert_eq!(inner.undo.undo.len(), 1, "and the history it found");
         assert!(inner.undo.redo.is_empty());
-        assert_eq!(inner.undo.undo.last().unwrap().label, "tempo");
+        assert_eq!(inner.undo.undo.last().unwrap().tag, "tempo");
     }
 
     #[test]
@@ -2236,7 +2325,7 @@ mod tests {
             132.0,
         );
         stack.restore_undo_level(1, &mut project).unwrap();
-        assert_eq!(stack.history().len(), 2);
+        assert_eq!(stack.history(&project.properties).len(), 2);
 
         stack_edit(
             &mut stack,
@@ -2245,8 +2334,17 @@ mod tests {
             UndoScope::Project,
             133.0,
         );
-        assert_eq!(stack.history().len(), 2, "redo levels were truncated");
-        assert!(stack.history().iter().all(|entry| entry.applied));
+        assert_eq!(
+            stack.history(&project.properties).len(),
+            2,
+            "redo levels were truncated"
+        );
+        assert!(
+            stack
+                .history(&project.properties)
+                .iter()
+                .all(|entry| entry.applied)
+        );
         assert!(stack.redo.is_empty());
     }
 

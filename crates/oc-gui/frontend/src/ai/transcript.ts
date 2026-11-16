@@ -7,6 +7,7 @@
 import type { ToolCall, TurnStop, WireMessage } from "./wire";
 import type { MediaAttachment } from "./media";
 import { isAuditionKind, messageKind, type MessageMeta } from "./messageProtocol";
+import { isChangeSet, type ChangeSet } from "../types/change";
 
 export interface DiffResult {
   old_text: string;
@@ -19,6 +20,8 @@ export interface ToolRow {
   name: string;
   args?: string;
   result?: string;
+  /** The project facts the call produced, when it changed the project. */
+  changes?: ChangeSet;
   /** The provider's call id; a truncated result names it for read_toolcall. */
   call_id?: string;
 }
@@ -141,7 +144,7 @@ function failedResult(content: string): boolean {
  * arguments; the view shortens them for its summary line, and the export reads
  * them unchanged.
  */
-export function toolRowOf(call: ToolCall | undefined, content: string): ChatMessage {
+export function toolRowOf(call: ToolCall | undefined, content: string, changes?: unknown): ChatMessage {
   const args = call?.function?.arguments;
   return {
     role: "tool",
@@ -149,6 +152,7 @@ export function toolRowOf(call: ToolCall | undefined, content: string): ChatMess
     tool: {
       name: call?.function?.name ?? "tool",
       ...(args ? { args } : {}),
+      ...(isChangeSet(changes) ? { changes } : {}),
       ...(call?.id ? { call_id: call.id } : {}),
       ...(content.trim() ? { result: oneLine(content, RESULT_SUMMARY_CHARS) } : {}),
     },
@@ -195,7 +199,7 @@ export function restoredTranscript(messages: WireMessage[] | null | undefined, s
       continue;
     }
     if (message.role === "tool") {
-      rows.push({ ...toolRowOf(byId.get(message.tool_call_id ?? ""), content), wireIndex, ...snapshot });
+      rows.push({ ...toolRowOf(byId.get(message.tool_call_id ?? ""), content, message.changes), wireIndex, ...snapshot });
       continue;
     }
     if (message.role === "user") {
@@ -223,7 +227,7 @@ export function restoredTranscript(messages: WireMessage[] | null | undefined, s
     const kind = messageKind(message);
     if (kind === "round_budget" || kind === "host_notice") continue;
     if (kind === "application_result") {
-      rows.push({ ...toolRowOf(pending.shift(), content.startsWith(APPLICATION_RESULT) ? content.slice(APPLICATION_RESULT.length) : content), wireIndex, ...snapshot });
+      rows.push({ ...toolRowOf(pending.shift(), content.startsWith(APPLICATION_RESULT) ? content.slice(APPLICATION_RESULT.length) : content, message.changes), wireIndex, ...snapshot });
       continue;
     }
     rows.push({

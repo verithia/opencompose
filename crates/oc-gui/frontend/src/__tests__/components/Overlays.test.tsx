@@ -86,7 +86,7 @@ beforeEach(async () => {
       return { ...TRANSPORT_STOPPED(), position_beats: (args as { beat: number }).beat };
     }
     if (cmd === "get_undo_state") {
-      return { can_undo: false, can_redo: false, undo_label: null, redo_label: null, undo_labels: [], redo_labels: [] };
+      return { can_undo: false, can_redo: false,    };
     }
     if (cmd === "update_dsl") {
       const source = (args as { source: string }).source;
@@ -432,7 +432,7 @@ describe("Adopted context menus", () => {
       if (cmd === "devices_catalog") return { devices: [] };
       if (cmd === "get_transport_state") return TRANSPORT_STOPPED();
       if (cmd === "get_undo_state") {
-        return { can_undo: false, can_redo: false, undo_label: null, redo_label: null, undo_labels: [], redo_labels: [] };
+        return { can_undo: false, can_redo: false,    };
       }
       return makeSnapshot({
         tracks: [makeTrack("Piano", 0)],

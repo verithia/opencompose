@@ -46,7 +46,7 @@ beforeEach(() => {
     if (command === "scan_plugins") return [];
     if (command === "get_transport_state") return TRANSPORT_STOPPED();
     if (command === "get_project") return current;
-    if (command === "get_undo_state") return { can_undo: history > 0, can_redo: false, undo_label: null, redo_label: null, undo_labels: [], redo_labels: [] };
+    if (command === "get_undo_state") return { can_undo: history > 0, can_redo: false,    };
     if (command === "begin_parameter_gesture") {
       if (pendingBegin) return pendingBegin;
       if (args?.expectedStamp !== current.parameter_target_stamp) throw new Error("Parameter target changed before gesture admission");

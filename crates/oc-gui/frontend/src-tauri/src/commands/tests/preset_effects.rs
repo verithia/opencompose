@@ -87,7 +87,7 @@ fn adds_an_effect_to_a_preset_chain_and_undo_restores_it() {
         "the effect lands at the end of the preset chain"
     );
     assert_eq!(inner.undo.undo.len(), 1, "one add, one undo entry");
-    assert_eq!(inner.undo.undo[0].label, "add effect");
+    assert_eq!(inner.undo.undo[0].tag, "add effect");
 
     inner.undo.undo(&mut inner.project).unwrap();
     assert_eq!(
@@ -106,7 +106,7 @@ fn removes_an_effect_from_a_preset_chain_and_undo_restores_it() {
         preset_names(&inner.project),
         ["reverb", "plugin:builtin.test_tone"]
     );
-    assert_eq!(inner.undo.undo[0].label, "remove effect");
+    assert_eq!(inner.undo.undo[0].tag, "remove effect");
 
     inner.undo.undo(&mut inner.project).unwrap();
     assert_eq!(
@@ -124,7 +124,7 @@ fn sets_a_parameter_on_a_preset_effect_and_undo_restores_it() {
         inner.project.presets[0].effects[1].params,
         vec![("mix".to_string(), ParamValue::Percentage(50.0))]
     );
-    assert_eq!(inner.undo.undo[0].label, "effect parameter");
+    assert_eq!(inner.undo.undo[0].tag, "effect parameter");
 
     inner.undo.undo(&mut inner.project).unwrap();
     assert_eq!(
@@ -151,7 +151,7 @@ fn sets_a_parameter_on_a_preset_effect_and_undo_restores_it() {
         ]
     );
     assert_eq!(inner.undo.undo.len(), 1, "one gesture, one undo entry");
-    assert_eq!(inner.undo.undo[0].label, "effect parameters");
+    assert_eq!(inner.undo.undo[0].tag, "effect parameters");
 }
 
 #[test]
@@ -163,7 +163,7 @@ fn toggles_bypass_on_a_preset_effect_and_undo_restores_it() {
 
     set_effect_bypass_inner(&mut inner, "preset:lead", 2, true).unwrap();
     assert!(bypassed(&inner));
-    assert_eq!(inner.undo.undo[0].label, "bypass effect");
+    assert_eq!(inner.undo.undo[0].tag, "bypass effect");
     assert!(
         inner.dsl_source.contains("bypass=true"),
         "the field reaches the DSL text:\n{}",

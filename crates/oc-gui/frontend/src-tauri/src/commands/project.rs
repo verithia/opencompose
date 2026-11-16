@@ -930,6 +930,7 @@ pub(crate) fn restore_dsl_with_undo(
     inner: &mut AppStateInner,
     source: String,
     label: &str,
+    cause: crate::edit_history::EditCause,
 ) -> Result<ProjectSnapshot, String> {
     inner.refuse_in_preview()?;
     let mut project = oc_dsl::parse(&source).map_err(|e| format!("{}", e))?;
@@ -938,7 +939,7 @@ pub(crate) fn restore_dsl_with_undo(
     if let Err(error) = super::shared::resync_restored_with_undo(
         inner,
         old_project.clone(),
-        UndoEdit::new(label, UndoScope::Project),
+        UndoEdit::new(label, UndoScope::Project).cause(cause),
     ) {
         inner.project = old_project;
         return Err(error);
@@ -1013,7 +1014,7 @@ pub fn add_track(
     resync_with_undo(
         &mut inner,
         old_project,
-        UndoEdit::new("add track", UndoScope::Project).about(name.clone()),
+        UndoEdit::new("add track", UndoScope::Project),
     )?;
     Ok(snapshot(&inner))
 }
@@ -1167,7 +1168,7 @@ pub fn add_track_checked(
     resync_with_undo(
         inner,
         old_project,
-        UndoEdit::new("add track", UndoScope::Project).about(name),
+        UndoEdit::new("add track", UndoScope::Project),
     )?;
     Ok(snapshot(inner))
 }
@@ -1290,11 +1291,11 @@ pub fn remove_track(track_index: usize, state: State<AppState>) -> Result<Projec
     if track_index >= inner.project.tracks.len() {
         return Err(format!("Track {} out of range", track_index));
     }
-    let removed = inner.project.tracks.remove(track_index);
+    inner.project.tracks.remove(track_index);
     resync_with_undo(
         &mut inner,
         old_project,
-        UndoEdit::new("remove track", UndoScope::Project).about(removed.name),
+        UndoEdit::new("remove track", UndoScope::Project),
     )?;
     Ok(snapshot(&inner))
 }
@@ -1309,7 +1310,7 @@ pub fn set_tempo(tempo: f64, state: State<AppState>) -> Result<ProjectSnapshot, 
     resync_with_undo(
         &mut inner,
         old_project,
-        UndoEdit::new("tempo", UndoScope::Transport).about(format!("{tempo} BPM")),
+        UndoEdit::new("tempo", UndoScope::Transport),
     )?;
     Ok(snapshot(&inner))
 }
@@ -1589,7 +1590,7 @@ pub fn set_project_name(name: String, state: State<AppState>) -> Result<ProjectS
     resync_with_undo(
         &mut inner,
         old_project,
-        UndoEdit::new("project name", UndoScope::Project).about(name),
+        UndoEdit::new("project name", UndoScope::Project),
     )?;
     Ok(snapshot(&inner))
 }
@@ -1598,10 +1599,6 @@ pub fn set_project_name(name: String, state: State<AppState>) -> Result<ProjectS
 pub struct UndoState {
     pub can_undo: bool,
     pub can_redo: bool,
-    pub undo_label: Option<String>,
-    pub redo_label: Option<String>,
-    pub undo_labels: Vec<String>,
-    pub redo_labels: Vec<String>,
 }
 
 /// Undo for the agent's `undo` tool, which may step back inside its own batch.
@@ -1683,11 +1680,11 @@ fn history_step(
         }
         StepKind::Undo => {
             inner.undo_step()?;
-            inner.undo.undone_brief()
+            inner.undo.undone_brief(&inner.project.properties)
         }
         StepKind::Redo => {
             inner.redo_step()?;
-            inner.undo.redone_brief()
+            inner.undo.redone_brief(&inner.project.properties)
         }
     };
     inner.sync_history();
@@ -1746,9 +1743,11 @@ pub fn history_page(
 ) -> Result<crate::state::HistoryPage, String> {
     let mut inner = state.lock_inner();
     inner.sync_history();
-    inner
-        .undo
-        .history_page(before, limit.unwrap_or(crate::state::HISTORY_PAGE))
+    inner.undo.history_page(
+        before,
+        limit.unwrap_or(crate::state::HISTORY_PAGE),
+        &inner.project.properties,
+    )
 }
 
 /// Where the history is kept and the space it occupies.
@@ -1799,15 +1798,9 @@ pub enum HistoryClearOutcome {
 #[tauri::command]
 pub fn get_undo_state(state: State<AppState>) -> UndoState {
     let inner = state.lock_inner();
-    let undo_labels = inner.undo.undo_labels();
-    let redo_labels = inner.undo.redo_labels();
     UndoState {
         can_undo: inner.undo.can_undo(),
         can_redo: inner.undo.can_redo(),
-        undo_label: undo_labels.first().cloned(),
-        redo_label: redo_labels.first().cloned(),
-        undo_labels,
-        redo_labels,
     }
 }
 
@@ -1875,7 +1868,7 @@ mod history_step_tests {
             resync_with_undo(
                 &mut inner,
                 old,
-                UndoEdit::new("tempo", UndoScope::Transport).about("133 BPM"),
+                UndoEdit::new("tempo", UndoScope::Transport),
             )
             .unwrap();
         }
@@ -1908,9 +1901,41 @@ mod history_step_tests {
         };
         assert_eq!(snapshot.project.properties.tempo, 120.0);
         let brief = brief.unwrap();
-        assert_eq!(brief.label, "tempo");
-        assert_eq!(brief.subject.as_deref(), Some("133 BPM"));
+        assert_eq!(
+            brief.changes.changes,
+            vec![oc_dsl::change::Change::Tempo {
+                from: 120.0,
+                to: 133.0
+            }]
+        );
+        assert_eq!(brief.cause, crate::edit_history::EditCause::Edit);
         assert_eq!(brief.author, crate::edit_history::Author::Person);
+    }
+
+    #[test]
+    fn undo_and_redo_briefs_carry_the_same_typed_changes() {
+        let state = edited();
+        let requests = crate::ai_service::Requests::default();
+        let HistoryStep::Applied { brief, .. } =
+            history_step(&state, &requests, StepKind::Undo).unwrap()
+        else {
+            panic!("the undo runs");
+        };
+        let undo = brief.unwrap();
+        assert_eq!(
+            undo.changes.changes,
+            vec![oc_dsl::change::Change::Tempo {
+                from: 120.0,
+                to: 133.0
+            }]
+        );
+        let HistoryStep::Applied { brief, .. } =
+            history_step(&state, &requests, StepKind::Redo).unwrap()
+        else {
+            panic!("the redo runs");
+        };
+        let redo = brief.unwrap();
+        assert_eq!(redo.changes, undo.changes);
     }
 
     #[test]

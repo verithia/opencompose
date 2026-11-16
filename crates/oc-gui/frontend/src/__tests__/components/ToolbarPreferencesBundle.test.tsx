@@ -20,10 +20,10 @@ function mockCommands() {
       return {
         can_undo: false,
         can_redo: false,
-        undo_label: null,
-        redo_label: null,
-        undo_labels: [],
-        redo_labels: [],
+        
+        
+        
+        
       };
     }
     if (cmd === "get_midi_config") {

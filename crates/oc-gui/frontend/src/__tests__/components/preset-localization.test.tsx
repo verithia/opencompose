@@ -21,7 +21,7 @@ beforeEach(() => {
     if (command === "get_project" || command === "set_preset_param") return makeSnapshot();
     if (command === "set_loop_region" || command === "release_web_audio") return undefined;
     if (command === "devices_catalog") return { devices: FALLBACK_DEVICES };
-    if (command === "get_undo_state") return { can_undo: false, can_redo: false, undo_label: null, redo_label: null, undo_labels: [], redo_labels: [] };
+    if (command === "get_undo_state") return { can_undo: false, can_redo: false,    };
     throw new Error(`Unexpected localized-preset fixture command: ${command}`);
   });
 });

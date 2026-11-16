@@ -43,7 +43,7 @@ beforeEach(async () => {
     if (command === "set_loop_region") return { start_beats: null, end_beats: null, enabled: false };
     if (command === "history_page") return [];
     if (command === "get_undo_state") return { can_undo: false, can_redo: false,
-      undo_label: null, redo_label: null, undo_labels: [], redo_labels: [] };
+         };
     if (command === "begin_parameter_gesture") {
       const args = raw as { expectedStamp: string };
       if (args.expectedStamp !== backend.parameter_target_stamp) throw new Error("Parameter target changed");

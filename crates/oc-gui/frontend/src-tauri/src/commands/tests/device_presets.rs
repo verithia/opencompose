@@ -48,7 +48,7 @@ fn applying_a_preset_writes_every_parameter_in_one_undo_entry() {
 
     assert_eq!(inner.undo.undo.len(), 1, "one undo entry");
     let entry = &inner.undo.undo[0];
-    assert_eq!(entry.label, "effect parameters");
+    assert_eq!(entry.tag, "effect parameters");
     assert!(
         entry.scopes.iter().any(|scope| scope == UndoScope::Preset),
         "the edit belongs to the preset scope"

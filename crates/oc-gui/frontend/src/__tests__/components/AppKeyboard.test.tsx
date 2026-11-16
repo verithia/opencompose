@@ -34,7 +34,7 @@ beforeEach(async () => {
     if (cmd === "take_startup_project") return null;
     if (cmd === "scan_plugins") return [];
     if (cmd === "get_transport_state") return TRANSPORT_STOPPED();
-    if (cmd === "get_undo_state") return { can_undo: true, can_redo: false, undo_label: "Test", redo_label: null, undo_labels: ["Test"], redo_labels: [] };
+    if (cmd === "get_undo_state") return { can_undo: true, can_redo: false,    };
     if (cmd === "transport_play") return TRANSPORT_PLAYING();
     if (cmd === "transport_stop") return TRANSPORT_STOPPED();
     if (cmd === "transport_pause") return TRANSPORT_STOPPED();
@@ -536,7 +536,11 @@ describe("App keyboard shortcuts", () => {
     invokeMock.mockImplementation(async (cmd: string, args?: unknown) => cmd === "history_undo"
       ? {
         status: "applied", snapshot: makeSnapshot(),
-        brief: { label: "tempo", subject: "128 BPM", author: { kind: "person" } },
+        brief: {
+          changes: { changes: [{ kind: "tempo", from: 120, to: 128 }], more: 0 },
+          cause: "edit",
+          author: { kind: "person" },
+        },
       }
       : base(cmd, args));
     const { container } = render(() => <App />);
@@ -544,7 +548,7 @@ describe("App keyboard shortcuts", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     fireEvent.keyDown(container, { key: "z", ctrlKey: true });
     await vi.waitFor(() => expect(container.querySelector('[data-history-notice="undid"]')?.textContent)
-      .toBe("Undid: Tempo: 128 BPM (You)"));
+      .toBe("Undid: Change tempo from 120 to 128 BPM (You)"));
   });
 
   it("says in the status bar that the agent is editing when undo is refused", async () => {

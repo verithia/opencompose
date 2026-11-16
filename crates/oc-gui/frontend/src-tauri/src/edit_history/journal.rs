@@ -20,7 +20,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
-use super::Author;
+use super::{Author, EditCause};
 use crate::state::UndoScopes;
 use serde::{Deserialize, Serialize};
 
@@ -170,9 +170,10 @@ pub fn move_dir(from: &Path, to: &Path) -> io::Result<()> {
 pub struct StoredEntry {
     pub id: u64,
     pub at_ms: u64,
-    pub label: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub subject: Option<String>,
+    /// Why the entry exists when the patches cannot say it; omitted for an
+    /// ordinary edit.
+    #[serde(default, skip_serializing_if = "EditCause::is_edit")]
+    pub cause: EditCause,
     pub author: Author,
     pub scopes: UndoScopes,
     #[serde(with = "b64")]

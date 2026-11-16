@@ -216,7 +216,7 @@ fn a_new_track_bounce_publishes_one_clip_and_one_undo_entry() {
     );
 
     assert_eq!(inner.undo.undo.len(), 1, "one undo entry");
-    assert_eq!(inner.undo.undo[0].label, "bounce track");
+    assert_eq!(inner.undo.undo[0].tag, "bounce track");
     assert!(result.report.contains("the source track is muted"));
     assert!(
         result.report.contains("limiter"),
@@ -284,7 +284,7 @@ fn an_in_place_bounce_bypasses_the_chain_and_replaces_the_blocks() {
     assert_eq!(clip.time_range.end, BarBeat::new(5, 2, 1));
     assert_eq!(clip.file, result.media);
     assert_eq!(inner.undo.undo.len(), 1);
-    assert_eq!(inner.undo.undo[0].label, "bounce track");
+    assert_eq!(inner.undo.undo[0].tag, "bounce track");
     drop(inner);
     assert!(Path::new(&result.path).is_file());
 }
@@ -412,7 +412,7 @@ fn a_consolidate_replaces_the_selected_clips_with_one_and_keeps_the_chain() {
         "consolidate keeps the track's inserts"
     );
     assert_eq!(inner.undo.undo.len(), 1, "one undo entry");
-    assert_eq!(inner.undo.undo[0].label, "consolidate clips");
+    assert_eq!(inner.undo.undo[0].tag, "consolidate clips");
     assert_eq!(frames as f64, 4.0 * f64::from(result.sample_rate));
 }
 

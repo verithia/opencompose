@@ -1,15 +1,16 @@
 use std::path::{Path, PathBuf};
 
+use oc_dsl::change::Change;
+
 use super::journal::{self, Journal, StoredEntry};
-use super::{Author, act_as, acting};
+use super::{Author, EditCause, act_as, acting};
 use crate::state::{AppState, AppStateInner, MAX_UNDO, UndoEdit, UndoScope, UndoScopes};
 
 fn entry(id: u64) -> StoredEntry {
     StoredEntry {
         id,
         at_ms: id * 10,
-        label: format!("edit {id}"),
-        subject: None,
+        cause: super::EditCause::Edit,
         author: Author::Person,
         scopes: UndoScopes::one(UndoScope::Project),
         forward: vec![id as u8; 3],
@@ -38,7 +39,7 @@ fn set_tempo(inner: &mut AppStateInner, tempo: f64) {
     crate::commands::shared::resync_with_undo(
         inner,
         old,
-        UndoEdit::new("tempo", UndoScope::Transport).about(format!("{tempo}")),
+        UndoEdit::new("tempo", UndoScope::Transport),
     )
     .unwrap();
 }
@@ -174,10 +175,19 @@ fn edits_survive_a_reopen_and_undo_onto_the_saved_document() {
     let source = std::fs::read_to_string(&path).unwrap();
     let mut inner = reopened.lock_inner();
     crate::commands::open_project(&mut inner, &source, Some(path)).unwrap();
-    let page = inner.undo.history_page(None, 64).unwrap();
+    let page = inner
+        .undo
+        .history_page(None, 64, &inner.project.properties)
+        .unwrap();
     assert_eq!(page.total, 2);
     assert_eq!(page.applied, 2);
-    assert_eq!(page.entries[0].subject.as_deref(), Some("130"));
+    assert_eq!(
+        page.entries[0].changes.changes,
+        vec![oc_dsl::change::Change::Tempo {
+            from: 120.0,
+            to: 130.0
+        }]
+    );
     assert_eq!(
         page.entries[0].author,
         Author::Agent {
@@ -210,10 +220,25 @@ fn a_file_changed_outside_gets_one_bridging_entry() {
     let reopened = AppState::new();
     let mut inner = reopened.lock_inner();
     crate::commands::open_project(&mut inner, outside, Some(path)).unwrap();
-    let page = inner.undo.history_page(None, 64).unwrap();
+    let page = inner
+        .undo
+        .history_page(None, 64, &inner.project.properties)
+        .unwrap();
     assert_eq!(page.total, 2);
     assert_eq!(page.entries[0].author, Author::Outside);
-    assert_eq!(page.entries[0].name, "external change");
+    assert_eq!(
+        page.entries[0].changes.changes,
+        vec![
+            oc_dsl::change::Change::ProjectRenamed {
+                from: Some("Song".into()),
+                to: Some("Renamed".into()),
+            },
+            oc_dsl::change::Change::Tempo {
+                from: 120.0,
+                to: 100.0,
+            },
+        ]
+    );
     inner.undo_step().unwrap();
     assert_eq!(inner.project.properties.tempo, 120.0);
     assert_eq!(inner.project.name.as_deref(), Some("Song"));
@@ -248,7 +273,10 @@ fn a_file_without_a_version_header_reopens_without_a_bridge() {
     let reopened = AppState::new();
     let mut inner = reopened.lock_inner();
     crate::commands::open_project(&mut inner, &source, Some(path)).unwrap();
-    let page = inner.undo.history_page(None, 64).unwrap();
+    let page = inner
+        .undo
+        .history_page(None, 64, &inner.project.properties)
+        .unwrap();
     assert_eq!((page.total, page.applied), (2, 2));
     assert!(
         page.entries
@@ -631,4 +659,131 @@ fn a_new_project_never_takes_a_history_by_content() {
         journal::dir_for(&first).exists(),
         "the old history stays for its file"
     );
+}
+
+#[test]
+fn a_history_page_entry_carries_typed_changes_and_no_display_text() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = opened(dir.path(), SOURCE);
+    let mut inner = state.lock_inner();
+    set_tempo(&mut inner, 132.0);
+    inner.sync_history();
+    let page = inner
+        .undo
+        .history_page(None, 64, &inner.project.properties)
+        .unwrap();
+    let entry = &page.entries[0];
+    assert_eq!(
+        entry.changes.changes,
+        vec![Change::Tempo {
+            from: 100.0,
+            to: 132.0
+        }]
+    );
+    let wire = serde_json::to_value(entry).unwrap();
+    assert!(wire.get("name").is_none(), "{wire}");
+    assert!(wire.get("subject").is_none(), "{wire}");
+    assert_eq!(
+        wire["changes"]["changes"],
+        serde_json::json!([{"kind": "tempo", "from": 100.0, "to": 132.0}])
+    );
+}
+
+#[test]
+fn a_merged_gesture_describes_its_whole_run() {
+    let mut stack = crate::state::UndoStack::new();
+    let state = AppState::new();
+    let mut project = state.inner.into_inner().unwrap().project;
+    let start = project.properties.tempo;
+    stack.begin_gesture(UndoScope::Transport);
+    for (step, tempo) in [110.0, 125.0, 140.0].into_iter().enumerate() {
+        let old = project.clone();
+        project.properties.tempo = tempo;
+        if step == 2 {
+            project.name = Some("Final".into());
+        }
+        stack
+            .push(old, &project, UndoEdit::new("tempo", UndoScope::Transport))
+            .unwrap();
+    }
+    stack.end_gesture();
+    let history = stack.history(&project.properties);
+    assert_eq!(history.len(), 1);
+    assert_eq!(
+        history[0].changes.changes,
+        vec![
+            Change::ProjectRenamed {
+                from: Some("Untitled".into()),
+                to: Some("Final".into()),
+            },
+            Change::Tempo {
+                from: start,
+                to: 140.0
+            },
+        ]
+    );
+}
+
+#[test]
+fn a_conversation_revert_cause_survives_the_journal() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = opened(dir.path(), SOURCE);
+    {
+        let mut inner = state.lock_inner();
+        let mut target = inner.project.clone();
+        target.properties.tempo = 140.0;
+        crate::commands::restore_dsl_with_undo(
+            &mut inner,
+            oc_dsl::serialize(&target),
+            "revert conversation",
+            EditCause::ConversationRevert,
+        )
+        .unwrap();
+        inner.sync_history();
+    }
+    crate::commands::save_file_inner(None, &state).unwrap();
+    drop(state);
+
+    let path = project_file(dir.path());
+    let source = std::fs::read_to_string(&path).unwrap();
+    let reopened = AppState::new();
+    let mut inner = reopened.lock_inner();
+    crate::commands::open_project(&mut inner, &source, Some(path)).unwrap();
+    let page = inner
+        .undo
+        .history_page(None, 64, &inner.project.properties)
+        .unwrap();
+    assert_eq!(page.entries.len(), 1);
+    assert_eq!(page.entries[0].cause, EditCause::ConversationRevert);
+    assert_eq!(
+        page.entries[0].changes.changes,
+        vec![Change::Tempo {
+            from: 100.0,
+            to: 140.0
+        }]
+    );
+}
+
+#[test]
+fn a_journal_line_with_old_display_keys_still_loads() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = project_file(dir.path());
+    let stored = entry(7);
+    let mut line = serde_json::to_value(&stored).unwrap();
+    line["label"] = serde_json::json!("tempo");
+    line["subject"] = serde_json::json!("128 BPM");
+    let mut text = serde_json::to_string(&line).unwrap();
+    text.push('\n');
+    let history = journal::dir_for(&path);
+    std::fs::create_dir_all(&history).unwrap();
+    std::fs::write(history.join("entries.jsonl"), &text).unwrap();
+    let mut row = Vec::new();
+    row.extend_from_slice(&stored.id.to_le_bytes());
+    row.extend_from_slice(&0u64.to_le_bytes());
+    row.extend_from_slice(&(text.len() as u64).to_le_bytes());
+    std::fs::write(history.join("index.bin"), &row).unwrap();
+
+    let journal = Journal::open(&path).unwrap();
+    let loaded = journal.read_range(0..1).unwrap().remove(0);
+    assert_eq!(loaded, stored);
 }

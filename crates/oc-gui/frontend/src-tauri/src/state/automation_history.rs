@@ -79,10 +79,10 @@ impl UndoStack {
             StagedAction::Append(UndoEntry {
                 id: fresh_entry_id(),
                 author: edit.author.unwrap_or_else(crate::edit_history::acting),
-                subject: edit.subject,
+                cause: edit.cause,
                 forward: self.encode(&patch)?,
                 inverse: self.encode(&inverse)?,
-                label: edit.name,
+                tag: edit.tag,
                 scopes: edit.scopes,
                 timestamp,
             })

@@ -378,7 +378,7 @@ fn an_effect_write_creates_the_lane_and_records_one_undo_entry() {
     }));
 
     assert_eq!(inner.undo.undo.len(), 1, "one drag is one undo entry");
-    assert_eq!(inner.undo.undo[0].label, "write automation");
+    assert_eq!(inner.undo.undo[0].tag, "write automation");
     let mut project = inner.project.clone();
     inner.undo.undo(&mut project).expect("one undo entry");
     assert!(project.tracks[0].automation_count() == 0);

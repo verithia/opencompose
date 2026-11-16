@@ -1,11 +1,9 @@
+import type { ChangeSet, EditCause } from "./change";
+
 // UndoState matches the Rust UndoState struct
 export interface UndoState {
   can_undo: boolean;
   can_redo: boolean;
-  undo_label: string | null;
-  redo_label: string | null;
-  undo_labels: string[];
-  redo_labels: string[];
 }
 
 /** Aspect tags a history entry can carry; ids match `UndoScope` in Rust. */
@@ -27,8 +25,8 @@ export type HistoryAuthor =
 
 /** What the footer names after an undo or a redo. */
 export interface HistoryBrief {
-  label: string;
-  subject?: string;
+  changes: ChangeSet;
+  cause: EditCause;
   author: HistoryAuthor;
 }
 
@@ -44,8 +42,8 @@ export type HistoryStep<Snapshot> =
 export interface UndoHistoryEntry {
   /** 1 is the oldest kept edit. */
   index: number;
-  name: string;
-  subject?: string;
+  changes: ChangeSet;
+  cause: EditCause;
   author: HistoryAuthor;
   scopes: UndoScope[];
   /** Milliseconds since the Unix epoch. */

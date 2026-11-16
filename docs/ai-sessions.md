@@ -69,6 +69,16 @@ Storage` reports both directories with their sizes and the shared budget, and
 confirmation. Conversations keep the audio blocks they name; those files are
 reported missing until a range is asked for again.
 
+### Edit facts on a tool row
+
+A tool call that changes the project saves a `changes` field on its row: the
+typed facts (`oc_dsl::change::ChangeSet`) between the document before the call
+and the document after it, bounded in count and text length. A read-only call
+has no such field, and a batch commit describes its base-to-final run. The
+field is local-only: the provider replays the tool result `content`, never the
+facts. A restored transcript keeps the field, so a reloaded row still describes
+its edit.
+
 ### Full tool results
 
 A tool result that is too large for its message row is written to

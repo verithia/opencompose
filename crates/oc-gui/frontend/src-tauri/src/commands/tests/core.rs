@@ -365,9 +365,9 @@ fn factory_load_marks_dirty_and_pushes_one_undo_entry() {
     assert!(inner.dirty);
     assert_eq!(inner.undo.undo.len(), 1, "one LOAD is one undo entry");
     assert!(
-        inner.undo.undo[0].label.contains("neon_bass"),
+        inner.undo.undo[0].tag.contains("neon_bass"),
         "unexpected label {}",
-        inner.undo.undo[0].label
+        inner.undo.undo[0].tag
     );
     // The replacement drops the previous patch, not just the edited keys.
     let preset = snapshot(&inner)
@@ -1642,7 +1642,7 @@ fn audio_clip_gain_is_one_undo_step_and_undo_restores() {
         inner.dsl_source
     );
     assert_eq!(inner.undo.undo.len(), 1);
-    assert_eq!(inner.undo.undo[0].label, "clip gain");
+    assert_eq!(inner.undo.undo[0].tag, "clip gain");
 
     inner.undo.undo(&mut inner.project).unwrap();
     assert_eq!(inner.project, before);
@@ -1720,10 +1720,10 @@ fn audio_clip_envelope_touches_only_the_named_field() {
     assert_eq!(clip.fade_out_seconds, 0.5);
     assert_eq!(clip.gain_db, -3.0);
     assert_eq!(clip.fade_in_seconds, 0.1);
-    assert_eq!(inner.undo.undo[0].label, "fade out");
+    assert_eq!(inner.undo.undo[0].tag, "fade out");
 
     set_audio_clip_envelope_inner(&mut inner, 0, None, Some(1.0), None).unwrap();
-    assert_eq!(inner.undo.undo[1].label, "fade in");
+    assert_eq!(inner.undo.undo[1].tag, "fade in");
 }
 
 #[test]
@@ -1785,11 +1785,11 @@ fn audio_clip_envelope_full_writes_crossfade_and_points() {
         inner.dsl_source
     );
     // Two fields at once is still the generic label.
-    assert_eq!(inner.undo.undo[0].label, "clip envelope");
+    assert_eq!(inner.undo.undo[0].tag, "clip envelope");
 
     let (_dir, mut inner) = audio_clip_project_with_media();
     set_audio_clip_envelope_full(&mut inner, 0, None, None, None, Some(0.1), None).unwrap();
-    assert_eq!(inner.undo.undo[0].label, "crossfade");
+    assert_eq!(inner.undo.undo[0].tag, "crossfade");
 
     let (_dir, mut inner) = audio_clip_project_with_media();
     set_audio_clip_envelope_full(
@@ -1802,7 +1802,7 @@ fn audio_clip_envelope_full_writes_crossfade_and_points() {
         Some(vec![point(0.0, 0.0), point(1.0, -6.0)]),
     )
     .unwrap();
-    assert_eq!(inner.undo.undo[0].label, "gain envelope");
+    assert_eq!(inner.undo.undo[0].tag, "gain envelope");
 
     // An empty list clears the envelope again.
     set_audio_clip_envelope_full(&mut inner, 0, None, None, None, None, Some(Vec::new())).unwrap();
@@ -3425,7 +3425,7 @@ fn audio_clip_slip_writes_the_offset_and_keeps_the_range() {
         inner.dsl_source
     );
     assert_eq!(inner.undo.undo.len(), 1);
-    assert_eq!(inner.undo.undo[0].label, "clip slip");
+    assert_eq!(inner.undo.undo[0].tag, "clip slip");
 }
 
 #[test]
@@ -3546,7 +3546,7 @@ fn pattern_clip_slip_writes_the_offset_and_keeps_the_range() {
         inner.dsl_source
     );
     assert_eq!(inner.undo.undo.len(), 1);
-    assert_eq!(inner.undo.undo[0].label, "clip slip");
+    assert_eq!(inner.undo.undo[0].tag, "clip slip");
 
     inner.undo.undo(&mut inner.project).unwrap();
     assert!(
@@ -3624,7 +3624,7 @@ fn audio_clip_loop_sets_once_and_clears() {
         inner.dsl_source
     );
     assert_eq!(inner.undo.undo.len(), 1);
-    assert_eq!(inner.undo.undo[0].label, "clip loop");
+    assert_eq!(inner.undo.undo[0].tag, "clip loop");
 
     inner.undo.undo(&mut inner.project).unwrap();
     assert_eq!(inner.project, before);
@@ -3701,7 +3701,7 @@ fn pattern_clip_loop_sets_once_and_clears() {
         "{}",
         inner.dsl_source
     );
-    assert_eq!(inner.undo.undo[0].label, "clip loop");
+    assert_eq!(inner.undo.undo[0].tag, "clip loop");
 
     set_pattern_clip_loop_inner(&mut inner, 0, 0, None).unwrap();
     assert_eq!(
@@ -3855,7 +3855,7 @@ fn split_pattern_clip_keeps_the_slip_and_loop_in_both_halves() {
 
     // One history entry restores the clip exactly.
     assert_eq!(inner.undo.undo.len(), 1);
-    assert_eq!(inner.undo.undo[0].label, "clip split");
+    assert_eq!(inner.undo.undo[0].tag, "clip split");
     inner.undo.undo(&mut inner.project).unwrap();
     assert_eq!(inner.project, before);
 }
@@ -3966,7 +3966,7 @@ fn add_clip_carries_a_playback_window() {
         inner.dsl_source
     );
     assert_eq!(inner.undo.undo.len(), 1);
-    assert_eq!(inner.undo.undo[0].label, "add clip");
+    assert_eq!(inner.undo.undo[0].tag, "add clip");
 }
 
 #[test]
@@ -4164,7 +4164,7 @@ fn moving_a_pattern_clip_between_normal_tracks_is_one_entry() {
     assert_eq!(inner.project.tracks[1].pattern_clip_count(), 0);
     assert_eq!(inner.project.tracks[2].pattern_clip_count(), 1);
     assert_eq!(inner.undo.undo.len(), undo + 1);
-    assert_eq!(inner.undo.undo[undo].label, "clip move");
+    assert_eq!(inner.undo.undo[undo].tag, "clip move");
 }
 
 #[test]
@@ -4324,11 +4324,14 @@ fn adding_a_plugin_track_is_one_undo_entry_and_one_rebuild() {
     );
     // One document revision, so one graph rebuild and one undo step.
     assert!(inner.revision > before, "the edit publishes a revision");
-    let entries = inner.undo.history();
+    let entries = inner.undo.history(&inner.project.properties);
     assert_eq!(
         entries.len(),
         1,
         "the preset and the track are one history entry"
     );
-    assert_eq!(entries[0].name, "add instrument track");
+    assert!(entries[0].changes.changes.iter().any(|change| matches!(
+        change,
+        oc_dsl::change::Change::TrackAdded { track } if track == "Hosted Instrument"
+    )));
 }

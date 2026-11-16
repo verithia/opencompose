@@ -55,7 +55,7 @@ beforeEach(async () => {
     if (command === "scan_plugins") return [];
     if (command === "get_project") return current;
     if (command === "get_transport_state") return TRANSPORT_STOPPED();
-    if (command === "get_undo_state") return { can_undo: false, can_redo: false, undo_label: null, redo_label: null, undo_labels: [], redo_labels: [] };
+    if (command === "get_undo_state") return { can_undo: false, can_redo: false,    };
     if (command === "begin_parameter_gesture" || command === "begin_guarded_synth_param_gesture") {
       if (args?.expectedStamp !== current.parameter_target_stamp) throw new Error("Parameter target changed before gesture admission");
       const token = `synth-owner-${++nextToken}`; members.add(token); return token;

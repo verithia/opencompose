@@ -69,12 +69,13 @@ project's canonical path, in hex.
 The folder holds `project.json` (the marker: version, canonical project path and
 the file's content SHA-256), `entries.jsonl` (one entry per line), `index.bin`
 (the live linear history) and `state.json` (the cursor and the document at it).
-Every entry records who made it: you, the agent of a named conversation, an
-external client, or a change made to the file outside OpenCompose.
+Every entry records who made it (you, the agent of a named conversation, an
+external client, or a change made to the file outside OpenCompose), the typed
+changes its patches describe, and a cause that marks a conversation revert.
 
-- **Mod+Z** and **Mod+Shift+Z** step through the history. The status bar names
-  what the step took back or reapplied, for example
-  `Undid: Tempo: 128 BPM (Agent - Drum ideas)`.
+- **Mod+Z** and **Mod+Shift+Z** step through the history. The status bar
+  describes what the step took back or reapplied from the entry's typed changes,
+  formatted in the app's language, and names the author.
 - While an agent turn is running or holds a batch, undo waits: the status bar
   says `Agent is editing the project, cannot undo.`
 - The **History** tab in the bottom panel lists the entries newest first, 64 at a

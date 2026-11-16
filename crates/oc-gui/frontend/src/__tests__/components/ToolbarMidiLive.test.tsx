@@ -49,7 +49,7 @@ function mockCommands(options: MockOptions = {}) {
     if (cmd === "scan_plugins") return [];
     if (cmd === "get_transport_state") return TRANSPORT_STOPPED();
     if (cmd === "get_undo_state") {
-      return { can_undo: false, can_redo: false, undo_label: null, redo_label: null, undo_labels: [], redo_labels: [] };
+      return { can_undo: false, can_redo: false,    };
     }
     if (cmd === "get_midi_config") {
       return options.config ?? { input: null, monitor: false, active: false, audition_active: false, error: null };

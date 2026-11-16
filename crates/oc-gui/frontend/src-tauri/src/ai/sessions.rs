@@ -2309,6 +2309,11 @@ fn saved_message(message: &Value) -> Option<Value> {
     {
         saved.insert(tool_results::RESULT_SHA.into(), json!(sha));
     }
+    // Typed edit facts describe the tool row in the panel. They stay local:
+    // the provider sees only the tool result content.
+    if let Some(changes) = message.get("changes") {
+        saved.insert("changes".into(), changes.clone());
+    }
     // The signed reasoning of an assistant turn is provider state: a restored
     // conversation that dropped it would replay an unsigned tool round.
     for key in ["tool_calls", "tool_call_id", "provider_state", "thinking"] {
@@ -7221,6 +7226,34 @@ mod tests {
         let saved = saved_message(&raw).unwrap();
         assert_eq!(saved["source_render"], "/saved/render.wav");
         assert_eq!(saved["message_meta"]["kind"], "audition");
+    }
+
+    #[test]
+    fn a_saved_tool_row_keeps_local_changes_and_the_provider_never_reads_them() {
+        let changes = json!({
+            "changes": [{"kind": "tempo", "from": 120.0, "to": 132.0}],
+            "more": 0,
+        });
+        let row = json!({
+            "role": "tool",
+            "tool_call_id": "call-1",
+            "content": "{\"tempo\":132.0}",
+            "changes": changes,
+        });
+        let saved = saved_message(&row).unwrap();
+        assert_eq!(saved["changes"], changes);
+        assert!(crate::ai::is_local_message_field("changes"));
+        // The provider replay reads only the text, so no local fact travels.
+        let turns = crate::ai::turns_from_wire(&json!([row])).unwrap();
+        assert_eq!(
+            turns[0].blocks,
+            vec![crate::ai::Block::ToolResult {
+                call_id: "call-1".into(),
+                name: String::new(),
+                content: "{\"tempo\":132.0}".into(),
+                is_error: false,
+            }]
+        );
     }
 
     #[test]

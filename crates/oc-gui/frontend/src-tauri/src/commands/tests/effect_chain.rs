@@ -107,7 +107,7 @@ fn moves_one_effect_and_undo_restores_the_order() {
         "move down moves the effect after its neighbours"
     );
     assert_eq!(inner.undo.undo.len(), 1, "one move, one undo entry");
-    assert_eq!(inner.undo.undo[0].label, "move effect");
+    assert_eq!(inner.undo.undo[0].tag, "move effect");
 
     move_effect_inner(&mut inner, "track:0", 2, 1).unwrap();
     assert_eq!(

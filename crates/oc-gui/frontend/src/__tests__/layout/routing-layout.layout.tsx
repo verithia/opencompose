@@ -201,7 +201,7 @@ describe("mixer routing layout", () => {
       if (cmd === "get_undo_state") {
         return {
           can_undo: false, can_redo: false,
-          undo_label: null, redo_label: null, undo_labels: [], redo_labels: [],
+             
         };
       }
       return makeSnapshot({

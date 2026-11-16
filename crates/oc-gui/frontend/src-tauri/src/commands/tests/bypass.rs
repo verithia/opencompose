@@ -45,7 +45,7 @@ fn toggles_the_field_on_and_off_and_undo_restores_it() {
         "the field reaches the DSL text:\n{}",
         inner.dsl_source
     );
-    assert_eq!(inner.undo.undo[0].label, "bypass effect");
+    assert_eq!(inner.undo.undo[0].tag, "bypass effect");
 
     set_effect_bypass_inner(&mut inner, "track:0", 0, false).unwrap();
     assert!(!inner.project.tracks[0].effects[0].bypass);

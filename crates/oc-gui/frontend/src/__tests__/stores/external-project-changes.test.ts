@@ -19,7 +19,7 @@ beforeEach(async () => {
   invokeMock.mockImplementation(async (command: string) => {
     if (command === "get_project") return snapshot(10);
     if (command === "get_transport_state") return TRANSPORT_STOPPED();
-    if (command === "get_undo_state") return { can_undo: true, can_redo: false, undo_label: "External edit", undo_labels: [], redo_labels: [] };
+    if (command === "get_undo_state") return { can_undo: true, can_redo: false };
     if (command === "history_page") return [];
     return undefined;
   });
@@ -39,7 +39,7 @@ describe("external project synchronization", () => {
     expect(store.project.name).toBe("Edited");
     expect(store.projectRevision).toBe(11);
     await vi.waitFor(() => expect(calls("get_undo_state")).toHaveLength(1));
-    expect(store.undoState().undoLabel).toBe("External edit");
+    expect(store.undoState().canUndo).toBe(true);
     // No History view is open, so no history page is read.
     expect(invokeMock.mock.calls.map(([name]) => name)).toEqual(["get_undo_state"]);
   });

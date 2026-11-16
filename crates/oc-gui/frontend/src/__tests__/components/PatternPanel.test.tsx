@@ -13,7 +13,7 @@ beforeEach(async () => {
   invokeMock.mockImplementation(async (cmd: string) => {
     if (cmd === "scan_plugins") return [];
     if (cmd === "get_transport_state") return { playing: false, position_beats: 0, position_seconds: 0, duration_seconds: 0 };
-    if (cmd === "get_undo_state") return { can_undo: false, can_redo: false, undo_label: null, redo_label: null, undo_labels: [], redo_labels: [] };
+    if (cmd === "get_undo_state") return { can_undo: false, can_redo: false,    };
     return makeSnapshot({
       tracks: [makeTrack("Piano", 0)],
       patterns: [
@@ -122,7 +122,7 @@ describe("PatternPanel", () => {
     invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === "scan_plugins") return [];
       if (cmd === "get_transport_state") return { playing: false, position_beats: 0, position_seconds: 0, duration_seconds: 0 };
-      if (cmd === "get_undo_state") return { can_undo: false, can_redo: false, undo_label: null, redo_label: null, undo_labels: [], redo_labels: [] };
+      if (cmd === "get_undo_state") return { can_undo: false, can_redo: false,    };
       return makeSnapshot({ tracks: [], patterns: [] });
     });
     await store.initProject();
@@ -135,7 +135,7 @@ describe("PatternPanel", () => {
     invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === "scan_plugins") return [];
       if (cmd === "get_transport_state") return { playing: false, position_beats: 0, position_seconds: 0, duration_seconds: 0 };
-      if (cmd === "get_undo_state") return { can_undo: false, can_redo: false, undo_label: null, redo_label: null, undo_labels: [], redo_labels: [] };
+      if (cmd === "get_undo_state") return { can_undo: false, can_redo: false,    };
       return makeSnapshot({
         tracks: [makeTrack("Piano", 0)],
         patterns: [{
@@ -197,7 +197,7 @@ describe("PatternPanel", () => {
     invokeMock.mockImplementation(async (cmd: string, args?: Record<string, unknown>) => {
       if (cmd === "scan_plugins") return [];
       if (cmd === "get_transport_state") return { playing: false, position_beats: 0, position_seconds: 0, duration_seconds: 0 };
-      if (cmd === "get_undo_state") return { can_undo: false, can_redo: false, undo_label: null, redo_label: null, undo_labels: [], redo_labels: [] };
+      if (cmd === "get_undo_state") return { can_undo: false, can_redo: false,    };
       if (cmd === "rename_pattern") {
         return rename(String(args?.patternName), String(args?.newName));
       }
@@ -254,7 +254,7 @@ describe("pattern swing", () => {
     invokeMock.mockImplementation(async (cmd: string, args?: Record<string, unknown>) => {
       if (cmd === "scan_plugins") return [];
       if (cmd === "get_transport_state") return { playing: false, position_beats: 0, position_seconds: 0, duration_seconds: 0 };
-      if (cmd === "get_undo_state") return { can_undo: false, can_redo: false, undo_label: null, redo_label: null, undo_labels: [], redo_labels: [] };
+      if (cmd === "get_undo_state") return { can_undo: false, can_redo: false,    };
       if (cmd === "set_pattern_swing") swing = args?.swing as number | null;
       return makeSnapshot({
         properties: { ...defaults, swing: projectSwing },
@@ -291,7 +291,7 @@ describe("pattern swing", () => {
     invokeMock.mockImplementation(async (cmd: string, args?: Record<string, unknown>) => {
       if (cmd === "scan_plugins") return [];
       if (cmd === "get_transport_state") return { playing: false, position_beats: 0, position_seconds: 0, duration_seconds: 0 };
-      if (cmd === "get_undo_state") return { can_undo: false, can_redo: false, undo_label: null, redo_label: null, undo_labels: [], redo_labels: [] };
+      if (cmd === "get_undo_state") return { can_undo: false, can_redo: false,    };
       if (cmd === "set_project_swing_subdivision") {
         subdivision = args?.subdivision as string;
         return makeSnapshot({

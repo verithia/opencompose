@@ -133,7 +133,7 @@ fn an_append_lands_after_the_track_content_and_undoes_as_one_entry() {
     );
 
     assert_eq!(inner.undo.undo.len(), 1, "an import is one undo entry");
-    assert_eq!(inner.undo.undo[0].label, "MIDI import");
+    assert_eq!(inner.undo.undo[0].tag, "MIDI import");
     inner
         .undo
         .undo(&mut inner.project)

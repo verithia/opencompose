@@ -9,7 +9,7 @@ import { BusActions } from "../../components/BusActions";
 
 const UNDO_NONE = {
   can_undo: false, can_redo: false,
-  undo_label: null, redo_label: null, undo_labels: [], redo_labels: [],
+     
 };
 
 function snapshot() {

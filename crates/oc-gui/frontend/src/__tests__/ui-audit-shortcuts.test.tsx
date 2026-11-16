@@ -30,7 +30,7 @@ async function mountApp() {
     if (command === "transport_seek") return TRANSPORT_STOPPED();
     if (command === "take_startup_project") return null;
     if (command === "get_undo_state") {
-      return { can_undo: true, can_redo: true, undo_label: "x", redo_label: "x", undo_labels: [], redo_labels: [] };
+      return { can_undo: true, can_redo: true,    };
     }
     if (command === "history_undo" || command === "history_redo") return { status: "applied", snapshot: makeSnapshot() };
     return makeTimelineProject();

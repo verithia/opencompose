@@ -126,8 +126,13 @@ fn restoring_a_saved_state_preserves_its_legacy_keys_and_stays_undoable() {
     let mut inner = state.lock_inner();
     let before = inner.dsl_source.clone();
     let source = before.replace("osc.a.level: 0.5", "osc.a.level: 0.5, env.3.decay: 0.035");
-    crate::commands::restore_dsl_with_undo(&mut inner, source.clone(), "Restore saved turn")
-        .unwrap();
+    crate::commands::restore_dsl_with_undo(
+        &mut inner,
+        source.clone(),
+        "Restore saved turn",
+        crate::edit_history::EditCause::Edit,
+    )
+    .unwrap();
     assert_eq!(inner.dsl_source, source);
     assert_eq!(inner.undo.undo.len(), 1);
     let mut current = inner.project.clone();

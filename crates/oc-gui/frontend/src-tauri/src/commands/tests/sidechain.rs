@@ -76,7 +76,7 @@ fn a_track_key_on_a_track_chain_is_accepted() {
         inner.project.tracks[0].effects[0].sidechain_source,
         Some("drum".to_string())
     );
-    assert_eq!(inner.undo.undo[0].label, "effect sidechain");
+    assert_eq!(inner.undo.undo[0].tag, "effect sidechain");
     assert!(
         document(&inner).contains("sidechain=drum"),
         "the key reaches the saved document:\n{}",

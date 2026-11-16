@@ -1,18 +1,9 @@
 /** How the footer and the History tab name an edit-history entry. */
+import type { EditCause } from "../types/change";
 import type { HistoryAuthor, HistoryBrief } from "../types/undo";
+import { changeSetText, type ChangeSetOptions } from "./changeText";
 import { i18n } from "./i18n";
 import { sessionTitle } from "./sessionTitles";
-
-const BATCH_PREFIX = "Transaction: ";
-
-/** The operation's name: a batch names the turn, the rest name the edit. */
-export function entryName(label: string): string {
-  if (label.startsWith(BATCH_PREFIX)) {
-    return i18n.t("history.op.batch", { label: label.slice(BATCH_PREFIX.length) });
-  }
-  if (label === "external change") return i18n.t("history.op.externalChange");
-  return label.charAt(0).toUpperCase() + label.slice(1);
-}
 
 /** Who made the entry. */
 export function authorName(author: HistoryAuthor): string {
@@ -29,10 +20,24 @@ export function authorName(author: HistoryAuthor): string {
   }
 }
 
-/** "Set tempo: 128 BPM (Agent - Drum ideas)". */
-export function briefText(brief: HistoryBrief): string {
-  const name = entryName(brief.label);
-  const what = brief.subject ? `${name}: ${brief.subject}` : name;
+/** A conversation revert names itself, with the facts as the detail. */
+function causeText(cause: EditCause, facts: string): string {
+  return cause === "conversation_revert"
+    ? i18n.t("change.cause.withFacts", { facts })
+    : facts;
+}
+
+/** What one history level did. */
+export function entryText(
+  entry: { changes: HistoryBrief["changes"]; cause: EditCause },
+  options: ChangeSetOptions = {},
+): string {
+  return causeText(entry.cause, changeSetText(entry.changes, options));
+}
+
+/** "Change tempo from 120 to 128 BPM (Agent - Drum ideas)". */
+export function briefText(brief: HistoryBrief, options: ChangeSetOptions = {}): string {
+  const what = causeText(brief.cause, changeSetText(brief.changes, options));
   return `${what} (${authorName(brief.author)})`;
 }
 

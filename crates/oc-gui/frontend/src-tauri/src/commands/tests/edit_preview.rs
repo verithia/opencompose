@@ -232,7 +232,7 @@ fn a_preview_accept_leaves_exactly_one_undo_entry() {
     {
         let inner = state.lock_inner();
         assert_eq!(inner.undo.undo.len(), 1, "accept is one edit");
-        assert_eq!(inner.undo.undo[0].label, "Preview edit");
+        assert_eq!(inner.undo.undo[0].tag, "Preview edit");
         assert!(inner.preview.is_none());
         assert!(inner.dirty);
     }

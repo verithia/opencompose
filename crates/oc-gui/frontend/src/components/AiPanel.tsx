@@ -2425,7 +2425,7 @@ export function AiPanel(props: { onClose?: () => void }) {
                     classList={{ error: msg.error }}
                     summary={<>
                       <span class="ai-tool-icon"><ToolIcon name={msg.tool!.name} /></span>
-                      <span class="ai-tool-name">{activitySummary(msg.tool!, msg.content)}</span>
+                      <span class="ai-tool-name">{activitySummary(msg.tool!, msg.content, { properties: store.project.properties })}</span>
                       <Show when={msg.error}><span class="ai-tool-error-label"> · {i18n.t("ai.activity.failed")}</span></Show>
                     </>}
                   >

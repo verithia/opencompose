@@ -9,7 +9,7 @@ import { store } from "../stores/project";
 import { i18n } from "../stores/i18n";
 import * as api from "../stores/api";
 import type { UndoHistoryEntry, UndoScope } from "../stores/api";
-import { authorName, entryName, sizeText } from "../stores/historyText";
+import { authorName, entryText as historyEntryText, sizeText } from "../stores/historyText";
 import { historyStorage } from "../stores/historyStorage";
 import "./HistoryPanel.css";
 
@@ -29,8 +29,7 @@ export function formatTimestamp(timestamp: number): string {
 }
 
 function entryText(entry: UndoHistoryEntry): string {
-  const name = entryName(entry.name);
-  return entry.subject ? `${name}: ${entry.subject}` : name;
+  return historyEntryText(entry, { properties: store.project.properties });
 }
 
 export function HistoryPanel() {

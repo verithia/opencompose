@@ -70,7 +70,7 @@ Storage page can show what an item belongs to.
 | File | Contents |
 |---|---|
 | `project.json` | Marker `{version: 1, path, sha256}`: the canonical project path and the file's content SHA-256 as the app last read or wrote it. |
-| `entries.jsonl` | One stored entry per line, with its patch, author and scope. The file only grows; a line a redo branch replaced stays as garbage until the history is rewritten. |
+| `entries.jsonl` | One stored entry per line, with its compressed forward and inverse patches, author, scope and an optional `cause` (`conversation_revert`; an ordinary edit omits it). Display text is not stored. The file only grows; a line a redo branch replaced stays as garbage until the history is rewritten. |
 | `index.bin` | Fixed-size rows for the live linear history, oldest first. Dropping a redo branch truncates it. |
 | `state.json` | The cursor and the document text at the cursor, written in one atomic replace, so an open can tell whether the file still matches. |
 

@@ -2,7 +2,6 @@ import { createSignal } from "solid-js";
 import type { ProjectSnapshot } from "../types/project";
 import type { HistoryBrief, HistoryStep, UndoHistoryEntry } from "../types/undo";
 import * as api from "./api";
-import { log } from "./log";
 
 /** How long the footer keeps an undo's line. */
 export const HISTORY_NOTICE_MS = 4000;
@@ -27,11 +26,10 @@ export function createUndoStore(
   setError: (message: string) => void,
   context: () => string | number = () => 0,
 ) {
-  const [undoState, setUndoState] = createSignal<{
-    canUndo: boolean; canRedo: boolean;
-    undoLabel: string | null; redoLabel: string | null;
-    undoLabels: string[]; redoLabels: string[];
-  }>({ canUndo: false, canRedo: false, undoLabel: null, redoLabel: null, undoLabels: [], redoLabels: [] });
+  const [undoState, setUndoState] = createSignal<{ canUndo: boolean; canRedo: boolean }>({
+    canUndo: false,
+    canRedo: false,
+  });
 
   const [historyView, setHistoryView] = createSignal<HistoryView>(EMPTY_VIEW);
   const [notice, setNotice] = createSignal<HistoryNotice | null>(null);
@@ -67,14 +65,7 @@ export function createUndoStore(
     try {
       const state = await api.getUndoState();
       if (request !== stateRequest || !ownsContext(owner)) return;
-      setUndoState({
-        canUndo: state.can_undo,
-        canRedo: state.can_redo,
-        undoLabel: state.undo_label,
-        redoLabel: state.redo_label,
-        undoLabels: state.undo_labels,
-        redoLabels: state.redo_labels,
-      });
+      setUndoState({ canUndo: state.can_undo, canRedo: state.can_redo });
     } catch { /* ignore */ }
     if (watchers > 0 && request === stateRequest && ownsContext(owner)) await readHistory(history, owner);
   }
@@ -124,10 +115,7 @@ export function createUndoStore(
         return;
       }
       applySnapshot(answer.snapshot);
-      if (kind !== "jumped" && answer.brief) {
-        showNotice({ kind, brief: answer.brief });
-        log.info("undo", `${kind === "undid" ? "Undo" : "Redo"}: ${answer.brief.label}`);
-      }
+      if (kind !== "jumped" && answer.brief) showNotice({ kind, brief: answer.brief });
       await refreshUndoState();
     } catch (e) {
       if (!ownsContext(owner)) return;
@@ -141,7 +129,7 @@ export function createUndoStore(
   const restoreUndoLevel = (level: number) => step(() => api.historyJump(level), "jumped");
 
   function clearUndoHistory() {
-    setUndoState({ canUndo: false, canRedo: false, undoLabel: null, redoLabel: null, undoLabels: [], redoLabels: [] });
+    setUndoState({ canUndo: false, canRedo: false });
     setHistoryView(EMPTY_VIEW);
     void refreshUndoState();
   }

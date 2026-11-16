@@ -546,7 +546,7 @@ export default function App() {
                         {current.kind === "agent_editing"
                           ? i18n.t("history.agentEditing")
                           : i18n.t(current.kind === "undid" ? "history.undid" : "history.redid", {
-                            brief: briefText(current.brief),
+                            brief: briefText(current.brief, { properties: store.project.properties }),
                           })}
                       </span>
                     );

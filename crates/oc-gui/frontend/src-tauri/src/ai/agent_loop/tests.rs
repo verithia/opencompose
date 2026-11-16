@@ -28,6 +28,8 @@ struct World {
     invalid_from: Option<u64>,
     /// Mutations succeed without changing the document.
     noop: bool,
+    /// The call whose result carries typed edit facts.
+    typed_changes_on: Option<String>,
     /// The model writes its calls in text.
     text_protocol: bool,
     undos: usize,
@@ -193,7 +195,7 @@ impl Host for Fake {
             world.revision += 1;
             world.dsl = format!("@project r{}", world.revision);
         }
-        match tool {
+        let result = match tool {
             "transaction_begin" => {
                 world.batch = Some(args["label"].as_str().unwrap_or_default().to_owned());
                 Ok(json!({"active": true}))
@@ -226,7 +228,15 @@ impl Host for Fake {
             "big_read" => Ok(json!({"rows": "x".repeat(20_000)})),
             "refused" => Err(json!({"error": "refused: nope"})),
             _ => Ok(json!({"ok": true})),
+        };
+        let mut result = result?;
+        if world.typed_changes_on.as_deref() == Some(tool) {
+            result["changes"] = json!({
+                "changes": [{"kind": "tempo", "from": 120.0, "to": 132.0}],
+                "more": 0,
+            });
         }
+        Ok(result)
     }
 
     async fn ask(&self, request: ApprovalRequest) -> Option<Decision> {
@@ -286,7 +296,7 @@ impl Host for Fake {
         }
     }
 
-    async fn apply_edit(&self, _path: &str, dsl: &str, expected: &str) -> Result<Document, String> {
+    async fn apply_edit(&self, _path: &str, dsl: &str, expected: &str) -> Result<Edited, String> {
         let mut world = self.world();
         if world.dsl != expected {
             return Err("changed".into());
@@ -296,10 +306,18 @@ impl Host for Fake {
         }
         world.revision += 1;
         world.dsl = dsl.to_owned();
-        Ok(Document {
-            dsl: world.dsl.clone(),
-            revision: world.revision,
-            track_count: 1,
+        // A fixture document that parses is described like the app's.
+        let changes = match (oc_dsl::parse(expected), oc_dsl::parse(dsl)) {
+            (Ok(before), Ok(after)) => crate::agent_api::describe_edit(&before, &after),
+            _ => None,
+        };
+        Ok(Edited {
+            document: Document {
+                dsl: world.dsl.clone(),
+                revision: world.revision,
+                track_count: 1,
+            },
+            changes,
         })
     }
 
@@ -771,7 +789,7 @@ fn a_reply_after_cancel_is_saved_and_none_of_its_calls_run() {
             path: &str,
             dsl: &str,
             expected: &str,
-        ) -> Result<Document, String> {
+        ) -> Result<Edited, String> {
             self.0.apply_edit(path, dsl, expected).await
         }
         async fn subtree(&self, path: &str) -> String {
@@ -1012,4 +1030,74 @@ fn a_reported_input_past_the_window_stops_the_turn_before_the_next_send() {
     assert_eq!(outcome.error.unwrap().kind, "context_overflow");
     assert_eq!(fake.world().sent.len(), 1, "the oversized wire is not sent");
     assert_eq!(check_pairing(&fake.saved()), Ok(()));
+}
+
+#[test]
+fn typed_changes_leave_the_result_and_stay_on_the_saved_row() {
+    let mut result = json!({
+        "revision": 1,
+        "changes": {
+            "changes": [{"kind": "tempo", "from": 120.0, "to": 132.0}],
+            "more": 0,
+        },
+    });
+    let changes = take_changes(&mut result).expect("the result carries the facts");
+    assert!(result.get("changes").is_none(), "{result}");
+    let call = Call {
+        id: "c1".into(),
+        name: "project_set_tempo".into(),
+        arguments: "{}".into(),
+    };
+    let mut message = result_message(&call, true, &result.to_string());
+    message["changes"] = changes;
+    assert_eq!(message["changes"]["changes"][0]["kind"], "tempo");
+    assert!(!message["content"].as_str().unwrap().contains("changes"));
+}
+
+#[test]
+fn an_edit_subtree_row_saves_the_typed_changes_of_its_edit() {
+    let new = "@project \"S\"\n  tempo: 132\n";
+    let args = json!({"path": "project", "new_dsl": new}).to_string();
+    let edit = json!({"role":"assistant","content":null,"tool_calls":[
+        {"id":"e","type":"function","function":{"name":"edit_subtree","arguments": args}}
+    ]});
+    let fake = Fake::new(vec![edit]);
+    fake.world().dsl = "@project \"S\"\n  tempo: 100\n".into();
+    block_on(fake.run(SessionPermission::Write));
+    assert_eq!(fake.world().dsl, new);
+    let saved = fake.saved();
+    let row = saved
+        .iter()
+        .find(|message| message["tool_call_id"] == "e")
+        .unwrap();
+    assert_eq!(
+        row["changes"]["changes"],
+        json!([{"kind": "tempo", "from": 100.0, "to": 132.0}])
+    );
+    assert!(!row["content"].as_str().unwrap().contains("changes"));
+}
+
+#[test]
+fn a_mutating_tool_row_saves_typed_changes_and_a_read_only_row_does_not() {
+    let fake = Fake::new(vec![round(&[
+        ("a", "project_set_tempo"),
+        ("b", "tracks_list"),
+    ])]);
+    fake.world().typed_changes_on = Some("project_set_tempo".into());
+    block_on(fake.run(SessionPermission::Write));
+    let saved = fake.saved();
+    let changed = saved
+        .iter()
+        .find(|message| message["tool_call_id"] == "a")
+        .unwrap();
+    assert_eq!(
+        changed["changes"]["changes"],
+        json!([{"kind": "tempo", "from": 120.0, "to": 132.0}])
+    );
+    assert!(!changed["content"].as_str().unwrap().contains("changes"));
+    let read = saved
+        .iter()
+        .find(|message| message["tool_call_id"] == "b")
+        .unwrap();
+    assert!(read.get("changes").is_none(), "{read}");
 }

@@ -85,7 +85,7 @@ async function bootProject(tracks = 2) {
   const snapshot = makeSnapshot({ tracks: projectTracks });
   invokeMock.mockImplementation(async (cmd: string) => {
     if (cmd === "get_undo_state") {
-      return { can_undo: false, can_redo: false, undo_label: null, redo_label: null, undo_labels: [], redo_labels: [] };
+      return { can_undo: false, can_redo: false,    };
     }
     return snapshot;
   });

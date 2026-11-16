@@ -107,8 +107,9 @@ Edits are guarded so a multi-step change is atomic to the user.
   mutation marks the transaction and the revision stays at the base;
   `expected_revision` accepts that base for every call in the batch.
 - `transaction_commit` publishes exactly one revision and squashes the batch into
-  one undo entry labelled `Transaction: <label>`. One undo restores the
-  pre-batch project and one redo re-applies the whole batch.
+  one undo entry that records the typed changes between the batch base and its
+  final state. One undo restores the pre-batch project and one redo re-applies
+  the whole batch.
 - `transaction_rollback` restores the snapshot byte-for-byte, drops the batch's
   undo and redo entries, and moves the revision forward so stale
   `expected_revision` guards fail.

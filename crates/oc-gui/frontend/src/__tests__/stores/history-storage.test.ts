@@ -32,18 +32,33 @@ describe("the history size notice", () => {
 });
 
 describe("history text", () => {
-  it("names the edit, what it set and who made it", () => {
+  it("names the typed changes and who made them", () => {
     rememberSessionTitles([{ id: "s1", title: "Drum ideas" }]);
-    expect(briefText({ label: "project name", subject: "Song", author: { kind: "person" } }))
-      .toBe("Project name: Song (You)");
-    expect(briefText({ label: "Transaction: groove", author: { kind: "agent", session: "s1" } }))
-      .toBe("Agent turn: groove (Agent - Drum ideas)");
-    expect(briefText({ label: "tempo", author: { kind: "agent", session: "gone" } }))
-      .toBe("Tempo (Agent)");
-    expect(briefText({ label: "external change", author: { kind: "outside" } }))
-      .toBe("Load the file as it is on disk (Outside OpenCompose)");
-    expect(briefText({ label: "edit", author: { kind: "client", owner: "http" } }))
-      .toBe("Edit (Client http)");
+    expect(briefText({
+      changes: { changes: [{ kind: "project_renamed", from: null, to: "Song" }], more: 0 },
+      cause: "edit",
+      author: { kind: "person" },
+    })).toBe("Name the project “Song” (You)");
+    expect(briefText({
+      changes: { changes: [{ kind: "track_added", track: "groove" }], more: 0 },
+      cause: "edit",
+      author: { kind: "agent", session: "s1" },
+    })).toBe("Add track “groove” (Agent - Drum ideas)");
+    expect(briefText({
+      changes: { changes: [{ kind: "tempo", from: 120, to: 132 }], more: 0 },
+      cause: "edit",
+      author: { kind: "agent", session: "gone" },
+    })).toBe("Change tempo from 120 to 132 BPM (Agent)");
+    expect(briefText({
+      changes: { changes: [], more: 0 },
+      cause: "edit",
+      author: { kind: "outside" },
+    })).toBe("Edit (Outside OpenCompose)");
+    expect(briefText({
+      changes: { changes: [{ kind: "sections_edited", span: null }], more: 0 },
+      cause: "conversation_revert",
+      author: { kind: "client", owner: "http" },
+    })).toBe("Revert conversation · Edit sections (Client http)");
   });
 
   it("sizes bytes in the largest unit that keeps a whole number", () => {

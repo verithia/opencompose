@@ -8,14 +8,17 @@ function deferred<T>() {
   const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
   return { promise, resolve, reject };
 }
-const state = (label: string) => ({
-  can_undo: true, can_redo: false, undo_label: label, redo_label: null,
-  undo_labels: [label], redo_labels: [],
-});
-const entries = (label: string) => [{
-  index: 1, name: label, author: { kind: "person" as const }, scopes: [], timestamp: 0, applied: true,
+const state = () => ({ can_undo: true, can_redo: false });
+const entries = (track: string) => [{
+  index: 1,
+  changes: { changes: [{ kind: "track_changed" as const, track }], more: 0 },
+  cause: "edit" as const,
+  author: { kind: "person" as const },
+  scopes: [],
+  timestamp: 0,
+  applied: true,
 }];
-const history = (label: string) => ({ entries: entries(label), total: 1, applied: 1, journaled: true });
+const history = (track: string) => ({ entries: entries(track), total: 1, applied: 1, journaled: true });
 const calls = (command: string) => invokeMock.mock.calls.filter(([name]) => name === command);
 
 /** A store with the History view open, its first read already answered. */
@@ -33,10 +36,10 @@ afterEach(() => { vi.useRealTimers(); });
 
 describe("undo reply ownership", () => {
   it("reads no history page while no History view is open", async () => {
-    invokeMock.mockImplementation(command => Promise.resolve(command === "get_undo_state" ? state("A") : history("A")));
+    invokeMock.mockImplementation(command => Promise.resolve(command === "get_undo_state" ? state() : history("A")));
     const store = createUndoStore(vi.fn(), vi.fn());
     await store.refreshUndoState();
-    expect(store.undoState().undoLabel).toBe("A");
+    expect(store.undoState().canUndo).toBe(true);
     expect(calls("history_page")).toHaveLength(0);
     const close = store.watchHistory();
     await vi.waitFor(() => expect(store.historyView().entries).toEqual(entries("A")));
@@ -55,7 +58,7 @@ describe("undo reply ownership", () => {
       ? old.promise : Promise.resolve(history("unexpected")));
     const request = store.refreshUndoState();
     context = "B:2";
-    old.resolve(state("A edit"));
+    old.resolve(state());
     await request;
     expect(store.undoState().canUndo).toBe(false);
     expect(calls("history_page")).toHaveLength(0);
@@ -67,15 +70,15 @@ describe("undo reply ownership", () => {
     const store = await watched(vi.fn(), vi.fn(), () => context);
     const old = deferred<ReturnType<typeof history>>();
     invokeMock.mockImplementation(command => command === "get_undo_state"
-      ? Promise.resolve(state(context)) : old.promise);
+      ? Promise.resolve(state()) : old.promise);
     const pending = store.refreshUndoState();
     await vi.waitFor(() => expect(calls("history_page")).toHaveLength(1));
     context = "B:2";
-    invokeMock.mockImplementation(command => Promise.resolve(command === "get_undo_state" ? state("B edit") : history("B edit")));
+    invokeMock.mockImplementation(command => Promise.resolve(command === "get_undo_state" ? state() : history("B edit")));
     await store.refreshUndoState();
     old.resolve(history("A edit"));
     await pending;
-    expect(store.undoState().undoLabel).toBe("B edit");
+    expect(store.undoState().canUndo).toBe(true);
     expect(store.historyView().entries).toEqual(entries("B edit"));
   });
 
@@ -88,11 +91,11 @@ describe("undo reply ownership", () => {
     invokeMock.mockImplementationOnce(() => first.promise).mockImplementationOnce(() => second.promise);
     const old = store.refreshUndoState();
     const latest = store.refreshUndoState();
-    second.resolve(state("New"));
+    second.resolve(state());
     await latest;
-    first.resolve(state("Old"));
+    first.resolve(state());
     await old;
-    expect(store.undoState().undoLabel).toBe("New");
+    expect(store.undoState().canUndo).toBe(true);
     expect(store.historyView().entries).toEqual(entries("New"));
     expect(calls("history_page")).toHaveLength(1);
   });
@@ -110,21 +113,21 @@ describe("undo reply ownership", () => {
   });
 
   it("clears old labels immediately and invalidates in-flight reads on document reset", async () => {
-    invokeMock.mockImplementation(command => Promise.resolve(command === "get_undo_state" ? state("Old") : history("Old")));
+    invokeMock.mockImplementation(command => Promise.resolve(command === "get_undo_state" ? state() : history("Old")));
     const store = await watched(vi.fn(), vi.fn());
     await store.refreshUndoState();
     const pendingHistory = deferred<ReturnType<typeof history>>();
     invokeMock.mockReturnValueOnce(pendingHistory.promise);
     const pending = store.refreshHistory();
     invokeMock.mockImplementation(command => Promise.resolve(command === "get_undo_state" ? {
-      can_undo: false, can_redo: false, undo_label: null, redo_label: null, undo_labels: [], redo_labels: [],
+      can_undo: false, can_redo: false,
     } : { entries: [], total: 0, applied: 0, journaled: true }));
     store.clearUndoHistory();
     expect(store.undoState().canUndo).toBe(false);
     expect(store.historyView().entries).toEqual([]);
     pendingHistory.resolve(history("Old"));
     await pending;
-    await vi.waitFor(() => expect(store.undoState().undoLabel).toBeNull());
+    await vi.waitFor(() => expect(store.undoState().canUndo).toBe(false));
     expect(store.historyView().entries).toEqual([]);
   });
 
@@ -160,14 +163,18 @@ describe("undo reply ownership", () => {
 });
 
 describe("the footer's history line", () => {
-  const brief = { label: "tempo", subject: "128 BPM", author: { kind: "agent" as const, session: "s1" } };
+  const brief = {
+    changes: { changes: [{ kind: "tempo" as const, from: 120, to: 132 }], more: 0 },
+    cause: "edit" as const,
+    author: { kind: "agent" as const, session: "s1" },
+  };
 
   it("names what an undo and a redo did, then clears", async () => {
     vi.useFakeTimers();
     invokeMock.mockImplementation(command => Promise.resolve(
       command === "history_undo" || command === "history_redo"
         ? { status: "applied", snapshot: makeSnapshot(), brief }
-        : state("x"),
+        : state(),
     ));
     const apply = vi.fn();
     const store = createUndoStore(apply, vi.fn());

@@ -121,11 +121,32 @@ pub fn start_fresh(project: &std::path::Path) {
     }
 }
 
+/// What a patch cannot say about why an entry exists.
+///
+/// A revert through [`crate::commands::restore_dsl_with_undo`] restores a saved
+/// document, so its diff names the same facts as an ordinary edit. The cause
+/// lets a UI describe it as a conversation revert instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EditCause {
+    /// An ordinary document edit.
+    #[default]
+    Edit,
+    /// A conversation restored an earlier document snapshot.
+    ConversationRevert,
+}
+
+impl EditCause {
+    /// Whether this is the default cause, which a stored entry omits.
+    pub fn is_edit(&self) -> bool {
+        matches!(self, Self::Edit)
+    }
+}
+
 /// What the footer and the History tab show for one entry.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Brief {
-    pub label: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub subject: Option<String>,
+    pub changes: oc_dsl::change::ChangeSet,
+    pub cause: EditCause,
     pub author: Author,
 }

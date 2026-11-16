@@ -5,6 +5,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { render, fireEvent, waitFor } from "@solidjs/testing-library";
 import type { HistoryPage, UndoHistoryEntry } from "../../stores/api";
+import type { Change, ChangeSet } from "../../types/change";
 import { expectInvoked, invokeMock, makeSnapshot, TRANSPORT_STOPPED } from "../setup";
 import { store } from "../../stores/project";
 import { HistoryPanel, formatTimestamp } from "../../components/HistoryPanel";
@@ -16,24 +17,21 @@ import { rememberSessionTitles } from "../../stores/sessionTitles";
 const dialog = vi.hoisted(() => ({ ask: vi.fn(async () => true) }));
 vi.mock("@tauri-apps/plugin-dialog", () => dialog);
 
-const UNDO_STATE = {
-  can_undo: true,
-  can_redo: true,
-  undo_label: "clip move",
-  redo_label: null,
-  undo_labels: ["clip move"],
-  redo_labels: [],
-};
+const UNDO_STATE = { can_undo: true, can_redo: true };
+
+function set(...changes: Change[]): ChangeSet {
+  return { changes, more: 0 };
+}
 
 function entry(
   index: number,
-  name: string,
+  changes: ChangeSet,
   scopes: UndoHistoryEntry["scopes"],
   applied = true,
   extra: Partial<UndoHistoryEntry> = {},
 ): UndoHistoryEntry {
   return {
-    index, name, scopes, timestamp: 1_700_000_000_000 + index * 1000, applied,
+    index, changes, cause: "edit", scopes, timestamp: 1_700_000_000_000 + index * 1000, applied,
     author: { kind: "person" }, ...extra,
   };
 }
@@ -57,9 +55,11 @@ beforeEach(async () => {
   dialog.ask.mockClear();
   bytes = 2048;
   history = [
-    entry(1, "tempo", ["transport"], true, { subject: "128 BPM" }),
-    entry(2, "Transaction: drums", ["project"], true, { author: { kind: "agent", session: "s1" } }),
-    entry(3, "clip move", ["project"], false),
+    entry(1, set({ kind: "tempo", from: 120, to: 128 }), ["transport"]),
+    entry(2, set({ kind: "track_added", track: "drums" }), ["project"], true, {
+      author: { kind: "agent", session: "s1" },
+    }),
+    entry(3, set({ kind: "clips_edited", track: "lead", span: null }), ["project"], false),
   ];
   rememberSessionTitles([{ id: "s1", title: "Drum ideas" }]);
   invokeMock.mockImplementation(async (cmd: string, args?: unknown) => {
@@ -85,19 +85,33 @@ beforeEach(async () => {
 });
 
 describe("HistoryPanel", () => {
-  it("names each entry with its subject and author, newest first", async () => {
+  it("names each entry with its typed changes and author, newest first", async () => {
     const { container } = render(() => <HistoryPanel />);
     await waitFor(() => expect(container.querySelectorAll(".undo-history-entry[data-level]").length).toBe(4));
     expect([...container.querySelectorAll(".undo-history-name")].map((node) => node.textContent)).toEqual([
-      "Clip move (You)",
-      "Agent turn: drums (Agent - Drum ideas)",
-      "Tempo: 128 BPM (You)",
+      "Edit clips on “lead” (You)",
+      "Add track “drums” (Agent - Drum ideas)",
+      "Change tempo from 120 to 128 BPM (You)",
       "Start of history",
     ]);
     expect(container.querySelector('[data-scope="transport"]')?.textContent).toBe("transport");
     expect(container.querySelectorAll(".undo-history-entry.redo").length).toBe(1);
     expect(container.querySelector(".undo-history-entry.current")?.getAttribute("data-level")).toBe("2");
     await waitFor(() => expect(container.querySelector(".history-size")?.textContent).toBe("2.0 KB on disk"));
+  });
+
+  it("names a span in bars and marks a conversation revert", async () => {
+    history = [entry(
+      1,
+      set({ kind: "clips_edited", track: "lead", span: { start: 0, end: 16 } }),
+      ["project"],
+      true,
+      { cause: "conversation_revert" },
+    )];
+    const { container } = render(() => <HistoryPanel />);
+    await waitFor(() => expect(container.querySelectorAll(".undo-history-entry[data-level]").length).toBe(2));
+    expect(container.querySelector(".undo-history-name")?.textContent)
+      .toBe("Revert conversation · Edit clips on “lead” in bars 1–4 (You)");
   });
 
   it("jumps to a level through the backend command", async () => {
@@ -108,7 +122,9 @@ describe("HistoryPanel", () => {
   });
 
   it("loads older entries a page at a time", async () => {
-    history = Array.from({ length: 70 }, (_, at) => entry(at + 1, `edit ${at + 1}`, ["project"]));
+    history = Array.from({ length: 70 }, (_, at) => entry(
+      at + 1, set({ kind: "track_changed", track: `edit ${at + 1}` }), ["project"],
+    ));
     const { container, getByText } = render(() => <HistoryPanel />);
     await waitFor(() => expect(container.querySelectorAll(".undo-history-entry").length).toBe(64));
     expect(container.querySelector('[data-level="0"]')).toBeNull();
@@ -121,7 +137,10 @@ describe("HistoryPanel", () => {
   it("follows a new edit that dropped the redo levels", async () => {
     const { container } = render(() => <HistoryPanel />);
     await waitFor(() => expect(container.querySelectorAll(".undo-history-entry.redo").length).toBe(1));
-    history = [entry(1, "tempo", ["transport"]), entry(2, "tempo", ["transport"])];
+    history = [
+      entry(1, set({ kind: "tempo", from: 120, to: 140 }), ["transport"]),
+      entry(2, set({ kind: "tempo", from: 140, to: 150 }), ["transport"]),
+    ];
     await store.setTempo(140);
     await waitFor(() => expect(container.querySelectorAll(".undo-history-entry.redo").length).toBe(0));
     expect(container.querySelector('[data-level="3"]')).toBeNull();

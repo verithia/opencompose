@@ -143,7 +143,7 @@ fn a_take_replaces_the_recorded_span_in_one_undo_entry() {
 
     let inner = state.lock_inner();
     assert_eq!(inner.undo.undo.len(), 1, "a take is one undo entry");
-    assert_eq!(inner.undo.undo[0].label, "record midi take");
+    assert_eq!(inner.undo.undo[0].tag, "record midi take");
     let events = &inner.project.patterns[0].events;
     assert_eq!(events.len(), 1, "the note inside the span is replaced");
     assert_eq!(events[0].start_beat, 0.0);
