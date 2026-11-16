@@ -83,7 +83,9 @@ compaction and a restart keep every result a message still refers to, and
 nothing else. A fork copies the files its inherited rows name, so deleting the
 parent does not remove the fork's results. A read validates the hash before it
 becomes a path and bounds the bytes it loads, so a damaged file cannot grow
-memory.
+memory, and it checks that the text hashes to its name: a file whose bytes
+changed reads as missing, never as the result the row recorded. Saving the
+same result again, or a fork copying it, replaces such a file.
 
 A conversation belongs to a **workspace**, which is the directory holding the
 project files, not to one `.ocp`. Projects in one directory share one set of

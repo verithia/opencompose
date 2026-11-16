@@ -32,6 +32,17 @@ fn path(dir: &Path, hash: &str) -> PathBuf {
     dir.join(DIR).join(format!("{hash}.txt"))
 }
 
+fn digest(text: &str) -> String {
+    format!("{:x}", Sha256::digest(text.as_bytes()))
+}
+
+/// Whether the file at `file` holds exactly the text `hash` names. A file
+/// whose bytes changed under its name is not reused: the next write replaces
+/// it.
+fn holds(file: &Path, hash: &str) -> bool {
+    std::fs::read(file).is_ok_and(|bytes| format!("{:x}", Sha256::digest(&bytes)) == hash)
+}
+
 /// Writes the full result each message carries and swaps it for its hash. A
 /// result over the stored bound is dropped: its preview already tells the
 /// model to query narrower.
@@ -47,9 +58,9 @@ pub(super) fn archive(dir: &Path, messages: &mut [Value]) -> Result<(), String> 
         if text.chars().count() > MAX_STORED_CHARS {
             continue;
         }
-        let hash = format!("{:x}", Sha256::digest(text.as_bytes()));
+        let hash = digest(text);
         let file = path(dir, &hash);
-        if !file.is_file() {
+        if !holds(&file, &hash) {
             private_fs::ensure_dir(&dir.join(DIR)).map_err(|error| format!("sessions: {error}"))?;
             private_fs::write_atomic(&file, text.as_bytes())
                 .map_err(|error| format!("sessions: {error}"))?;
@@ -60,12 +71,15 @@ pub(super) fn archive(dir: &Path, messages: &mut [Value]) -> Result<(), String> 
 }
 
 /// The full result a saved hash names. The hash is validated before it becomes
-/// a file name, and the read is bounded, so a damaged file cannot grow memory.
+/// a file name, the read is bounded, so a damaged file cannot grow memory, and
+/// the text must hash to its name: a file whose bytes changed reads as missing
+/// rather than as the result the row recorded.
 pub(super) fn read(dir: &Path, hash: &str) -> Result<Option<String>, String> {
     if !is_hash(hash) {
         return Ok(None);
     }
-    let file = match std::fs::File::open(path(dir, &hash.to_ascii_lowercase())) {
+    let hash = hash.to_ascii_lowercase();
+    let file = match std::fs::File::open(path(dir, &hash)) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(format!("sessions: {error}")),
@@ -76,7 +90,7 @@ pub(super) fn read(dir: &Path, hash: &str) -> Result<Option<String>, String> {
     file.take(cap + 1)
         .read_to_string(&mut text)
         .map_err(|error| format!("sessions: {error}"))?;
-    if text.len() as u64 > cap {
+    if text.len() as u64 > cap || digest(&text) != hash {
         return Ok(None);
     }
     Ok(Some(text))
@@ -131,11 +145,12 @@ pub(super) fn copy_references(
         .filter_map(|row| row[RESULT_SHA].as_str())
         .filter(|hash| is_hash(hash))
     {
-        let target = path(child, hash);
-        if target.is_file() {
+        let hash = hash.to_ascii_lowercase();
+        let target = path(child, &hash);
+        if holds(&target, &hash) {
             continue;
         }
-        if let Some(text) = read(parent, hash)? {
+        if let Some(text) = read(parent, &hash)? {
             private_fs::ensure_dir(&child.join(DIR))
                 .map_err(|error| format!("sessions: {error}"))?;
             private_fs::write_atomic(&target, text.as_bytes())
@@ -258,6 +273,60 @@ mod tests {
         let (dir, _) = store.find(&id).unwrap();
         assert_eq!(read(&dir, "../../meta").unwrap(), None);
         assert_eq!(read(&dir, &"g".repeat(64)).unwrap(), None);
+    }
+
+    #[test]
+    fn a_result_whose_bytes_changed_under_its_hash_reads_as_missing() {
+        let (_root, store, id) = fixture();
+        let saved = store
+            .append_turn(
+                &id,
+                &[user("go"), round("c"), truncated("c", "ORIGINAL")],
+                None,
+            )
+            .unwrap();
+        let hash = saved[2][RESULT_SHA].as_str().unwrap().to_string();
+        let (dir, _) = store.find(&id).unwrap();
+        std::fs::write(path(&dir, &hash), "{\"rows\":[\"TAMPERED\"]}").unwrap();
+        assert_eq!(store.tool_result(&id, "c").unwrap(), None);
+        assert_eq!(read(&dir, &hash.to_ascii_uppercase()).unwrap(), None);
+    }
+
+    #[test]
+    fn saving_the_same_result_again_replaces_a_file_whose_bytes_changed() {
+        let (_root, store, id) = fixture();
+        let saved = store
+            .append_turn(&id, &[user("go"), round("c"), truncated("c", "SAME")], None)
+            .unwrap();
+        let hash = saved[2][RESULT_SHA].as_str().unwrap().to_string();
+        let (dir, _) = store.find(&id).unwrap();
+        std::fs::write(path(&dir, &hash), "TAMPERED").unwrap();
+        store
+            .append_turn(&id, &[round("d"), truncated("d", "SAME")], None)
+            .unwrap();
+        assert_eq!(
+            store.tool_result(&id, "c").unwrap().as_deref(),
+            Some("SAME")
+        );
+        assert_eq!(
+            store.tool_result(&id, "d").unwrap().as_deref(),
+            Some("SAME")
+        );
+    }
+
+    #[test]
+    fn a_fork_replaces_a_changed_copy_of_an_inherited_result() {
+        let (_root, store, id) = fixture();
+        let saved = store
+            .append_turn(&id, &[user("go"), round("c"), truncated("c", "KEPT")], None)
+            .unwrap();
+        let hash = saved[2][RESULT_SHA].as_str().unwrap().to_string();
+        let (parent, _) = store.find(&id).unwrap();
+        let child = tempfile::tempdir().unwrap();
+        private_fs::ensure_dir(&child.path().join(DIR)).unwrap();
+        std::fs::write(path(child.path(), &hash), "TAMPERED").unwrap();
+        copy_references(&parent, child.path(), &saved).unwrap();
+        assert_eq!(read(child.path(), &hash).unwrap().as_deref(), Some("KEPT"));
     }
 
     #[test]
