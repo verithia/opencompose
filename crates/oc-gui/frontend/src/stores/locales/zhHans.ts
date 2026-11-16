@@ -2363,6 +2363,7 @@ export const zhHans = {
   "ai.turn.stalled": "{seconds} 前已请求停止，但服务商没有响应；再按一次可重新发送停止请求。",
   "ai.turn.stop": "取消请求",
   "ai.turn.error": "错误：{error}",
+  "ai.turn.changed": "本轮更改：{changes}",
   "ai.turn.notStarted": "无法开始对话。",
   "ai.queue.idle": "当前没有进行中的轮。",
   "ai.queue.sendNow": "立即发送",

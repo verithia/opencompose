@@ -370,6 +370,13 @@ impl Host for AppHost {
         result
     }
 
+    async fn batch_changes(&self) -> Option<oc_dsl::change::ChangeSet> {
+        let state = self.state();
+        let inner = state.lock_inner();
+        let base = inner.transaction_base_project()?;
+        crate::agent_api::describe_edit(base, &inner.project)
+    }
+
     async fn call(&self, tool: &str, args: &Value, cancel: &Cancel) -> Result<Value, Value> {
         let refusal = crate::ai::skill_hints::refusal;
         let checked = crate::tool_registry::panel_tool_in(tool, self.toolsets.as_deref())

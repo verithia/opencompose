@@ -245,6 +245,10 @@ pub struct TurnOutcome {
     /// The provider or store failure that ended the turn.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<AiError>,
+    /// The typed facts the turn's committed batch produced, described once
+    /// from its base to its final document.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub changes: Option<oc_dsl::change::ChangeSet>,
 }
 
 /// What one turn is allowed to do.
@@ -287,6 +291,10 @@ pub trait Host: Sync {
     fn begin_batch(&self, label: &str) -> impl Future<Output = Result<(), String>> + Send;
     /// Commits the turn's batch as one undo entry and writes the project file.
     fn commit_batch(&self) -> impl Future<Output = Result<(), CommitError>> + Send;
+    /// The typed facts of the open batch, read before its commit.
+    fn batch_changes(&self) -> impl Future<Output = Option<oc_dsl::change::ChangeSet>> + Send {
+        std::future::ready(None)
+    }
     /// Dispatches one registry tool. A refusal is the payload the model reads.
     fn call(
         &self,
@@ -1080,6 +1088,11 @@ impl<H: Host> Turn<'_, H> {
             }
             Err(error) => save_error = Some(error),
         }
+        let changes = if self.batch {
+            self.host.batch_changes().await
+        } else {
+            None
+        };
         let commit_result = if self.batch {
             let result = self.host.commit_batch().await;
             // A save failure still committed: the batch is closed either way
@@ -1118,12 +1131,14 @@ impl<H: Host> Turn<'_, H> {
                 failed: true,
                 stop: Some(stop),
                 error: None,
+                ..TurnOutcome::default()
             },
             Ending::Empty => TurnOutcome {
                 text: "Provider returned no text.".into(),
                 failed: true,
                 stop: (self.edits > 0 || commit_error.is_some()).then_some(stop),
                 error: None,
+                ..TurnOutcome::default()
             },
             Ending::Cancelled => {
                 stop.cancelled = true;
@@ -1132,6 +1147,7 @@ impl<H: Host> Turn<'_, H> {
                     failed: true,
                     stop: Some(stop),
                     error: None,
+                    ..TurnOutcome::default()
                 }
             }
             Ending::Cap => TurnOutcome {
@@ -1143,6 +1159,7 @@ impl<H: Host> Turn<'_, H> {
                 failed: true,
                 stop: Some(stop),
                 error: None,
+                ..TurnOutcome::default()
             },
             Ending::Repeated(text) => {
                 stop.failure_kept = stop.committed;
@@ -1151,6 +1168,7 @@ impl<H: Host> Turn<'_, H> {
                     failed: true,
                     stop: Some(stop),
                     error: None,
+                    ..TurnOutcome::default()
                 }
             }
             Ending::Failed(error) => {
@@ -1166,9 +1184,13 @@ impl<H: Host> Turn<'_, H> {
                     failed: true,
                     stop: edited.then_some(stop),
                     error: Some(error),
+                    ..TurnOutcome::default()
                 }
             }
         };
+        if committed_in_memory {
+            outcome.changes = changes;
+        }
         if let Some(error) = save_error {
             outcome.failed = true;
             outcome.text = format!(

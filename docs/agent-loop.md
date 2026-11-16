@@ -698,6 +698,11 @@ drops the batch's undo/redo entries and moves the revision forward so stale
   puts back the history it found.
 * **Undo depth is one per transaction.** After commit, one `undo` restores the
   pre-batch project and one `redo` re-applies the whole batch.
+* **The turn reports its batch once.** The model's `transaction_commit` inside a
+  panel turn is answered without dispatch, so that saved row carries no facts.
+  When the turn ends, the loop describes the batch from its base to its final
+  document and returns those typed changes in the turn outcome. The panel shows
+  them once as "This turn changed: ..." instead of rewriting the saved row.
 * **Renders see the working state.** Every tool reads the project the batch has
   edited so far, and `render_range` renders it: a model can audition its own
   in-turn edit. The pre-batch render is kept while the batch is open, so

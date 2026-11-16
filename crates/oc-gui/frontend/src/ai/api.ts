@@ -1,6 +1,7 @@
 import { Channel } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { ProjectSnapshot } from "../types/project";
+import type { ChangeSet } from "../types/change";
 import type { ModelLimits } from "../stores/aiLimits";
 import type { AuthKind, Wire } from "./config";
 import type { ApprovalRequest, ToolDef, TurnStop, WireMessage } from "./wire";
@@ -34,6 +35,8 @@ export interface TurnOutcome {
   text: string;
   failed: boolean;
   stop?: TurnStop;
+  /** The typed facts the committed batch produced, reported once per turn. */
+  changes?: ChangeSet;
   error?: {
     kind: string;
     message: string;

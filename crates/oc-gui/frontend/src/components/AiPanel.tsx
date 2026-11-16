@@ -18,6 +18,8 @@ import { previewStore } from "../stores/preview";
 import { log } from "../stores/log";
 import type { ApprovalRequest, TurnStop, WireMessage } from "../ai/wire";
 import type { TurnEnvelope, TurnOutcome } from "../ai/api";
+import { changeSetText } from "../stores/changeText";
+import { hasChangeFacts, isChangeSet } from "../types/change";
 import { approvalEffect, approvalTarget } from "../ai/approval";
 import { allowTool, allowedTools } from "../ai/approvalMemory";
 import {
@@ -1721,11 +1723,27 @@ export function AiPanel(props: { onClose?: () => void }) {
   const settleOutcome = (outcome: TurnOutcome, sent: WireMessage[], textProtocol: boolean) => {
     const error = outcome.error;
     if (error && errorKind(error) === "auth_expired") setAuthError(errorMessage(error));
-    if (!outcome.failed) return;
+    // The turn's batch commits as one edit, so its facts are reported once here
+    // instead of on the deferred transaction_commit row.
+    const changed = isChangeSet(outcome.changes) && hasChangeFacts(outcome.changes)
+      ? i18n.t("ai.turn.changed", {
+        changes: changeSetText(outcome.changes, { properties: store.project.properties }),
+      })
+      : null;
+    if (!outcome.failed) {
+      if (changed) {
+        setMessages(prev => [...prev, {
+          role: "system",
+          content: changed,
+          timestamp: Date.now(),
+        }]);
+      }
+      return;
+    }
     const reason = error ? i18n.t("ai.turn.error", { error: errorMessage(error) }) : null;
     const content = outcome.stop
-      ? [reason, stopNotice(outcome.stop)].filter(Boolean).join("\n")
-      : reason ?? outcome.text;
+      ? [reason, stopNotice(outcome.stop), changed].filter(Boolean).join("\n")
+      : [reason ?? outcome.text, changed].filter(Boolean).join("\n");
     setMessages(prev => [...prev, {
       role: "system",
       content,

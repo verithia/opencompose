@@ -2,6 +2,7 @@ import type { I18nKey } from "../i18n";
 
 /** Japanese interface copy for the editor, settings and export workflows. */
 export const jaCompletionCore = {
+  "ai.turn.changed": "このターンの変更: {changes}",
   "ai.binding.bound": "会話を {name} に紐付けました",
   "ai.binding.moved": "プロジェクトを {name} に移動しました",
   "ai.toolSurface.changed": "ツールが変更されました: {detail}",
@@ -348,16 +349,16 @@ export const jaCompletionCore = {
   "change.audioClipsOnTrack": "「{track}」のオーディオクリップを編集{range}",
   "change.presetAdded": "プリセット「{preset}」を追加",
   "change.presetRemoved": "プリセット「{preset}」を削除",
-  "change.presetChanged": "プリセット「{preset}」を変更",
   "change.presetRenamed": "プリセット名を「{from}」から「{to}」に変更",
+  "change.presetChanged": "プリセット「{preset}」を変更",
   "change.patternAdded": "パターン「{pattern}」を追加",
   "change.patternRemoved": "パターン「{pattern}」を削除",
-  "change.patternChanged": "パターン「{pattern}」を変更{range}",
   "change.patternRenamed": "パターン名を「{from}」から「{to}」に変更",
+  "change.patternChanged": "パターン「{pattern}」を変更{range}",
   "change.busAdded": "バス「{bus}」を追加",
   "change.busRemoved": "バス「{bus}」を削除",
-  "change.busChanged": "バス「{bus}」を変更",
   "change.busRenamed": "バス名を「{from}」から「{to}」に変更",
+  "change.busChanged": "バス「{bus}」を変更",
   "change.busMix": "バス「{bus}」の{params}を変更",
   "change.masterChanged": "マスターを変更",
   "change.presetsReordered": "プリセットを並べ替え",

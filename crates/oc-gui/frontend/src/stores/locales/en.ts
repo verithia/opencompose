@@ -2339,6 +2339,7 @@ export const en = {
     "ai.turn.stalled": "Stop was requested {seconds} ago and the provider has not answered; press again to resend it.",
     "ai.turn.stop": "Cancel request",
     "ai.turn.error": "Error: {error}",
+    "ai.turn.changed": "This turn changed: {changes}",
     "ai.turn.notStarted": "The conversation could not be started.",
     "ai.queue.idle": "No turn is running.",
     "ai.queue.sendNow": "Send now",

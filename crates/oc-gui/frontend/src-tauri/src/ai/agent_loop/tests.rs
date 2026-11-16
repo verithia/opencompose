@@ -38,6 +38,8 @@ struct World {
     steer_on_send: Option<usize>,
     /// Make the batch close fail at this step.
     commit_failure: Option<CommitFailure>,
+    /// The facts the open batch would describe at close.
+    turn_changes: Option<oc_dsl::change::ChangeSet>,
     /// Someone else edits the project while this tool runs.
     edit_elsewhere_on: Option<String>,
 }
@@ -145,6 +147,10 @@ impl Host for Fake {
         .await
         .map(|_| ())
         .map_err(|refusal| refusal.to_string())
+    }
+
+    async fn batch_changes(&self) -> Option<oc_dsl::change::ChangeSet> {
+        self.world().turn_changes.clone()
     }
 
     async fn commit_batch(&self) -> Result<(), CommitError> {
@@ -388,6 +394,40 @@ fn an_answered_turn_saves_every_round_and_commits_once() {
     // The second request carried the first round's results exactly as saved.
     let second = &world.sent[1];
     assert_eq!(&second[1..], &saved[..second.len() - 1]);
+}
+
+#[test]
+fn the_turn_outcome_carries_the_committed_batches_changes_once() {
+    use oc_dsl::change::{Change, ChangeSet};
+    let fake = Fake::new(vec![
+        round(&[("a", "tracks_add"), ("b", "transaction_commit")]),
+        json!({"role":"assistant","content":"All set."}),
+    ]);
+    fake.world().turn_changes = Some(ChangeSet {
+        changes: vec![Change::Tempo {
+            from: 120.0,
+            to: 132.0,
+        }],
+        more: 0,
+    });
+    let outcome = block_on(fake.run(SessionPermission::Write));
+    assert!(!outcome.failed);
+    assert_eq!(
+        outcome.changes,
+        Some(ChangeSet {
+            changes: vec![Change::Tempo {
+                from: 120.0,
+                to: 132.0,
+            }],
+            more: 0,
+        })
+    );
+    // The deferred commit row itself carries no facts; the turn reports them once.
+    assert!(fake.results()[1].1.get("changes").is_none());
+
+    // A read-only turn has no facts to report.
+    let plain = Fake::new(vec![json!({"role":"assistant","content":"Nothing to do."})]);
+    assert_eq!(block_on(plain.run(SessionPermission::Write)).changes, None);
 }
 
 #[test]

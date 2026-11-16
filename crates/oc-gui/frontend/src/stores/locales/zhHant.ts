@@ -2363,6 +2363,7 @@ export const zhHant = {
   "ai.turn.stalled": "{seconds} 前已請求停止，但提供方沒有回應；再按一次可重新送出停止請求。",
   "ai.turn.stop": "取消請求",
   "ai.turn.error": "錯誤：{error}",
+  "ai.turn.changed": "本輪變更：{changes}",
   "ai.turn.notStarted": "無法開始對話。",
   "ai.queue.idle": "目前沒有進行中的回合。",
   "ai.queue.sendNow": "立即傳送",
