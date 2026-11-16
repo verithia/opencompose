@@ -1,5 +1,6 @@
 //! Provider-agnostic conversation model, credential-safe transport helpers and
 //! the adapter boundary. Native wire formats never leave this module.
+pub mod agent_loop;
 pub mod anthropic;
 pub mod auth;
 pub mod catalog;
@@ -855,6 +856,7 @@ pub(crate) fn is_local_message_field(key: &str) -> bool {
             | "source_render_missing"
             | "source_render_unavailable"
             | "dsl_sha"
+            | "dsl_project"
     )
 }
 

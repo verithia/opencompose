@@ -3,7 +3,7 @@ id: playable-instruments
 title: Playable instruments
 when: Choosing or checking a playable preset, articulation or sampled kit, or diagnosing a silent track or a missing SoundFont.
 category: render
-version: 5
+version: 6
 tools: [tracks_list, presets_list, project_extract, render_compat_report, render_range, audio_analyze, audition_range]
 ---
 Inspect actual source, preset and parameters to identify the sound. Native OpenSynth, SoundFont and supported hosted instruments have different capabilities.
@@ -24,7 +24,7 @@ block and the track's `preset:` line, so `project_dsl` shows what was chosen:
 
 An explicit `preset:` is never replaced.
 ## Choosing another sound
-Declare `source: builtin` with OpenSynth params for a self-contained preset. `params: {}` is a plain saw with `builtin.open_synth`. `builtin.test_tone` provides a known test signal.
+Declare both `source: builtin` and `plugin: "builtin.open_synth"` for OpenSynth, including with presets_add. Then set its params; an empty builtin preset without a plugin does not identify this synth. `builtin.test_tone` provides a known test signal.
 
 ## Verify an inherited patch after reuse
 Use `presets_list({name: "Child"})` to read the authored child and its `effective_preset`. The child overrides parameter keys and appends its inserts after the parent's. Use `project_extract({path: "preset:Child"})` before editing authored DSL.

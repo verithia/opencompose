@@ -18,6 +18,8 @@ import { aiWorkspace } from "../stores/aiWorkspace";
 import { aiConfig, getActiveProvider, hasUnsavedConfig } from "../ai/config";
 import { elapsedLabel, stopStalled, STOP_STALLED_SECONDS } from "../ai/transcript";
 import type { SessionMeta } from "../ai/sessions";
+import type { WireMessage } from "../ai/wire";
+import { answerFakeTurn, cancelFakeTurn, emitTurnEvent, emitTurnProject, fakeTurnRunning, resetFakeTurns, runFakeTurn, type TurnStartArgs } from "./helpers/fakeTurn";
 
 const CAPABILITIES = { text: true, audio_in: false, audio_out: false, native_tool_calling: true, streaming: true };
 
@@ -80,6 +82,8 @@ const backend = {
   cancelIds: [] as string[],
   snapshot: makeSnapshot() as unknown,
   sessions: [] as SessionMeta[],
+  /** Saved messages whose event the fake sends after the turn's reply. */
+  late: undefined as ((message: WireMessage) => boolean) | undefined,
 };
 
 function installBackend() {
@@ -94,16 +98,24 @@ function installBackend() {
       case "ai_toolsets": return SETS;
       case "ai_tools": return TOOLS;
       case "ai_build_context": return { dsl_context: '@project "Test Project"\n  tempo: 128\n' };
-      case "ai_chat": {
-        backend.chatCalls.push({ ...typed, messages: JSON.parse(JSON.stringify(typed.messages)) } as ChatCall);
-        return backend.chat();
-      }
+      case "ai_turn_start": return runFakeTurn(typed as unknown as TurnStartArgs, {
+        chat: (round) => {
+          backend.chatCalls.push({ ...round, messages: JSON.parse(JSON.stringify(round.messages)) } as unknown as ChatCall);
+          return backend.chat();
+        },
+        tool: (call) => backend.tool(call),
+        ask: (call) => call.tool === "edit_subtree" || call.tool === "tracks_remove",
+        late: (message) => backend.late?.(message) ?? false,
+      });
+      case "ai_turn_answer": return answerFakeTurn(String(typed.requestId), String(typed.callId), typed.decision as never);
+      case "ai_turn_questions": return [];
+      case "ai_batch_recover": return null;
       case "ai_cancel": {
         backend.cancelIds.push(String(typed.requestId));
         if (backend.cancel) backend.cancel(String(typed.requestId));
+        cancelFakeTurn(String(typed.requestId));
         return undefined;
       }
-      case "ai_call_tool": return backend.tool(typed as { tool: string; args: Record<string, unknown> });
       case "ai_validate_edit": return { valid: true };
       case "extract_subtree": return { dsl_text: "@project \"Test Project\"\n" };
       case "diff_dsl": return { old_text: "before", new_text: "after", hunks: [{ lines: [{ kind: "Added", text: "+ @project" }] }] };
@@ -171,6 +183,7 @@ beforeEach(() => {
   backend.cancelIds = [];
   backend.snapshot = makeSnapshot();
   backend.sessions = [];
+  backend.late = undefined;
   i18n.setLocale("en");
   aiLimits.setActiveContext(null);
   resetStats();
@@ -181,6 +194,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  resetFakeTurns();
   aiSession.reset();
   workspaceStore.reset();
   aiLimits.setActiveContext(null);
@@ -188,6 +202,27 @@ afterEach(() => {
 });
 
 describe("the turn in flight", () => {
+  it("keeps the waiting row mounted while the next message is typed", async () => {
+    const pending = held();
+    backend.chat = () => pending.promise;
+    await mount();
+    await startTurn("work on the song");
+    const status = pendingRow()!.querySelector(".ai-thinking")!;
+    const label = status.querySelector(".ai-thinking-label")!;
+    const original = label.textContent;
+    for (const draft of ["a", "ab", "abc", "a next instruction", ""]) {
+      fireEvent.input(input(), { target: { value: draft } });
+      await Promise.resolve();
+      expect(pendingRow()!.querySelector(".ai-thinking")).toBe(status);
+      expect(status.querySelector(".ai-thinking-label")).toBe(label);
+      expect(label.textContent).toBe(original);
+      expect(status.isConnected).toBe(true);
+    }
+    expect(backend.chatCalls).toHaveLength(1);
+    pending.resolve({ role: "assistant", content: "Done." });
+    await waitFor(() => expect(pendingRow()).toBeNull());
+  });
+
   it("is the transcript's last row, with the phase, the model, the clock and the way out", async () => {
     const pending = held();
     backend.chat = () => pending.promise;
@@ -257,85 +292,40 @@ describe("the turn in flight", () => {
     stop.resolve(undefined);
     await waitFor(() => expect(pendingRow()).toBeNull());
     await waitFor(() => expect(input().disabled).toBe(false));
-    expect(document.body.textContent).toContain("Cancelled before any edit was applied");
+    expect(document.body.textContent).toContain("Cancelled before any edit; the project is unchanged.");
     expect(answers()).toHaveLength(0);
   });
 
-  it("stops the active separator when the composer Stop button is clicked", async () => {
+  it.each(["", "My unsent next instruction"])("cancel preserves the composer as %j instead of restoring the sent prompt", async (draft) => {
     const pending = held();
-    const tool = { name: "separate_stems", description: "Separate stems", area: "analysis", mutation: false,
-      inputSchema: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } };
-    const previous = invokeMock.getMockImplementation()!;
-    invokeMock.mockImplementation(async (command: string, args?: unknown) => {
-      if (command === "ai_tools") return [...TOOLS, tool];
-      if (command === "ai_toolsets") return [{ ...SETS[0], tools: [...SETS[0].tools, tool.name] }];
-      if (command === "ai_cancel_separator") {
-        pending.reject({ error: "separation cancelled" });
-        return undefined;
-      }
-      return previous(command, args);
-    });
-    backend.chat = async () => ({ role: "assistant", content: null, tool_calls: [
-      { id: "split", type: "function", function: { name: tool.name, arguments: '{"path":"/tmp/mix.wav"}' } },
-    ] });
-    backend.tool = () => pending.promise;
+    backend.chat = () => pending.promise;
     await mount();
-    await startTurn("Separate the reference.");
-    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("ai_call_tool", expect.objectContaining({ tool: tool.name, cancellationId: expect.any(String) })));
-    const launched = invokeMock.mock.calls.find(([command, args]) => command === "ai_call_tool" && (args as {tool: string}).tool === tool.name)![1] as {cancellationId: string};
-    fireEvent.click(cancelButton()!);
+    await startTurn("the prompt already sent");
+    fireEvent.input(input(), { target: { value: draft } });
+    // A nonempty draft changes the send button, so invoke the same cancel
+    // action through the backend and settle the existing turn.
+    if (draft) {
+      const id = String(backend.chatCalls[0].requestId);
+      cancelFakeTurn(id);
+    } else fireEvent.click(cancelButton()!);
     await waitFor(() => expect(pendingRow()).toBeNull());
-    expect(invokeMock).toHaveBeenCalledWith("ai_cancel_separator", { cancellationId: launched.cancellationId });
-    expect(backend.chatCalls).toHaveLength(1);
+    expect(input().value).toBe(draft);
+    expect(document.body.textContent).toContain("Cancelled before any edit; the project is unchanged.");
   });
 
-  it("keeps an answer whose commit outlived Stop instead of leaving a silent hole", async () => {
-    // The turn had already answered and was committing its batch when Stop
-    // arrived: dropping the answer would leave the question with no reply.
-    const commit = held();
-    let commitStarted!: () => void;
-    const committing = new Promise<void>((resolve) => { commitStarted = resolve; });
-    let round = 0;
-    backend.chat = async () => {
-      round += 1;
-      return round === 1
-        ? {
-          role: "assistant", content: null,
-          tool_calls: [{ id: "call-1", type: "function", function: { name: "tracks_add", arguments: JSON.stringify({ name: "bass" }) } }],
-        }
-        : { role: "assistant", content: "Added the bass track." };
-    };
-    backend.tool = async ({ tool }) => {
-      if (tool === "transaction_commit") { commitStarted(); return commit.promise; }
-      if (tool === "transaction_begin") return { active: true, label: "AI edit" };
-      return { revision: 1 };
-    };
-    await mount();
-    await typeAndSend("add a bass track");
-    // Wait until the loop is parked inside the commit, then stop.
-    await committing;
-    fireEvent.click(cancelButton()!);
-    await waitFor(() => expect(phase()).toBe("Stopping…"));
-    commit.resolve({ committed: true });
-
-    await waitFor(() => expect(pendingRow()).toBeNull());
-    expect(answers().at(-1)?.textContent).toContain("Added the bass track.");
-    expect(systemRows()).toHaveLength(0);
-  });
-
-  it("clears the composer on Send and gives the draft back when the credential read fails", async () => {
+  it("keeps the sent composer clear when the credential read fails", async () => {
     backend.chat = async () => {
       throw { kind: "auth", message: "The API key could not be read from the keychain", retryable: true };
     };
     await mount();
     await typeAndSend("add a bass line");
 
-    // The send cleared the composer at once, and the failure put the text back.
+    // A failure leaves the sent composer clear; Retry carries the saved request.
     await waitFor(() => expect(pendingRow()).toBeNull());
     await waitFor(() => expect(systemRows()).toHaveLength(1));
     expect(systemRows()[0].textContent).toContain("The API key could not be read");
     expect(retryButton()).toBeTruthy();
-    expect(input().value).toBe("add a bass line");
+    expect(input().value).toBe("");
     expect(pendingRow()).toBeNull();
     expect(answers()).toHaveLength(0);
   });
@@ -350,7 +340,100 @@ describe("the turn in flight", () => {
     expect(systemRows()[0].textContent).toContain("Provider returned no text.");
     expect(retryButton()).toBeTruthy();
     expect(answers()).toHaveLength(0);
-    expect(input().value).toBe("describe the mix");
+    expect(input().value).toBe("");
+  });
+
+  it("words a folded wire from its numbers in the interface language", async () => {
+    backend.chat = async () => {
+      const round = backend.chatCalls.at(-1)! as unknown as { requestId: string; sessionId: string };
+      emitTurnEvent(round.requestId, round.sessionId, {
+        type: "wire_folded", before_rows: 900, before_bytes: 9_000_000,
+        after_rows: 120, after_bytes: 800_000, folded: 390, kept: 40,
+      });
+      return { role: "assistant", content: "Done." };
+    };
+    await mount();
+    await typeAndSend("describe the mix");
+    await waitFor(() => expect(answers()).toHaveLength(1));
+    expect(systemRows().map((row) => row.textContent).join(" ")).toContain(
+      i18n.t("ai.turn.wireFolded", { folded: 390, before: 900, after: 120 }),
+    );
+  });
+
+  it("paints an answer whose event arrives after the turn's reply, once and in order", async () => {
+    backend.late = (message) => message.role === "assistant";
+    backend.chat = async () => ({ role: "assistant", content: "Saved, then announced." });
+    await mount();
+    await typeAndSend("describe the mix");
+
+    await waitFor(() => expect(pendingRow()).toBeNull());
+    await waitFor(() => expect(answers()).toHaveLength(1));
+    expect(answers()[0].textContent).toContain("Saved, then announced.");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(answers()).toHaveLength(1);
+    expect([...document.querySelectorAll(".ai-messages .ai-message")].map((row) => row.className))
+      .toEqual(["ai-message user", "ai-message assistant"]);
+  });
+
+  it("paints a late answer ahead of the queued message its turn sent next", async () => {
+    const first = held();
+    let round = 0;
+    backend.late = (message) => message.content === "First answer, announced late.";
+    backend.chat = () => {
+      round += 1;
+      return round === 1 ? first.promise : new Promise(() => {});
+    };
+    await mount();
+    await startTurn("first");
+    fireEvent.input(input(), { target: { value: "next" } });
+    fireEvent.click(sendButton());
+    await waitFor(() => expect(queuedTexts()).toEqual(["next"]));
+
+    // The first turn settles and its flush starts the queued one before the
+    // first turn's answer is announced.
+    first.resolve({ role: "assistant", content: "First answer, announced late." });
+    await waitFor(() => expect(backend.chatCalls).toHaveLength(2));
+    await waitFor(() => expect(answers()).toHaveLength(1));
+    expect(answers()[0].textContent).toContain("First answer, announced late.");
+    const rows = [...document.querySelectorAll(".ai-messages .ai-message:not(.ai-pending)")]
+      .map((row) => `${row.className}:${row.querySelector(".ai-message-content")?.textContent ?? ""}`);
+    expect(rows).toEqual([
+      "ai-message user:first",
+      "ai-message assistant:First answer, announced late.",
+      "ai-message user:next",
+    ]);
+  });
+
+  it("places late saved rows ahead of the failure row the reply already added", async () => {
+    let round = 0;
+    backend.late = () => true;
+    backend.chat = async () => {
+      round += 1;
+      if (round === 1) {
+        return {
+          role: "assistant", content: null,
+          tool_calls: [{ id: "call-1", type: "function", function: { name: "tracks_list", arguments: "{}" } }],
+        };
+      }
+      throw { kind: "provider", message: "connection reset", retryable: true };
+    };
+    await mount();
+    await typeAndSend("describe the mix");
+
+    await waitFor(() => expect(systemRows()).toHaveLength(1));
+    expect(systemRows()[0].textContent).toContain("Error: connection reset");
+    await waitFor(() => {
+      openStepGroups();
+      expect(document.querySelectorAll(".ai-message.tool")).toHaveLength(1);
+    });
+    openStepGroups();
+    const tool = document.querySelector(".ai-message.tool")!;
+    const failure = systemRows()[0];
+    // The saved call and its result precede the failure the reply reported.
+    expect(failure.compareDocumentPosition(tool) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
+    expect(document.querySelectorAll(".ai-message.tool")).toHaveLength(1);
+    expect(systemRows()).toHaveLength(1);
+    expect(retryButton()).toBeTruthy();
   });
 
   it("abandons the turn when a new conversation starts, so no stale row lands", async () => {
@@ -441,15 +524,41 @@ describe("the turn in flight", () => {
     await waitFor(() => expect(document.querySelector(".ai-approval-card")).toBeTruthy());
     const applied = () => invokeMock.mock.calls.some(([command]) => command === "ai_apply_edit");
     expect(applied()).toBe(false);
-    // The window goes away while the card waits: the turn is cancelled, and
-    // nothing is applied without an answer.
+    // The view goes away while the backend question waits. Detaching the
+    // listeners neither cancels the turn nor supplies an approval.
     first.unmount();
     await waitFor(() => expect(applied()).toBe(false));
+    expect(backend.cancelIds).toEqual([]);
 
     await mount();
-    // A remounted panel does not pretend the decision is still open.
+    // This fixture reports no inherited question; it cannot invent an answer.
     await waitFor(() => expect(document.querySelector(".ai-approval-card")).toBeFalsy());
     expect(applied()).toBe(false);
+  });
+
+  it("leaves a backend turn running when the panel closes and ignores its late view callbacks", async () => {
+    const pending = held();
+    let rounds = 0;
+    let toolEntered = false;
+    backend.chat = async () => ++rounds === 1
+      ? { role: "assistant", content: null, tool_calls: [{ id: "read", type: "function", function: { name: "tracks_list", arguments: "{}" } }] }
+      : { role: "assistant", content: "Finished while the panel was closed." };
+    backend.tool = () => { toolEntered = true; return pending.promise; };
+    const first = await mount();
+    await typeAndSend("inspect the song");
+    await waitFor(() => expect(rounds).toBe(1));
+    await waitFor(() => expect(toolEntered).toBe(true));
+    const requestId = backend.chatCalls[0].requestId!;
+    const marker = aiSession.turn();
+    first.unmount();
+    expect(backend.cancelIds).toEqual([]);
+    expect(fakeTurnRunning(requestId)).toBe(true);
+    expect(aiSession.turn()).toEqual(marker);
+    pending.resolve({ tracks: [] });
+    await waitFor(() => expect(rounds).toBe(2));
+    await waitFor(() => expect(fakeTurnRunning(requestId)).toBe(false));
+    expect(aiSession.turn()).toEqual(marker);
+    expect(document.body.textContent).not.toContain("Finished while the panel was closed.");
   });
 
   it("keeps a pasted multi-line draft and does not send on Shift+Enter", async () => {
@@ -620,6 +729,7 @@ describe("native edit snapshots", () => {
         snap.project.properties.tempo = 76;
         snap.dirty = true;
         backend.snapshot = snap;
+        emitTurnProject(snap);
       }
       return {revision:2};
     };
@@ -641,11 +751,12 @@ describe("native edit snapshots", () => {
     backend.tool = async ({tool}) => {
       if (tool === "tracks_add") {
         const snap = makeSnapshot(); snap.project.name = "Transient edit"; backend.snapshot = snap;
+        emitTurnProject(snap);
       }
       return {revision:2};
     };
     await typeAndSend("compose piano");
-    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("ai_call_tool",expect.objectContaining({tool:"transaction_commit"})));
+    await waitFor(() => expect(store.project.name).toBe("Transient edit"));
     await waitFor(() => expect(pendingRow()).toBeNull());
     expect(store.project.name).toBe("Transient edit");
   });
@@ -704,45 +815,6 @@ describe("provider reasoning channel", () => {
   });
 });
 
-describe("a reply the store did not keep", () => {
-  const WARNING = "The reply could not be saved; it will be lost when the window closes. Session s1: no session 's1'";
-
-  it("shows the warning under the answer and offers only a retry", async () => {
-    backend.chat = async () => ({ role: "assistant", content: "The bass line is in.", session_warning: WARNING });
-    await mount();
-    await typeAndSend("add a bass line");
-    await waitFor(() => expect(pendingRow()).toBeNull());
-
-    expect(answers()).toHaveLength(1);
-    expect(document.querySelector(".ai-session-warning")?.textContent).toBe(WARNING);
-    expect(retryButton()).toBeTruthy();
-    // A finished turn cannot be continued, only sent again to be saved.
-    expect(document.querySelector(".ai-turn-continue")).toBeFalsy();
-  });
-
-  it("replaces the unsaved answer on retry instead of stacking a second one", async () => {
-    let turn = 0;
-    backend.chat = async () => {
-      turn += 1;
-      return turn === 1
-        ? { role: "assistant", content: "The bass line is in.", session_warning: WARNING }
-        : { role: "assistant", content: "The bass line is in." };
-    };
-    await mount();
-    await typeAndSend("add a bass line");
-    await waitFor(() => expect(pendingRow()).toBeNull());
-    expect(answers()).toHaveLength(1);
-
-    fireEvent.click(retryButton()!);
-    await waitFor(() => expect(backend.chatCalls).toHaveLength(2));
-    await waitFor(() => expect(pendingRow()).toBeNull());
-
-    expect(answers()).toHaveLength(1);
-    expect(answers()[0].textContent).toContain("The bass line is in.");
-    expect(document.querySelector(".ai-session-warning")).toBeFalsy();
-  });
-});
-
 describe("the edit target", () => {
   it("falls back to the whole project when another document opens in the same folder", async () => {
     backend.snapshot = { ...makeSnapshot(), file_path: "/Users/me/songs/one.ocp" };
@@ -787,7 +859,7 @@ describe("an unsaved provider draft", () => {
     const saved = commands.lastIndexOf("save_ai_config");
     expect(saved).toBeGreaterThanOrEqual(0);
     // The write precedes the request it applies to.
-    expect(saved).toBeLessThan(commands.indexOf("ai_chat"));
+    expect(saved).toBeLessThan(commands.indexOf("ai_turn_start"));
     expect(hasUnsavedConfig()).toBe(false);
     expect(input().value).toBe("");
   });

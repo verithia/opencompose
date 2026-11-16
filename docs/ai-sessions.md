@@ -114,6 +114,26 @@ read live. Opening another `.ocp` from the File menu therefore moves the
 conversation list at once, while opening a file outside a chosen workspace does
 not.
 
+## Project versions
+
+Before a saved provider request is sent, the native session layer attaches a
+content-addressed project version (`dsl_sha`) to each newly admitted human
+message. This applies to the panel and explicitly bound headless requests.
+The project path, source and summary facts are captured together; a headless
+request for a different open project is refused.
+
+Replayed human turns retain their original version. Tool results, assistant
+replies and typed host deliveries do not acquire a human-turn snapshot. The
+version file and its first transcript reference are written under the same
+store lock, so collection cannot remove a checkpoint between those writes.
+A snapshot that cannot be saved prevents the new turn from reaching the
+provider. Version reads are bounded by the DSL document limit and verify the
+content hash before returning text.
+
+A fork copies the versions its retained messages reference, so deleting the
+parent cannot remove the fork's project checkpoints. A missing or corrupt
+referenced version refuses the fork and leaves no partial child session.
+
 ## Project instructions
 
 A project can carry a short note — "always print stems at -14 LUFS", "this song is
@@ -281,19 +301,23 @@ and the saved copy says the clip was omitted. Files the user attached from the
 composer are different: their descriptors are part of the saved user message,
 so a restored conversation replays the same attachment on every later turn.
 
-A retried or continued turn sends the wire its stopped predecessor held, so the
-request is the tail of a conversation the store already has: preparing it appends
-nothing, and `sessions_load` keeps one user message for the turn. A stop that
-landed mid-round is closed first — every call the model asked for gets a result,
-and the calls that never ran say so — so the store never holds a tool call without
-a result. See `docs/agent-loop.md` §Retry and continue after a stop.
+A retried or continued turn is prepared from the saved conversation, so the
+request is the conversation the store already holds plus its system prompt:
+preparing it appends nothing, and `sessions_load` keeps one user message for the
+turn. A stop that landed mid-round is closed first: every call the model asked
+for gets a result, `outcome unknown` for a dispatched call whose result was lost
+and `not run` for a call that never started, so the store never holds a tool call
+without a result. See `docs/agent-loop.md`, section "Retry and continue after a stop".
 
 The panel starts a conversation with the first message of a turn and uses that
 message as the title, so the conversation it saves into is the one it shows.
 `sessions_new` and `sessions_load` also mark a conversation as the target for the
 open project, and the first turn of a fresh process starts a new one. An external
-agent drives its own turns and calls the commands below instead; the
-`/ai/complete` endpoint does not autosave.
+agent creates a named conversation with `sessions_new` before its first turn.
+The `/ai/complete` endpoint saves into that conversation when every request
+names its session and the open project file, as described in
+[Headless agent host](agent-loop.md#headless-agent-host). Requests that omit
+that binding remain ephemeral.
 
 ## The conversation switcher
 
@@ -307,7 +331,7 @@ Each row offers, for that conversation:
 
 | action | command | behaviour |
 | --- | --- | --- |
-| select | `sessions_load` | paints the saved transcript and makes it the autosave target; the composer and its chips are cleared |
+| select | `sessions_load` | paints the saved transcript and opens it for the next turn; the composer and its chips are cleared |
 | Rename | `sessions_rename` | inline field; Enter or blur saves, Escape cancels, an empty title is refused |
 | Fork | `sessions_new(parent:)` | copies the conversation and opens the copy; the parent is unchanged |
 | Compact | `sessions_compact` | folds the conversation and adds one transcript line stating what it dropped |
@@ -336,20 +360,21 @@ starts the next one. Opening a tool row shows a view chosen for the result: a tr
 table, a section timeline, a piano roll for transcribed notes, octave-band bars
 and level cards for an analysis, a waveform and player for a render or audition,
 a diff for an edit, or a status card for a refusal. Raw JSON stays one toggle
-away. A result bounded for the model wire recovers the full payload from the
-session copy when this window still holds it; otherwise the view keeps the
-recovered counters and shows the preview the wire carried.
+away. A result bounded for the model wire recovers its full payload through
+`ai_tool_result` while the backend still keeps it; the backend keeps the newest
+64 results, scoped to their conversations, at most 32 per conversation and
+32 MiB in all, and drops a result over 2,000,000 characters. Otherwise the view keeps the recovered counters and shows the
+preview the wire carried.
 
 The composer draft, its attachment chips and the messages queued behind a running
 turn live in `src/stores/aiSession.ts`, outside the panel: closing the sidebar or
 switching tabs unmounts the panel, and all three survive that. They are also
-written per conversation to `localStorage`, so a reload of the window — which
-discards the panel with everything in it — brings them back. A validated
-replacement waiting for Accept or Reject lives there too, with the diff the
-panel paints, so a panel that comes back still offers the decision instead of a
-conversation that claims a replacement is pending. A failed or stopped turn
-gives the draft and the chips back, so the typing is not lost; a conversation
-switch clears them, because it is a different conversation.
+written per conversation to `localStorage`, so a reload of the window, which
+discards the panel with everything in it, brings them back. An approval card
+belongs to the running turn: a reloaded panel asks `ai_turn_questions` and
+paints the waiting card again. A failed or stopped turn gives the draft and the
+chips back, so the typing is not lost; a conversation switch clears them, because
+it is a different conversation.
 The same store remembers which conversation the panel had open for each
 workspace and project file, so reopening the panel paints that song's last
 conversation instead of the previous song's transcript or an empty one. The
@@ -391,19 +416,19 @@ ignored.
 | --- | --- |
 | Edit | turns that row's text into a field; Enter or blur commits the edit, Escape closes it uncommitted. The edit is what gets sent |
 | Remove | drops that queued message and the chips with it; nothing is sent |
-| Steer | on the oldest row only, while a turn runs: stops that turn, then sends the message |
+| Steer | on the oldest row only, while a turn runs: delivers the message into that turn once its current tools finish, without stopping it. The row stays until the backend confirms the message was saved, and a row that reads a project path is sent when the turn finishes instead |
 | Send now | on the oldest row when no turn runs: sends it immediately |
 
 The hint under the rows says what the queue is waiting for: the running turn, the
-Accept/Reject answer a proposal is waiting on, or no turn at all — which is when
-**Send now** appears instead of **Steer**. A queued message is therefore never
-stranded by a panel that was closed mid-turn and came back with nothing running.
+approval card a turn is waiting on, or no turn at all, which is when **Send
+now** appears instead of **Steer**. A queued message is therefore never stranded
+by a panel that was closed mid-turn and came back with nothing running.
 
 One message leaves the queue per settled turn: after an answer, after a stop,
-after a failure, and after a proposal is accepted or rejected. It is sent once,
-as an ordinary turn, and the row disappears before the request goes out. A turn
-that is still waiting on an approval card keeps the queue, because the composer
-is paused with it.
+after a failure, and after an approval card is answered. It is sent once, as an
+ordinary turn, and the row disappears before the request goes out. A turn that is
+still waiting on an approval card keeps the queue, because the composer is
+paused with it.
 
 The queue lives in `src/stores/aiSession.ts` next to the draft, so closing the
 sidebar or switching tabs keeps it. Leaving the panel cancels the running turn
@@ -452,17 +477,23 @@ bytes, and a saved conversation carries the same descriptor for the files it
 sent. A composer that has no conversation yet is kept under the empty id, so
 typing is not lost merely because the first message was never sent.
 
-A pending Accept/Reject proposal is not part of this: the diff is a rendering
-the panel holds, and a reload drops it. The conversation keeps the edits it
-applied; a replacement that was never applied stays history.
+An open approval card is not part of this: it belongs to the running turn, and
+`ai_turn_questions` returns it on mount. The panel also calls `ai_batch_recover`
+once on mount; it commits a batch a gone turn left open, writes the project file
+and returns `{snapshot, unsaved?}`, or answers null while a turn is running. The
+panel shows `unsaved` as an error, because the edits are then only in memory. A
+batch an external client owns is left alone.
 
 ### The turn that was running
 
-The provider request runs in the backend, so the window can be reloaded under it
-and the answer is still saved into the conversation. What the window cannot do
-is carry the turn on: the loop that dispatches tool calls and writes the rows
-lived in the page that went away. The panel therefore reports the turn instead
-of resuming it.
+The agent loop runs in the backend, so the panel can be closed or the window
+reloaded under a turn and the answer is still saved into the conversation.
+Closing the panel only detaches its listeners; the turn keeps running and keeps
+its open question. The reopened or reloaded panel asks `ai_active_turn` for the
+turn the backend still runs and follows its `ai_turn` events again; when the
+turn ends it repaints the conversation from the saved one. While it follows such
+a turn, and while that turn's stop settles, the panel does not switch, start or
+fork a conversation, and a workspace change stops following it.
 
 `ai_active_turn` reports the one request in flight — its id and the conversation
 its reply will be saved into. `session_id` is absent until the backend has
@@ -470,25 +501,31 @@ resolved the conversation, so a window never claims a session it was not told.
 The panel asks on mount, and the marker is kept only when the backend reports
 the turn the marker names:
 
-* **The backend still has it.** A banner says a turn was running when the window
-  was reloaded and that the backend still has it. It offers **Stop the turn**,
+* **The backend still has it.** A banner says a turn was running when the panel
+  was closed or the window reloaded, and that the backend still has it. It offers **Stop the turn**,
   which is the same cancel as Stop. The window follows the request until it
-  ends, repaints the conversation from the saved one — where the answer was
-  written — and adds one line saying the inherited turn finished. The composer
-  stays usable: a send while that turn runs joins the queue, because the backend
-  still admits one turn at a time.
-* **The backend has no such turn.** The marker is cleared, and a banner states
-  that a turn was running when the window was reloaded and that nothing is
-  running now. It offers **Reload conversation** — the stored answer may have
-  arrived between the mount and the question — and **Dismiss**. No row is
-  painted as running and no strip appears.
+  ends, repaints the conversation from the saved one, where the answer was
+  written, and adds one line saying the inherited turn finished. An approval
+  card the turn was waiting on is painted again from `ai_turn_questions`. The
+  composer stays usable: a send while that turn runs joins the queue, because
+  the backend still admits one turn at a time.
+* **The backend has no such turn.** The marker is cleared and the saved
+  conversation is read again. When it ends on an answer, a banner says the turn
+  finished while the panel was away and offers **Dismiss**. Otherwise the banner
+  says the turn stopped and how it ended is unknown, and offers **Reload
+  conversation** and **Dismiss**. No row is painted as running and no strip
+  appears. A steer the closed page sent is settled from the saved conversation:
+  it arrived when a saved message carries its row's id as `steer_id`; otherwise
+  the row is an ordinary queued message again.
 * **The backend has a turn for another conversation.** This conversation has
   none, so its marker is cleared exactly as above.
 
-An answer the store saved can ask for tools whose loop died with the window.
-The next request closes that round before it is sent: one `tool` result per call
-that never ran, saying so, so the conversation stays sendable and the model
-reads what happened instead of a call no request may carry.
+An answer the store saved can ask for tools whose results never arrived, such as
+after the process died. When the conversation is next prepared, the backend
+closes that round: one result per call, `outcome unknown` for a dispatched call
+whose result was lost and `not run` for a call that never started. The
+conversation stays sendable, and the model reads what happened instead of a call
+no request may carry.
 
 ## Exporting a conversation
 
@@ -600,12 +637,21 @@ project's DSL **digest** rather than carrying the DSL, which would defeat the
 purpose.
 
 Compaction leaves nothing to replay: the output is one `user` message plus any
-trailing plain-text messages, each carrying only `role` and `content`. There is
-no assistant message with `tool_calls`, no `provider_state`, and no signature
+trailing prose messages. Those carry their `role`, `content` and message kind;
+a person's message also keeps its attachments as canonical descriptors, the
+snapshot a revert restores (`dsl_sha`, `dsl_project`) and its steering id. The
+pending message, the one the model is about to answer, is always carried this
+way, even when it directly follows a tool round. There is no assistant message
+with `tool_calls` or a text-protocol call, no `provider_state`, and no signature
 field (`extra_content`, `thought_signature`, `signature`) — a provider that
 rejects a replayed signature accepts a compacted conversation because there is
 no assistant tool-call turn left to replay. The store refuses to write a
 compaction that would violate this.
+
+The retained tool lines name every call of a round, so a parallel batch lists
+each call with the result that answers it. A round is its assistant message
+plus the results and host deliveries that pairing assigns to it, for native and
+text-protocol calls alike.
 
 `retained_pairs` states how many tool calls the summary carries as text. If the
 result is still above `target_tokens`, the transcript drops pairs from the
@@ -613,10 +659,10 @@ oldest end first; the standing intent, the failure list and the latest user
 message always survive. When even the smallest summary would not reduce the
 estimate, the store refuses rather than writing a longer conversation.
 
-A proposal that was never applied — a replacement subtree the user rejected, for
-example — is ordinary history. The summary records it in text (`edit_subtree
-proposed a replacement for track:kick (not applied; the user decides)`) and no
-tool-call turn is replayed for it.
+A declined replacement is ordinary history: the call and its refusal stay in the
+conversation, and the summary records it in text (`edit_subtree declined for
+track:kick`). No tool-call turn is replayed for a replacement that was never
+applied.
 
 ### Estimating context usage
 
@@ -640,11 +686,12 @@ The estimate has three parts:
    assumes. One sample cannot move the average, and an absurd report is ignored.
 
 The panel also counts the **system prompt and the tool schemas**, which ride on
-every request and are the largest part of a small conversation. The store's
-compaction estimate covers the saved conversation only, because the store is
-reached without a request in hand; the 75 % / 15 % thresholds therefore describe
-the conversation, and a request that still overflows is left to the provider's
-own error.
+every request and are the largest part of a small conversation. The backend
+counts them too when a turn is prepared: the system prompt and the serialized
+tool list of the conversation's toolsets are the overhead the 75 % threshold
+adds to the conversation, and attachments are estimated by kind (1,600 tokens
+per image, 32 tokens per second of audio; a disk-only reference costs nothing).
+The 15 % floor still describes the conversation alone.
 
 The figure under the composer is labelled an estimate, and the pre-send guard
 warns rather than refuses: only the provider can reject a request for size.
@@ -676,10 +723,21 @@ saved id first and the id without one leading `<vendor>/` segment or a trailing
 `gemini-4-argon` window rather than the entry's guess. The panel shows that
 number next to the provider default when the two differ.
 
-Only a request that ends with the user's message is compacted: folding the
-conversation in the middle of a tool round would take away the result the model
-is about to answer from. A mid-turn overflow is left to the provider's own
-limit, as before.
+A window the entry stores as 0 or 1 is unknown, not tiny: the size thresholds
+are skipped and only the 80-message rule applies.
+
+Whether a turn can be sent is decided before anything is saved. The request is
+measured as it would go out, compacted if it would be: when the system prompt,
+the tool list and the conversation still exceed the whole window, the turn is
+refused with the error kind `context_overflow`, and the message, its snapshot
+and its attachments are not saved. A conversation that no cut can bring under
+the row bound is refused the same way, as `session_save`. A request over 96
+rows is folded like a running turn's wire (see the agent loop's request
+budget), keeping the latest compaction summary and the turn's ask.
+
+An automatic compaction that fails does not fail the turn: the conversation is
+sent as saved, the failure is logged, and `ai_session` carries
+`{session_id, notice: "compaction_failed", message}`.
 
 The panel is told: an auto-compaction emits `ai_session` with `compacted: true`,
 the dropped range, the token counts before and after, the retained pair count and
@@ -694,7 +752,11 @@ the messages that were sent. The panel writes one line into the transcript.
 | `sessions_load` | `id` | metadata plus the wire messages to replay |
 | `sessions_rename` | `id`, `title` | the updated metadata |
 | `sessions_delete` | `id` | removes the directory |
-| `sessions_compact` | `id`, `target_tokens?` | the summary, the dropped range and the token counts |
+| `sessions_compact` | `id`, `target_tokens?` | the summary, the dropped range and the token counts; a refusal is `{kind, message}` with `busy` or `conflict` |
+
+A requested compaction whose conversation already ends in a compaction is a
+`conflict`: when two windows ask at once, both run under the store lock one
+after the other, and the second finds the state the first produced.
 
 `sessions_list` covers the open workspace; `all` covers every workspace, and each
 entry names its workspace so a client can group the answer. A `project` argument
@@ -713,7 +775,8 @@ conversation. No command here writes to the project.
   short summary of it.
 - `provider_state`, thought signatures and reasoning items. A conversation that
   needs them to continue on the same provider continues as a fresh context.
-- Attachments and inline audio clips, which compaction drops rather than
-  carrying into the summary.
+- Attachments of the folded turns and inline audio clips, which compaction
+  drops rather than carrying into the summary. The person's messages it keeps
+  keep their attachments.
 - The message range itself: the summary states the range and the token counts,
   not the messages.

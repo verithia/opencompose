@@ -111,28 +111,6 @@ fn a_listing_is_scoped_to_the_open_project_unless_all_is_asked_for() {
 }
 
 #[test]
-fn a_new_or_loaded_session_becomes_the_autosave_target() {
-    let fixture = fixture("active");
-    let state = state_with_project(&fixture.dir, PROJECT);
-    let first = new_for(&state, None, Some("first"), None).unwrap();
-    assert_eq!(
-        sessions::active(&first.workspace_key).as_deref(),
-        Some(first.id.as_str())
-    );
-    let second = new_for(&state, None, Some("second"), None).unwrap();
-    assert_eq!(
-        sessions::active(&second.workspace_key).as_deref(),
-        Some(second.id.as_str())
-    );
-    let loaded = sessions_load(first.id.clone()).unwrap();
-    assert_eq!(loaded.meta.id, first.id);
-    assert_eq!(
-        sessions::active(&first.workspace_key).as_deref(),
-        Some(first.id.as_str())
-    );
-}
-
-#[test]
 fn the_project_facts_name_the_path_the_digest_and_the_track_count() {
     let fixture = fixture("facts");
     let state = state_with_project(&fixture.dir, PROJECT);

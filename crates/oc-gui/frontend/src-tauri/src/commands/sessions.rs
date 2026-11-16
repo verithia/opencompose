@@ -3,15 +3,17 @@
 //!
 //! The commands reach the store at `~/.opencompose/ai/sessions` through
 //! [`Store::config`]. Nothing here writes to the project.
+use crate::ai::agent_loop::wire;
 use crate::ai::sessions::{
-    self, Compaction, Fork, Loaded, ProjectFacts, Scope, SessionMeta, Store,
+    self, Compaction, Fork, Loaded, ProjectFacts, Scope, SessionError, SessionErrorKind,
+    SessionMeta, Store,
 };
-use crate::ai_service::{ActiveTurn, Requests};
+use crate::ai_service::AiError;
 use crate::commands::AiProviderEntry;
 use crate::state::{AppState, AppStateInner};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
 
 /// Tauri event emitted when the autosave session changes.
 pub const AUTO_SESSION_EVENT: &str = "ai_session";
@@ -149,51 +151,39 @@ fn create_session(
     };
     let store = store();
     let meta = store.create(place.as_deref(), project.as_deref(), title, fork)?;
-    sessions::set_active(&meta.workspace_key, &meta.id);
     Ok(meta)
 }
 
 /// The saved wire messages of one session, ready to replay.
 #[tauri::command]
 pub fn sessions_load(id: String) -> Result<Loaded, String> {
-    let loaded = store().load(&id)?;
-    sessions::set_active(&loaded.meta.workspace_key, &loaded.meta.id);
-    Ok(loaded)
+    store().load(&id)
 }
 
 /// Drop all history before the `keep`-th compaction, then collect assets no
 /// remaining message refers to.
 #[tauri::command]
 pub fn sessions_drop_history(id: String, keep: u64) -> Result<Value, String> {
-    store().drop_history(&id, keep)
+    Ok(store().drop_history_guarded(&id, keep, &|| refuse_while_running(&id))?)
 }
 
-/// Cut the conversation back to its first `keep` wire messages, at the start of
-/// a tool block the cut landed inside, closing any call the cut left without a
-/// result. Refused while a turn is still writing this conversation's history.
-#[tauri::command]
-pub fn sessions_rewind(
-    id: String,
-    keep: usize,
-    requests: State<'_, Requests>,
-) -> Result<Value, String> {
-    let active = requests.active()?;
-    refuse_while_running(active.as_ref(), &id)?;
-    let kept = store().rewind(&id, keep)?;
-    Ok(json!({ "kept": kept }))
-}
-
-/// Why a rewind cannot run: a turn that is still answering writes messages at
-/// the end of the very history the rewind rewrites. A request that has not named
-/// its conversation yet may be saving into this one, so it counts as running.
-fn refuse_while_running(active: Option<&ActiveTurn>, id: &str) -> Result<(), String> {
-    let Some(turn) = active else {
-        return Ok(());
-    };
-    match turn.session_id.as_deref() {
-        Some(session) if session != id => Ok(()),
-        _ => Err("A turn is still running in this conversation; stop it before reverting.".into()),
+/// A conversation a turn is writing keeps its shape until the turn ends.
+///
+/// The check runs as the store's guard, under the same mutation lock every
+/// write of a turn takes, preparation first. A turn is registered as running
+/// before its preparation takes that lock and stays registered until after
+/// its last write. So either the turn is registered when the guard runs and
+/// the command is refused, or the turn's preparation waits for the lock and
+/// then reads the conversation the command left; no turn writes into a
+/// conversation reshaped between a check and the command's write.
+fn refuse_while_running(id: &str) -> Result<(), SessionError> {
+    if crate::ai::agent_loop::host::session_running(id) {
+        return Err(SessionError::new(
+            SessionErrorKind::Busy,
+            "A turn is running in this conversation; stop it or wait for it to finish.",
+        ));
     }
+    Ok(())
 }
 
 /// Save the project DSL as it stands before a message is sent, so that message
@@ -237,17 +227,19 @@ pub fn sessions_set_permission(
 #[tauri::command]
 /// Delete one saved session.
 pub fn sessions_delete(id: String) -> Result<(), String> {
-    store().delete(&id)
+    Ok(store().delete_guarded(&id, &|| refuse_while_running(&id))?)
 }
 
-/// Folds the older turns of a session into one plain-text summary.
+/// Folds the older turns of a session into one plain-text summary. A refusal
+/// is `{kind, message}`: `busy` while a turn runs, `conflict` when another
+/// window compacted first.
 #[tauri::command]
 pub fn sessions_compact(
     id: String,
     target_tokens: Option<u64>,
     state: State<AppState>,
-) -> Result<Compaction, String> {
-    compact_for(&state, &id, target_tokens)
+) -> Result<Compaction, SessionError> {
+    compact_checked(&state, &id, target_tokens)
 }
 
 /// Compact a session to a target token budget.
@@ -256,11 +248,19 @@ pub fn compact_for(
     id: &str,
     target_tokens: Option<u64>,
 ) -> Result<Compaction, String> {
+    Ok(compact_checked(state, id, target_tokens)?)
+}
+
+fn compact_checked(
+    state: &AppState,
+    id: &str,
+    target_tokens: Option<u64>,
+) -> Result<Compaction, SessionError> {
     let facts = {
         let inner = state.lock_inner();
         facts(&inner)
     };
-    store().compact(id, target_tokens, &facts)
+    store().compact_requested(id, target_tokens, &facts, &|| refuse_while_running(id))
 }
 
 /// One model turn's saved-view decision.
@@ -273,83 +273,207 @@ pub struct PreparedTurn {
     pub saved_auditions: Vec<Value>,
 }
 
+/// Identity captured by the request owner, not the active panel selection.
+pub struct SavedTurnBinding<'a> {
+    pub id: &'a str,
+    pub incarnation: &'a str,
+    pub project: Option<&'a Path>,
+    /// Tokens of the tool list the request carries beside its messages
+    /// ([`wire::offered_tool_tokens`]); 0 for a request without tools.
+    pub tool_tokens: u64,
+}
+
+/// Why a turn was not prepared. Every variant leaves the store unchanged.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PrepareTurnError {
+    /// Even compacted, the request is larger than the model's window.
+    ContextOverflow { tokens: u64, window: u64 },
+    /// No cut brings the saved conversation under the request's row bound.
+    Unreplayable,
+    /// The store refused or failed.
+    Store(String),
+}
+
+impl PrepareTurnError {
+    /// The stable code an `ai_turn` failure carries.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::ContextOverflow { .. } => "context_overflow",
+            Self::Unreplayable | Self::Store(_) => "session_save",
+        }
+    }
+}
+
+impl std::fmt::Display for PrepareTurnError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ContextOverflow { tokens, window } => write!(
+                formatter,
+                "This message makes the request about {tokens} tokens, more than the model's \
+                 {window}-token window even after compaction. Nothing was sent or saved; \
+                 shorten the message or choose a model with a larger window."
+            ),
+            Self::Unreplayable => formatter.write_str("The saved conversation cannot be replayed"),
+            Self::Store(message) => formatter.write_str(message),
+        }
+    }
+}
+
+impl From<String> for PrepareTurnError {
+    fn from(message: String) -> Self {
+        Self::Store(message)
+    }
+}
+
+impl From<PrepareTurnError> for AiError {
+    fn from(error: PrepareTurnError) -> Self {
+        AiError::new(error.kind(), error.to_string())
+    }
+}
+
+/// Rows a prepared request keeps under, below the wire's 100 so the host's
+/// state line and one round of results still fit.
+const PREPARED_WIRE_ROWS: usize = 96;
+
+pub(crate) fn validate_saved_project(expected: &Path, actual: Option<&Path>) -> Result<(), String> {
+    let expected = expected.canonicalize().map_err(|error| error.to_string())?;
+    let actual = actual
+        .ok_or("No project is open")?
+        .canonicalize()
+        .map_err(|error| error.to_string())?;
+    if expected != actual {
+        return Err("The saved turn belongs to another project".into());
+    }
+    Ok(())
+}
+
+/// The request a saved conversation becomes: the client's system rows, then
+/// the conversation, folded under the row bound and, when the window is
+/// known, toward it. `Err` names why it cannot be sent; the caller decides
+/// whether that refuses the turn.
+fn fitted_request(
+    system: &[Value],
+    saved: &[Value],
+    tokens: Option<wire::TokenBudget>,
+) -> Result<Vec<Value>, PrepareTurnError> {
+    let mut outbound = system.to_vec();
+    outbound.extend_from_slice(saved);
+    let limits = wire::FoldLimits {
+        rows: PREPARED_WIRE_ROWS,
+        bytes: crate::ai::LIMIT,
+        tokens,
+    };
+    if !limits.fits(&outbound) {
+        let ask = wire::turn_ask(&outbound);
+        let shape = wire::FoldLimits {
+            tokens: None,
+            ..limits
+        };
+        let folded = wire::fold_wire(&mut outbound, &limits, ask)
+            .or_else(|| wire::fold_wire(&mut outbound, &shape, ask));
+        if let Some(fold) = folded {
+            log::warn!(
+                "[ai] a saved conversation was folded to {} messages ({} rows replaced)",
+                outbound.len(),
+                fold.to - fold.from
+            );
+        }
+    }
+    if outbound.len() > PREPARED_WIRE_ROWS {
+        return Err(PrepareTurnError::Unreplayable);
+    }
+    if let Some(tokens) = tokens {
+        let measured = tokens.measure(&outbound);
+        if measured > tokens.window {
+            return Err(PrepareTurnError::ContextOverflow {
+                tokens: measured,
+                window: tokens.window,
+            });
+        }
+    }
+    Ok(outbound)
+}
+
 /// Resolves the active session for the open workspace (creating one on the first
 /// turn), appends what the request adds, and returns what to send.
 ///
-/// Returns `Ok(None)` when the request must go out unchanged: there is no session
-/// to save into or the saved conversation cannot be replayed as it stands.
+/// Whether the request can be sent is decided before anything is saved: a
+/// refusal (too large for the model, not replayable) leaves the conversation,
+/// its archive and its metadata exactly as they were.
 pub fn prepare_turn_for(
     app: &tauri::AppHandle,
     provider: &AiProviderEntry,
     messages: &Value,
-    session_id: &str,
-    incarnation: &str,
-) -> Result<Option<PreparedTurn>, String> {
+    binding: SavedTurnBinding<'_>,
+) -> Result<PreparedTurn, PrepareTurnError> {
     let state = app.state::<AppState>();
-    let (project, place, facts) = {
+    let (project, place, facts, source) = {
         let inner = state.lock_inner();
+        if let Some(expected) = binding.project {
+            validate_saved_project(expected, inner.file_path.as_deref())?;
+        }
         let project = project_of(None, &inner);
         let place = crate::commands::workspace::scoped_workspace(&inner, None);
-        (project, place, facts(&inner))
+        (project, place, facts(&inner), inner.dsl_source.clone())
     };
+    let session_id = binding.id;
     let store = store();
     let key = store.workspace_key(place.as_deref());
     let (_, meta) = store.find(session_id)?;
     if meta.workspace_key != key {
-        return Err("The requested conversation belongs to another workspace".into());
+        return Err("The requested conversation belongs to another workspace"
+            .to_owned()
+            .into());
     }
     let session_id = session_id.to_owned();
     let incoming = messages
         .as_array()
         .ok_or_else(|| "Invalid AI request messages".to_string())?;
-    let overhead = sessions::estimate_tokens(
-        &incoming
-            .iter()
-            .filter(|message| message["role"] == "system")
-            .cloned()
-            .collect::<Vec<_>>(),
-    );
+    let system: Vec<Value> = incoming
+        .iter()
+        .filter(|message| message["role"] == "system")
+        .cloned()
+        .collect();
+    // What a request carries besides the saved conversation counts against
+    // the window too: the system prompt and the tool list. Attachments ride
+    // in the conversation and are measured there.
+    let overhead = sessions::estimate_tokens(&system) + binding.tool_tokens;
     let context = crate::ai::limits::context_length(provider);
-    let prepared = store.prepare_owned(
+    let tokens = wire::TokenBudget::new(context, binding.tool_tokens);
+    let prepared = store.prepare_admitted(
         &session_id,
         incoming,
         project.as_deref(),
         crate::ai::sessions::PrepareContext {
+            snapshot: Some(&source),
             overhead,
             context_length: context,
             facts: &facts,
             provider: &provider.id,
             model: &provider.model,
         },
-        Some(incarnation),
+        Some(binding.incarnation),
+        |planned| fitted_request(&system, planned, tokens).map(|_| ()),
     )?;
+    if let Some(error) = prepared.compaction_error.as_ref() {
+        let _ = app.emit(
+            AUTO_SESSION_EVENT,
+            compaction_failed_event(&session_id, error),
+        );
+    }
     let saved = match prepared.live {
         Some(live) => live,
         None => prepared.messages,
     };
-    let mut outbound: Vec<Value> = incoming
-        .iter()
-        .filter(|message| message["role"] == "system")
-        .cloned()
-        .collect();
-    outbound.extend(saved);
-    // The wire admits 100 messages. Should a conversation grow past what
-    // compaction folded, send its newest messages that start on a user turn, so
-    // no tool result is orphaned from its call.
-    if outbound.len() > 96 {
-        let keep = outbound.len() - 96;
-        if let Some(start) = (keep..outbound.len()).find(|index| outbound[*index]["role"] == "user")
-        {
-            outbound.drain(..start);
-            log::warn!(
-                "[ai] session {session_id} sent the last {} messages",
-                outbound.len()
-            );
-        }
-    }
-    if outbound.len() > 96 {
-        return Ok(None);
-    }
+    // Admission measured this same conversation before it was saved; what
+    // was saved differs only by archive references, so a refusal here would
+    // contradict it. The turn is sent as fitted, or unfitted if that fails.
+    let mut outbound = fitted_request(&system, &saved, tokens).unwrap_or_else(|error| {
+        log::warn!("[ai] session {session_id} was saved but does not fit: {error}");
+        let mut outbound = system.clone();
+        outbound.extend(saved);
+        outbound
+    });
     outbound.insert(0, json!({"role": "system", "content": format!(
         "Authoritative current project state at request time: DSL sha256 {}; track count {}. Historical tool successes may have been rolled back or superseded. Inspect current project when continuing edits; do not assume historical mutations remain applied.", facts.dsl_digest, facts.track_count
     )}));
@@ -367,54 +491,13 @@ pub fn prepare_turn_for(
         }
     }
     sessions::bound_media_replay(&mut outbound, incoming);
-    Ok(Some(PreparedTurn {
+    Ok(PreparedTurn {
         session_id,
         messages: Value::Array(outbound),
         compacted: prepared.compacted,
         archive_evicted: prepared.evicted_auditions,
         saved_auditions: prepared.saved_auditions,
-    }))
-}
-
-/// Persists panel-local proposal results without making another provider request.
-#[tauri::command]
-pub fn sessions_checkpoint(
-    id: String,
-    messages: Vec<Value>,
-    status: Option<String>,
-    path: Option<String>,
-) -> Result<(), String> {
-    if messages.len() > 100
-        || serde_json::to_vec(&messages)
-            .map_err(|e| e.to_string())?
-            .len()
-            > 2_000_000
-    {
-        return Err("Session checkpoint exceeds its bounded tool-result budget".into());
-    }
-    let outcome = match (status.as_deref(), path.as_deref()) {
-        (None, None) => None,
-        (Some(status), Some(path)) => Some((status, path)),
-        _ => return Err("Proposal outcome requires both status and path".into()),
-    };
-    store().checkpoint_tools(&id, &messages, outcome)
-}
-
-/// Persists the host outcome, even when the provider failed before replying.
-pub fn record_panel_rollback(app: &tauri::AppHandle) -> Result<(), String> {
-    let state = app.state::<AppState>();
-    let (place, facts) = {
-        let inner = state.lock_inner();
-        (
-            crate::commands::workspace::scoped_workspace(&inner, None),
-            facts(&inner),
-        )
-    };
-    let store = store();
-    if let Some(id) = sessions::active(&store.workspace_key(place.as_deref())) {
-        store.record_rollback(&id, &facts)?;
-    }
-    Ok(())
+    })
 }
 
 /// Saves the assistant message a finished turn produced.
@@ -460,6 +543,16 @@ pub fn compaction_event(
     })
 }
 
+/// The payload of [`AUTO_SESSION_EVENT`] when the compaction a turn needed
+/// failed: the turn went out uncompacted, and the panel can say so.
+pub fn compaction_failed_event(session_id: &str, error: &str) -> Value {
+    json!({
+        "session_id": session_id,
+        "notice": "compaction_failed",
+        "message": error,
+    })
+}
+
 /// The payload of [`AUTO_SESSION_EVENT`] when a turn's auditions had to evict
 /// older archive files: the panel says what went so the loss is not silent.
 pub fn archive_event(turn: &PreparedTurn) -> Value {
@@ -470,23 +563,75 @@ pub fn archive_event(turn: &PreparedTurn) -> Value {
 }
 
 #[cfg(test)]
-mod tests {
+mod fit_tests {
     use super::*;
+    use crate::ai::sessions::turns;
 
-    fn running(session: Option<&str>) -> ActiveTurn {
-        ActiveTurn {
-            request_id: "r1".into(),
-            session_id: session.map(str::to_owned),
-        }
+    fn user(text: &str) -> Value {
+        json!({"role":"user","content":text,"message_meta":{"version":1,"kind":"user"}})
+    }
+
+    fn summary() -> Value {
+        json!({"role":"user","context":"summary","content":"Conversation summary written at noon.",
+               "message_meta":{"version":1,"kind":"summary","standing_intent":"a longer song",
+                               "discarded_auditions":0}})
+    }
+
+    fn text_round(saved: &mut Vec<Value>, round: usize) {
+        let id = format!("text-call-t-{round}");
+        saved.push(json!({"role":"assistant","content":"{\"tool\":\"tracks_list\",\"args\":{}}",
+            "message_meta":{"version":1,"kind":"assistant","text_call":{"id":id,"tool":"tracks_list"}}}));
+        saved.push(json!({"role":"user","content":format!("{}{{}}", turns::APPLICATION_RESULT_PREFIX),
+            "message_meta":{"version":1,"kind":"application_result","text_call":{"id":id,"tool":"tracks_list"}}}));
     }
 
     #[test]
-    fn a_rewind_is_refused_while_a_turn_writes_the_conversation() {
-        assert!(refuse_while_running(None, "s1").is_ok());
-        // A turn saving into another conversation does not block this one.
-        assert!(refuse_while_running(Some(&running(Some("other"))), "s1").is_ok());
-        assert!(refuse_while_running(Some(&running(Some("s1"))), "s1").is_err());
-        // A request that has not named its conversation yet may be saving here.
-        assert!(refuse_while_running(Some(&running(None)), "s1").is_err());
+    fn a_long_request_keeps_the_summary_and_never_resumes_on_a_result() {
+        let system = [json!({"role":"system","content":"prompt"})];
+        let mut saved = vec![summary(), user("continue the arrangement")];
+        for round in 0..60 {
+            text_round(&mut saved, round);
+        }
+        let outbound = fitted_request(&system, &saved, None).unwrap();
+        assert!(outbound.len() <= PREPARED_WIRE_ROWS);
+        assert!(
+            sessions::is_compaction_summary(&outbound[1]),
+            "{}",
+            outbound[1]
+        );
+        assert_eq!(outbound[2]["content"], "continue the arrangement");
+        assert_eq!(turns::check_pairing(&outbound[1..]), Ok(()));
+    }
+
+    #[test]
+    fn a_request_larger_than_the_window_is_refused_as_context_overflow() {
+        let system = [json!({"role":"system","content":"prompt"})];
+        let saved = [user(&"pasted text ".repeat(40_000))];
+        let tokens = wire::TokenBudget::new(64_000, 0);
+        let error = fitted_request(&system, &saved, tokens).unwrap_err();
+        assert!(matches!(
+            error,
+            PrepareTurnError::ContextOverflow { window: 64_000, .. }
+        ));
+        assert_eq!(AiError::from(error).kind, "context_overflow");
+        assert!(fitted_request(&system, &saved[..], wire::TokenBudget::new(1_000_000, 0)).is_ok());
+    }
+
+    #[test]
+    fn a_request_no_cut_can_shorten_is_unreplayable() {
+        let system = [json!({"role":"system","content":"prompt"})];
+        let ids: Vec<String> = (0..100).map(|call| format!("c{call}")).collect();
+        let mut saved = vec![
+            user("run them all"),
+            json!({"role":"assistant","content":null,"message_meta":{"version":1,"kind":"assistant"},
+                "tool_calls": ids.iter().map(|id| json!({"id":id,"type":"function",
+                    "function":{"name":"tracks_list","arguments":"{}"}})).collect::<Vec<_>>()}),
+        ];
+        saved.extend(ids.iter().map(|id| {
+            json!({"role":"tool","tool_call_id":id,"content":"{}","message_meta":{"version":1,"kind":"tool"}})
+        }));
+        let error = fitted_request(&system, &saved, None).unwrap_err();
+        assert_eq!(error, PrepareTurnError::Unreplayable);
+        assert_eq!(error.kind(), "session_save");
     }
 }

@@ -7,6 +7,7 @@ import { render, fireEvent } from "@solidjs/testing-library";
 import { invokeMock, openDialogMock, aiConfigWire } from "../setup";
 import { AiPanel } from "../../components/AiPanel";
 import { aiSession } from "../../stores/aiSession";
+import { answerFakeTurn, resetFakeTurns, runFakeTurn, type TurnStartArgs } from "../helpers/fakeTurn";
 
 const ATTACHMENT = {
   kind: "audio",
@@ -48,6 +49,7 @@ function catalog(audioIn: boolean) {
 /** No saved file: the panel installs the built-in defaults and saves them. */
 function mockBackend(options: { audioIn: boolean; chat?: (args: Record<string, unknown>) => unknown }) {
   invokeMock.mockImplementation(async (cmd: string, args?: unknown) => {
+    const typed = (args ?? {}) as Record<string, unknown>;
     if (cmd === "load_ai_config") return aiConfigWire();
     if (cmd === "save_ai_config") return "ok";
     if (cmd === "ai_key_status") return true;
@@ -55,7 +57,17 @@ function mockBackend(options: { audioIn: boolean; chat?: (args: Record<string, u
     if (cmd === "ai_attach_media") return ATTACHMENT;
     if (cmd === "ai_build_context") return { dsl_context: '@project "Test Project"' };
     if (cmd === "ai_tools") return [];
-    if (cmd === "ai_chat") return options.chat?.(args as Record<string, unknown>) ?? { role: "assistant", content: "ok" };
+    if (cmd === "sessions_new") return { id: "s1", title: String(typed.title ?? "new") };
+    if (cmd === "sessions_list") return [];
+    if (cmd === "sessions_load") return { meta: { id: "s1", title: "new" }, messages: [], skipped: 0 };
+    if (cmd === "ai_turn_start") {
+      return runFakeTurn(typed as unknown as TurnStartArgs, {
+        chat: async (round) => options.chat?.(round as unknown as Record<string, unknown>) ?? { role: "assistant", content: "ok" },
+      });
+    }
+    if (cmd === "ai_turn_answer") return answerFakeTurn(String(typed.requestId), String(typed.callId), typed.decision as never);
+    if (cmd === "ai_turn_questions") return [];
+    if (cmd === "ai_batch_recover") return null;
     return {};
   });
 }
@@ -69,6 +81,7 @@ async function attach(container: HTMLElement) {
 
 async function ready(container: HTMLElement) {
   await vi.waitFor(() => expect(container.querySelector(".ai-save-notice")).toBeFalsy());
+  await vi.waitFor(() => expect(container.querySelector(".ai-toolset-chip")).toBeTruthy());
 }
 
 async function send(container: HTMLElement, text: string) {
@@ -81,6 +94,7 @@ beforeEach(() => {
   aiSession.reset();
   invokeMock.mockClear();
   openDialogMock.mockReset();
+  resetFakeTurns();
 });
 
 describe("AI panel audio attachment", () => {

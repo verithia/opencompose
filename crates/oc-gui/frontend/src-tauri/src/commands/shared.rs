@@ -90,6 +90,42 @@ enum AudioSync {
     Chain,
 }
 
+enum PresetValidation {
+    Changed,
+    Historical,
+}
+
+struct ResyncOptions {
+    audio: AudioSync,
+    presets: PresetValidation,
+}
+
+impl From<AudioSync> for ResyncOptions {
+    fn from(audio: AudioSync) -> Self {
+        Self {
+            audio,
+            presets: PresetValidation::Changed,
+        }
+    }
+}
+
+/// A stored snapshot keeps its exact legacy parameters while new edits validate.
+pub(crate) fn resync_restored_with_undo(
+    inner: &mut crate::state::AppStateInner,
+    old_project: ast::Project,
+    edit: crate::state::UndoEdit,
+) -> Result<(), String> {
+    resync(
+        inner,
+        old_project,
+        edit,
+        ResyncOptions {
+            audio: AudioSync::Full,
+            presets: PresetValidation::Historical,
+        },
+    )
+}
+
 /// Re-serialize DSL from AST after any mutation that changes audio content.
 /// Pushes to undo stack by diffing against the pre-mutation snapshot.
 /// `old_project` is the project state BEFORE the mutation was applied; `edit`
@@ -99,7 +135,7 @@ pub(crate) fn resync_with_undo(
     old_project: ast::Project,
     edit: crate::state::UndoEdit,
 ) -> Result<(), String> {
-    resync(inner, old_project, edit, AudioSync::Full)
+    resync(inner, old_project, edit, AudioSync::Full.into())
 }
 
 /// Publish a document edit only when the project it produces still validates.
@@ -139,7 +175,7 @@ pub(crate) fn resync_chain_with_undo(
     old_project: ast::Project,
     edit: crate::state::UndoEdit,
 ) -> Result<(), String> {
-    resync(inner, old_project, edit, AudioSync::Chain)
+    resync(inner, old_project, edit, AudioSync::Chain.into())
 }
 
 /// The refusal a document edit gets while a preview holds the document.
@@ -159,14 +195,14 @@ pub(crate) fn resync_mixer_with_undo(
     old_project: ast::Project,
     edit: crate::state::UndoEdit,
 ) -> Result<(), String> {
-    resync(inner, old_project, edit, AudioSync::Mixer)
+    resync(inner, old_project, edit, AudioSync::Mixer.into())
 }
 
 fn resync(
     inner: &mut crate::state::AppStateInner,
     old_project: ast::Project,
     edit: crate::state::UndoEdit,
-    sync: AudioSync,
+    options: ResyncOptions,
 ) -> Result<(), String> {
     // An open edit preview holds two documents. A mutation would land on the
     // side on screen and make the comparison meaningless, so every document
@@ -180,6 +216,13 @@ fn resync(
         inner.dsl_source = dsl_source;
         return Err(crate::preview::READ_ONLY.to_string());
     }
+    if matches!(options.presets, PresetValidation::Changed)
+        && let Err(error) =
+            crate::device_catalog::validate_synth_changes(&old_project, &inner.project)
+    {
+        inner.project = old_project;
+        return Err(error);
+    }
     inner.retire_touches_for_topology_change(&old_project);
     inner.audio.resource_root = inner
         .file_path
@@ -192,7 +235,7 @@ fn resync(
         .invalidate_inherited_live_synth(&old_project, &inner.project);
     inner.dsl_source = oc_dsl::serialize(&inner.project);
     inner.dirty = true;
-    match sync {
+    match options.audio {
         // Eagerly pre-load the updated project into the render thread so playback
         // starts instantly when the user next presses play.
         AudioSync::Full => {

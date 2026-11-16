@@ -415,7 +415,7 @@ pub fn catalog() -> Vec<ToolSpec> {
             "Load a staged .ocppatch file from the saved project's handoff/ folder into an existing OpenSynth project preset as one undoable edit. Replaces the whole voice and insert chain, detaches inheritance, and preserves the target's project name and track references. Also keeps a reusable library copy; Undo restores the project but retains that library copy. Duplicate library names get numbered copies. Requires current revision and transaction ownership. External insert sidechains are refused.",
         ),
         arguments::tool::<crate::agent_tools::presets::PresetsAddArgs>(
-            "Create a preset. For a local SoundFont use source=soundfont, file=<absolute SF2/SF3 path from soundfonts_list.discovered or content_libraries.discovered_soundfonts>, program=0 (or another program), then tracks_preset to assign it. Use source=clap|vst3|lv2 with plugin=<scanned plugin id> for instrument plugins.",
+            "Create a preset. For OpenSynth use source=builtin, plugin=builtin.open_synth explicitly before presets_set_params. For a local SoundFont use source=soundfont, file=<absolute SF2/SF3 path from soundfonts_list.discovered or content_libraries.discovered_soundfonts>, program=0 (or another program), then tracks_preset to assign it. Use source=clap|vst3|lv2 with plugin=<scanned plugin id> for instrument plugins.",
         ),
         arguments::tool::<crate::agent_tools::presets::PresetsRemoveArgs>(
             "Remove a preset and clear it from tracks.",

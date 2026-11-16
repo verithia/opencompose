@@ -1,4 +1,4 @@
-import { Show, createEffect, createSignal, on, onCleanup } from "solid-js";
+import { Show, createEffect, createMemo, createSignal, on, onCleanup } from "solid-js";
 import { preparingActivity, thinkingPreview } from "../ai/activity";
 import { AiMarkdown } from "./AiMarkdown";
 import { i18n } from "../stores/i18n";
@@ -77,8 +77,9 @@ export function thinkingState(facts: ThinkingFacts): ThinkingState | null {
 
 export function AiThinking(props: ThinkingFacts) {
   const [elapsed, setElapsed] = createSignal(0);
-  const state = () => thinkingState(props) ?? (props.reasoning?.trim()
-    ? { phase: "waiting" as const, label: i18n.t("ai.activity.thinking") } : null);
+  const state = createMemo(() => thinkingState(props) ?? (props.reasoning?.trim()
+    ? { phase: "waiting" as const, label: i18n.t("ai.activity.thinking") } : null), undefined,
+    { equals: (a, b) => a?.phase === b?.phase && a?.label === b?.label });
 
   // The counter measures one phase, so a new phase starts it at zero.
   createEffect(on(() => thinkingPhase(props), () => setElapsed(0), { defer: true }));

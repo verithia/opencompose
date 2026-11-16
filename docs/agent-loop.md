@@ -40,6 +40,52 @@ Give each concurrent host a separate `OPENCOMPOSE_CONFIG_DIR`. This directory
 owns its configuration and private `agent.json` endpoint; it does not
 automatically inherit another profile's provider settings or credentials.
 `OPENCOMPOSE_AGENT_PORT=0` requests an available port, recorded in that endpoint.
+For a saved headless conversation, create a project file and call
+`sessions_new` with that file and a title. Send both `session_id` and the
+absolute `project_path` on each `POST /ai/complete` request and each `/call`
+envelope. Tool calls then use that conversation's ownership, including access
+to its attached audio references and saved renders. A `/ai/complete` or `/call`
+request's project transaction stays the client's own: an AI panel working in
+the same conversation cannot join, commit or recover it, and each committed
+edit is published to the window like any other external edit. The file must be
+open in that host and the session must belong to its workspace. Requests save
+incoming tool results, audition media and the provider reply through the same
+conversation store as the AI panel. Keep saving the same project path; copies
+for checkpoints do not change the session's working file. Omitting both fields
+keeps the request ephemeral.
+Malformed messages are refused before the conversation is changed. If a
+provider reply arrives but cannot be saved, the response still contains that
+reply and a `session_warning`; do not repeat a paid request merely to recover
+from a transcript write failure.
+A binding that names a conversation or project this host does not have open
+answers 409 with `kind` `session_binding`, before any provider call. A local
+conversation-store failure answers 500 with `kind` `session_save`.
+
+`POST /ai/turn` runs one whole agent turn on the same backend loop the panel
+uses. Its body carries `provider` (required, non-empty, at most 100
+characters), `messages`, `session_id` and the absolute `project_path` (both
+required and bound as for `/ai/complete`), and optional `toolsets` (at most 64
+names), `label` (at most 200 characters) and `request_id`. `messages` holds up
+to eight system messages and at most one message of the person, last; history
+comes from the saved conversation, so a tool result, an assistant message or a
+host message kind is refused with 400 `request`. The person's message carries at
+most four attachments, each a valid descriptor. `request_id` names the turn (up
+to 96 letters, digits, `-`, `_` or `.`); without it the host picks one. A named
+turn can be steered with `POST /ai/steer` and stopped with `POST /ai/cancel`
+(`{request_id, session_id}`; 409 `not_running` when no such turn runs). The
+route requires the same token as the other routes. Nobody attends a headless
+turn: a `Confirm` call is refused with a readable result and the turn
+continues, a validated `edit_subtree` applies in the turn, and the session's
+permission reads as `write`. The turn's batch owner is
+`turn:<request_id>:<conversation>`, so a `/call` client bound to the same
+conversation cannot join, commit or roll it back. The answer is the turn's
+outcome JSON with `ok`. The window hears the document once the batch closes, as
+for any external edit.
+
+The store belongs to `OPENCOMPOSE_CONFIG_DIR`. A private profile's sessions do
+not appear in the default desktop profile. Use the intended profile when you
+want to continue the conversation there.
+
 Stop the host before removing its profile. Headless mode still uses the native
 application event loop; it is not a standalone core daemon for systems without
 a window-system session. Audio playback tools can use hardware output, so
@@ -91,20 +137,27 @@ track and channel. Empty projects take the MIDI tempo,
 meter and key maps. Projects with tracks or sections keep their own clock.
 An import joins an open transaction owned by the caller and rolls back with it.
 
-## Applying an edit: a proposal or an application
+## Applying an edit: one write path
 
-`edit_subtree` is the one write path that replaces a whole subtree, and it has
-two outcomes:
+`edit_subtree` is the one write path that replaces a whole subtree. It validates
+the candidate first, so a replacement that cannot apply never reaches a person.
+Then the conversation's permission decides what happens:
 
-| session | result the model reads | what happens |
-|---|---|---|
-| a user is there (the panel) | `{"status":"pending_user_confirmation","applied":false}` | the panel shows the diff; **Accept** calls `ai_apply_edit` |
-| nobody to ask (an agent session) | `{"status":"applied","applied":true,"path":…,"revision":…}` | the loop calls `ai_apply_edit` itself, in the same turn |
+* **Require approval.** The card asks before the replacement runs and shows the
+  change as a diff row. An approved replacement applies in the turn's batch.
+* **Autoreview.** The loop records the diff row and applies the replacement.
+  After any reviewed mutation it compares the document just before the call
+  with the one after it, and takes the call back as one undo step only when
+  the call moved the revision and introduced an error, the project is still at
+  the revision it wrote, and the error is not one the project already had.
+  Errors are compared without their line positions, so an edit that only moves
+  an existing error, such as a missing sample below an added track, is not
+  blamed for it.
+* **Write.** The replacement applies directly.
+* **Nobody to ask.** A headless turn applies a validated replacement in the turn.
 
-The session sets the capability (`runAgent({autoApply})`), never a guess about
-the surface: the panel leaves it off, and a headless driver turns it on. Both
-outcomes are one undo entry through `apply_edit_to_project`, and both refuse a
-replacement that does not parse or names missing media without touching the
+Applied replacements are one undo entry within the turn's batch. A replacement
+that does not parse or names missing media is refused without touching the
 project. An applied edit moves the document the turn is checked against, so a
 second replacement in the same turn is validated against what the first one
 wrote.
@@ -116,8 +169,8 @@ Replaceable paths: `project` (a whole document), `project.properties` or
 (every `@section` at once). Extract and replace take the same path language, so
 `project_extract("pattern:groove")` reads exactly what `edit_subtree` replaces.
 
-Both outcomes validate the candidate before anything is written: it must parse
-into the addressed subtree, the media it declares must exist under the project
+Every replacement is validated before anything is written: it must parse into
+the addressed subtree, the media it declares must exist under the project
 directory, and it must not add an error `oc_dsl::validator` would make a render
 refuse (a `gain_automation` point in dB, a bus route that names nothing). The
 error text is the validator's own, so a replacement the renderer would reject
@@ -125,30 +178,6 @@ never reaches the project or the undo stack.
 
 This document is the contract for the feedback-loop pieces: render a window,
 measure it, compare two mixes, edit atomically, and export a full song.
-
-## The preview bar's one-line summary
-
-A proposal opened as a preview prints one line above the side hint that says
-what the edit does. It comes from the proposal's own diff — `diff_dsl` over the
-extracted subtree — and never from the model's prose; the classifier is
-`crates/oc-gui/frontend/src/ai/previewChange.ts`.
-
-* A changed `@track` or `@pattern` declaration names that track or pattern. The
-  same name on both sides of the diff changed in place and reads as a settings
-  change; a name on one side only reads as an addition or a removal.
-* A `@phrase`, an indented `@pattern` or an `@audio_clip` is a clip. A clip
-  whose range moved reads as a move, one that only left or only arrived reads as
-  a removal or an addition, and the owning track is named.
-* A body line under a `@phrase` or `@pattern` is a note; any other body line is
-  a setting. A body under a declaration the diff replaces counts as part of that
-  declaration, so adding a track does not also claim to change its notes.
-* A diff with no hunks, or one that shares no line with the base document at the
-  whole document's level, prints `Replaces the whole project document.` rather
-  than guessing. A diff with no changed line prints nothing.
-
-The line names at most three kinds in a fixed order of significance — tracks,
-patterns, clips, notes, structure, settings — and the strings live under
-`ai.preview.change.*` in all five locales.
 
 ## 1. `render_range` — a window of the full mix
 
@@ -327,9 +356,14 @@ same full-rate WAV, and additionally returns a mono 16 kHz 16-bit WAV inline:
   `path`. The session archive keeps the full render in the format selected in
   Preferences → Storage and preserves the bounded model excerpt as the exact WAV
   delivered to the model. The clip is capped at 30 s and 2 MiB
-  of base64; a longer window returns its first 30 s with `"truncated": true`,
-  while `path` still holds the whole window. `duration_s` is the length of the
-  returned clip.
+  of base64; either limit can shorten a window and sets `"truncated": true`,
+  while `path` still holds the whole window. `duration_s` and the delivered
+  message's audio range describe the returned clip, not the requested window.
+  Request the remainder separately when a complete ending matters. For agent
+  auditions, `source_render` identifies an immutable full-rate stereo snapshot,
+  including when the chosen `path` is later overwritten. If the scratch budget
+  cannot retain that snapshot, `source_render_unavailable` reports the loss;
+  the exact bounded excerpt remains available for the session archive.
 * **What each provider accepts.** The clip is shaped for the model in front of
   it. The row in the bundled catalog (`ai-catalog.json`) may carry an
   `audio_input` block — `channels` (1 or 2, default 1), `sample_rate` (default
@@ -379,6 +413,13 @@ Use `picture_clock_set` with `clock: {rate, origin}` and the latest
 `expected_revision` from `project_get` to save a confirmed setting. Pass
 `clock: null` to clear it. The edit is undoable and is saved with the project.
 [Timecode reference](https://pub.smpte.org/latest/st12-1/st0012-1-2014.pdf)
+
+For OpenSynth, declare `source: builtin` and `plugin: "builtin.open_synth"`.
+New or changed parameters are checked against the supported controls before
+GUI or agent edits are published, including inherited values and subtree
+preflight. Unsupported names fail without changing the document or undo history.
+Unchanged legacy keys do not block unrelated repairs; restoring a saved turn
+preserves that historical snapshot.
 
 Use `preset_bundle_export` to share one existing OpenSynth preset into a new,
 numbered `.ocppatch` file under the saved project's `handoff/` folder. Pass the
@@ -630,32 +671,72 @@ drops the batch's undo/redo entries and moves the revision forward so stale
 but is not counted as an edit.
 
 * **One owner per batch.** A batch records the caller that opened it: a panel
-  turn is `panel:<conversation>`, and an HTTP or MCP client is `http`. A
-  mutation from any other caller is refused before it writes, and only the
+  turn is `panel:<conversation>`, a headless turn `turn:<request>:<conversation>`,
+  a bound client `http:<conversation>` and an unbound HTTP or MCP client `http`.
+  A mutation from any other caller is refused before it writes, and only the
   owner may commit or roll it back. An external `/call` therefore cannot join a
   turn's batch, and the turn's commit never includes it.
-* **A reloaded panel recovers its own orphan.** The panel calls
-  `ai_batch_recover` once on mount; it rolls back an open `panel:` batch and
-  returns the restored document, so `project_save`, `redo` and preview work
-  immediately. A batch an external client owns is left alone, and a call with
-  no batch open is a no-op.
+* **A stranded turn batch commits.** A turn holds the request slot for as long
+  as its batch is open, so a `panel:` or `turn:` batch found while the slot is
+  free belongs to a turn that is gone: one whose commit failed, or one that
+  died. The next turn commits it before it opens its own, in any conversation.
+  When the file cannot be written then, the stranded batch still closes and
+  the new batch opens; the new turn's own commit writes the whole project and
+  reports a file it cannot write. The panel also calls `ai_batch_recover` once on mount; it holds the slot,
+  commits such a batch, writes the project file and returns
+  `{snapshot, unsaved?}`, so `project_save`, `redo` and preview work
+  immediately. `unsaved` says why the file did not take the edits. It answers
+  null while a turn is running. A batch a client owns is left alone, and a call
+  with no batch open is a no-op.
 
 ### The panel turn is one transaction
 
-The panel loop wraps a turn in the same commands an external session calls, so a
-turn is one undo step. No stop discards it: cancel, provider failure, timeout and
-the round cap all keep the batch and report how many edits stayed. The stopped row
-offers Continue (and Retry when the last request failed), and the transcript
-points at the user message's revert action.
+The agent loop runs in the Rust backend and drives the panel and a headless
+caller alike. `ai_turn_start` starts a turn and answers with the outcome
+`{text, failed, stop?, error?}`. The panel hears `ai_turn` events
+`{request_id, session_id, type}` with types `message` (a message the turn just
+saved, in saved form), `running` (a call is about to run), `ask` (a call waits
+for a person), `expired` (a question's wait ran out), `preview` (an autoreview
+replacement about to apply), `wire_folded` (the request was folded to fit;
+the numbers before and after, which the view words) and `media`, plus
+`ai_turn_project` for the document a panel turn changed.
+`ai_turn_answer` answers a question by call id with `{approved, target?,
+always}`. `ai_turn_questions` lists the open questions of a running turn so a
+reloaded or reopened window shows the card again. Closing the panel leaves the
+turn running and its question open. A question nobody answers within 30
+minutes is refused: the call reads `"expired": true`, nothing changes, and the
+turn goes on without it. A question whose wait is dropped unanswered is refused
+too. Neither is the nobody-attends answer, so neither lets an `edit_subtree`
+apply. `ai_cancel` stops a turn; the slot a revert or a recovery holds is the
+host's own, so `ai_cancel` cannot release it and `ai_active_turn` does not
+report it. `ai_tool_result` returns the full text behind a truncated result
+while the process keeps it, scoped to the conversation; the newest 64 results
+are kept, at most 32 per conversation and 32 MiB in all, and a result over
+2,000,000 characters is not. A conversation over its share of that memory
+evicts its own oldest results first, so a busy conversation never takes the
+pages another one is reading.
 
-* **Opening the batch.** Every panel tool carries a `mutation` flag, read from
-  `is_mutation_tool`. The loop opens the batch before the first call with that
-  flag; the panel-local `edit_subtree` opens it too when the session applies the
-  replacement itself (`autoApply`). A turn that only reads opens no batch, so it
+A model without native tool calling writes a call as one `{tool, args}` object
+in its text. The loop reads such a call only when the system prompt asked for
+it: the panel sends `text_protocol` with the prompt it built, and a resumed
+turn sends the value its prompt was built with, so a model switched in between
+cannot leave the prompt and the parser disagreeing. A headless turn, which
+builds no prompt here, reads the provider's `native_tool_calling` capability.
+For a native model a text reply is an answer, and a call quoted in it never
+runs.
+
+A turn is one undo step. No stop discards it: cancel, provider failure, timeout
+and the round cap all keep the batch and report how many edits stayed. The
+stopped row offers Continue (and Retry when the last request failed), and the
+transcript points at the user message's context menu for a deliberate revert.
+
+* **Opening the batch.** Every mutating call carries a `mutation` flag from the
+  registry, and `edit_subtree` is a write path too. The loop opens the batch
+  before the first such call. A turn that only reads opens no batch, so it
   cannot disturb the undo or redo history.
-* **One entry.** The answer commits the batch with the turn's label (the panel
-  passes `AI edit`; a batch the model opened keeps the model's label). One undo
-  restores the pre-turn project, and the commit publishes one revision.
+* **One entry.** The answer commits the batch with the turn's label (`AI edit`
+  by default; a headless caller's `label` replaces it). One undo restores the
+  pre-turn project, and the commit publishes one revision.
 * **The model cannot commit early.** While the turn's batch is open, the loop
   answers a model `transaction_commit` with `committed: false`: the batch stays
   open until the turn ends, so calls after the model's commit stay in the same
@@ -669,9 +750,16 @@ points at the user message's revert action.
 * **Every stop keeps the batch.** Cancel, a provider or transport failure, a
   timeout and the round cap all commit the open batch and report how many edits
   were kept, so a stop cannot discard completed work. The row offers Continue,
-  which resumes the wire where the loop stopped; it offers no Retry, because
-  resending the turn would apply the same edits twice. A commit that fails
-  leaves the batch open and says so; it is never rolled back automatically.
+  which continues from the saved conversation where the loop stopped. A cancel
+  or a committed stop offers no Retry: the person chose to stop, or the edits
+  already landed; a kept failure or timeout offers Retry for the failed request.
+  A commit that fails leaves the batch open and says so; it is never rolled
+  back automatically, and the next turn commits it.
+  A working-file save failure is also reported, even if the in-memory batch
+  committed successfully: the stop carries `commit_failure` `save` (the edits
+  are committed in memory and in undo, and only the file is behind) or
+  `commit` (the batch did not commit), with the host's reason in
+  `commit_error`.
   The notice points at the user message's context menu for a deliberate revert.
 * **The round cap is the same rule.** The cap is a budget stop, not a failure:
   when the loop reaches its last round it commits the open batch like an answer
@@ -737,10 +825,10 @@ writes only: a destructive call is a floor under all three.
 * **A declined call opens no batch.** The approval comes before
   `transaction_begin`, so a turn whose only call was rejected leaves the project
   byte-identical and no undo entry behind.
-* **Nobody to ask means no.** In a session with nobody to approve (`autoApply`,
-  or a caller that supplies no approver) the call is refused with a readable
-  result naming the tool and its arguments, and the turn continues. Silence is
-  never an approval.
+* **Nobody to ask means no.** In a headless turn on `POST /ai/turn`, or any
+  caller that supplies no approver, the call is refused with a readable result
+  naming the tool and its arguments, and the turn continues. Silence is never an
+  approval.
 * **Cancel while the card is open** settles the card as a decline and stops the
   turn at the loop's own check: the batch keeps the edits that already landed,
   like any other cancel, and the transcript's notice says what landed.
@@ -753,42 +841,75 @@ loop had not dispatched yet never runs. The model's remaining calls in the
 interrupted round do not run. The batch keeps the edits that already landed and
 commits them as the turn's one undo entry.
 
-The panel writes one transcript line built from the loop's counts: the calls the
-model had requested, the calls that returned, and the applied edits that were
-kept. A cancel before any edit ran says the project is unchanged. The line points
-at the user message's context menu for a deliberate revert; the project keeps the
-edits until that action runs.
+A completed call keeps its saved result; a call that was dispatched but whose
+result was lost reads `outcome unknown` when the conversation is next prepared;
+a call that never started reads `not run`. The stop facts include `not_run`.
+This holds for both call protocols. A native call is paired by its call id. A
+text-protocol call (a `{tool, args}` object in a text reply) gets an id that is
+unique within the conversation; the assistant round and its application result
+both carry it in `message_meta.text_call`, which is local and never sent to a
+provider. A call id is scoped to its round: a provider that numbers calls per
+reply or per process may use the same id again in a later round, and within
+one round an id names one call, answered once.
+
+The started markers fail toward caution: a marker file that cannot be read
+counts every open call as dispatched, so a lost result never reads as "not
+run". Markers are spent when their round is answered, when a new round opens
+and when a rollback closes the round.
+
+What a caller sends is checked against the saved conversation before anything
+is written or archived: a request that would leave a result without its call,
+a second result for one call, or a message inside an open round is refused,
+and nothing changes. Only the results a request appends answer the open
+round: a client that resends an earlier round's result with a reused id does
+not answer the open one. A conversation trimmed to its size cap starts at a
+message every later append accepts. A conversation saved before these rules
+reads well-formed: an orphan or repeated result is dropped, a round with a
+repeated call id goes with its results, and a round left open before a later
+message reads `outcome unknown`. The round open at the end is left to the loop.
+
+The transcript line is built from the loop's counts: the calls the model had
+requested, the calls that returned, and the applied edits that were kept. A
+cancel before any edit ran says the project is unchanged. The line points at the
+user message's context menu for a deliberate revert; the project keeps the edits
+until that action runs.
 
 The line is transcript-only: the saved conversation keeps the turn's user
 message (see `docs/ai-sessions.md`).
 
 ### Retry and continue after a stop
 
-A stopped turn leaves one actionable row. It offers **Retry** when the last
-request failed in a way a resend can fix — a transport error, a timeout, or a
-reply the loop could not use (malformed tool arguments, an empty or cut-off
-reply, a stalled read). Retry sends that request again over the wire the loop
-held; it does not replay the calls that already ran, so a kept edit is safe. It
-offers **Continue** whenever there is a wire to carry on from: a reportable
-stop, a cancel, a kept failure, or a tool result the model never answered. A
-refused mutation is not one of those: it ends no turn, so it leaves no row. A
-cancel and the round cap offer Continue only: the user stopped one, and the cap
-is not a request failure. A configuration or authentication failure offers no
-Retry either, because the same request cannot start working; the panel's
-provider layer decides that and the error carries `retryable`.
+A stopped turn leaves one actionable row. The backend replays the saved
+conversation, so a resumed turn sends only its system prompt: the store already
+holds the turn's question and what followed it. **Continue** is offered for a
+stop where a call ran or was left unstarted. A cancel and a committed stop offer
+no **Retry**. A kept failure or timeout offers **Retry**, which sends the saved
+conversation again and replays no call. A failure before the turn starts saves
+nothing and gives the message back to the composer with no Retry. A refused
+mutation ends no turn, so it leaves no row. A configuration or authentication
+failure offers no Retry either, because the same request cannot start working;
+the panel's provider layer decides that and the error carries `retryable`.
 
-* **The row keeps the wire.** The loop hands the panel the messages it last held,
-  system prompt included, plus the edits a stop kept. Retry sends exactly
-  that array through the same loop entry as Send, so the model sees the tool
-  results it already earned and nothing is retyped.
+* **The saved conversation is the wire.** Retry and Continue start a turn from
+  the saved conversation and its system prompt, so the model reads every stored
+  call and result and nothing is retyped. A kept edit is already part of that
+  conversation, and a resumed request replays no call.
 * **The wire stays inside the request budget.** Before every provider request
   the loop counts its messages and prompt-text bytes against the bounds `ai_chat`
   enforces: 100 messages and 2 MiB, with a margin so one round of results cannot
-  reach them. When either bound is near, the oldest part of the wire is folded
-  into one summary row: the turn's first user message and the newest six
-  call/result pairs stay whole, and a call is never separated from its result.
-  The fold is reported as its own transcript line, the summary row is marked
-  `summary`, and a Retry resends the folded wire rather than the oversized one.
+  reach them. It also measures the wire in tokens against the model's window,
+  with the estimator the store's compaction uses plus the tool list, and takes
+  the larger of that estimate and what the provider reported for the previous
+  round. When any bound is near (75 % of the window for tokens), the oldest part
+  of the wire is folded into one summary row, aiming for half the window: the
+  turn's ask, the steering delivered after it, the latest compaction summary
+  and the newest six call/result pairs stay whole. A cut lands only where the
+  pairing rules allow a new message, never on a tool or text-protocol result
+  or a delivery, so a call is never separated from its result. A wire that
+  still exceeds the whole window is not sent; the turn fails with
+  `context_overflow`. The fold is reported as its own transcript line, the
+  summary row is marked `summary`, and a Retry refolds the replayed
+  conversation rather than sending the oversized one.
 * **No second question.** The store already holds the turn's user message; a
   request whose tail the conversation has appends nothing (`absorb` in
   `ai/sessions.rs`), so `sessions_load` keeps one user row for the turn.
@@ -799,27 +920,61 @@ provider layer decides that and the error carries `retryable`.
 * **A kept turn says so.** A failed or cancelled turn that applied edits commits
   them before its row appears, and the row states how many edits were kept and
   points at the message menu for a deliberate revert. A kept failure or timeout
-  still offers Retry: it resends only the failed request, with the applied
-  results already in the wire.
+  still offers Retry: it sends the saved conversation again, with the applied
+  results already in it.
 * **A stop can land mid-round.** The model may have asked for more calls than
-  returned. Before resuming, the panel closes that round with one `not run` tool
-  result per missing call, so the request never carries an unanswered call and
-  the model is not told a call landed.
+  returned. Before resuming, the backend closes that round with one result per
+  missing call: a call that was dispatched but whose result was lost reads
+  `outcome unknown`, and a call that never started reads `not run`. The request
+  never carries an unanswered call, and the model is not told a call landed.
 * **An empty reply is a failure.** A provider that answers with no text and no
   tool call still ends the turn's batch like any answer, but the loop reports the
   turn as failed with `Provider returned no text.` instead of passing the
   fallback on as prose. The panel then paints a failed row with Retry, not an
   answer bubble that reads like finished work.
-* **The loop names the call it dispatches.** `onTool` reports each call before it
-  runs, so the panel's status strip can say which tool is in flight instead of
-  showing the previous round's text. It is a progress hint only: it changes no
-  dispatch, no approval and no transaction.
+* **The loop names the call it dispatches.** The `running` event reports each
+  call before it runs, so the panel's status strip can say which tool is in
+  flight instead of showing the previous round's text. It is a progress hint
+  only: it changes no dispatch, no approval and no transaction.
 * **Where it resumed.** Continue names what it continues from, both on its row
   (`Continue resumes after 2 of 5 requested calls`) and in the transcript line
   the click writes.
-* **A failure does not eat the composer.** The draft and its attachment chips go
-  back to the composer when a turn fails or stops, and Retry and Continue leave
-  them there, so a failed turn costs the typing once.
+* **A failure does not eat the composer.** A request refused before the turn
+  starts saved nothing, so its message and attachment chips go back to the
+  composer, or a queued row goes back to the head of the queue. A turn that
+  started has saved the message: Retry and Continue resend it, and **Revert to
+  before this message** puts it back in the composer.
+
+### Reverting a turn
+
+Revert is offered only from a right-click on a person's own message: **Revert to
+before this message**. It is one backend operation, `ai_revert_before`
+`{session_id, index}`. It restores the project snapshot the message was sent
+against as one undo entry labelled `Revert conversation`, only when the document
+differs, and cuts the conversation just before that message. If the cut fails,
+the project, its text, the dirty flag and both history stacks are put back
+exactly, so no redo entry is lost and no undo entry is evicted, and the window
+is sent the document under its new revision. The cut checks that the saved
+message is still the one that was chosen, not only its snapshot: two messages
+sent against one document share a snapshot, and a compaction from another
+window in between refuses the revert instead of cutting elsewhere.
+It also forgets that conversation's stored full results. The answer is
+`{kept, snapshot, unsaved?}`: the revert stands in the document either way, and
+`unsaved` says why the project file was not written.
+
+A message records the project file its snapshot came from. A conversation
+follows its workspace, so a revert to a message sent against another file of
+that workspace is refused rather than written into the open one.
+
+The operation is refused while any turn runs with `A turn is still running;
+stop it before reverting.` and while a batch is open with `A batch of edits is
+still open; finish it before reverting.` No other row offers revert; there is no
+per-call revert and no roll-back item for a turn. While a turn runs, its
+conversation also cannot be compacted, have its history dropped or be deleted:
+those would move the round the turn is writing. The check runs under the store
+lock every write of the turn takes, and a turn is registered as running before
+its first write, so a turn that starts during the command waits for the command
+and then reads what it left.
 
 ## 5. `render_offline` — full-song export
 
@@ -1050,6 +1205,20 @@ read the bank, and apply one entry to an effect insert.
   difference, refusal of unequal lengths/rates.
 * `crates/oc-gui/frontend/src-tauri/src/state.rs` — byte-identical rollback,
   one undo entry per transaction, one revision per commit, no-edit rollback.
+* `crates/oc-gui/frontend/src-tauri/src/ai/agent_loop/tests.rs` -- fake-host tests
+  for the loop: an answered turn saves every round and commits once, cancel
+  keeps completed results and marks the rest not run, the round cap commits and
+  closes with real results, a provider failure after edits keeps them, a failure
+  before any edit is a plain error, a store failure stops before the unsaved
+  call runs, a repeated mutation stops, a declined confirm call opens no batch,
+  nobody-to-ask refuses a confirm and applies a valid replacement, an invalid
+  replacement never reaches the person, autoreview previews before it applies,
+  a model commit inside the turn is answered by the loop, a model rollback is
+  saved as a host notice, a large result is paged only inside its conversation,
+  a text-protocol call runs as a user message, a reply after cancel is saved
+  with none of its calls run, and an unoffered replacement is refused by its
+  toolset. `wire.rs`, `gate.rs` and `results.rs` pin wire folding, text call
+  parsing, result paging and result scoping.
 * `crates/oc-gui/frontend/src-tauri/src/agent_api.rs` — panel round trip
   (seconds + bars + cache hit + analysis + compare), failed-batch rollback,
   transaction guards; and the producer tools: a tempo map written and read back
@@ -1086,8 +1255,9 @@ read the bank, and apply one entry to an effect insert.
   holds for the stems export, whose staged set is removed as a whole when a
   render fails, a publish fails part-way, or a newer export supersedes it.
 * `crates/oc-gui/frontend/src-tauri/src/ai/sessions.rs` — `prepare` closes a
-  round whose calls never got a result (a window reloaded mid-turn) with one
-  `not run` result per call, saves it once, and leaves a round that got its
+  round whose calls never got a result (a process stopped mid-turn) with one
+  result per call -- `outcome unknown` for a dispatched call, `not run` for a
+  call that never started -- saves it once, and leaves a round that got its
   results alone.
 * `crates/oc-gui/frontend/src-tauri/src/ai_service.rs` — `ai_active_turn`
   reports the one request in flight, names its conversation only once that is
@@ -1098,3 +1268,26 @@ read the bank, and apply one entry to an effect insert.
   reports that turn, clears it (painting nothing as running) when the backend
   reports none or another conversation's, and paints an answer that arrives
   after the reload into the conversation the marker named.
+
+### Steering a running turn
+
+`ai_turn_steer` (desktop) and authenticated `POST /ai/steer` (headless) accept
+`request_id`, `session_id` and a `message` with `content`, optional `media`
+(at most four valid attachment descriptors) and an optional `id` (up to 64
+letters, digits, `-`, `_` or `.`). They deliver into that existing turn,
+without cancelling its provider request, tools or transaction. The loop saves
+the message with a project snapshot after all results and audio deliveries of
+the current round, before its next request; the snapshot and the message are
+written under one store lock. The saved message keeps `id` as
+`message_meta.steer_id`, so a caller that lost the response can find out from
+the saved conversation whether the message arrived. A message arriving during
+a final answer causes another round in the same turn, unless that answer came
+in the last round: then the message is refused, and the caller still holds it.
+
+A successful response confirms the message was saved. Callers retain their
+queued message until then. A malformed body, an empty or oversized message or
+a bad attachment answers 400 `request`. A closed, foreign or cancelled turn
+answers 409 `steer_closed`, and a full inbox 429 `steer_full`. When the store
+cannot save the message the turn fails on it, and the steer answers 500
+`session_save`. A stopped or failed turn rejects pending receipts instead of
+discarding them silently. Stop remains a separate cancellation action.

@@ -8,6 +8,49 @@ use std::time::Duration;
 
 use crate::state::AppState;
 
+#[test]
+fn an_agent_audition_keeps_its_source_when_the_explicit_output_is_reused() {
+    let state = render_state();
+    let rate = state.lock_inner().audio.sample_rate;
+    let dir = tempfile::tempdir().unwrap();
+    let output = dir.path().join("scratch.wav");
+    let result = crate::commands::audition_range_for_agent(
+        Some(output.display().to_string()),
+        crate::commands::RangeRequest {
+            start_bar: Some(1),
+            end_bar: Some(2),
+            ..Default::default()
+        },
+        crate::commands::AuditionChannel::Mono,
+        crate::commands::AUDITION_SAMPLE_RATE,
+        &state,
+        true,
+    )
+    .unwrap();
+    let source = std::path::PathBuf::from(
+        result
+            .source_render
+            .expect("an archive handoff needs an immutable source"),
+    );
+    struct Cleanup(std::path::PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            crate::commands::audition_scratch::finish_handoff(&self.0);
+            let _ = std::fs::remove_file(&self.0);
+            let _ = std::fs::remove_file(crate::render_grid::sidecar_path(&self.0));
+        }
+    }
+    let _cleanup = Cleanup(source.clone());
+    assert_ne!(source, output);
+    let before = std::fs::read(&source).unwrap();
+    std::fs::write(&output, b"reused by the next audition").unwrap();
+    assert_eq!(std::fs::read(&source).unwrap(), before);
+    let wav = hound::WavReader::new(std::io::Cursor::new(before)).unwrap();
+    assert_eq!(wav.spec().channels, 2);
+    assert_eq!(wav.spec().sample_format, hound::SampleFormat::Float);
+    assert_eq!(wav.spec().sample_rate, rate);
+}
+
 const PROJECT: &str = r#"@ocp "0.2.0"
 
 @project "offline render test"

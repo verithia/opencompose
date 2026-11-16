@@ -8,6 +8,7 @@ import { fireEvent, render } from "@solidjs/testing-library";
 import { invokeMock, makeSnapshot, openDialogMock, aiConfigWire } from "./setup";
 import { AiPanel } from "../components/AiPanel";
 import { aiSession } from "../stores/aiSession";
+import { answerFakeTurn, resetFakeTurns, runFakeTurn, type TurnStartArgs } from "./helpers/fakeTurn";
 import type { MediaAttachment } from "../ai/media";
 
 const CAPABILITIES = { text: true, audio_in: false, audio_out: false, native_tool_calling: true, streaming: true };
@@ -81,8 +82,19 @@ function installBackend(overrides: Partial<Backend> = {}): Backend {
       case "ai_build_context": return { dsl_context: '@project "Test Project"\n  tempo: 128\n' };
       case "ai_attach_media": return backend.attach();
       case "sessions_list": return [META];
+      case "sessions_new": return { ...META, id: String(typed.title ?? META.id) };
       case "sessions_load": return backend.loaded;
-      case "ai_chat": backend.chatCalls.push(typed); return backend.chat(typed);
+      case "ai_turn_start": {
+        return runFakeTurn(typed as unknown as TurnStartArgs, {
+          chat: async (round) => {
+            backend.chatCalls.push(round as unknown as Record<string, unknown>);
+            return backend.chat(round as unknown as Record<string, unknown>);
+          },
+        });
+      }
+      case "ai_turn_answer": return answerFakeTurn(String(typed.requestId), String(typed.callId), typed.decision as never);
+      case "ai_turn_questions": return [];
+      case "ai_batch_recover": return null;
       default: return makeSnapshot();
     }
   });
@@ -91,6 +103,7 @@ function installBackend(overrides: Partial<Backend> = {}): Backend {
 
 async function ready(container: HTMLElement) {
   await vi.waitFor(() => expect(container.querySelector(".ai-save-notice")).toBeFalsy());
+  await vi.waitFor(() => expect(container.querySelector(".ai-toolset-chip")).toBeTruthy());
 }
 
 async function attach(container: HTMLElement, path: string) {
@@ -108,6 +121,7 @@ beforeEach(() => {
   aiSession.reset();
   invokeMock.mockClear();
   openDialogMock.mockReset();
+  resetFakeTurns();
 });
 
 describe("restored attachments", () => {

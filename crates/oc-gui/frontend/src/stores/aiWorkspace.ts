@@ -8,7 +8,7 @@
  */
 import { createSignal } from "solid-js";
 import { Channel, invoke } from "@tauri-apps/api/core";
-import type { WireMessage } from "../ai/agent";
+import type { WireMessage } from "../ai/wire";
 import { errorMessage } from "../ai/errors";
 import { loadCatalog, type Catalog } from "../ai/catalog";
 import { getActiveProvider } from "../ai/config";

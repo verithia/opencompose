@@ -71,17 +71,52 @@ pub fn validate_edit_in_project(
     let Ok(candidate) = oc_dsl::ai::candidate_project(&edit, &inner.project) else {
         return result;
     };
-    let existing = oc_engine::graph::validate_effect_parameters(&inner.project, 48_000);
-    let introduced: Vec<String> = oc_engine::graph::validate_effect_parameters(&candidate, 48_000)
-        .into_iter()
-        .filter(|error| !existing.contains(error))
-        .collect();
+    let introduced = introduced_engine_errors(&inner.project, &candidate);
     if !introduced.is_empty() {
         result.valid = false;
         result.parsed_dsl = None;
         result.errors.extend(introduced);
     }
     result
+}
+
+/// Effect parameters and synth changes `candidate` gets wrong that `base` got
+/// right: the checks above the DSL crate, compared the same way for a proposed
+/// edit and for a change a tool already wrote.
+fn introduced_engine_errors(
+    base: &oc_dsl::ast::Project,
+    candidate: &oc_dsl::ast::Project,
+) -> Vec<String> {
+    let existing = oc_engine::graph::validate_effect_parameters(base, 48_000);
+    let mut introduced: Vec<String> =
+        oc_engine::graph::validate_effect_parameters(candidate, 48_000)
+            .into_iter()
+            .filter(|error| !existing.contains(error))
+            .collect();
+    if let Err(error) = crate::device_catalog::validate_synth_changes(base, candidate) {
+        introduced.push(error);
+    }
+    introduced
+}
+
+/// The errors the document `after` has that `before` did not, for a change a
+/// tool already wrote. A document that does not parse reports its parse error.
+/// `Err` means `before` itself does not parse, so there is nothing to compare
+/// against.
+pub fn introduced_by_change(
+    inner: &crate::state::AppStateInner,
+    before: &str,
+    after: &str,
+) -> Result<Vec<String>, String> {
+    let base = oc_dsl::parse(before).map_err(|error| error.to_string())?;
+    let candidate = match oc_dsl::parse(after) {
+        Ok(candidate) => candidate,
+        Err(error) => return Ok(vec![error.to_string()]),
+    };
+    let root = super::shared::project_root(inner);
+    let mut errors = oc_dsl::ai::introduced_errors(&base, &candidate, root.as_deref());
+    errors.extend(introduced_engine_errors(&base, &candidate));
+    Ok(errors)
 }
 
 /// Apply a validated AI edit to the project.
@@ -144,43 +179,56 @@ pub fn apply_edit_to_project(
     Ok(snapshot(inner))
 }
 
-/// Roll back a batch a panel turn left open, e.g. after a window reload killed
-/// the loop that would have closed it. Returns the restored document, or `None`
-/// when no panel batch was open.
-///
-/// Only a panel-owned batch is recovered: a batch an external client opened is
-/// that client's to finish, so it is left alone. Calling this with no open batch
-/// and calling it twice are both no-ops.
-pub fn recover_panel_batch(state: &AppState) -> Result<Option<ProjectSnapshot>, String> {
-    let Some(owner) = state.batch_owner() else {
-        return Ok(None);
-    };
-    if !owner.starts_with(crate::state::PANEL_BATCH_OWNER_PREFIX) {
-        return Ok(None);
-    }
-    state.rollback_transaction()?;
-    let inner = state.lock_inner();
-    Ok(Some(snapshot(&inner)))
+/// What a recovery committed, and whether the file took it.
+#[derive(Debug, serde::Serialize)]
+pub struct RecoveredBatch {
+    pub snapshot: ProjectSnapshot,
+    /// Why the committed edits are not in the project file yet.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unsaved: Option<String>,
 }
 
-/// The panel calls this once on mount, before its first turn. A recovered batch
-/// is reported to the saved conversation, so the model does not read the
-/// interrupted turn's results as applied.
+/// Commits a batch a backend turn left open, e.g. when the process that ran
+/// the turn died between its edits and its commit. The edits stay applied, as
+/// one undo entry; the saved conversation marks the calls that never reported.
+/// Returns the published document, or `None` when no such batch was open.
+///
+/// Recovery holds the request slot, and a turn holds it for as long as its
+/// batch is open, so a loop-owned batch found here has no live turn, in any
+/// conversation; committing it only keeps edits that already landed. A batch
+/// an external client opened is that client's to finish, so it is left alone.
+/// Calling this with no open batch and calling it twice are both no-ops.
+pub fn recover_panel_batch(state: &AppState) -> Result<Option<RecoveredBatch>, String> {
+    let Some(saved) = crate::ai::agent_loop::host::commit_stranded(state)? else {
+        return Ok(None);
+    };
+    let unsaved = saved.err();
+    let inner = state.lock_inner();
+    Ok(Some(RecoveredBatch {
+        snapshot: snapshot(&inner),
+        unsaved,
+    }))
+}
+
+/// The panel calls this once on mount. A turn still running on the backend
+/// owns its batch and commits it itself, so recovery waits for it to end.
 #[tauri::command]
 pub fn ai_batch_recover(
-    app: tauri::AppHandle,
     state: State<AppState>,
-) -> Result<Option<ProjectSnapshot>, String> {
-    let recovered = recover_panel_batch(&state)?;
-    if recovered.is_some()
-        && let Err(error) = super::record_panel_rollback(&app)
-    {
-        // The rollback already succeeded: a transcript that could not record it
-        // must not turn into a failed recovery.
-        log::warn!("[ai] panel batch rolled back but its outcome was not saved: {error}");
-    }
-    Ok(recovered)
+    requests: State<crate::ai_service::Requests>,
+) -> Result<Option<RecoveredBatch>, String> {
+    // Recovery holds the request slot, so no turn can open a batch between
+    // the check and the commit.
+    let Some(claim) = requests.claim_internal(RECOVER_SLOT)? else {
+        return Ok(None);
+    };
+    let recovered = recover_panel_batch(&state);
+    let _ = requests.release_owned(RECOVER_SLOT, &claim.identity);
+    recovered
 }
+
+/// The request slot batch recovery holds while it commits.
+const RECOVER_SLOT: &str = "panel-batch-recover";
 
 /// Extract a subtree as DSL text (for inspection / AI context).
 #[tauri::command]

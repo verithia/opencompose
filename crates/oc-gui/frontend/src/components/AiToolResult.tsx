@@ -2,10 +2,10 @@
  * Rich views for tool results. Every view keeps the raw payload behind one
  * toggle, so a shape this file does not know still reads as JSON.
  */
-import { For, Show, createMemo, createSignal, type JSX } from "solid-js";
+import { For, Show, createMemo, createResource, createSignal, type JSX } from "solid-js";
 import { i18n, type I18nKey } from "../stores/i18n";
 import { toolResultLabelKeys } from "../stores/locales/toolResultCopy";
-import { storedToolResult } from "../ai/agent";
+import { aiApi } from "../stores/api";
 import { store } from "../stores/project";
 import { previewAudioFile, type PreviewAudio } from "../stores/api";
 import { pcmPreviewWaveform } from "../utils/pcmPreviewWaveform";
@@ -18,11 +18,6 @@ type Scalar = string | number | boolean | null;
 type Column = { key: string; label?: string; numeric?: boolean };
 
 const MAX_ROWS = 80;
-
-/** A listening delivery opens itself; a render result stays folded like the rest. */
-export function autoOpenResult(tool: string): boolean {
-  return tool === "audition_range";
-}
 
 function record(value: unknown): RecordValue | null {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -1330,15 +1325,18 @@ function SnapshotReceipt(props: { value: RecordValue }) {
 }
 
 /**
- * A result the loop bounded to 8 000 characters. The session keeps the full
- * payload in memory, so the view recovers it when this window still has it;
- * after a reload only the summary and the preview remain.
+ * A result the loop bounded to 8 000 characters. The backend keeps the full
+ * payload in memory for the conversation that produced it, so the view asks
+ * for it; after a restart only the summary and the preview remain.
  */
-function TruncatedResult(props: { tool: string; value: RecordValue; args?: string }) {
-  const full = createMemo(() => {
-    const id = string(props.value.tool_call_id);
-    return id ? storedToolResult(id) : null;
-  });
+function TruncatedResult(props: { tool: string; value: RecordValue; args?: string; sessionId?: string }) {
+  const [full] = createResource(
+    () => {
+      const id = string(props.value.tool_call_id);
+      return id && props.sessionId ? { session: props.sessionId, id } : null;
+    },
+    ({ session, id }) => aiApi.toolResult(session, id).catch(() => null),
+  );
   const parsed = createMemo<unknown>(() => {
     const text = full();
     if (!text) return undefined;
@@ -1539,7 +1537,7 @@ function ArrayTool(props: { tool: string; rows: RecordValue[] }) {
   }
 }
 
-export function AiToolResult(props: { tool: string; content: string; args?: string }) {
+export function AiToolResult(props: { tool: string; content: string; args?: string; sessionId?: string }) {
   const [raw, setRaw] = createSignal(false);
   const value = createMemo(() => {
     try {
@@ -1563,7 +1561,7 @@ export function AiToolResult(props: { tool: string; content: string; args?: stri
             <Show when={object()!.result_truncated === true} fallback={
               <GenericTool name={props.tool} value={object()!} args={props.args} />
             }>
-              <TruncatedResult tool={props.tool} value={object()!} args={props.args} />
+              <TruncatedResult tool={props.tool} value={object()!} args={props.args} sessionId={props.sessionId} />
             </Show>
           </Show>
         </Show>

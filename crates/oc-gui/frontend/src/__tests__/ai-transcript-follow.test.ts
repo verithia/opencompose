@@ -1,48 +1,49 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { followTranscript } from "../ai/transcriptScroll";
 
-afterEach(() => { document.body.replaceChildren(); vi.unstubAllGlobals(); });
-function fixture() {
-  const element = document.createElement("div");
-  document.body.append(element);
-  let height = 1000;
-  Object.defineProperty(element, "scrollHeight", { get: () => height });
-  Object.defineProperty(element, "clientHeight", { value: 200 });
-  element.scrollTop = 800;
-  const follow = followTranscript(element);
-  return { element, follow, grow() { height += 500; element.append(document.createElement("p")); } };
-}
-const settle = async () => { await Promise.resolve(); await Promise.resolve(); };
-describe("transcript bottom following", () => {
-  it("follows appended turns after a long diff but preserves manual upward scroll", async () => {
-    const f = fixture();
-    f.grow(); await settle();
-    expect(f.element.scrollTop).toBe(1500);
-    f.element.scrollTop = 120;
-    f.element.dispatchEvent(new Event("scroll"));
-    f.grow(); await settle();
-    expect(f.element.scrollTop).toBe(120);
-    f.follow.resume(); await settle(); // Explicit Send / Accept / Reject / restore.
-    expect(f.element.scrollTop).toBe(2000);
-    f.follow.dispose();
+afterEach(() => { vi.unstubAllGlobals(); document.body.replaceChildren(); });
+
+it("keeps following through composer and scale resizing, while respecting a reader who scrolls up", async () => {
+  let resized: () => void = () => {};
+  vi.stubGlobal("ResizeObserver", class {
+    constructor(callback: () => void) { resized = callback; }
+    observe() {}
+    disconnect() {}
   });
-  it("resumes when the reader scrolls back to bottom", async () => {
-    const f = fixture();
-    f.element.scrollTop = 0; f.element.dispatchEvent(new Event("scroll"));
-    f.element.scrollTop = 790; f.element.dispatchEvent(new Event("scroll"));
-    f.grow(); await settle();
-    expect(f.element.scrollTop).toBe(1500);
-    f.follow.dispose();
+  const list = document.createElement("div");
+  document.body.append(list);
+  let height = 200;
+  let extent = 1000;
+  let top = 800;
+  Object.defineProperties(list, {
+    clientHeight: { get: () => height },
+    scrollHeight: { get: () => extent },
+    scrollTop: { get: () => top, set: value => { top = Math.min(Number(value), extent - height); } },
   });
-  it("follows footer-driven resize only while pinned and disconnects on disposal", async () => {
-    let resize = () => {};
-    const disconnect = vi.fn();
-    vi.stubGlobal("ResizeObserver", class { constructor(callback: () => void) { resize = callback; } observe() {} disconnect = disconnect; });
-    const f = fixture();
-    resize(); await settle(); expect(f.element.scrollTop).toBe(1000);
-    f.element.scrollTop = 120; f.element.dispatchEvent(new Event("scroll"));
-    resize(); await settle(); expect(f.element.scrollTop).toBe(120);
-    f.follow.dispose(); expect(disconnect).toHaveBeenCalledOnce();
-    f.follow.resume(); f.grow(); await settle(); expect(f.element.scrollTop).toBe(120);
-  });
+  const follow = followTranscript(list);
+  follow.resume();
+  await Promise.resolve();
+  height = 300;
+  top = 700;
+  list.dispatchEvent(new Event("scroll"));
+  height = 150;
+  list.dispatchEvent(new Event("scroll"));
+  resized();
+  await Promise.resolve();
+  expect(top).toBe(850);
+  list.dispatchEvent(new Event("scroll"));
+  top = 400;
+  list.dispatchEvent(new Event("scroll"));
+  height = 100;
+  extent = 1200;
+  list.dispatchEvent(new Event("scroll"));
+  resized();
+  list.append("New reply text");
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(top).toBe(400);
+  follow.resume();
+  await Promise.resolve();
+  expect(top).toBe(1100);
+  follow.dispose();
 });

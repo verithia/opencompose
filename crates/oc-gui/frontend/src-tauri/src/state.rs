@@ -36,7 +36,7 @@ pub use undo_gestures::{
     ParameterTargetError, ParameterTargetStamp, UndoGestureError, UndoGestureToken,
 };
 
-const MAX_UNDO: usize = 256;
+pub(crate) const MAX_UNDO: usize = 256;
 static NEXT_TRANSACTION_ID: AtomicU64 = AtomicU64::new(0);
 
 /// Owner prefix of a batch an AI panel turn opened. The suffix names the
@@ -50,12 +50,64 @@ pub const HTTP_BATCH_OWNER: &str = "http";
 pub const TRANSACTION_BLOCKS_REPLACEMENT: &str =
     "commit or roll back the active project transaction before opening another project";
 
+/// Owner prefix of a batch an external client opened for a saved conversation.
+/// It is distinct from the panel's prefix, so a panel turn and a headless client
+/// bound to the same conversation never join, commit or recover each other's
+/// batch.
+pub const HTTP_SESSION_OWNER_PREFIX: &str = "http:";
+
+/// Owner prefix of the batch a headless backend turn opens:
+/// `turn:{request}:{conversation}`. Only the loop opens batches under it, so a
+/// bound `/call` client (which runs as [`http_session_owner`]) can neither
+/// join nor close a running turn's batch.
+pub const TURN_BATCH_OWNER_PREFIX: &str = "turn:";
+
+/// The owner a headless turn records on its batch. Request ids carry no `:`,
+/// so the conversation is everything after the first one.
+pub fn turn_batch_owner(request: &str, conversation: &str) -> String {
+    format!("{TURN_BATCH_OWNER_PREFIX}{request}:{conversation}")
+}
+
+/// Whether only a backend turn opens batches under this owner. A turn holds
+/// the request slot for as long as its batch is open, so such a batch found
+/// while the slot is free belongs to a turn that is gone.
+pub fn loop_batch_owner(owner: &str) -> bool {
+    owner.starts_with(PANEL_BATCH_OWNER_PREFIX) || owner.starts_with(TURN_BATCH_OWNER_PREFIX)
+}
+
 /// The owner a panel turn records on its batch.
 pub fn panel_batch_owner(conversation: Option<&str>) -> String {
     format!(
         "{PANEL_BATCH_OWNER_PREFIX}{}",
         conversation.unwrap_or("unsaved")
     )
+}
+
+/// The owner an external client's call bound to `conversation` runs as.
+pub fn http_session_owner(conversation: &str) -> String {
+    format!("{HTTP_SESSION_OWNER_PREFIX}{conversation}")
+}
+
+/// The saved conversation a caller acts for, on either surface. The panel's
+/// placeholder for a turn that has no conversation yet names none.
+pub fn caller_conversation(caller: &str) -> Option<&str> {
+    caller
+        .strip_prefix(PANEL_BATCH_OWNER_PREFIX)
+        .filter(|id| *id != "unsaved")
+        .or_else(|| caller.strip_prefix(HTTP_SESSION_OWNER_PREFIX))
+        .or_else(|| {
+            caller
+                .strip_prefix(TURN_BATCH_OWNER_PREFIX)
+                .and_then(|rest| rest.split_once(':'))
+                .map(|(_, conversation)| conversation)
+        })
+        .filter(|id| !id.is_empty())
+}
+
+/// A caller outside the panel, whose edits the panel learns about only through
+/// a published project snapshot.
+pub fn is_external_caller(caller: &str) -> bool {
+    caller == HTTP_BATCH_OWNER || caller.starts_with(HTTP_SESSION_OWNER_PREFIX)
 }
 
 /// One aspect of the project an edit can touch. Closed on purpose: a new
@@ -219,6 +271,12 @@ struct GestureState {
     depth: u32,
     /// Whether a push already opened the entry that later pushes merge into.
     push_started: bool,
+}
+
+/// A copy of both stacks; see [`UndoStack::take_copy`].
+pub struct UndoHistory {
+    undo: Vec<UndoEntry>,
+    redo: Vec<UndoEntry>,
 }
 
 /// The undo/redo stack, managed entirely on the backend.
@@ -570,6 +628,24 @@ impl UndoStack {
             undo: self.undo.len(),
             redo: self.redo.len(),
         }
+    }
+
+    /// Both stacks as they are, for an operation that must put them back
+    /// exactly: a truncation to a mark cannot return redo entries that a new
+    /// edit cleared, or an undo entry that the push evicted.
+    pub fn take_copy(&self) -> UndoHistory {
+        UndoHistory {
+            undo: self.undo.clone(),
+            redo: self.redo.clone(),
+        }
+    }
+
+    /// Puts back what [`Self::take_copy`] took.
+    pub fn put_back(&mut self, history: UndoHistory) {
+        self.undo = history.undo;
+        self.redo = history.redo;
+        self.merge_base = None;
+        self.invalidate_gestures();
     }
 
     /// Drop edits recorded after `mark`, e.g. when a transaction rolls back.
@@ -1354,6 +1430,28 @@ fn default_project() -> Project {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn batch_owners_name_their_surface_and_conversation() {
+        let panel = panel_batch_owner(Some("abc"));
+        let bound = http_session_owner("abc");
+        assert_ne!(panel, bound);
+        assert_eq!(caller_conversation(&panel), Some("abc"));
+        assert_eq!(caller_conversation(&bound), Some("abc"));
+        assert_eq!(caller_conversation(&panel_batch_owner(None)), None);
+        assert_eq!(caller_conversation(HTTP_BATCH_OWNER), None);
+        assert_eq!(caller_conversation("http:"), None);
+        assert!(is_external_caller(HTTP_BATCH_OWNER));
+        assert!(is_external_caller(&bound));
+        assert!(!is_external_caller(&panel));
+        // A headless turn publishes its own document; its owner names the
+        // conversation and is never a client's.
+        let turn = turn_batch_owner("turn-1", "s:1");
+        assert!(!is_external_caller(&turn));
+        assert_eq!(caller_conversation(&turn), Some("s:1"));
+        assert!(loop_batch_owner(&turn) && loop_batch_owner(&panel));
+        assert!(!loop_batch_owner(&bound) && !loop_batch_owner(HTTP_BATCH_OWNER));
+    }
 
     fn invalid_reorder_patch(project: &Project) -> Vec<u8> {
         let mut properties = project.properties.clone();

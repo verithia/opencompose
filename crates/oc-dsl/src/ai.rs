@@ -258,6 +258,31 @@ fn introduced_diagnostics(
         .collect()
 }
 
+/// The errors `candidate` has that `base` does not: missing local media under
+/// `root` and semantic errors. They are compared without their positions, so a
+/// change that only moves an error the project already had, such as a missing
+/// sample below an added track, is not blamed for it. The errors that remain
+/// are located in `candidate`.
+pub fn introduced_errors(base: &Project, candidate: &Project, root: Option<&Path>) -> Vec<String> {
+    let mut errors = Vec::new();
+    if let Some(root) = root {
+        let document = candidate_document(candidate);
+        let existing: std::collections::HashSet<String> =
+            crate::media::missing_diagnostics(base, root)
+                .into_iter()
+                .map(|(error, _)| error)
+                .collect();
+        errors.extend(
+            crate::media::missing_diagnostics(candidate, root)
+                .into_iter()
+                .filter(|(error, _)| !existing.contains(error))
+                .map(|(error, subject)| locate_message(error, subject, document.as_ref())),
+        );
+    }
+    errors.extend(introduced_errors_located(base, candidate));
+    errors
+}
+
 fn introduced_errors_located(base: &Project, candidate: &Project) -> Vec<String> {
     let document = candidate_document(candidate);
     introduced_diagnostics(base, candidate)
@@ -488,6 +513,47 @@ fn resolve_track_from_path<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_change_is_blamed_only_for_the_media_it_adds_wherever_old_errors_move() {
+        let dir = oc_test_support::temp_dir("oc-ai", "introduced");
+        let lead = "@audio_clip lead [1:1 - 2:1] | track: vocal\n  file: \"media/lead.wav\"\n";
+        let base = crate::parse(&format!(
+            "@project\n  tempo: 120\n@track vocal | instrument: audio/clip\n{lead}"
+        ))
+        .unwrap();
+        // An added track above the clip moves its missing-file error down.
+        let moved = crate::parse(&format!(
+            "@project\n  tempo: 120\n@track vocal | instrument: audio/clip\n@track keys | instrument: audio/clip\n{lead}"
+        ))
+        .unwrap();
+        assert!(
+            !validate_edit_in(
+                &AiEdit {
+                    new_dsl: "@track keys | instrument: audio/clip".into(),
+                    target_path: "tracks.keys".into(),
+                    explanation: None,
+                },
+                &base,
+                Some(&dir)
+            )
+            .errors
+            .is_empty()
+        );
+        assert_eq!(
+            introduced_errors(&base, &moved, Some(&dir)),
+            Vec::<String>::new()
+        );
+
+        let added = crate::parse(&format!(
+            "@project\n  tempo: 120\n@track vocal | instrument: audio/clip\n{lead}@audio_clip tail [2:1 - 3:1] | track: vocal\n  file: \"media/tail.wav\"\n"
+        ))
+        .unwrap();
+        let errors = introduced_errors(&base, &added, Some(&dir));
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(errors[0].contains("media/tail.wav"), "{errors:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn project_properties_replace_through_the_documented_path() {

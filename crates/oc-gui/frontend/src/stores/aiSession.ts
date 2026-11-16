@@ -12,22 +12,33 @@
  * a conversation's own attachments already live in its saved messages.
  */
 import { createSignal } from "solid-js";
-import type { Proposal } from "../ai/agent";
 import type { MediaAttachment } from "../ai/media";
-import type { DiffResult } from "../ai/transcript";
 
 /** A message composed while a turn ran; it goes out when that turn settles. */
 export interface QueuedMessage {
+  /**
+   * Names the row across a reload and a remount, where object identity does
+   * not survive: a delivery is acknowledged by this id.
+   */
+  id: string;
   text: string;
   media: MediaAttachment[];
   /** The project path this message reads, when the composer scoped it. */
   reference?: string;
 }
 
-/** A validated replacement waiting for Accept or Reject, with the diff shown. */
-export interface PendingProposal {
-  proposal: Proposal;
-  diff: DiffResult;
+/** A queued row as a caller writes it; the store gives it an id if it has none. */
+export type QueuedDraft = Omit<QueuedMessage, "id"> & { id?: string };
+
+/**
+ * The queued row a steer is delivering into a running turn. `before` counts the
+ * person's rows with the same text that the transcript held when the steer
+ * went out, so a window that lost the reply can tell from the saved
+ * conversation whether the message arrived.
+ */
+export interface SteerMark {
+  /** The queued row's id; the backend saves it with the delivered message. */
+  id: string;
 }
 
 /** The turn this window was running, kept so a reloaded window can ask about it. */
@@ -43,6 +54,8 @@ interface ConversationState {
   queue?: QueuedMessage[];
   /** The staged goal the agent is working toward in this conversation. */
   goal?: string;
+  /** The queued row a steer is delivering, so no second steer sends it again. */
+  steering?: SteerMark;
 }
 
 interface StoredState {
@@ -89,6 +102,19 @@ function attachmentsOf(value: unknown): MediaAttachment[] {
     && typeof (entry as MediaAttachment).name === "string");
 }
 
+let queuedCounter = 0;
+/** A fresh row id; a runtime without `randomUUID` still gets a unique one. */
+function newQueuedId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  queuedCounter += 1;
+  return `q-${Date.now().toString(36)}-${queuedCounter.toString(36)}`;
+}
+
+/** Gives every row an id; a row that already has one keeps it. */
+function withIds(rows: readonly QueuedDraft[]): QueuedMessage[] {
+  return rows.map(row => typeof row.id === "string" && isRowId(row.id) ? row as QueuedMessage : { ...row, id: newQueuedId() });
+}
+
 function queueOf(value: unknown): QueuedMessage[] {
   if (!Array.isArray(value)) return [];
   const rows: QueuedMessage[] = [];
@@ -97,13 +123,28 @@ function queueOf(value: unknown): QueuedMessage[] {
     const text = textOf((entry as QueuedMessage).text)?.trim();
     if (!text) continue;
     const reference = (entry as QueuedMessage).reference;
+    // A row stored without an id is given one here and keeps it from the next write.
+    const stored = textOf((entry as QueuedMessage).id);
+    const id = stored && isRowId(stored) ? stored : newQueuedId();
     rows.push({
+      id,
       text,
       media: attachmentsOf((entry as QueuedMessage).media),
       ...(typeof reference === "string" && reference ? { reference } : {}),
     });
   }
   return rows;
+}
+
+function steerOf(value: unknown): SteerMark | null {
+  if (!value || typeof value !== "object") return null;
+  const id = textOf((value as SteerMark).id);
+  return id && isRowId(id) ? { id } : null;
+}
+
+/** An id the backend keeps with a steered message: up to 64 of `[A-Za-z0-9._-]`. */
+export function isRowId(id: string): boolean {
+  return /^[A-Za-z0-9._-]{1,64}$/.test(id);
 }
 
 /** Reads the store; a damaged or older entry reads as an empty one. */
@@ -137,6 +178,9 @@ function readState(): StoredState {
         if (queue.length) conversation.queue = queue;
         const goal = textOf(entry.goal);
         if (goal) conversation.goal = goal;
+        // A mark is only meaningful while the row it names is still queued.
+        const steering = steerOf(entry.steering);
+        if (steering && queue.some(row => row.id === steering.id)) conversation.steering = steering;
         if (Object.keys(conversation).length) state.conversations[id] = conversation;
       }
     }
@@ -164,12 +208,17 @@ const [draft, setDraftSignal] = createSignal("");
 const [attachments, setAttachmentsSignal] = createSignal<MediaAttachment[]>([]);
 const [queue, setQueueSignal] = createSignal<QueuedMessage[]>([]);
 const [goal, setGoalSignal] = createSignal("");
-const [pending, setPending] = createSignal<PendingProposal | null>(null);
+const [steering, setSteeringSignal] = createSignal<SteerMark | null>(null);
 const [open, setOpenSignal] = createSignal<string | null>(null);
 const [openScope, setOpenScopeSignal] = createSignal<string | null>(null);
 const [turn, setTurnSignal] = createSignal<InFlightTurn | null>(null);
 
 let stored = readState();
+/**
+ * Steers whose reply this page is still waiting for. A mark the store read back
+ * without one of these was left by a page that went away, so its reply is lost.
+ */
+const liveSteers = new Set<string>();
 /** The pending draft write, if typing has not paused yet. */
 let draftTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -191,6 +240,8 @@ function persist() {
   if (attachments().length) conversation.attachments = attachments();
   if (queue().length) conversation.queue = queue();
   if (goal()) conversation.goal = goal();
+  const mark = steering();
+  if (mark) conversation.steering = mark;
   if (Object.keys(conversation).length) stored.conversations[key] = conversation;
   else delete stored.conversations[key];
   stored.open = open();
@@ -227,6 +278,7 @@ function install(id: string | null) {
   setAttachmentsSignal(conversation.attachments ?? []);
   setQueueSignal(conversation.queue ?? []);
   setGoalSignal(conversation.goal ?? "");
+  setSteeringSignal(conversation.steering ?? null);
 }
 
 setOpenSignal(stored.open);
@@ -256,13 +308,68 @@ export const aiSession = {
   },
   /** Messages waiting behind a running turn, oldest first, with their chips. */
   queued: queue,
-  setQueued(value: QueuedMessage[] | ((previous: QueuedMessage[]) => QueuedMessage[])) {
-    setQueueSignal(value);
+  setQueued(value: QueuedDraft[] | ((previous: QueuedMessage[]) => QueuedDraft[])) {
+    setQueueSignal(previous => withIds(typeof value === "function" ? value(previous) : value));
     persist();
+  },
+  /**
+   * A delivery belongs to its conversation even if its originating panel closed
+   * or the store was read again, so the row is found by its id.
+   */
+  acknowledgeQueued(id: string, rowId: string) {
+    liveSteers.delete(rowId);
+    if (open() === id) {
+      setQueueSignal(previous => previous.filter(item => item.id !== rowId));
+      if (steering()?.id === rowId) setSteeringSignal(null);
+      persist();
+      return;
+    }
+    const conversation = stored.conversations[slot(id)];
+    if (!conversation) return;
+    if (conversation.queue) {
+      conversation.queue = conversation.queue.filter(item => item.id !== rowId);
+      if (!conversation.queue.length) delete conversation.queue;
+    }
+    if (conversation.steering?.id === rowId) delete conversation.steering;
+    writeState(stored);
+  },
+  /** The open conversation's row a steer is delivering, or `null`. */
+  steering,
+  /** Whether this page is still waiting for the reply of the steer naming `rowId`. */
+  steerLive(rowId: string): boolean {
+    return liveSteers.has(rowId);
+  },
+  /** Marks a row of conversation `id` as being steered, before the request goes out. */
+  beginSteer(id: string, mark: SteerMark) {
+    liveSteers.add(mark.id);
+    if (open() === id) {
+      setSteeringSignal(mark);
+      persist();
+      return;
+    }
+    const conversation = stored.conversations[slot(id)] ?? (stored.conversations[slot(id)] = {});
+    conversation.steering = mark;
+    writeState(stored);
+  },
+  /** The steer naming `rowId` ended without delivering; its row stays queued. */
+  endSteer(id: string, rowId: string) {
+    liveSteers.delete(rowId);
+    if (open() === id) {
+      if (steering()?.id !== rowId) return;
+      setSteeringSignal(null);
+      persist();
+      return;
+    }
+    const conversation = stored.conversations[slot(id)];
+    if (conversation?.steering?.id !== rowId) return;
+    delete conversation.steering;
+    if (!Object.keys(conversation).length) delete stored.conversations[slot(id)];
+    writeState(stored);
   },
   /** The composer clears so every send has an effect. */
   clearQueue() {
     setQueueSignal([]);
+    setSteeringSignal(null);
     persist();
   },
   /** Takes the oldest message off the queue; exactly one caller gets it. */
@@ -273,9 +380,6 @@ export const aiSession = {
     persist();
     return next;
   },
-  /** The proposal on screen; it survives an unmount like the draft does. */
-  pending,
-  setPending,
   /** Id of the conversation on screen; `null` before one is opened. */
   open,
   /** The workspace + project path the open conversation belongs to. */
@@ -310,9 +414,13 @@ export const aiSession = {
   },
   /** Switches the transcript and records it against this workspace + project. */
   setOpenScoped(scope: string, value: string | null) {
-    setOpenSignal(value);
-    setOpenScopeSignal(value ? scope : null);
-    install(value);
+    const same = open() === value && openScope() === (value ? scope : null);
+    if (!same) {
+      flushPersist();
+      setOpenSignal(value);
+      setOpenScopeSignal(value ? scope : null);
+      install(value);
+    }
     if (value) {
       this.rememberOpen(scope, value);
     } else {
@@ -334,7 +442,6 @@ export const aiSession = {
   reload() {
     flushPersist();
     stored = readState();
-    setPending(null);
     setOpenSignal(stored.open);
     setOpenScopeSignal(stored.openScope);
     install(stored.open);
@@ -353,7 +460,8 @@ export const aiSession = {
     setDraftSignal("");
     setAttachmentsSignal([]);
     setQueueSignal([]);
-    setPending(null);
+    setSteeringSignal(null);
+    liveSteers.clear();
     setOpenSignal(null);
     setOpenScopeSignal(null);
     setTurnSignal(null);

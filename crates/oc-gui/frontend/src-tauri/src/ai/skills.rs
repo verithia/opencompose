@@ -946,7 +946,7 @@ mod tests {
     #[test]
     fn audition_and_listen_teaches_the_assisted_separation_path() {
         let skill = read("audition-and-listen").expect("the bundled skill reads");
-        assert_eq!(skill.version, 7);
+        assert_eq!(skill.version, 8);
         assert!(
             skill.tools.contains(&"separate_stems".to_owned()),
             "{:?}",

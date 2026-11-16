@@ -22,6 +22,14 @@ mod source_map;
 
 type Pair<'a> = pest::iterators::Pair<'a, Rule>;
 
+/// Whether a complete parameter key can be written without escaping in DSL.
+pub fn is_parameter_key(key: &str) -> bool {
+    OcpParser::parse(Rule::param_key, key)
+        .ok()
+        .and_then(|mut pairs| pairs.next())
+        .is_some_and(|pair| pair.as_str() == key)
+}
+
 /// Parse an OpenCompose DSL source string into a Project AST.
 pub fn parse(source: &str) -> Result<Project, ParseError> {
     let pairs = OcpParser::parse(Rule::project, source).map_err(|error| refuse(source, &error))?;
@@ -4202,6 +4210,28 @@ fn parse_beat_value(pair: Pair) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parameter_keys_match_the_complete_dsl_grammar() {
+        for key in [
+            "amp.attack",
+            "mod.1.source",
+            "filter_env.attack",
+            "open_synth_state_file",
+        ] {
+            assert!(is_parameter_key(key), "{key}");
+        }
+        for key in [
+            "",
+            "\"amp.attack\"",
+            "amp.attack ",
+            "mod..source",
+            "amp.attack\n@track extra",
+            "amp.attack, other",
+        ] {
+            assert!(!is_parameter_key(key), "{key}");
+        }
+    }
 
     #[test]
     fn kit_pad_notes_accept_sharps_and_flats() {

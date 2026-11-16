@@ -492,7 +492,7 @@
 }
 
 /* A stopped turn: one row carries Retry and Continue, plus the lines saying what
-   rolled back and where Continue resumes. */
+   was kept and where Continue resumes. */
 .ai-turn-actions {
   display: flex;
   flex-wrap: wrap;
@@ -608,13 +608,6 @@
   gap: 2px;
   flex: 1 1 auto;
   min-width: 0;
-}
-.ai-preview-change {
-  font-size: 11px;
-  line-height: 1.35;
-  font-weight: 600;
-  color: var(--text-primary);
-  overflow-wrap: anywhere;
 }
 .ai-preview-hint {
   flex: 0 1 auto;
@@ -912,6 +905,7 @@
   line-height: 1.45;
   resize: none;
   max-height: 160px;
+  overflow-x: hidden;
   overflow-y: auto;
   outline: none;
 }

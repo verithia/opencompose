@@ -572,13 +572,18 @@ fn known_context(id: &str) -> Option<u64> {
 
 /// Input window a request for this entry uses: the catalog or known value when
 /// one describes the model, otherwise the saved entry's own number. Auto-
-/// compaction sizes itself from this.
+/// compaction sizes itself from this. `0` means unknown: a saved number of 0 or
+/// 1 is a placeholder, not a window, and sizing from it would compact every turn.
 pub fn context_length(entry: &AiProviderEntry) -> u64 {
     model_for(entry)
         .map(|model| model.context)
         .filter(|context| *context > 0)
         .or_else(|| known_context(&entry.model))
-        .unwrap_or_else(|| entry.context_length.max(1))
+        .unwrap_or(if entry.context_length > 1 {
+            entry.context_length
+        } else {
+            0
+        })
 }
 
 /// Effective input modalities for a saved entry.
@@ -806,6 +811,15 @@ mod tests {
         let mut saved = entry("vendor", "vendor/unknown");
         saved.context_length = 32_768;
         assert_eq!(context_length(&saved), 32_768);
+    }
+
+    #[test]
+    fn a_placeholder_saved_window_reads_as_unknown() {
+        for placeholder in [0, 1] {
+            let mut saved = entry("vendor", "vendor/unknown");
+            saved.context_length = placeholder;
+            assert_eq!(context_length(&saved), 0, "{placeholder}");
+        }
     }
 
     #[test]

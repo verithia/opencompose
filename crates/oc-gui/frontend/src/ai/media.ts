@@ -75,7 +75,7 @@ export function auditionLabel(attachment: MediaAttachment, content: string, meta
     const range = meta.audio_range;
     if (range && Number.isFinite(range.start_seconds) && Number.isFinite(range.end_seconds) && range.end_seconds > range.start_seconds) {
       return { key: range.source ? "ai.media.savedSourceAuditionRange" : "ai.media.savedAuditionRange",
-        params: { from: String(Number(range.start_seconds.toFixed(2))), to: String(Number(range.end_seconds.toFixed(2))) } };
+        params: auditionRangeLabel(range.start_seconds, range.end_seconds, attachment.duration_secs) };
     }
     return meta.kind === "audition" ? { key: "ai.media.savedAudition" } : null;
   }
@@ -86,10 +86,16 @@ export function auditionLabel(attachment: MediaAttachment, content: string, meta
   if (match && Number.isFinite(Number(match[1])) && Number.isFinite(Number(match[2])) && Number(match[2]) > Number(match[1])) {
     return {
       key: raw ? "ai.media.savedSourceAuditionRange" : "ai.media.savedAuditionRange",
-      params: { from: String(Number(Number(match[1]).toFixed(2))), to: String(Number(Number(match[2]).toFixed(2))) },
+      params: auditionRangeLabel(Number(match[1]), Number(match[2]), attachment.duration_secs),
     };
   }
   return { key: "ai.media.savedAudition" };
+}
+
+function auditionRangeLabel(from: number, end: number, duration: number | null | undefined): Record<string, string> {
+  const to = typeof duration === "number" && Number.isFinite(duration) && duration > 0
+    ? Math.min(end, from + duration) : end;
+  return { from: String(Number(from.toFixed(2))), to: String(Number(to.toFixed(2))) };
 }
 
 export function legacyAuditionText(content: string, explanation: string): string {

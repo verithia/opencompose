@@ -1,0 +1,162 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1040" height="790" viewBox="0 0 1040 790" font-family="Helvetica, Arial, sans-serif" font-size="12">
+  <title>OpenCompose code structure</title>
+  <desc>Surfaces at the top call the desktop backend or the Rust crates. The backend runs one agent loop for the AI panel and headless clients. Engine crates render and host plugins; the format crates at the bottom are permissively licensed.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#555"/>
+    </marker>
+    <style>
+      .layer { fill: #f6f7f9; stroke: #c9ced6; }
+      .label { font-size: 13px; font-weight: bold; fill: #333; paint-order: stroke; stroke: #f6f7f9; stroke-width: 6px; stroke-linejoin: round; }
+      .box { fill: #ffffff; stroke: #7a8494; rx: 6; }
+      .loop { fill: #fff6e5; stroke: #d08a1a; stroke-width: 1.5; rx: 6; }
+      .mit { fill: #eaf5ea; stroke: #4f8f4f; rx: 6; }
+      .name { font-weight: bold; fill: #222; }
+      .note { fill: #555; font-size: 11px; }
+      .edge { stroke: #555; stroke-width: 1.2; fill: none; marker-end: url(#arrow); }
+      .event { stroke: #d08a1a; stroke-width: 1.2; fill: none; stroke-dasharray: 5 3; marker-end: url(#arrow); }
+    </style>
+  </defs>
+
+  <!-- Surfaces -->
+  <rect class="layer" x="10" y="10" width="1020" height="120" rx="8"/>
+  <rect class="box" x="24" y="44" width="300" height="74"/>
+  <text class="name" x="36" y="64">Desktop UI (SolidJS)</text>
+  <text class="note" x="36" y="82">crates/oc-gui/frontend/src</text>
+  <text class="note" x="36" y="98">timeline, mixer, editors; the AI panel</text>
+  <text class="note" x="36" y="112">is a view over one backend turn</text>
+  <rect class="box" x="340" y="44" width="210" height="74"/>
+  <text class="name" x="352" y="64">Agent clients</text>
+  <text class="note" x="352" y="82">loopback HTTP and MCP:</text>
+  <text class="note" x="352" y="98">/call, /mcp, /ai/complete,</text>
+  <text class="note" x="352" y="112">/ai/turn (a headless turn)</text>
+  <rect class="box" x="566" y="44" width="200" height="74"/>
+  <text class="name" x="578" y="64">ocp (oc-cli)</text>
+  <text class="note" x="578" y="82">validate, format, render,</text>
+  <text class="note" x="578" y="98">analyse, convert MIDI; uses</text>
+  <text class="note" x="578" y="112">oc-dsl and the engine crates</text>
+  <rect class="mit" x="782" y="44" width="234" height="74"/>
+  <text class="name" x="794" y="64">ocp-lsp, vscode-ocp</text>
+  <text class="note" x="794" y="82">language server and editor</text>
+  <text class="note" x="794" y="98">extension for .ocp files;</text>
+  <text class="note" x="794" y="112">the server uses oc-dsl only</text>
+
+  <!-- Backend -->
+  <rect class="layer" x="10" y="170" width="1020" height="300" rx="8"/>
+  <rect class="box" x="24" y="206" width="210" height="80"/>
+  <text class="name" x="36" y="226">commands</text>
+  <text class="note" x="36" y="244">IPC adapters for the UI:</text>
+  <text class="note" x="36" y="260">project, sessions, preview,</text>
+  <text class="note" x="36" y="276">ai_revert_before, ai_tool_result</text>
+  <rect class="box" x="250" y="206" width="210" height="80"/>
+  <text class="name" x="262" y="226">agent_api</text>
+  <text class="note" x="262" y="244">HTTP and MCP routes, the</text>
+  <text class="note" x="262" y="260">dispatch of one tool call,</text>
+  <text class="note" x="262" y="276">bound headless conversations</text>
+  <rect class="loop" x="490" y="206" width="290" height="130"/>
+  <text class="name" x="502" y="226">ai::agent_loop</text>
+  <text class="note" x="502" y="244">run_turn over a Host: rounds and calls,</text>
+  <text class="note" x="502" y="260">one batch committed on every ending,</text>
+  <text class="note" x="502" y="276">questions and previews as events</text>
+  <text class="note" x="502" y="296">AppHost: the panel (attended) and</text>
+  <text class="note" x="502" y="312">headless turns; per-round accounting</text>
+  <text class="note" x="502" y="328">gate.rs  wire.rs  results.rs  host.rs</text>
+  <rect class="box" x="796" y="206" width="220" height="80"/>
+  <text class="name" x="808" y="226">ai providers</text>
+  <text class="note" x="808" y="244">chat completions, responses,</text>
+  <text class="note" x="808" y="260">anthropic, gemini wires;</text>
+  <text class="note" x="808" y="276">credentials, usage ledger</text>
+  <rect class="box" x="24" y="354" width="210" height="100"/>
+  <text class="name" x="36" y="374">state</text>
+  <text class="note" x="36" y="392">document, revision, undo,</text>
+  <text class="note" x="36" y="408">transactions and their owners;</text>
+  <text class="note" x="36" y="424">project_persist writes the</text>
+  <text class="note" x="36" y="440">autosave and the project file</text>
+  <rect class="box" x="250" y="354" width="210" height="100"/>
+  <text class="name" x="262" y="374">tool_registry</text>
+  <text class="note" x="262" y="392">one catalogue of tools: schema,</text>
+  <text class="note" x="262" y="408">mutation flag, approval policy,</text>
+  <text class="note" x="262" y="424">toolsets; shared by the panel,</text>
+  <text class="note" x="262" y="440">/call and MCP</text>
+  <rect class="box" x="490" y="354" width="290" height="100"/>
+  <text class="name" x="502" y="374">playback and audio bridge</text>
+  <text class="note" x="502" y="392">transport, render cache, analysis,</text>
+  <text class="note" x="502" y="408">auditions and stems for the tools</text>
+  <rect class="box" x="796" y="354" width="220" height="100"/>
+  <text class="name" x="808" y="374">ai::sessions</text>
+  <text class="note" x="808" y="392">saved conversations, project</text>
+  <text class="note" x="808" y="408">versions, compaction, revert</text>
+  <text class="note" x="808" y="424">points, started-call markers</text>
+
+  <!-- Engine -->
+  <rect class="layer" x="10" y="490" width="1020" height="136" rx="8"/>
+  <rect class="box" x="24" y="524" width="230" height="88"/>
+  <text class="name" x="36" y="544">oc-engine</text>
+  <text class="note" x="36" y="562">offline renderer, streaming</text>
+  <text class="note" x="36" y="578">block graph, render cache,</text>
+  <text class="note" x="36" y="594">analysis, MIDI I/O</text>
+  <rect class="box" x="270" y="524" width="230" height="88"/>
+  <text class="name" x="282" y="544">oc-synth and friends</text>
+  <text class="note" x="282" y="562">synth-core, synth-fx, synth-import:</text>
+  <text class="note" x="282" y="578">voices, wavetables, sampler,</text>
+  <text class="note" x="282" y="594">SF2/SF3, preset import</text>
+  <rect class="box" x="516" y="524" width="160" height="88"/>
+  <text class="name" x="528" y="544">oc-dsp</text>
+  <text class="note" x="528" y="562">filters, dynamics, EQ,</text>
+  <text class="note" x="528" y="578">reverb, delay, pitch</text>
+  <text class="note" x="528" y="594">and time, vocal</text>
+  <rect class="box" x="692" y="524" width="160" height="88"/>
+  <text class="name" x="704" y="544">oc-host</text>
+  <text class="note" x="704" y="562">VST3, CLAP, AU, LV2,</text>
+  <text class="note" x="704" y="578">VST2; out-of-process</text>
+  <text class="note" x="704" y="594">scan and editors</text>
+  <rect class="box" x="868" y="524" width="148" height="88"/>
+  <text class="name" x="880" y="544">oc-audio</text>
+  <text class="note" x="880" y="562">device I/O and</text>
+  <text class="note" x="880" y="578">deterministic test</text>
+  <text class="note" x="880" y="594">backends</text>
+
+  <!-- Foundation -->
+  <rect class="layer" x="10" y="646" width="1020" height="134" rx="8"/>
+  <rect class="mit" x="640" y="656" width="14" height="14" rx="2"/>
+  <text class="note" x="660" y="667">MIT OR Apache-2.0; never depends on an AGPL crate</text>
+  <rect class="mit" x="24" y="680" width="300" height="86"/>
+  <text class="name" x="36" y="700">oc-dsl</text>
+  <text class="note" x="36" y="718">.ocp grammar, AST, validator,</text>
+  <text class="note" x="36" y="734">formatter, serializer</text>
+  <rect class="mit" x="340" y="680" width="300" height="86"/>
+  <text class="name" x="352" y="700">oc-device-schema</text>
+  <text class="note" x="352" y="718">parameter ranges, defaults, units</text>
+  <text class="note" x="352" y="734">and enum labels: one owner per rule</text>
+  <rect class="box" x="656" y="680" width="360" height="86"/>
+  <text class="name" x="668" y="700">oc-audio-types, oc-diag, oc-data, oc-market, oc-sample</text>
+  <text class="note" x="668" y="718">effect and transport contracts, JSONL diagnostics,</text>
+  <text class="note" x="668" y="734">dataset conversion, plugin catalog, sample providers</text>
+
+  <!-- Edges between the surfaces and the backend -->
+  <path class="edge" d="M130,118 L130,206"/>
+  <text class="note" x="136" y="146">invoke</text>
+  <path class="edge" d="M445,118 L445,206"/>
+  <path class="event" d="M540,206 L540,150 L270,150 L270,122"/>
+  <text class="note" x="548" y="158" fill="#a86a00">ai_turn, ai_turn_project events</text>
+  <!-- Edges inside the backend -->
+  <path class="edge" d="M150,286 C200,322 430,322 490,300"/>
+  <text class="note" x="250" y="302">ai_turn_start, ai_turn_answer</text>
+  <path class="edge" d="M460,264 L490,264"/>
+  <path class="edge" d="M780,246 L796,246"/>
+  <path class="edge" d="M600,336 L360,354"/>
+  <text class="note" x="404" y="342">tool calls</text>
+  <path class="edge" d="M740,336 L860,354"/>
+  <path class="edge" d="M250,404 L234,404"/>
+  <path class="edge" d="M460,424 L490,424"/>
+  <!-- Edges to the engine and the format -->
+  <path class="edge" d="M630,454 L140,524"/>
+  <path class="edge" d="M140,612 L140,680"/>
+  <path class="edge" d="M385,612 L200,680"/>
+  <path class="edge" d="M596,612 L490,680"/>
+  <!-- Layer headings, drawn over the edges that cross them -->
+  <text class="label" x="24" y="32">Surfaces</text>
+  <text class="label" x="24" y="192">Desktop backend (Tauri)  crates/oc-gui/frontend/src-tauri</text>
+  <text class="label" x="24" y="512">Engine crates</text>
+  <text class="label" x="24" y="668">Format and contracts</text>
+</svg>

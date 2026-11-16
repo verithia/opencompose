@@ -21,19 +21,27 @@
 //! constants below and enforced in `append`.
 #[path = "session_artifacts.rs"]
 mod artifacts;
+#[cfg(test)]
+#[path = "session_compaction_tests.rs"]
+mod compaction_tests;
 #[path = "session_lookup.rs"]
 pub(super) mod lookup;
 #[path = "session_message.rs"]
 mod message_protocol;
+#[path = "session_turns.rs"]
+pub mod turns;
+#[path = "session_versions.rs"]
+mod versions;
 use crate::private_fs;
-use message_protocol::{MessageKind, MessageMeta};
+pub use message_protocol::MessageKind;
+use message_protocol::MessageMeta;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const AUDITION_RENDER_STAGE: &str = ".audition-render.part";
@@ -84,7 +92,6 @@ const MAX_INTENT_CHARS: usize = 600;
 
 const VERSION: u32 = 1;
 
-static ACTIVE: LazyLock<Mutex<HashMap<String, String>>> = LazyLock::new(Default::default);
 static TEST_ROOT: Mutex<Option<PathBuf>> = Mutex::new(None);
 #[cfg(test)]
 static TEST_ROOT_LOCK: Mutex<()> = Mutex::new(());
@@ -245,8 +252,62 @@ pub struct Compaction {
     pub retained_pairs: usize,
 }
 
+/// What a refused reshaping of a conversation (compact, drop history, delete)
+/// is about. The panel tells the cases apart by this, never by the message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionErrorKind {
+    /// A turn is writing this conversation.
+    Busy,
+    /// The conversation changed under the request: another window already
+    /// did what this one asked for.
+    Conflict,
+    /// The store refused or failed for any other reason.
+    SessionStore,
+}
+
+/// A typed refusal of a session command, serialized as `{kind, message}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SessionError {
+    pub kind: SessionErrorKind,
+    pub message: String,
+}
+
+impl SessionError {
+    pub fn new(kind: SessionErrorKind, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for SessionError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl From<String> for SessionError {
+    fn from(message: String) -> Self {
+        Self::new(SessionErrorKind::SessionStore, message)
+    }
+}
+
+impl From<SessionError> for String {
+    fn from(error: SessionError) -> Self {
+        error.message
+    }
+}
+
+/// A check the store runs while it holds its mutation lock, right before a
+/// reshaping write, so the condition it tests cannot change in between.
+pub type Guard<'a> = &'a dyn Fn() -> Result<(), SessionError>;
+
 /// Shared context for saving and compacting one model turn.
 pub struct PrepareContext<'a> {
+    /// The current document, captured with the request's project identity.
+    pub snapshot: Option<&'a str>,
     pub overhead: u64,
     pub context_length: u64,
     pub facts: &'a ProjectFacts,
@@ -265,6 +326,9 @@ pub struct Prepared {
     pub live: Option<Vec<Value>>,
     pub appended: usize,
     pub compacted: Option<Compaction>,
+    /// Why the automatic compaction this turn needed did not happen. The turn
+    /// still goes out; the caller tells the panel.
+    pub compaction_error: Option<String>,
     /// Archive files this turn's auditions evicted to stay inside the budget.
     pub evicted_auditions: Vec<EvictedAudition>,
     /// Audition rows added by this request, for the live operator transcript.
@@ -578,11 +642,21 @@ impl Store {
         };
         let dir = self.root.join(&key).join(&meta.id);
         private_fs::ensure_dir(&dir).map_err(|error| format!("sessions: {error}"))?;
-        if let Some(inherited) = inherited.filter(|messages| !messages.is_empty()) {
-            write_records(&dir, &[turn_record(&at, inherited)])?;
+        let created = (|| {
+            if let Some(inherited) = inherited.filter(|messages| !messages.is_empty()) {
+                if let Some(parent) = &parent {
+                    let (parent_dir, _) = self.find(&parent.id)?;
+                    versions::copy_references(&parent_dir, &dir, &inherited)?;
+                }
+                write_records(&dir, &[turn_record(&at, inherited)])?;
+            }
+            super::session_usage::initialize(&dir).map_err(|error| error.message)?;
+            write_meta(&dir, &meta)
+        })();
+        if let Err(error) = created {
+            let _ = std::fs::remove_dir_all(&dir);
+            return Err(error);
         }
-        super::session_usage::initialize(&dir).map_err(|error| error.message)?;
-        write_meta(&dir, &meta)?;
         self.prune(&key, &meta.id)?;
         Ok(meta)
     }
@@ -663,8 +737,16 @@ impl Store {
         Ok(meta)
     }
 
+    #[cfg(test)]
     pub fn delete(&self, id: &str) -> Result<(), String> {
+        self.delete_guarded(id, &|| Ok(()))
+            .map_err(|error| error.message)
+    }
+
+    /// [`Self::delete`] after `guard` admits it under the store lock.
+    pub fn delete_guarded(&self, id: &str, guard: Guard<'_>) -> Result<(), SessionError> {
         let _lock = self.mutation_lock()?;
+        guard()?;
         self.delete_inner(id)?;
         self.collect_unreferenced_locked();
         Ok(())
@@ -702,10 +784,23 @@ impl Store {
     /// Drop every record before the `keep`-th compaction, then remove assets no
     /// remaining message refers to. `keep = 1` keeps only the first compaction
     /// and what followed it.
+    #[cfg(test)]
     pub fn drop_history(&self, id: &str, keep: u64) -> Result<Value, String> {
+        self.drop_history_guarded(id, keep, &|| Ok(()))
+            .map_err(|error| error.message)
+    }
+
+    /// [`Self::drop_history`] after `guard` admits it under the store lock.
+    pub fn drop_history_guarded(
+        &self,
+        id: &str,
+        keep: u64,
+        guard: Guard<'_>,
+    ) -> Result<Value, SessionError> {
         let _lock = self.mutation_lock()?;
+        guard()?;
         if keep == 0 {
-            return Err("drop_history needs a count of at least 1".into());
+            return Err("drop_history needs a count of at least 1".to_owned().into());
         }
         let (dir, mut meta) = self.find(id)?;
         let records = read_records(&dir)?;
@@ -720,7 +815,8 @@ impl Store {
             return Err(format!(
                 "drop_history {keep}: this session has {} compaction(s)",
                 compactions.len()
-            ));
+            )
+            .into());
         }
         let from = compactions[keep - 1];
         let dropped = records.len() - from;
@@ -773,106 +869,19 @@ impl Store {
         Ok(removed)
     }
 
-    /// Cut the conversation back to its first `keep` messages.
-    ///
-    /// The store is append-only, so a rewind rewrites the file with one turn
-    /// that holds the kept prefix. A cut that lands inside a tool block moves
-    /// back to the call that opened the block, because a provider rejects a
-    /// result whose call is gone. A call left without its result is answered
-    /// with a refusal, because a provider rejects a history where a call is not
-    /// followed by a result.
-    pub fn rewind(&self, id: &str, keep: usize) -> Result<usize, String> {
-        let _lock = self.mutation_lock()?;
-        let (dir, mut meta) = self.find(id)?;
-        let (view, _) = read_view(&dir)?;
-        if keep == 0 || keep > view.len() {
-            return Err(format!(
-                "rewind needs 1..{} messages, got {keep}",
-                view.len()
-            ));
-        }
-        let keep = block_start(&view, keep);
-        if keep == 0 {
-            return Err("rewind would cut before the first tool call".into());
-        }
-        let mut kept: Vec<Value> = view[..keep].to_vec();
-        // Every result in the prefix is known before any call is judged: a
-        // result always follows its call, so one pass would call each completed
-        // call unanswered.
-        let answered: std::collections::HashSet<&str> = kept
-            .iter()
-            .filter(|message| message["role"] == "tool")
-            .filter_map(|message| message["tool_call_id"].as_str())
-            .collect();
-        let mut pending: Vec<String> = Vec::new();
-        for message in &kept {
-            for call in message["tool_calls"].as_array().into_iter().flatten() {
-                if let Some(call) = call["id"].as_str()
-                    && !answered.contains(call)
-                    && !pending.iter().any(|open| open == call)
-                {
-                    pending.push(call.to_owned());
-                }
-            }
-        }
-        for call in pending {
-            kept.push(json!({
-                "role": "tool",
-                "tool_call_id": call,
-                "content": json!({
-                    "error": "the conversation was rewound before this call returned",
-                }).to_string(),
-            }));
-        }
-        let record = Record {
-            v: VERSION,
-            kind: RecordKind::Turn,
-            at: now(),
-            dropped: None,
-            tokens_before: None,
-            tokens_after: None,
-            truncated: None,
-            messages: kept.clone(),
-        };
-        write_records(&dir, &[record])?;
-        meta.tokens = estimate_tokens(&kept);
-        meta.updated = now();
-        write_meta(&dir, &meta)?;
-        Ok(kept.len())
-    }
-
     /// Save one DSL version for a session. Content-addressed, so the same
     /// document costs one file however many messages carry it.
     pub fn snapshot_dsl(&self, id: &str, dsl: &str) -> Result<String, String> {
         let _lock = self.mutation_lock()?;
-        use sha2::{Digest, Sha256};
         let (dir, _) = self.find(id)?;
-        let hash = format!("{:x}", Sha256::digest(dsl.as_bytes()));
-        let versions = dir.join("versions");
-        std::fs::create_dir_all(&versions).map_err(|error| format!("sessions: {error}"))?;
-        let path = versions.join(format!("{hash}.ocp"));
-        if !path.is_file() {
-            private_fs::write_atomic(&path, dsl.as_bytes())
-                .map_err(|error| format!("sessions: {error}"))?;
-        }
-        Ok(hash)
+        versions::save(&dir, dsl)
     }
 
     /// The DSL a snapshot holds. The hash is validated as hex before it is used
     /// as a file name, so a caller cannot address another file.
     pub fn dsl_version(&self, id: &str, hash: &str) -> Result<String, String> {
-        use sha2::{Digest, Sha256};
         let (dir, _) = self.find(id)?;
-        if hash.len() != 64 || !hash.chars().all(|c| c.is_ascii_hexdigit()) {
-            return Err("Not a DSL snapshot id".into());
-        }
-        let path = dir.join("versions").join(format!("{hash}.ocp"));
-        let text = std::fs::read_to_string(&path).map_err(|error| format!("sessions: {error}"))?;
-        let actual = format!("{:x}", Sha256::digest(text.as_bytes()));
-        if actual != hash {
-            return Err("The saved DSL version does not match its id".into());
-        }
-        Ok(text)
+        versions::read(&dir, hash)
     }
 
     /// The history before compaction, for the panel's original view.
@@ -904,6 +913,7 @@ impl Store {
 
     /// Admits transcript preparation against the same saved-session incarnation
     /// as the request's accounting owner, before any transcript or archive write.
+    #[cfg(test)]
     pub fn prepare_owned(
         &self,
         id: &str,
@@ -912,7 +922,26 @@ impl Store {
         context: PrepareContext<'_>,
         incarnation: Option<&str>,
     ) -> Result<Prepared, String> {
+        self.prepare_admitted(id, incoming, project, context, incarnation, |_| {
+            Ok::<(), String>(())
+        })
+    }
+
+    /// [`Self::prepare_owned`] with an admission check: `admit` sees the
+    /// conversation the request would send (after the compaction it would
+    /// get) before the archive, the snapshot or the transcript is written, so
+    /// a refused request leaves the store exactly as it was.
+    pub fn prepare_admitted<E: From<String>>(
+        &self,
+        id: &str,
+        incoming: &[Value],
+        project: Option<&Path>,
+        context: PrepareContext<'_>,
+        incarnation: Option<&str>,
+        admit: impl FnOnce(&[Value]) -> Result<(), E>,
+    ) -> Result<Prepared, E> {
         let PrepareContext {
+            snapshot,
             overhead,
             context_length,
             facts,
@@ -928,28 +957,66 @@ impl Store {
             .filter(|message| message["role"] != "system")
             .cloned()
             .collect();
-        let audio_settings = crate::gui_settings::load().session_audio;
-        let evicted_auditions = persist_auditions(&self.root, &mut filtered, &audio_settings)?;
         // A window that reloaded mid-turn, or any client that died, leaves the
         // model's last round without results. Closing it here keeps the rule
         // that the store never holds a call no request may carry. A call the
         // request itself answers is not a debt, so the loop's own rounds are
         // left exactly as it sends them.
-        let answered: Vec<&str> = filtered
+        //
+        // Only the results the request appends count: a client that rebuilds
+        // its history resends earlier rounds' results, and a provider that
+        // numbers calls per reply reuses their ids for the open round.
+        let fresh = {
+            let mut probe = pending.clone();
+            absorb(&mut probe, &filtered).1
+        };
+        let answered: Vec<String> = filtered[fresh.min(filtered.len())..]
             .iter()
-            .filter_map(|message| message["tool_call_id"].as_str())
+            .filter_map(turns::answered_call)
             .collect();
-        let closed = close_unanswered_round(&mut pending, &answered);
-        if !closed.is_empty() {
-            append_records(&dir, &[turn_record(&now(), closed)])?;
-        }
+        let answered: Vec<&str> = answered.iter().map(String::as_str).collect();
+        let closed = close_unanswered_round(&dir, &mut pending, &answered);
+        // What a client sends must leave a well-formed conversation, checked
+        // before anything is archived or written: one orphan result would
+        // refuse every later append of this conversation.
+        let mut probe = pending.clone();
+        absorb(&mut probe, &filtered);
+        turns::check_pairing(&probe).map_err(|error| format!("sessions: {error}"))?;
+        admit(&planned_request(
+            &pending,
+            &filtered,
+            &PlanInputs {
+                overhead,
+                context_length,
+                facts,
+                id,
+            },
+        ))?;
+        let audio_settings = crate::gui_settings::load().session_audio;
+        let evicted_auditions = persist_auditions(&self.root, &mut filtered, &audio_settings)?;
         let start = pending.len();
         let (appended, absorbed) = absorb(&mut pending, &filtered);
+        // Archiving rewrites auditions, which can move where the request
+        // joins the saved conversation, so what is written is checked again.
+        // Clips archived for a refused request are collected like any orphan.
+        turns::check_pairing(&pending).map_err(|error| format!("sessions: {error}"))?;
+        // A version and its first transcript reference share the store lock,
+        // so collection cannot remove the version between the two writes.
+        versions::attach(&dir, &mut pending[start..], snapshot, project)?;
         let inline_audio = filtered
             .iter()
             .any(|message| message.get("input_audio").is_some());
-        if appended > 0 {
-            append_records(&dir, &[turn_record(&now(), pending[start..].to_vec())])?;
+        let closed_round = !closed.is_empty();
+        if appended > 0 || closed_round {
+            let mut added = closed;
+            added.extend_from_slice(&pending[start..]);
+            append_records(&dir, &[turn_record(&now(), added)])?;
+        }
+        if closed_round {
+            // The round is answered on disk, so its started markers are spent.
+            // Cleared only after the write: a failed write keeps them, and the
+            // next preparation still tells a lost result from a call never run.
+            turns::spend_started(&dir, &Default::default());
         }
         let saved_auditions = pending[start..]
             .iter()
@@ -976,13 +1043,24 @@ impl Store {
             merged
         });
         let mut compacted = None;
+        let mut compaction_error = None;
         if !inline_audio && should_compact(&view, overhead, context_length) {
             let target = (context_length as f64 * AUTO_COMPACT_TARGET_FRACTION) as u64;
-            if let Ok(outcome) = self.compact_locked(id, Some(target), facts) {
-                view = outcome.messages.clone();
-                meta.compacted_at = Some(outcome.compacted_at.clone());
-                meta.tokens = outcome.tokens_after;
-                compacted = Some(outcome);
+            // A failed compaction does not fail the turn: the conversation is
+            // sent as saved and the admission above already bounded it. The
+            // failure is still reported, so a window that keeps growing is
+            // not silent.
+            match self.compact_locked(id, Some(target), facts) {
+                Ok(outcome) => {
+                    view = outcome.messages.clone();
+                    meta.compacted_at = Some(outcome.compacted_at.clone());
+                    meta.tokens = outcome.tokens_after;
+                    compacted = Some(outcome);
+                }
+                Err(error) => {
+                    log::warn!("[ai] session {id} auto-compaction failed: {error}");
+                    compaction_error = Some(error);
+                }
             }
         }
         if appended > 0 || compacted.is_some() || meta.provider != provider || meta.model != model {
@@ -1001,101 +1079,10 @@ impl Store {
             live,
             appended,
             compacted,
+            compaction_error,
             evicted_auditions,
             saved_auditions,
         })
-    }
-
-    /// Saves locally completed tool results before returning control to the user.
-    /// Only outstanding saved call IDs are accepted; repeated checkpoints are idempotent.
-    pub fn checkpoint_tools(
-        &self,
-        id: &str,
-        results: &[Value],
-        outcome: Option<(&str, &str)>,
-    ) -> Result<(), String> {
-        let _lock = self.mutation_lock()?;
-        let (dir, mut meta) = self.find(id)?;
-        let (view, _) = read_view(&dir)?;
-        let mut pending = std::collections::HashSet::new();
-        for message in &view {
-            for call in message["tool_calls"].as_array().into_iter().flatten() {
-                if let Some(id) = call["id"].as_str() {
-                    pending.insert(id.to_owned());
-                }
-            }
-            if message["role"] == "tool"
-                && let Some(id) = message["tool_call_id"].as_str()
-            {
-                pending.remove(id);
-            }
-        }
-        let mut added = Vec::new();
-        for message in results {
-            if message["role"] == "tool"
-                && message["tool_call_id"]
-                    .as_str()
-                    .is_some_and(|id| pending.remove(id))
-                && let Some(saved) = saved_message(message)
-            {
-                added.push(saved);
-            }
-        }
-        if let Some((status, path)) = outcome {
-            if !matches!(status, "applied" | "rejected") || path.len() > 1024 {
-                return Err("Invalid proposal outcome".into());
-            }
-            // Answer the call that proposed it: a provider requires the tool
-            // result to follow its call immediately, and a user message in
-            // between makes the next request invalid. With no pending call the
-            // outcome stays a note.
-            let body = format!(
-                "Host proposal outcome: {}",
-                json!({"status":status,"path":path,"other_deferred_calls_applied":false})
-            );
-            let mut message = match pending.iter().next() {
-                Some(call) => json!({
-                    "role": "tool",
-                    "tool_call_id": call,
-                    "content": body,
-                }),
-                None => json!({"role": "user", "content": body}),
-            };
-            message_protocol::tag(&mut message, MessageMeta::new(MessageKind::ProposalOutcome));
-            if view.last() != Some(&message) {
-                added.push(message);
-            }
-        }
-        if !added.is_empty() {
-            append_records(&dir, &[turn_record(&now(), added)])?;
-            let (view, _) = read_view(&dir)?;
-            meta.tokens = estimate_tokens(&view);
-            meta.updated = now();
-            write_meta(&dir, &meta)?;
-        }
-        Ok(())
-    }
-
-    /// Records a host transaction outcome independently of the panel's stale wire history.
-    pub fn record_rollback(&self, id: &str, facts: &ProjectFacts) -> Result<(), String> {
-        let _lock = self.mutation_lock()?;
-        let (dir, mut meta) = self.find(id)?;
-        let (mut view, _) = read_view(&dir)?;
-        let mut messages = close_unanswered_round(&mut view, &[]);
-        let mut rollback = json!({"role": "user", "content": format!(
-            "Host transaction rollback: all project edits in the interrupted transaction were reverted. Earlier successful mutation results describe historical intermediate states, not the current project. Current project DSL sha256 {}; track count {}. Inspect current project before further edits. External rendered or separated audio files are not reverted.",
-            facts.dsl_digest, facts.track_count
-        )});
-        message_protocol::tag(
-            &mut rollback,
-            MessageMeta::new(MessageKind::TransactionRollback),
-        );
-        messages.push(rollback);
-        append_records(&dir, &[turn_record(&now(), messages)])?;
-        let (view, _) = read_view(&dir)?;
-        meta.tokens = estimate_tokens(&view);
-        meta.updated = now();
-        write_meta(&dir, &meta)
     }
 
     /// Appends the assistant message a turn produced, so an answer survives the
@@ -1143,6 +1130,7 @@ impl Store {
     /// Folds the older turns into one plain-text message that also carries the
     /// most recent tool pairs as text. No assistant tool call, provider state or
     /// signature survives.
+    #[cfg(test)]
     pub fn compact(
         &self,
         id: &str,
@@ -1151,6 +1139,33 @@ impl Store {
     ) -> Result<Compaction, String> {
         let _lock = self.mutation_lock()?;
         self.compact_locked(id, target_tokens, facts)
+    }
+
+    /// A compaction a person asked for. `guard` runs under the store lock.
+    ///
+    /// Two windows can ask at once; both run under this lock, one after the
+    /// other, and each plans from the view it reads under the lock. The second
+    /// would then fold the first one's fresh summary into a summary of a
+    /// summary, so a view whose newest record already is a compaction is a
+    /// conflict: the conversation is in the state the request asked for.
+    pub fn compact_requested(
+        &self,
+        id: &str,
+        target_tokens: Option<u64>,
+        facts: &ProjectFacts,
+        guard: Guard<'_>,
+    ) -> Result<Compaction, SessionError> {
+        let _lock = self.mutation_lock()?;
+        guard()?;
+        let (dir, _) = self.find(id)?;
+        let newest = read_records(&dir)?.last().map(|record| record.kind);
+        if newest == Some(RecordKind::Compaction) {
+            return Err(SessionError::new(
+                SessionErrorKind::Conflict,
+                "This conversation was just compacted; nothing new has been added since.",
+            ));
+        }
+        Ok(self.compact_locked(id, target_tokens, facts)?)
     }
 
     fn compact_locked(
@@ -1180,10 +1195,17 @@ impl Store {
         // Append, never rewrite: the turns this summary replaces stay on disk so
         // the user can still read them (the panel's original view).
         append_records(&dir, &[record])?;
+        // The record is the compaction; the metadata only caches what the
+        // records already say (the token estimate is recomputed on the next
+        // write). Once the record landed the compaction happened, so a cache
+        // write failure is reported in the log rather than as a failure the
+        // caller would take to mean nothing changed.
         meta.compacted_at = Some(at);
         meta.tokens = outcome.tokens_after;
         meta.updated = now();
-        write_meta(&dir, &meta)?;
+        if let Err(error) = write_meta(&dir, &meta) {
+            log::warn!("[ai] session {id} compacted, but its metadata was not updated: {error}");
+        }
         Ok(outcome)
     }
 }
@@ -1216,9 +1238,12 @@ fn persist_auditions(
         let descriptor = super::media::to_wire(clip.kind, &clip.media);
         // Keep the render by path. A later audition may request another
         // passage, but normal replay sends only the bounded delivery.
-        let mut render_unavailable = false;
+        let mut render_unavailable = audio["source_render_unavailable"]
+            .as_bool()
+            .unwrap_or(false);
         let render = audio
             .get("source_path")
+            .filter(|_| !render_unavailable)
             .and_then(Value::as_str)
             .filter(|path| !path.is_empty())
             .map(PathBuf::from)
@@ -2004,6 +2029,12 @@ fn saved_message(message: &Value) -> Option<Value> {
     {
         saved.insert("dsl_sha".into(), json!(sha));
     }
+    if let Some(project) = message["dsl_project"]
+        .as_str()
+        .filter(|path| !path.is_empty() && path.chars().count() <= MAX_PROJECT_PATH)
+    {
+        saved.insert("dsl_project".into(), json!(project));
+    }
     // The signed reasoning of an assistant turn is provider state: a restored
     // conversation that dropped it would replay an unsigned tool round.
     for key in ["tool_calls", "tool_call_id", "provider_state", "thinking"] {
@@ -2147,21 +2178,18 @@ fn turn_record(at: &str, mut messages: Vec<Value>) -> Record {
 }
 
 /// The tool blocks of a conversation: each assistant message that asks for tools
-/// plus the tool results (and any attached delivery) that follow it.
+/// (natively or through the text protocol) plus the results and host deliveries
+/// that follow it. Pairing decides what belongs to a round, so a person's next
+/// message, attachments included, is never taken for part of the round.
 fn tool_blocks(view: &[Value]) -> Vec<(usize, usize)> {
     let mut blocks = Vec::new();
     let mut index = 0;
     while index < view.len() {
-        let calls = view[index]["tool_calls"]
-            .as_array()
-            .map(|calls| !calls.is_empty())
-            .unwrap_or(false);
-        if view[index]["role"] == "assistant" && calls {
+        if !turns::calls_of(&view[index]).is_empty() {
             let mut end = index + 1;
             while end < view.len()
-                && (view[end]["role"] == "tool"
-                    || view[end].get("input_audio").is_some()
-                    || view[end].get("media").is_some())
+                && (turns::answered_call(&view[end]).is_some()
+                    || turns::is_round_delivery(&view[end]))
             {
                 end += 1;
             }
@@ -2174,63 +2202,17 @@ fn tool_blocks(view: &[Value]) -> Vec<(usize, usize)> {
     blocks
 }
 
-/// The first index a cut at `keep` may keep: a cut that lands on a tool result
-/// moves back to the call that opened the block. A conversation that keeps a
-/// call without the results it owes is one a provider refuses, and a kept call
-/// whose results were dropped would be closed as unanswered.
-fn block_start(view: &[Value], keep: usize) -> usize {
-    if keep >= view.len() || view[keep]["role"] != "tool" {
-        return keep;
-    }
-    for (start, end) in tool_blocks(view) {
-        if start < keep && keep < end {
-            return start;
-        }
-    }
-    keep
-}
-
 /// Closes a last round whose calls never got a result: a window that reloaded
 /// mid-turn, or a client that died, stops the loop that owed them. `answered`
 /// names the calls the request being prepared brings results for, which are not
 /// debts. Returns the results it added, in call order; a round that follows the
 /// block is complete and is left alone.
-fn close_unanswered_round(view: &mut Vec<Value>, answered: &[&str]) -> Vec<Value> {
-    let Some((start, end)) = tool_blocks(view).last().copied() else {
-        return Vec::new();
-    };
-    if end < view.len() {
-        return Vec::new();
-    }
-    let calls = view[start]["tool_calls"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default();
-    let known: Vec<&str> = view[start + 1..end]
-        .iter()
-        .filter_map(|message| message["tool_call_id"].as_str())
-        .chain(answered.iter().copied())
-        .collect();
-    let mut closed = Vec::new();
-    for call in &calls {
-        let Some(id) = call["id"].as_str() else {
-            continue;
-        };
-        if known.contains(&id) {
-            continue;
-        }
-        let name = call["function"]["name"].as_str().unwrap_or("the tool");
-        closed.push(json!({
-            "role": "tool",
-            "tool_call_id": id,
-            "content": format!(
-                "Not run: the window that was running this turn went away before {name} returned, so it has no result."
-            ),
-        }));
-    }
-    for message in &mut closed {
-        message_protocol::tag_new(message);
-    }
+fn close_unanswered_round(dir: &Path, view: &mut Vec<Value>, answered: &[&str]) -> Vec<Value> {
+    // A call the request itself answers is not a debt.
+    let mut closed = turns::close_open(view, &turns::started_in(dir, view));
+    closed.retain(|message| {
+        !turns::answered_call(message).is_some_and(|id| answered.contains(&id.as_str()))
+    });
     view.extend(closed.iter().cloned());
     closed
 }
@@ -2255,6 +2237,10 @@ fn is_audition(message: &Value) -> bool {
     message_protocol::kind(message).is_some_and(message_protocol::is_audition)
 }
 
+/// The replay-free form of a prose message. A person's message keeps what is
+/// theirs, verbatim: the text, the attachments as canonical descriptors, the
+/// snapshot a revert restores (`dsl_sha`, `dsl_project`) and the steering id.
+/// Calls, provider state and inline audio never survive.
 fn plain_message(message: &Value) -> Option<Value> {
     let role = message["role"].as_str()?;
     if role != "user" && role != "assistant" {
@@ -2262,39 +2248,68 @@ fn plain_message(message: &Value) -> Option<Value> {
     }
     if message.get("tool_calls").is_some()
         || message.get("provider_state").is_some()
-        || message.get("media").is_some()
         || message.get("input_audio").is_some()
         || context_of(message).is_some()
     {
         return None;
     }
     let content = message["content"].as_str()?;
-    if content.trim().is_empty()
-        || !matches!(
-            message_protocol::kind(message),
-            Some(MessageKind::User | MessageKind::Assistant)
-        )
+    let kind = message_protocol::kind(message)?;
+    let media = match message.get("media") {
+        Some(media) if role == "user" => canonical_media(media),
+        Some(_) => return None,
+        None => Value::Array(Vec::new()),
+    };
+    let has_media = media.as_array().is_some_and(|entries| !entries.is_empty());
+    if (content.trim().is_empty() && !has_media)
+        || !matches!(kind, MessageKind::User | MessageKind::Assistant)
     {
         return None;
     }
     let mut plain = json!({ "role": role, "content": content });
-    message_protocol::tag_new(&mut plain);
+    let mut meta = MessageMeta::new(kind);
+    if kind == MessageKind::User {
+        meta.steer_id = message_protocol::read(message).and_then(|meta| meta.steer_id);
+        if has_media {
+            plain["media"] = media;
+        }
+        for key in ["dsl_sha", "dsl_project"] {
+            if let Some(value) = message.get(key).filter(|value| value.is_string()) {
+                plain[key] = value.clone();
+            }
+        }
+    }
+    message_protocol::tag(&mut plain, meta);
     Some(plain)
 }
 
-/// Compacted messages retain prose and validated file descriptors, never tool
-/// calls, provider state or signatures. Audio content remains available on disk.
+/// Compacted messages retain prose, validated file descriptors and a person's
+/// revert snapshot, never tool calls, provider state or signatures. Audio
+/// content remains available on disk.
 pub fn strips_replay_state(messages: &[Value]) -> bool {
     messages.iter().all(|message| {
         message.as_object().is_some_and(|object| {
             object.keys().all(|key| {
                 matches!(
                     key.as_str(),
-                    "role" | "content" | "media" | "context" | "source_render" | "message_meta"
+                    "role"
+                        | "content"
+                        | "media"
+                        | "context"
+                        | "source_render"
+                        | "message_meta"
+                        | "dsl_sha"
+                        | "dsl_project"
                 )
             }) && object
                 .get("message_meta")
                 .is_none_or(|_| message_protocol::read(message).is_some())
+                && message_protocol::text_call(message).is_none()
+                && ["dsl_sha", "dsl_project"].iter().all(|key| {
+                    object
+                        .get(*key)
+                        .is_none_or(|_| message_protocol::kind(message) == Some(MessageKind::User))
+                })
                 && object.get("context").is_none_or(is_context_marker)
                 && object
                     .get("source_render")
@@ -2309,6 +2324,38 @@ pub fn strips_replay_state(messages: &[Value]) -> bool {
                 )
         })
     })
+}
+
+/// What deciding a compaction needs, apart from the conversation.
+struct PlanInputs<'a> {
+    overhead: u64,
+    context_length: u64,
+    facts: &'a ProjectFacts,
+    id: &'a str,
+}
+
+/// The conversation a preparation would send, computed without writing:
+/// the saved view plus what the request adds, compacted as the preparation
+/// would compact it. An inline clip is sent from the client's own messages,
+/// as the preparation sends it.
+fn planned_request(pending: &[Value], incoming: &[Value], plan: &PlanInputs<'_>) -> Vec<Value> {
+    let mut view = pending.to_vec();
+    let (_, absorbed) = absorb(&mut view, incoming);
+    if incoming
+        .iter()
+        .any(|message| message.get("input_audio").is_some())
+    {
+        let mut merged = pending.to_vec();
+        merged.extend_from_slice(&incoming[absorbed.min(incoming.len())..]);
+        return merged;
+    }
+    if should_compact(&view, plan.overhead, plan.context_length) {
+        let target = (plan.context_length as f64 * AUTO_COMPACT_TARGET_FRACTION) as u64;
+        if let Ok(outcome) = plan_compaction(&view, target, plan.facts, plan.id) {
+            return outcome.messages;
+        }
+    }
+    view
 }
 
 fn plan_compaction(
@@ -2426,8 +2473,9 @@ fn plan_compaction(
     }
 }
 
-/// The messages after `split` that are safe to keep: plain text only, never a
-/// message of a retained tool block, and always the pending user message.
+/// The messages after `split` that are safe to keep: prose only, never a
+/// message of a retained tool block, and always the pending user message with
+/// its attachments, so the ask the model is about to answer survives intact.
 fn tail_messages(view: &[Value], split: usize, retained: &[(usize, usize)]) -> Vec<Value> {
     let in_block = |index: usize| {
         retained
@@ -2733,28 +2781,27 @@ fn summary_text(
         text.push_str("- none retained\n");
     }
     for (offset, (start, end)) in retained.iter().enumerate() {
-        let name = view[*start]["tool_calls"]
-            .as_array()
-            .and_then(|calls| calls.first())
-            .and_then(|call| call["function"]["name"].as_str())
-            .unwrap_or("tool")
-            .to_owned();
-        let arguments = view[*start]["tool_calls"]
-            .as_array()
-            .and_then(|calls| calls.first())
-            .and_then(|call| call["function"]["arguments"].as_str())
-            .map(|arguments| clip(&collapse(arguments), MAX_SUMMARY_ITEM_CHARS))
-            .unwrap_or_default();
-        let result = view
-            .get(*start + 1)
-            .filter(|message| message["role"] == "tool")
-            .map(summary_of_result)
-            .unwrap_or_else(|| "no result recorded".into());
-        let _ = end;
-        text.push_str(&format!(
-            "{}. {name} → {arguments} → {result}\n",
-            offset + 1
-        ));
+        // Every call of a parallel batch, each with the result that answers it.
+        let lines: Vec<String> = turns::calls_of(&view[*start])
+            .into_iter()
+            .map(|(id, name)| {
+                let arguments = view[*start]["tool_calls"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .find(|call| call["id"].as_str() == Some(id.as_str()))
+                    .and_then(|call| call["function"]["arguments"].as_str())
+                    .map(|arguments| clip(&collapse(arguments), MAX_SUMMARY_ITEM_CHARS))
+                    .unwrap_or_default();
+                let result = view[*start + 1..*end]
+                    .iter()
+                    .find(|message| turns::answered_call(message).as_deref() == Some(id.as_str()))
+                    .map(summary_of_result)
+                    .unwrap_or_else(|| "no result recorded".into());
+                format!("{name} \u{2192} {arguments} \u{2192} {result}")
+            })
+            .collect();
+        text.push_str(&format!("{}. {}\n", offset + 1, lines.join("; ")));
     }
     let kept = retained_media(view, retained);
     if !kept.is_empty() {
@@ -2897,13 +2944,19 @@ fn should_compact(view: &[Value], overhead: u64, context_length: u64) -> bool {
     if view.len() > MAX_AUTO_COMPACT_MESSAGES {
         return true;
     }
-    if context_length == 0 {
+    // A window of 0 or 1 is a placeholder for "unknown", not a size.
+    if context_length <= 1 {
         return false;
     }
     let tokens = estimate_tokens(view);
     let limit = (context_length as f64 * AUTO_COMPACT_FRACTION) as u64;
     let floor = (context_length as f64 * AUTO_COMPACT_CONVERSATION_FLOOR) as u64;
-    tokens + overhead > limit.max(1) && tokens > floor
+    tokens + media_tokens(view) + overhead > limit.max(1) && tokens > floor
+}
+
+/// Versioned metadata for a host message of `kind`, as saved on the wire.
+pub fn message_meta(kind: MessageKind) -> Value {
+    json!(MessageMeta::new(kind))
 }
 
 // ---- token estimate -----------------------------------------------------
@@ -2942,6 +2995,72 @@ fn text_tokens(text: &str) -> u64 {
         units += if character.is_ascii() { 1 } else { 4 };
     }
     units.div_ceil(4)
+}
+
+/// Tokens of any serialized payload under the same rule as the conversation,
+/// for parts of a request the store does not save, such as the tool list.
+pub fn value_tokens(value: &Value) -> u64 {
+    text_tokens(&value.to_string())
+}
+
+/// What one image costs a provider, about a full-resolution tile set. Images
+/// carry no size the store can read, so every image counts the same.
+pub const IMAGE_TOKENS: u64 = 1_600;
+/// Audio input tokens per second of sound, a common provider rate.
+pub const AUDIO_TOKENS_PER_SECOND: f64 = 32.0;
+/// Bytes per second assumed for compressed audio whose duration is unknown.
+const COMPRESSED_AUDIO_BYTES_PER_SECOND: u64 = 16_000;
+/// Bytes per second of the 16-bit stereo 44.1 kHz WAV an inline clip carries.
+const WAV_BYTES_PER_SECOND: u64 = 176_400;
+
+/// The attachments a request carries, estimated apart from the text because
+/// their cost depends on their kind and length, not on their descriptor. A
+/// disk-only reference is not sent and costs nothing.
+pub fn media_tokens(messages: &[Value]) -> u64 {
+    let audio = |seconds: f64| (seconds.max(0.0) * AUDIO_TOKENS_PER_SECOND).ceil() as u64;
+    let mut tokens = 0u64;
+    for message in messages {
+        for entry in message["media"].as_array().into_iter().flatten() {
+            if entry["local_reference"].as_bool() == Some(true) {
+                continue;
+            }
+            tokens += match entry["kind"].as_str() {
+                Some("image") => IMAGE_TOKENS,
+                _ => match entry["duration_secs"].as_f64().filter(|s| s.is_finite()) {
+                    Some(seconds) => audio(seconds),
+                    None => {
+                        let rate = if entry["mime"] == "audio/wav" {
+                            WAV_BYTES_PER_SECOND
+                        } else {
+                            COMPRESSED_AUDIO_BYTES_PER_SECOND
+                        };
+                        audio(entry["bytes"].as_u64().unwrap_or(0) as f64 / rate as f64)
+                    }
+                },
+            };
+        }
+        if let Some(data) = message["input_audio"]["data"].as_str() {
+            let bytes = data.len() as u64 / 4 * 3;
+            tokens += audio(bytes as f64 / WAV_BYTES_PER_SECOND as f64);
+        }
+    }
+    tokens
+}
+
+/// The versioned kind of a saved or wire message.
+pub fn message_kind(message: &Value) -> Option<MessageKind> {
+    message_protocol::kind(message)
+}
+
+/// A summary the store's compaction wrote. It carries the conversation's
+/// structured state (standing intent, discarded auditions); a fold row the
+/// loop writes into one request carries none, so a later fold or trim can
+/// keep the one and drop the other.
+pub fn is_compaction_summary(message: &Value) -> bool {
+    message_protocol::legacy(message).is_some_and(|meta| {
+        meta.kind == MessageKind::Summary
+            && (meta.standing_intent.is_some() || meta.discarded_auditions.is_some())
+    })
 }
 
 // ---- file I/O -----------------------------------------------------------
@@ -3038,6 +3157,7 @@ fn read_view(dir: &Path) -> Result<(Vec<Value>, u64), String> {
     canonicalize_media(&mut view);
     message_protocol::migrate(&mut view);
     artifacts::repair(&mut view);
+    turns::repair_pairing(&mut view);
     Ok((view, skipped))
 }
 
@@ -3143,21 +3263,41 @@ fn append_records_under(dir: &Path, records: &[Record], cap: u64) -> Result<(), 
 }
 
 /// The newest messages of a conversation that fit in `budget` bytes, in order.
+/// The latest compaction summary leads them when the cut fell after it: it
+/// holds the standing intent and the decisions the dropped turns made.
 fn newest_that_fit(view: &[Value], budget: u64) -> Vec<Value> {
+    let size_of = |message: &Value| {
+        serde_json::to_vec(message)
+            .map(|bytes| bytes.len())
+            .unwrap_or(0) as u64
+            + 1
+    };
+    let summary = view.iter().rposition(is_compaction_summary);
+    let reserved = summary.map_or(0, |index| size_of(&view[index]));
     let mut kept: Vec<Value> = Vec::new();
     let mut used = 0u64;
     for message in view.iter().rev() {
-        let size = serde_json::to_vec(message)
-            .map(|bytes| bytes.len())
-            .unwrap_or(0) as u64
-            + 1;
-        if used + size > budget && !kept.is_empty() {
+        let size = size_of(message);
+        if used + size + reserved > budget && !kept.is_empty() {
             break;
         }
         used += size;
         kept.push(message.clone());
     }
     kept.reverse();
+    // A cut inside a round can keep results whose call fell off the front;
+    // dropping them keeps the conversation one every later append accepts.
+    while !kept.is_empty() && turns::check_pairing(&kept).is_err() {
+        kept.remove(0);
+    }
+    // The summary is a user row, so it opens no call and answers none: in
+    // front of a well-paired tail the conversation stays well paired.
+    if let Some(index) = summary
+        && view.len() - kept.len() > index
+        && !kept.is_empty()
+    {
+        kept.insert(0, view[index].clone());
+    }
     kept
 }
 
@@ -3183,7 +3323,10 @@ fn canonical_dir(path: &Path) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
-fn canonical_path(path: &Path) -> PathBuf {
+/// Longest project path a saved message records with its snapshot.
+const MAX_PROJECT_PATH: usize = 4096;
+
+pub(crate) fn canonical_path(path: &Path) -> PathBuf {
     if let Ok(resolved) = std::fs::canonicalize(path) {
         return resolved;
     }
@@ -3260,21 +3403,6 @@ fn clip(text: &str, limit: usize) -> String {
 }
 
 // ---- test support -------------------------------------------------------
-
-/// The panel's process-wide active session per project key, so a turn can
-/// autosave without the panel naming a session.
-pub fn active(key: &str) -> Option<String> {
-    ACTIVE
-        .lock()
-        .ok()
-        .and_then(|active| active.get(key).cloned())
-}
-
-pub fn set_active(key: &str, id: &str) {
-    if let Ok(mut active) = ACTIVE.lock() {
-        active.insert(key.to_owned(), id.to_owned());
-    }
-}
 
 #[cfg(test)]
 pub(crate) struct TestRootGuard {
@@ -3371,6 +3499,53 @@ mod tests {
     use crate::ai::{self, provider_for, request_from_wire};
     use crate::commands::{AiCapabilities, AiProviderEntry, AuthKind, ProviderKind, Wire};
 
+    #[test]
+    fn a_trimmed_conversation_never_starts_with_an_orphan_result() {
+        let call = json!({"role":"assistant","content":null,"tool_calls":[
+            {"id":"a","type":"function","function":{"name":"tracks_add","arguments":"{}"}}
+        ]});
+        let big = "x".repeat(400);
+        let view = vec![
+            user("go"),
+            call,
+            json!({"role":"tool","tool_call_id":"a","content":big}),
+            user("next"),
+        ];
+        // The budget fits the result and the last message, not the call.
+        let kept = newest_that_fit(&view, 500);
+        assert_eq!(turns::check_pairing(&kept), Ok(()));
+        assert_eq!(kept.first().unwrap()["content"], "next");
+    }
+
+    #[test]
+    fn unavailable_handoff_retains_the_clip_without_archiving_a_reused_export() {
+        use crate::gui_settings::{SessionAudioFormat, SessionAudioSettings};
+        let root = tempfile::tempdir().unwrap();
+        let stale = root.path().join("reused.wav");
+        std::fs::write(
+            &stale,
+            oc_engine::wav::mono_wav_bytes(&[0.75; 800], 16_000).unwrap(),
+        )
+        .unwrap();
+        let mut messages = vec![json!({
+            "role":"user", "message_meta":{"version":1,"kind":"audition"}, "content":"Audition",
+            "input_audio":{"data":audition_clip(),"format":"wav","source_render_unavailable":true,"source_path":stale}
+        })];
+        persist_auditions(
+            root.path(),
+            &mut messages,
+            &SessionAudioSettings {
+                format: SessionAudioFormat::Wav,
+                mp3_kbps: 128,
+            },
+        )
+        .unwrap();
+        assert!(messages[0].get("input_audio").is_none());
+        assert_eq!(messages[0]["media"].as_array().unwrap().len(), 1);
+        assert_eq!(messages[0]["source_render_unavailable"], true);
+        assert!(messages[0].get("source_render").is_none());
+    }
+
     fn user(text: &str) -> Value {
         json!({ "role": "user", "content": text })
     }
@@ -3446,162 +3621,6 @@ mod tests {
         }
         view.push(user("now the bass"));
         view
-    }
-
-    #[test]
-    fn proposal_checkpoint_preserves_pending_deferred_and_applied_on_continue() {
-        let (store, project) = fixture("proposal-checkpoint");
-        let meta = store
-            .create(None, Some(&project), Some("Goal"), None)
-            .unwrap();
-        let mut call = tool_call("edit_subtree", "{}", "sig");
-        let second = json!({"id":"later","type":"function","function":{"name":"edit_subtree","arguments":"{}"}});
-        call["tool_calls"].as_array_mut().unwrap().push(second);
-        let history = vec![user("Improve the song"), call];
-        let current = facts(&project);
-        store
-            .prepare(
-                &meta.id,
-                &history,
-                Some(&project),
-                crate::ai::sessions::PrepareContext {
-                    overhead: 0,
-                    context_length: 1_000_000,
-                    facts: &current,
-                    provider: "fixture",
-                    model: "model",
-                },
-            )
-            .unwrap();
-        let results = vec![
-            tool_result(
-                "edit_subtree",
-                "{\"status\":\"pending_user_confirmation\",\"applied\":false}",
-            ),
-            json!({"role":"tool","tool_call_id":"later","content":"{\"deferred\":true,\"applied\":false}"}),
-            tool_result("unknown", "ignore"),
-        ];
-        store.checkpoint_tools(&meta.id, &results, None).unwrap();
-        store.checkpoint_tools(&meta.id, &results, None).unwrap();
-        store
-            .checkpoint_tools(&meta.id, &[], Some(("applied", "track:lead_chop")))
-            .unwrap();
-        let prepared = store
-            .prepare(
-                &meta.id,
-                &[user("Continue")],
-                Some(&project),
-                crate::ai::sessions::PrepareContext {
-                    overhead: 0,
-                    context_length: 1_000_000,
-                    facts: &current,
-                    provider: "fixture",
-                    model: "model",
-                },
-            )
-            .unwrap();
-        let text = serde_json::to_string(&prepared.messages).unwrap();
-        assert!(!text.contains("Not run:"));
-        assert!(text.contains("pending_user_confirmation"));
-        assert!(text.contains("deferred"));
-        assert!(text.contains("Host proposal outcome:"));
-        assert_eq!(
-            prepared
-                .messages
-                .iter()
-                .filter(|m| m["role"] == "tool")
-                .count(),
-            2
-        );
-        let summary = summary_text(
-            &prepared.messages,
-            prepared.messages.len(),
-            &[],
-            &current,
-            1000,
-            "now",
-        );
-        assert!(summary.contains("Host proposal outcome:"));
-        let reopened = Store::new(store.root().to_owned()).load(&meta.id).unwrap();
-        assert_eq!(reopened.messages, prepared.messages);
-        store
-            .checkpoint_tools(&meta.id, &[], Some(("rejected", "track:bass")))
-            .unwrap();
-        assert!(
-            store.load(&meta.id).unwrap().messages.last().unwrap()["content"]
-                .as_str()
-                .unwrap()
-                .contains("rejected")
-        );
-    }
-
-    #[test]
-    fn rollback_survives_reopen_continue_and_repeated_compaction() {
-        let (store, project) = fixture("rollback-continuity");
-        let meta = store
-            .create(None, Some(&project), Some("Goal"), None)
-            .unwrap();
-        let history = vec![
-            user("Build an editable song"),
-            tool_call("tracks_create", "{}", "sig"),
-            tool_result("tracks_create", "{\"track_count\":16}"),
-            tool_call("tracks_mix", "{}", "sig2"),
-        ];
-        let current = ProjectFacts {
-            track_count: 1,
-            ..facts(&project)
-        };
-        store
-            .prepare(
-                &meta.id,
-                &history,
-                Some(&project),
-                crate::ai::sessions::PrepareContext {
-                    overhead: 0,
-                    context_length: 1_000_000,
-                    facts: &current,
-                    provider: "fixture",
-                    model: "model",
-                },
-            )
-            .unwrap();
-        store.record_rollback(&meta.id, &current).unwrap();
-        let reopened = Store::new(store.root().to_owned());
-        let loaded = reopened.load(&meta.id).unwrap();
-        let notice = loaded.messages.last().unwrap()["content"].as_str().unwrap();
-        assert!(notice.starts_with("Host transaction rollback:"));
-        assert!(notice.contains("track count 1"));
-        let mut stale = history;
-        stale.push(user("Continue"));
-        let prepared = reopened
-            .prepare(
-                &meta.id,
-                &stale,
-                Some(&project),
-                crate::ai::sessions::PrepareContext {
-                    overhead: 0,
-                    context_length: 1_000_000,
-                    facts: &current,
-                    provider: "fixture",
-                    model: "model",
-                },
-            )
-            .unwrap();
-        assert_eq!(prepared.appended, 1);
-        let first = summary_text(
-            &prepared.messages,
-            prepared.messages.len(),
-            &[],
-            &current,
-            2000,
-            "first",
-        );
-        assert!(first.contains(notice));
-        assert!(!first.contains("tracks_create applied"));
-        let second_view = vec![user(&first), user("Continue")];
-        let second = summary_text(&second_view, 2, &[], &current, 1000, "second");
-        assert!(second.contains(notice));
-        assert!(second.contains("Standing intent: Build an editable song"));
     }
 
     #[test]
@@ -3703,6 +3722,7 @@ mod tests {
                     &[user(text)],
                     Some(&project),
                     crate::ai::sessions::PrepareContext {
+                        snapshot: None,
                         overhead: 0,
                         context_length: 0,
                         facts: &context,
@@ -3800,6 +3820,7 @@ mod tests {
                 std::slice::from_ref(&question),
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
+                    snapshot: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &context,
@@ -3823,6 +3844,7 @@ mod tests {
                 &[question, call, fonts.clone(), project_result.clone()],
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
+                    snapshot: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &context,
@@ -3864,6 +3886,7 @@ mod tests {
                 turn.as_array().unwrap(),
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
+                    snapshot: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &context,
@@ -3899,6 +3922,7 @@ mod tests {
                 round.as_array().unwrap(),
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
+                    snapshot: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &context,
@@ -3934,6 +3958,7 @@ mod tests {
                 next.as_array().unwrap(),
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
+                    snapshot: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &context,
@@ -3956,6 +3981,7 @@ mod tests {
                 next.as_array().unwrap(),
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
+                    snapshot: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &context,
@@ -3997,6 +4023,7 @@ mod tests {
                 &view,
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
+                    snapshot: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &context,
@@ -4444,189 +4471,6 @@ mod tests {
     }
 
     #[test]
-    fn a_rewind_keeps_the_prefix_and_closes_a_dangling_call() {
-        let (store, project) = fixture("rewind");
-        let session = store
-            .create(Some(&workspace(&project)), Some(&project), None, None)
-            .unwrap();
-        let (dir, _) = store.find(&session.id).unwrap();
-        let call = json!({
-            "role": "assistant",
-            "content": null,
-            "tool_calls": [{"id": "call-1", "type": "function",
-                            "function": {"name": "edit_subtree", "arguments": "{}"}}]
-        });
-        let record = Record {
-            v: VERSION,
-            kind: RecordKind::Turn,
-            at: now(),
-            dropped: None,
-            tokens_before: None,
-            tokens_after: None,
-            truncated: None,
-            messages: vec![user("first"), call, user("outcome")],
-        };
-        write_records(&dir, &[record]).unwrap();
-
-        let kept = store.rewind(&session.id, 2).unwrap();
-        assert_eq!(kept, 3, "the kept prefix plus the closed call");
-        let (view, _) = read_view(&dir).unwrap();
-        assert_eq!(view[0]["content"], "first");
-        assert_eq!(view[1]["tool_calls"][0]["id"], "call-1");
-        // The call the cut left open is answered, so the next request is valid.
-        assert_eq!(view[2]["role"], "tool");
-        assert_eq!(view[2]["tool_call_id"], "call-1");
-        assert_eq!(view.len(), 3, "a completed call gets no second result");
-        std::fs::remove_dir_all(store.root().parent().unwrap()).unwrap();
-    }
-
-    /// One round as the loop saves it: the call and the result it produced.
-    fn completed_round(round: usize) -> Vec<Value> {
-        vec![
-            json!({
-                "role": "assistant",
-                "content": null,
-                "tool_calls": [{
-                    "id": format!("done-{round}"),
-                    "type": "function",
-                    "function": {"name": "tracks_list", "arguments": "{}"}
-                }]
-            }),
-            json!({
-                "role": "tool",
-                "tool_call_id": format!("done-{round}"),
-                "content": "{\"ok\":true}"
-            }),
-        ]
-    }
-
-    #[test]
-    fn a_rewind_closes_only_the_call_it_left_open() {
-        let (store, project) = fixture("rewind-completed");
-        let session = store
-            .create(Some(&workspace(&project)), Some(&project), None, None)
-            .unwrap();
-        let (dir, _) = store.find(&session.id).unwrap();
-        let mut messages = vec![user("three rounds, then one call still open")];
-        for round in 0..3 {
-            messages.extend(completed_round(round));
-        }
-        messages.push(json!({
-            "role": "assistant",
-            "content": null,
-            "tool_calls": [{
-                "id": "open",
-                "type": "function",
-                "function": {"name": "tracks_add", "arguments": "{}"}
-            }]
-        }));
-        write_records(&dir, &[turn_record(&now(), messages)]).unwrap();
-
-        // Keeping every message drops nothing, so the trailing call is the only
-        // one without a result.
-        let kept = store.rewind(&session.id, 8).unwrap();
-        let (view, _) = read_view(&dir).unwrap();
-        assert_eq!(kept, 9, "the kept prefix plus one closing result");
-        let closed: Vec<&str> = view
-            .iter()
-            .filter(|message| message["tool_call_id"].is_string())
-            .filter(|message| {
-                message["content"]
-                    .as_str()
-                    .is_some_and(|content| content.contains("rewound before"))
-            })
-            .filter_map(|message| message["tool_call_id"].as_str())
-            .collect();
-        assert_eq!(closed, ["open"], "completed calls are not answered again");
-        let mut answered: Vec<&str> = view
-            .iter()
-            .filter_map(|message| message["tool_call_id"].as_str())
-            .collect();
-        answered.sort_unstable();
-        assert_eq!(
-            answered,
-            ["done-0", "done-1", "done-2", "open"],
-            "no call is answered twice"
-        );
-        std::fs::remove_dir_all(store.root().parent().unwrap()).unwrap();
-    }
-
-    #[test]
-    fn a_rewind_lands_on_the_start_of_a_tool_block() {
-        let (store, project) = fixture("rewind-block");
-        let block = || {
-            vec![
-                user("start"),
-                json!({
-                    "role": "assistant",
-                    "content": null,
-                    "tool_calls": [
-                        {"id": "call-a", "type": "function",
-                         "function": {"name": "tracks_list", "arguments": "{}"}},
-                        {"id": "call-b", "type": "function",
-                         "function": {"name": "buses_list", "arguments": "{}"}}
-                    ]
-                }),
-                json!({"role": "tool", "tool_call_id": "call-a", "content": "{\"ok\":true}"}),
-                json!({"role": "tool", "tool_call_id": "call-b", "content": "{\"ok\":true}"}),
-                user("outcome"),
-            ]
-        };
-        for (label, cut, expected) in [
-            // A cut on either result moves back to the call that opened the block.
-            ("first-result", 2, 1),
-            ("second-result", 3, 1),
-            // A cut after the block keeps it whole.
-            ("after-block", 5, 5),
-        ] {
-            let session = store
-                .create(
-                    Some(&workspace(&project)),
-                    Some(&project),
-                    Some(label),
-                    None,
-                )
-                .unwrap();
-            let (dir, _) = store.find(&session.id).unwrap();
-            write_records(&dir, &[turn_record(&now(), block())]).unwrap();
-            assert_eq!(
-                store.rewind(&session.id, cut).unwrap(),
-                expected,
-                "{label}: keep {cut}"
-            );
-            let (view, _) = read_view(&dir).unwrap();
-            assert_eq!(view.len(), expected, "{label}");
-            assert_eq!(view[0]["content"], "start");
-            if expected == 1 {
-                assert_eq!(view[0]["role"], "user", "{label}: the whole block is gone");
-            }
-        }
-        std::fs::remove_dir_all(store.root().parent().unwrap()).unwrap();
-    }
-
-    #[test]
-    fn a_rewind_refuses_an_index_outside_the_conversation() {
-        let (store, project) = fixture("rewind-range");
-        let session = store
-            .create(Some(&workspace(&project)), Some(&project), None, None)
-            .unwrap();
-        let (dir, _) = store.find(&session.id).unwrap();
-        write_records(&dir, &[turn_record(&now(), vec![user("only message")])]).unwrap();
-
-        assert!(
-            store.rewind(&session.id, 0).is_err(),
-            "nothing would be kept"
-        );
-        assert!(store.rewind(&session.id, 2).is_err(), "past the end");
-        assert_eq!(
-            store.view(&session.id).unwrap().len(),
-            1,
-            "a refused rewind leaves the conversation alone"
-        );
-        std::fs::remove_dir_all(store.root().parent().unwrap()).unwrap();
-    }
-
-    #[test]
     fn a_saved_snapshot_survives_a_reload_and_a_sweep() {
         let (store, project) = fixture("saved-snapshot");
         let session = store
@@ -4650,6 +4494,7 @@ mod tests {
                 &history,
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
+                    snapshot: None,
                     overhead: 0,
                     context_length: 1_000_000,
                     facts: &facts(&project),
@@ -4868,6 +4713,7 @@ mod tests {
                 &messages,
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
+                    snapshot: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &context,
@@ -5228,6 +5074,7 @@ mod tests {
                 &incoming,
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
+                    snapshot: None,
                     overhead: 0,
                     context_length: 1_000_000,
                     facts: &facts(&project),
@@ -5371,6 +5218,7 @@ mod tests {
                 &incoming,
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
+                    snapshot: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &facts(&project),
@@ -5412,6 +5260,7 @@ mod tests {
                     &[audition(sample)],
                     None,
                     crate::ai::sessions::PrepareContext {
+                        snapshot: None,
                         overhead: 0,
                         context_length: 0,
                         facts: &context,
@@ -5565,6 +5414,7 @@ mod tests {
                 &messages,
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
+                    snapshot: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &facts(&project),
@@ -5717,6 +5567,7 @@ mod tests {
                 &view,
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
+                    snapshot: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &context,
@@ -5841,6 +5692,7 @@ mod tests {
                 &view,
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
+                    snapshot: None,
                     overhead: 0,
                     context_length: window,
                     facts: &context,
@@ -5876,6 +5728,7 @@ mod tests {
                 &[user("hello")],
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
+                    snapshot: None,
                     overhead: 0,
                     context_length: 1_000_000,
                     facts: &context,
@@ -5981,6 +5834,7 @@ mod tests {
                 &[user("first")],
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
+                    snapshot: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &context,
@@ -6013,6 +5867,7 @@ mod tests {
                 &[user("second")],
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
+                    snapshot: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &context,
@@ -6061,6 +5916,7 @@ mod tests {
                     &[user(question)],
                     Some(&project),
                     crate::ai::sessions::PrepareContext {
+                        snapshot: None,
                         overhead: 0,
                         context_length: 0,
                         facts: &context,
@@ -6150,6 +6006,7 @@ mod tests {
                 &view,
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
+                    snapshot: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &context,
@@ -6188,6 +6045,7 @@ mod tests {
                     messages,
                     Some(&project),
                     crate::ai::sessions::PrepareContext {
+                        snapshot: None,
                         overhead: 0,
                         context_length: 0,
                         facts: &context,
@@ -6291,6 +6149,7 @@ mod tests {
                 &turn,
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
+                    snapshot: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &context,
@@ -6333,6 +6192,7 @@ mod tests {
                 &[user("what did you hear?")],
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
+                    snapshot: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &context,
@@ -6419,6 +6279,7 @@ mod tests {
                 std::slice::from_ref(&first),
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
+                    snapshot: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &context,
@@ -6461,6 +6322,7 @@ mod tests {
                 &[user("and now?")],
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
+                    snapshot: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &context,
@@ -6531,6 +6393,7 @@ mod tests {
                 &[first],
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
+                    snapshot: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &context,
@@ -6551,6 +6414,7 @@ mod tests {
                 &[user("and now?")],
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
+                    snapshot: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &context,
@@ -6631,6 +6495,7 @@ mod tests {
                 &[user("and now?")],
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
+                    snapshot: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &facts(&project),
@@ -6668,6 +6533,7 @@ mod tests {
                 turn.as_array().unwrap(),
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
+                    snapshot: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &context,
@@ -6696,6 +6562,7 @@ mod tests {
                 next.as_array().unwrap(),
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
+                    snapshot: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &context,
@@ -6709,8 +6576,8 @@ mod tests {
         assert_eq!(closed["role"], "tool");
         assert_eq!(closed["tool_call_id"], "call-tracks_mix");
         assert!(
-            closed["content"].as_str().unwrap().contains("Not run"),
-            "the model reads why the call has no result: {closed}"
+            closed["content"].as_str().unwrap().contains("not run"),
+            "a call that was never marked started reads as not run: {closed}"
         );
         assert_eq!(
             messages.last().unwrap()["content"],
@@ -6733,6 +6600,7 @@ mod tests {
                 again.as_array().unwrap(),
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
+                    snapshot: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &context,
@@ -6747,10 +6615,79 @@ mod tests {
             .filter(|message| {
                 message["content"]
                     .as_str()
-                    .is_some_and(|content| content.contains("Not run"))
+                    .is_some_and(|content| content.contains("not run"))
             })
             .count();
         assert_eq!(closings, 1);
+    }
+
+    /// A provider that numbers calls per reply reuses an id in a later round.
+    /// A client that resends the earlier round's result does not answer the
+    /// open one, so the open one is closed and the turn goes out.
+    #[test]
+    fn a_resent_earlier_result_does_not_answer_an_open_round_with_the_same_id() {
+        let (store, project) = fixture("reused-id-round");
+        let session = store
+            .create(Some(&workspace(&project)), Some(&project), None, None)
+            .unwrap();
+        let context = facts(&project);
+        let system = json!({ "role": "system", "content": "you are the panel" });
+        let context_for = || crate::ai::sessions::PrepareContext {
+            snapshot: None,
+            overhead: 0,
+            context_length: 0,
+            facts: &context,
+            provider: "fixture-provider",
+            model: "fixture-model",
+        };
+        let ask = user("make it punchy");
+        let call = tool_call("tracks_mix", "{\"track\":\"kick\"}", "sig-0");
+        let result = tool_result("tracks_mix", "{\"ok\":true}");
+        store
+            .prepare(
+                &session.id,
+                &[system.clone(), ask.clone()],
+                Some(&project),
+                context_for(),
+            )
+            .unwrap();
+        store
+            .append_turn(&session.id, &[call.clone(), result.clone()], None)
+            .unwrap();
+        let again = user("once more");
+        store
+            .prepare(
+                &session.id,
+                &[system.clone(), again.clone()],
+                Some(&project),
+                context_for(),
+            )
+            .unwrap();
+        // The next round reuses the id for another call, and the client dies
+        // before its result.
+        let reused = tool_call("tracks_mix", "{\"track\":\"snare\"}", "sig-1");
+        store
+            .record_reply(
+                &session.id,
+                &reused,
+                &context,
+                "fixture-provider",
+                "fixture-model",
+            )
+            .unwrap();
+
+        let rebuilt = [system, ask, call, result, again, user("and now?")];
+        let prepared = store
+            .prepare(&session.id, &rebuilt, Some(&project), context_for())
+            .expect("the open round is closed and the turn goes out");
+        assert_eq!(turns::check_pairing(&prepared.messages), Ok(()));
+        let closed = &prepared.messages[prepared.messages.len() - 2];
+        assert_eq!(closed["role"], "tool");
+        assert!(
+            closed["content"].as_str().unwrap().contains("not run"),
+            "{closed}"
+        );
+        assert_eq!(prepared.messages.last().unwrap()["content"], "and now?");
     }
 
     /// A round whose results all arrived is history, not a debt: nothing is
@@ -6770,6 +6707,7 @@ mod tests {
                 turn.as_array().unwrap(),
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
+                    snapshot: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &context,
@@ -6800,6 +6738,7 @@ mod tests {
                 round.as_array().unwrap(),
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
+                    snapshot: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &context,
@@ -6817,6 +6756,7 @@ mod tests {
                 next.as_array().unwrap(),
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
+                    snapshot: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &context,
@@ -6950,6 +6890,7 @@ mod tests {
                 &[user(text)],
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
+                    snapshot: None,
                     overhead: 0,
                     context_length: 1_000_000,
                     facts: &facts(&project),
@@ -7078,6 +7019,7 @@ mod tests {
                 &[raw],
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
+                    snapshot: None,
                     overhead: 0,
                     context_length: 1_000_000,
                     facts: &facts(&project),

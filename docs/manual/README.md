@@ -17,6 +17,15 @@ by the desktop app.
 A fourth surface, an MCP/HTTP agent API over the running GUI, is described in
 [Drawing from an agent](agents.md).
 
+## How the code fits together
+
+![OpenCompose code structure: surfaces, the desktop backend with its one agent loop, the engine crates and the format crates](code-structure.svg)
+
+The desktop UI and agent clients reach the same backend. The AI panel and a
+headless `POST /ai/turn` run one agent loop in the backend; the panel only
+paints its events and answers its questions. The format crates at the bottom
+are permissively licensed so editors and tools can depend on them.
+
 ## Chapters
 
 1. [Getting started](getting-started.md) — build the CLI and the GUI, open the

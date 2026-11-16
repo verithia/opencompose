@@ -325,7 +325,7 @@ fn a_mutating_tool_publishes_the_file_and_a_batch_waits_for_its_commit() {
 }
 
 #[test]
-fn a_batch_a_reloaded_panel_left_open_is_recovered_and_the_file_saves() {
+fn a_batch_a_dead_turn_left_open_is_committed_and_the_file_saves() {
     let fixture = Fixture::new("agent-batch-recover");
     let baseline = fixture.state.lock_inner().dsl_source.clone();
     let path = fixture.path.clone();
@@ -338,13 +338,15 @@ fn a_batch_a_reloaded_panel_left_open_is_recovered_and_the_file_saves() {
     set_mute(&fixture.state, true);
     assert!(fixture.state.lock_inner().transaction.is_some());
 
-    // The panel mounts and recovers the batch the dead turn left open.
+    // The panel mounts and recovers the batch the dead turn left open: the
+    // applied edit stays, and the project file holds it.
     let recovered = crate::commands::recover_panel_batch(&fixture.state)
         .unwrap()
         .expect("the panel's orphan is recovered");
     assert!(fixture.state.lock_inner().transaction.is_none());
-    assert_eq!(recovered.dsl_source, baseline);
-    assert!(!recovered.project.tracks[0].mix.mute);
+    assert_ne!(recovered.snapshot.dsl_source, baseline);
+    assert!(recovered.snapshot.project.tracks[0].mix.mute);
+    assert_eq!(fixture.bytes(), recovered.snapshot.dsl_source.as_bytes());
 
     // Save works immediately, and a second recovery is a no-op.
     assert_eq!(
@@ -356,6 +358,30 @@ fn a_batch_a_reloaded_panel_left_open_is_recovered_and_the_file_saves() {
             .unwrap()
             .is_none()
     );
+}
+
+#[test]
+fn a_stranded_batch_that_cannot_be_saved_still_lets_the_next_turn_begin() {
+    let fixture = Fixture::new("agent-batch-stranded-unsaved");
+    {
+        let mut inner = fixture.state.lock_inner();
+        inner
+            .begin_transaction("turn".into(), "panel:s1".into())
+            .unwrap();
+    }
+    set_mute(&fixture.state, true);
+    // A directory where the project file belongs makes every write fail.
+    std::fs::remove_file(&fixture.path).unwrap();
+    std::fs::create_dir(&fixture.path).unwrap();
+
+    let next = crate::state::turn_batch_owner("turn-2", "s1");
+    let stranded =
+        crate::ai::agent_loop::host::begin_loop_batch(&fixture.state, "next".into(), next.clone())
+            .expect("the next turn's batch opens");
+    assert!(matches!(stranded, Some(Err(_))), "{stranded:?}");
+    assert_eq!(fixture.state.batch_owner().as_deref(), Some(next.as_str()));
+    let inner = fixture.state.lock_inner();
+    assert!(inner.project.tracks[0].mix.mute, "the stranded edit stays");
 }
 
 #[test]
