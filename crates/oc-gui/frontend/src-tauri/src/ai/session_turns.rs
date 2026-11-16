@@ -459,7 +459,6 @@ impl Store {
         if (rewrite && before > 0) || started.len() != before {
             spend_started(&dir, &started);
         }
-        let (view, _) = read_view(&dir)?;
         meta.tokens = super::estimate_tokens(&view);
         meta.updated = now();
         write_meta(&dir, &meta)?;
@@ -612,6 +611,22 @@ mod tests {
         let store = Store::new(root.path().join("sessions"));
         let meta = store.create(None, None, Some("Fixture"), None).unwrap();
         (root, store, meta.id)
+    }
+
+    #[test]
+    fn an_append_keeps_tokens_equal_to_the_reloaded_view() {
+        let (_root, store, id) = fixture();
+        store
+            .append_turn(&id, &[user("go"), round(&["a"])], None)
+            .unwrap();
+        let view = store.view(&id).unwrap();
+        let (_, meta) = store.find(&id).unwrap();
+        assert_eq!(meta.tokens, super::super::estimate_tokens(&view));
+
+        store.append_turn(&id, &[result("a")], None).unwrap();
+        let view = store.view(&id).unwrap();
+        let (_, meta) = store.find(&id).unwrap();
+        assert_eq!(meta.tokens, super::super::estimate_tokens(&view));
     }
 
     #[test]
