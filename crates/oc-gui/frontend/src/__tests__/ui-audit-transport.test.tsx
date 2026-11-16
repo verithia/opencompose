@@ -107,14 +107,14 @@ describe("transport defects", () => {
     const view = await mountSurface(() => <App />);
     fireEvent.keyDown(view.container, { key: "Z", ctrlKey: true, shiftKey: true });
     await settle();
-    expectInvoked("redo");
+    expectInvoked("history_redo");
   });
 
   it("undo still accepts an unshifted z", async () => {
     const view = await mountSurface(() => <App />);
     fireEvent.keyDown(view.container, { key: "z", ctrlKey: true });
     await settle();
-    expectInvoked("undo");
+    expectInvoked("history_undo");
   });
 
   it("disables Apply and explains an out-of-range meter instead of ignoring the click", async () => {

@@ -2,7 +2,7 @@
 use super::{AppStateInner, UndoEdit, UndoGestureToken, undo_gestures};
 use oc_dsl::ast::Project;
 
-use super::{GestureState, MAX_UNDO, UndoEntry, UndoStack, diff};
+use super::{GestureState, UndoEntry, UndoStack, diff, fresh_entry_id};
 use std::time::SystemTime;
 
 pub(super) struct StagedUndoPush {
@@ -77,6 +77,9 @@ impl UndoStack {
         {
             let inverse = diff::invert_patch(&old, new, &patch);
             StagedAction::Append(UndoEntry {
+                id: fresh_entry_id(),
+                author: edit.author.unwrap_or_else(crate::edit_history::acting),
+                subject: edit.subject,
                 forward: self.encode(&patch)?,
                 inverse: self.encode(&inverse)?,
                 label: edit.name,
@@ -116,13 +119,13 @@ impl UndoStack {
                 last.forward = forward;
                 last.inverse = inverse;
                 last.scopes.insert_all(scopes);
+                // The journal holds the entry as it was before the merge.
+                last.id = fresh_entry_id();
             }
             StagedAction::Append(entry) => {
                 self.undo.push(entry);
-                if self.undo.len() > MAX_UNDO {
-                    self.undo.remove(0);
-                }
-                self.redo.clear();
+                self.cap_unjournaled();
+                self.drop_redo();
                 self.merge_base = Some(staged.before);
                 if let Some(gesture) = &mut self.gesture {
                     gesture.push_started = true;

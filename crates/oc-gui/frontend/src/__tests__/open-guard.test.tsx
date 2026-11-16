@@ -41,7 +41,7 @@ function mockBackend(options: {
     if (cmd === "open_file") {
       return { ...makeSnapshot({ name: "Opened" }), file_path: NEW_PATH };
     }
-    if (cmd === "new_project") return makeSnapshot({ name: "Fresh" });
+    if (cmd === "new_project_at") return { ...makeSnapshot({ name: "Fresh" }), file_path: "/songs/Fresh.ocp" };
     if (cmd === "save_file") return options.save ? options.save() : { path: OLD_PATH, snapshot: null };
     if (cmd === "list_recoveries") return options.recoveries ? options.recoveries() : [];
     if (cmd === "set_loop_region") return { enabled: false, start_beats: null, end_beats: null };
@@ -58,7 +58,7 @@ function mockBackend(options: {
         undo_labels: [], redo_labels: [],
       };
     }
-    if (cmd === "get_undo_history") return [];
+    if (cmd === "history_page") return [];
     return makeSnapshot();
   });
 }
@@ -191,17 +191,32 @@ describe("the New guard", () => {
     expect(store.filePath()).toBe(OLD_PATH);
   });
 
-  it("creates the project after Don't Save", async () => {
+  it("creates the project after Don't Save, at the file the person picks", async () => {
     mockBackend({ project: dirtySnapshot });
     await store.initProject();
+    saveDialogMock.mockResolvedValueOnce("/songs/Fresh");
     const view = render(() => <Toolbar />);
 
     fireEvent.click(view.getByLabelText(i18n.t("toolbar.newProject")));
     await waitFor(() => expect(overlay(view.container)).toBeInTheDocument());
     fireEvent.click(view.container.querySelector(".quit-btn-discard")!);
 
-    await waitFor(() => expect(calls).toContain("new_project"));
+    await waitFor(() => expect(calls).toContain("new_project_at"));
+    expect(invokeMock).toHaveBeenCalledWith("new_project_at", { path: "/songs/Fresh.ocp" });
+    expect(saveDialogMock).toHaveBeenCalledWith(expect.objectContaining({ defaultPath: "/songs/untitled.ocp" }));
     expect(store.project.name).toBe("Fresh");
+    expect(calls).not.toContain("new_project");
+  });
+
+  it("creates nothing when the file picker is cancelled", async () => {
+    mockBackend({ project: cleanSnapshot });
+    await store.initProject();
+    const view = render(() => <Toolbar />);
+    fireEvent.click(view.getByLabelText(i18n.t("toolbar.newProject")));
+    await waitFor(() => expect(saveDialogMock).toHaveBeenCalled());
+    expect(calls).not.toContain("new_project_at");
+    expect(calls).not.toContain("new_project");
+    expect(store.filePath()).toBe(OLD_PATH);
   });
 
   it("does not create a project when Save fails", async () => {

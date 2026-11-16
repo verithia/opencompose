@@ -54,9 +54,12 @@ const [loading, setLoading] = createSignal(false);
 const [error, setError] = createSignal<string | null>(null);
 const {
   undoState,
-  undoHistory,
+  historyView,
+  historyNotice,
   refreshUndoState,
-  refreshUndoHistory,
+  refreshHistory,
+  loadOlderHistory,
+  watchHistory,
   undo,
   redo,
   restoreUndoLevel,
@@ -481,8 +484,19 @@ async function initProject() {
   finally { if (loadEpoch === projectLoadEpoch) setLoading(false); }
 }
 
-async function newProject(): Promise<boolean> {
-  return installNewProject(() => api.newProject());
+/**
+ * Give the open project another file. Its edit history moves with it, so the
+ * history the panel shows stays; only the path and the title change.
+ */
+async function moveProject(to: string): Promise<boolean> {
+  try {
+    applySnapshot(await api.moveProject(to));
+    void refreshUndoState();
+    return true;
+  } catch (e) {
+    setError(String(e));
+    return false;
+  }
 }
 
 /**
@@ -1720,7 +1734,8 @@ export const store = {
   setScrubPosition,
   cursorActive,
   undoState,
-  undoHistory,
+  historyView,
+  historyNotice,
   selectedTrackIndex,
   selectedTrack,
   selectedPresetName,
@@ -1740,8 +1755,8 @@ export const store = {
   ...createNotesActions(applyWithUndo, setError),
   initProject,
   initStartupProject,
-  newProject,
   newProjectAt,
+  moveProject,
   setProjectName,
   openFile,
   saveFile,
@@ -1767,7 +1782,10 @@ export const store = {
   undo,
   redo,
   restoreUndoLevel,
-  refreshUndoHistory,
+  refreshHistory,
+  refreshUndoState,
+  loadOlderHistory,
+  watchHistory,
   clearUndoHistory,
   addTrack,
   addInstrumentTrack,

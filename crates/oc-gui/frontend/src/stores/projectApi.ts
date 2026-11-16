@@ -9,19 +9,30 @@ import type { ParameterTargetStamp, Project, ProjectSnapshot, RecoveryEntry } fr
 import type { TransportSnapshot } from "../types/transport";
 import { startNativeAudio } from "./webAudioFocus";
 
-import type { UndoGestureToken, UndoHistoryEntry, UndoScope, UndoState } from "../types/undo";
-export type { UndoHistoryEntry, UndoScope, UndoState } from "../types/undo";
+import type {
+  HistoryClearOutcome, HistoryInfo, HistoryPage, HistoryStep, UndoGestureToken, UndoScope, UndoState,
+} from "../types/undo";
+export type {
+  HistoryAuthor, HistoryBrief, HistoryClearOutcome, HistoryInfo, HistoryPage, HistoryRefusal, HistoryStep,
+  UndoHistoryEntry, UndoScope, UndoState,
+} from "../types/undo";
 
 // ============================================================================
-// Undo / Redo (backend-managed patch-based stack)
+// Edit history (backend-managed, kept beside the project file)
 // ============================================================================
 
-export const undoProject = () => invoke<ProjectSnapshot>("undo");
-export const redoProject = () => invoke<ProjectSnapshot>("redo");
+export const historyUndo = () => invoke<HistoryStep<ProjectSnapshot>>("history_undo");
+export const historyRedo = () => invoke<HistoryStep<ProjectSnapshot>>("history_redo");
+/** Move the cursor so `level` entries are applied; 0 is before the oldest kept one. */
+export const historyJump = (level: number) =>
+  invoke<HistoryStep<ProjectSnapshot>>("history_jump", { level });
+/** Up to `limit` (at most 64) entries older than level `before`, newest first. */
+export const historyPage = (before?: number, limit?: number) =>
+  invoke<HistoryPage>("history_page", { before: before ?? null, limit: limit ?? null });
+export const historyInfo = () => invoke<HistoryInfo>("history_info");
+export const historyClearOlder = (keep: number) =>
+  invoke<HistoryClearOutcome>("history_clear_older", { keep });
 export const getUndoState = () => invoke<UndoState>("get_undo_state");
-export const getUndoHistory = () => invoke<UndoHistoryEntry[]>("get_undo_history");
-export const restoreUndoLevel = (level: number) =>
-  invoke<ProjectSnapshot>("restore_undo_level", { level });
 export const beginUndoGesture = (scope: UndoScope) =>
   invoke<void>("begin_undo_gesture", { scope });
 export const endUndoGesture = () => invoke<void>("end_undo_gesture");
@@ -39,7 +50,6 @@ export const endOwnedUndoGesture = (token: UndoGestureToken) =>
 // Project / DSL
 // ============================================================================
 
-export const newProject = () => invoke<ProjectSnapshot>("new_project");
 /** Create, name and write a project in one command. */
 export const newProjectAt = (path: string, template?: "starter") =>
   invoke<ProjectSnapshot>("new_project_at", template ? { path, template } : { path });
@@ -66,6 +76,8 @@ export const previewAccept = () => invoke<ProjectSnapshot>("preview_accept");
 export const previewCancel = () => invoke<ProjectSnapshot>("preview_cancel");
 export const previewState = () => invoke<PreviewState | null>("preview_state");
 export const openFile = (path: string) => invoke<ProjectSnapshot>("open_file", { path });
+/** Give the project another file; its history and backup move with it. */
+export const moveProject = (to: string) => invoke<ProjectSnapshot>("move_project", { to });
 export const saveFile = (path?: string) => invoke<{ path: string; snapshot: ProjectSnapshot | null }>("save_file", { path: path ?? null });
 /** The operator answered Don't Save: the document must not reach the file. */
 export const discardUnsaved = () => invoke<ProjectSnapshot>("discard_unsaved");

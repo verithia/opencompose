@@ -18,6 +18,7 @@ mod content_library;
 mod device_catalog;
 mod device_presets;
 mod diagnostics;
+mod edit_history;
 mod editor_helper;
 mod first_block;
 #[cfg(test)]
@@ -640,11 +641,14 @@ pub fn run_with_options(path: Option<String>, diag: DiagOptions) {
             commands::set_loop_region,
             commands::set_punch_region,
             // Undo / redo
-            commands::undo,
-            commands::redo,
+            commands::move_project,
+            commands::history_undo,
+            commands::history_redo,
+            commands::history_jump,
+            commands::history_page,
+            commands::history_info,
+            commands::history_clear_older,
             commands::get_undo_state,
-            commands::get_undo_history,
-            commands::restore_undo_level,
             commands::begin_undo_gesture,
             commands::end_undo_gesture,
             commands::begin_owned_undo_gesture,

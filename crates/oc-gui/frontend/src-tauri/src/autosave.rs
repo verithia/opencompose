@@ -791,6 +791,11 @@ pub fn spawn(app: tauri::AppHandle) {
                         log::warn!("autosave: {error}");
                     }
                 }
+                // The edit history beside the project catches up once a second.
+                let history_due = state.lock_inner().history_due();
+                if history_due {
+                    state.lock_inner().sync_history();
+                }
             }
         });
     if let Err(error) = spawned {

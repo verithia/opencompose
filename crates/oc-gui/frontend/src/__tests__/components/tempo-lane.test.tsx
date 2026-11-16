@@ -129,7 +129,7 @@ describe("tempo and meter lane", () => {
           undo_labels: [], redo_labels: [],
         };
       }
-      if (cmd === "get_undo_history") return [];
+      if (cmd === "history_page") return [];
       if (cmd === "set_tempo_map") return saved;
       return withMaps();
     });

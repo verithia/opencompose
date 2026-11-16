@@ -119,7 +119,7 @@ function backend(handlers: Record<string, Handler>, project: ProjectSnapshot) {
         redo_labels: [],
       };
     }
-    if (command === "get_undo_history") return [];
+    if (command === "history_page") return [];
     if (command === "get_transport_state" || command === "transport_stop") {
       return { playing: false, position_beats: 0, position_seconds: 0, duration_seconds: project.duration_seconds };
     }

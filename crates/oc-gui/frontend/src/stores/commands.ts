@@ -19,7 +19,9 @@ import { themeStore } from "./theme";
 import { uiScaleStore } from "./uiScale";
 import { openExportAudioDialog } from "./exportAudio";
 import { openMidiExportDialog, openMidiImportDialog } from "./midiUi";
-import { newProjectDialog, openAlignedStemsDialog, openFileDialog, saveAsFileDialog, saveFileDialog } from "./fileDialogs";
+import {
+  moveProjectDialog, newProjectDialog, openAlignedStemsDialog, openFileDialog, saveAsFileDialog, saveFileDialog,
+} from "./fileDialogs";
 import { EXPORT_DIAGNOSTICS_EVENT, RENAME_SELECTION_EVENT } from "./appEvents";
 import { overlayStore } from "./overlays";
 import { uniqueName } from "../utils/naming";
@@ -422,6 +424,15 @@ export const COMMANDS: readonly Command[] = [
     run: () => void saveAsFileDialog(),
   },
   {
+    id: "file.moveProject",
+    labelKey: "command.file.moveProject",
+    category: "file",
+    defaultBinding: null,
+    guard: "none",
+    enabled: () => !!store.filePath(),
+    run: () => void moveProjectDialog(),
+  },
+  {
     id: "file.exportAudio",
     labelKey: "command.file.exportAudio",
     category: "file",
@@ -681,6 +692,13 @@ export const COMMANDS: readonly Command[] = [
     // No default binding: the free keys are taken by editing actions.
     defaultBinding: null,
     run: () => panelStore.toggleBottom("samples"),
+  },
+  {
+    id: "view.toggleHistory",
+    labelKey: "command.view.toggleHistory",
+    category: "view",
+    defaultBinding: null,
+    run: () => panelStore.toggleBottom("history"),
   },
   {
     id: "view.toggleDsl",

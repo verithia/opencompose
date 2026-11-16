@@ -15,6 +15,8 @@ import {
   preferencesStore,
 } from "../../stores/preferencesBundle";
 import { useTooltip } from "../Tooltip";
+import { historyStorage } from "../../stores/historyStorage";
+import { sizeText } from "../../stores/historyText";
 
 /** The directory part of a path, for the "open folder" action. */
 function parentOf(path: string): string {
@@ -95,6 +97,7 @@ export function StoragePage(props: { onClose: () => void }) {
   onMount(() => {
     void storageStore.load();
     void storageStore.loadSessionAudio();
+    void historyStorage.refresh();
   });
 
   const report = () => storageStore.report();
@@ -234,6 +237,35 @@ export function StoragePage(props: { onClose: () => void }) {
                   </div>
                   <p class="preferences-hint">{i18n.t("preferences.storage.sessionAudioHint")}</p>
                 </div>
+              </div>
+
+              {/* Edit history: kept beside each project file; the open one's size. */}
+              <div class="preferences-block preferences-history">
+                <div class="preferences-block-head">
+                  <span class="preferences-fact-label">{i18n.t("preferences.storage.history")}</span>
+                  <span class="preferences-block-meta">
+                    <span class="preferences-size">
+                      {historyStorage.info()?.journaled ? sizeText(historyStorage.info()!.bytes) : ""}
+                    </span>
+                  </span>
+                </div>
+                <p class="preferences-hint">{i18n.t("preferences.storage.historyHint")}</p>
+                <label class="preferences-field">
+                  <span class="preferences-field-label">{i18n.t("preferences.storage.historyNotice")}</span>
+                  <input
+                    type="number"
+                    min="1"
+                    step="1"
+                    class="preferences-history-notice"
+                    value={Math.round(historyStorage.noticeBytes() / 1024 ** 2)}
+                    onChange={(event) => {
+                      const megabytes = Number(event.currentTarget.value);
+                      if (Number.isFinite(megabytes) && megabytes >= 1) {
+                        historyStorage.setNoticeBytes(Math.round(megabytes) * 1024 ** 2);
+                      }
+                    }}
+                  />
+                </label>
               </div>
 
               {/* Conversations: one group per workspace, one row per session. */}

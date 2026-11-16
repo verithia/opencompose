@@ -101,14 +101,15 @@ function scopePath(): string | null {
 /**
  * True while the start surface stands in for the timeline: nothing is open yet.
  *
- * A chosen folder keeps it until a project is opened, so its list of projects —
- * and the way to create one — stays reachable. Before the backend answers there
- * is nothing to decide with, so the timeline keeps the area.
+ * It stays until a project is opened or created, with or without a chosen
+ * folder, so the folder's projects and the way to create one stay reachable.
+ * Before the backend answers there is nothing to decide with, so the timeline
+ * keeps the area.
  */
 function startSurface(): boolean {
-  if (!asked()) return false;
-  const current = view();
-  if (!current || current.detached) return false;
+  if (!asked() || !view()) return false;
+  // Every project has a file, because its edit history is kept beside it, so
+  // with no file open there is no document to edit: only ways to get one.
   return !store.filePath();
 }
 
@@ -204,12 +205,13 @@ function freeProjectName(projects: WorkspaceProject[]): string {
 async function newProjectHere(template?: "starter"): Promise<boolean> {
   const current = view();
   const dir = current?.path;
-  if (!current || !dir || busy() || store.filePath()) return false;
+  if (busy() || store.filePath()) return false;
   if (store.dirty()) { setError(i18n.t("dialog.unsavedTitle")); return false; }
   setBusy(true);
   setError(null);
   try {
-    const defaultPath = `${dir.replace(/[\\/]+$/, "")}/${freeProjectName(current.projects)}`;
+    const name = freeProjectName(current?.projects ?? []);
+    const defaultPath = dir ? `${dir.replace(/[\\/]+$/, "")}/${name}` : name;
     const { save: pick } = await import("@tauri-apps/plugin-dialog");
     const picked = await pick({
       title: i18n.t(template ? "workspace.starterProject" : "workspace.newProject"),

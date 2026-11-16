@@ -74,7 +74,7 @@ beforeAll(async () => {
     if (cmd === "get_undo_state") {
       return { can_undo: false, can_redo: false, undo_label: null, redo_label: null, undo_labels: [], redo_labels: [] };
     }
-    if (cmd === "get_undo_history") return [];
+    if (cmd === "history_page") return [];
     if (cmd === "list_recoveries") return [];
     if (cmd === "scan_plugins") return [];
     if (cmd === "workspace_current") {

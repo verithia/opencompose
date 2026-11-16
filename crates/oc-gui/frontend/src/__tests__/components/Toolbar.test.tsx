@@ -460,6 +460,7 @@ describe("Toolbar", () => {
     expect(items).toEqual([
       "Switch workspace…",
       "Save As…Cmd/Ctrl+Shift+S",
+      "Move Project…",
       "Recover autosave…",
       "Import MIDI…",
       "Import Aligned Stems…",

@@ -221,9 +221,9 @@ describe("tempo and meter persistence", () => {
     invokeMock.mockResolvedValueOnce(saved);
     await store.setTempoMap([point]);
 
-    invokeMock.mockResolvedValueOnce(baseSnapshot()); // undo restores the empty map
+    invokeMock.mockResolvedValueOnce({ status: "applied", snapshot: baseSnapshot() }); // undo restores the empty map
     await store.undo();
-    expectInvoked("undo");
+    expectInvoked("history_undo");
     expect(store.project.properties.tempo_map).toEqual([]);
   });
 

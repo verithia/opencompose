@@ -8,7 +8,7 @@ use tauri::{Manager, State};
 use oc_dsl::ast::{self, *};
 
 use crate::state::{AppState, AppStateInner};
-use crate::state::{UndoEdit, UndoHistoryEntry, UndoScope};
+use crate::state::{UndoEdit, UndoScope};
 
 use super::arrangement::warm_audio_clip_peaks;
 use super::patch::clone_track_preset;
@@ -90,6 +90,10 @@ pub(crate) fn create_project_in(
         .and_then(Path::file_stem)
         .map(|stem| stem.to_string_lossy().into_owned())
         .unwrap_or_else(|| "Untitled".to_string());
+    if let Some(path) = path.as_deref() {
+        // A new project replaces whatever file was there, and its history too.
+        crate::edit_history::discard_beside(path);
+    }
     replace_project_with(inner, new_project_document(name), path.clone(), false, None)?;
     if let Some(path) = path.as_deref() {
         // A directory that refuses the file must not leave the document claiming
@@ -97,6 +101,8 @@ pub(crate) fn create_project_in(
         if let Err(error) = write_new_project_file(inner, path) {
             inner.file_path = None;
             inner.audio.resource_root = None;
+            inner.undo.clear();
+            crate::edit_history::discard_beside(path);
             return Err(error);
         }
     }
@@ -140,6 +146,7 @@ pub(crate) fn create_starter_project_in(
         return Err(format!("Cannot write starter {}: {error}", path.display()));
     }
     drop(file);
+    crate::edit_history::discard_beside(&path);
     match replace_project_with(inner, project, Some(path.clone()), false, None) {
         Ok(snapshot) => Ok(snapshot),
         Err(error) => {
@@ -433,11 +440,15 @@ fn replace_project_with(
     inner.exit_ready = false;
     inner.autosave_at = None;
     inner.autosave_digest = 0;
+    // The outgoing document's history is complete on disk before it goes.
+    inner.sync_history();
     inner.undo.clear();
+    inner.history_synced = None;
     inner.transaction = None;
     // A replacement is a new document; a preview of the old one cannot survive.
     inner.preview = None;
     install_document_with(inner, project, dsl_source, preload);
+    inner.attach_history();
     Ok(snapshot(inner))
 }
 
@@ -524,6 +535,35 @@ pub(crate) struct SaveRequest {
     pub(crate) save_path: PathBuf,
     pub(crate) revision: u64,
     relocated: bool,
+    /// The history was copied beside the new path, for a save to another file.
+    history_copied: bool,
+}
+
+impl SaveRequest {
+    /// Whether the save gives the project another file.
+    fn changes_path(&self) -> bool {
+        self.old_path.as_deref() != Some(self.save_path.as_path())
+    }
+
+    /// Copy the history to the new file's side, so Save As keeps it. Runs
+    /// without the document lock; the history was synced at capture.
+    fn copy_history(&mut self) {
+        if !self.changes_path() || !crate::edit_history::persistence_enabled() {
+            return;
+        }
+        let Some(old) = self.old_path.as_deref() else {
+            return;
+        };
+        let from = crate::edit_history::journal::dir_for(old);
+        if !from.is_dir() {
+            return;
+        }
+        let to = crate::edit_history::journal::dir_for(&self.save_path);
+        match crate::edit_history::journal::copy_dir(&from, &to) {
+            Ok(()) => self.history_copied = true,
+            Err(error) => log::warn!("[history] Save As could not copy the history: {error}"),
+        }
+    }
 }
 
 /// What a save wrote, and whether playback has to follow it.
@@ -543,7 +583,7 @@ pub(crate) fn snapshot_for_save(
     path: Option<String>,
     state: &AppState,
 ) -> Result<SaveRequest, String> {
-    let inner = state.lock_inner();
+    let mut inner = state.lock_inner();
     // A preview is not the document: never write either side to disk.
     inner.refuse_in_preview()?;
     // Never persist a half-applied agent batch.
@@ -562,6 +602,8 @@ pub(crate) fn snapshot_for_save(
     {
         return Err("Stop recording before saving the project in another folder.".into());
     }
+    // A Save As copies the history from disk, so the disk must be current.
+    inner.sync_history();
     Ok(SaveRequest {
         project: inner.project.clone(),
         dsl_source: inner.dsl_source.clone(),
@@ -569,6 +611,7 @@ pub(crate) fn snapshot_for_save(
         save_path,
         revision: inner.revision,
         relocated: false,
+        history_copied: false,
     })
 }
 
@@ -621,6 +664,9 @@ pub(crate) fn publish_save(state: &AppState, request: &SaveRequest) -> Option<bo
     inner.dirty = false;
     inner.autosave_at = None;
     inner.autosave_digest = 0;
+    if request.changes_path() {
+        inner.rehome_history(request.history_copied);
+    }
     let root = request.save_path.parent().map(Path::to_path_buf);
     let repointed =
         request.relocated || needs_repoint(inner.audio.resource_root.as_deref(), root.as_deref());
@@ -648,6 +694,7 @@ pub(crate) fn save_document(path: Option<String>, state: &AppState) -> Result<Sa
     // identity, so capture it with the snapshot.
     let session = state.lock_inner().session_id.clone();
     write_save(&mut request)?;
+    request.copy_history();
     // A clean save makes the recovery copies obsolete, including any written
     // while the project had no path yet.
     if let Err(error) = crate::autosave::clear_saved(
@@ -712,6 +759,118 @@ fn write_new_project_file(inner: &mut AppStateInner, path: &Path) -> Result<(), 
     inner.audio.mark_dirty();
     inner.dirty = false;
     Ok(())
+}
+
+/// File > Move Project: give the project another file, taking its history
+/// (and its backup) along, and leave nothing at the old place.
+///
+/// In the same folder the files are renamed. Across folders the project is
+/// saved at the destination the way Save As saves it (its media is copied
+/// beside it), the history is copied, and only then are the old files
+/// removed. Any failure leaves the project where it was.
+#[tauri::command]
+pub async fn move_project(to: String, app: tauri::AppHandle) -> Result<ProjectSnapshot, String> {
+    let handle = app.clone();
+    let (snapshot, repointed) = run_blocking(move || {
+        let state = handle.state::<AppState>();
+        move_project_inner(&state, PathBuf::from(to))
+    })
+    .await?;
+    if repointed {
+        warm_preload_later(&app, snapshot.revision);
+    }
+    Ok(snapshot)
+}
+
+/// The move without the app handle; returns the snapshot and whether
+/// playback has to follow the media to another folder.
+pub(crate) fn move_project_inner(
+    state: &AppState,
+    to: PathBuf,
+) -> Result<(ProjectSnapshot, bool), String> {
+    use crate::edit_history::journal::dir_for;
+    let from = {
+        let inner = state.lock_inner();
+        inner.refuse_in_preview()?;
+        if inner.transaction.is_some() {
+            return Err(
+                "commit or roll back the active transaction before moving the project".into(),
+            );
+        }
+        if has_active_take(&inner) {
+            return Err("Stop recording before moving the project.".into());
+        }
+        inner
+            .file_path
+            .clone()
+            .ok_or("Save the project before moving it.")?
+    };
+    if to == from {
+        return Ok((snapshot(&state.lock_inner()), false));
+    }
+    if to.exists() || dir_for(&to).exists() {
+        return Err(format!(
+            "{} already exists; choose a name that is free.",
+            to.display()
+        ));
+    }
+    let backup = crate::project_persist::backup_path(&from);
+    if from.parent() == to.parent() {
+        let mut inner = state.lock_inner();
+        inner.sync_history();
+        std::fs::rename(&from, &to).map_err(|error| format!("Cannot move the project: {error}"))?;
+        let history = dir_for(&from);
+        if history.exists()
+            && let Err(error) = std::fs::rename(&history, dir_for(&to))
+        {
+            let _ = std::fs::rename(&to, &from);
+            return Err(format!("Cannot move the project's history: {error}"));
+        }
+        if backup.exists() {
+            let _ = std::fs::rename(&backup, crate::project_persist::backup_path(&to));
+        }
+        inner.file_path = Some(to);
+        inner.rehome_history(true);
+        return Ok((snapshot(&inner), false));
+    }
+    let mut request = snapshot_for_save(Some(to.display().to_string()), state)?;
+    let undo_new_files = |request: &SaveRequest| {
+        let _ = std::fs::remove_file(&request.save_path);
+        let _ = std::fs::remove_dir_all(dir_for(&request.save_path));
+    };
+    if let Err(error) = write_save(&mut request) {
+        undo_new_files(&request);
+        return Err(error);
+    }
+    request.copy_history();
+    if dir_for(&from).exists() && !request.history_copied {
+        undo_new_files(&request);
+        return Err("Cannot copy the project's history to the new folder.".into());
+    }
+    let Some(repointed) = publish_save(state, &request) else {
+        undo_new_files(&request);
+        return Err("The project changed during the move; try again.".into());
+    };
+    for (old, what) in [(&from, "file"), (&backup, "backup")] {
+        if let Err(error) = std::fs::remove_file(old)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            log::warn!(
+                "move: the old project {what} stays at {}: {error}",
+                old.display()
+            );
+        }
+    }
+    if let Err(error) = std::fs::remove_dir_all(dir_for(&from))
+        && error.kind() != std::io::ErrorKind::NotFound
+    {
+        log::warn!(
+            "move: the old history stays beside {}: {error}",
+            from.display()
+        );
+    }
+    let inner = state.lock_inner();
+    Ok((snapshot(&inner), repointed))
 }
 
 #[tauri::command]
@@ -832,7 +991,7 @@ pub fn add_track(
     resync_with_undo(
         &mut inner,
         old_project,
-        UndoEdit::new("add track", UndoScope::Project),
+        UndoEdit::new("add track", UndoScope::Project).about(name.clone()),
     )?;
     Ok(snapshot(&inner))
 }
@@ -986,7 +1145,7 @@ pub fn add_track_checked(
     resync_with_undo(
         inner,
         old_project,
-        UndoEdit::new("add track", UndoScope::Project),
+        UndoEdit::new("add track", UndoScope::Project).about(name),
     )?;
     Ok(snapshot(inner))
 }
@@ -1109,11 +1268,11 @@ pub fn remove_track(track_index: usize, state: State<AppState>) -> Result<Projec
     if track_index >= inner.project.tracks.len() {
         return Err(format!("Track {} out of range", track_index));
     }
-    inner.project.tracks.remove(track_index);
+    let removed = inner.project.tracks.remove(track_index);
     resync_with_undo(
         &mut inner,
         old_project,
-        UndoEdit::new("remove track", UndoScope::Project),
+        UndoEdit::new("remove track", UndoScope::Project).about(removed.name),
     )?;
     Ok(snapshot(&inner))
 }
@@ -1128,7 +1287,7 @@ pub fn set_tempo(tempo: f64, state: State<AppState>) -> Result<ProjectSnapshot, 
     resync_with_undo(
         &mut inner,
         old_project,
-        UndoEdit::new("tempo", UndoScope::Transport),
+        UndoEdit::new("tempo", UndoScope::Transport).about(format!("{tempo} BPM")),
     )?;
     Ok(snapshot(&inner))
 }
@@ -1404,11 +1563,11 @@ fn remap_gain_automation(
 pub fn set_project_name(name: String, state: State<AppState>) -> Result<ProjectSnapshot, String> {
     let mut inner = state.lock_inner();
     let old_project = inner.project.clone();
-    inner.project.name = Some(name);
+    inner.project.name = Some(name.clone());
     resync_with_undo(
         &mut inner,
         old_project,
-        UndoEdit::new("project name", UndoScope::Project),
+        UndoEdit::new("project name", UndoScope::Project).about(name),
     )?;
     Ok(snapshot(&inner))
 }
@@ -1423,27 +1582,196 @@ pub struct UndoState {
     pub redo_labels: Vec<String>,
 }
 
-#[tauri::command]
+/// Undo for the agent's `undo` tool, which may step back inside its own batch.
 pub fn undo(state: State<AppState>) -> Result<ProjectSnapshot, String> {
     let mut inner = state.lock_inner();
     let label = inner.undo_step()?;
     log::info!("Undo: {}", label);
+    inner.sync_history();
     Ok(snapshot(&inner))
 }
 
-#[tauri::command]
+/// Redo for the agent's `redo` tool.
 pub fn redo(state: State<AppState>) -> Result<ProjectSnapshot, String> {
     let mut inner = state.lock_inner();
-    inner.refuse_in_preview()?;
-    if inner.transaction.is_some() {
-        return Err("commit or roll back the active transaction before redo".into());
-    }
-    let mut project = inner.project.clone();
-    let label = inner.undo.redo(&mut project)?;
-    inner.project = project;
+    let label = inner.redo_step()?;
     log::info!("Redo: {}", label);
-    inner.resync_after_history();
+    inner.sync_history();
     Ok(snapshot(&inner))
+}
+
+/// Why a history step from the GUI did not run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HistoryRefusal {
+    /// An agent turn is running or holds a batch on this project.
+    AgentEditing,
+    NothingToUndo,
+    NothingToRedo,
+}
+
+/// The answer to an undo, a redo or a jump from the GUI.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum HistoryStep {
+    Applied {
+        snapshot: Box<ProjectSnapshot>,
+        /// The entry the step undid or redid; absent for a jump.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        brief: Option<crate::edit_history::Brief>,
+    },
+    Refused {
+        reason: HistoryRefusal,
+    },
+}
+
+/// The person's history steps wait while an agent edits the project: a turn
+/// that is running, or a batch that is open, owns the project's history.
+fn agent_editing(inner: &AppStateInner, requests: &crate::ai_service::Requests) -> bool {
+    inner.transaction.is_some() || requests.active().ok().flatten().is_some()
+}
+
+#[derive(Clone, Copy)]
+enum StepKind {
+    Undo,
+    Redo,
+}
+
+fn history_step(
+    state: &AppState,
+    requests: &crate::ai_service::Requests,
+    kind: StepKind,
+) -> Result<HistoryStep, String> {
+    let mut inner = state.lock_inner();
+    if agent_editing(&inner, requests) {
+        return Ok(HistoryStep::Refused {
+            reason: HistoryRefusal::AgentEditing,
+        });
+    }
+    let brief = match kind {
+        StepKind::Undo if !inner.undo.can_undo() => {
+            return Ok(HistoryStep::Refused {
+                reason: HistoryRefusal::NothingToUndo,
+            });
+        }
+        StepKind::Redo if !inner.undo.can_redo() => {
+            return Ok(HistoryStep::Refused {
+                reason: HistoryRefusal::NothingToRedo,
+            });
+        }
+        StepKind::Undo => {
+            inner.undo_step()?;
+            inner.undo.undone_brief()
+        }
+        StepKind::Redo => {
+            inner.redo_step()?;
+            inner.undo.redone_brief()
+        }
+    };
+    inner.sync_history();
+    Ok(HistoryStep::Applied {
+        snapshot: Box::new(snapshot(&inner)),
+        brief,
+    })
+}
+
+/// Ctrl/Cmd+Z from the GUI.
+#[tauri::command]
+pub fn history_undo(
+    state: State<AppState>,
+    requests: State<crate::ai_service::Requests>,
+) -> Result<HistoryStep, String> {
+    history_step(&state, &requests, StepKind::Undo)
+}
+
+/// Ctrl/Cmd+Shift+Z from the GUI.
+#[tauri::command]
+pub fn history_redo(
+    state: State<AppState>,
+    requests: State<crate::ai_service::Requests>,
+) -> Result<HistoryStep, String> {
+    history_step(&state, &requests, StepKind::Redo)
+}
+
+/// A click on a History entry: move the cursor so `level` entries are applied.
+#[tauri::command]
+pub fn history_jump(
+    level: usize,
+    state: State<AppState>,
+    requests: State<crate::ai_service::Requests>,
+) -> Result<HistoryStep, String> {
+    let mut inner = state.lock_inner();
+    if agent_editing(&inner, &requests) {
+        return Ok(HistoryStep::Refused {
+            reason: HistoryRefusal::AgentEditing,
+        });
+    }
+    inner.restore_level(level)?;
+    inner.sync_history();
+    Ok(HistoryStep::Applied {
+        snapshot: Box::new(snapshot(&inner)),
+        brief: None,
+    })
+}
+
+/// One page of the history, newest first: up to `limit` (at most 64) entries
+/// below level `before`, or the newest ones.
+#[tauri::command]
+pub fn history_page(
+    before: Option<usize>,
+    limit: Option<usize>,
+    state: State<AppState>,
+) -> Result<crate::state::HistoryPage, String> {
+    let mut inner = state.lock_inner();
+    inner.sync_history();
+    inner
+        .undo
+        .history_page(before, limit.unwrap_or(crate::state::HISTORY_PAGE))
+}
+
+/// Where the history is kept and the space it occupies.
+#[tauri::command]
+pub fn history_info(state: State<AppState>) -> crate::state::HistoryInfo {
+    let mut inner = state.lock_inner();
+    inner.sync_history();
+    inner.undo.history_info()
+}
+
+/// Drop all but the newest `keep` entries (never one that is undone).
+#[tauri::command]
+pub fn history_clear_older(
+    keep: usize,
+    state: State<AppState>,
+    requests: State<crate::ai_service::Requests>,
+) -> Result<HistoryClearOutcome, String> {
+    let mut inner = state.lock_inner();
+    if agent_editing(&inner, &requests) {
+        return Ok(HistoryClearOutcome::Refused {
+            reason: HistoryRefusal::AgentEditing,
+        });
+    }
+    inner.sync_history();
+    let before = inner.undo.history_info().bytes;
+    let dropped = inner.undo.clear_older(keep)?;
+    let info = inner.undo.history_info();
+    Ok(HistoryClearOutcome::Cleared {
+        dropped,
+        freed: before.saturating_sub(info.bytes),
+        info,
+    })
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum HistoryClearOutcome {
+    Cleared {
+        dropped: usize,
+        freed: u64,
+        info: crate::state::HistoryInfo,
+    },
+    Refused {
+        reason: HistoryRefusal,
+    },
 }
 
 #[tauri::command]
@@ -1459,28 +1787,6 @@ pub fn get_undo_state(state: State<AppState>) -> UndoState {
         undo_labels,
         redo_labels,
     }
-}
-
-/// Ordered undo history for the panel and the agent surface.
-#[tauri::command]
-pub fn get_undo_history(state: State<AppState>) -> Vec<UndoHistoryEntry> {
-    let inner = state.lock_inner();
-    inner.undo.history()
-}
-
-/// Jump the history cursor to `level` applied edits (0 = before the first edit).
-#[tauri::command]
-pub fn restore_undo_level(level: usize, state: State<AppState>) -> Result<ProjectSnapshot, String> {
-    let mut inner = state.lock_inner();
-    inner.refuse_in_preview()?;
-    if inner.transaction.is_some() {
-        return Err("commit or roll back the active transaction before restoring a level".into());
-    }
-    let mut project = inner.project.clone();
-    inner.undo.restore_undo_level(level, &mut project)?;
-    inner.project = project;
-    inner.resync_after_history();
-    Ok(snapshot(&inner))
 }
 
 /// Open a gesture: every edit until `end_undo_gesture` merges into one entry.
@@ -1532,6 +1838,78 @@ pub fn end_owned_undo_gesture(
     state: State<AppState>,
 ) -> bool {
     state.lock_inner().undo.end_owned_gesture(&token)
+}
+
+#[cfg(test)]
+mod history_step_tests {
+    use super::*;
+
+    fn edited() -> AppState {
+        let state = AppState::new();
+        {
+            let mut inner = state.lock_inner();
+            let old = inner.project.clone();
+            inner.project.properties.tempo = 133.0;
+            resync_with_undo(
+                &mut inner,
+                old,
+                UndoEdit::new("tempo", UndoScope::Transport).about("133 BPM"),
+            )
+            .unwrap();
+        }
+        state
+    }
+
+    fn refused(step: HistoryStep) -> Option<HistoryRefusal> {
+        match step {
+            HistoryStep::Refused { reason } => Some(reason),
+            HistoryStep::Applied { .. } => None,
+        }
+    }
+
+    #[test]
+    fn the_persons_undo_waits_while_an_agent_batch_is_open() {
+        let state = edited();
+        let requests = crate::ai_service::Requests::default();
+        state
+            .begin_transaction("turn".into(), crate::state::panel_batch_owner(Some("s")))
+            .unwrap();
+        for kind in [StepKind::Undo, StepKind::Redo] {
+            let step = history_step(&state, &requests, kind).unwrap();
+            assert_eq!(refused(step), Some(HistoryRefusal::AgentEditing));
+        }
+        assert_eq!(state.lock_inner().project.properties.tempo, 133.0);
+        state.rollback_transaction().unwrap();
+        let step = history_step(&state, &requests, StepKind::Undo).unwrap();
+        let HistoryStep::Applied { brief, snapshot } = step else {
+            panic!("the undo runs once the batch is gone");
+        };
+        assert_eq!(snapshot.project.properties.tempo, 120.0);
+        let brief = brief.unwrap();
+        assert_eq!(brief.label, "tempo");
+        assert_eq!(brief.subject.as_deref(), Some("133 BPM"));
+        assert_eq!(brief.author, crate::edit_history::Author::Person);
+    }
+
+    #[test]
+    fn the_persons_undo_waits_while_a_turn_runs_without_a_batch() {
+        let state = edited();
+        let requests = crate::ai_service::Requests::default();
+        let _claim = requests.claim("turn-1").unwrap().unwrap();
+        let step = history_step(&state, &requests, StepKind::Undo).unwrap();
+        assert_eq!(refused(step), Some(HistoryRefusal::AgentEditing));
+        assert_eq!(state.lock_inner().project.properties.tempo, 133.0);
+    }
+
+    #[test]
+    fn an_empty_history_answers_with_a_typed_refusal() {
+        let state = AppState::new();
+        let requests = crate::ai_service::Requests::default();
+        let undo = history_step(&state, &requests, StepKind::Undo).unwrap();
+        assert_eq!(refused(undo), Some(HistoryRefusal::NothingToUndo));
+        let redo = history_step(&state, &requests, StepKind::Redo).unwrap();
+        assert_eq!(refused(redo), Some(HistoryRefusal::NothingToRedo));
+    }
 }
 
 #[cfg(test)]

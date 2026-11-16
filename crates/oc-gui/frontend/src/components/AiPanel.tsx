@@ -1,4 +1,5 @@
 import { composerSizer } from "../ai/composerSize";
+import { rememberSessionTitles } from "../stores/sessionTitles";
 import { AiComposer } from "./AiComposer";
 import { ProposalReviewBar } from "./ProposalReviewBar";
 import { followTranscript } from "../ai/transcriptScroll";
@@ -533,6 +534,7 @@ export function AiPanel(props: { onClose?: () => void }) {
       const next = sessionList(await aiApi.listSessions());
       if (disposed || epoch !== scopeEpoch || request !== listRequest) return false;
       setSessions(next);
+      rememberSessionTitles(next);
       return true;
     } catch (e) {
       if (!disposed && epoch === scopeEpoch && request === listRequest) setSessionError(errorMessage(e));

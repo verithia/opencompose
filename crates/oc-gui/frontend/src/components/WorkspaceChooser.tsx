@@ -172,7 +172,7 @@ export function WorkspaceChooser(props: { onClose?: () => void }) {
           onClick={() => void workspaceStore.openProjectFile()}
         >{i18n.t("workspace.openProject")}</button>
         {/* Only while nothing is open: creating a project replaces the open one. */}
-        <Show when={workspaceStore.startSurface() && current()}>
+        <Show when={workspaceStore.startSurface()}>
           <button
             type="button"
             class="workspace-action workspace-action-new-project"

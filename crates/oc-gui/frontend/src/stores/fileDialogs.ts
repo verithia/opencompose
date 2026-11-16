@@ -2,6 +2,7 @@
 import { store } from "./project";
 import { importAlignedStems } from "./api";
 import { i18n } from "./i18n";
+import { workspaceStore } from "./workspace";
 
 let stemImportPending = false;
 
@@ -51,10 +52,53 @@ export async function openFileDialog() {
   if (path) void store.openFile(path as string);
 }
 
-/** File ▸ New and the toolbar's New: the same guard as Open. */
+/** `untitled.ocp` beside the open project, or in the workspace folder. */
+function newProjectDefaultPath(): string {
+  const open = store.filePath();
+  const dir = open ? open.replace(/[\\/][^\\/]*$/, "") : workspaceStore.scopePath();
+  return dir ? `${dir.replace(/[\\/]+$/, "")}/untitled.ocp` : "untitled.ocp";
+}
+
+/** The picked path with the `.ocp` extension a project file needs. */
+function projectPath(picked: string): string {
+  return /\.ocp$/i.test(picked) ? picked : `${picked}.ocp`;
+}
+
+/**
+ * File > New and the toolbar's New: the same guard as Open, then the file's
+ * place. Every project has a file from the start, because its edit history is
+ * kept beside it.
+ */
 export async function newProjectDialog() {
   if (!await store.confirmDiscardChanges()) return;
-  await store.newProject();
+  try {
+    const { save } = await import("@tauri-apps/plugin-dialog");
+    const picked = await save({
+      title: i18n.t("workspace.newProject"),
+      defaultPath: newProjectDefaultPath(),
+      filters: [{ name: "OpenCompose", extensions: ["ocp"] }],
+    });
+    if (picked) await store.newProjectAt(projectPath(picked));
+  } catch (error) {
+    store.setError(String(error));
+  }
+}
+
+/** File > Move Project: another file for the project, history included. */
+export async function moveProjectDialog() {
+  const current = store.filePath();
+  if (!current) return;
+  try {
+    const { save } = await import("@tauri-apps/plugin-dialog");
+    const picked = await save({
+      title: i18n.t("command.file.moveProject"),
+      defaultPath: current,
+      filters: [{ name: "OpenCompose", extensions: ["ocp"] }],
+    });
+    if (picked) await store.moveProject(projectPath(picked));
+  } catch (error) {
+    store.setError(String(error));
+  }
 }
 
 export async function saveFileDialog() {

@@ -41,7 +41,9 @@ import { CodeIcon, PlugIcon, SparkIcon, StoreIcon } from "./components/icons";
 import { MidiImportDialog } from "./components/MidiImportDialog";
 import { MidiExportDialog } from "./components/MidiExportDialog";
 import { ExportAudioDialog } from "./components/ExportAudioDialog";
-import { UndoHistoryPanel } from "./components/UndoHistoryPanel";
+import { HistoryPanel } from "./components/HistoryPanel";
+import { briefText, sizeText } from "./stores/historyText";
+import { historyStorage } from "./stores/historyStorage";
 import { WorkspaceChooser, WorkspaceChooserDialog } from "./components/WorkspaceChooser";
 import { LanguagePrompt } from "./components/LanguagePrompt";
 import { Onboarding, Splash } from "./components/Onboarding";
@@ -80,7 +82,6 @@ export default function App() {
   const [quitBusy, setQuitBusy] = createSignal(false);
   // Where the request came from: a window close leaves the window, a quit
   // leaves the process.
-  const [historyOpen, setHistoryOpen] = createSignal(false);
   /** What the render thread is preparing, polled independently of playback. */
   const [buildProgress, setBuildProgress] = createSignal<BuildSnapshot | null>(null);
   /** The project name the operator is editing; the webview has no prompt. */
@@ -176,6 +177,8 @@ export default function App() {
     createEffect(on(() => store.projectRevision, () => {
       buildPollFastUntil = performance.now() + 8000;
     }));
+    // Another project has another history beside it; its size decides the notice.
+    createEffect(on(() => store.filePath(), () => void historyStorage.refresh()));
     onCleanup(mountNativeMenu({
       blocked: () => dialogOpen() || onboardingStore.pending() || !languageChosen() || quitPrompt(),
       onQuit: () => void askToQuit(),
@@ -536,6 +539,27 @@ export default function App() {
                 <Show when={!store.filePath()}>
                   <span class="status-chip">{i18n.t("status.unsaved")}</span>
                 </Show>
+                <Show when={store.historyNotice()} keyed>
+                  {(current) => {
+                    return (
+                      <span class="status-chip history-notice" data-history-notice={current.kind} role="status">
+                        {current.kind === "agent_editing"
+                          ? i18n.t("history.agentEditing")
+                          : i18n.t(current.kind === "undid" ? "history.undid" : "history.redid", {
+                            brief: briefText(current.brief),
+                          })}
+                      </span>
+                    );
+                  }}
+                </Show>
+                <Show when={historyStorage.overNotice()}>
+                  <button
+                    class="status-chip history-size-notice"
+                    onClick={() => panelStore.openBottom("history")}
+                  >
+                    {i18n.t("history.sizeNotice", { size: sizeText(historyStorage.info()?.bytes ?? 0) })}
+                  </button>
+                </Show>
               </Show>
             </div>
             <div
@@ -552,8 +576,8 @@ export default function App() {
               <button
                 class="status-chip undo-history-toggle"
                 aria-label={i18n.t("history.title")}
-                aria-expanded={historyOpen()}
-                onClick={() => setHistoryOpen((open) => !open)}
+                aria-expanded={panelStore.bottomMode() === "history"}
+                onClick={() => panelStore.toggleBottom("history")}
               >{i18n.t("history.title")}</button>
               <span class="status-transport-time">
                 {formatTime(displaySeconds())}
@@ -638,7 +662,6 @@ export default function App() {
         </For>
       </div>
 
-      <UndoHistoryPanel open={historyOpen()} onClose={() => setHistoryOpen(false)} />
 
       {/* The chooser, reopened from the File menu or the AI panel's scope line */}
       <Show when={!languageChosen()}>
@@ -745,6 +768,7 @@ function BottomPanelContent(props: { mode: BottomMode }) {
       <Match when={props.mode === "mixer"}><Mixer /></Match>
       <Match when={props.mode === "drumpads"}><DrumKitPanel /></Match>
       <Match when={props.mode === "samples"}><SampleMarketPanel /></Match>
+      <Match when={props.mode === "history"}><HistoryPanel /></Match>
       <Match when={props.mode === "detail"}><DetailView /></Match>
     </Switch>
   );
@@ -775,6 +799,7 @@ function AnyPanelContent(props: { id: PanelId }) {
       <Match when={props.id === "mixer"}><Mixer /></Match>
       <Match when={props.id === "drumpads"}><DrumKitPanel /></Match>
       <Match when={props.id === "samples"}><SampleMarketPanel /></Match>
+      <Match when={props.id === "history"}><HistoryPanel /></Match>
       <Match when={props.id === "detail"}><DetailView /></Match>
       <Match when={props.id === "dsl"}><DslEditor /></Match>
       <Match when={props.id === "plugins"}><PluginBrowser /></Match>

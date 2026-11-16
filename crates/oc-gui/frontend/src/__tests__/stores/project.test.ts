@@ -386,14 +386,15 @@ describe("document identity", () => {
   });
 });
 
-describe("newProject", () => {
-  it("resets to empty project and clears undo", async () => {
-    const snap = makeSnapshot({ name: "New" });
+describe("newProjectAt", () => {
+  it("creates the project at its file and clears undo", async () => {
+    const snap = { ...makeSnapshot({ name: "New" }), file_path: "/songs/New.ocp" };
     invokeMock.mockResolvedValueOnce(snap);
-    await store.newProject();
+    await store.newProjectAt("/songs/New.ocp");
     expect(store.project.name).toBe("New");
+    expect(store.filePath()).toBe("/songs/New.ocp");
     expect(store.selectedTrackIndex()).toBe(null);
-    expectInvoked("new_project");
+    expectInvoked("new_project_at", { path: "/songs/New.ocp" });
   });
 });
 
@@ -981,7 +982,7 @@ describe("presets", () => {
       const admission = ownership.route(command, args);
       if (admission) return admission.value;
       if (ownership.mutation(command, args) === "set_preset_params") return snap;
-      if (command === "get_undo_history") return [];
+      if (command === "history_page") return [];
       throw new Error(`Unexpected preset batch IPC ${command}`);
     });
 
@@ -1053,12 +1054,12 @@ describe("undo / redo", () => {
     expect(store.project.tracks[0].phrases[0].events.length).toBe(1);
 
     // Undo — restores empty project
-    invokeMock.mockResolvedValueOnce(makeSnapshot());
+    invokeMock.mockResolvedValueOnce({ status: "applied", snapshot: makeSnapshot() });
     await store.undo();
     expect(store.project.tracks.length).toBe(0);
 
     // Redo — back to 1 note
-    invokeMock.mockResolvedValueOnce(afterAdd);
+    invokeMock.mockResolvedValueOnce({ status: "applied", snapshot: afterAdd });
     await store.redo();
     expect(store.project.tracks[0].phrases[0].events.length).toBe(1);
   });
@@ -1079,12 +1080,12 @@ describe("undo / redo", () => {
     await store.addNote(0, 0, "D", "", 4, "Quarter", "MF", 1);
 
     // Undo: back to snap1
-    invokeMock.mockResolvedValueOnce(snap1);
+    invokeMock.mockResolvedValueOnce({ status: "applied", snapshot: snap1 });
     await store.undo();
     expect(store.project.tracks[0].phrases[0].events.length).toBe(1);
 
     // Undo: back to empty
-    invokeMock.mockResolvedValueOnce(makeSnapshot());
+    invokeMock.mockResolvedValueOnce({ status: "applied", snapshot: makeSnapshot() });
     await store.undo();
     expect(store.project.tracks.length).toBe(0);
   });
@@ -1657,7 +1658,7 @@ describe("mixer routing edits", () => {
 
     const commands = invokeMock.mock.calls
       .map(([cmd]) => cmd)
-      .filter((cmd) => cmd !== "get_undo_state" && cmd !== "get_undo_history");
+      .filter((cmd) => cmd !== "get_undo_state" && cmd !== "history_page");
     expect(commands).toEqual([
       "set_send", "set_send", "set_send_target", "add_send", "remove_send",
     ]);
@@ -1669,14 +1670,14 @@ describe("mixer routing edits", () => {
     await store.addSend(0, "glue", 0.25);
     expect(store.project.tracks[0].mix.sends).toHaveLength(2);
 
-    invokeMock.mockResolvedValueOnce(before());
+    invokeMock.mockResolvedValueOnce({ status: "applied", snapshot: before() });
     await store.undo();
-    expectInvoked("undo");
+    expectInvoked("history_undo");
     expect(store.project.tracks[0].mix.sends).toHaveLength(1);
 
-    invokeMock.mockResolvedValueOnce(added);
+    invokeMock.mockResolvedValueOnce({ status: "applied", snapshot: added });
     await store.redo();
-    expectInvoked("redo");
+    expectInvoked("history_redo");
     expect(store.project.tracks[0].mix.sends).toHaveLength(2);
   });
 });
@@ -1899,7 +1900,7 @@ describe("parameter target stamp admission", () => {
     const snapshot = { ...makeSnapshot(), parameter_target_stamp: original };
     invokeMock.mockImplementation(async (command: string, raw?: unknown) => {
       if (command === "get_project") return snapshot;
-      if (command === "get_undo_history") return [];
+      if (command === "history_page") return [];
       if (command === "get_transport_state") return TRANSPORT_STOPPED();
       if (command === "begin_parameter_gesture") {
         const args = raw as { expectedStamp: string };

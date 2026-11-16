@@ -1,7 +1,26 @@
 import { createSignal } from "solid-js";
 import type { ProjectSnapshot } from "../types/project";
+import type { HistoryBrief, HistoryStep, UndoHistoryEntry } from "../types/undo";
 import * as api from "./api";
 import { log } from "./log";
+
+/** How long the footer keeps an undo's line. */
+export const HISTORY_NOTICE_MS = 4000;
+
+/** What the footer says after a history step. */
+export type HistoryNotice =
+  | { kind: "undid" | "redid"; brief: HistoryBrief }
+  | { kind: "agent_editing" };
+
+/** The pages of the history the History tab has loaded, newest first. */
+export interface HistoryView {
+  entries: UndoHistoryEntry[];
+  total: number;
+  applied: number;
+  journaled: boolean;
+}
+
+const EMPTY_VIEW: HistoryView = { entries: [], total: 0, applied: 0, journaled: false };
 
 export function createUndoStore(
   applySnapshot: (snapshot: ProjectSnapshot) => void,
@@ -14,19 +33,29 @@ export function createUndoStore(
     undoLabels: string[]; redoLabels: string[];
   }>({ canUndo: false, canRedo: false, undoLabel: null, redoLabel: null, undoLabels: [], redoLabels: [] });
 
-  /** Ordered backend history, oldest first; `applied` levels are undoable. */
-  const [undoHistory, setUndoHistory] = createSignal<api.UndoHistoryEntry[]>([]);
+  const [historyView, setHistoryView] = createSignal<HistoryView>(EMPTY_VIEW);
+  const [notice, setNotice] = createSignal<HistoryNotice | null>(null);
+  let noticeTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Open History views; with none, an edit reads no history page. */
+  let watchers = 0;
 
   let stateRequest = 0;
   let historyRequest = 0;
   const ownsContext = (owner: string | number) => owner === context();
 
+  function showNotice(next: HistoryNotice) {
+    setNotice(next);
+    if (noticeTimer !== undefined) clearTimeout(noticeTimer);
+    noticeTimer = setTimeout(() => { setNotice(null); noticeTimer = undefined; }, HISTORY_NOTICE_MS);
+  }
+
+  /** Read the newest page, replacing what was loaded. */
   async function readHistory(request: number, owner: string | number) {
     if (request !== historyRequest || !ownsContext(owner)) return;
     try {
-      const history = await api.getUndoHistory();
-      if (request === historyRequest && ownsContext(owner)) {
-        setUndoHistory(Array.isArray(history) ? history : []);
+      const page = await api.historyPage();
+      if (request === historyRequest && ownsContext(owner) && page && Array.isArray(page.entries)) {
+        setHistoryView({ ...page });
       }
     } catch { /* ignore */ }
   }
@@ -47,51 +76,58 @@ export function createUndoStore(
         redoLabels: state.redo_labels,
       });
     } catch { /* ignore */ }
-    if (request === stateRequest && ownsContext(owner)) await readHistory(history, owner);
+    if (watchers > 0 && request === stateRequest && ownsContext(owner)) await readHistory(history, owner);
   }
 
-  async function refreshUndoHistory() {
+  async function refreshHistory() {
     await readHistory(++historyRequest, context());
   }
 
-  async function undo() {
+  /** Append the page older than the oldest loaded entry. */
+  async function loadOlderHistory() {
+    const current = historyView();
+    const oldest = current.entries.at(-1);
+    if (!oldest || oldest.index <= 1) return;
+    const request = historyRequest;
     const owner = context();
     try {
-      const snap = await api.undoProject();
-      if (!ownsContext(owner)) return;
-      applySnapshot(snap);
-      log.info("undo", `Undo: ${undoState().undoLabel ?? "unknown"}`);
-      await refreshUndoState();
+      const page = await api.historyPage(oldest.index - 1);
+      if (request !== historyRequest || !ownsContext(owner) || historyView() !== current) return;
+      setHistoryView({ ...page, entries: [...current.entries, ...page.entries] });
     } catch (e) {
-      if (!ownsContext(owner)) return;
-      const msg = String(e);
-      if (!msg.includes("Nothing to undo")) setError(msg);
+      if (ownsContext(owner)) setError(String(e));
     }
   }
 
-  async function redo() {
-    const owner = context();
-    try {
-      const snap = await api.redoProject();
-      if (!ownsContext(owner)) return;
-      applySnapshot(snap);
-      log.info("undo", `Redo: ${undoState().redoLabel ?? "unknown"}`);
-      await refreshUndoState();
-    } catch (e) {
-      if (!ownsContext(owner)) return;
-      const msg = String(e);
-      if (!msg.includes("Nothing to redo")) setError(msg);
-    }
+  /** A History view is open; returns the call that closes it. */
+  function watchHistory(): () => void {
+    watchers += 1;
+    void refreshHistory();
+    let closed = false;
+    return () => {
+      if (closed) return;
+      closed = true;
+      watchers -= 1;
+    };
   }
 
-  /** Jump to an absolute history level; level 0 is the state before any edit. */
-  async function restoreUndoLevel(level: number) {
+  async function step(
+    run: () => Promise<HistoryStep<ProjectSnapshot>>,
+    kind: "undid" | "redid" | "jumped",
+  ) {
     const owner = context();
     try {
-      const snap = await api.restoreUndoLevel(level);
+      const answer = await run();
       if (!ownsContext(owner)) return;
-      applySnapshot(snap);
-      log.info("undo", `Restore level ${level}`);
+      if (answer.status === "refused") {
+        if (answer.reason === "agent_editing") showNotice({ kind: "agent_editing" });
+        return;
+      }
+      applySnapshot(answer.snapshot);
+      if (kind !== "jumped" && answer.brief) {
+        showNotice({ kind, brief: answer.brief });
+        log.info("undo", `${kind === "undid" ? "Undo" : "Redo"}: ${answer.brief.label}`);
+      }
       await refreshUndoState();
     } catch (e) {
       if (!ownsContext(owner)) return;
@@ -99,17 +135,25 @@ export function createUndoStore(
     }
   }
 
+  const undo = () => step(api.historyUndo, "undid");
+  const redo = () => step(api.historyRedo, "redid");
+  /** Jump so `level` entries are applied; 0 is before the oldest kept one. */
+  const restoreUndoLevel = (level: number) => step(() => api.historyJump(level), "jumped");
+
   function clearUndoHistory() {
     setUndoState({ canUndo: false, canRedo: false, undoLabel: null, redoLabel: null, undoLabels: [], redoLabels: [] });
-    setUndoHistory([]);
+    setHistoryView(EMPTY_VIEW);
     void refreshUndoState();
   }
 
   return {
     undoState,
-    undoHistory,
+    historyView,
+    historyNotice: notice,
     refreshUndoState,
-    refreshUndoHistory,
+    refreshHistory,
+    loadOlderHistory,
+    watchHistory,
     undo,
     redo,
     restoreUndoLevel,

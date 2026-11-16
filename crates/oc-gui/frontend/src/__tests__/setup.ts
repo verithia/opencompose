@@ -290,7 +290,7 @@ vi.mock("@tauri-apps/api/core", () => {
     if (cmd === "ai_batch_recover") return null;
     if (cmd === "list_recoveries") return [];
     if (cmd === "discard_recovery") return undefined;
-    if (cmd === "get_undo_history") return [];
+    if (cmd === "history_page") return [];
     if (cmd === "begin_undo_gesture" || cmd === "end_undo_gesture") return undefined;
     if (cmd === "begin_owned_undo_gesture" || cmd === "begin_parameter_gesture") {
       if (cmd === "begin_parameter_gesture" && (_args as { expectedStamp?: unknown } | undefined)?.expectedStamp !== TEST_PARAMETER_TARGET_STAMP) {

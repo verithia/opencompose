@@ -115,7 +115,7 @@ beforeAll(async () => {
       case "get_project": return makeSnapshot();
       case "get_transport_state": return TRANSPORT_STOPPED();
       case "get_undo_state": return { can_undo: false, can_redo: false, undo_label: null, redo_label: null, undo_labels: [], redo_labels: [] };
-      case "get_undo_history":
+      case "history_page":
       case "scan_plugins":
       case "sessions_list":
       case "ai_toolsets":

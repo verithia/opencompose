@@ -24,7 +24,9 @@ holds no audio code; every audio decision is a command into this backend.
 |---|---|
 | `PlaybackState` | `Playing`, `Paused`, `Stopped`; the transport's single source of truth. |
 | `StreamingPlayback` | The render thread: block production, ring buffer and seek generation. |
-| `UndoStack` | Project history, with patch coalescing. |
+| `UndoStack` | Project history, with patch coalescing: a window of entries around the cursor. |
+| `edit_history::journal::Journal` | The whole history beside the project file (`<name>.ocp.hist/`); the stack syncs its window to it at settle points and pages entries from it. |
+| `edit_history::Author` | Who made an entry: the person, a conversation's agent, an external client, or a change outside the app. |
 | `ToolDef`, `Panel` | One agent tool and its panel policy; the registry both surfaces read. |
 | `SilenceReport`, `RenderGrid` (see `render_grid`) | What the grid draws for a range. |
 

@@ -1307,7 +1307,9 @@ fn dispatch_with_policy(
     let tool = tool.replace('.', "_");
     let state = state(app);
     guard_mutation(&state, &tool, args, caller)?;
+    let acting = crate::edit_history::act_as(crate::edit_history::Author::from_caller(caller));
     let mut result = dispatch_tool(app, &tool, args, caller, install_policy)?;
+    drop(acting);
     // A call that published a document leaves the project file stale, and the
     // file is the durable record the next process reads. A write that failed is
     // put into the result, so the model does not report a save that did not happen.
@@ -2381,9 +2383,16 @@ fn presets_duplicate_json(state: &AppState, args: &Value) -> Result<Value, Strin
 
 /// `undo_history`: the stack as a list; the cursor never moves.
 pub fn undo_history(state: &AppState) -> Result<Value, String> {
-    let entries = state.lock_inner().undo.history();
-    let applied = entries.iter().filter(|entry| entry.applied).count();
-    let redoable = entries.len() - applied;
+    // The window around the cursor; older entries stay in the history on disk.
+    let (entries, applied, total) = {
+        let inner = state.lock_inner();
+        (
+            inner.undo.history(),
+            inner.undo.applied_level(),
+            inner.undo.total_levels(),
+        )
+    };
+    let redoable = total - applied;
     Ok(json!({
         "entries": serde_json::to_value(&entries).map_err(|error| error.to_string())?,
         "applied": applied,

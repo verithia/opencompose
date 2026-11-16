@@ -47,10 +47,40 @@ that has no lane yet gets one on the first recorded point. The button stays
 enabled while the transport is stopped because writing at the playhead is
 useful — the tooltip states what a stopped gesture does.
 
-The toolbar also holds the file actions (new, open, save, save as), MIDI import
-and export, offline render to WAV, stems export, the theme family/variant
-pickers, and the preferences popover (output device, live MIDI input,
-diagnostics, shortcut list).
+The toolbar also holds the file actions (new, open, save, save as, move
+project), MIDI import and export, offline render to WAV, stems export, the theme
+family/variant pickers, and the preferences popover (output device, live MIDI
+input, diagnostics, shortcut list).
+
+Every project has a file from the start: **New** asks where to put it and writes
+it there, and with no project open the start surface offers to open or create
+one. **Move Project** gives the open project another file and takes its edit
+history and backup along; nothing stays at the old place.
+
+## Edit history
+
+Each project keeps its edit history beside its file, in `<name>.ocp.hist/`, so
+undo reaches edits from earlier sessions. Every entry records who made it: you,
+the agent of a named conversation, an external client, or a change made to the
+file outside OpenCompose (when the file does not match the history, opening
+it adds one entry that bridges the two, so older entries still undo correctly).
+
+- **Mod+Z** and **Mod+Shift+Z** step through the history. The status bar names
+  what the step took back or reapplied, for example
+  `Undid: Tempo: 128 BPM (Agent - Drum ideas)`.
+- While an agent turn is running or holds a batch, undo waits: the status bar
+  says `Agent is editing the project, cannot undo.`
+- The **History** tab in the bottom panel lists the entries newest first, 64 at a
+  time, with **Load older entries** for the rest. Clicking an entry moves the
+  project to the state after it; undone entries stay listed until a new edit
+  replaces them.
+- The tab shows the space the history uses. **Clear older history** keeps the
+  newest entries you choose and drops the rest after asking; undo then stops at
+  the oldest kept entry. Entries you undid are never cleared. When a history
+  passes the size set in **Preferences > Storage** (1 GB by default), the tab and
+  the status bar offer the clearing; nothing is cleared without you.
+- **Save As** copies the history to the new file, and **New** over an existing
+  file starts a new history there.
 
 ## Timeline
 

@@ -349,12 +349,12 @@ pub fn rename_track(
         .tracks
         .get_mut(track_index)
         .ok_or_else(|| format!("Track {} out of range", track_index))?;
-    track.name = new_name;
+    track.name = new_name.clone();
     // Track names affect DSL output but not audio — just resync for consistency
     resync_with_undo(
         &mut inner,
         old_project,
-        UndoEdit::new("track rename", UndoScope::Project),
+        UndoEdit::new("track rename", UndoScope::Project).about(new_name),
     )?;
     Ok(snapshot(&inner))
 }
@@ -1139,7 +1139,7 @@ pub fn add_bus(
     resync_with_undo(
         &mut inner,
         old_project,
-        UndoEdit::new("add bus", UndoScope::MixerRouting),
+        UndoEdit::new("add bus", UndoScope::MixerRouting).about(name),
     )?;
     Ok(snapshot(&inner))
 }

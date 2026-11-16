@@ -20,7 +20,7 @@ beforeEach(async () => {
     if (command === "get_project") return snapshot(10);
     if (command === "get_transport_state") return TRANSPORT_STOPPED();
     if (command === "get_undo_state") return { can_undo: true, can_redo: false, undo_label: "External edit", undo_labels: [], redo_labels: [] };
-    if (command === "get_undo_history") return [];
+    if (command === "history_page") return [];
     return undefined;
   });
   await store.initProject();
@@ -38,10 +38,10 @@ describe("external project synchronization", () => {
     emit({ snapshot: snapshot(11, "Edited"), replaces_document: false });
     expect(store.project.name).toBe("Edited");
     expect(store.projectRevision).toBe(11);
-    await vi.waitFor(() => expect(calls("get_undo_history")).toHaveLength(1));
-    expect(calls("get_undo_state")).toHaveLength(1);
+    await vi.waitFor(() => expect(calls("get_undo_state")).toHaveLength(1));
     expect(store.undoState().undoLabel).toBe("External edit");
-    expect(invokeMock.mock.calls.map(([name]) => name)).toEqual(["get_undo_state", "get_undo_history"]);
+    // No History view is open, so no history page is read.
+    expect(invokeMock.mock.calls.map(([name]) => name)).toEqual(["get_undo_state"]);
   });
 
   it("ignores stale and duplicate snapshots from the same document", async () => {

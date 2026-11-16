@@ -91,7 +91,7 @@ export function installAuditBackend(
         return { ...TRANSPORT_STOPPED(), position_beats: Number(typed.beat ?? 0) };
       case "get_undo_state":
         return { can_undo: true, can_redo: true, undo_label: null, redo_label: null, undo_labels: [], redo_labels: [] };
-      case "get_undo_history": return [];
+      case "history_page": return [];
       case "get_midi_config":
         return { input: null, monitor: false, active: false, audition_active: false, error: null };
       case "list_midi_ports": return { supported: true, inputs: [], outputs: [], error: null };
