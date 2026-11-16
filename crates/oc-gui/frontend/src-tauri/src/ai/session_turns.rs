@@ -426,6 +426,7 @@ impl Store {
         let mut archived = messages.to_vec();
         let settings = crate::gui_settings::load().session_audio;
         super::persist_auditions(&self.root, &mut archived, &settings)?;
+        super::tool_results::archive(&dir, &mut archived)?;
         let mut added: Vec<Value> = archived.iter().filter_map(saved_message).collect();
         if added.is_empty() {
             return Ok(added);

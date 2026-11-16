@@ -470,6 +470,15 @@ impl Host for AppHost {
             .await?
     }
 
+    async fn stored_result(&self, call: &str) -> Option<String> {
+        let (id, call) = (self.session_id.clone(), call.to_owned());
+        self.blocking(move |_| Store::config().tool_result(&id, &call))
+            .await
+            .ok()?
+            .ok()
+            .flatten()
+    }
+
     async fn record_steering(&self, messages: &[Value]) -> Result<Vec<Value>, String> {
         let (id, incarnation, messages) = (
             self.session_id.clone(),

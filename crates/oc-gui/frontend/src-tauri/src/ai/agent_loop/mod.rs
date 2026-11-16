@@ -23,6 +23,7 @@ pub mod results;
 pub mod steering;
 pub mod wire;
 
+use crate::ai::sessions::tool_results::FULL_RESULT;
 use crate::ai::sessions::turns::APPLICATION_RESULT_PREFIX;
 use crate::ai::sessions::{MessageKind, SessionPermission, message_meta};
 use crate::ai_service::AiError;
@@ -294,6 +295,11 @@ pub trait Host: Sync {
     /// and returns their saved form: that is what the next request sends.
     fn record(&self, messages: &[Value])
     -> impl Future<Output = Result<Vec<Value>, String>> + Send;
+    /// The full result behind the newest saved preview of `call`, read from
+    /// the saved conversation when the in-memory cache does not hold it.
+    fn stored_result(&self, _call: &str) -> impl Future<Output = Option<String>> + Send {
+        std::future::ready(None)
+    }
     /// Saves admitted human steering messages with their rewind snapshot.
     fn record_steering(
         &self,
@@ -696,10 +702,16 @@ impl<H: Host> Turn<'_, H> {
             }
         };
         if name == READ_TOOLCALL {
+            let id = args.get("id").and_then(Value::as_str).unwrap_or_default();
+            let scope = &self.spec.scope;
+            let cached = results::with_results(|store| store.full(scope, id).is_some());
+            if !cached && let Some(text) = self.host.stored_result(id).await {
+                results::with_results(|store| store.remember(scope, id, text));
+            }
             let page = results::with_results(|store| {
                 store.page(
-                    &self.spec.scope,
-                    args.get("id").and_then(Value::as_str).unwrap_or_default(),
+                    scope,
+                    id,
                     args.get("offset").and_then(Value::as_f64),
                     args.get("limit").and_then(Value::as_f64),
                 )
@@ -984,6 +996,7 @@ impl<H: Host> Turn<'_, H> {
         } else {
             wire::without_inline_audio(&result)
         };
+        let mut full = None;
         let content = if name == READ_TOOLCALL {
             shaped.to_string()
         } else {
@@ -994,13 +1007,20 @@ impl<H: Host> Turn<'_, H> {
             };
             let (content, keep) = wire::bounded(&shaped, failed, &call.id);
             if keep {
+                let text = shaped.to_string();
                 let scope = self.spec.scope.clone();
-                results::with_results(|store| store.remember(&scope, &call.id, shaped.to_string()));
+                results::with_results(|store| store.remember(&scope, &call.id, text.clone()));
+                full = Some(text);
             }
             content
         };
-        self.push(vec![result_message(call, native, &content)])
-            .await?;
+        let mut message = result_message(call, native, &content);
+        if let Some(text) = full {
+            // The append saves this text beside the conversation and keeps
+            // only its hash on the row, so a restart still reads it.
+            message[FULL_RESULT] = json!(text);
+        }
+        self.push(vec![message]).await?;
         if rolled_back {
             deliveries.push(host_notice(
                 "Host transaction rollback: every project edit this turn made before the rollback was reverted. Earlier successful results in this turn describe intermediate states, not the current project.",

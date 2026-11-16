@@ -19,6 +19,12 @@
 //! (`O_APPEND`, one write); the file is rewritten only when a compaction or the
 //! size cap replaces the whole conversation. Limits are stated with the
 //! constants below and enforced in `append`.
+//!
+//! A tool result too large for its message row is written to
+//! `results/<sha256>.txt`; the row keeps `result_sha` in place of the text. The
+//! sweep removes a result file no saved line of its session names, a fork
+//! copies the files its inherited rows name, and a read validates the hash and
+//! bounds the bytes it loads.
 #[path = "session_artifacts.rs"]
 mod artifacts;
 #[cfg(test)]
@@ -28,6 +34,8 @@ mod compaction_tests;
 pub(super) mod lookup;
 #[path = "session_message.rs"]
 mod message_protocol;
+#[path = "session_results.rs"]
+pub mod tool_results;
 #[path = "session_turns.rs"]
 pub mod turns;
 #[path = "session_versions.rs"]
@@ -647,6 +655,7 @@ impl Store {
                 if let Some(parent) = &parent {
                     let (parent_dir, _) = self.find(&parent.id)?;
                     versions::copy_references(&parent_dir, &dir, &inherited)?;
+                    tool_results::copy_references(&parent_dir, &dir, &inherited)?;
                 }
                 write_records(&dir, &[turn_record(&at, inherited)])?;
             }
@@ -847,6 +856,11 @@ impl Store {
         sweep(&clip_dir(&self.root), &referenced, &mut removed);
         sweep(&render_dir(&self.root), &referenced, &mut removed);
         for dir in version_dirs {
+            // The version folder's parent is the session, whose own lines own
+            // its results.
+            if let Some(session) = dir.parent() {
+                removed += tool_results::collect(session);
+            }
             sweep(&dir, &referenced, &mut removed);
         }
         removed
@@ -890,6 +904,19 @@ impl Store {
         let (mut messages, compactions, _) = read_original(&dir)?;
         mark_missing_media(&mut messages);
         Ok((messages, compactions))
+    }
+
+    /// The full result behind the newest saved preview of `call` in this
+    /// session, read from disk; `None` when no saved row keeps one.
+    pub fn tool_result(&self, id: &str, call: &str) -> Result<Option<String>, String> {
+        if call.is_empty() || call.len() > 256 {
+            return Ok(None);
+        }
+        let (dir, _) = self.find(id)?;
+        match tool_results::newest_for(&dir, call)? {
+            Some(hash) => tool_results::read(&dir, &hash),
+            None => Ok(None),
+        }
     }
 
     pub fn view(&self, id: &str) -> Result<Vec<Value>, String> {
@@ -2034,6 +2061,14 @@ fn saved_message(message: &Value) -> Option<Value> {
         .filter(|path| !path.is_empty() && path.chars().count() <= MAX_PROJECT_PATH)
     {
         saved.insert("dsl_project".into(), json!(project));
+    }
+    // The file holding the full result behind a truncated preview. The sweep
+    // reads the hash as that file's owner, so dropping it here deletes it.
+    if let Some(sha) = message[tool_results::RESULT_SHA]
+        .as_str()
+        .filter(|sha| tool_results::is_hash(sha))
+    {
+        saved.insert(tool_results::RESULT_SHA.into(), json!(sha));
     }
     // The signed reasoning of an assistant turn is provider state: a restored
     // conversation that dropped it would replay an unsigned tool round.
@@ -3259,7 +3294,10 @@ fn append_records_under(dir: &Path, records: &[Record], cap: u64) -> Result<(), 
         truncated: Some(true),
         messages,
     };
-    write_records(dir, &[trim])
+    write_records(dir, &[trim])?;
+    // The rows the trim dropped were the only owners of their results.
+    tool_results::collect(dir);
+    Ok(())
 }
 
 /// The newest messages of a conversation that fit in `budget` bytes, in order.

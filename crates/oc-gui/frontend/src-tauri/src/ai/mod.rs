@@ -857,6 +857,8 @@ pub(crate) fn is_local_message_field(key: &str) -> bool {
             | "source_render_unavailable"
             | "dsl_sha"
             | "dsl_project"
+            | "result_sha"
+            | "full_result"
     )
 }
 

@@ -1468,10 +1468,16 @@ pub fn ai_turn_questions(request_id: String) -> Vec<ai::agent_loop::ApprovalRequ
     ai::agent_loop::host::questions(&request_id)
 }
 
-/// The full result behind a truncated preview, while this process still keeps it.
+/// The full result behind a truncated preview: the in-memory cache first, else
+/// the copy saved beside the conversation.
 #[tauri::command]
 pub fn ai_tool_result(session_id: String, call_id: String) -> Option<String> {
-    ai::agent_loop::results::with_results(|store| store.full(&session_id, &call_id))
+    full_tool_result(&ai::sessions::Store::config(), &session_id, &call_id)
+}
+
+fn full_tool_result(sessions: &ai::sessions::Store, session: &str, call: &str) -> Option<String> {
+    ai::agent_loop::results::with_results(|store| store.full(session, call))
+        .or_else(|| sessions.tool_result(session, call).ok().flatten())
 }
 
 #[tauri::command]
@@ -3314,5 +3320,42 @@ mod headless_request_tests {
         );
         drop(replacement);
         assert!(requests.active().unwrap().is_none());
+    }
+}
+
+#[cfg(test)]
+mod tool_result_tests {
+    use super::*;
+    use crate::ai::sessions::Store;
+
+    #[test]
+    fn a_full_result_the_cache_lost_is_read_from_the_saved_conversation() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::new(root.path().join("sessions"));
+        let id = store.create(None, None, Some("Fixture"), None).unwrap().id;
+        let call = "call-lost";
+        let rows = [
+            json!({"role": "user", "content": "go"}),
+            json!({"role": "assistant", "content": null, "tool_calls": [{
+                "id": call, "type": "function",
+                "function": {"name": "project_get", "arguments": "{}"}
+            }]}),
+            json!({
+                "role": "tool", "tool_call_id": call,
+                "content": json!({"result_truncated": true, "preview": "x"}).to_string(),
+                crate::ai::sessions::tool_results::FULL_RESULT: "THE-FULL-TEXT",
+            }),
+        ];
+        store.append_turn(&id, &rows, None).unwrap();
+        // A fresh process: the in-memory cache has nothing for this session.
+        assert_eq!(
+            ai::agent_loop::results::with_results(|cache| cache.full(&id, call)),
+            None
+        );
+        assert_eq!(
+            full_tool_result(&store, &id, call).as_deref(),
+            Some("THE-FULL-TEXT")
+        );
+        assert_eq!(full_tool_result(&store, &id, "call-missing"), None);
     }
 }

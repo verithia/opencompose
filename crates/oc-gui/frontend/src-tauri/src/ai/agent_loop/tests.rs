@@ -252,6 +252,10 @@ impl Host for Fake {
         self.store.append_turn(&self.session, messages, None)
     }
 
+    async fn stored_result(&self, call: &str) -> Option<String> {
+        self.store.tool_result(&self.session, call).ok().flatten()
+    }
+
     async fn started(&self, call_id: &str) -> Result<(), String> {
         self.store.mark_started(&self.session, call_id)
     }
@@ -646,6 +650,30 @@ fn a_large_result_is_paged_only_inside_its_conversation() {
     assert_eq!(results[0].1["result_truncated"], true);
     assert_eq!(results[1].1["text"], "xxxxx");
     assert!(results::with_results(|store| store.page("elsewhere", "big", None, None)).is_err());
+}
+
+#[test]
+fn a_large_result_is_read_from_the_saved_conversation_once_the_cache_lost_it() {
+    let page = json!({"role":"assistant","content":null,"tool_calls":[
+        {"id":"p","type":"function","function":{"name":"read_toolcall","arguments":"{\"id\":\"big\",\"offset\":10,\"limit\":5}"}}
+    ]});
+    let done = json!({"role":"assistant","content":"done"});
+    let fake = Fake::new(vec![
+        round(&[("big", "big_read")]),
+        done.clone(),
+        page,
+        done,
+    ]);
+    block_on(fake.run(SessionPermission::Write));
+    let saved = fake.saved();
+    let row = saved.iter().find(|m| m["tool_call_id"] == "big").unwrap();
+    assert!(row["result_sha"].is_string());
+    assert!(row.get("full_result").is_none());
+    // A restart, or eviction by other conversations, empties the cache.
+    results::with_results(|store| store.forget(&fake.session));
+    block_on(fake.run(SessionPermission::Write));
+    let results = fake.results();
+    assert_eq!(results.last().unwrap().1["text"], "xxxxx", "{results:?}");
 }
 
 #[test]
