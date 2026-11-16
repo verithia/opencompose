@@ -20,6 +20,7 @@ audition_render                          Audio or model result field, not an age
 content_library                          Rust module, not an agent tool
 device_buffer_frames                     Audio or model result field, not an agent tool
 device_cpu                               Integration-test module, not an agent tool
+edit_history                             Rust module, not an agent tool
 effects_ceiling_margin_db                Audio or model result field, not an agent tool
 effects_max_gain_reduction_db            Audio or model result field, not an agent tool
 import_summary                           Audio or model result field, not an agent tool
@@ -57,6 +58,7 @@ plugin_store                             Rust module, not an agent tool
 plugin_store_install                     Tauri command, not a published agent tool
 preset_output_pairs                      Tauri command, not a published agent tool
 preset_output_ports                      Tauri command, not a published agent tool
+project_data                             Rust module, not an agent tool
 project_extent                           Rust module, not an agent tool
 project_instrument_tail_samples          Internal rendering helper, not an agent tool
 project_resources                        Rust module, not an agent tool

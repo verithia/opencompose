@@ -1,5 +1,5 @@
 //! The project's edit history: who made each undoable edit, and the journal
-//! that keeps the history beside the project file so it outlives the process.
+//! that keeps the history in the app's data folder so it outlives the process.
 //!
 //! The in-memory [`crate::state::UndoStack`] holds a window of entries around
 //! the cursor; [`journal::Journal`] holds all of them. The stack writes its
@@ -82,20 +82,20 @@ pub fn act_as(author: Author) -> Acting {
     Acting(ACTING.with(|acting| acting.borrow_mut().replace(author)))
 }
 
-/// Whether histories are written beside project files. A test build writes
-/// none unless the test asks, so no test leaves a history next to a fixture.
+/// Whether histories are written to disk. A test build writes none unless the
+/// test asks, and then into a folder of the test thread's own.
 pub fn persistence_enabled() -> bool {
     !cfg!(test) || PERSIST_IN_TEST.with(Cell::get)
 }
 
-/// Let this test thread write histories beside the projects it opens.
+/// Let this test thread write histories for the projects it opens.
 #[cfg(test)]
 pub fn enable_persistence_for_test() {
     PERSIST_IN_TEST.with(|enabled| enabled.set(true));
 }
 
-/// Remove the history beside `project`, for a new document written over it.
-pub fn discard_beside(project: &std::path::Path) {
+/// Remove the history of `project`.
+pub fn discard(project: &std::path::Path) {
     if !persistence_enabled() {
         return;
     }
@@ -104,6 +104,20 @@ pub fn discard_beside(project: &std::path::Path) {
         && error.kind() != std::io::ErrorKind::NotFound
     {
         log::warn!("[history] cannot remove {}: {error}", dir.display());
+    }
+}
+
+/// Start an empty history for a new document written at `project`. The
+/// history exists before the file is opened, so the open never adopts another
+/// project's history by fingerprint: a new file can match an old one's bytes.
+pub fn start_fresh(project: &std::path::Path) {
+    discard(project);
+    if !persistence_enabled() {
+        return;
+    }
+    let dir = journal::dir_for(project);
+    if let Err(error) = journal::write_marker(&dir, &journal::Marker::new(project, None)) {
+        log::warn!("[history] cannot start {}: {error}", dir.display());
     }
 }
 

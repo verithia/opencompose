@@ -1,4 +1,4 @@
-//! The undo stack's window over the journal beside the project file.
+//! The undo stack's window over the project's journal in the app data folder.
 //!
 //! Every in-memory change is written at a settle point by [`UndoStack::sync_journal`],
 //! which compares the window with the journal entry by entry, so a squash, a
@@ -29,7 +29,7 @@ pub struct HistoryPage {
     pub total: usize,
     /// How many of them, from the oldest, are applied.
     pub applied: usize,
-    /// Whether the history is kept beside the project file.
+    /// Whether the history is kept on disk for the project file.
     pub journaled: bool,
 }
 
@@ -109,7 +109,7 @@ fn page_entry(position: usize, applied: usize, entry: StoredEntry) -> UndoHistor
 }
 
 fn io_text(error: std::io::Error) -> String {
-    format!("the edit history beside the project could not be used: {error}")
+    format!("the project's edit history could not be used: {error}")
 }
 
 impl UndoStack {
@@ -396,7 +396,7 @@ impl UndoStack {
 }
 
 impl AppStateInner {
-    /// Write the history's changes beside the project. Skipped while a batch
+    /// Write the history's changes to disk. Skipped while a batch
     /// is open (its entries are provisional until it commits) and while a
     /// preview holds the document (neither side is at a history cursor).
     pub(crate) fn sync_history(&mut self) {
@@ -431,10 +431,13 @@ impl AppStateInner {
         self.undo.reload_window(applied)
     }
 
-    /// Open (or start) the history beside the project file, after the
-    /// document was installed. When the file differs from the document the
-    /// history last recorded, one entry bridges the two, so every older entry
-    /// still undoes onto the document it was recorded against.
+    /// Open (or start) the project's history, after the document was
+    /// installed. The history is found by the file's path; a file the app has
+    /// none for gets the one whose recorded fingerprint matches its bytes, so
+    /// a project moved or copied outside the app keeps its history. When the
+    /// file differs from the document the history last recorded, one entry
+    /// bridges the two, so every older entry still undoes onto the document
+    /// it was recorded against.
     pub(crate) fn attach_history(&mut self) {
         if !crate::edit_history::persistence_enabled() {
             return;
@@ -442,6 +445,40 @@ impl AppStateInner {
         let Some(path) = self.file_path.clone() else {
             return;
         };
+        let file_sha = journal::fingerprint(&path);
+        let dir = journal::dir_for(&path);
+        if journal::read_marker(&dir).is_none()
+            && let Some(sha) = file_sha.as_deref()
+            && let Some(found) = journal::find_by_fingerprint(sha, &dir)
+        {
+            // A history whose file is gone moves with the file; one whose file
+            // is still there is copied, like a Save As.
+            let how = if found.marker.path.exists() {
+                crate::project_data::Relocation::Copy
+            } else {
+                crate::project_data::Relocation::Move
+            };
+            let adopted = match how {
+                crate::project_data::Relocation::Copy => journal::copy_dir(&found.dir, &dir),
+                crate::project_data::Relocation::Move => journal::move_dir(&found.dir, &dir),
+            };
+            match adopted {
+                Ok(()) => {
+                    log::info!(
+                        "[history] found the history of {} by its content",
+                        found.marker.path.display()
+                    );
+                    // The note, the conversations and the recovery copies
+                    // follow the file the same way.
+                    crate::project_data::relocate(&found.marker.path, &path, how);
+                }
+                Err(error) => log::warn!("[history] {}", io_text(error)),
+            }
+        }
+        if let Err(error) = journal::write_marker(&dir, &journal::Marker::new(&path, file_sha)) {
+            log::warn!("[history] {}", io_text(error));
+            return;
+        }
         let mut journal = match Journal::open(&path) {
             Ok(journal) => journal,
             Err(error) => {
@@ -488,8 +525,15 @@ impl AppStateInner {
         let Some(path) = self.file_path.clone() else {
             return;
         };
+        let dir = journal::dir_for(&path);
         if !copied {
-            let _ = std::fs::remove_dir_all(journal::dir_for(&path));
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+        // A copied or moved directory still names the old path; the
+        // fingerprint stays until the save that follows records the new file.
+        let sha = journal::read_marker(&dir).and_then(|marker| marker.sha256);
+        if let Err(error) = journal::write_marker(&dir, &journal::Marker::new(&path, sha)) {
+            log::warn!("[history] {}", io_text(error));
         }
         match Journal::open(&path) {
             Ok(journal) => self.undo.adopt_journal(journal),
@@ -497,5 +541,20 @@ impl AppStateInner {
         }
         self.history_synced = None;
         self.sync_history();
+    }
+
+    /// Record the fingerprint of the project file the app just wrote, so the
+    /// history can be found again if the file moves outside the app.
+    pub(crate) fn mark_history_file(&mut self, sha256: Option<String>) {
+        if !crate::edit_history::persistence_enabled() || sha256.is_none() {
+            return;
+        }
+        let Some(path) = self.file_path.clone() else {
+            return;
+        };
+        let dir = journal::dir_for(&path);
+        if let Err(error) = journal::write_marker(&dir, &journal::Marker::new(&path, sha256)) {
+            log::warn!("[history] {}", io_text(error));
+        }
     }
 }

@@ -22,7 +22,7 @@ fn project_file(dir: &Path) -> PathBuf {
 }
 
 /// A state whose open project is `song.ocp` in a fresh directory, with its
-/// history kept beside it.
+/// history kept in this test thread's history folder.
 fn opened(dir: &Path, source: &str) -> AppState {
     super::enable_persistence_for_test();
     let path = project_file(dir);
@@ -116,7 +116,8 @@ fn clear_older_keeps_the_newest_entries_and_never_an_undone_one() {
         .map(|entry| entry.id)
         .collect();
     assert_eq!(ids, [5, 6]);
-    assert!(!journal::dir_for(&path).with_extension("hist.old").exists());
+    let retired = format!("{}.old", journal::dir_for(&path).display());
+    assert!(!Path::new(&retired).exists());
 }
 
 #[test]
@@ -386,7 +387,7 @@ fn a_first_save_writes_the_window_of_an_unsaved_document() {
 }
 
 #[test]
-fn history_is_not_written_beside_projects_unless_a_test_asks() {
+fn history_is_not_written_unless_a_test_asks() {
     let dir = tempfile::tempdir().unwrap();
     let path = project_file(dir.path());
     let result = std::thread::spawn(move || {
@@ -487,4 +488,111 @@ fn a_merge_after_a_sync_rewrites_the_entry_on_disk() {
         "one entry holds the whole drag"
     );
     assert_eq!(inner.project.name.as_deref(), Some("Song"));
+}
+
+#[test]
+fn the_history_lives_in_the_app_folder_with_a_marker_naming_the_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = opened(dir.path(), SOURCE);
+    set_tempo(&mut state.lock_inner(), 120.0);
+    let path = project_file(dir.path());
+    crate::commands::save_file_inner(None, &state).unwrap();
+    let history = journal::dir_for(&path);
+    assert!(history.starts_with(journal::root()));
+    assert_eq!(
+        history.file_name().unwrap().to_str().unwrap(),
+        crate::project_data::path_key(&path)
+    );
+    let marker = journal::read_marker(&history).unwrap();
+    assert_eq!(marker.path, crate::project_data::canonical_path(&path));
+    assert_eq!(marker.sha256, crate::project_data::content_sha256(&path));
+    let beside: Vec<_> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.file_name())
+        .filter(|name| name != "song.ocp")
+        .collect();
+    assert!(
+        beside.is_empty(),
+        "nothing is written beside the project: {beside:?}"
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        state.lock_inner().undo.clear_older(0).ok();
+        for entry in std::fs::read_dir(&history).unwrap().flatten() {
+            let mode = entry.metadata().unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode & 0o077, 0, "{:?} is private", entry.file_name());
+        }
+    }
+}
+
+fn reopen(path: &Path) -> AppState {
+    let source = std::fs::read_to_string(path).unwrap();
+    let state = AppState::new();
+    crate::commands::open_project(&mut state.lock_inner(), &source, Some(path.to_path_buf()))
+        .unwrap();
+    state
+}
+
+#[test]
+fn a_file_moved_outside_the_app_finds_its_history_by_content() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = opened(dir.path(), SOURCE);
+    set_tempo(&mut state.lock_inner(), 120.0);
+    crate::commands::save_file_inner(None, &state).unwrap();
+    drop(state);
+    let from = project_file(dir.path());
+    let moved_dir = dir.path().join("elsewhere");
+    std::fs::create_dir(&moved_dir).unwrap();
+    let to = moved_dir.join("renamed.ocp");
+    std::fs::rename(&from, &to).unwrap();
+
+    let state = reopen(&to);
+    let mut inner = state.lock_inner();
+    assert_eq!(inner.undo.total_levels(), 1, "the history came along");
+    assert!(!journal::dir_for(&from).exists(), "and left the old key");
+    inner.undo_step().unwrap();
+    assert_eq!(inner.project.properties.tempo, 100.0);
+}
+
+#[test]
+fn a_file_copied_outside_the_app_gets_a_copy_of_the_history() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = opened(dir.path(), SOURCE);
+    set_tempo(&mut state.lock_inner(), 120.0);
+    crate::commands::save_file_inner(None, &state).unwrap();
+    drop(state);
+    let original = project_file(dir.path());
+    let copy = dir.path().join("copy.ocp");
+    std::fs::copy(&original, &copy).unwrap();
+
+    assert_eq!(reopen(&copy).lock_inner().undo.total_levels(), 1);
+    assert_eq!(reopen(&original).lock_inner().undo.total_levels(), 1);
+}
+
+#[test]
+fn a_new_project_never_takes_a_history_by_content() {
+    let dir = tempfile::tempdir().unwrap();
+    super::enable_persistence_for_test();
+    let state = AppState::new();
+    let first = dir.path().join("first.ocp");
+    crate::commands::create_project_in(&mut state.lock_inner(), Some(first.clone())).unwrap();
+    set_tempo(&mut state.lock_inner(), 130.0);
+    crate::commands::save_file_inner(None, &state).unwrap();
+    // The same bytes at another path, written by New: the file is new.
+    let bytes = std::fs::read(&first).unwrap();
+    std::fs::remove_file(&first).unwrap();
+    let second = dir.path().join("second.ocp");
+    crate::commands::create_project_in(&mut state.lock_inner(), Some(second.clone())).unwrap();
+    std::fs::write(&second, &bytes).unwrap();
+    assert_eq!(
+        reopen(&second).lock_inner().undo.total_levels(),
+        1,
+        "only the bridge"
+    );
+    assert!(
+        journal::dir_for(&first).exists(),
+        "the old history stays for its file"
+    );
 }

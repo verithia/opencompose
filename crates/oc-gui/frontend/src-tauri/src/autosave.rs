@@ -3,6 +3,11 @@
 //! A copy is a whole project document, so restoring one goes through the normal
 //! project-load path. Copies never touch the user's file or its directory:
 //! every path below the recovery root belongs to this module.
+//!
+//! A project's copies live under its path key, the key every per-project store
+//! uses (see [`crate::project_data`]). The owner marker beside the directory
+//! records the path and the content SHA-256 of the file, so copies follow a
+//! file renamed or moved outside the app.
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -146,30 +151,30 @@ fn identity_of(_meta: &std::fs::Metadata) -> Option<String> {
     None
 }
 
-/// Directory name for the document: its file identity where the platform
-/// offers one, the legacy path hash otherwise, and the session for an unsaved
-/// document.
-fn path_key(project_path: Option<&Path>, session: &str) -> String {
-    let Some(path) = project_path else {
-        return session_key(session);
-    };
-    file_identity(path).unwrap_or_else(|| legacy_key(path))
+/// Directory name for the document: the path key every per-project store
+/// uses (see [`crate::project_data`]), and the session for an unsaved document.
+fn copy_key(project_path: Option<&Path>, session: &str) -> String {
+    match project_path {
+        Some(path) => crate::project_data::path_key(path),
+        None => session_key(session),
+    }
 }
 
-/// Directories that may hold this document's copies: its identity key and the
-/// legacy path key an older build wrote. An unsaved document also reads the
-/// shared legacy `untitled` directory, whose copies no session can claim.
+/// Directories that may hold this document's copies: its path key, then the
+/// keys earlier builds wrote, the file identity and the FNV-1a path hash, so
+/// copies written by those builds are still found and cleared. An unsaved
+/// document also reads the shared legacy `untitled` directory, whose copies no
+/// session can claim.
 fn candidate_keys(project_path: Option<&Path>, session: &str) -> Vec<String> {
     let Some(path) = project_path else {
         return vec![session_key(session), LEGACY_UNTITLED_KEY.to_string()];
     };
-    let identity = path_key(Some(path), session);
-    let legacy = legacy_key(path);
-    if identity == legacy {
-        vec![identity]
-    } else {
-        vec![identity, legacy]
-    }
+    let mut keys = vec![copy_key(Some(path), session)];
+    keys.extend(file_identity(path));
+    keys.push(legacy_key(path));
+    let mut seen = std::collections::HashSet::new();
+    keys.retain(|key| seen.insert(key.clone()));
+    keys
 }
 
 fn file_name(saved_at_ms: u64, key: &str) -> String {
@@ -205,21 +210,109 @@ fn owner_path(root: &Path, key: &str) -> PathBuf {
     root.join(format!("{key}{OWNER_SUFFIX}"))
 }
 
-fn read_owner(root: &Path, key: &str) -> Option<PathBuf> {
+/// The owner marker: the project path and the content SHA-256 of its file
+/// when the marker was written, so copies follow a file renamed outside the
+/// app. An earlier build wrote the bare path as text; that form still reads.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Owner {
+    path: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sha256: Option<String>,
+}
+
+fn read_owner_marker(root: &Path, key: &str) -> Option<Owner> {
     let text = std::fs::read_to_string(owner_path(root, key)).ok()?;
+    if let Ok(owner) = serde_json::from_str::<Owner>(&text) {
+        return Some(owner);
+    }
     let text = text.trim();
-    (!text.is_empty()).then(|| PathBuf::from(text))
+    (!text.is_empty()).then(|| Owner {
+        path: PathBuf::from(text),
+        sha256: None,
+    })
+}
+
+fn read_owner(root: &Path, key: &str) -> Option<PathBuf> {
+    read_owner_marker(root, key).map(|owner| owner.path)
 }
 
 fn write_owner(root: &Path, key: &str, project_path: &Path) {
-    let _ = private_fs::write_atomic(
-        &owner_path(root, key),
-        resolved(project_path).to_string_lossy().as_bytes(),
-    );
+    let owner = Owner {
+        path: resolved(project_path),
+        sha256: crate::project_data::content_sha256(project_path),
+    };
+    if let Ok(bytes) = serde_json::to_vec(&owner) {
+        let _ = private_fs::write_atomic(&owner_path(root, key), &bytes);
+    }
 }
 
-/// Keys whose owner marker names `project_path`. A save clears these too,
-/// because an atomic replace gives the file a new identity key.
+/// Move the copies under `from_key` to `to_path`'s key, renaming each copy so
+/// its name carries the new key. A failure leaves the copies where they were.
+fn rekey(root: &Path, from_key: &str, to_path: &Path) -> std::io::Result<()> {
+    let to_key = copy_key(Some(to_path), "");
+    if from_key == to_key {
+        return Ok(());
+    }
+    let from = root.join(from_key);
+    let to = root.join(&to_key);
+    if to.exists() {
+        std::fs::remove_dir_all(&to)?;
+    }
+    std::fs::rename(&from, &to)?;
+    for entry in std::fs::read_dir(&to)?.filter_map(Result::ok) {
+        let name = entry.file_name();
+        let Some((stamp, key)) = name.to_str().and_then(parse_file_name) else {
+            continue;
+        };
+        if key == from_key {
+            std::fs::rename(entry.path(), to.join(file_name(stamp, &to_key)))?;
+        }
+    }
+    let _ = std::fs::remove_file(owner_path(root, from_key));
+    write_owner(root, &to_key, to_path);
+    Ok(())
+}
+
+/// Give a project's copies to its new path, for Move Project.
+pub(crate) fn relocate_copies(root: &Path, from: &Path, to: &Path) {
+    for key in candidate_keys(Some(from), "") {
+        if root.join(&key).is_dir()
+            && let Err(error) = rekey(root, &key, to)
+        {
+            log::warn!("[recovery] the copies of {} stay: {error}", from.display());
+        }
+    }
+}
+
+/// Copies of a file this path has none for, found by the content SHA-256 its
+/// owner marker recorded: the file was renamed or moved outside the app.
+fn adopt_by_content(root: &Path, project_path: &Path) {
+    let Some(sha) = crate::project_data::content_sha256(project_path) else {
+        return;
+    };
+    let Ok(read_dir) = std::fs::read_dir(root) else {
+        return;
+    };
+    let found = read_dir
+        .filter_map(Result::ok)
+        .filter_map(|entry| entry.file_name().to_str().map(str::to_owned))
+        .filter_map(|name| name.strip_suffix(OWNER_SUFFIX).map(str::to_owned))
+        .find(|key| {
+            root.join(key).is_dir()
+                && read_owner_marker(root, key).is_some_and(|owner| {
+                    owner.sha256.as_deref() == Some(sha.as_str()) && !owner.path.exists()
+                })
+        });
+    if let Some(key) = found
+        && let Err(error) = rekey(root, &key, project_path)
+    {
+        log::warn!("[recovery] cannot adopt the copies of a moved file: {error}");
+    }
+}
+
+/// Keys whose owner marker names `project_path`. A save clears these too: an
+/// earlier build keyed copies by file identity, which an atomic replace
+/// changes.
 fn owned_keys(root: &Path, project_path: &Path) -> Vec<String> {
     let wanted = resolved(project_path);
     let Ok(read_dir) = std::fs::read_dir(root) else {
@@ -283,7 +376,7 @@ pub fn write_copy(
     source: &str,
     saved_at_ms: u64,
 ) -> Result<RecoveryEntry, String> {
-    let key = path_key(project_path, session);
+    let key = copy_key(project_path, session);
     let directory = root.join(&key);
     if let Some(path) = project_path {
         write_owner(root, &key, path);
@@ -313,8 +406,11 @@ pub fn list_copies(
 ) -> Result<Vec<RecoveryEntry>, String> {
     let keys = candidate_keys(project_path, session);
     if let Some(path) = project_path {
-        // A rename leaves the identity directory in place; refresh the marker
-        // so the sweep does not later mistake a live project for an orphan.
+        if !keys.iter().any(|key| root.join(key).is_dir()) {
+            adopt_by_content(root, path);
+        }
+        // Refresh the markers so the sweep does not later mistake a live
+        // project for an orphan.
         for key in &keys {
             if root.join(key).is_dir() {
                 write_owner(root, key, path);
@@ -452,13 +548,62 @@ fn newest_copy(directory: &Path) -> Option<SystemTime> {
 
 /// Remove recovery directories no live project owns. A directory becomes a
 /// candidate once its newest copy is older than [`ORPHAN_AGE`]; it goes when
-/// its owner marker names a file that is gone, or one that is neither this
-/// directory's identity nor its legacy key. A directory without a marker (a
-/// legacy or crashed-session directory) goes on age alone. Returns the removed
-/// directories.
-#[cfg(test)]
+/// its owner marker names a file that is gone (not one on a volume that is not
+/// mounted), or a file none of whose keys is this directory's. A directory
+/// without a marker (a legacy or crashed-session directory) goes on age
+/// alone. Returns the removed directories.
 pub fn sweep(root: &Path, now: SystemTime) -> Vec<PathBuf> {
     sweep_except(root, now, &[])
+}
+
+/// One directory of recovery copies, for the Storage page.
+#[derive(Debug, Clone)]
+pub struct StoredCopies {
+    pub key: String,
+    /// The project the owner marker names; absent for an untitled document
+    /// and for a directory an earlier build left without a marker.
+    pub path: Option<PathBuf>,
+    pub files: usize,
+    pub bytes: u64,
+    pub touched: Option<SystemTime>,
+}
+
+/// Every directory of recovery copies under `root`.
+pub fn stored(root: &Path) -> Vec<StoredCopies> {
+    let Ok(read_dir) = std::fs::read_dir(root) else {
+        return Vec::new();
+    };
+    read_dir
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+        .filter_map(|entry| {
+            let key = entry.file_name().to_str()?.to_owned();
+            let files = std::fs::read_dir(entry.path())
+                .map(|read| read.filter_map(Result::ok).count())
+                .unwrap_or(0);
+            Some(StoredCopies {
+                path: read_owner(root, &key),
+                files,
+                bytes: crate::project_data::dir_bytes(&entry.path()),
+                touched: newest_copy(&entry.path()),
+                key,
+            })
+        })
+        .collect()
+}
+
+/// Remove one directory of recovery copies and its owner marker.
+pub fn remove_stored(root: &Path, key: &str) -> Result<(), String> {
+    if key.is_empty() || key.contains(['/', '\\']) || key.starts_with('.') {
+        return Err("not a recovery directory".into());
+    }
+    match std::fs::remove_dir_all(root.join(key)) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("Could not remove recovery copies: {error}")),
+    }
+    let _ = std::fs::remove_file(owner_path(root, key));
+    Ok(())
 }
 
 fn sweep_except(root: &Path, now: SystemTime, keep: &[String]) -> Vec<PathBuf> {
@@ -483,14 +628,11 @@ fn sweep_except(root: &Path, now: SystemTime, keep: &[String]) -> Vec<PathBuf> {
             continue;
         }
         let orphan = match read_owner(root, &key) {
-            Some(owner) if owner.exists() => match file_identity(&owner) {
-                // A live project keeps its identity directory and the path-hash
-                // directory an older build wrote for it.
-                Some(identity) => identity != key && legacy_key(&owner) != key,
-                // Present but unreadable: keep rather than guess.
-                None => false,
-            },
-            Some(_) => true,
+            // A live project keeps its path-key directory and the ones earlier
+            // builds wrote for it.
+            Some(owner) if owner.exists() => !candidate_keys(Some(&owner), "").contains(&key),
+            // A file on a volume that is not mounted keeps its copies.
+            Some(owner) => crate::project_data::is_gone(&owner),
             None => true,
         };
         if orphan && std::fs::remove_dir_all(entry.path()).is_ok() {
@@ -791,7 +933,7 @@ pub fn spawn(app: tauri::AppHandle) {
                         log::warn!("autosave: {error}");
                     }
                 }
-                // The edit history beside the project catches up once a second.
+                // The edit history on disk catches up once a second.
                 let history_due = state.lock_inner().history_due();
                 if history_due {
                     state.lock_inner().sync_history();
@@ -983,7 +1125,7 @@ mod tests {
             "the user's file is untouched"
         );
         assert!(
-            written.starts_with(fixture.0.join(path_key(Some(&path), &session))),
+            written.starts_with(fixture.0.join(copy_key(Some(&path), &session))),
             "copy lives in the recovery store"
         );
 
@@ -1044,7 +1186,7 @@ mod tests {
             1_000,
         )
         .unwrap();
-        let key = path_key(Some(&path), "session");
+        let key = copy_key(Some(&path), "session");
         // A directory at the next copy's name makes the atomic rename fail.
         let blocked = fixture.0.join(&key).join(file_name(2_000, &key));
         std::fs::create_dir(&blocked).unwrap();
@@ -1379,7 +1521,7 @@ mod tests {
         .unwrap();
         let moved = fixture
             .0
-            .join(path_key(Some(&second_path), "session"))
+            .join(copy_key(Some(&second_path), "session"))
             .join(Path::new(&entry.path).file_name().unwrap());
         assert!(load_copy(&fixture.0, Some(&first_path), "session", &moved).is_err());
     }
@@ -1444,11 +1586,12 @@ mod tests {
         std::fs::rename(&old_path, &new_path).unwrap();
 
         let copies = list_copies(&fixture.0, Some(&new_path), "session").unwrap();
-        assert_eq!(copies.len(), 1, "the copies followed the same file id");
-        assert_eq!(copies[0].path, entry.path);
+        assert_eq!(copies.len(), 1, "the copies follow the file's content");
+        assert_eq!(copies[0].saved_at_ms, entry.saved_at_ms);
+        assert!(!Path::new(&entry.path).exists(), "moved under the new key");
         assert_eq!(copies[0].restore_disabled_reason, None);
 
-        // A different file at the old path has another identity and sees nothing.
+        // A new file at the old path does not get the copies back.
         std::fs::write(&old_path, &source).unwrap();
         assert!(
             list_copies(&fixture.0, Some(&old_path), "session")
@@ -1458,18 +1601,33 @@ mod tests {
     }
 
     #[test]
-    fn a_project_is_keyed_by_its_file_identity_with_the_path_hash_as_fallback() {
+    fn a_project_is_keyed_by_the_shared_path_key_and_copies_under_earlier_keys_are_read() {
         let fixture = Fixture::new();
-        let (path, _, _) = fixture.project("identity");
-        let key = path_key(Some(&path), "session");
-        #[cfg(any(unix, windows))]
-        assert!(key.starts_with("id-"), "platform file id: {key}");
-        #[cfg(not(any(unix, windows)))]
-        assert_eq!(key, legacy_key(&path));
-
-        // With the file gone, the key falls back to the legacy path hash.
+        let (path, _, source) = fixture.project("identity");
+        let key = copy_key(Some(&path), "session");
+        assert_eq!(key, crate::project_data::path_key(&path));
         std::fs::remove_file(&path).unwrap();
-        assert_eq!(path_key(Some(&path), "session"), legacy_key(&path));
+        assert_eq!(
+            copy_key(Some(&path), "session"),
+            key,
+            "a gone file keeps its key"
+        );
+        std::fs::write(&path, &source).unwrap();
+
+        // Copies an earlier build wrote under the file identity and the FNV-1a
+        // path hash are listed, then cleared by a save.
+        let mut earlier = vec![legacy_key(&path)];
+        earlier.extend(file_identity(&path));
+        for (offset, old) in earlier.iter().enumerate() {
+            let dir = fixture.0.join(old);
+            std::fs::create_dir_all(&dir).unwrap();
+            let stamp = above_file(&path) + offset as u64;
+            std::fs::write(dir.join(file_name(stamp, old)), &source).unwrap();
+        }
+        let listed = list_copies(&fixture.0, Some(&path), "session").unwrap();
+        assert_eq!(listed.len(), earlier.len());
+        clear_saved(&fixture.0, &path, false, "session").unwrap();
+        assert!(earlier.iter().all(|old| !fixture.0.join(old).exists()));
     }
 
     #[test]
@@ -1567,7 +1725,34 @@ mod tests {
     }
 
     #[test]
-    fn a_save_clears_the_directory_a_replaced_file_id_left_behind() {
+    fn moving_a_project_gives_its_copies_the_new_key() {
+        let fixture = Fixture::new();
+        let (from, project, source) = fixture.project("moving");
+        let entry = write_copy(
+            &fixture.0,
+            Some(&from),
+            project.name.as_deref(),
+            "session",
+            &source,
+            above_file(&from),
+        )
+        .unwrap();
+        // The old file stays, so only the move itself can give the copies away.
+        let to = fixture.0.join("moved.ocp");
+        std::fs::copy(&from, &to).unwrap();
+        relocate_copies(&fixture.0, &from, &to);
+        assert!(!fixture.0.join(copy_key(Some(&from), "")).exists());
+        let listed = list_copies(&fixture.0, Some(&to), "session").unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].saved_at_ms, entry.saved_at_ms);
+        assert_eq!(
+            read_owner(&fixture.0, &copy_key(Some(&to), "")),
+            Some(resolved(&to))
+        );
+    }
+
+    #[test]
+    fn a_save_that_replaces_the_file_keeps_the_key() {
         let fixture = Fixture::new();
         let (path, project, source) = fixture.project("replace");
         let entry = write_copy(
@@ -1579,19 +1764,14 @@ mod tests {
             above_file(&path),
         )
         .unwrap();
-        let old_key = path_key(Some(&path), "session");
-
-        // A save replaces the file by rename, so the path gets a new file id.
+        let old_key = copy_key(Some(&path), "session");
+        // A save replaces the file by rename; the path, and so the key, stay.
         let replacement = fixture.0.join("replacement.tmp");
         std::fs::write(&replacement, &source).unwrap();
         std::fs::rename(&replacement, &path).unwrap();
-        assert_ne!(path_key(Some(&path), "session"), old_key);
-
+        assert_eq!(copy_key(Some(&path), "session"), old_key);
         clear_saved(&fixture.0, &path, false, "session").unwrap();
-        assert!(
-            !Path::new(&entry.path).exists(),
-            "the old identity directory is cleared"
-        );
+        assert!(!Path::new(&entry.path).exists());
     }
 
     #[test]

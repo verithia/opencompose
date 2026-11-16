@@ -1,5 +1,10 @@
-//! The on-disk edit history beside a project file: `<file>.hist/`.
+//! The on-disk edit history of a project, kept in the app's own data folder:
+//! `<config>/history/<key>/`, where the key hashes the project's path.
 //!
+//! - `project.json` is the [`Marker`]: the path the history belongs to and the
+//!   SHA-256 of the project file as the app last read or wrote it. The path
+//!   finds the history by default; the fingerprint finds it again when the
+//!   file was moved or copied outside the app.
 //! - `entries.jsonl` holds one [`StoredEntry`] per line. It only grows; an
 //!   entry a redo branch or a merge replaced stays as garbage until the
 //!   history is rewritten by [`Journal::clear_older`].
@@ -15,25 +20,147 @@ use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
-use serde::{Deserialize, Serialize};
-
 use super::Author;
 use crate::state::UndoScopes;
+use serde::{Deserialize, Serialize};
 
-/// Suffix of the history directory beside the project file.
-pub const HISTORY_SUFFIX: &str = "hist";
+/// The folder under the app's data folder that holds every history.
+pub const HISTORY_DIR: &str = "history";
+const MARKER: &str = "project.json";
+const MARKER_VERSION: u32 = 1;
 const ENTRIES: &str = "entries.jsonl";
 const INDEX: &str = "index.bin";
 const STATE: &str = "state.json";
-const ROW: usize = 24;
+/// Bytes of one `index.bin` row.
+pub const INDEX_ROW: usize = 24;
+const ROW: usize = INDEX_ROW;
 const STATE_VERSION: u32 = 1;
 
-/// The history directory of `project`: `song.ocp` keeps `song.ocp.hist/`.
+#[cfg(test)]
+thread_local! {
+    static TEST_ROOT: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The folder every history lives under. A test thread gets its own, removed
+/// when the thread exits.
+pub fn root() -> PathBuf {
+    #[cfg(test)]
+    {
+        TEST_ROOT.with(|root| {
+            root.borrow_mut()
+                .get_or_insert_with(|| oc_test_support::temp_dir("oc-history", HISTORY_DIR))
+                .clone()
+        })
+    }
+    #[cfg(not(test))]
+    {
+        crate::private_fs::config_dir().join(HISTORY_DIR)
+    }
+}
+
+/// The key of `project`: the first 8 bytes of the SHA-256 of its canonical
+/// path, in hex. A file that does not exist yet resolves through its folder,
+/// so the key is the same before and after the first write.
+pub fn key_for(project: &Path) -> String {
+    crate::project_data::path_key(project)
+}
+
+/// The history directory of `project`.
 pub fn dir_for(project: &Path) -> PathBuf {
-    let mut name = project.as_os_str().to_owned();
-    name.push(".");
-    name.push(HISTORY_SUFFIX);
-    PathBuf::from(name)
+    root().join(key_for(project))
+}
+
+/// What a history directory says about the project it belongs to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Marker {
+    pub version: u32,
+    pub path: PathBuf,
+    /// SHA-256 of the project file as the app last read or wrote it; absent
+    /// until the file exists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+}
+
+impl Marker {
+    pub fn new(path: &Path, sha256: Option<String>) -> Self {
+        Self {
+            version: MARKER_VERSION,
+            path: crate::project_data::canonical_path(path),
+            sha256,
+        }
+    }
+}
+
+pub fn read_marker(dir: &Path) -> Option<Marker> {
+    let bytes = std::fs::read(dir.join(MARKER)).ok()?;
+    serde_json::from_slice::<Marker>(&bytes)
+        .ok()
+        .filter(|marker| marker.version == MARKER_VERSION)
+}
+
+pub fn write_marker(dir: &Path, marker: &Marker) -> io::Result<()> {
+    crate::private_fs::ensure_dir(dir)?;
+    let bytes = serde_json::to_vec_pretty(marker).map_err(io::Error::other)?;
+    crate::private_fs::write_atomic(&dir.join(MARKER), &bytes)
+}
+
+/// The content SHA-256 the marker records; see [`crate::project_data`].
+pub fn fingerprint(path: &Path) -> Option<String> {
+    crate::project_data::content_sha256(path)
+}
+
+/// One history directory under [`root`], with its marker.
+#[derive(Debug, Clone)]
+pub struct Stored {
+    pub dir: PathBuf,
+    pub marker: Marker,
+}
+
+/// Every history directory that carries a readable marker.
+pub fn list() -> Vec<Stored> {
+    let Ok(read) = std::fs::read_dir(root()) else {
+        return Vec::new();
+    };
+    read.flatten()
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .is_some_and(crate::project_data::is_path_key)
+        })
+        .filter_map(|entry| {
+            let dir = entry.path();
+            read_marker(&dir).map(|marker| Stored { dir, marker })
+        })
+        .collect()
+}
+
+/// A history whose recorded fingerprint is `sha256`, for a file the app has no
+/// history for at its path. One whose project file is gone is preferred: that
+/// file was moved, so its history follows it. Otherwise the newest copy wins.
+pub fn find_by_fingerprint(sha256: &str, except: &Path) -> Option<Stored> {
+    let mut matches: Vec<(Stored, bool, std::time::SystemTime)> = list()
+        .into_iter()
+        .filter(|stored| stored.dir != except)
+        .filter(|stored| stored.marker.sha256.as_deref() == Some(sha256))
+        .map(|stored| {
+            let gone = !stored.marker.path.exists();
+            let at = std::fs::metadata(stored.dir.join(STATE))
+                .and_then(|meta| meta.modified())
+                .unwrap_or(std::time::UNIX_EPOCH);
+            (stored, gone, at)
+        })
+        .collect();
+    matches.sort_by_key(|(_, gone, at)| (*gone, *at));
+    matches.pop().map(|(stored, _, _)| stored)
+}
+
+/// Move a history directory to `to`, replacing a stale one there.
+pub fn move_dir(from: &Path, to: &Path) -> io::Result<()> {
+    if to.exists() {
+        std::fs::remove_dir_all(to)?;
+    }
+    std::fs::rename(from, to)
 }
 
 /// One history entry as stored. Patches are kept in their forward
@@ -99,7 +226,10 @@ impl Journal {
     /// is clamped, so a crash mid-write loses at most the unfinished write.
     pub fn open(project: &Path) -> io::Result<Self> {
         let dir = dir_for(project);
-        std::fs::create_dir_all(&dir)?;
+        crate::private_fs::ensure_dir(&dir)?;
+        if read_marker(&dir).is_none() {
+            write_marker(&dir, &Marker::new(project, None))?;
+        }
         let entries_len = match std::fs::metadata(dir.join(ENTRIES)) {
             Ok(meta) => meta.len(),
             Err(error) if error.kind() == io::ErrorKind::NotFound => 0,
@@ -228,10 +358,7 @@ impl Journal {
             line.push(b'\n');
             lines.extend_from_slice(&line);
         }
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(self.dir.join(ENTRIES))?;
+        let mut file = open_append_private(&self.dir.join(ENTRIES))?;
         // The rows are written against the length the file had when opened; a
         // file that grew elsewhere would make every row point at the wrong line.
         if file.metadata()?.len() != self.entries_len {
@@ -239,10 +366,7 @@ impl Journal {
         }
         file.write_all(&lines)?;
         file.sync_data()?;
-        let mut index = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(self.dir.join(INDEX))?;
+        let mut index = open_append_private(&self.dir.join(INDEX))?;
         let mut bytes = Vec::with_capacity(rows.len() * ROW);
         for row in &rows {
             bytes.extend_from_slice(&row.id.to_le_bytes());
@@ -290,7 +414,7 @@ impl Journal {
         let head = self.head.clone().unwrap_or_default();
         let staging = sibling(&self.dir, "new");
         let _ = std::fs::remove_dir_all(&staging);
-        std::fs::create_dir_all(&staging)?;
+        crate::private_fs::ensure_dir(&staging)?;
         let mut fresh = Journal {
             dir: staging.clone(),
             rows: Vec::new(),
@@ -305,6 +429,9 @@ impl Journal {
                 let end = (at + PAGE).min(self.rows.len());
                 fresh.append(&self.read_range(at..end)?)?;
                 at = end;
+            }
+            if let Some(marker) = read_marker(&self.dir) {
+                write_marker(&staging, &marker)?;
             }
             fresh.write_state(self.applied - drop, &head)
         })();
@@ -327,6 +454,19 @@ impl Journal {
     }
 }
 
+/// An append handle on a private file, created 0600 on Unix like every file
+/// under the app's data folder.
+fn open_append_private(path: &Path) -> io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(path)
+}
+
 fn sibling(dir: &Path, tag: &str) -> PathBuf {
     let mut name = dir.as_os_str().to_owned();
     name.push(format!(".{tag}"));
@@ -341,29 +481,22 @@ fn truncate_index(dir: &Path, rows: usize) -> io::Result<()> {
 
 /// Total size of the files under `dir`, recursively.
 pub fn dir_bytes(dir: &Path) -> u64 {
-    let Ok(read) = std::fs::read_dir(dir) else {
-        return 0;
-    };
-    read.flatten()
-        .map(|entry| match entry.metadata() {
-            Ok(meta) if meta.is_dir() => dir_bytes(&entry.path()),
-            Ok(meta) => meta.len(),
-            Err(_) => 0,
-        })
-        .sum()
+    crate::project_data::dir_bytes(dir)
 }
 
 /// Copy a history directory for Save As. The copy is assembled beside the
 /// destination and renamed into place, replacing any history already there.
+/// The copy keeps the source's marker until its owner rewrites it.
 pub fn copy_dir(from: &Path, to: &Path) -> io::Result<()> {
     let staging = sibling(to, "new");
     let _ = std::fs::remove_dir_all(&staging);
-    std::fs::create_dir_all(&staging)?;
+    crate::private_fs::ensure_dir(&staging)?;
     let copied = (|| {
-        for name in [ENTRIES, INDEX, STATE] {
+        for name in [ENTRIES, INDEX, STATE, MARKER] {
             let source = from.join(name);
             if source.exists() {
                 std::fs::copy(&source, staging.join(name))?;
+                crate::private_fs::repair_file_mode(&staging.join(name));
             }
         }
         Ok::<_, io::Error>(())

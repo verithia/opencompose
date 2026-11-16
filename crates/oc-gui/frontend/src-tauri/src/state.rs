@@ -1108,7 +1108,7 @@ pub struct AppStateInner {
     pub scanned_plugins: Vec<PluginInfo>,
     /// Backend-managed undo/redo stack (patch-based)
     pub undo: UndoStack,
-    /// Revision whose history the journal beside the project holds; `None`
+    /// Revision whose history the on-disk journal holds; `None`
     /// until the first sync after the history was attached.
     pub history_synced: Option<u64>,
     /// The open edit preview: the base and the proposal, one of them live.

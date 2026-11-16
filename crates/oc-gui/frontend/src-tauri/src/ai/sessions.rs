@@ -1,19 +1,25 @@
-//! Saved AI conversations under `~/.opencompose/ai/sessions`: one directory per
-//! project key, one directory per session, an append-only `messages.jsonl`.
+//! Saved AI conversations under the configuration root's `ai/sessions`
+//! directory: one directory per workspace key, one directory per session, and
+//! an append-only `messages.jsonl`.
 //!
 //! Layout:
 //!
 //! ```text
 //! sessions/
-//!   <project key>/project.json      the path(s) this key was derived from
-//!   <project key>/<session id>/meta.json
-//!   <project key>/<session id>/messages.jsonl
-//!   detached/<session id>/…         a conversation with no saved project
+//!   <workspace key>/workspace.json  the directory this key was derived from
+//!   <workspace key>/<session id>/meta.json
+//!   <workspace key>/<session id>/messages.jsonl
+//!   <workspace key>/<session id>/results/<sha256>.txt
+//!   <workspace key>/<session id>/versions/<sha256>.ocp
+//!   detached/<session id>/...       a conversation with no workspace
+//!   audition-media/                 clips a listening request replays
+//!   audition-renders/               full-rate renders kept for listening
 //! ```
 //!
-//! The key is the first 8 bytes of the SHA-256 of the canonical project path as
-//! hex, so the directory name is stable and does not leak the path. `project.json`
-//! keeps the path so a project that moved can be found again.
+//! The key is the first 8 bytes of the SHA-256 of the canonical workspace
+//! directory path as hex, so the directory name is stable and does not leak the
+//! path. `workspace.json` keeps the path so a moved workspace can be found
+//! again.
 //!
 //! `messages.jsonl` holds one record per model turn. A record is appended whole
 //! (`O_APPEND`, one write); the file is rewritten only when a compaction or the
@@ -228,6 +234,19 @@ pub struct ProjectFacts {
 pub enum Scope<'a> {
     Workspace(Option<&'a Path>),
     All,
+}
+
+/// One workspace folder of conversations on disk.
+#[derive(Debug, Clone)]
+pub struct StoredWorkspace {
+    pub key: String,
+    /// The folder the conversations belong to; absent for `detached` and for a
+    /// record that lost it.
+    pub path: Option<PathBuf>,
+    pub sessions: usize,
+    pub bytes: u64,
+    /// When a conversation in it last changed.
+    pub touched: Option<std::time::SystemTime>,
 }
 
 /// One loaded conversation.
@@ -695,6 +714,7 @@ impl Store {
                 .then_with(|| left.id.cmp(&right.id))
         });
         let mut excess = sessions.len() - MAX_SESSIONS_PER_WORKSPACE;
+        let before = excess;
         for meta in sessions {
             if excess == 0 {
                 break;
@@ -708,7 +728,61 @@ impl Store {
                 excess -= 1;
             }
         }
+        // The shared audition files only the pruned conversations named go
+        // with them.
+        if excess < before {
+            self.collect_unreferenced_locked();
+        }
         Ok(())
+    }
+
+    /// Point the conversations about the project at `from` to `to`, for Move
+    /// Project and for a file moved outside the app. A conversation scoped to
+    /// the project's own folder moves to the new folder's workspace; one scoped
+    /// to a chosen folder stays where it is. Answers how many were updated.
+    pub fn relocate_project(&self, from: &Path, to: &Path) -> Result<usize, String> {
+        let _lock = self.mutation_lock()?;
+        let from_text = canonical_path(from).to_string_lossy().to_string();
+        let to_canonical = canonical_path(to);
+        let from_folder = from.parent().map(hashed_key);
+        let to_folder = to.parent();
+        let mut moved = 0;
+        for key in self.workspace_keys() {
+            let Ok(entries) = std::fs::read_dir(self.root.join(&key)) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if !is_valid_id(&name) {
+                    continue;
+                }
+                let mut dir = entry.path();
+                let Some(mut meta) = read_meta(&dir.join(META_FILE)) else {
+                    continue;
+                };
+                if meta.project_path.as_deref() != Some(from_text.as_str()) {
+                    continue;
+                }
+                meta.project_path = Some(to_canonical.to_string_lossy().to_string());
+                if from_folder.as_deref() == Some(key.as_str())
+                    && let Some(folder) = to_folder
+                {
+                    let target_key = hashed_key(folder);
+                    if target_key != key {
+                        self.ensure_workspace(&target_key, Some(folder), &now())?;
+                        let target = self.root.join(&target_key).join(&meta.id);
+                        std::fs::rename(&dir, &target)
+                            .map_err(|error| format!("sessions: {error}"))?;
+                        dir = target;
+                        meta.workspace_key = target_key;
+                        meta.workspace = Some(canonical_dir(folder).to_string_lossy().to_string());
+                    }
+                }
+                write_meta(&dir, &meta)?;
+                moved += 1;
+            }
+        }
+        Ok(moved)
     }
 
     pub fn rename(&self, id: &str, title: &str) -> Result<SessionMeta, String> {
@@ -759,6 +833,69 @@ impl Store {
         self.delete_inner(id)?;
         self.collect_unreferenced_locked();
         Ok(())
+    }
+
+    /// Every workspace folder of conversations, for the Storage page and the
+    /// stale sweep. `detached` has no folder and is never stale.
+    pub fn workspaces_on_disk(&self) -> Vec<StoredWorkspace> {
+        let paths = self.workspace_paths();
+        self.workspace_keys()
+            .into_iter()
+            .map(|key| {
+                let dir = self.root.join(&key);
+                let mut sessions = 0;
+                let mut touched = std::fs::metadata(dir.join(WORKSPACE_FILE))
+                    .and_then(|meta| meta.modified())
+                    .ok();
+                for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if !is_valid_id(&name) {
+                        continue;
+                    }
+                    sessions += 1;
+                    let modified = std::fs::metadata(entry.path().join(MESSAGES_FILE))
+                        .or_else(|_| std::fs::metadata(entry.path().join(META_FILE)))
+                        .and_then(|meta| meta.modified())
+                        .ok();
+                    touched = touched.max(modified);
+                }
+                StoredWorkspace {
+                    path: paths.get(&key).map(PathBuf::from),
+                    bytes: crate::project_data::dir_bytes(&dir),
+                    key,
+                    sessions,
+                    touched,
+                }
+            })
+            .collect()
+    }
+
+    /// Remove every conversation of one workspace, then the shared audio
+    /// only they named. `guard` refuses while a turn runs in any of them.
+    pub fn remove_workspace_guarded(
+        &self,
+        key: &str,
+        guard: &dyn Fn(&str) -> Result<(), SessionError>,
+    ) -> Result<u64, SessionError> {
+        if !is_valid_key(key) || key == DETACHED_KEY {
+            return Err("not a workspace of conversations".to_owned().into());
+        }
+        let _lock = self.mutation_lock()?;
+        let dir = self.root.join(key);
+        for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if is_valid_id(&name) {
+                guard(&name)?;
+            }
+        }
+        let bytes = crate::project_data::dir_bytes(&dir);
+        match std::fs::remove_dir_all(&dir) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("sessions: {error}").into()),
+        }
+        self.collect_unreferenced_locked();
+        Ok(bytes)
     }
 
     fn delete_inner(&self, id: &str) -> Result<(), String> {
@@ -3365,27 +3502,11 @@ fn canonical_dir(path: &Path) -> PathBuf {
 const MAX_PROJECT_PATH: usize = 4096;
 
 pub(crate) fn canonical_path(path: &Path) -> PathBuf {
-    if let Ok(resolved) = std::fs::canonicalize(path) {
-        return resolved;
-    }
-    // A project that is not saved yet, or one that moved: resolve the directory
-    // so the key of a missing file still matches the key it had when it existed.
-    match (path.parent(), path.file_name()) {
-        (Some(parent), Some(name)) => std::fs::canonicalize(parent)
-            .map(|parent| parent.join(name))
-            .unwrap_or_else(|_| path.to_path_buf()),
-        _ => path.to_path_buf(),
-    }
+    crate::project_data::canonical_path(path)
 }
 
 fn hashed_key(path: &Path) -> String {
-    let canonical = canonical_path(path);
-    let digest = Sha256::digest(canonical.to_string_lossy().as_bytes());
-    let mut key = String::with_capacity(16);
-    for byte in &digest[..8] {
-        key.push_str(&format!("{byte:02x}"));
-    }
-    key
+    crate::project_data::path_key(path)
 }
 
 /// The digest a summary names instead of carrying the project's DSL.
@@ -3804,6 +3925,44 @@ mod tests {
             return;
         }
         std::fs::remove_dir_all(store.root().parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn a_pruned_conversation_takes_the_audio_only_it_named() {
+        let (store, project) = fixture("prune-audio");
+        let hash = "c".repeat(64);
+        let first = store
+            .create(
+                Some(&workspace(&project)),
+                Some(&project),
+                Some("first"),
+                None,
+            )
+            .unwrap();
+        store
+            .append_turn(
+                &first.id,
+                &[json!({"role":"user","content":format!("clip {hash}"),"message_meta":{"version":1,"kind":"user"}})],
+                None,
+            )
+            .unwrap();
+        std::fs::create_dir_all(clip_dir(store.root())).unwrap();
+        let clip = clip_dir(store.root()).join(format!("{hash}.wav"));
+        std::fs::write(&clip, b"RIFF").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        for index in 0..MAX_SESSIONS_PER_WORKSPACE {
+            store
+                .create(
+                    Some(&workspace(&project)),
+                    Some(&project),
+                    Some(&format!("session {index}")),
+                    None,
+                )
+                .unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert!(store.find(&first.id).is_err(), "the oldest was pruned");
+        assert!(!clip.exists(), "its audio went with it");
     }
 
     #[test]

@@ -427,7 +427,9 @@ pub fn render_harmony_window(
         && let Some(parent) = path.parent()
     {
         let _ = fs::create_dir_all(parent);
-        let _ = crate::vocal_tune::write_baked_wav(path, &samples, sample_rate);
+        if crate::vocal_tune::write_baked_wav(path, &samples, sample_rate).is_ok() {
+            crate::vocal_cache::after_write(path);
+        }
     }
     Ok(Some(samples))
 }

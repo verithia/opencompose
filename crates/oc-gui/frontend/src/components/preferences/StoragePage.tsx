@@ -17,6 +17,7 @@ import {
 import { useTooltip } from "../Tooltip";
 import { historyStorage } from "../../stores/historyStorage";
 import { sizeText } from "../../stores/historyText";
+import { AppFoldersBlock, ProjectDataBlock } from "./ProjectDataBlocks";
 
 /** The directory part of a path, for the "open folder" action. */
 function parentOf(path: string): string {
@@ -239,7 +240,7 @@ export function StoragePage(props: { onClose: () => void }) {
                 </div>
               </div>
 
-              {/* Edit history: kept beside each project file; the open one's size. */}
+              {/* Edit history: the open project's size and the notice bound. */}
               <div class="preferences-block preferences-history">
                 <div class="preferences-block-head">
                   <span class="preferences-fact-label">{i18n.t("preferences.storage.history")}</span>
@@ -267,6 +268,10 @@ export function StoragePage(props: { onClose: () => void }) {
                   />
                 </label>
               </div>
+
+              <Show when={loaded().project_data}>
+                {(data) => <ProjectDataBlock data={data()} />}
+              </Show>
 
               {/* Conversations: one group per workspace, one row per session. */}
               <div class="preferences-block">
@@ -476,7 +481,8 @@ export function StoragePage(props: { onClose: () => void }) {
                       label={i18n.t("preferences.storage.clipCache")}
                       size={megabytes(
                         pcm().decoded.cached_bytes + clipTemporaryBytes(pcm().decoded)
-                        + pcm().processed.cached_bytes + clipTemporaryBytes(pcm().processed),
+                        + pcm().processed.cached_bytes + clipTemporaryBytes(pcm().processed)
+                        + (pcm().vocal?.bytes ?? 0),
                       )}
                       section="clip_pcm"
                     />
@@ -488,12 +494,29 @@ export function StoragePage(props: { onClose: () => void }) {
                       label={i18n.t("preferences.storage.clipCacheProcessed")}
                       usage={pcm().processed}
                     />
+                    <Show when={pcm().vocal}>
+                      {(vocal) => (
+                        <div class="preferences-field preferences-vocal-cache">
+                          <span class="preferences-fact-label">
+                            {i18n.t("preferences.storage.clipCacheVocal")}
+                          </span>
+                          <p class="preferences-hint">
+                            {i18n.t("preferences.storage.vocalCacheUsage", {
+                              files: vocal().files,
+                              size: megabytes(vocal().bytes),
+                              budget: megabytes(vocal().budget_bytes),
+                            })}
+                          </p>
+                        </div>
+                      )}
+                    </Show>
                     <div class="preferences-path-row">
                       <button
                         type="button"
                         class="toolbar-btn text-btn preferences-clear-clip-cache"
                         disabled={storageStore.clearing()
-                          || pcm().decoded.cached_bytes + pcm().processed.cached_bytes === 0}
+                          || pcm().decoded.cached_bytes + pcm().processed.cached_bytes
+                            + (pcm().vocal?.bytes ?? 0) === 0}
                         onClick={() => void clearClipCache()}
                       >{i18n.t("preferences.storage.clipCacheClear")}</button>
                     </div>
@@ -548,6 +571,10 @@ export function StoragePage(props: { onClose: () => void }) {
                   )}
                 </Show>
               </div>
+
+              <Show when={loaded().app_folders}>
+                {(folders) => <AppFoldersBlock folders={folders()} />}
+              </Show>
 
               <div class="preferences-block">
                 <div class="preferences-field">

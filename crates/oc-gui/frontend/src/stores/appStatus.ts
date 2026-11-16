@@ -156,9 +156,58 @@ export interface ClipCacheUsage {
   budget_bytes: number;
 }
 
+/** Vocal analyses and tune or harmony bakes, under their own bound. */
+export interface VocalCacheUsage {
+  dir: string | null;
+  files: number;
+  bytes: number;
+  budget_bytes: number;
+}
+
 export interface ClipPcmStorage {
   decoded: ClipCacheUsage;
   processed: ClipCacheUsage;
+  vocal?: VocalCacheUsage;
+}
+
+/** What one item of project data is; wire names of the backend enum. */
+export type DataKind = "history" | "note" | "recovery" | "conversations";
+
+/** One item the app keeps for a project or a workspace folder. */
+export interface DataItem {
+  kind: DataKind;
+  key: string;
+  /** The project file, or the workspace folder for conversations. */
+  path?: string | null;
+  bytes: number;
+  count: number;
+  touched_ms?: number;
+  /** The file or folder it belongs to is gone. */
+  gone: boolean;
+  /** Gone long enough that the next start removes it. */
+  due: boolean;
+}
+
+export interface ProjectDataStorage {
+  items: DataItem[];
+  stale_after_days: number;
+  total_bytes: number;
+}
+
+export type AppFolderId =
+  | "runtimes"
+  | "plugin_index"
+  | "presets"
+  | "sample_providers"
+  | "audition_scratch"
+  | "preset_trims"
+  | "logs";
+
+export interface AppFolder {
+  id: AppFolderId;
+  path: string;
+  files: number;
+  bytes: number;
 }
 
 export interface StorageReport {
@@ -167,12 +216,18 @@ export interface StorageReport {
   samples: SampleStorage;
   clip_pcm?: ClipPcmStorage;
   sessions: SessionStorage;
+  project_data?: ProjectDataStorage;
+  app_folders?: AppFolder[];
   preferences: string;
 }
 
 export const storageReport = () => invoke<StorageReport>("storage_report");
 
 export const clearClipPcmCache = () => invoke<ClipPcmStorage>("clear_clip_pcm_cache");
+
+/** Remove one item of project data whose file or folder is gone. */
+export const removeProjectData = (kind: DataKind, key: string) =>
+  invoke<ProjectDataStorage>("remove_project_data", { kind, key });
 
 export const clearSampleCache = () => invoke<StorageReport>("clear_sample_cache");
 

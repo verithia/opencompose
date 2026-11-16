@@ -92,7 +92,7 @@ pub(crate) fn create_project_in(
         .unwrap_or_else(|| "Untitled".to_string());
     if let Some(path) = path.as_deref() {
         // A new project replaces whatever file was there, and its history too.
-        crate::edit_history::discard_beside(path);
+        crate::edit_history::start_fresh(path);
     }
     replace_project_with(inner, new_project_document(name), path.clone(), false, None)?;
     if let Some(path) = path.as_deref() {
@@ -102,7 +102,7 @@ pub(crate) fn create_project_in(
             inner.file_path = None;
             inner.audio.resource_root = None;
             inner.undo.clear();
-            crate::edit_history::discard_beside(path);
+            crate::edit_history::discard(path);
             return Err(error);
         }
     }
@@ -146,7 +146,7 @@ pub(crate) fn create_starter_project_in(
         return Err(format!("Cannot write starter {}: {error}", path.display()));
     }
     drop(file);
-    crate::edit_history::discard_beside(&path);
+    crate::edit_history::start_fresh(&path);
     match replace_project_with(inner, project, Some(path.clone()), false, None) {
         Ok(snapshot) => Ok(snapshot),
         Err(error) => {
@@ -535,8 +535,10 @@ pub(crate) struct SaveRequest {
     pub(crate) save_path: PathBuf,
     pub(crate) revision: u64,
     relocated: bool,
-    /// The history was copied beside the new path, for a save to another file.
+    /// The history was copied to the new path's, for a save to another file.
     history_copied: bool,
+    /// SHA-256 of the file the save wrote, for the history's marker.
+    file_sha: Option<String>,
 }
 
 impl SaveRequest {
@@ -545,7 +547,7 @@ impl SaveRequest {
         self.old_path.as_deref() != Some(self.save_path.as_path())
     }
 
-    /// Copy the history to the new file's side, so Save As keeps it. Runs
+    /// Copy the history to the new file's, so Save As keeps it. Runs
     /// without the document lock; the history was synced at capture.
     fn copy_history(&mut self) {
         if !self.changes_path() || !crate::edit_history::persistence_enabled() {
@@ -612,6 +614,7 @@ pub(crate) fn snapshot_for_save(
         revision: inner.revision,
         relocated: false,
         history_copied: false,
+        file_sha: None,
     })
 }
 
@@ -635,6 +638,9 @@ pub(crate) fn write_save_with_library(
         request.project = project;
         request.dsl_source = source;
         request.relocated = true;
+    }
+    if crate::edit_history::persistence_enabled() {
+        request.file_sha = crate::edit_history::journal::fingerprint(&request.save_path);
     }
     Ok(())
 }
@@ -666,7 +672,15 @@ pub(crate) fn publish_save(state: &AppState, request: &SaveRequest) -> Option<bo
     inner.autosave_digest = 0;
     if request.changes_path() {
         inner.rehome_history(request.history_copied);
+        if let Some(old) = request.old_path.as_deref() {
+            crate::project_data::relocate(
+                old,
+                &request.save_path,
+                crate::project_data::Relocation::Copy,
+            );
+        }
     }
+    inner.mark_history_file(request.file_sha.clone());
     let root = request.save_path.parent().map(Path::to_path_buf);
     let repointed =
         request.relocated || needs_repoint(inner.audio.resource_root.as_deref(), root.as_deref());
@@ -808,7 +822,7 @@ pub(crate) fn move_project_inner(
     if to == from {
         return Ok((snapshot(&state.lock_inner()), false));
     }
-    if to.exists() || dir_for(&to).exists() {
+    if to.exists() {
         return Err(format!(
             "{} already exists; choose a name that is free.",
             to.display()
@@ -821,7 +835,7 @@ pub(crate) fn move_project_inner(
         std::fs::rename(&from, &to).map_err(|error| format!("Cannot move the project: {error}"))?;
         let history = dir_for(&from);
         if history.exists()
-            && let Err(error) = std::fs::rename(&history, dir_for(&to))
+            && let Err(error) = crate::edit_history::journal::move_dir(&history, &dir_for(&to))
         {
             let _ = std::fs::rename(&to, &from);
             return Err(format!("Cannot move the project's history: {error}"));
@@ -829,8 +843,9 @@ pub(crate) fn move_project_inner(
         if backup.exists() {
             let _ = std::fs::rename(&backup, crate::project_persist::backup_path(&to));
         }
-        inner.file_path = Some(to);
+        inner.file_path = Some(to.clone());
         inner.rehome_history(true);
+        crate::project_data::relocate(&from, &to, crate::project_data::Relocation::Move);
         return Ok((snapshot(&inner), false));
     }
     let mut request = snapshot_for_save(Some(to.display().to_string()), state)?;
@@ -864,11 +879,9 @@ pub(crate) fn move_project_inner(
     if let Err(error) = std::fs::remove_dir_all(dir_for(&from))
         && error.kind() != std::io::ErrorKind::NotFound
     {
-        log::warn!(
-            "move: the old history stays beside {}: {error}",
-            from.display()
-        );
+        log::warn!("move: the old history of {} stays: {error}", from.display());
     }
+    crate::project_data::relocate(&from, &to, crate::project_data::Relocation::Move);
     let inner = state.lock_inner();
     Ok((snapshot(&inner), repointed))
 }

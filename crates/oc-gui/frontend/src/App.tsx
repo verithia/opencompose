@@ -177,7 +177,7 @@ export default function App() {
     createEffect(on(() => store.projectRevision, () => {
       buildPollFastUntil = performance.now() + 8000;
     }));
-    // Another project has another history beside it; its size decides the notice.
+    // Another project has another history; its size decides the notice.
     createEffect(on(() => store.filePath(), () => void historyStorage.refresh()));
     onCleanup(mountNativeMenu({
       blocked: () => dialogOpen() || onboardingStore.pending() || !languageChosen() || quitPrompt(),

@@ -12,7 +12,9 @@ conversation inside a model's context window.
   <workspace key>/workspace.json            the directory this key was derived from
   <workspace key>/<session id>/meta.json
   <workspace key>/<session id>/messages.jsonl
-  detached/<session id>/…                   a conversation with no workspace
+  <workspace key>/<session id>/results/<sha256>.txt    full tool results
+  <workspace key>/<session id>/versions/<sha256>.ocp   project versions
+  detached/<session id>/...                 a conversation with no workspace
 ```
 
 Directories are `0700` and files are `0600`, written through the same private
@@ -66,8 +68,24 @@ Storage` reports both directories with their sizes and the shared budget, and
 confirmation. Conversations keep the audio blocks they name; those files are
 reported missing until a range is asked for again.
 
+### Full tool results
+
+A tool result that is too large for its message row is written to
+`<session dir>/results/<sha256>.txt`, and the row keeps `result_sha` in place of
+the text. The file is written under the store lock before the transcript line,
+so a row never names a result that is not on disk. A result over 2,000,000
+characters is not written: the row keeps its bounded preview instead.
+
+The row that names the hash is the file's owner record. The sweep removes a
+result file once no saved line of its session names it, so a reload, a
+compaction and a restart keep every result a message still refers to, and
+nothing else. A fork copies the files its inherited rows name, so deleting the
+parent does not remove the fork's results. A read validates the hash before it
+becomes a path and bounds the bytes it loads, so a damaged file cannot grow
+memory.
+
 A conversation belongs to a **workspace**, which is the directory holding the
-project files — not to one `.ocp`. Projects in one directory share one set of
+project files, not to one `.ocp`. Projects in one directory share one set of
 conversations; opening a file in another directory shows another set. A
 conversation's `meta.json` records the project file it last worked on, and that
 record follows the file the panel has open: switching to another `.ocp` in the

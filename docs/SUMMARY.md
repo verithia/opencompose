@@ -23,6 +23,7 @@
 - [Ornaments](ornaments.md)
 - [Command line](manual/cli.md)
 - [The window](manual/gui.md)
+- [On-disk storage](storage-layout.md)
 - [Markers and the loop region](manual/markers.md)
 - [Built-in devices](manual/devices.md)
 - [OpenSynth](manual/synth.md)

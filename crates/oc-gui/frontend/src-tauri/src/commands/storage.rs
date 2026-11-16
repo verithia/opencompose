@@ -63,13 +63,115 @@ pub struct SampleStorage {
 pub struct ClipPcmStorage {
     pub decoded: oc_engine::media_cache::ClipCacheUsage,
     pub processed: oc_engine::media_cache::ClipCacheUsage,
+    /// Vocal analyses and tune or harmony bakes, under their own bound.
+    pub vocal: oc_engine::vocal_cache::VocalCacheUsage,
 }
 
 fn clip_pcm_report() -> ClipPcmStorage {
     ClipPcmStorage {
         decoded: oc_engine::media_cache::shared().disk_usage(),
         processed: oc_engine::derived_cache::shared().disk_usage(),
+        vocal: oc_engine::vocal_cache::usage(
+            oc_engine::vocal_analysis::default_cache_dir().as_deref(),
+        ),
     }
+}
+
+/// What the app keeps for projects and workspace folders: edit histories, AI
+/// notes, recovery copies and conversations, each with whether the file or
+/// folder it belongs to is gone.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ProjectDataStorage {
+    pub items: Vec<crate::project_data::stale::DataItem>,
+    /// How long a gone item waits before the startup sweep removes it.
+    pub stale_after_days: u64,
+    pub total_bytes: u64,
+}
+
+fn project_data_report() -> ProjectDataStorage {
+    let items = crate::project_data::stale::inventory(std::time::SystemTime::now());
+    ProjectDataStorage {
+        total_bytes: items.iter().map(|item| item.bytes).sum(),
+        stale_after_days: crate::project_data::stale::STALE_AFTER.as_secs() / 86_400,
+        items,
+    }
+}
+
+/// One folder of app data the page reports by size.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AppFolderId {
+    /// Installed helper runtimes, such as the stem separator.
+    Runtimes,
+    /// The cached plugin catalog.
+    PluginIndex,
+    /// The preset library.
+    Presets,
+    /// Sample provider plugins.
+    SampleProviders,
+    /// Audition renders waiting to be handed to a conversation.
+    AuditionScratch,
+    /// Measured loudness trims of presets.
+    PresetTrims,
+    /// Diagnostic logs.
+    Logs,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AppFolder {
+    pub id: AppFolderId,
+    pub path: String,
+    pub files: usize,
+    pub bytes: u64,
+}
+
+fn app_folders() -> Vec<AppFolder> {
+    let config = crate::private_fs::config_dir();
+    let cache_root = oc_engine::media_cache::default_cache_dir()
+        .and_then(|media| media.parent().map(Path::to_path_buf));
+    let logs = oc_diag::log_path()
+        .and_then(|path| path.parent().map(Path::to_path_buf))
+        .unwrap_or_else(oc_diag::log_dir);
+    let samples = std::env::var_os("OPENCOMPOSE_SAMPLE_PLUGIN_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| config.join("sample-providers"));
+    let folders: [(AppFolderId, Option<PathBuf>); 7] = [
+        (
+            AppFolderId::Runtimes,
+            crate::plugin_store::separator_runtime::root(),
+        ),
+        (
+            AppFolderId::PluginIndex,
+            Some(crate::plugin_index::index_dir()),
+        ),
+        (
+            AppFolderId::Presets,
+            Some(super::patch::preset_library().dir().to_path_buf()),
+        ),
+        (AppFolderId::SampleProviders, Some(samples)),
+        (
+            AppFolderId::AuditionScratch,
+            super::audition_scratch::scratch_dir().ok(),
+        ),
+        (
+            AppFolderId::PresetTrims,
+            cache_root.map(|root| root.join("preset-trims")),
+        ),
+        (AppFolderId::Logs, Some(logs)),
+    ];
+    folders
+        .into_iter()
+        .filter_map(|(id, path)| {
+            let path = path?;
+            let (files, bytes) = dir_usage(&path, 0);
+            Some(AppFolder {
+                id,
+                path: path.display().to_string(),
+                files,
+                bytes,
+            })
+        })
+        .collect()
 }
 
 /// Everything the Storage page shows.
@@ -81,6 +183,10 @@ pub struct StorageReport {
     pub clip_pcm: ClipPcmStorage,
     /// Conversations: messages, DSL versions and the archived audition audio.
     pub sessions: SessionStorage,
+    /// Histories, notes, recovery copies and conversations by project.
+    pub project_data: ProjectDataStorage,
+    /// The other folders the app keeps.
+    pub app_folders: Vec<AppFolder>,
     /// The private file this build writes its own preferences to.
     pub preferences: String,
 }
@@ -397,6 +503,8 @@ fn report_at(samples: Option<&Path>) -> StorageReport {
         samples: samples_report_at(samples),
         clip_pcm: clip_pcm_report(),
         sessions: sessions_report(),
+        project_data: project_data_report(),
+        app_folders: app_folders(),
         preferences: crate::gui_settings::path().display().to_string(),
     }
 }
@@ -412,6 +520,8 @@ pub async fn storage_scan(
     run_blocking(move || {
         let value = match section.as_str() {
             "clip_pcm" => serde_json::to_value(clip_pcm_report()).unwrap_or_default(),
+            "project_data" => serde_json::to_value(project_data_report()).unwrap_or_default(),
+            "app_folders" => serde_json::to_value(app_folders()).unwrap_or_default(),
             "sessions" => serde_json::to_value(sessions_report()).unwrap_or_default(),
             "soundfonts" => serde_json::to_value(soundfonts_report()).unwrap_or_default(),
             "plugins" => serde_json::to_value({
@@ -443,6 +553,9 @@ pub async fn clear_clip_pcm_cache() -> Result<ClipPcmStorage, String> {
     run_blocking(|| {
         oc_engine::media_cache::shared().clear();
         oc_engine::derived_cache::shared().clear();
+        if let Some(dir) = oc_engine::vocal_analysis::default_cache_dir() {
+            oc_engine::vocal_cache::clear(&dir);
+        }
         Ok(clip_pcm_report())
     })
     .await
@@ -484,6 +597,39 @@ pub fn clear_audition_archive(state: State<AppState>) -> Result<StorageReport, S
         .clear_audition_archive()
         .map_err(|error| format!("cannot clear the audition archive: {error}"))?;
     Ok(report(&state))
+}
+
+/// Remove a cache folder no reader uses any more, off the startup path. The
+/// folder holds only files the cache can rebuild.
+pub(crate) fn retire_cache(dir: PathBuf) {
+    if !dir.is_dir()
+        || oc_engine::media_cache::default_cache_dir().as_deref() == Some(dir.as_path())
+    {
+        return;
+    }
+    let _ = std::thread::Builder::new()
+        .name("retire-cache".into())
+        .spawn(move || {
+            if let Err(error) = std::fs::remove_dir_all(&dir) {
+                log::warn!("cannot remove the retired cache {}: {error}", dir.display());
+            }
+        });
+}
+
+/// Remove the data of one project or workspace folder that is gone, and
+/// report what is left. The open project's data is refused.
+#[tauri::command]
+pub async fn remove_project_data(
+    state: State<'_, AppState>,
+    kind: crate::project_data::stale::DataKind,
+    key: String,
+) -> Result<ProjectDataStorage, String> {
+    let open = state.lock_inner().file_path.clone();
+    run_blocking(move || {
+        crate::project_data::stale::remove(kind, &key, open.as_deref())?;
+        Ok(project_data_report())
+    })
+    .await
 }
 
 /// Open one https address in the platform's browser.
@@ -561,6 +707,42 @@ pub fn open_storage_folder(path: String) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_report_lists_project_data_with_its_state_and_every_app_folder() {
+        use crate::edit_history::journal;
+        let dir = tempfile::tempdir().unwrap();
+        let _sessions = crate::ai::sessions::test_root(dir.path().join("sessions"));
+        let _notes = crate::ai::project_instructions::test_root(&dir.path().join("notes"));
+        let live = dir.path().join("live.ocp");
+        std::fs::write(&live, "x").unwrap();
+        let gone = dir.path().join("gone.ocp");
+        for project in [&live, &gone] {
+            journal::write_marker(
+                &journal::dir_for(project),
+                &journal::Marker::new(project, None),
+            )
+            .unwrap();
+        }
+        let report = project_data_report();
+        let state = |path: &Path| {
+            let canonical = crate::project_data::canonical_path(path)
+                .display()
+                .to_string();
+            report
+                .items
+                .iter()
+                .find(|item| item.path.as_deref() == Some(canonical.as_str()))
+                .map(|item| (item.kind, item.gone, item.due))
+        };
+        use crate::project_data::stale::DataKind;
+        assert_eq!(state(&live), Some((DataKind::History, false, false)));
+        assert_eq!(state(&gone), Some((DataKind::History, true, false)));
+        assert_eq!(report.stale_after_days, 30);
+        assert!(report.total_bytes > 0);
+        let ids: Vec<AppFolderId> = app_folders().iter().map(|folder| folder.id).collect();
+        assert_eq!(ids.len(), 7, "{ids:?}");
+    }
 
     #[test]
     fn only_https_addresses_reach_the_browser() {

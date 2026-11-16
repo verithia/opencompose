@@ -193,7 +193,7 @@ fn waiting_for_archive(path: &Path, now: SystemTime) -> Result<bool, String> {
     }
 }
 
-fn scratch_dir() -> Result<PathBuf, String> {
+pub(crate) fn scratch_dir() -> Result<PathBuf, String> {
     #[cfg(test)]
     return Ok(crate::private_fs::config_dir().join("audition-scratch"));
 

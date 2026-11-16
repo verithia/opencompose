@@ -18,7 +18,7 @@ export type {
 } from "../types/undo";
 
 // ============================================================================
-// Edit history (backend-managed, kept beside the project file)
+// Edit history (backend-managed, kept in the app data folder)
 // ============================================================================
 
 export const historyUndo = () => invoke<HistoryStep<ProjectSnapshot>>("history_undo");

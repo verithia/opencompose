@@ -42,6 +42,7 @@ mod preview;
 mod preview_focus;
 mod private_fs;
 pub mod probe;
+mod project_data;
 mod project_extent;
 mod project_persist;
 mod project_resources;
@@ -174,11 +175,16 @@ pub fn run_with_options(path: Option<String>, diag: DiagOptions) {
                 log::warn!("menu: {error}");
             }
             app.handle().plugin(tauri_plugin_dialog::init())?;
-            if let Ok(dir) = app.path().app_cache_dir() {
+            if let Some(dir) = oc_engine::media_cache::default_cache_dir() {
                 let cap = oc_engine::media_cache::DEFAULT_DISK_BYTES;
-                if let Err(error) = oc_engine::media_cache::init_shared(dir.join("media"), cap) {
+                if let Err(error) = oc_engine::media_cache::init_shared(dir, cap) {
                     log::warn!("media cache: {error}");
                 }
+            }
+            // The GUI shares its decoded cache with the CLI; the folder it
+            // kept on its own holds nothing a reader needs, so it is removed.
+            if let Ok(old) = app.path().app_cache_dir() {
+                commands::retire_cache(old.join("media"));
             }
             // Reads the last-good cache from disk. Nothing fetches here: the
             // plugin browser asks for a refresh when it opens.
@@ -209,6 +215,7 @@ pub fn run_with_options(path: Option<String>, diag: DiagOptions) {
             plugin_inventory::start(app.handle().clone());
             agent_api::spawn(app.handle().clone());
             autosave::spawn(app.handle().clone());
+            project_data::stale::spawn(app.handle().clone());
             // Desktop windows stay hidden until setup; headless hosts must not
             // claim desktop activation or execute a background frontend.
             if !mode.is_desktop() {
@@ -293,6 +300,7 @@ pub fn run_with_options(path: Option<String>, diag: DiagOptions) {
             commands::network_test,
             commands::clear_sample_cache,
             commands::clear_clip_pcm_cache,
+            commands::remove_project_data,
             commands::clear_audition_archive,
             commands::open_storage_folder,
             commands::open_url,

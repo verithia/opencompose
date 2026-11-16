@@ -61,7 +61,7 @@ export interface HistoryPage {
   entries: UndoHistoryEntry[];
   total: number;
   applied: number;
-  /** Whether the history is kept beside the project file. */
+  /** Whether the history is kept on disk for the project file. */
   journaled: boolean;
 }
 

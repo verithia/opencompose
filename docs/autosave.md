@@ -16,22 +16,23 @@ project:
 
 `<project-key>` names the document:
 
-- A saved project is keyed by its file identity: the device and inode number on
-  Unix, and the creation time and size on Windows, where the standard library
-  exposes no file id. Renaming or moving the file keeps that identity, so its
-  copies stay reachable. When the file is gone, the key falls back to a 64-bit
-  hash of the canonical path.
+- A saved project is keyed by its path key, the first 8 bytes of the SHA-256 of
+  its canonical path in hex. The edit history, the AI note and the recovery
+  copies of one file share that key. Renaming or moving the file keeps its
+  copies reachable through Move Project, and a file moved outside the app is
+  matched by the content SHA-256 its owner marker records.
 - A project that has never been saved is keyed by the app session. Two windows
   with unsaved documents therefore get separate directories, and neither can
   list, restore or prune copies the other wrote.
 
-The `.owner` marker beside a directory records the project path. A save replaces
-the project file by rename, which gives it a new identity; the marker lets the
-save clear the directory the old identity left behind. A copy written by an
-older build lives in a directory named by the path hash alone, and still lists
-and restores. Its copies of a never-saved document live in the shared
-`untitled` directory, which every session lists because no session can claim
-them; a save from an untitled document retires that directory.
+The `.owner` marker beside a directory records the project path and the content
+SHA-256. A save replaces the project file by rename; the marker lets a move
+adopt the copies, and lets a save clear the directories an earlier identity key
+left behind. A copy written by an older build lives in a directory named by the
+file identity or the older 64-bit path hash, and still lists and restores. Its
+copies of a never-saved document live in the shared `untitled` directory, which
+every session lists because no session can claim them; a save from an untitled
+document retires that directory.
 
 Copies hold the project document only. Media files declared by the project stay
 in the project folder and are not duplicated; restoring a copy assumes those

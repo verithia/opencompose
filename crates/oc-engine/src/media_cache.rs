@@ -737,12 +737,34 @@ fn env_bytes(name: &str) -> Option<u64> {
     std::env::var(name).ok()?.parse().ok()
 }
 
-/// Platform cache directory used when the GUI does not supply one. A test build
-/// never resolves the operator's home; it uses the process scratch root.
+/// The cache directory every OpenCompose process uses: the GUI, the CLI and
+/// the derived caches beside it. A selected profile keeps it under
+/// `<profile>/cache`; a test build never resolves the operator's home and uses
+/// the process scratch root.
 pub fn default_cache_dir() -> Option<PathBuf> {
     if oc_audio::private_fs::running_under_test() {
         return Some(oc_audio::private_fs::test_config_dir().join("media"));
     }
+    cache_dir_for(
+        oc_audio::private_fs::explicit_config_dir().as_deref(),
+        platform_cache_dir,
+    )
+}
+
+/// A selected profile keeps its caches with it, so two profiles never share
+/// or evict each other's cache; without one the platform's cache folder holds
+/// them.
+fn cache_dir_for(
+    profile: Option<&Path>,
+    platform: impl FnOnce() -> Option<PathBuf>,
+) -> Option<PathBuf> {
+    match profile {
+        Some(profile) => Some(profile.join("cache").join("media")),
+        None => platform(),
+    }
+}
+
+fn platform_cache_dir() -> Option<PathBuf> {
     let home = std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
         .map(PathBuf::from)?;
@@ -804,6 +826,19 @@ pub fn init_shared(dir: PathBuf, disk_cap: u64) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_selected_profile_keeps_the_cache_inside_it() {
+        let profile = Path::new("/profiles/a");
+        assert_eq!(
+            super::cache_dir_for(Some(profile), || unreachable!()),
+            Some(profile.join("cache/media"))
+        );
+        assert_eq!(
+            super::cache_dir_for(None, || Some(PathBuf::from("/platform"))),
+            Some(PathBuf::from("/platform"))
+        );
+    }
+
     use super::*;
 
     #[test]

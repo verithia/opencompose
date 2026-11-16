@@ -66,7 +66,7 @@ beforeEach(async () => {
     if (cmd === "get_undo_state") return UNDO_STATE;
     if (cmd === "history_page") return page(typed.before);
     if (cmd === "history_info") {
-      return { total: history.length, applied: 2, journaled: true, bytes, path: "/s/song.ocp.hist" };
+      return { total: history.length, applied: 2, journaled: true, bytes, path: "/config/history/0123456789abcdef" };
     }
     if (cmd === "history_jump") return { status: "applied", snapshot: makeSnapshot() };
     if (cmd === "history_clear_older") {

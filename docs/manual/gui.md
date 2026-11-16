@@ -59,11 +59,18 @@ history and backup along; nothing stays at the old place.
 
 ## Edit history
 
-Each project keeps its edit history beside its file, in `<name>.ocp.hist/`, so
-undo reaches edits from earlier sessions. Every entry records who made it: you,
-the agent of a named conversation, an external client, or a change made to the
-file outside OpenCompose (when the file does not match the history, opening
-it adds one entry that bridges the two, so older entries still undo correctly).
+Each project keeps its edit history in the app data folder, under
+`<config>/history/<path key>/`, so undo reaches edits from earlier sessions. The
+history does not sit beside the `.ocp` file. `<config>` is the app profile
+directory (`~/.opencompose`, or the directory named by
+`OPENCOMPOSE_CONFIG_DIR`). The key is the first 8 bytes of the SHA-256 of the
+project's canonical path, in hex.
+
+The folder holds `project.json` (the marker: version, canonical project path and
+the file's content SHA-256), `entries.jsonl` (one entry per line), `index.bin`
+(the live linear history) and `state.json` (the cursor and the document at it).
+Every entry records who made it: you, the agent of a named conversation, an
+external client, or a change made to the file outside OpenCompose.
 
 - **Mod+Z** and **Mod+Shift+Z** step through the history. The status bar names
   what the step took back or reapplied, for example
@@ -79,8 +86,25 @@ it adds one entry that bridges the two, so older entries still undo correctly).
   the oldest kept entry. Entries you undid are never cleared. When a history
   passes the size set in **Preferences > Storage** (1 GB by default), the tab and
   the status bar offer the clearing; nothing is cleared without you.
-- **Save As** copies the history to the new file, and **New** over an existing
-  file starts a new history there.
+- The history is matched by path. A file whose path has no history is matched by
+  content: its SHA-256 is compared with the marker of every history, and a
+  history whose project file is gone follows the file. This adopts the history of
+  a file moved or copied outside the app: the history is copied when the old file
+  still exists and moved when the old file is gone. A project created with
+  **New** starts a fresh history and never adopts another file's.
+- **Move Project** gives the history, the AI note, the conversations scoped to
+  the project folder and the recovery copies to the new path, and nothing stays
+  at the old path. **Save As** copies the history and the AI note and leaves the
+  conversations and recovery copies with the old file.
+- When the project file or workspace folder is gone, its data waits 30 days and
+  is then removed by a sweep that runs 60 seconds after start. A file on a
+  volume that is not mounted is not counted as gone, and the open project's data
+  and a running conversation are never removed.
+- **Preferences > Storage** lists the project data of each project and folder
+  (history, AI note, recovery copies and conversations) with its size and its
+  gone or due state. Only gone data offers **Remove**; the page also reports the
+  other app folders and the clip PCM cache. See
+  [On-disk storage](../storage-layout.md).
 
 ## Timeline
 
@@ -471,8 +495,11 @@ preferences list immediately.
 ## Files on disk
 
 - Projects are `.ocp` text. Saving is the same document the CLI reads.
-- Media cache: `~/Library/Caches/OpenCompose/media` (platform cache directory
-  elsewhere). Decoded audio and stretch variants are recomputable.
+- Media cache: `<config>/cache/media` when a profile is selected, otherwise the
+  platform cache directory (`~/Library/Caches/OpenCompose/media` on macOS).
+  Decoded audio, stretch variants and vocal analyses are recomputable.
+- The history, recovery copies, AI conversations and caches are described in
+  [On-disk storage](../storage-layout.md).
 - Preferences for live MIDI: `~/.opencompose/midi.json`.
 - Audio devices, sample rate, buffer, capture layout and monitoring:
   `~/.opencompose/audio.json`. See [Audio devices](../audio-devices.md).

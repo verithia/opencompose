@@ -8,7 +8,8 @@
 //!   <key>.md              the note, exactly as written
 //! ```
 //!
-//! The key is the first 8 bytes of the SHA-256 of the canonical project path,
+//! The key is the path key every per-project store uses (the first 8 bytes of
+//! the SHA-256 of the canonical project path; see [`crate::project_data`]),
 //! so several `.ocp` files in one workspace keep separate notes. `index.json`
 //! carries the readable path for the panel and for diagnosing a key; it is
 //! written with the note, never on a read.
@@ -19,7 +20,7 @@
 //! A longer note is refused before anything is written; it is never truncated.
 use crate::private_fs;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -76,6 +77,15 @@ struct Index {
 struct IndexEntry {
     path: String,
     updated: String,
+}
+
+/// One note on disk, for the Storage page and the stale sweep.
+#[derive(Debug, Clone)]
+pub struct StoredNote {
+    pub key: String,
+    pub path: Option<PathBuf>,
+    pub bytes: u64,
+    pub modified: Option<std::time::SystemTime>,
 }
 
 /// The note store. `root` is the directory holding `index.json` and the notes.
@@ -224,6 +234,81 @@ impl Store {
         })
     }
 
+    /// Give the note of `from` to `to`: moved for Move Project and a file
+    /// moved outside the app, copied for Save As. Answers whether a note went.
+    pub fn relocate(&self, from: &Path, to: &Path, copy: bool) -> Result<bool, String> {
+        let (from_key, to_key) = (key_for(from), key_for(to));
+        if from_key == to_key {
+            return Ok(false);
+        }
+        let Some(text) = self.read_note(&from_key)? else {
+            return Ok(false);
+        };
+        private_fs::write_atomic(&self.note_path(&to_key), text.as_bytes())
+            .map_err(|error| format!("project instructions: {error}"))?;
+        let mut index = self.read_index();
+        let updated = index
+            .projects
+            .get(&from_key)
+            .map(|entry| entry.updated.clone())
+            .unwrap_or_else(crate::ai::sessions::now);
+        index.projects.insert(
+            to_key,
+            IndexEntry {
+                path: canonical_project(to).to_string_lossy().to_string(),
+                updated,
+            },
+        );
+        if !copy {
+            index.projects.remove(&from_key);
+            let _ = std::fs::remove_file(self.note_path(&from_key));
+        }
+        self.record_index(&mut index);
+        Ok(true)
+    }
+
+    /// Every stored note: its key, the project path the index names (absent
+    /// when the index lost it), its size and when it was last written.
+    pub fn notes(&self) -> Vec<StoredNote> {
+        let index = self.read_index();
+        let Ok(read) = std::fs::read_dir(&self.root) else {
+            return Vec::new();
+        };
+        read.flatten()
+            .filter_map(|entry| {
+                let name = entry.file_name().to_str()?.to_owned();
+                let key = name.strip_suffix(".md")?.to_owned();
+                if !crate::project_data::is_path_key(&key) {
+                    return None;
+                }
+                let meta = entry.metadata().ok()?;
+                Some(StoredNote {
+                    path: index
+                        .projects
+                        .get(&key)
+                        .map(|entry| PathBuf::from(&entry.path)),
+                    key,
+                    bytes: meta.len(),
+                    modified: meta.modified().ok(),
+                })
+            })
+            .collect()
+    }
+
+    /// Remove the note stored under `key`.
+    pub fn remove_key(&self, key: &str) -> Result<(), String> {
+        match std::fs::remove_file(self.note_path(key)) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("project instructions: {error}")),
+        }
+        let mut index = self.read_index();
+        if index.projects.remove(key).is_some() {
+            self.record_index(&mut index);
+        }
+        Ok(())
+    }
+
     fn note_path(&self, key: &str) -> PathBuf {
         self.root.join(format!("{key}.md"))
     }
@@ -267,28 +352,12 @@ impl Store {
 /// The key a project's note lives under: the first 8 bytes of the SHA-256 of its
 /// canonical path, in hex.
 pub fn key_for(project: &Path) -> String {
-    let canonical = canonical_project(project);
-    let digest = Sha256::digest(canonical.to_string_lossy().as_bytes());
-    let mut key = String::with_capacity(16);
-    for byte in &digest[..8] {
-        key.push_str(&format!("{byte:02x}"));
-    }
-    key
+    crate::project_data::path_key(project)
 }
 
-/// The project path as the store keys it. A file that does not exist yet keeps
-/// its name under a canonical directory, so a note written before the first
-/// save still matches the note read after it.
+/// The project path as the store keys it; see [`crate::project_data`].
 fn canonical_project(path: &Path) -> PathBuf {
-    if let Ok(resolved) = std::fs::canonicalize(path) {
-        return resolved;
-    }
-    match (path.parent(), path.file_name()) {
-        (Some(parent), Some(name)) => std::fs::canonicalize(parent)
-            .map(|parent| parent.join(name))
-            .unwrap_or_else(|_| path.to_path_buf()),
-        _ => path.to_path_buf(),
-    }
+    crate::project_data::canonical_path(path)
 }
 
 /// Points the store at a fixture directory for the duration of one test.

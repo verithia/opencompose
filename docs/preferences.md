@@ -97,8 +97,16 @@ disk rather than what a project claims to use.
 |---|---|---|
 | SoundFonts | The installed packs and their folder. | Open folder. |
 | Plugins | Bundles found in the search paths, counted per format. | Open folder for each path. |
+| Project data | Edit histories, AI notes, recovery copies and conversations of each project and workspace folder, with size and a gone or due state. | Scan, and Remove only for data whose file or folder is gone. |
+| Conversations | Each workspace's saved conversations and the shared audition audio archive. | Delete one conversation, Clear audition audio. |
+| Clip cache | Decoded and processed clip PCM, and the vocal analysis and bake cache against its 1 GiB budget. | Scan, Clear. |
 | Sample cache | Files and bytes under the open project's `media/samples`. | Open folder, Clear. |
+| App folders | Runtimes, the plugin index, presets, sample providers, audition scratch, preset trims and logs. | Scan, Open folder. |
 | Preferences file | The settings file this build writes. | Open folder, then Export or Import. |
+
+Project data whose file or folder is gone waits 30 days and is then removed by
+the startup sweep. Removing one by hand is offered only while it is gone. See
+[On-disk storage](storage-layout.md).
 
 **Clear** deletes every file inside `media/samples` of the open project and
 leaves the folder in place. It never touches the project file, an audio clip

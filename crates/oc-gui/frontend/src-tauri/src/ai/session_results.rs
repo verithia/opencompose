@@ -25,7 +25,7 @@ pub const FULL_RESULT: &str = "full_result";
 pub const RESULT_SHA: &str = "result_sha";
 
 pub(super) fn is_hash(value: &str) -> bool {
-    value.len() == 64 && value.bytes().all(|c| c.is_ascii_hexdigit())
+    crate::project_data::is_sha256(value)
 }
 
 fn path(dir: &Path, hash: &str) -> PathBuf {

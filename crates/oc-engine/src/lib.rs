@@ -117,6 +117,7 @@ pub mod stems;
 pub mod stretch;
 pub mod touch;
 pub mod vocal_analysis;
+pub mod vocal_cache;
 pub mod vocal_harmony;
 pub mod vocal_snap;
 pub mod vocal_tune;
