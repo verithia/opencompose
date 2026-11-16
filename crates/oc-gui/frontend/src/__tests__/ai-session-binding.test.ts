@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { bindingBar, projectName, sessionBinding } from "../ai/binding";
+import { followsOpenProject, projectName, sessionBinding } from "../ai/binding";
 import { hostNotice, messageKind, projectBoundNotice, toolSurfaceNotice, type MessageMeta } from "../ai/messageProtocol";
 import { restoredTranscript } from "../ai/transcript";
 import type { WireMessage } from "../ai/wire";
@@ -99,14 +99,17 @@ describe("typed host notices in the transcript", () => {
 });
 
 describe("session binding status", () => {
-  it("validates the backend answer and shows a bar only on a mismatch", () => {
+  it("validates the backend answer and follows only another open project", () => {
     expect(sessionBinding({ bound: "/songs/a.ocp", open: "/songs/b.ocp", matches: false })).toEqual({ bound: "/songs/a.ocp", open: "/songs/b.ocp", matches: false });
     expect(sessionBinding({ bound: null, open: "/songs/b.ocp", matches: true })).toEqual({ bound: null, open: "/songs/b.ocp", matches: true });
     expect(sessionBinding({ bound: 7, open: null, matches: false })).toBeNull();
     expect(sessionBinding(null)).toBeNull();
-    expect(bindingBar({ bound: "/songs/a.ocp", open: "/songs/b.ocp", matches: false })).toEqual({ bound: "/songs/a.ocp", open: "/songs/b.ocp" });
-    expect(bindingBar({ bound: "/songs/a.ocp", open: "/songs/a.ocp", matches: true })).toBeNull();
-    expect(bindingBar({ bound: null, open: "/songs/b.ocp", matches: true })).toBeNull();
+    expect(followsOpenProject({ bound: "/songs/a.ocp", open: "/songs/b.ocp", matches: false })).toBe(true);
+    expect(followsOpenProject({ bound: "/songs/a.ocp", open: "/songs/a.ocp", matches: true })).toBe(false);
+    expect(followsOpenProject({ bound: null, open: "/songs/b.ocp", matches: true })).toBe(false);
+    // With no project open there is nothing to follow.
+    expect(followsOpenProject({ bound: "/songs/a.ocp", open: null, matches: false })).toBe(false);
+    expect(followsOpenProject(null)).toBe(false);
   });
 
   it("shows a file name instead of the whole path", () => {

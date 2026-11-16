@@ -10,12 +10,6 @@ export interface SessionBinding {
   matches: boolean;
 }
 
-/** The mismatch the panel must resolve before a turn, or null. */
-export interface BindingMismatch {
-  bound: string;
-  open: string | null;
-}
-
 /** Validate the `sessions_binding` answer. */
 export function sessionBinding(payload: unknown): SessionBinding | null {
   if (!payload || typeof payload !== "object") return null;
@@ -26,10 +20,14 @@ export function sessionBinding(payload: unknown): SessionBinding | null {
   return { bound: value.bound, open: value.open, matches: value.matches };
 }
 
-/** The bar a conversation that works on another file shows, or null. */
-export function bindingBar(status: SessionBinding | null): BindingMismatch | null {
-  if (!status || status.matches || !status.bound) return null;
-  return { bound: status.bound, open: status.open };
+/**
+ * Whether the panel rebinds the conversation to the open project. The open
+ * file is what the person works on, so the conversation follows it; the
+ * backend saves the change as a notice the model reads with the next message.
+ * With no project open there is nothing to follow.
+ */
+export function followsOpenProject(status: SessionBinding | null): boolean {
+  return !!status && !status.matches && !!status.open;
 }
 
 /** The file name a binding line shows, never the whole path. */

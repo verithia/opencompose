@@ -101,10 +101,12 @@ A conversation belongs to a **workspace**, which is the directory holding the
 project files. Projects in one directory share one set of conversations;
 opening a file in another directory shows another set. Within that workspace a
 conversation is bound to one **project file**, recorded as `project_path` in
-`meta.json`. Every turn runs against the bound file. If another `.ocp` is open,
-the turn is refused until the person rebinds the conversation in the panel or
-starts a new one. An unbound conversation binds to the open project on its
-first turn without a notice.
+`meta.json`. Every turn runs against the bound file, and the backend refuses a
+turn while another `.ocp` is open. The panel keeps the two in step: opening
+another file rebinds the open conversation to it, and a conversation opened from
+the list rebinds to the open file when the person sends. Either rebind is saved
+as a typed notice the model reads with the next message. An unbound
+conversation binds to the open project on its first turn without a notice.
 
 **Move project** rebinds every conversation that names the old file and records
 a moved notice for the model to read on the next turn. **Save As** leaves

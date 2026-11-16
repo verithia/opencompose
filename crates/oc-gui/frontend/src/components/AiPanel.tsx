@@ -35,7 +35,7 @@ import { activeModelGroup, activeModelKnown, applyModelChoice, listModelChoices,
 import { MEDIA_EXTENSIONS, attachMedia, audioAccepted, acceptedModalities, formatBytes, formatDuration, legacyAuditionText, imageAccepted, type MediaAttachment, type MediaNotice } from "../ai/media";
 import { copyToClipboard, downloadText, exportFileName, exportJson, exportMarkdown } from "../ai/export";
 import { errorBindingMismatch, errorKind, errorMessage } from "../ai/errors";
-import { bindingBar, projectName, sessionBinding, type SessionBinding } from "../ai/binding";
+import { followsOpenProject, projectName, sessionBinding, type SessionBinding } from "../ai/binding";
 import {
   activeTurn,
   archiveNotice,
@@ -211,12 +211,9 @@ export function AiPanel(props: { onClose?: () => void }) {
   const [sessions, setSessions] = createSignal<SessionMeta[]>([]);
   const [sessionsOpen, setSessionsOpen] = createSignal(false);
   const [openId, setOpenId] = createSignal<string | null>(aiSession.open());
-  /** Whether the open conversation works on the file that is open now. */
+  /** The open conversation's binding as last read, so a send that needs no
+   * rebind starts without waiting on the backend. */
   const [binding, setBinding] = createSignal<SessionBinding | null>(null);
-  const [bindingBusy, setBindingBusy] = createSignal(false);
-  const bindingMismatch = createMemo(() => bindingBar(binding()));
-  const boundName = createMemo(() => projectName(bindingMismatch()?.bound));
-  const openName = createMemo(() => projectName(bindingMismatch()?.open));
   /** What this conversation may do to the DSL without asking. A session with no
    * stored setting reads as the default, and a fresh conversation starts there. */
   const permission = aiWorkspace.permission;
@@ -646,7 +643,7 @@ export function AiPanel(props: { onClose?: () => void }) {
   // such as `track:kick` names a track in the file that was open before it.
   createEffect(on(() => store.filePath(), () => {
     aiWorkspace.setTargetPath("project");
-    void refreshBinding(openId());
+    void followOpenProject(openId());
   }, { defer: true }));
   /**
    * A target restored from `localStorage` was saved against whichever document
@@ -660,16 +657,34 @@ export function AiPanel(props: { onClose?: () => void }) {
     aiWorkspace.setTargetPath("project");
     log.warn("ai", `edit target ${target} is not in ${store.filePath() ?? "this project"}; using the whole project`);
   };
-  /** Asks the backend whether the conversation works on the open project and
-   * keeps the answer only for the conversation still on screen. */
-  const refreshBinding = async (id: string | null): Promise<void> => {
-    if (!id) {
-      setBinding(null);
-      return;
-    }
+  /**
+   * Rebinds a conversation to the project that is open. Opening another file
+   * moves the open conversation with it, and a conversation opened from the
+   * list follows at its next send; the backend compares the paths and tells the
+   * model with the next message. A failure is reported and leaves the binding,
+   * so the backend still refuses a turn on the wrong file.
+   */
+  const followOpenProject = async (id: string | null): Promise<void> => {
+    if (!id) return;
     try {
-      const next = sessionBinding(await aiApi.sessionBinding(id));
-      if (!disposed && openId() === id) setBinding(next);
+      const status = sessionBinding(await aiApi.sessionBinding(id));
+      if (followsOpenProject(status)) {
+        await aiApi.bindSession(id);
+        if (!disposed && openId() === id) setBinding({ bound: status!.open, open: status!.open, matches: true });
+      } else if (!disposed && openId() === id) {
+        setBinding(status);
+      }
+    } catch (e) {
+      log.warn("ai", `conversation not bound to the open project: ${errorMessage(e)}`);
+    }
+  };
+
+  /** Reads where a conversation just painted is bound, without rebinding it:
+   * viewing a conversation leaves it on its file until the person sends. */
+  const readBinding = async (id: string): Promise<void> => {
+    try {
+      const status = sessionBinding(await aiApi.sessionBinding(id));
+      if (!disposed && openId() === id) setBinding(status);
     } catch {
       if (!disposed && openId() === id) setBinding(null);
     }
@@ -709,7 +724,7 @@ export function AiPanel(props: { onClose?: () => void }) {
       });
       aiSession.setOpenScoped(sessionScope(), loaded.meta.id);
       setOpenId(loaded.meta.id);
-      void refreshBinding(loaded.meta.id);
+      void readBinding(loaded.meta.id);
       selectStatsSession(loaded.meta.id);
       hydrateSessionUsage(loaded.meta.id, loaded.usage, loaded.usage_error, usageRead);
       return true;
@@ -1249,35 +1264,6 @@ export function AiPanel(props: { onClose?: () => void }) {
     aiSession.clearQueue();
     setSessionsOpen(false);
   };
-  /** Binds the open conversation to the open project, then sends the draft it
-   * kept while the two disagreed. */
-  const bindConversation = async () => {
-    const id = openId();
-    if (!id || bindingBusy()) return;
-    setBindingBusy(true);
-    setSessionError(null);
-    try {
-      await aiApi.bindSession(id);
-      await refreshBinding(id);
-      await handleSend();
-    } catch (e) {
-      setSessionError(errorMessage(e));
-    } finally {
-      setBindingBusy(false);
-    }
-  };
-
-  /** Starts a fresh conversation on the open project with the held draft. */
-  const bindNewConversation = () => {
-    if (newConversationBlocked()) return;
-    const text = input();
-    const media = attachments();
-    startConversation();
-    setInput(text);
-    setAttachments(media);
-    if (text.trim()) void handleSend();
-  };
-
   /**
    * Forks a conversation from the list and opens the fork. While the open
    * conversation is locked, its own fork waits, and a fork of another one is
@@ -1875,7 +1861,6 @@ export function AiPanel(props: { onClose?: () => void }) {
         if (meta && typeof meta.id === "string") {
           aiSession.setOpenScoped(sessionScope(), meta.id);
           setOpenId(meta.id);
-          void refreshBinding(meta.id);
           // The mode shown here applies to the conversation this turn started.
           await persistPermission(meta.id);
           if (!liveTurn(token)) return posted;
@@ -1964,11 +1949,11 @@ export function AiPanel(props: { onClose?: () => void }) {
       settleOutcome(outcome, sent, textProtocol);
     } catch (e) {
       if (cancelledFor(token)) return posted;
-      // A binding the panel had not seen yet is not a turn failure: nothing was
-      // saved, the draft returns, and the bar names the two ways forward.
-      const mismatch = errorBindingMismatch(e);
-      if (mismatch) {
-        setBinding({ bound: mismatch.bound, open: mismatch.open, matches: false });
+      // A file opened while the send was on its way is not a turn failure:
+      // nothing was saved, the conversation follows the open file, and the
+      // message returns so the next send carries the binding notice.
+      if (errorBindingMismatch(e)) {
+        await followOpenProject(sessionId);
         if (turn.queued) {
           const row = turn.queued;
           aiSession.setQueued((previous) => [row, ...previous.filter((entry) => entry.id !== row.id)]);
@@ -1977,7 +1962,7 @@ export function AiPanel(props: { onClose?: () => void }) {
         }
         handedBack = true;
         posted = false;
-        log.warn("ai", "conversation bound to another project");
+        log.warn("ai", "conversation followed the open project; the message returns");
         return posted;
       }
       // A failure before the turn started saved nothing, so the message goes
@@ -2216,9 +2201,9 @@ export function AiPanel(props: { onClose?: () => void }) {
   const handleSend = async () => {
     const msg = input().trim();
     if (!msg || !getActiveProvider().model.trim()) return;
-    // A conversation bound to another file sends nothing: the draft stays in
-    // the composer and the bar above it offers the two ways forward.
-    if (bindingMismatch()) return;
+    // A conversation opened from the list may work on another file; it
+    // follows the open one before the turn, so the model reads the notice.
+    if (followsOpenProject(binding())) await followOpenProject(openId());
     // The scope belongs to this one request, so the send takes it and the
     // composer forgets it. A refused send keeps both the text and the scope.
     const reference = activeScope();
@@ -3085,31 +3070,6 @@ export function AiPanel(props: { onClose?: () => void }) {
             onClick={() => setReloadNotice(null)}
           >{i18n.t("ai.reload.dismiss")}</button>
         </div>
-      </Show>
-
-      <Show when={bindingMismatch()}>
-        {(row) => (
-          <div class="ai-binding-bar" role="status">
-            <span class="ai-binding-text" title={row().bound}>{i18n.t("ai.binding.worksOn", { name: boundName() })}</span>
-            <Show when={row().open}>
-              {(open) => (
-                <button
-                  type="button"
-                  class="ai-binding-action"
-                  title={open()}
-                  disabled={bindingBusy()}
-                  onClick={() => void bindConversation()}
-                >{i18n.t("ai.binding.bind", { name: openName() })}</button>
-              )}
-            </Show>
-            <button
-              type="button"
-              class="ai-binding-action"
-              disabled={bindingBusy() || newConversationBlocked()}
-              onClick={bindNewConversation}
-            >{i18n.t("ai.binding.newConversation")}</button>
-          </div>
-        )}
       </Show>
 
       <AiComposer

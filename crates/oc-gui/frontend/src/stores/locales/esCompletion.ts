@@ -1,8 +1,5 @@
 /** Spanish translations for the gaps in the original locale dictionary. */
 export const esCompletion = {
-  "ai.binding.worksOn": "Esta conversación trabaja con {name}.",
-  "ai.binding.bind": "Vincular a {name}",
-  "ai.binding.newConversation": "Nueva conversación",
   "ai.binding.bound": "Conversación vinculada a {name}",
   "ai.binding.moved": "Proyecto movido a {name}",
   "ai.toolSurface.changed": "Herramientas cambiadas: {detail}",

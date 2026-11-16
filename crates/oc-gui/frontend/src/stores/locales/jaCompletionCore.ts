@@ -2,9 +2,6 @@ import type { I18nKey } from "../i18n";
 
 /** Japanese interface copy for the editor, settings and export workflows. */
 export const jaCompletionCore = {
-  "ai.binding.worksOn": "この会話は {name} で作業します。",
-  "ai.binding.bind": "{name} に紐付け",
-  "ai.binding.newConversation": "新しい会話",
   "ai.binding.bound": "会話を {name} に紐付けました",
   "ai.binding.moved": "プロジェクトを {name} に移動しました",
   "ai.toolSurface.changed": "ツールが変更されました: {detail}",

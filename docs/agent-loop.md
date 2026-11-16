@@ -69,8 +69,9 @@ conversation-store failure answers 500 with `kind` `session_save`.
 
 A conversation's project binding is durable conversation state, not a field
 each request may choose. An unbound conversation binds to the open project on
-its first turn. An explicit rebind in the panel, and a project move, record a
-pending binding; the next admitted turn writes one typed `project_bound` host
+its first turn. A rebind in the panel (opening another file, or sending from a
+conversation bound to another file), and a project move, record a pending
+binding; the next admitted turn writes one typed `project_bound` host
 notice before the person's message, telling the model which file edits apply
 to. A fold or a compaction keeps the newest binding notice, so the model never
 interprets later paths against a file the conversation left.
