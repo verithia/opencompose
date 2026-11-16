@@ -16,7 +16,9 @@ use super::{
     UndoScope, UndoStack, entry_changes,
 };
 use crate::edit_history::journal::{self, Journal, StoredEntry};
-use crate::edit_history::{Author, Brief};
+use crate::edit_history::{
+    Author, Brief, EditCause, HistoryMark, MAX_OUTSIDE_ENTRIES, OutsideChanges, OutsideEntry,
+};
 
 /// Entries a window reload keeps below the cursor; the rest stay on disk.
 const WINDOW_BELOW: usize = 2 * HISTORY_PAGE;
@@ -132,6 +134,151 @@ impl UndoStack {
     /// Entries in the whole history, applied or not.
     pub fn total_levels(&self) -> usize {
         self.below + self.undo.len() + self.redo.len() + self.above
+    }
+
+    /// The id at a zero-based position in the whole history, from the window
+    /// where it holds the entry and from the journal elsewhere.
+    fn id_at_level(&self, position: usize) -> Option<u64> {
+        if position < self.below {
+            return self
+                .journal
+                .as_ref()
+                .and_then(|journal| journal.id_at(position));
+        }
+        let applied = self.below + self.undo.len();
+        if position < applied {
+            return self.undo.get(position - self.below).map(|entry| entry.id);
+        }
+        let redo_start = applied;
+        if position < redo_start + self.redo.len() {
+            let offset = position - redo_start;
+            return self
+                .redo
+                .get(self.redo.len() - 1 - offset)
+                .map(|entry| entry.id);
+        }
+        self.journal
+            .as_ref()
+            .and_then(|journal| journal.id_at(position))
+    }
+
+    /// The cursor and the largest id the history holds, for a conversation to
+    /// compare against on its next turn.
+    pub fn mark(&self) -> HistoryMark {
+        let applied = self.applied_level();
+        let at = if applied == 0 {
+            None
+        } else {
+            self.id_at_level(applied - 1)
+        };
+        let mut max_id = self.journal.as_ref().map(Journal::max_id).unwrap_or(0);
+        for entry in self.undo.iter().chain(self.redo.iter()) {
+            max_id = max_id.max(entry.id);
+        }
+        HistoryMark { at, max_id }
+    }
+
+    /// What changed since `mark` by anyone but `session_id`: the applied
+    /// entries after its position, the steps undo took back, or the applied
+    /// entries newer than a mark whose entry is gone.
+    pub fn since(
+        &self,
+        mark: &HistoryMark,
+        session_id: &str,
+        properties: &ProjectProperties,
+    ) -> Option<OutsideChanges> {
+        let total = self.total_levels();
+        let applied = self.applied_level();
+        let found = match mark.at {
+            None => Some(0),
+            // A mark usually sits near the newest entry, so the search runs
+            // newest first.
+            Some(id) => (1..=total)
+                .rev()
+                .find(|&position| self.id_at_level(position - 1) == Some(id)),
+        };
+        let mut positions = Vec::new();
+        let mut undone = 0;
+        let rewritten;
+        match found {
+            Some(position) if applied >= position => {
+                rewritten = false;
+                // `position` counts entries up to the mark, so the new entries
+                // start at that zero-based index. Newest first describes the
+                // edits a reader needs.
+                positions.extend((position..applied).rev());
+            }
+            Some(position) => {
+                rewritten = false;
+                undone = position - applied;
+            }
+            None => {
+                rewritten = true;
+                // Ids rise along the linear history, so scanning back to the
+                // mark's largest id finds the entries it never saw.
+                for position in (0..applied).rev() {
+                    match self.id_at_level(position) {
+                        Some(id) if id > mark.max_id => positions.push(position),
+                        _ => break,
+                    }
+                }
+            }
+        }
+        let own = |author: &Author| matches!(author, Author::Agent { session: Some(session) } if session == session_id);
+        let mut listed = Vec::new();
+        let mut read = 0;
+        for &position in &positions {
+            if listed.len() == MAX_OUTSIDE_ENTRIES {
+                break;
+            }
+            read += 1;
+            let Some((author, cause, forward, inverse)) = self.applied_entry_at(position) else {
+                log::warn!("[history] cannot read an entry for the outside-changes notice");
+                return None;
+            };
+            if !own(&author) {
+                listed.push((author, cause, forward, inverse));
+            }
+        }
+        // Entries past the listed ones are counted, not read: a long run of
+        // edits outside the conversation costs index lookups only, while the
+        // state lock is held. The count may include the conversation's own
+        // edits from calls outside a turn.
+        let more = positions.len() - read;
+        let entries: Vec<OutsideEntry> = listed
+            .into_iter()
+            .map(|(author, cause, forward, inverse)| OutsideEntry {
+                author,
+                cause,
+                changes: entry_changes(&forward, &inverse, properties),
+            })
+            .collect();
+        if entries.is_empty() && undone == 0 && !rewritten {
+            return None;
+        }
+        Some(OutsideChanges {
+            entries,
+            more,
+            undone,
+            rewritten,
+        })
+    }
+
+    /// One applied entry as its author, cause and forward-oriented patches.
+    /// Applied positions live in the window or below it, never on the redo side.
+    fn applied_entry_at(&self, position: usize) -> Option<(Author, EditCause, Vec<u8>, Vec<u8>)> {
+        if position < self.below {
+            let journal = self.journal.as_ref()?;
+            let entry = journal.read_range(position..position + 1).ok()?.pop()?;
+            return Some((entry.author, entry.cause, entry.forward, entry.inverse));
+        }
+        let entry = self.undo.get(position - self.below)?;
+        Some((
+            entry.author.clone(),
+            entry.cause,
+            entry.forward.clone(),
+            entry.inverse.clone(),
+        ))
     }
 
     pub fn journaled(&self) -> bool {

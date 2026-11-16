@@ -75,6 +75,16 @@ notice before the person's message, telling the model which file edits apply
 to. A fold or a compaction keeps the newest binding notice, so the model never
 interprets later paths against a file the conversation left.
 
+After its first turn, a conversation also reads what changed in its bound
+project since its previous turn ended. The next admitted turn compares the
+project's edit-history cursor with the saved mark and writes one typed
+`outside_changes` host notice before the person's message. The notice names the
+entries other authors made, newest first and at most eight, how many more exist,
+how many steps undo moved back, and whether the history was rewritten so earlier
+entries are gone. It is model context, so a fold may drop it and the transcript
+does not show it. The notice is skipped on the first turn and when a
+`project_bound` notice already explains a file boundary.
+
 `POST /ai/turn` runs one whole agent turn on the same backend loop the panel
 uses. Its body carries `provider` (required, non-empty, at most 100
 characters), `messages`, `session_id` and the absolute `project_path` (both

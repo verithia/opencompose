@@ -150,3 +150,44 @@ pub struct Brief {
     pub cause: EditCause,
     pub author: Author,
 }
+
+/// Entries one outside-changes notice describes.
+pub const MAX_OUTSIDE_ENTRIES: usize = 8;
+
+/// Largest count an outside-changes notice may report.
+pub const MAX_OUTSIDE_COUNT: usize = 1_000_000;
+
+/// Longest author identity an outside-changes notice may carry.
+pub const MAX_OUTSIDE_AUTHOR_CHARS: usize = 512;
+
+/// A cursor position in a project's edit history. `at` is the entry the cursor
+/// rests on after its newest applied edit; `max_id` is the largest id the
+/// history holds, so a reader can tell a rewritten history from an extended one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HistoryMark {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<u64>,
+    pub max_id: u64,
+}
+
+/// One edit another author made while a conversation was away.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OutsideEntry {
+    pub author: Author,
+    pub cause: EditCause,
+    pub changes: oc_dsl::change::ChangeSet,
+}
+
+/// What changed in a project outside one conversation, and how far undo moved
+/// the cursor back.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OutsideChanges {
+    /// Newest first, bounded by [`MAX_OUTSIDE_ENTRIES`].
+    pub entries: Vec<OutsideEntry>,
+    /// Listed edits beyond the described ones.
+    pub more: usize,
+    /// Steps undo took back past the conversation's mark.
+    pub undone: usize,
+    /// Whether the entry at the mark is gone, so earlier entries may differ.
+    pub rewritten: bool,
+}

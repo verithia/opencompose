@@ -4419,6 +4419,7 @@ providers:
                     facts: &crate::ai::sessions::ProjectFacts::default(),
                     provider: "fixture",
                     model: "fixture",
+                    outside: None,
                 },
             )
             .unwrap();
@@ -4487,6 +4488,7 @@ providers:
                     facts: &facts,
                     provider: "test",
                     model: "test",
+                    outside: None,
                 },
             )
             .unwrap();
@@ -4502,6 +4504,7 @@ providers:
                     facts: &facts,
                     provider: "test",
                     model: "test",
+                    outside: None,
                 },
             )
             .unwrap();

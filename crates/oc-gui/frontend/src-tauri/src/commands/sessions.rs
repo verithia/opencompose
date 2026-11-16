@@ -4,7 +4,7 @@
 //! The commands reach the store at `~/.opencompose/ai/sessions` through
 //! [`Store::config`]. Nothing here writes to the project.
 use crate::ai::agent_loop::wire;
-use crate::ai::host_notice::BindCause;
+use crate::ai::host_notice::{BindCause, HostNotice};
 use crate::ai::sessions::{
     self, BindingMismatch, BindingStatus, Compaction, Fork, Loaded, LoadedPage, MAX_PAGE_TURNS,
     PageRead, PrepareFailure, ProjectFacts, Scope, SessionError, SessionErrorKind, SessionMeta,
@@ -12,6 +12,7 @@ use crate::ai::sessions::{
 };
 use crate::ai_service::{AiError, AiErrorDetail};
 use crate::commands::AiProviderEntry;
+use crate::edit_history::HistoryMark;
 use crate::state::{AppState, AppStateInner};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -470,19 +471,26 @@ pub fn prepare_turn_for<R: tauri::Runtime>(
     binding: SavedTurnBinding<'_>,
 ) -> Result<PreparedTurn, PrepareTurnError> {
     let state = app.state::<AppState>();
-    let (project, place, facts, source) = {
+    let session_id = binding.id;
+    let store = store();
+    let (_, meta) = store.find(session_id)?;
+    let (project, place, facts, source, outside) = {
         let inner = state.lock_inner();
         if let Some(expected) = binding.project {
             validate_saved_project(expected, inner.file_path.as_deref())?;
         }
         let project = project_of(None, &inner);
         let place = crate::commands::workspace::scoped_workspace(&inner, None);
-        (project, place, facts(&inner), inner.dsl_source.clone())
+        let outside = outside_changes(&meta, project.as_deref(), &inner, session_id);
+        (
+            project,
+            place,
+            facts(&inner),
+            inner.dsl_source.clone(),
+            outside,
+        )
     };
-    let session_id = binding.id;
-    let store = store();
     let key = store.workspace_key(place.as_deref());
-    let (_, meta) = store.find(session_id)?;
     if meta.workspace_key != key {
         return Err("The requested conversation belongs to another workspace"
             .to_owned()
@@ -515,6 +523,7 @@ pub fn prepare_turn_for<R: tauri::Runtime>(
                 facts: &facts,
                 provider: &provider.id,
                 model: &provider.model,
+                outside,
             },
             Some(binding.incarnation),
             |planned| fitted_request(&system, planned, tokens).map(|_| ()),
@@ -566,6 +575,44 @@ pub fn prepare_turn_for<R: tauri::Runtime>(
         compacted: prepared.compacted,
         archive_evicted: prepared.evicted_auditions,
         saved_auditions: prepared.saved_auditions,
+    })
+}
+
+/// The outside-changes notice to save before this turn. A pending binding
+/// already tells the model about the file boundary, and a mark for another
+/// project says nothing about this one.
+fn outside_changes(
+    meta: &SessionMeta,
+    project: Option<&Path>,
+    inner: &AppStateInner,
+    session_id: &str,
+) -> Option<HostNotice> {
+    if meta.pending_binding.is_some() {
+        return None;
+    }
+    let mark = meta.history_mark.as_ref()?;
+    let open = sessions::canonical_path(project?)
+        .to_string_lossy()
+        .to_string();
+    let saved = sessions::canonical_path(Path::new(&mark.project))
+        .to_string_lossy()
+        .to_string();
+    if open != saved {
+        return None;
+    }
+    let changes = inner.undo.since(
+        &HistoryMark {
+            at: mark.at,
+            max_id: mark.max_id,
+        },
+        session_id,
+        &inner.project.properties,
+    )?;
+    Some(HostNotice::OutsideChanges {
+        entries: changes.entries,
+        more: changes.more,
+        undone: changes.undone,
+        rewritten: changes.rewritten,
     })
 }
 

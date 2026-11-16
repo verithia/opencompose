@@ -500,3 +500,164 @@ fn the_binding_commands_compare_canonically_and_bind_to_the_open_file() {
             .matches
     );
 }
+
+fn outside_provider() -> crate::commands::AiProviderEntry {
+    use crate::commands::{AiCapabilities, AuthKind, ProviderKind, Wire};
+    crate::commands::AiProviderEntry {
+        id: "p".into(),
+        name: "p".into(),
+        kind: ProviderKind::OpenAiChatCompletions,
+        wire: Some(Wire::OpenAiChatCompletions),
+        auth: AuthKind::ApiKey,
+        auth_provider: None,
+        oauth_allowed_hosts: Vec::new(),
+        endpoint: "https://example.test/v1/chat/completions".into(),
+        model: "fixture-model".into(),
+        models: Vec::new(),
+        context_length: 1_000_000,
+        max_tokens: 16_000,
+        temperature: 0.3,
+        thinking_level: "medium".into(),
+        capabilities: AiCapabilities::default(),
+    }
+}
+
+#[test]
+fn a_prepared_turn_reports_edits_made_outside_its_conversation() {
+    use crate::ai::agent_loop::wire;
+    use crate::ai::session_usage::{Purpose, SessionLease};
+    use crate::commands::{SavedTurnBinding, prepare_turn_for, update_dsl_inner};
+    use serde_json::json;
+    use tauri::test::{mock_builder, mock_context, noop_assets};
+
+    let fixture = fixture("outside-turn");
+    let state = state_with_project(&fixture.dir, PROJECT);
+    let open = fixture.dir.join("song.ocp");
+    let session = new_for(&state, None, Some("outside"), None).unwrap();
+    let store = sessions::Store::config();
+    {
+        let mut inner = state.lock_inner();
+        update_dsl_inner(PROJECT.replace("tempo: 128", "tempo: 120"), &mut inner).unwrap();
+        let mark = inner.undo.mark();
+        store.record_history_mark(&session.id, &open, mark).unwrap();
+        update_dsl_inner(PROJECT.replace("tempo: 128", "tempo: 132"), &mut inner).unwrap();
+    }
+    let lease = SessionLease::admit(store, &session.id, "outside-request", Purpose::Chat).unwrap();
+    let incarnation = lease.update().incarnation;
+    let provider = outside_provider();
+    let messages = json!([
+        {"role":"system","content":"prompt"},
+        {"role":"user","content":"hi","message_meta":{"version":1,"kind":"user"}},
+    ]);
+    let app = mock_builder()
+        .manage(state)
+        .build(mock_context(noop_assets()))
+        .unwrap();
+    let prepared = prepare_turn_for(
+        &app.handle().clone(),
+        &provider,
+        &messages,
+        SavedTurnBinding {
+            id: &session.id,
+            incarnation: &incarnation,
+            project: Some(&open),
+            tool_tokens: wire::offered_tool_tokens(None, false),
+        },
+    )
+    .unwrap();
+    let rows = prepared.messages.as_array().unwrap();
+    assert_eq!(rows.last().unwrap()["content"], "hi");
+    let notice_row = rows
+        .iter()
+        .find(|row| row["message_meta"]["notice"]["kind"] == "outside_changes")
+        .expect("an outside changes row");
+    let notice: crate::ai::host_notice::HostNotice =
+        serde_json::from_value(notice_row["message_meta"]["notice"].clone()).unwrap();
+    match notice {
+        crate::ai::host_notice::HostNotice::OutsideChanges {
+            entries,
+            more,
+            undone,
+            rewritten,
+        } => {
+            assert_eq!(entries.len(), 1);
+            assert_eq!(entries[0].author, crate::edit_history::Author::Person);
+            assert_eq!(more, 0);
+            assert_eq!(undone, 0);
+            assert!(!rewritten);
+        }
+        other => panic!("expected outside changes, got {other:?}"),
+    }
+    assert!(
+        notice_row["content"]
+            .as_str()
+            .is_some_and(|text| text.contains("Edits by others, newest first:"))
+    );
+    drop(lease);
+}
+
+#[test]
+fn a_pending_binding_suppresses_the_outside_changes_notice() {
+    use crate::ai::agent_loop::wire;
+    use crate::ai::host_notice::BindCause;
+    use crate::ai::session_usage::{Purpose, SessionLease};
+    use crate::commands::{SavedTurnBinding, prepare_turn_for, update_dsl_inner};
+    use serde_json::json;
+    use tauri::test::{mock_builder, mock_context, noop_assets};
+
+    let fixture = fixture("outside-suppressed");
+    let state = state_with_project(&fixture.dir, PROJECT);
+    let first = fixture.dir.join("song.ocp");
+    let second = fixture.dir.join("second.ocp");
+    std::fs::write(&second, PROJECT).unwrap();
+    let session = new_for(&state, None, Some("moved"), None).unwrap();
+    let store = sessions::Store::config();
+    store
+        .bind(&session.id, Some(&second), BindCause::Chosen)
+        .unwrap();
+    {
+        let mut inner = state.lock_inner();
+        inner.file_path = Some(second.clone());
+        update_dsl_inner(PROJECT.replace("tempo: 128", "tempo: 120"), &mut inner).unwrap();
+        let mark = inner.undo.mark();
+        store
+            .record_history_mark(&session.id, &second, mark)
+            .unwrap();
+        update_dsl_inner(PROJECT.replace("tempo: 128", "tempo: 132"), &mut inner).unwrap();
+    }
+    let lease = SessionLease::admit(store, &session.id, "moved-request", Purpose::Chat).unwrap();
+    let incarnation = lease.update().incarnation;
+    let provider = outside_provider();
+    let messages = json!([
+        {"role":"system","content":"prompt"},
+        {"role":"user","content":"hi","message_meta":{"version":1,"kind":"user"}},
+    ]);
+    let app = mock_builder()
+        .manage(state)
+        .build(mock_context(noop_assets()))
+        .unwrap();
+    let prepared = prepare_turn_for(
+        &app.handle().clone(),
+        &provider,
+        &messages,
+        SavedTurnBinding {
+            id: &session.id,
+            incarnation: &incarnation,
+            project: Some(&second),
+            tool_tokens: wire::offered_tool_tokens(None, false),
+        },
+    )
+    .unwrap();
+    let rows = prepared.messages.as_array().unwrap();
+    assert_eq!(rows.last().unwrap()["content"], "hi");
+    assert!(
+        rows.iter()
+            .any(|row| row["message_meta"]["notice"]["kind"] == "project_bound")
+    );
+    assert!(
+        rows.iter()
+            .all(|row| row["message_meta"]["notice"]["kind"] != "outside_changes")
+    );
+    drop(lease);
+    let _ = first;
+}

@@ -696,6 +696,32 @@ pub(crate) fn begin_loop_batch(
     Ok(stranded)
 }
 
+/// Save where the bound project's history stands after a turn. A turn that
+/// ended on another open file leaves the conversation's mark untouched; a
+/// failed write is reported and never fails the turn.
+async fn record_history_mark(app: &AppHandle, session_id: &str) {
+    let Some((project, mark)) = ({
+        let state = app.state::<AppState>();
+        let inner = state.lock_inner();
+        inner
+            .file_path
+            .clone()
+            .map(|path| (path, inner.undo.mark()))
+    }) else {
+        return;
+    };
+    let id = session_id.to_owned();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        Store::config().record_history_mark(&id, &project, mark)
+    })
+    .await;
+    match result {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => log::warn!("[ai] session {session_id} history mark not saved: {error}"),
+        Err(error) => log::warn!("[ai] session {session_id} history mark task failed: {error}"),
+    }
+}
+
 fn commit_batch_and_save(state: &AppState, owner: &str) -> Result<(), super::CommitError> {
     crate::agent_api::transaction_commit(state, owner).map_err(super::CommitError::commit)?;
     crate::project_persist::flush_state(state)
@@ -947,6 +973,9 @@ async fn run_claimed(
         context_length: crate::ai::limits::context_length(provider),
     };
     let outcome = super::run_turn(&host, spec, control.cancel).await;
+    // The next turn compares the project's history against this mark, whether
+    // this turn succeeded, failed or was cancelled.
+    record_history_mark(app, &start.session_id).await;
     // A round cancelled mid-request, or a first round never sent, still
     // closes its accounting.
     let unfinished = lock(&host.round_stats).take();

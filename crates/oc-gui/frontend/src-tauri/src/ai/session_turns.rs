@@ -635,6 +635,7 @@ mod tests {
                     facts: &facts,
                     provider: "p",
                     model: "m",
+                    outside: None,
                 },
             )
             .unwrap();
@@ -815,6 +816,7 @@ mod tests {
             facts: &facts,
             provider: "p",
             model: "m",
+            outside: None,
         };
         // A client's orphan result would refuse every later append.
         let error = store

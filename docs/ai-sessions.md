@@ -348,16 +348,21 @@ Limits, all enforced in the store:
  "model":"gemini-4-argon","provider":"google","workspace_key":"3f2a…",
  "workspace":"/Users/…/songs","project_path":"/Users/…/songs/song.ocp",
  "pending_binding":{"from":"/Users/…/songs/old.ocp","cause":"moved"},
+ "history_mark":{"project":"/Users/…/songs/song.ocp","at":42,"max_id":42},
  "turns":7,"tokens":9321,"compacted_at":"2026-10-29T07:41:02.019Z"}
 ```
 
 `project_path` is the project file this conversation is bound to, stored in
 canonical form. `pending_binding` is present only between an explicit rebind or
 a move and the next admitted turn: that turn writes one typed `project_bound`
-host notice before the person's message and clears the field. `tokens` is this
-project's estimate of the saved conversation, not a provider's reported usage;
-`compacted_at` records the last compaction; `parent` names the session a fork
-copied.
+host notice before the person's message and clears the field. `history_mark` is
+the edit-history cursor the conversation ended its previous turn at: the
+canonical `project` it belongs to, the id of the newest applied entry `at`
+(absent before the first edit), and the largest id the history held. A rebind or
+a move clears it, because the `project_bound` notice covers that boundary.
+`tokens` is this project's estimate of the saved conversation, not a provider's
+reported usage; `compacted_at` records the last compaction; `parent` names the
+session a fork copied.
 
 ## Autosave
 
@@ -367,7 +372,10 @@ There is no save action. Every model turn writes to the store:
    that message, a tool round contributes the results it added. A request that
    the conversation already contains appends nothing, so a retried request does
    not duplicate history. A pending binding contributes one typed
-   `project_bound` notice immediately before that turn's message.
+   `project_bound` notice immediately before that turn's message. When the
+   conversation carries a `history_mark` and its bound project changed since
+   then, one typed `outside_changes` notice follows it with the entries other
+   authors made, the steps undo moved back, and any rewrite of the history.
 2. The assistant message the provider returned is appended, so an answer is
    saved even if the panel closes before the next turn.
 3. When the estimate says the conversation no longer fits, it is compacted

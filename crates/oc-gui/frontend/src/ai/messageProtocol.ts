@@ -1,16 +1,40 @@
+import { isChangeSet, type ChangeSet, type EditCause } from "../types/change";
+
 /** Local transcript semantics. These tags are never provider API fields. */
 export type MessageKind = "user" | "assistant" | "tool" | "application_result" | "round_budget"
   | "audition" | "comparison_reference" | "comparison_candidate" | "summary"
   | "transaction_rollback" | "proposal_outcome" | "host_notice";
 export type BindCause = "chosen" | "moved";
 
+/** Who made an edit another conversation reports. */
+export type NoticeAuthor =
+  | { kind: "person" }
+  | { kind: "agent"; session?: string }
+  | { kind: "client"; owner: string }
+  | { kind: "outside" };
+
+/** One edit another author made while the conversation was away. */
+export interface OutsideChange {
+  author: NoticeAuthor;
+  cause?: EditCause;
+  changes: ChangeSet;
+}
+
 /** A typed host notice. Only a `host_notice` row carries one. */
-export type HostNotice = {
-  kind: "project_bound";
-  from?: string;
-  to: string;
-  cause: BindCause;
-};
+export type HostNotice =
+  | {
+    kind: "project_bound";
+    from?: string;
+    to: string;
+    cause: BindCause;
+  }
+  | {
+    kind: "outside_changes";
+    entries: OutsideChange[];
+    more: number;
+    undone: number;
+    rewritten: boolean;
+  };
 
 export interface MessageMeta {
   version: 1;
@@ -77,13 +101,79 @@ function isMessageKind(value: unknown): value is MessageKind {
 /** A saved path bound, shared by every notice kind that names one. */
 const MAX_NOTICE_PATH_CHARS = 4096;
 
+/** Entries one outside-changes notice may describe. */
+const MAX_OUTSIDE_ENTRIES = 8;
+
+/** Largest count an outside-changes notice may report. */
+const MAX_OUTSIDE_COUNT = 1_000_000;
+
+/** Longest author identity an outside-changes notice may carry. */
+const MAX_OUTSIDE_AUTHOR_CHARS = 512;
+
 function validPath(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 && [...value].length <= MAX_NOTICE_PATH_CHARS;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function noticeAuthor(value: unknown): NoticeAuthor | null {
+  if (!isRecord(value)) return null;
+  switch (value.kind) {
+    case "person":
+      return { kind: "person" };
+    case "outside":
+      return { kind: "outside" };
+    case "agent":
+      if (value.session !== undefined && value.session !== null
+        && (typeof value.session !== "string" || !value.session
+          || [...value.session].length > MAX_OUTSIDE_AUTHOR_CHARS)) return null;
+      return {
+        kind: "agent",
+        ...(typeof value.session === "string" ? { session: value.session } : {}),
+      };
+    case "client":
+      if (typeof value.owner !== "string" || !value.owner
+        || [...value.owner].length > MAX_OUTSIDE_AUTHOR_CHARS) return null;
+      return { kind: "client", owner: value.owner };
+    default:
+      return null;
+  }
+}
+
+function boundedCount(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0
+    && value <= MAX_OUTSIDE_COUNT ? value : null;
+}
+
+function outsideChange(value: unknown): OutsideChange | null {
+  if (!isRecord(value) || !isChangeSet(value.changes)) return null;
+  const author = noticeAuthor(value.author);
+  if (!author) return null;
+  const cause = value.cause;
+  if (cause !== undefined && cause !== "edit" && cause !== "conversation_revert") return null;
+  return { author, ...(cause === undefined ? {} : { cause }), changes: value.changes };
+}
+
 /** Validate an untrusted typed notice; unknown kinds read as no notice. */
 export function hostNotice(value: unknown): HostNotice | null {
-  if (!value || typeof value !== "object") return null;
+  if (!isRecord(value)) return null;
+  if (value.kind === "outside_changes") {
+    if (!Array.isArray(value.entries) || value.entries.length > MAX_OUTSIDE_ENTRIES) return null;
+    const entries = value.entries.map(outsideChange);
+    if (entries.some((entry) => entry === null)) return null;
+    const more = boundedCount(value.more);
+    const undone = boundedCount(value.undone);
+    if (more === null || undone === null || typeof value.rewritten !== "boolean") return null;
+    return {
+      kind: "outside_changes",
+      entries: entries as OutsideChange[],
+      more,
+      undone,
+      rewritten: value.rewritten,
+    };
+  }
   const notice = value as { kind?: unknown; from?: unknown; to?: unknown; cause?: unknown };
   if (notice.kind !== "project_bound") return null;
   if (!validPath(notice.to)) return null;

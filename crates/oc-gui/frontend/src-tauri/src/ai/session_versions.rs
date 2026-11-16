@@ -132,6 +132,7 @@ mod tests {
                         facts: &facts,
                         provider: "fixture",
                         model: "fixture",
+                        outside: None,
                     },
                 )
                 .unwrap()
@@ -214,7 +215,8 @@ mod tests {
                         context_length: 1_000_000,
                         facts: &facts,
                         provider: "fixture",
-                        model: "fixture"
+                        model: "fixture",
+                        outside: None,
                     },
                 )
                 .is_err()
@@ -245,6 +247,7 @@ mod tests {
                     facts: &facts,
                     provider: "fixture",
                     model: "fixture",
+                    outside: None,
                 },
             )
             .unwrap();

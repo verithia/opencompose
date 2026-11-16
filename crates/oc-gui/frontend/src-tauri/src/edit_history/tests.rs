@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 use oc_dsl::change::Change;
 
 use super::journal::{self, Journal, StoredEntry};
-use super::{Author, EditCause, act_as, acting};
-use crate::state::{AppState, AppStateInner, MAX_UNDO, UndoEdit, UndoScope, UndoScopes};
+use super::{Author, EditCause, MAX_OUTSIDE_ENTRIES, act_as, acting};
+use crate::state::{AppState, AppStateInner, MAX_UNDO, UndoEdit, UndoScope, UndoScopes, UndoStack};
 
 fn entry(id: u64) -> StoredEntry {
     StoredEntry {
@@ -786,4 +786,233 @@ fn a_journal_line_with_old_display_keys_still_loads() {
     let journal = Journal::open(&path).unwrap();
     let loaded = journal.read_range(0..1).unwrap().remove(0);
     assert_eq!(loaded, stored);
+}
+
+fn tempo(tempo: u32) -> oc_dsl::ast::Project {
+    oc_dsl::parse(&format!("@project \"Song\"\n  tempo: {tempo}\n")).unwrap()
+}
+
+fn push_edit(
+    stack: &mut UndoStack,
+    before: &oc_dsl::ast::Project,
+    after: &oc_dsl::ast::Project,
+    author: Author,
+) {
+    stack
+        .push(
+            before.clone(),
+            after,
+            UndoEdit::new("test edit", UndoScope::Transport).by(author),
+        )
+        .unwrap();
+}
+
+fn stack(journaled: bool, dir: &Path) -> UndoStack {
+    let mut stack = UndoStack::new();
+    if journaled {
+        let journal = Journal::open(&project_file(dir)).unwrap();
+        stack.attach_journal(journal).unwrap();
+    }
+    stack
+}
+
+#[test]
+fn a_person_edit_after_a_mark_is_listed_with_its_changes() {
+    for journaled in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut stack = stack(journaled, dir.path());
+        let mut project = tempo(100);
+        let mark = stack.mark();
+        assert_eq!(mark.at, None);
+        let before = project.clone();
+        project = tempo(120);
+        push_edit(&mut stack, &before, &project, Author::Person);
+        if journaled {
+            stack.sync_journal(&oc_dsl::serialize(&project)).unwrap();
+        }
+        let changes = stack
+            .since(&mark, "s1", &project.properties)
+            .expect("the person's edit is news");
+        assert_eq!(changes.entries.len(), 1);
+        assert_eq!(changes.more, 0);
+        assert_eq!(changes.undone, 0);
+        assert!(!changes.rewritten);
+        assert_eq!(changes.entries[0].author, Author::Person);
+        assert_eq!(changes.entries[0].cause, EditCause::Edit);
+        assert_eq!(
+            changes.entries[0].changes.changes,
+            vec![Change::Tempo {
+                from: 100.0,
+                to: 120.0,
+            }]
+        );
+    }
+}
+
+#[test]
+fn a_sessions_own_edit_is_not_listed_but_another_sessions_is() {
+    for journaled in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut stack = stack(journaled, dir.path());
+        let mut project = tempo(100);
+        let mark = stack.mark();
+        let before = project.clone();
+        project = tempo(110);
+        push_edit(
+            &mut stack,
+            &before,
+            &project,
+            Author::Agent {
+                session: Some("s1".into()),
+            },
+        );
+        assert!(
+            stack.since(&mark, "s1", &project.properties).is_none(),
+            "a conversation does not report its own edits"
+        );
+        let before = project.clone();
+        project = tempo(120);
+        push_edit(
+            &mut stack,
+            &before,
+            &project,
+            Author::Agent {
+                session: Some("s2".into()),
+            },
+        );
+        if journaled {
+            stack.sync_journal(&oc_dsl::serialize(&project)).unwrap();
+        }
+        let changes = stack
+            .since(&mark, "s1", &project.properties)
+            .expect("the other conversation's edit is news");
+        assert_eq!(changes.entries.len(), 1);
+        assert_eq!(
+            changes.entries[0].author,
+            Author::Agent {
+                session: Some("s2".into())
+            }
+        );
+        assert_eq!(
+            changes.entries[0].changes.changes,
+            vec![Change::Tempo {
+                from: 110.0,
+                to: 120.0,
+            }]
+        );
+    }
+}
+
+#[test]
+fn an_undo_past_the_mark_reports_the_steps_without_entries() {
+    for journaled in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut stack = stack(journaled, dir.path());
+        let mut project = tempo(100);
+        let before = project.clone();
+        project = tempo(110);
+        push_edit(&mut stack, &before, &project, Author::Person);
+        let before = project.clone();
+        project = tempo(120);
+        push_edit(
+            &mut stack,
+            &before,
+            &project,
+            Author::Agent {
+                session: Some("s1".into()),
+            },
+        );
+        if journaled {
+            stack.sync_journal(&oc_dsl::serialize(&project)).unwrap();
+        }
+        let mark = stack.mark();
+        stack.undo(&mut project).unwrap();
+        let changes = stack
+            .since(&mark, "s1", &project.properties)
+            .expect("undo moved the project back");
+        assert!(changes.entries.is_empty());
+        assert_eq!(changes.undone, 1);
+        assert!(!changes.rewritten);
+        assert_eq!(changes.more, 0);
+    }
+}
+
+#[test]
+fn an_undo_past_the_mark_and_a_new_edit_reads_as_rewritten() {
+    for journaled in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut stack = stack(journaled, dir.path());
+        let mut project = tempo(100);
+        for tempo_value in [110, 120, 130] {
+            let before = project.clone();
+            project = tempo(tempo_value);
+            push_edit(&mut stack, &before, &project, Author::Person);
+        }
+        if journaled {
+            stack.sync_journal(&oc_dsl::serialize(&project)).unwrap();
+        }
+        let mark = stack.mark();
+        stack.undo(&mut project).unwrap();
+        stack.undo(&mut project).unwrap();
+        let before = project.clone();
+        project = tempo(140);
+        push_edit(&mut stack, &before, &project, Author::Person);
+        let changes = stack
+            .since(&mark, "s1", &project.properties)
+            .expect("a rewritten history is news");
+        assert!(changes.rewritten);
+        assert_eq!(changes.undone, 0);
+        assert_eq!(changes.entries.len(), 1);
+        assert_eq!(changes.more, 0);
+        assert_eq!(
+            changes.entries[0].changes.changes,
+            vec![Change::Tempo {
+                from: 110.0,
+                to: 140.0,
+            }]
+        );
+    }
+}
+
+#[test]
+fn ten_outside_edits_list_the_newest_eight() {
+    for journaled in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut stack = stack(journaled, dir.path());
+        let mut project = tempo(100);
+        let mark = stack.mark();
+        for tempo_value in 101..=110 {
+            let before = project.clone();
+            project = tempo(tempo_value);
+            push_edit(&mut stack, &before, &project, Author::Person);
+        }
+        if journaled {
+            stack.sync_journal(&oc_dsl::serialize(&project)).unwrap();
+        }
+        let changes = stack
+            .since(&mark, "s1", &project.properties)
+            .expect("the edits are news");
+        assert_eq!(changes.entries.len(), MAX_OUTSIDE_ENTRIES);
+        assert_eq!(changes.more, 2);
+        let newest: Vec<u32> = changes
+            .entries
+            .iter()
+            .filter_map(|entry| match entry.changes.changes.first() {
+                Some(Change::Tempo { to, .. }) => Some(*to as u32),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(newest, [110, 109, 108, 107, 106, 105, 104, 103]);
+    }
+}
+
+#[test]
+fn an_unchanged_history_has_no_outside_changes() {
+    for journaled in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let stack = stack(journaled, dir.path());
+        let project = tempo(100);
+        let mark = stack.mark();
+        assert!(stack.since(&mark, "s1", &project.properties).is_none());
+    }
 }

@@ -29,6 +29,34 @@ describe("typed host notices in the transcript", () => {
     expect(rows).toEqual([]);
   });
 
+  it("validates an outside changes notice and keeps it out of the transcript", () => {
+    const notice = {
+      kind: "outside_changes",
+      entries: [{
+        author: { kind: "person" },
+        cause: "edit",
+        changes: { changes: [{ kind: "tempo", from: 120, to: 130 }], more: 0 },
+      }],
+      more: 2,
+      undone: 1,
+      rewritten: false,
+    };
+    expect(hostNotice(notice)).not.toBeNull();
+    const rows = restoredTranscript([
+      { role: "user", content: "outside", message_meta: noticeMeta(notice) } as WireMessage,
+      { role: "user", content: "next", message_meta: { version: 1, kind: "user" } } as WireMessage,
+    ]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].content).toBe("next");
+    expect(messageKind({ role: "user", content: "outside", message_meta: noticeMeta(notice) } as WireMessage)).toBe("host_notice");
+    expect(hostNotice({ ...notice, entries: Array(9).fill(notice.entries[0]) })).toBeNull();
+    expect(hostNotice({ ...notice, more: 1_000_001 })).toBeNull();
+    expect(hostNotice({
+      ...notice,
+      entries: [{ author: { kind: "client", owner: "x".repeat(513) }, changes: { changes: [], more: 0 } }],
+    })).toBeNull();
+  });
+
   it("reads only a valid typed project binding", () => {
     expect(projectBoundNotice(noticeMeta({ kind: "project_bound", to: "/songs/song.ocp", cause: "chosen" }))?.to).toBe("/songs/song.ocp");
     expect(projectBoundNotice(noticeMeta({ kind: "project_bound", to: "/songs/song.ocp", cause: "elsewhere" }))).toBeNull();

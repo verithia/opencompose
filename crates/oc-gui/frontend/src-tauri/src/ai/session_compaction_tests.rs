@@ -124,6 +124,7 @@ fn revert_to_the_newest_message_works_after_auto_compaction_with_a_snapshot() {
                 facts: &facts(),
                 provider: "p",
                 model: "m",
+                outside: None,
             },
         )
         .unwrap();
@@ -235,6 +236,7 @@ fn a_failed_auto_compaction_is_reported_and_the_turn_still_prepares() {
                 facts: &facts(),
                 provider: "p",
                 model: "m",
+                outside: None,
             },
         )
         .unwrap();
@@ -279,6 +281,7 @@ fn a_refused_admission_saves_nothing() {
         facts: &project_facts,
         provider: "p",
         model: "m",
+        outside: None,
     };
     store
         .prepare(&session.id, &[user("first")], Some(&project), context())
@@ -291,6 +294,7 @@ fn a_refused_admission_saves_nothing() {
         Some(&project),
         PrepareContext {
             snapshot: Some("@project\n  tempo: 90\n"),
+            outside: None,
             ..context()
         },
         None,
@@ -344,6 +348,7 @@ fn a_landed_compaction_succeeds_even_when_its_metadata_cannot_be_written() {
                 facts: &facts(),
                 provider: "p",
                 model: "m",
+                outside: None,
             },
         )
         .unwrap();
@@ -376,6 +381,7 @@ fn a_second_requested_compaction_of_the_same_state_is_a_conflict() {
                 facts: &facts(),
                 provider: "p",
                 model: "m",
+                outside: None,
             },
         )
         .unwrap();

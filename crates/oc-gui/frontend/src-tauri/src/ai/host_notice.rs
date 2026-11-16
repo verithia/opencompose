@@ -2,6 +2,9 @@
 //! its localization stay separate: the row carries the typed value, and its
 //! English text is derived from that value alone.
 
+use crate::edit_history::{
+    Author, MAX_OUTSIDE_AUTHOR_CHARS, MAX_OUTSIDE_COUNT, MAX_OUTSIDE_ENTRIES, OutsideEntry,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -10,7 +13,7 @@ pub const MAX_NOTICE_PATH_CHARS: usize = 4096;
 
 /// A host notice a saved conversation carries. New variants extend this enum;
 /// each kind states whether a fold and a compaction keep it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum HostNotice {
     /// The conversation's project binding changed.
@@ -19,6 +22,15 @@ pub enum HostNotice {
         from: Option<String>,
         to: String,
         cause: BindCause,
+    },
+    /// Other people, conversations or clients edited the bound project while
+    /// this conversation was away, or undo moved it back.
+    OutsideChanges {
+        entries: Vec<OutsideEntry>,
+        more: usize,
+        undone: usize,
+        #[serde(default)]
+        rewritten: bool,
     },
 }
 
@@ -45,6 +57,7 @@ impl HostNotice {
     pub fn kind(&self) -> &'static str {
         match self {
             Self::ProjectBound { .. } => "project_bound",
+            Self::OutsideChanges { .. } => "outside_changes",
         }
     }
 
@@ -54,8 +67,8 @@ impl HostNotice {
         matches!(self, Self::ProjectBound { .. })
     }
 
-    /// Whether every path is bounded, so an untrusted saved row cannot grow
-    /// the transcript without limit.
+    /// Whether every path and count is bounded, so an untrusted saved row
+    /// cannot grow the transcript without limit.
     pub fn valid(&self) -> bool {
         match self {
             Self::ProjectBound { from, to, .. } => {
@@ -64,6 +77,17 @@ impl HostNotice {
                     && from.as_ref().is_none_or(|path| {
                         !path.is_empty() && path.chars().count() <= MAX_NOTICE_PATH_CHARS
                     })
+            }
+            Self::OutsideChanges {
+                entries,
+                more,
+                undone,
+                rewritten: _,
+            } => {
+                entries.len() <= MAX_OUTSIDE_ENTRIES
+                    && *more <= MAX_OUTSIDE_COUNT
+                    && *undone <= MAX_OUTSIDE_COUNT
+                    && entries.iter().all(valid_outside_entry)
             }
         }
     }
@@ -87,10 +111,40 @@ impl HostNotice {
                     format!("The project file of this conversation is {to}. Edits apply there.")
                 }
             },
+            Self::OutsideChanges {
+                entries,
+                more,
+                undone,
+                rewritten,
+            } => {
+                let mut text = String::from(
+                    "Since your previous turn, the project changed outside this conversation.",
+                );
+                if *undone > 0 {
+                    text.push_str(&format!(" Undo moved it back {undone} {}.", steps(*undone)));
+                }
+                if !entries.is_empty() {
+                    let facts: Vec<Value> = entries.iter().map(outside_entry_fact).collect();
+                    text.push_str(&format!(
+                        " Edits by others, newest first: {}.",
+                        Value::Array(facts)
+                    ));
+                }
+                if *more > 0 {
+                    text.push_str(&format!(" {more} more {}.", more_edits(*more)));
+                }
+                if *rewritten {
+                    text.push_str(
+                        " The history before your previous turn was rewritten, so earlier edits \
+                         you saw may be gone.",
+                    );
+                }
+                text
+            }
         }
     }
 
-    /// A copy whose paths fit the saved bound.
+    /// A copy whose paths, entries and counts fit the saved bound.
     fn bounded(&self) -> Self {
         match self {
             Self::ProjectBound { from, to, cause } => Self::ProjectBound {
@@ -98,7 +152,70 @@ impl HostNotice {
                 to: bounded_path(to),
                 cause: *cause,
             },
+            Self::OutsideChanges {
+                entries,
+                more,
+                undone,
+                rewritten,
+            } => {
+                let mut entries = entries.clone();
+                let mut more = *more;
+                if entries.len() > MAX_OUTSIDE_ENTRIES {
+                    more += entries.len() - MAX_OUTSIDE_ENTRIES;
+                    entries.truncate(MAX_OUTSIDE_ENTRIES);
+                }
+                Self::OutsideChanges {
+                    entries,
+                    more,
+                    undone: *undone,
+                    rewritten: *rewritten,
+                }
+            }
         }
+    }
+}
+
+fn valid_outside_entry(entry: &OutsideEntry) -> bool {
+    let bounded_author = match &entry.author {
+        Author::Person | Author::Outside => true,
+        Author::Agent { session } => session.as_ref().is_none_or(|session| {
+            !session.is_empty() && session.chars().count() <= MAX_OUTSIDE_AUTHOR_CHARS
+        }),
+        Author::Client { owner } => {
+            !owner.is_empty() && owner.chars().count() <= MAX_OUTSIDE_AUTHOR_CHARS
+        }
+    };
+    bounded_author && entry.changes.changes.len() <= oc_dsl::change::MAX_CHANGES
+}
+
+fn outside_entry_fact(entry: &OutsideEntry) -> Value {
+    let mut fact = serde_json::Map::new();
+    fact.insert(
+        "author".into(),
+        serde_json::to_value(&entry.author).unwrap_or(Value::Null),
+    );
+    if !entry.cause.is_edit() {
+        fact.insert(
+            "cause".into(),
+            serde_json::to_value(entry.cause).unwrap_or(Value::Null),
+        );
+    }
+    fact.insert(
+        "changes".into(),
+        serde_json::to_value(&entry.changes).unwrap_or(Value::Null),
+    );
+    Value::Object(fact)
+}
+
+fn steps(count: usize) -> &'static str {
+    if count == 1 { "step" } else { "steps" }
+}
+
+fn more_edits(count: usize) -> &'static str {
+    if count == 1 {
+        "edit is not listed"
+    } else {
+        "edits are not listed"
     }
 }
 

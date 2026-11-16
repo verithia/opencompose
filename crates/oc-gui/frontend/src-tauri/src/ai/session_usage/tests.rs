@@ -71,6 +71,7 @@ fn accounting_queued_preparation_cannot_mutate_a_replaced_session_incarnation() 
                         facts: &ProjectFacts::default(),
                         provider: "old-provider",
                         model: "old-model",
+                        outside: None,
                     },
                     Some(&admitted),
                 )
@@ -118,6 +119,7 @@ fn accounting_queued_preparation_cannot_mutate_a_replaced_session_incarnation() 
                 facts: &ProjectFacts::default(),
                 provider: "current-provider",
                 model: "current-model",
+                outside: None,
             },
             Some(&replacement),
         )

@@ -395,7 +395,7 @@ mod tests {
             let mut stack = UndoStack::new();
             let mut project = super::super::default_project();
             let original = project.clone();
-            let mark = stack.mark();
+            let mark = stack.rollback_mark();
             project.properties.tempo += 1.0;
             stack
                 .push(

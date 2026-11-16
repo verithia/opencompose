@@ -691,7 +691,7 @@ impl UndoStack {
         !self.redo.is_empty() || self.above > 0
     }
 
-    pub fn mark(&self) -> UndoMark {
+    pub fn rollback_mark(&self) -> UndoMark {
         UndoMark {
             undo: self.undo.len(),
             redo: self.redo.len(),
@@ -1398,7 +1398,7 @@ impl AppStateInner {
             dsl_source: self.dsl_source.clone(),
             dirty: self.dirty,
             file_path: self.file_path.clone(),
-            undo_mark: self.undo.mark(),
+            undo_mark: self.undo.rollback_mark(),
             base_undos: Vec::new(),
             label,
             owner,

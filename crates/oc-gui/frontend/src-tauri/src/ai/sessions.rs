@@ -55,6 +55,7 @@ mod versions;
 #[path = "session_view.rs"]
 mod view;
 use super::host_notice::{BindCause, HostNotice, PendingBinding};
+use crate::edit_history::HistoryMark;
 use crate::private_fs;
 pub use message_protocol::MessageKind;
 use message_protocol::MessageMeta;
@@ -157,6 +158,10 @@ pub struct SessionMeta {
     /// host notice before that turn's message.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_binding: Option<PendingBinding>,
+    /// The project's history cursor after this conversation's previous turn,
+    /// so the next turn can tell the model what changed outside it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history_mark: Option<SavedHistoryMark>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<String>,
     /// What a call that changes the project DSL may do without asking. A
@@ -174,6 +179,16 @@ pub struct SessionMeta {
     /// Set when the session was forked from another one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<String>,
+}
+
+/// The edit-history cursor a conversation ended its previous turn at.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SavedHistoryMark {
+    /// The canonical project path the mark belongs to.
+    pub project: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<u64>,
+    pub max_id: u64,
 }
 
 /// A conversation copied into a new session.
@@ -431,6 +446,9 @@ pub struct PrepareContext<'a> {
     pub facts: &'a ProjectFacts,
     pub provider: &'a str,
     pub model: &'a str,
+    /// What changed outside this conversation since its previous turn, saved
+    /// as a typed notice before the turn's message.
+    pub outside: Option<HostNotice>,
 }
 
 /// One autosave step: what the store now holds and whether it compacted.
@@ -747,6 +765,7 @@ impl Store {
             workspace_key: key.clone(),
             project_path: project.map(|path| canonical_path(path).to_string_lossy().to_string()),
             pending_binding: None,
+            history_mark: None,
             workspace: workspace.map(|path| canonical_dir(path).to_string_lossy().to_string()),
             // A fork keeps the mode the conversation was working under.
             permission: parent
@@ -801,6 +820,9 @@ impl Store {
         }
         let from = meta.project_path.take();
         meta.project_path = Some(to);
+        // The binding notice tells the model about the new file; a mark taken
+        // on the old one would describe a different history.
+        meta.history_mark = None;
         // A second bind before a turn keeps the path the model last saw, so the
         // one notice it reads names where the conversation started.
         if meta.pending_binding.is_none() {
@@ -816,6 +838,37 @@ impl Store {
     pub fn binding_status(&self, id: &str, open: Option<&Path>) -> Result<BindingStatus, String> {
         let (_, meta) = self.find(id)?;
         Ok(binding_status(&meta, open))
+    }
+
+    /// Record where the bound project's history stands after a turn. A turn
+    /// that ended on another open file leaves the mark untouched.
+    pub fn record_history_mark(
+        &self,
+        id: &str,
+        project: &Path,
+        mark: HistoryMark,
+    ) -> Result<(), String> {
+        let _lock = self.mutation_lock()?;
+        let (dir, mut meta) = self.find(id)?;
+        let project = canonical_path(project).to_string_lossy().to_string();
+        let bound = meta.project_path.as_deref().map(|path| {
+            canonical_path(Path::new(path))
+                .to_string_lossy()
+                .to_string()
+        });
+        if bound.as_deref() != Some(project.as_str()) {
+            return Ok(());
+        }
+        let saved = SavedHistoryMark {
+            project,
+            at: mark.at,
+            max_id: mark.max_id,
+        };
+        if meta.history_mark.as_ref() == Some(&saved) {
+            return Ok(());
+        }
+        meta.history_mark = Some(saved);
+        write_meta(&dir, &meta)
     }
 
     /// Deletes the least recently updated session of a workspace while it holds
@@ -900,6 +953,9 @@ impl Store {
                     });
                 }
                 meta.project_path = Some(to_text);
+                // The moved notice covers this boundary; the old history's
+                // cursor does not describe the new file's history.
+                meta.history_mark = None;
                 if from_folder.as_deref() == Some(key.as_str())
                     && let Some(folder) = to_folder
                 {
@@ -1315,6 +1371,7 @@ impl Store {
             facts,
             provider,
             model,
+            outside,
         } = context;
         let _lock = self.mutation_lock()?;
         let (dir, mut meta) = self.find(id)?;
@@ -1391,21 +1448,30 @@ impl Store {
         let evicted_auditions = persist_auditions(&self.root, &mut filtered, &audio_settings)?;
         let start = pending.len();
         let (appended, absorbed) = absorb(&mut pending, &filtered);
-        // The notice the model reads stands before the turn's new message, in
+        // The notices the model reads stand before the turn's new message, in
         // the same record, so a reload never shows the text without its cause.
-        let mut notice_added = false;
+        let mut notices = Vec::new();
         if let Some(pending_binding) = pending_binding
             && let Some(to) = meta.project_path.clone()
         {
-            let notice = HostNotice::ProjectBound {
+            notices.push(HostNotice::ProjectBound {
                 from: pending_binding.from,
                 to,
                 cause: pending_binding.cause,
-            };
-            if let Some(row) = saved_message(&super::host_notice::notice_row(&notice)) {
-                pending.insert(start, row);
-                notice_added = true;
+            });
+        }
+        if let Some(outside) = outside {
+            notices.push(outside);
+        }
+        let mut notice_rows = Vec::new();
+        for notice in &notices {
+            if let Some(row) = saved_message(&super::host_notice::notice_row(notice)) {
+                notice_rows.push(row);
             }
+        }
+        let notice_added = !notice_rows.is_empty();
+        for (offset, row) in notice_rows.into_iter().enumerate() {
+            pending.insert(start + offset, row);
         }
         // Archiving rewrites auditions, which can move where the request
         // joins the saved conversation, so what is written is checked again.
@@ -4175,6 +4241,7 @@ mod tests {
                         facts: &context,
                         provider: "fixture-provider",
                         model: "fixture-model",
+                        outside: None,
                     },
                 )
                 .unwrap();
@@ -4311,6 +4378,7 @@ mod tests {
                     facts: &context,
                     provider: "fixture",
                     model: "model",
+                    outside: None,
                 },
             )
             .unwrap();
@@ -4335,6 +4403,7 @@ mod tests {
                     facts: &context,
                     provider: "fixture",
                     model: "model",
+                    outside: None,
                 },
             )
             .unwrap();
@@ -4377,6 +4446,7 @@ mod tests {
                     facts: &context,
                     provider: "fixture-provider",
                     model: "fixture-model",
+                    outside: None,
                 },
             )
             .unwrap();
@@ -4413,6 +4483,7 @@ mod tests {
                     facts: &context,
                     provider: "fixture-provider",
                     model: "fixture-model",
+                    outside: None,
                 },
             )
             .unwrap();
@@ -4449,6 +4520,7 @@ mod tests {
                     facts: &context,
                     provider: "fixture-provider",
                     model: "fixture-model",
+                    outside: None,
                 },
             )
             .unwrap();
@@ -4472,6 +4544,7 @@ mod tests {
                     facts: &context,
                     provider: "fixture-provider",
                     model: "fixture-model",
+                    outside: None,
                 },
             )
             .unwrap();
@@ -4514,6 +4587,7 @@ mod tests {
                     facts: &context,
                     provider: "fixture-provider",
                     model: "fixture-model",
+                    outside: None,
                 },
             )
             .unwrap();
@@ -4985,6 +5059,7 @@ mod tests {
                     facts: &facts(&project),
                     provider: "fixture",
                     model: "model",
+                    outside: None,
                 },
             )
             .unwrap();
@@ -5204,6 +5279,7 @@ mod tests {
                     facts: &context,
                     provider: "fixture-provider",
                     model: "fixture-model",
+                    outside: None,
                 },
             )
             .unwrap();
@@ -5565,6 +5641,7 @@ mod tests {
                     facts: &facts(&project),
                     provider: "fixture",
                     model: "model",
+                    outside: None,
                 },
             )
             .expect("a full archive does not refuse the turn");
@@ -5709,6 +5786,7 @@ mod tests {
                     facts: &facts(&project),
                     provider: "fixture",
                     model: "model",
+                    outside: None,
                 },
             )
             .unwrap();
@@ -5751,6 +5829,7 @@ mod tests {
                         facts: &context,
                         provider: "fixture",
                         model: "model",
+                        outside: None,
                     },
                 )
                 .unwrap();
@@ -5905,6 +5984,7 @@ mod tests {
                     facts: &facts(&project),
                     provider: "fixture",
                     model: "model",
+                    outside: None,
                 },
             )
             .unwrap();
@@ -6058,6 +6138,7 @@ mod tests {
                     facts: &context,
                     provider: "fixture-provider",
                     model: "fixture-model",
+                    outside: None,
                 },
             )
             .unwrap();
@@ -6183,6 +6264,7 @@ mod tests {
                     facts: &context,
                     provider: "fixture-provider",
                     model: "fixture-model",
+                    outside: None,
                 },
             )
             .unwrap();
@@ -6219,6 +6301,7 @@ mod tests {
                     facts: &context,
                     provider: "p",
                     model: "m",
+                    outside: None,
                 },
             )
             .unwrap();
@@ -6325,6 +6408,7 @@ mod tests {
                     facts: &context,
                     provider: "p",
                     model: "m",
+                    outside: None,
                 },
             )
             .unwrap();
@@ -6358,6 +6442,7 @@ mod tests {
                     facts: &context,
                     provider: "p",
                     model: "m",
+                    outside: None,
                 },
             )
             .unwrap();
@@ -6407,6 +6492,7 @@ mod tests {
                         facts: &context,
                         provider: "p",
                         model: "m",
+                        outside: None,
                     },
                 )
                 .unwrap();
@@ -6497,6 +6583,7 @@ mod tests {
                     facts: &context,
                     provider: "fixture-provider",
                     model: "fixture-model",
+                    outside: None,
                 },
             )
             .unwrap();
@@ -6536,6 +6623,7 @@ mod tests {
                         facts: &context,
                         provider: "fixture-provider",
                         model: "fixture-model",
+                        outside: None,
                     },
                 )
                 .unwrap()
@@ -6640,6 +6728,7 @@ mod tests {
                     facts: &context,
                     provider: "fixture-provider",
                     model: "fixture-model",
+                    outside: None,
                 },
             )
             .unwrap();
@@ -6683,6 +6772,7 @@ mod tests {
                     facts: &context,
                     provider: "fixture-provider",
                     model: "fixture-model",
+                    outside: None,
                 },
             )
             .unwrap();
@@ -6770,6 +6860,7 @@ mod tests {
                     facts: &context,
                     provider: "fixture-provider",
                     model: "fixture-model",
+                    outside: None,
                 },
             )
             .unwrap();
@@ -6813,6 +6904,7 @@ mod tests {
                     facts: &context,
                     provider: "fixture-provider",
                     model: "fixture-model",
+                    outside: None,
                 },
             )
             .unwrap();
@@ -6884,6 +6976,7 @@ mod tests {
                     facts: &context,
                     provider: "fixture-provider",
                     model: "fixture-model",
+                    outside: None,
                 },
             )
             .unwrap();
@@ -6905,6 +6998,7 @@ mod tests {
                     facts: &context,
                     provider: "fixture-provider",
                     model: "fixture-model",
+                    outside: None,
                 },
             )
             .unwrap();
@@ -6986,6 +7080,7 @@ mod tests {
                     facts: &facts(&project),
                     provider: "fixture-provider",
                     model: "fixture-model",
+                    outside: None,
                 },
             )
             .unwrap();
@@ -7024,6 +7119,7 @@ mod tests {
                     facts: &context,
                     provider: "fixture-provider",
                     model: "fixture-model",
+                    outside: None,
                 },
             )
             .unwrap();
@@ -7053,6 +7149,7 @@ mod tests {
                     facts: &context,
                     provider: "fixture-provider",
                     model: "fixture-model",
+                    outside: None,
                 },
             )
             .unwrap();
@@ -7091,6 +7188,7 @@ mod tests {
                     facts: &context,
                     provider: "fixture-provider",
                     model: "fixture-model",
+                    outside: None,
                 },
             )
             .unwrap();
@@ -7124,6 +7222,7 @@ mod tests {
             facts: &context,
             provider: "fixture-provider",
             model: "fixture-model",
+            outside: None,
         };
         let ask = user("make it punchy");
         let call = tool_call("tracks_mix", "{\"track\":\"kick\"}", "sig-0");
@@ -7198,6 +7297,7 @@ mod tests {
                     facts: &context,
                     provider: "fixture-provider",
                     model: "fixture-model",
+                    outside: None,
                 },
             )
             .unwrap();
@@ -7229,6 +7329,7 @@ mod tests {
                     facts: &context,
                     provider: "fixture-provider",
                     model: "fixture-model",
+                    outside: None,
                 },
             )
             .unwrap();
@@ -7247,6 +7348,7 @@ mod tests {
                     facts: &context,
                     provider: "fixture-provider",
                     model: "fixture-model",
+                    outside: None,
                 },
             )
             .unwrap();
@@ -7381,6 +7483,7 @@ mod tests {
                     facts: &facts(&project),
                     provider: "fixture",
                     model: "model",
+                    outside: None,
                 },
             )
             .unwrap();
@@ -7538,6 +7641,7 @@ mod tests {
                     facts: &facts(&project),
                     provider: "fixture",
                     model: "model",
+                    outside: None,
                 },
             )
             .unwrap();

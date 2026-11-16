@@ -369,6 +369,40 @@ mod tests {
     }
 
     #[test]
+    fn an_outside_changes_notice_is_bounded_on_read() {
+        let entry = || {
+            json!({
+                "author": {"kind": "person"},
+                "cause": "edit",
+                "changes": {"changes": [], "more": 0},
+            })
+        };
+        let eight: Vec<Value> = (0..8).map(|_| entry()).collect();
+        let mut row = json!({"role":"user","content":"notice",
+            "message_meta":{"version":1,"kind":"host_notice","notice":{
+                "kind":"outside_changes","entries":eight,"more":0,
+                "undone":0,"rewritten":false}}});
+        assert!(read(&row).is_some());
+        let nine: Vec<Value> = (0..9).map(|_| entry()).collect();
+        row["message_meta"]["notice"]["entries"] = json!(nine);
+        assert!(read(&row).is_none(), "more than eight entries is refused");
+        row["message_meta"]["notice"]["entries"] = json!([entry()]);
+        row["message_meta"]["notice"]["more"] = json!(crate::edit_history::MAX_OUTSIDE_COUNT + 1);
+        assert!(read(&row).is_none(), "an unlimited count is refused");
+        row["message_meta"]["notice"]["more"] = json!(0);
+        row["message_meta"]["notice"]["undone"] = json!(crate::edit_history::MAX_OUTSIDE_COUNT + 1);
+        assert!(read(&row).is_none(), "an unlimited undo count is refused");
+        row["message_meta"]["notice"]["undone"] = json!(0);
+        row["message_meta"]["notice"]["entries"] = json!([{
+            "author": {"kind": "client", "owner": "x".repeat(
+                crate::edit_history::MAX_OUTSIDE_AUTHOR_CHARS + 1)},
+            "cause": "edit",
+            "changes": {"changes": [], "more": 0},
+        }]);
+        assert!(read(&row).is_none(), "an oversized author is refused");
+    }
+
+    #[test]
     fn metadata_does_not_copy_or_drop_provider_payloads() {
         let mut row = json!({"role":"assistant","content":null,"tool_calls":[{"id":"call"}],"thinking":[{"text":"visible","signature":"sig"}],"provider_state":{"encrypted":"opaque"}});
         let before = row.clone();
