@@ -110,6 +110,53 @@ pub struct ApprovalRequest {
     pub after: Option<String>,
 }
 
+/// A question the model asks a person, carrying no project change.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct UserQuestion {
+    pub call_id: String,
+    pub question: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub options: Vec<String>,
+    pub free_text: bool,
+}
+
+/// A person's answer to [`UserQuestion`]. `option` indexes `options`; `text` is
+/// the free-text answer when one was typed.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub struct Reply {
+    #[serde(default)]
+    pub option: Option<usize>,
+    #[serde(default)]
+    pub text: Option<String>,
+    /// Nobody answered in time. Only the host sets it; a view cannot.
+    #[serde(skip)]
+    pub expired: bool,
+}
+
+impl Reply {
+    /// The answer a question gets when its wait runs out.
+    pub fn expired() -> Self {
+        Self {
+            expired: true,
+            ..Self::default()
+        }
+    }
+}
+
+/// A question a running turn waits on, as a window that reloaded reads it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PendingQuestion {
+    Approval {
+        #[serde(flatten)]
+        request: ApprovalRequest,
+    },
+    UserQuestion {
+        #[serde(flatten)]
+        request: UserQuestion,
+    },
+}
+
 /// A person's answer. `target` is the object the card named, so a refusal
 /// can say what was refused; `always` allows the tool for the rest of the
 /// conversation.
@@ -146,6 +193,8 @@ pub enum TurnEvent {
     Running { call_id: String, tool: String },
     /// A call waits for a person; answered with `ai_turn_answer`.
     Ask { request: ApprovalRequest },
+    /// The model asks the person a question; answered with `ai_turn_reply`.
+    AskUser { request: UserQuestion },
     /// A question's wait ran out; the call was refused and its card is gone.
     Expired { call_id: String },
     /// A replacement the loop is about to apply under `autoreview`.
@@ -309,6 +358,10 @@ pub trait Host: Sync {
     ) -> impl Future<Output = Result<Value, Value>> + Send;
     /// Asks the person; `None` when nobody is there to ask.
     fn ask(&self, request: ApprovalRequest) -> impl Future<Output = Option<Decision>> + Send;
+    /// Asks the person a question; `None` when nobody is there to ask.
+    fn ask_user(&self, _request: UserQuestion) -> impl Future<Output = Option<Reply>> + Send {
+        async { None }
+    }
     /// Tools this conversation answered "always allow" for, read per call.
     fn allowed(&self) -> Vec<String>;
     /// Appends messages to the saved conversation, refusing a broken pairing,
@@ -413,6 +466,8 @@ struct Turn<'a, H: Host> {
     /// Successful mid-turn compactions, bounded so a request that cannot
     /// shrink does not call the model again every round.
     mid_compactions: usize,
+    /// The context-share thresholds this turn already reported.
+    context_warned: [bool; 2],
 }
 
 /// How many times one turn may compact its saved conversation.
@@ -462,6 +517,7 @@ pub async fn run_turn<H: Host>(host: &H, spec: TurnSpec, cancel: Cancel) -> Turn
         ask: None,
         system_len,
         mid_compactions: 0,
+        context_warned: [false; 2],
     };
     turn.budget = wire::TokenBudget::new(
         turn.spec.context_length,
@@ -593,9 +649,7 @@ impl<H: Host> Turn<'_, H> {
                 }
             }
             let remaining = MAX_TOOL_ROUNDS - round - 1;
-            if remaining > 0 && remaining <= ROUNDS_LEFT_NOTICE {
-                deliveries.push(wire::rounds_left_notice(remaining));
-            }
+            deliveries.extend(self.budget_notices(remaining));
             if !deliveries.is_empty() {
                 self.push(deliveries).await?;
                 self.refresh_state_context();
@@ -819,6 +873,52 @@ impl<H: Host> Turn<'_, H> {
                 return Ok(ran);
             }
         };
+        if name == "ask_user" {
+            if let Some(selection) = self.spec.toolsets.as_deref()
+                && !crate::ai::toolsets::offers(name, selection)
+            {
+                ran.result =
+                    crate::ai::skill_hints::refusal(&crate::ai::toolsets::refusal(name, selection));
+                ran.failed = true;
+                return Ok(ran);
+            }
+            use crate::tool_registry::arguments::ToolArguments;
+            let request = crate::agent_tools::question::AskUserArgs::decode(&Value::Object(args))
+                .map_err(|error| error.to_string());
+            let prompt = match request.and_then(|request| request.into_prompt()) {
+                Ok(prompt) => prompt,
+                Err(error) => {
+                    ran.result = json!({ "error": error });
+                    ran.failed = true;
+                    return Ok(ran);
+                }
+            };
+            self.mark_started(call).await?;
+            let options = prompt.options;
+            let question = UserQuestion {
+                call_id: call.id.clone(),
+                question: prompt.question,
+                options: options.clone(),
+                free_text: prompt.free_text,
+            };
+            match self.ask_user(question).await? {
+                None => ran.result = crate::agent_tools::question::unanswered("no_user"),
+                Some(reply) if reply.expired => {
+                    ran.result = crate::agent_tools::question::unanswered("expired");
+                }
+                Some(reply) => {
+                    let mut result = json!({ "answered": true });
+                    if let Some(option) = reply.option.and_then(|index| options.get(index)) {
+                        result["option"] = json!(option);
+                    }
+                    if let Some(text) = reply.text.filter(|text| !text.trim().is_empty()) {
+                        result["text"] = json!(text);
+                    }
+                    ran.result = result;
+                }
+            }
+            return Ok(ran);
+        }
         if name == READ_TOOLCALL {
             let id = args.get("id").and_then(Value::as_str).unwrap_or_default();
             let scope = &self.spec.scope;
@@ -980,6 +1080,39 @@ impl<H: Host> Turn<'_, H> {
             () = self.cancel.cancelled() => Err(Ending::Cancelled),
             decision = self.host.ask(request) => Ok(decision),
         }
+    }
+
+    async fn ask_user(&self, request: UserQuestion) -> Result<Option<Reply>, Ending> {
+        tokio::select! {
+            biased;
+            () = self.cancel.cancelled() => Err(Ending::Cancelled),
+            reply = self.host.ask_user(request) => Ok(reply),
+        }
+    }
+
+    /// The budget rows this round owes the model: one when the rounds run
+    /// low, and one when the measured context share first reaches 60% or 75%.
+    /// The two facts share a row when they happen in the same round.
+    fn budget_notices(&mut self, remaining: usize) -> Vec<Value> {
+        let rounds = (remaining > 0 && remaining <= ROUNDS_LEFT_NOTICE).then_some(remaining as u32);
+        let share = self.budget.map(|budget| {
+            let measured = budget.measure(&self.wire);
+            let percent = (measured as f64 / budget.window as f64 * 100.0).ceil();
+            percent.clamp(0.0, 100.0) as u8
+        });
+        let mut crossed = None;
+        if let Some(share) = share {
+            for (index, threshold) in [60u8, 75].into_iter().enumerate() {
+                if !self.context_warned[index] && share >= threshold {
+                    self.context_warned[index] = true;
+                    crossed = Some(share);
+                }
+            }
+        }
+        if rounds.is_none() && crossed.is_none() {
+            return Vec::new();
+        }
+        vec![wire::budget_notice(rounds, crossed)]
     }
 
     async fn mark_started(&self, call: &Call) -> Result<(), Ending> {

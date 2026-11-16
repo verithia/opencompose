@@ -8,8 +8,8 @@ panel additionally applies its exclusion policy; the range render, audition,
 analysis, compare, transaction and plugin program/state tools are enabled in
 the panel.
 
-The MCP catalog has 126 tools. The panel enables 98 of them and adds its local
-`edit_subtree` and `plan_update` tools, for 100 panel tools.
+The MCP catalog has 127 tools. The panel enables 99 of them and adds its local
+`edit_subtree`, `plan_update` and `ask_user` tools, for 102 panel tools.
 
 Use `effects_set_bypass` for a reversible comparison of an existing insert.
 Read its original bypass state and chain index with `project_extract`. Pass
@@ -750,8 +750,9 @@ caller alike. `ai_turn_start` starts a turn and answers with the outcome
 `{text, failed, stop?, error?}`. The panel hears `ai_turn` events
 `{request_id, session_id, type}` with types `message` (a message the turn just
 saved, in saved form), `running` (a call is about to run), `ask` (a call waits
-for a person), `expired` (a question's wait ran out), `preview` (an autoreview
-replacement about to apply), `wire_folded` (the request was folded to fit;
+for a person), `ask_user` (the model asks a question), `expired` (a question's
+wait ran out), `preview` (an autoreview replacement about to apply),
+`wire_folded` (the request was folded to fit;
 the numbers before and after, which the view words) and `media`, plus
 `ai_turn_project` for the document a panel turn changed.
 `ai_turn_answer` answers a question by call id with `{approved, target?,
@@ -761,7 +762,11 @@ turn running and its question open. A question nobody answers within 30
 minutes is refused: the call reads `"expired": true`, nothing changes, and the
 turn goes on without it. A question whose wait is dropped unanswered is refused
 too. Neither is the nobody-attends answer, so neither lets an `edit_subtree`
-apply. `ai_cancel` stops a turn; the slot a recall or a recovery holds is the
+apply. `ask_user` carries no project change: it asks the person one question,
+with at most six short options or free text, when the decision is theirs. A
+headless turn has nobody to ask and answers `{"answered": false, "reason":
+"no_user"}` immediately; an expired question answers `"expired"`. `ai_cancel`
+stops a turn; the slot a recall or a recovery holds is the
 host's own, so `ai_cancel` cannot release it and `ai_active_turn` does not
 report it. `ai_tool_result` returns the full text behind a truncated result
 while the process keeps it, scoped to the conversation; the newest 64 results
@@ -948,6 +953,12 @@ the panel's provider layer decides that and the error carries `retryable`.
   the saved conversation and its system prompt, so the model reads every stored
   call and result and nothing is retyped. A kept edit is already part of that
   conversation, and a resumed request replays no call.
+* **A typed budget row bounds the turn.** When four or fewer rounds remain, or
+  the measured context share first reaches 60 % and then 75 % within a turn,
+  the loop writes one `round_budget` row whose `notice` carries
+  `{rounds_left?, context_share?}`; each threshold is reported once. Its English
+  text is derived from that payload, so the transcript hides it and an older
+  saved English row still loads.
 * **The wire stays inside the request budget.** Before every provider request
   the loop counts its messages and prompt-text bytes against the bounds `ai_chat`
   enforces: 100 messages and 2 MiB, with a margin so one round of results cannot

@@ -148,8 +148,8 @@ The **AI** sidebar tab is a chat client with the same tools, minus the ones that
 would escape the panel.
 
 - It advertises every catalog tool the panel policy enables, plus the
-  panel-local `edit_subtree` and `plan_update`. The enabled set follows the
-  catalog.
+  panel-local `edit_subtree`, `plan_update` and `ask_user`. The enabled set
+  follows the catalog.
 - Excluded from the panel: plugin scan/load/install/sidecar-state and native
   plugin windows, content-library writes, `render_offline` and `render_stems`,
   host audio device configuration, device-level mute, tools that list filesystem
@@ -169,8 +169,16 @@ would escape the panel.
   and a plan strip, and the agent updates them through `plan_update`. Rewinding
   before a goal or plan change restores the earlier one, and a fork keeps the
   state it copied.
+- `ask_user` asks you one question when a decision is yours, with at most six
+  short options or free text. A headless turn has nobody to answer and carries
+  on with `answered: false`.
+- Before guessing a name, the assistant searches the project with
+  `project_search` (tracks, presets, patterns, buses, sections, markers,
+  effects and phrases) and gets back addressable paths.
 - A turn is limited to sixty-four model rounds and thirty-two tool calls per
-  round; a turn that reaches the round cap commits the edits it applied.
+  round; a turn that reaches the round cap commits the edits it applied. A
+  budget row reports the last four rounds and the context share as it reaches
+  60 % and 75 %.
 - Provider settings require HTTPS, except on loopback. Keys are stored in the OS
   credential store, not in the project or in YAML; non-secret settings live in
   `~/.opencompose/ai-providers.yaml`.

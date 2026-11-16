@@ -131,11 +131,12 @@ pub(super) fn read(message: &Value) -> Option<MessageMeta> {
     {
         return None;
     }
-    if meta
-        .notice
-        .as_ref()
-        .is_some_and(|notice| meta.kind != MessageKind::HostNotice || !notice.valid())
-    {
+    if meta.notice.as_ref().is_some_and(|notice| {
+        !matches!(
+            meta.kind,
+            MessageKind::HostNotice | MessageKind::RoundBudget
+        ) || !notice.valid()
+    }) {
         return None;
     }
     if meta
@@ -384,6 +385,25 @@ mod tests {
         row["message_meta"]["kind"] = json!("host_notice");
         row["message_meta"]["notice"]["to"] = json!("x".repeat(4097));
         assert!(read(&row).is_none(), "an oversized path is refused");
+    }
+
+    #[test]
+    fn a_round_budget_row_loads_with_and_without_its_typed_notice() {
+        let legacy = json!({"role":"user","content":"You have 2 tool rounds left in this turn."});
+        assert_eq!(kind(&legacy), Some(MessageKind::RoundBudget));
+        let typed = crate::ai::agent_loop::wire::budget_notice(Some(2), Some(62));
+        let meta = read(&typed).expect("a typed budget row is valid");
+        assert_eq!(meta.kind, MessageKind::RoundBudget);
+        assert!(matches!(
+            meta.notice,
+            Some(crate::ai::host_notice::HostNotice::Budget {
+                rounds_left: Some(2),
+                context_share: Some(62)
+            })
+        ));
+        let mut invalid = typed;
+        invalid["message_meta"]["notice"]["context_share"] = json!(101);
+        assert!(read(&invalid).is_none(), "an unbounded share is refused");
     }
 
     #[test]

@@ -19,7 +19,7 @@ import { aiConfig, getActiveProvider, hasUnsavedConfig } from "../ai/config";
 import { elapsedLabel, stopStalled, STOP_STALLED_SECONDS } from "../ai/transcript";
 import type { SessionMeta } from "../ai/sessions";
 import type { WireMessage } from "../ai/wire";
-import { answerFakeTurn, cancelFakeTurn, emitTurnEvent, emitTurnProject, fakeTurnRunning, resetFakeTurns, runFakeTurn, type TurnStartArgs } from "./helpers/fakeTurn";
+import { answerFakeTurn, cancelFakeTurn, emitTurnEvent, emitTurnProject, fakeTurnRunning, replyFakeTurn, resetFakeTurns, runFakeTurn, type TurnStartArgs } from "./helpers/fakeTurn";
 
 const CAPABILITIES = { text: true, audio_in: false, audio_out: false, native_tool_calling: true, streaming: true };
 
@@ -84,6 +84,10 @@ const backend = {
   sessions: [] as SessionMeta[],
   /** Saved messages whose event the fake sends after the turn's reply. */
   late: undefined as ((message: WireMessage) => boolean) | undefined,
+  /** Calls the fake turns into questions. */
+  askUser: (_call: { tool: string; args: Record<string, unknown> }) => false,
+  /** Every `ai_turn_reply`, in order. */
+  replies: [] as { requestId: string; callId: string; reply: Record<string, unknown> }[],
 };
 
 function installBackend() {
@@ -105,9 +109,14 @@ function installBackend() {
         },
         tool: (call) => backend.tool(call),
         ask: (call) => call.tool === "edit_subtree" || call.tool === "tracks_remove",
+        askUser: (call) => backend.askUser(call),
         late: (message) => backend.late?.(message) ?? false,
       });
       case "ai_turn_answer": return answerFakeTurn(String(typed.requestId), String(typed.callId), typed.decision as never);
+      case "ai_turn_reply": {
+        backend.replies.push({ requestId: String(typed.requestId), callId: String(typed.callId), reply: typed.reply as Record<string, unknown> });
+        return replyFakeTurn(String(typed.requestId), String(typed.callId), typed.reply as never);
+      }
       case "ai_turn_questions": return [];
       case "ai_batch_recover": return null;
       case "ai_cancel": {
@@ -182,6 +191,8 @@ beforeEach(() => {
   backend.tool = async () => ({ tracks: [] });
   backend.cancel = null;
   backend.cancelIds = [];
+  backend.replies = [];
+  backend.askUser = () => false;
   backend.snapshot = makeSnapshot();
   backend.sessions = [];
   backend.late = undefined;
@@ -560,6 +571,59 @@ describe("the turn in flight", () => {
     await waitFor(() => expect(fakeTurnRunning(requestId)).toBe(false));
     expect(aiSession.turn()).toEqual(marker);
     expect(document.body.textContent).not.toContain("Finished while the panel was closed.");
+  });
+
+  it("shows a question card with options and sends the chosen answer", async () => {
+    let round = 0;
+    backend.chat = async () => {
+      round += 1;
+      return round === 1
+        ? { role: "assistant", content: null, tool_calls: [{
+            id: "q1", type: "function",
+            function: { name: "ask_user", arguments: JSON.stringify({ question: "Which mood?", options: ["Warm", "Bright"] }) },
+          }] }
+        : { role: "assistant", content: "Bright wins." };
+    };
+    backend.askUser = (call) => call.tool === "ask_user";
+    await mount();
+    await typeAndSend("pick a mood");
+
+    await waitFor(() => expect(document.querySelector(".ai-question-card")).toBeTruthy());
+    expect(document.querySelector(".ai-question-card")!.textContent).toContain("Which mood?");
+    const options = [...document.querySelectorAll(".ai-question-option")] as HTMLButtonElement[];
+    expect(options.map((option) => option.textContent)).toEqual(["Warm", "Bright"]);
+    fireEvent.click(options[1]);
+    await waitFor(() => expect(backend.replies).toHaveLength(1));
+    expect(backend.replies[0].reply).toEqual({ option: 1 });
+    await waitFor(() => expect(document.querySelector(".ai-question-card")).toBeNull());
+    await waitFor(() => expect(answers().at(-1)?.textContent).toContain("Bright wins."));
+  });
+
+  it("sends a typed answer when the question allows free text", async () => {
+    let round = 0;
+    backend.chat = async () => {
+      round += 1;
+      return round === 1
+        ? { role: "assistant", content: null, tool_calls: [{
+            id: "q2", type: "function",
+            function: { name: "ask_user", arguments: JSON.stringify({ question: "What mood?", options: ["Warm"], free_text: true }) },
+          }] }
+        : { role: "assistant", content: "Noted." };
+    };
+    backend.askUser = (call) => call.tool === "ask_user";
+    await mount();
+    await typeAndSend("describe the mood");
+
+    const field = await waitFor(() => {
+      const element = document.querySelector(".ai-question-input") as HTMLInputElement | null;
+      expect(element).toBeTruthy();
+      return element!;
+    });
+    fireEvent.input(field, { target: { value: "Late-night jazz" } });
+    fireEvent.click(document.querySelector(".ai-question-submit") as HTMLButtonElement);
+    await waitFor(() => expect(backend.replies).toHaveLength(1));
+    expect(backend.replies[0].reply).toEqual({ text: "Late-night jazz" });
+    await waitFor(() => expect(answers().at(-1)?.textContent).toContain("Noted."));
   });
 
   it("keeps a pasted multi-line draft and does not send on Shift+Enter", async () => {

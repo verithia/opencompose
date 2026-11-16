@@ -261,6 +261,7 @@ pub fn run_with_options(path: Option<String>, diag: DiagOptions) {
             ai_service::ai_cancel,
             ai_service::ai_turn_start,
             ai_service::ai_turn_answer,
+            ai_service::ai_turn_reply,
             ai_service::ai_turn_steer,
             ai_service::ai_recall,
             ai_service::ai_turn_questions,

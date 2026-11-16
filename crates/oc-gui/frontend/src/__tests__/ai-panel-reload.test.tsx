@@ -23,7 +23,7 @@ import type { ActiveTurn, SessionMeta } from "../ai/sessions";
 import type { ProjectSnapshot } from "../types/project";
 import type { WireMessage } from "../ai/wire";
 import type { MediaAttachment } from "../ai/media";
-import { answerFakeTurn, cancelFakeTurn, emitTurnEvent, emitTurnProject, resetFakeTurns, runFakeTurn, type TurnStartArgs } from "./helpers/fakeTurn";
+import { answerFakeTurn, cancelFakeTurn, emitTurnEvent, emitTurnProject, replyFakeTurn, resetFakeTurns, runFakeTurn, type TurnStartArgs } from "./helpers/fakeTurn";
 
 const CAPABILITIES = { text: true, audio_in: false, audio_out: false, native_tool_calling: true, streaming: true };
 
@@ -115,9 +115,12 @@ const backend = {
   recovered: null as { snapshot: ProjectSnapshot; unsaved?: string } | null,
   project: makeSnapshot() as ProjectSnapshot,
   /** The questions the inherited turn waits on. */
-  questions: [] as { call_id: string; tool: string; args: Record<string, unknown> }[],
+  questions: [] as ({ kind?: "approval"; call_id: string; tool: string; args: Record<string, unknown> }
+    | { kind: "user_question"; call_id: string; question: string; options?: string[]; free_text: boolean })[],
   /** Every `ai_turn_answer`, in order. */
   answers: [] as Record<string, unknown>[],
+  /** Every `ai_turn_reply`, in order. */
+  replies: [] as Record<string, unknown>[],
   /** Held `ai_turn_questions` reply, when a test races it. */
   questionsReply: null as Promise<unknown> | null,
   /** True when `ai_cancel` leaves the inherited turn running for a while. */
@@ -186,6 +189,10 @@ function installBackend() {
         return answerFakeTurn(String(typed.requestId), String(typed.callId), typed.decision as never);
       }
       case "ai_turn_questions": return backend.questionsReply ?? backend.questions;
+      case "ai_turn_reply": {
+        backend.replies.push(typed);
+        return replyFakeTurn(String(typed.requestId), String(typed.callId), typed.reply as never);
+      }
       case "ai_turn_steer": {
         expect(typed.requestId).toBe(backend.active?.request_id);
         expect(typed.sessionId).toBe(backend.active?.session_id);
@@ -322,6 +329,7 @@ beforeEach(() => {
   backend.activeOnce = false;
   backend.questions = [];
   backend.answers = [];
+  backend.replies = [];
   backend.chatCalls = [];
   backend.calls = [];
   backend.cancels = [];
@@ -551,6 +559,32 @@ describe("a reloaded window", () => {
       decision: { approved: false, always: false },
     });
     expect(document.querySelector(".ai-approval-card")).toBeNull();
+  });
+
+  it("shows an inherited question and sends its reply", async () => {
+    reloadWith({ open: "s1", turn: { session: "s1", started: Date.now() } });
+    backend.active = { request_id: "r1", session_id: "s1" };
+    backend.loaded = [{ role: "user", content: "what should we do" }];
+    backend.questions = [{
+      kind: "user_question",
+      call_id: "q7",
+      question: "Which direction?",
+      options: ["Darker", "Brighter"],
+      free_text: true,
+    }];
+    await mount();
+
+    await waitFor(() => expect(document.querySelector(".ai-question-card")).toBeTruthy());
+    expect(document.querySelector(".ai-question-card")!.textContent).toContain("Which direction?");
+    fireEvent.input(document.querySelector(".ai-question-input")!, { target: { value: "Darker, but sparse" } });
+    fireEvent.click(document.querySelector(".ai-question-submit")!);
+    await waitFor(() => expect(backend.replies).toHaveLength(1));
+    expect(backend.replies[0]).toMatchObject({
+      requestId: "r1",
+      callId: "q7",
+      reply: { text: "Darker, but sparse" },
+    });
+    expect(document.querySelector(".ai-question-card")).toBeNull();
   });
 
   it("drops the card of a question whose wait ran out, and only that one", async () => {

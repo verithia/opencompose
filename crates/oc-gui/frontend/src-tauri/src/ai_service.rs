@@ -1586,10 +1586,20 @@ pub fn ai_recall(
     )
 }
 
+/// Answers a question the model asked a person, without an approval decision.
+#[tauri::command]
+pub fn ai_turn_reply(
+    request_id: String,
+    call_id: String,
+    reply: ai::agent_loop::Reply,
+) -> Result<(), String> {
+    ai::agent_loop::host::reply(&request_id, &call_id, reply)
+}
+
 /// The questions a running turn waits on, for a window that reloaded mid-turn.
 #[tauri::command]
-pub fn ai_turn_questions(request_id: String) -> Vec<ai::agent_loop::ApprovalRequest> {
-    ai::agent_loop::host::questions(&request_id)
+pub fn ai_turn_questions(request_id: String) -> Vec<ai::agent_loop::PendingQuestion> {
+    ai::agent_loop::host::pending_questions(&request_id)
 }
 
 /// The full result behind a truncated preview: the in-memory cache first, else

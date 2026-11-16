@@ -2702,7 +2702,9 @@ fn dispatch_tool(
     match id {
         ToolId::ListSkills | ToolId::ReadSkill => dispatch_skill(id, args)
             .ok_or_else(|| format!("No reference handler for '{}'", id.name()))?,
-        ToolId::EditSubtree | ToolId::PlanUpdate => Err(format!("unknown tool '{}'", id.name())),
+        ToolId::EditSubtree | ToolId::PlanUpdate | ToolId::AskUser => {
+            Err(format!("unknown tool '{}'", id.name()))
+        }
         // ---- system -----------------------------------------------------
         ToolId::SystemCapabilities => {
             let _ = crate::agent_tools::misc::SystemCapabilitiesArgs::decode(args)
@@ -3007,6 +3009,12 @@ fn dispatch_tool(
         }
 
         // ---- DSL context / edits ---------------------------------------
+        ToolId::ProjectSearch => {
+            use crate::tool_registry::arguments::ToolArguments;
+            let request = crate::agent_tools::search::SearchArgs::decode(args)
+                .map_err(|error| error.to_string())?;
+            crate::agent_tools::search::execute(state(app).inner(), request)
+        }
         ToolId::ProjectGet
         | ToolId::ProjectDsl
         | ToolId::ProjectContext
@@ -5855,6 +5863,7 @@ providers:
             "project_new",
             "project_open",
             "project_save",
+            "project_search",
             "project_set_name",
             "project_set_tempo",
             "project_validate",

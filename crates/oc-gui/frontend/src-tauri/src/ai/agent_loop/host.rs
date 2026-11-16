@@ -8,8 +8,8 @@
 //! which the loop commits on every ending.
 
 use super::{
-    ApprovalRequest, AudioShape, Cancel, Decision, Document, Edited, Host, TurnEvent, TurnOutcome,
-    TurnSpec,
+    ApprovalRequest, AudioShape, Cancel, Decision, Document, Edited, Host, PendingQuestion, Reply,
+    TurnEvent, TurnOutcome, TurnSpec, UserQuestion,
 };
 use crate::ai::sessions::{SessionPermission, Store};
 use crate::ai::timing::TurnStatsHandle;
@@ -41,12 +41,18 @@ const MAX_REQUEST_ID: usize = 96;
 type QuestionKey = (String, String);
 /// A question waiting for a person, kept so a window that reloaded can ask
 /// it again.
-struct Question {
-    answer: oneshot::Sender<Decision>,
-    request: ApprovalRequest,
+enum Waiting {
+    Approval {
+        answer: oneshot::Sender<Decision>,
+        request: ApprovalRequest,
+    },
+    UserQuestion {
+        answer: oneshot::Sender<Reply>,
+        request: UserQuestion,
+    },
 }
 /// Questions waiting for a person.
-static PENDING: LazyLock<Mutex<HashMap<QuestionKey, Question>>> = LazyLock::new(Mutex::default);
+static PENDING: LazyLock<Mutex<HashMap<QuestionKey, Waiting>>> = LazyLock::new(Mutex::default);
 /// Running turn controls, keyed by request id.
 static RUNNING: LazyLock<Mutex<HashMap<String, RunningTurn>>> = LazyLock::new(Mutex::default);
 
@@ -434,7 +440,7 @@ impl Host for AppHost {
             }
             pending.insert(
                 key.clone(),
-                Question {
+                Waiting::Approval {
                     answer: sender,
                     request: request.clone(),
                 },
@@ -462,6 +468,41 @@ impl Host for AppHost {
             }
         }
         decision
+    }
+
+    async fn ask_user(&self, request: UserQuestion) -> Option<Reply> {
+        if !self.attended {
+            return None;
+        }
+        let (sender, receiver) = oneshot::channel();
+        let key = (self.request_id.clone(), request.call_id.clone());
+        {
+            let mut pending = lock(&PENDING);
+            if pending
+                .keys()
+                .filter(|(turn, _)| turn == &self.request_id)
+                .count()
+                >= MAX_PENDING
+            {
+                return Some(Reply::expired());
+            }
+            pending.insert(
+                key.clone(),
+                Waiting::UserQuestion {
+                    answer: sender,
+                    request: request.clone(),
+                },
+            );
+        }
+        let _asked = AskedQuestion(key.clone());
+        self.emit(TurnEvent::AskUser { request });
+        let reply = await_reply(receiver, QUESTION_TIMEOUT).await;
+        if reply.expired {
+            self.emit(TurnEvent::Expired {
+                call_id: key.1.clone(),
+            });
+        }
+        Some(reply)
     }
 
     fn allowed(&self) -> Vec<String> {
@@ -701,6 +742,14 @@ async fn await_answer(
         Ok(Ok(decision)) => decision,
         Ok(Err(_)) => Decision::default(),
         Err(_) => Decision::expired(),
+    }
+}
+
+/// A person's reply, or the refusal the same wait produces.
+async fn await_reply(receiver: oneshot::Receiver<Reply>, wait: std::time::Duration) -> Reply {
+    match tokio::time::timeout(wait, receiver).await {
+        Ok(Ok(reply)) => reply,
+        Ok(Err(_)) | Err(_) => Reply::expired(),
     }
 }
 
@@ -1086,14 +1135,39 @@ fn stranded_loop_batch(open: Option<&str>) -> bool {
     open.is_some_and(crate::state::loop_batch_owner)
 }
 
-/// Answers a question a running turn asked. A stale answer changes nothing.
+/// Answers an approval a running turn asked. A stale answer changes nothing.
 pub fn answer(request_id: &str, call_id: &str, decision: Decision) -> Result<(), String> {
-    let question = lock(&PENDING)
-        .remove(&(request_id.to_owned(), call_id.to_owned()))
-        .ok_or("Nothing is waiting for an answer to this question")?;
-    question
-        .answer
+    let key = (request_id.to_owned(), call_id.to_owned());
+    let question = {
+        let mut pending = lock(&PENDING);
+        if !matches!(pending.get(&key), Some(Waiting::Approval { .. })) {
+            return Err("Nothing is waiting for an answer to this question".into());
+        }
+        pending.remove(&key)
+    };
+    let Some(Waiting::Approval { answer, .. }) = question else {
+        return Err("Nothing is waiting for an answer to this question".into());
+    };
+    answer
         .send(decision)
+        .map_err(|_| "The turn stopped before the answer arrived".to_string())
+}
+
+/// Answers a question a running turn asked. A stale answer changes nothing.
+pub fn reply(request_id: &str, call_id: &str, reply: Reply) -> Result<(), String> {
+    let key = (request_id.to_owned(), call_id.to_owned());
+    let question = {
+        let mut pending = lock(&PENDING);
+        if !matches!(pending.get(&key), Some(Waiting::UserQuestion { .. })) {
+            return Err("Nothing is waiting for an answer to this question".into());
+        }
+        pending.remove(&key)
+    };
+    let Some(Waiting::UserQuestion { answer, .. }) = question else {
+        return Err("Nothing is waiting for an answer to this question".into());
+    };
+    answer
+        .send(reply)
         .map_err(|_| "The turn stopped before the answer arrived".to_string())
 }
 
@@ -1381,13 +1455,33 @@ fn recall_with(
     })
 }
 
-/// The questions a running turn is waiting on, for a window that reloaded
+/// The approvals a running turn is waiting on, for a window that reloaded
 /// while the card was open.
+#[cfg(test)]
 pub fn questions(request_id: &str) -> Vec<ApprovalRequest> {
     lock(&PENDING)
         .iter()
         .filter(|((turn, _), _)| turn == request_id)
-        .map(|(_, question)| question.request.clone())
+        .filter_map(|(_, question)| match question {
+            Waiting::Approval { request, .. } => Some(request.clone()),
+            Waiting::UserQuestion { .. } => None,
+        })
+        .collect()
+}
+
+/// Every question a running turn is waiting on, typed for the wire.
+pub fn pending_questions(request_id: &str) -> Vec<PendingQuestion> {
+    lock(&PENDING)
+        .iter()
+        .filter(|((turn, _), _)| turn == request_id)
+        .map(|(_, question)| match question {
+            Waiting::Approval { request, .. } => PendingQuestion::Approval {
+                request: request.clone(),
+            },
+            Waiting::UserQuestion { request, .. } => PendingQuestion::UserQuestion {
+                request: request.clone(),
+            },
+        })
         .collect()
 }
 
@@ -1948,7 +2042,7 @@ mod tests {
         };
         lock(&PENDING).insert(
             ("t-ans".into(), "c1".into()),
-            Question {
+            Waiting::Approval {
                 answer: sender,
                 request: request.clone(),
             },
@@ -2221,12 +2315,51 @@ mod tests {
     }
 
     #[test]
+    fn a_user_question_and_an_approval_answer_their_own_kind() {
+        let key: QuestionKey = ("ask-turn".into(), "q1".into());
+        let (sender, receiver) = oneshot::channel();
+        lock(&PENDING).insert(
+            key,
+            Waiting::UserQuestion {
+                answer: sender,
+                request: UserQuestion {
+                    call_id: "q1".into(),
+                    question: "Which mood?".into(),
+                    options: vec!["Warm".into(), "Bright".into()],
+                    free_text: true,
+                },
+            },
+        );
+        let pending = pending_questions("ask-turn");
+        assert_eq!(pending.len(), 1);
+        assert!(matches!(
+            &pending[0],
+            PendingQuestion::UserQuestion { request } if request.question == "Which mood?"
+        ));
+        assert!(
+            questions("ask-turn").is_empty(),
+            "an approval view stays empty"
+        );
+        assert!(
+            answer("ask-turn", "q1", Decision::default()).is_err(),
+            "an approval answer does not reach a question"
+        );
+        let reply_value = Reply {
+            option: Some(1),
+            ..Reply::default()
+        };
+        reply("ask-turn", "q1", reply_value.clone()).unwrap();
+        assert_eq!(receiver.blocking_recv().unwrap(), reply_value);
+        assert!(reply("ask-turn", "q1", Reply::default()).is_err());
+    }
+
+    #[test]
     fn a_question_leaves_the_list_when_its_wait_is_dropped() {
         let key: QuestionKey = ("asked-guard-turn".into(), "c1".into());
         let (sender, _receiver) = oneshot::channel();
         lock(&PENDING).insert(
             key.clone(),
-            Question {
+            Waiting::Approval {
                 answer: sender,
                 request: ApprovalRequest {
                     call_id: "c1".into(),

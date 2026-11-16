@@ -2,6 +2,7 @@
 //! reply, shaping a tool result for the model, the audio a result delivers, and
 //! folding an over-budget wire. Nothing here touches the project or the store.
 
+use crate::ai::host_notice::HostNotice;
 use crate::ai::sessions::{MessageKind, message_meta, turns};
 use serde_json::{Map, Value, json};
 
@@ -401,15 +402,21 @@ pub fn delivered_comparison(result: &Value) -> Vec<Value> {
     .collect()
 }
 
-/// The user message that budgets the last rounds out loud.
-pub fn rounds_left_notice(remaining: usize) -> Value {
-    let plural = if remaining == 1 { "" } else { "s" };
+/// The user message that reports a turn's remaining budget as typed facts.
+pub fn budget_notice(rounds_left: Option<u32>, context_share: Option<u8>) -> Value {
+    let notice = HostNotice::Budget {
+        rounds_left,
+        context_share,
+    };
+    let text = notice.model_text();
     json!({
         "role": "user",
-        "message_meta": message_meta(MessageKind::RoundBudget),
-        "content": format!(
-            "You have {remaining} tool round{plural} left in this turn. Write or answer with what you have now; if something is still missing, say what it is."
-        ),
+        "message_meta": {
+            "version": 1,
+            "kind": MessageKind::RoundBudget,
+            "notice": notice,
+        },
+        "content": text,
     })
 }
 

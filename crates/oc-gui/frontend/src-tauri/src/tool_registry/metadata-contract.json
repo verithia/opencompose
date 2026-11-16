@@ -290,6 +290,16 @@
     "handler": "backend"
   },
   {
+    "approval": "automatic",
+    "area": "project",
+    "handler": "backend",
+    "mutation": false,
+    "name": "project_search",
+    "panel": {
+      "enabled": true
+    }
+  },
+  {
     "name": "tracks_list",
     "area": "tracks",
     "mutation": false,
@@ -1272,6 +1282,16 @@
   {
     "name": "plan_update",
     "area": "sessions",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "panel_local"
+  },
+  {
+    "name": "ask_user",
+    "area": "project",
     "mutation": false,
     "approval": "automatic",
     "panel": {

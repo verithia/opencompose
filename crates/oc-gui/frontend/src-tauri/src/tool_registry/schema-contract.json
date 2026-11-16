@@ -1256,6 +1256,55 @@
     "name": "project_diff"
   },
   {
+    "description": "Search the open project by name before guessing one: tracks, presets, patterns, buses, sections, markers, effects and phrases. Case-insensitive tokens match names and meaningful labels such as an instrument, effect type or section label. Read-only. Returns bounded hits with an addressable `path`; sections and markers report `sections` in `path` and their own name in `name`.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "definitions": {
+        "ProjectSearchKind": {
+          "description": "Object kind to include in the result",
+          "enum": [
+            "track",
+            "preset",
+            "pattern",
+            "bus",
+            "section",
+            "marker",
+            "effect",
+            "phrase"
+          ],
+          "type": "string"
+        }
+      },
+      "description": "Search the open project for tracks, presets, patterns, buses, sections, markers, effects and phrases by name, label or type. Case-insensitive. Returns addressable paths.",
+      "properties": {
+        "kinds": {
+          "description": "Restrict the result set to these object kinds.",
+          "items": {
+            "$ref": "#/definitions/ProjectSearchKind"
+          },
+          "type": "array"
+        },
+        "limit": {
+          "description": "Maximum hits (default 20)",
+          "maximum": 50.0,
+          "minimum": 1.0,
+          "type": "integer"
+        },
+        "query": {
+          "description": "Case-insensitive tokens matched against names and labels",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "type": "object"
+    },
+    "name": "project_search"
+  },
+  {
     "description": "List tracks with pattern clip count (clips), audio clip count (audio_clips), preset, instrument, mix, mute/solo, and output.",
     "inputSchema": {
       "additionalProperties": false,

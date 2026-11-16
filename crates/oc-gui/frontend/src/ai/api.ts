@@ -5,7 +5,7 @@ import type { ChangeSet } from "../types/change";
 import type { HistoryAuthor } from "../types/undo";
 import type { ModelLimits } from "../stores/aiLimits";
 import type { AuthKind, Wire } from "./config";
-import type { ApprovalRequest, ToolDef, TurnStop, WireMessage } from "./wire";
+import type { ApprovalRequest, PendingQuestion, ToolDef, TurnStop, UserQuestion, WireMessage } from "./wire";
 import type { PermissionMode } from "./permission";
 import type { ClearReport, CompactionResult, SessionMeta } from "./sessions";
 import type { SkillRef } from "./system-prompt";
@@ -23,6 +23,7 @@ export type TurnEvent =
   | { type: "message"; message: WireMessage }
   | { type: "running"; call_id: string; tool: string }
   | { type: "ask"; request: ApprovalRequest }
+  | { type: "ask_user"; request: UserQuestion }
   | { type: "expired"; call_id: string }
   | { type: "preview"; call_id: string; tool: string; path?: string; before: string; after: string }
   | { type: "wire_folded"; before_rows: number; before_bytes: number; after_rows: number; after_bytes: number; folded: number; kept: number }
@@ -50,6 +51,9 @@ export interface TurnOutcome {
 
 /** A person's answer to a question a running turn asked. */
 export interface TurnDecision { approved: boolean; target?: string; always?: boolean }
+
+/** A person's answer to `ask_user`: a chosen option, free text, or both. */
+export interface TurnReply { option?: number; text?: string }
 
 /**
  * Runs one agent turn in the backend. `messages` is the system prompt and the
@@ -100,9 +104,14 @@ export function answerTurn(requestId: string, callId: string, decision: TurnDeci
   return invoke<void>("ai_turn_answer", { requestId, callId, decision });
 }
 
+/** Answers a question the model asked, without an approval decision. */
+export function replyTurn(requestId: string, callId: string, reply: TurnReply) {
+  return invoke<void>("ai_turn_reply", { requestId, callId, reply });
+}
+
 /** The questions a running turn waits on, for a window that reloaded. */
 export function turnQuestions(requestId: string) {
-  return invoke<ApprovalRequest[]>("ai_turn_questions", { requestId });
+  return invoke<PendingQuestion[]>("ai_turn_questions", { requestId });
 }
 
 export function listenTurn(handler: (event: TurnEnvelope) => void) {

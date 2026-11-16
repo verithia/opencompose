@@ -16,7 +16,7 @@ import { aiApi } from "../stores/api";
 import { store } from "../stores/project";
 import { previewStore } from "../stores/preview";
 import { log } from "../stores/log";
-import type { ApprovalRequest, TurnStop, WireMessage } from "../ai/wire";
+import type { ApprovalRequest, TurnStop, UserQuestion, WireMessage } from "../ai/wire";
 import type { RecallOther, RecallRefusal, TurnEnvelope, TurnOutcome } from "../ai/api";
 import { changeSetText } from "../stores/changeText";
 import { hasChangeFacts, isChangeSet } from "../types/change";
@@ -176,6 +176,9 @@ export function AiPanel(props: { onClose?: () => void }) {
    * resolved once, so the card and the decline the model reads name the same
    * object. */
   const [approval, setApproval] = createSignal<(ApprovalRequest & { target: string | null; requestId: string }) | null>(null);
+  /** A question the model asked, in the same slot as an approval card. */
+  const [userQuestion, setUserQuestion] = createSignal<(UserQuestion & { requestId: string }) | null>(null);
+  const [replyText, setReplyText] = createSignal("");
   /** When the turn in flight started, so the pending row can count seconds. */
   const [turnStartedAt, setTurnStartedAt] = createSignal<number | null>(null);
   /** When Stop was pressed; the pending row says so until the turn settles. */
@@ -348,6 +351,7 @@ export function AiPanel(props: { onClose?: () => void }) {
     setStopRequestedAt((previous) => previous ?? Date.now());
     // The backend drops the question when its turn stops.
     setApproval(null);
+    setUserQuestion(null);
     // This window owned the turn, so the marker it kept is spent: a window that
     // comes back must not ask about a turn this one stopped.
     if (requestId) {
@@ -357,6 +361,7 @@ export function AiPanel(props: { onClose?: () => void }) {
   };
   /** Shows a question a turn asked; the card answers it by call id. */
   const showQuestion = (turn: string, request: ApprovalRequest) => {
+    setUserQuestion(null);
     setApproval({
       ...request,
       requestId: turn,
@@ -364,6 +369,12 @@ export function AiPanel(props: { onClose?: () => void }) {
       // name for it, so a subtree replacement says which subtree it touches.
       target: approvalTarget(request.tool, request.args, store.project) ?? request.path ?? null,
     });
+  };
+  /** Shows a question the model asked; the card replies by call id. */
+  const showUserQuestion = (turn: string, request: UserQuestion) => {
+    setApproval(null);
+    setReplyText("");
+    setUserQuestion({ ...request, requestId: turn });
   };
   /** The call's arguments as the card shows them: bounded, one line. */
   const argumentLine = (args: Record<string, unknown>): string => {
@@ -380,6 +391,18 @@ export function AiPanel(props: { onClose?: () => void }) {
     const next = id ? allowTool(id, tool) : allowed();
     setAllowed(next);
     return next;
+  };
+  /** Sends the question card's answer; the backend's turn goes on with it. */
+  const answerQuestion = (option?: number) => {
+    const request = userQuestion();
+    setUserQuestion(null);
+    if (!request) return;
+    const text = replyText().trim();
+    setReplyText("");
+    void aiApi.replyTurn(request.requestId, request.call_id, {
+      ...(option !== undefined ? { option } : {}),
+      ...(text ? { text } : {}),
+    }).catch((error) => log.warn("ai", `answer not delivered: ${errorMessage(error)}`));
   };
   /** Sends the card's answer; the backend's turn goes on with it. */
   const answerApproval = (approved: boolean, always = false) => {
@@ -1239,7 +1262,8 @@ export function AiPanel(props: { onClose?: () => void }) {
       if (disposed || epoch !== scopeEpoch || reattached() !== turn) return;
       const gone = expired.get(active.request_id);
       const open = waiting.find(question => !gone?.has(question.call_id));
-      if (open) showQuestion(active.request_id, open);
+      if (open?.kind === "user_question") showUserQuestion(active.request_id, open);
+      else if (open) showQuestion(active.request_id, open);
     } finally {
       if (attachExpired === expired) attachExpired = null;
     }
@@ -1682,6 +1706,8 @@ export function AiPanel(props: { onClose?: () => void }) {
       }
       const open = approval();
       if (open && open.requestId === event.request_id && open.call_id === event.call_id) setApproval(null);
+      const asking = userQuestion();
+      if (asking && asking.requestId === event.request_id && asking.call_id === event.call_id) setUserQuestion(null);
       return;
     }
     const inherited = reattached();
@@ -1709,6 +1735,9 @@ export function AiPanel(props: { onClose?: () => void }) {
         if (event.request.after !== undefined) {
           void paintPreview(event.request.path, event.request.before ?? "", event.request.after);
         }
+        break;
+      case "ask_user":
+        showUserQuestion(event.request_id, event.request);
         break;
       case "preview":
         void paintPreview(event.path, event.before, event.after);
@@ -3083,6 +3112,46 @@ export function AiPanel(props: { onClose?: () => void }) {
             <button class="ai-approval-always" onClick={() => answerApproval(true, true)}>{i18n.t("ai.approval.always")}</button>
             <button class="ai-approval-reject" onClick={() => answerApproval(false)}>{i18n.t("ai.approval.reject")}</button>
           </div>
+        </div>
+      </Show>
+
+      {/* A question from the model uses the same slot as an approval card. */}
+      <Show when={userQuestion()}>
+        <div class="ai-approval-card ai-question-card" role="alert" aria-label={i18n.t("ai.question.title")}>
+          <div class="ai-approval-title">{i18n.t("ai.question.title")}</div>
+          <div class="ai-question-text selectable">{userQuestion()!.question}</div>
+          <Show when={(userQuestion()!.options?.length ?? 0) > 0}>
+            <div class="ai-approval-actions">
+              <For each={userQuestion()!.options!}>
+                {(option, index) => (
+                  <button class="ai-question-option" onClick={() => answerQuestion(index())}>{option}</button>
+                )}
+              </For>
+            </div>
+          </Show>
+          <Show when={userQuestion()!.free_text}>
+            <div class="ai-question-free">
+              <input
+                class="ai-question-input"
+                type="text"
+                aria-label={i18n.t("ai.question.placeholder")}
+                placeholder={i18n.t("ai.question.placeholder")}
+                value={replyText()}
+                onInput={(event) => setReplyText(event.currentTarget.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    answerQuestion();
+                  }
+                }}
+              />
+              <button
+                class="ai-question-submit"
+                disabled={!replyText().trim()}
+                onClick={() => answerQuestion()}
+              >{i18n.t("ai.question.submit")}</button>
+            </div>
+          </Show>
         </div>
       </Show>
 

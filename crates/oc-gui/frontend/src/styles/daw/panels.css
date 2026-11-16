@@ -1603,6 +1603,32 @@ fieldset.ai-settings { margin: 0; border: 0; min-width: 0; max-height: 75%; flex
 .ai-approval-always:hover { background: var(--bg-hover, var(--bg-surface)); }
 .ai-approval-reject { background: var(--bg-surface); color: var(--text-primary); border: 1px solid var(--border); }
 .ai-approval-reject:hover { background: var(--bg-hover, var(--bg-surface)); }
+/* A question from the model is ordinary context, not a destructive pause. */
+.ai-question-card { background: var(--bg-surface); border-color: var(--border); }
+.ai-question-text { font-size: var(--font-size-sm); line-height: 1.4; white-space: pre-wrap; }
+.ai-question-free { display: flex; gap: 6px; margin-top: 4px; }
+.ai-question-input {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 6px;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: var(--font-size-sm);
+}
+.ai-question-option, .ai-question-submit {
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+}
+.ai-question-option { flex: 1; }
+.ai-question-option:hover, .ai-question-submit:hover:not(:disabled) { background: var(--bg-hover, var(--bg-surface)); }
+.ai-question-submit:disabled { opacity: 0.5; cursor: default; }
 .ai-settings-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 .ai-settings-body small, .ai-save-notice, .ai-model-notice { color: var(--text-secondary); font-size: 11px; line-height: 1.4; }
 .ai-save-notice, .ai-model-notice { display: block; padding: 2px 10px 6px; }

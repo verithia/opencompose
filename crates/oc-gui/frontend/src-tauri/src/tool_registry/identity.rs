@@ -69,6 +69,7 @@ tool_ids! {
     ProjectEdit => ("project_edit", "project", Panel::Excluded("whole-subtree replacement goes through the edit_subtree proposal"), true, Automatic, Backend),
     ProjectExtract => ("project_extract", "project", Panel::Enabled, false, Automatic, Backend),
     ProjectDiff => ("project_diff", "project", Panel::Enabled, false, Automatic, Backend),
+    ProjectSearch => ("project_search", "project", Panel::Enabled, false, Automatic, Backend),
     TracksList => ("tracks_list", "tracks", Panel::Enabled, false, Automatic, Backend),
     TracksAdd => ("tracks_add", "tracks", Panel::Enabled, true, Automatic, Backend),
     TracksCreate => ("tracks_create", "tracks", Panel::Enabled, true, Automatic, Backend),
@@ -168,5 +169,6 @@ tool_ids! {
     SessionsCompact => ("sessions_compact", "sessions", Panel::Enabled, false, Automatic, Backend),
     EditSubtree => ("edit_subtree", "project", Panel::Enabled, false, Automatic, PanelLocal),
     PlanUpdate => ("plan_update", "sessions", Panel::Enabled, false, Automatic, PanelLocal),
+    AskUser => ("ask_user", "project", Panel::Enabled, false, Automatic, PanelLocal),
     PluginIndexStatus => ("plugin_index_status", "unmapped", Panel::Excluded("not enabled for the built-in panel"), false, Automatic, HiddenBackend),
 }

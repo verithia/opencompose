@@ -59,6 +59,7 @@ pub mod ornament;
 pub mod parser;
 pub mod performance;
 pub mod project_document;
+pub mod search;
 pub mod serializer;
 pub mod timecode;
 pub mod timing;

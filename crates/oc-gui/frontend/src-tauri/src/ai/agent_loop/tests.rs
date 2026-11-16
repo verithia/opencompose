@@ -19,6 +19,8 @@ struct World {
     events: Vec<TurnEvent>,
     decisions: VecDeque<Option<Decision>>,
     asked: Vec<ApprovalRequest>,
+    user_replies: VecDeque<Option<Reply>>,
+    user_questions: Vec<UserQuestion>,
     /// Cancel when this tool is dispatched, after it ran.
     cancel_on: Option<String>,
     /// Fail the store write after this many records.
@@ -42,6 +44,8 @@ struct World {
     turn_changes: Option<oc_dsl::change::ChangeSet>,
     /// Someone else edits the project while this tool runs.
     edit_elsewhere_on: Option<String>,
+    /// The model's input window in tokens; 0 when unknown.
+    context_length: u64,
 }
 
 struct Fake {
@@ -98,6 +102,10 @@ impl Fake {
         self.store
             .append_turn(&self.session, std::slice::from_ref(&user), None)
             .unwrap();
+        let (text_protocol, context_length) = {
+            let world = self.world();
+            (world.text_protocol, world.context_length)
+        };
         TurnSpec {
             wire: vec![json!({"role":"system","content":"sys"}), user],
             permission,
@@ -105,8 +113,8 @@ impl Fake {
             audio: None,
             scope: self.session.clone(),
             toolsets: None,
-            text_protocol: self.world().text_protocol,
-            context_length: 0,
+            text_protocol,
+            context_length,
             max_output: 0,
         }
     }
@@ -250,6 +258,12 @@ impl Host for Fake {
         let mut world = self.world();
         world.asked.push(request);
         world.decisions.pop_front().flatten()
+    }
+
+    async fn ask_user(&self, request: UserQuestion) -> Option<Reply> {
+        let mut world = self.world();
+        world.user_questions.push(request);
+        world.user_replies.pop_front().flatten()
     }
 
     fn allowed(&self) -> Vec<String> {
@@ -533,6 +547,100 @@ fn cancel_mid_round_keeps_completed_results_and_marks_the_rest_not_run() {
     assert_eq!(check_pairing(&fake.saved()), Ok(()));
 }
 
+fn ask_user_round(id: &str, args: Value) -> Value {
+    json!({"role":"assistant","content":null,"tool_calls":[{
+        "id":id,"type":"function",
+        "function":{"name":"ask_user","arguments":args.to_string()}
+    }]})
+}
+
+#[test]
+fn ask_user_answers_with_a_chosen_option() {
+    let fake = Fake::new(vec![
+        ask_user_round(
+            "q",
+            json!({"question":"Which feel?","options":["Warm","Bright"]}),
+        ),
+        json!({"role":"assistant","content":"ok"}),
+    ]);
+    fake.world().user_replies.push_back(Some(Reply {
+        option: Some(1),
+        ..Reply::default()
+    }));
+    let outcome = block_on(fake.run(SessionPermission::Write));
+    assert!(!outcome.failed, "{outcome:?}");
+    let world = fake.world();
+    assert_eq!(world.user_questions.len(), 1);
+    assert_eq!(world.user_questions[0].question, "Which feel?");
+    assert!(world.user_questions[0].free_text);
+    drop(world);
+    let result = &fake.results()[0].1;
+    assert_eq!(result["answered"], true);
+    assert_eq!(result["option"], "Bright");
+    assert!(result.get("text").is_none());
+    assert_eq!(fake.world().calls.len(), 0, "ask_user is not dispatched");
+}
+
+#[test]
+fn ask_user_answers_with_free_text() {
+    let fake = Fake::new(vec![
+        ask_user_round("q", json!({"question":"What mood?","free_text":true})),
+        json!({"role":"assistant","content":"ok"}),
+    ]);
+    fake.world().user_replies.push_back(Some(Reply {
+        text: Some("Late-night jazz".into()),
+        ..Reply::default()
+    }));
+    block_on(fake.run(SessionPermission::Write));
+    let result = &fake.results()[0].1;
+    assert_eq!(result["answered"], true);
+    assert_eq!(result["text"], "Late-night jazz");
+    assert!(result.get("option").is_none());
+}
+
+#[test]
+fn an_expired_question_answers_with_the_typed_reason() {
+    let fake = Fake::new(vec![
+        ask_user_round("q", json!({"question":"Continue?"})),
+        json!({"role":"assistant","content":"ok"}),
+    ]);
+    fake.world().user_replies.push_back(Some(Reply::expired()));
+    block_on(fake.run(SessionPermission::Write));
+    let result = &fake.results()[0].1;
+    assert_eq!(result["answered"], false);
+    assert_eq!(result["reason"], "expired");
+}
+
+#[test]
+fn nobody_to_ask_answers_a_question_immediately() {
+    let fake = Fake::new(vec![
+        ask_user_round("q", json!({"question":"Continue?"})),
+        json!({"role":"assistant","content":"ok"}),
+    ]);
+    block_on(fake.run(SessionPermission::Write));
+    let result = &fake.results()[0].1;
+    assert_eq!(result["answered"], false);
+    assert_eq!(result["reason"], "no_user");
+    assert_eq!(fake.world().user_questions.len(), 1);
+}
+
+#[test]
+fn ask_user_refuses_a_question_over_its_bounds() {
+    let long = "x".repeat(crate::agent_tools::question::MAX_QUESTION_CHARS + 1);
+    let fake = Fake::new(vec![
+        ask_user_round("q", json!({"question":long})),
+        json!({"role":"assistant","content":"ok"}),
+    ]);
+    block_on(fake.run(SessionPermission::Write));
+    let result = &fake.results()[0].1;
+    assert!(
+        result["error"]
+            .as_str()
+            .is_some_and(|text| text.contains("500"))
+    );
+    assert!(fake.world().user_questions.is_empty());
+}
+
 #[test]
 fn the_round_cap_commits_and_closes_with_real_results() {
     let replies = (0..MAX_TOOL_ROUNDS)
@@ -550,12 +658,83 @@ fn the_round_cap_commits_and_closes_with_real_results() {
     let results = fake.results();
     assert_eq!(results.len(), MAX_TOOL_ROUNDS);
     assert!(results.iter().all(|(_, body)| body["ok"] == true));
-    let notices = fake
+    let notices: Vec<_> = fake
+        .saved()
+        .into_iter()
+        .filter(|message| message["message_meta"]["kind"] == "round_budget")
+        .collect();
+    assert_eq!(notices.len(), ROUNDS_LEFT_NOTICE);
+    for notice in notices {
+        assert_eq!(notice["message_meta"]["notice"]["kind"], "budget");
+        assert!(notice["message_meta"]["notice"]["rounds_left"].is_u64());
+        assert!(notice["content"].as_str().unwrap().contains("tool round"));
+    }
+}
+
+#[test]
+fn context_share_reports_each_threshold_once_and_only_above_it() {
+    let fixed = crate::ai::agent_loop::wire::offered_tool_tokens(None, true);
+    let mut second = round(&[]);
+    second["tool_calls"] = json!(
+        (0..3)
+            .map(|index| json!({
+                "id": format!("b{index}"),
+                "type": "function",
+                "function": {"name": "big_read", "arguments": "{}"},
+            }))
+            .collect::<Vec<_>>()
+    );
+    let fake = Fake::new(vec![
+        round(&[("a", "project_get")]),
+        second,
+        json!({"role":"assistant","content":"ok"}),
+    ]);
+    // 62% at the first round leaves room below the fold limit; the 20k results
+    // push the same turn past 75% without changing the measured shape.
+    {
+        let mut world = fake.world();
+        world.context_length = (fixed as f64 / 0.62) as u64;
+    }
+    block_on(fake.run(SessionPermission::Write));
+    let shares: Vec<u8> = fake
         .saved()
         .iter()
         .filter(|message| message["message_meta"]["kind"] == "round_budget")
-        .count();
-    assert_eq!(notices, ROUNDS_LEFT_NOTICE);
+        .filter_map(|message| message["message_meta"]["notice"]["context_share"].as_u64())
+        .map(|share| share as u8)
+        .collect();
+    assert!(!shares.is_empty(), "the measured share is reported");
+    assert!(shares[0] >= 60 && shares[0] < 75, "{shares:?}");
+    assert!(shares.iter().any(|share| *share >= 75), "{shares:?}");
+    assert_eq!(
+        shares
+            .iter()
+            .filter(|share| **share >= 60 && **share < 75)
+            .count(),
+        1,
+        "the 60% threshold is reported once: {shares:?}"
+    );
+}
+
+#[test]
+fn a_context_share_below_the_threshold_stays_silent() {
+    let fixed = crate::ai::agent_loop::wire::offered_tool_tokens(None, true);
+    let fake = Fake::new(vec![
+        round(&[("a", "project_get")]),
+        json!({"role":"assistant","content":"ok"}),
+    ]);
+    {
+        let mut world = fake.world();
+        world.context_length = fixed * 2;
+    }
+    block_on(fake.run(SessionPermission::Write));
+    assert!(
+        !fake.saved().iter().any(|message| {
+            message["message_meta"]["kind"] == "round_budget"
+                && message["message_meta"]["notice"]["context_share"].is_u64()
+        }),
+        "under 60% no context row is written"
+    );
 }
 
 #[test]

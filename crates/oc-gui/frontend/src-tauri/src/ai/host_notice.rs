@@ -16,6 +16,8 @@ pub const MAX_NOTICE_PATH_CHARS: usize = 4096;
 pub const MAX_TOOL_SURFACE_NAMES: usize = 512;
 /// Longest tool name one surface or notice may carry.
 pub const MAX_TOOL_NAME_CHARS: usize = 128;
+/// Highest remaining-round count a saved budget row may carry.
+pub const MAX_BUDGET_ROUNDS: u32 = 10_000;
 
 /// A host notice a saved conversation carries. New variants extend this enum;
 /// each kind states whether a fold and a compaction keep it.
@@ -45,6 +47,14 @@ pub enum HostNotice {
         removed: Vec<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         permission: Option<PermissionChange>,
+    },
+    /// The turn is running low on rounds or on the model's context window.
+    Budget {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rounds_left: Option<u32>,
+        /// Measured share of the model's input window, in percent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        context_share: Option<u8>,
     },
 }
 
@@ -95,6 +105,7 @@ impl HostNotice {
             Self::ProjectBound { .. } => "project_bound",
             Self::OutsideChanges { .. } => "outside_changes",
             Self::ToolSurface { .. } => "tool_surface",
+            Self::Budget { .. } => "budget",
         }
     }
 
@@ -135,6 +146,13 @@ impl HostNotice {
                     && removed.len() <= MAX_TOOL_SURFACE_NAMES
                     && added.iter().all(|name| valid_name(name))
                     && removed.iter().all(|name| valid_name(name))
+            }
+            Self::Budget {
+                rounds_left,
+                context_share,
+            } => {
+                rounds_left.is_none_or(|rounds| rounds <= MAX_BUDGET_ROUNDS)
+                    && context_share.is_none_or(|share| share <= 100)
             }
         }
     }
@@ -187,6 +205,24 @@ impl HostNotice {
                     );
                 }
                 text
+            }
+            Self::Budget {
+                rounds_left,
+                context_share,
+            } => {
+                let mut lines = Vec::new();
+                if let Some(rounds) = rounds_left {
+                    let plural = if *rounds == 1 { "" } else { "s" };
+                    lines.push(format!(
+                        "You have {rounds} tool round{plural} left in this turn. Write or answer                          with what you have now; if something is still missing, say what it is."
+                    ));
+                }
+                if let Some(share) = context_share {
+                    lines.push(format!(
+                        "This turn has used about {share}% of the model's context window. Keep                          the remaining work small and summarize what you already found."
+                    ));
+                }
+                lines.join(" ")
             }
             Self::ToolSurface {
                 added,
@@ -257,6 +293,13 @@ impl HostNotice {
                 added: bounded_names(added),
                 removed: bounded_names(removed),
                 permission: *permission,
+            },
+            Self::Budget {
+                rounds_left,
+                context_share,
+            } => Self::Budget {
+                rounds_left: rounds_left.map(|rounds| rounds.min(MAX_BUDGET_ROUNDS)),
+                context_share: context_share.map(|share| share.min(100)),
             },
         }
     }
@@ -488,6 +531,55 @@ mod tests {
         );
         assert!(permission.pinned());
         assert!(permission.valid());
+    }
+
+    #[test]
+    fn a_budget_notice_derives_its_text_from_the_typed_value() {
+        let both = HostNotice::Budget {
+            rounds_left: Some(3),
+            context_share: Some(61),
+        };
+        let text = both.model_text();
+        assert!(text.contains("3 tool rounds left"));
+        assert!(text.contains("61% of the model's context window"));
+        assert!(both.valid());
+        let rounds = HostNotice::Budget {
+            rounds_left: Some(1),
+            context_share: None,
+        };
+        assert!(rounds.model_text().contains("1 tool round left"));
+        assert!(!rounds.model_text().contains("context window"));
+        let context = HostNotice::Budget {
+            rounds_left: None,
+            context_share: Some(75),
+        };
+        assert!(!context.model_text().contains("tool round"));
+        assert!(context.model_text().contains("75%"));
+    }
+
+    #[test]
+    fn a_budget_notice_refuses_an_unbounded_share_or_count() {
+        assert!(
+            !HostNotice::Budget {
+                rounds_left: Some(MAX_BUDGET_ROUNDS + 1),
+                context_share: None,
+            }
+            .valid()
+        );
+        assert!(
+            !HostNotice::Budget {
+                rounds_left: None,
+                context_share: Some(101),
+            }
+            .valid()
+        );
+        let row = notice_row(&HostNotice::Budget {
+            rounds_left: None,
+            context_share: Some(101),
+        });
+        let notice: HostNotice =
+            serde_json::from_value(row["message_meta"]["notice"].clone()).unwrap();
+        assert!(notice.valid(), "the written row stays readable");
     }
 
     #[test]

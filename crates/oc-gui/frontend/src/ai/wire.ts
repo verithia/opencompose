@@ -128,3 +128,19 @@ export interface ApprovalRequest {
   after?: string;
 }
 
+/**
+ * A question the model asks the person. `options` offers short choices; with
+ * `free_text` the person may type an answer instead.
+ */
+export interface UserQuestion {
+  call_id: string;
+  question: string;
+  options?: string[];
+  free_text: boolean;
+}
+
+/** One pending question as a reloaded window reads it. */
+export type PendingQuestion =
+  | { kind?: "approval" } & ApprovalRequest
+  | { kind: "user_question" } & UserQuestion;
+

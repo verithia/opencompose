@@ -47,10 +47,12 @@ const BUNDLED: &[(&str, &str, &str, &[ToolId], bool)] = &[
             ToolId::ProjectExtract,
             ToolId::ProjectValidate,
             ToolId::ProjectDiff,
+            ToolId::ProjectSearch,
             ToolId::ProjectContext,
             ToolId::ProjectGenerateContext,
             ToolId::EditSubtree,
             ToolId::PlanUpdate,
+            ToolId::AskUser,
             ToolId::ListSkills,
             ToolId::ReadSkill,
         ],
@@ -541,7 +543,7 @@ mod tests {
         sorted.sort_unstable();
         sorted.dedup();
         assert_eq!(sorted.len(), everything.len());
-        assert_eq!(everything.last().map(String::as_str), Some("plan_update"));
+        assert_eq!(everything.last().map(String::as_str), Some("ask_user"));
     }
 
     #[test]
