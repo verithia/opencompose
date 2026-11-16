@@ -662,6 +662,64 @@ fn a_new_project_never_takes_a_history_by_content() {
 }
 
 #[test]
+fn start_fresh_replaces_a_history_with_an_unfingerprinted_marker() {
+    let dir = tempfile::tempdir().unwrap();
+    super::enable_persistence_for_test();
+    let path = dir.path().join("fresh.ocp");
+    std::fs::write(&path, SOURCE).unwrap();
+
+    // An old history with an entry and a fingerprint stands in for another file.
+    let mut journal = Journal::open(&path).unwrap();
+    journal.append(&[entry(1)]).unwrap();
+    journal::write_marker(
+        journal.dir(),
+        &journal::Marker::new(&path, Some("old-fingerprint".into())),
+    )
+    .unwrap();
+    drop(journal);
+
+    super::start_fresh(&path);
+
+    let marker = journal::read_marker(&journal::dir_for(&path)).unwrap();
+    assert_eq!(marker.path, crate::project_data::canonical_path(&path));
+    assert_eq!(marker.sha256, None);
+    assert!(
+        !journal::dir_for(&path).join("entries.jsonl").exists(),
+        "the old entries survived"
+    );
+}
+
+#[test]
+fn start_fresh_keeps_attach_from_adopting_a_matching_fingerprint() {
+    let dir = tempfile::tempdir().unwrap();
+    super::enable_persistence_for_test();
+    let first = dir.path().join("first.ocp");
+    std::fs::write(&first, SOURCE).unwrap();
+    let state = AppState::new();
+    crate::commands::open_project(&mut state.lock_inner(), SOURCE, Some(first.clone())).unwrap();
+    set_tempo(&mut state.lock_inner(), 130.0);
+    crate::commands::save_file_inner(None, &state).unwrap();
+    drop(state);
+
+    // The same bytes at another path would match the first history by content.
+    let bytes = std::fs::read(&first).unwrap();
+    let second = dir.path().join("second.ocp");
+    super::start_fresh(&second);
+    std::fs::write(&second, &bytes).unwrap();
+
+    let reopened = reopen(&second);
+    assert_eq!(
+        reopened.lock_inner().undo.total_levels(),
+        0,
+        "the new file adopted another file's history"
+    );
+    assert!(
+        journal::dir_for(&first).exists(),
+        "the first history moved to the new file"
+    );
+}
+
+#[test]
 fn a_history_page_entry_carries_typed_changes_and_no_display_text() {
     let dir = tempfile::tempdir().unwrap();
     let state = opened(dir.path(), SOURCE);
