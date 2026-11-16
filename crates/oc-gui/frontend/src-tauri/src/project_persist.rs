@@ -152,6 +152,9 @@ pub fn flush_on_exit(app: &tauri::AppHandle) {
 /// the turn's work, so a failure is an error rather than a warning and gets one
 /// more attempt, because a transient lock or a slow disk can clear.
 pub(crate) fn flush_exit(state: &AppState) {
+    // The journal is durable beside the file, so the last second's edits keep
+    // their undo entries even when the process leaves before the autosave tick.
+    state.lock_inner().sync_history();
     if let Err(reason) = flush_state(state) {
         log::error!("project write failed on exit: {reason}");
         record(format!("error: project write failed on exit: {reason}"));
@@ -171,15 +174,18 @@ pub(crate) fn flush_exit(state: &AppState) {
 /// transaction reaches the file. A write this call could not make is added to
 /// the tool result, so the model knows the file was not written.
 pub fn after_tool(state: &AppState, tool: &str, result: &mut serde_json::Value) {
+    let history = crate::tool_registry::is_mutation_tool(tool) || tool == "transaction_commit";
     let publishes = match tool {
         "undo" | "redo" | "transaction_begin" | "transaction_rollback" => false,
         _ => crate::tool_registry::is_mutation_tool(tool) || tool == "transaction_commit",
     };
-    if !publishes {
-        return;
-    }
-    if let Err(reason) = flush_state(state) {
+    if publishes && let Err(reason) = flush_state(state) {
         mark_stale(result, &reason);
+    }
+    // A tool's entries join the journal before the next autosave tick; an open
+    // batch keeps its provisional entries out of the journal until it commits.
+    if history {
+        state.lock_inner().sync_history();
     }
 }
 

@@ -85,6 +85,10 @@ starts a fresh history and never adopts another file's.
 leaves the source history in place. Both keep the marker in step with the new
 path.
 
+The journal is synced once a second, after an agent tool mutation, and when the
+app exits, so an edit made just before a quit keeps its undo entry. An open
+agent batch stays provisional and reaches the journal only when it commits.
+
 ## Recovery copies
 
 `<config>/recovery/<key>/` holds whole-document recovery copies. The key is the

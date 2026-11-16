@@ -324,6 +324,60 @@ fn a_mutating_tool_publishes_the_file_and_a_batch_waits_for_its_commit() {
     assert_eq!(fixture.bytes(), unmuted.as_bytes());
 }
 
+/// An open project with its history attached and persistence enabled.
+fn history_state(label: &str) -> (TempDir, AppState, PathBuf) {
+    crate::edit_history::enable_persistence_for_test();
+    let dir = TempDir::new(label);
+    std::fs::create_dir_all(dir.path()).unwrap();
+    let path = dir.path().join("song.ocp");
+    std::fs::write(&path, SONG).unwrap();
+    let state = AppState::new();
+    crate::commands::open_project(&mut state.lock_inner(), SONG, Some(path.clone())).unwrap();
+    (dir, state, path)
+}
+
+#[test]
+fn an_agent_mutation_syncs_the_journal_without_the_autosave_tick() {
+    use crate::edit_history::journal::Journal;
+
+    let (_dir, state, path) = history_state("agent-history-dispatch");
+    set_mute(&state, true);
+    assert_eq!(Journal::open(&path).unwrap().len(), 0);
+    // The same post-tool step dispatch runs for a mutating call.
+    let mut result = json!({"applied": true});
+    after_tool(&state, "tracks_mix", &mut result);
+    assert_eq!(
+        Journal::open(&path).unwrap().len(),
+        1,
+        "the tool's entry waited for the autosave tick"
+    );
+}
+
+#[test]
+fn exit_flushes_pending_history_entries() {
+    use crate::edit_history::journal::Journal;
+
+    let (_dir, state, path) = history_state("agent-history-exit");
+    {
+        let mut inner = state.lock_inner();
+        let old = inner.project.clone();
+        inner.project.properties.tempo = 131.0;
+        resync_with_undo(
+            &mut inner,
+            old,
+            UndoEdit::new("tempo", UndoScope::Transport),
+        )
+        .unwrap();
+    }
+    assert_eq!(Journal::open(&path).unwrap().len(), 0);
+    crate::project_persist::flush_exit(&state);
+    assert_eq!(
+        Journal::open(&path).unwrap().len(),
+        1,
+        "the exit write left the last entry in memory"
+    );
+}
+
 #[test]
 fn a_batch_a_dead_turn_left_open_is_committed_and_the_file_saves() {
     let fixture = Fixture::new("agent-batch-recover");
