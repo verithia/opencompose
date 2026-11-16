@@ -592,8 +592,14 @@ pub fn fold_wire(
         .iter()
         .rposition(crate::ai::sessions::is_compaction_summary)
         .map(|offset| head + offset);
+    let notices: std::collections::HashSet<usize> =
+        crate::ai::sessions::pinned_notice_indices(&messages[head..ask.unwrap_or(messages.len())])
+            .into_iter()
+            .map(|offset| head + offset)
+            .collect();
     let pinned = |index: usize| {
         Some(index) == summary
+            || notices.contains(&index)
             || ask.is_some_and(|ask| {
                 index >= ask && message_kind(&messages[index]) == Some(MessageKind::User)
             })
@@ -904,6 +910,48 @@ mod tests {
         fold_wire(&mut wire, &limits, ask).unwrap();
         assert!(tokens.measure(&wire) <= tokens.limit());
         assert_eq!(wire[1]["content"], "ask");
+    }
+
+    #[test]
+    fn a_fold_keeps_the_newest_project_binding_notice() {
+        use crate::ai::host_notice::{BindCause, HostNotice, notice_row};
+        let mut wire = vec![
+            json!({"role":"system","content":"s"}),
+            user("the first ask"),
+            notice_row(&HostNotice::ProjectBound {
+                from: None,
+                to: "/songs/first.ocp".into(),
+                cause: BindCause::Chosen,
+            }),
+            notice_row(&HostNotice::ProjectBound {
+                from: Some("/songs/first.ocp".into()),
+                to: "/songs/second.ocp".into(),
+                cause: BindCause::Chosen,
+            }),
+        ];
+        for round in 0..120 {
+            native_round(&mut wire, &format!("c{round}"), 200);
+        }
+        wire.push(user("the current ask"));
+        let ask = turn_ask(&wire);
+        fold_wire(&mut wire, &FoldLimits::round(None), ask).unwrap();
+        let bound: Vec<&str> = wire
+            .iter()
+            .filter_map(|row| row["message_meta"]["notice"]["kind"].as_str())
+            .collect();
+        assert_eq!(bound, ["project_bound"]);
+        let kept = wire
+            .iter()
+            .find(|row| row["message_meta"]["notice"]["to"] == "/songs/second.ocp")
+            .expect("the newest binding is kept");
+        assert_eq!(kept["message_meta"]["notice"]["to"], "/songs/second.ocp");
+        assert!(
+            !wire
+                .iter()
+                .any(|row| row["message_meta"]["notice"]["to"] == "/songs/first.ocp"),
+            "the older binding is folded away"
+        );
+        assert_eq!(turns::check_pairing(&wire[1..]), Ok(()));
     }
 
     #[test]

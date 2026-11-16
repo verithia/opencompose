@@ -51,6 +51,16 @@ export function errorKind(error: unknown): string | undefined {
   return undefined;
 }
 
+/** The two paths a `session_binding` refusal carries, read from its typed detail. */
+export function errorBindingMismatch(error: unknown): { bound: string; open: string } | null {
+  if (!error || typeof error !== "object") return null;
+  const value = error as { kind?: unknown; detail?: unknown };
+  if (value.kind !== "session_binding" || !value.detail || typeof value.detail !== "object") return null;
+  const detail = value.detail as { kind?: unknown; bound?: unknown; open?: unknown };
+  if (detail.kind !== "binding_mismatch" || typeof detail.bound !== "string" || typeof detail.open !== "string") return null;
+  return { bound: detail.bound, open: detail.open };
+}
+
 /**
  * The provider layer's verdict on resending the turn. `undefined` when the
  * error did not carry one, which keeps Retry available for local failures.

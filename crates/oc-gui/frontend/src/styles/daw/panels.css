@@ -844,6 +844,42 @@
 .ai-turn-reloaded-open:hover { border-color: var(--accent); color: var(--text-primary); }
 .ai-turn-reloaded-dismiss:hover { border-color: var(--border-light); color: var(--text-primary); }
 
+/* A conversation bound to another project than the one on screen: the turn
+   waits until the person binds it or starts a fresh conversation. */
+.ai-binding-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  padding: 6px 10px;
+  background: var(--bg-surface);
+  border-top: 1px solid var(--border);
+  border-left: 2px solid var(--accent);
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+.ai-binding-text { flex: 1 1 100%; min-width: 0; line-height: 1.45; }
+.ai-binding-action {
+  padding: 3px 10px;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 10px;
+  cursor: pointer;
+}
+.ai-binding-action:hover:not(:disabled) { border-color: var(--accent); }
+.ai-binding-action:disabled { opacity: 0.5; cursor: default; }
+
+/* The binding a saved notice recorded, kept small beside the conversation. */
+.ai-binding-row {
+  align-self: flex-start;
+  padding: 3px 8px;
+  color: var(--text-muted);
+  border-left: 2px solid var(--border-light);
+  font-size: 10px;
+}
+
 /* Why Send is unavailable, above the composer so it cannot sit off-screen. */
 .ai-send-blocked {
   padding: 4px 10px 0;

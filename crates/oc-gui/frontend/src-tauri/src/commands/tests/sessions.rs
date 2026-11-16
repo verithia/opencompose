@@ -378,3 +378,125 @@ fn a_fork_message_count_reaches_the_store_and_a_bare_count_is_refused() {
     assert_eq!(whole.parent.as_deref(), Some(parent.id.as_str()));
     assert_eq!(list_for(&state, None, false).unwrap().len(), 2);
 }
+
+#[test]
+fn a_headless_turn_bound_to_another_open_file_is_refused_as_session_binding() {
+    use crate::ai::session_usage::{Purpose, SessionLease};
+    use crate::ai_service::{AiError, AiErrorDetail};
+    use crate::commands::{
+        AiCapabilities, AiProviderEntry, AuthKind, ProviderKind, SavedTurnBinding, Wire,
+        prepare_turn_for,
+    };
+    use serde_json::json;
+    use tauri::test::{mock_builder, mock_context, noop_assets};
+
+    let fixture = fixture("headless-binding");
+    let state = state_with_project(&fixture.dir, PROJECT);
+    let open = fixture.dir.join("song.ocp");
+    let other = fixture.dir.join("other.ocp");
+    std::fs::write(&other, PROJECT).unwrap();
+    let session = new_for(
+        &state,
+        Some(other.to_str().unwrap()),
+        Some("other file"),
+        None,
+    )
+    .unwrap();
+    let store = sessions::Store::config();
+    let lease = SessionLease::admit(store, &session.id, "binding-request", Purpose::Chat).unwrap();
+    let incarnation = lease.update().incarnation;
+    let provider = AiProviderEntry {
+        id: "p".into(),
+        name: "p".into(),
+        kind: ProviderKind::OpenAiChatCompletions,
+        wire: Some(Wire::OpenAiChatCompletions),
+        auth: AuthKind::ApiKey,
+        auth_provider: None,
+        oauth_allowed_hosts: Vec::new(),
+        endpoint: "https://example.test/v1/chat/completions".into(),
+        model: "fixture-model".into(),
+        models: Vec::new(),
+        context_length: 1_000_000,
+        max_tokens: 16_000,
+        temperature: 0.3,
+        thinking_level: "medium".into(),
+        capabilities: AiCapabilities::default(),
+    };
+    let messages = json!([
+        {"role":"system","content":"prompt"},
+        {"role":"user","content":"hi","message_meta":{"version":1,"kind":"user"}},
+    ]);
+    let app = mock_builder()
+        .manage(state)
+        .build(mock_context(noop_assets()))
+        .unwrap();
+    let error = prepare_turn_for(
+        &app.handle().clone(),
+        &provider,
+        &messages,
+        SavedTurnBinding {
+            id: &session.id,
+            incarnation: &incarnation,
+            project: Some(&open),
+            tool_tokens: 0,
+        },
+    )
+    .unwrap_err();
+    assert_eq!(error.kind(), "session_binding");
+    let error: AiError = error.into();
+    assert_eq!(error.kind, "session_binding");
+    assert_eq!(
+        error.detail,
+        Some(AiErrorDetail::BindingMismatch {
+            bound: other.canonicalize().unwrap().to_string_lossy().to_string(),
+            open: open.canonicalize().unwrap().to_string_lossy().to_string(),
+        })
+    );
+    let (_, saved) = sessions::Store::config().find(&session.id).unwrap();
+    assert_eq!(
+        saved.project_path.as_deref(),
+        Some(other.canonicalize().unwrap().to_string_lossy().as_ref())
+    );
+    drop(lease);
+}
+
+#[test]
+fn the_binding_commands_compare_canonically_and_bind_to_the_open_file() {
+    let fixture = fixture("binding-commands");
+    let state = state_with_project(&fixture.dir, PROJECT);
+    let first = fixture.dir.join("song.ocp");
+    let second = fixture.dir.join("second.ocp");
+    std::fs::write(&second, PROJECT).unwrap();
+    let session = new_for(&state, None, Some("bound"), None).unwrap();
+    {
+        let mut inner = state.lock_inner();
+        inner.file_path = Some(second.clone());
+    }
+    let status = crate::commands::binding_for(&state, &session.id).unwrap();
+    assert_eq!(
+        status.bound.as_deref(),
+        Some(first.canonicalize().unwrap().to_str().unwrap())
+    );
+    assert_eq!(
+        status.open.as_deref(),
+        Some(second.canonicalize().unwrap().to_str().unwrap())
+    );
+    assert!(!status.matches);
+    let bound = crate::commands::bind_for(&state, &session.id).unwrap();
+    assert_eq!(
+        bound.project_path.as_deref(),
+        Some(second.canonicalize().unwrap().to_str().unwrap())
+    );
+    assert_eq!(
+        bound
+            .pending_binding
+            .as_ref()
+            .and_then(|pending| pending.from.as_deref()),
+        Some(first.canonicalize().unwrap().to_str().unwrap())
+    );
+    assert!(
+        crate::commands::binding_for(&state, &session.id)
+            .unwrap()
+            .matches
+    );
+}

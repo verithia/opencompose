@@ -34,7 +34,8 @@ import { modelFor } from "../ai/catalog";
 import { activeModelGroup, activeModelKnown, applyModelChoice, listModelChoices, modelIdentity, modelKey, modelLevels } from "../ai/modelPicker";
 import { MEDIA_EXTENSIONS, attachMedia, audioAccepted, acceptedModalities, formatBytes, formatDuration, legacyAuditionText, imageAccepted, type MediaAttachment, type MediaNotice } from "../ai/media";
 import { copyToClipboard, downloadText, exportFileName, exportJson, exportMarkdown } from "../ai/export";
-import { errorKind, errorMessage } from "../ai/errors";
+import { errorBindingMismatch, errorKind, errorMessage } from "../ai/errors";
+import { bindingBar, projectName, sessionBinding, type SessionBinding } from "../ai/binding";
 import {
   activeTurn,
   archiveNotice,
@@ -190,6 +191,12 @@ export function AiPanel(props: { onClose?: () => void }) {
   const [sessions, setSessions] = createSignal<SessionMeta[]>([]);
   const [sessionsOpen, setSessionsOpen] = createSignal(false);
   const [openId, setOpenId] = createSignal<string | null>(aiSession.open());
+  /** Whether the open conversation works on the file that is open now. */
+  const [binding, setBinding] = createSignal<SessionBinding | null>(null);
+  const [bindingBusy, setBindingBusy] = createSignal(false);
+  const bindingMismatch = createMemo(() => bindingBar(binding()));
+  const boundName = createMemo(() => projectName(bindingMismatch()?.bound));
+  const openName = createMemo(() => projectName(bindingMismatch()?.open));
   /** What this conversation may do to the DSL without asking. A session with no
    * stored setting reads as the default, and a fresh conversation starts there. */
   const permission = aiWorkspace.permission;
@@ -619,6 +626,7 @@ export function AiPanel(props: { onClose?: () => void }) {
   // such as `track:kick` names a track in the file that was open before it.
   createEffect(on(() => store.filePath(), () => {
     aiWorkspace.setTargetPath("project");
+    void refreshBinding(openId());
   }, { defer: true }));
   /**
    * A target restored from `localStorage` was saved against whichever document
@@ -632,10 +640,26 @@ export function AiPanel(props: { onClose?: () => void }) {
     aiWorkspace.setTargetPath("project");
     log.warn("ai", `edit target ${target} is not in ${store.filePath() ?? "this project"}; using the whole project`);
   };
+  /** Asks the backend whether the conversation works on the open project and
+   * keeps the answer only for the conversation still on screen. */
+  const refreshBinding = async (id: string | null): Promise<void> => {
+    if (!id) {
+      setBinding(null);
+      return;
+    }
+    try {
+      const next = sessionBinding(await aiApi.sessionBinding(id));
+      if (!disposed && openId() === id) setBinding(next);
+    } catch {
+      if (!disposed && openId() === id) setBinding(null);
+    }
+  };
+
   /** Paints a saved conversation. The draft is the caller's business: a switch
    * clears it, a remount keeps it. */
   const paintSession = async (id: string): Promise<boolean> => {
     const epoch = scopeEpoch;
+    setBinding(null);
     const request = ++paintRequest;
     const usageRead = beginUsageHydration(id);
     pendingUsageRead = usageRead;
@@ -665,6 +689,7 @@ export function AiPanel(props: { onClose?: () => void }) {
       });
       aiSession.setOpenScoped(sessionScope(), loaded.meta.id);
       setOpenId(loaded.meta.id);
+      void refreshBinding(loaded.meta.id);
       selectStatsSession(loaded.meta.id);
       hydrateSessionUsage(loaded.meta.id, loaded.usage, loaded.usage_error, usageRead);
       return true;
@@ -1195,6 +1220,7 @@ export function AiPanel(props: { onClose?: () => void }) {
     setSessionError(null);
     aiSession.setOpenScoped(sessionScope(), null);
     setOpenId(null);
+    setBinding(null);
     // A conversation with no stored setting reads as the default.
     aiWorkspace.adoptPermission(DEFAULT_PERMISSION);
     setAllowed([]);
@@ -1203,6 +1229,35 @@ export function AiPanel(props: { onClose?: () => void }) {
     aiSession.clearQueue();
     setSessionsOpen(false);
   };
+  /** Binds the open conversation to the open project, then sends the draft it
+   * kept while the two disagreed. */
+  const bindConversation = async () => {
+    const id = openId();
+    if (!id || bindingBusy()) return;
+    setBindingBusy(true);
+    setSessionError(null);
+    try {
+      await aiApi.bindSession(id);
+      await refreshBinding(id);
+      await handleSend();
+    } catch (e) {
+      setSessionError(errorMessage(e));
+    } finally {
+      setBindingBusy(false);
+    }
+  };
+
+  /** Starts a fresh conversation on the open project with the held draft. */
+  const bindNewConversation = () => {
+    if (newConversationBlocked()) return;
+    const text = input();
+    const media = attachments();
+    startConversation();
+    setInput(text);
+    setAttachments(media);
+    if (text.trim()) void handleSend();
+  };
+
   /**
    * Forks a conversation from the list and opens the fork. While the open
    * conversation is locked, its own fork waits, and a fork of another one is
@@ -1800,6 +1855,7 @@ export function AiPanel(props: { onClose?: () => void }) {
         if (meta && typeof meta.id === "string") {
           aiSession.setOpenScoped(sessionScope(), meta.id);
           setOpenId(meta.id);
+          void refreshBinding(meta.id);
           // The mode shown here applies to the conversation this turn started.
           await persistPermission(meta.id);
           if (!liveTurn(token)) return posted;
@@ -1888,6 +1944,22 @@ export function AiPanel(props: { onClose?: () => void }) {
       settleOutcome(outcome, sent, textProtocol);
     } catch (e) {
       if (cancelledFor(token)) return posted;
+      // A binding the panel had not seen yet is not a turn failure: nothing was
+      // saved, the draft returns, and the bar names the two ways forward.
+      const mismatch = errorBindingMismatch(e);
+      if (mismatch) {
+        setBinding({ bound: mismatch.bound, open: mismatch.open, matches: false });
+        if (turn.queued) {
+          const row = turn.queued;
+          aiSession.setQueued((previous) => [row, ...previous.filter((entry) => entry.id !== row.id)]);
+        } else {
+          restoreComposer(question);
+        }
+        handedBack = true;
+        posted = false;
+        log.warn("ai", "conversation bound to another project");
+        return posted;
+      }
       // A failure before the turn started saved nothing, so the message goes
       // back where it came from instead of offering a Retry: a queued row to
       // the head of the queue, whatever the composer holds, and a typed
@@ -2124,6 +2196,9 @@ export function AiPanel(props: { onClose?: () => void }) {
   const handleSend = async () => {
     const msg = input().trim();
     if (!msg || !getActiveProvider().model.trim()) return;
+    // A conversation bound to another file sends nothing: the draft stays in
+    // the composer and the bar above it offers the two ways forward.
+    if (bindingMismatch()) return;
     // The scope belongs to this one request, so the send takes it and the
     // composer forgets it. A refused send keeps both the text and the scope.
     const reference = activeScope();
@@ -2396,18 +2471,24 @@ export function AiPanel(props: { onClose?: () => void }) {
                 <AiThinking loading={!!msg.liveReasoning && loading()} partial="" approval={false} lastTool={null} identity="" reasoning={msg.reasoning} />
               </Show>
               <Show when={msg.role === "tool"} fallback={
-                <Show when={msg.context === "audition"} fallback={
-                  <Show when={msg.checkpoint} fallback={<div class="ai-message-content"><Show when={msg.role === "assistant"} fallback={legacyAuditionText(msg.content, i18n.t("ai.media.legacyAudition"))}><AiMarkdown content={msg.content} /></Show></div>}>
-                    <LazyDetails
-                      class="ai-checkpoint"
-                      open={false}
-                      summary={i18n.t("ai.sessions.summary")}
-                    >
-                      <div class="ai-message-content"><Show when={msg.role === "assistant"} fallback={legacyAuditionText(msg.content, i18n.t("ai.media.legacyAudition"))}><AiMarkdown content={msg.content} /></Show></div>
-                    </LazyDetails>
+                <Show when={msg.binding} fallback={
+                  <Show when={msg.context === "audition"} fallback={
+                    <Show when={msg.checkpoint} fallback={<div class="ai-message-content"><Show when={msg.role === "assistant"} fallback={legacyAuditionText(msg.content, i18n.t("ai.media.legacyAudition"))}><AiMarkdown content={msg.content} /></Show></div>}>
+                      <LazyDetails
+                        class="ai-checkpoint"
+                        open={false}
+                        summary={i18n.t("ai.sessions.summary")}
+                      >
+                        <div class="ai-message-content"><Show when={msg.role === "assistant"} fallback={legacyAuditionText(msg.content, i18n.t("ai.media.legacyAudition"))}><AiMarkdown content={msg.content} /></Show></div>
+                      </LazyDetails>
+                    </Show>
+                  }>
+                    <AiAudition message={msg} />
                   </Show>
                 }>
-                  <AiAudition message={msg} />
+                  <div class="ai-binding-row" role="status" title={msg.binding!.to}>
+                    {i18n.t(msg.binding!.cause === "moved" ? "ai.binding.moved" : "ai.binding.bound", { name: projectName(msg.binding!.to) })}
+                  </div>
                 </Show>
               }>
                 {/* A restored tool row: the call's name, what it was asked and what came back. */}
@@ -2978,6 +3059,31 @@ export function AiPanel(props: { onClose?: () => void }) {
             onClick={() => setReloadNotice(null)}
           >{i18n.t("ai.reload.dismiss")}</button>
         </div>
+      </Show>
+
+      <Show when={bindingMismatch()}>
+        {(row) => (
+          <div class="ai-binding-bar" role="status">
+            <span class="ai-binding-text" title={row().bound}>{i18n.t("ai.binding.worksOn", { name: boundName() })}</span>
+            <Show when={row().open}>
+              {(open) => (
+                <button
+                  type="button"
+                  class="ai-binding-action"
+                  title={open()}
+                  disabled={bindingBusy()}
+                  onClick={() => void bindConversation()}
+                >{i18n.t("ai.binding.bind", { name: openName() })}</button>
+              )}
+            </Show>
+            <button
+              type="button"
+              class="ai-binding-action"
+              disabled={bindingBusy() || newConversationBlocked()}
+              onClick={bindNewConversation}
+            >{i18n.t("ai.binding.newConversation")}</button>
+          </div>
+        )}
       </Show>
 
       <AiComposer

@@ -769,6 +769,9 @@ fn accounting_status(code: crate::ai::session_usage::AccountingCode) -> u16 {
 fn complete_failure(error: AiError) -> (u16, String) {
     let status = complete_status(&error.kind);
     let mut payload = crate::ai::skill_hints::refusal(&error.message);
+    if let Some(detail) = &error.detail {
+        payload["detail"] = json!(detail);
+    }
     payload["kind"] = json!(error.kind);
     payload["retryable"] = json!(error.retryable);
     payload["reauth"] = json!(error.reauth);
@@ -4114,6 +4117,22 @@ providers:
         }
     }
 
+    #[test]
+    fn a_binding_refusal_carries_both_paths_as_a_typed_detail() {
+        let mut error = AiError::new("session_binding", "bound elsewhere");
+        error.detail = Some(crate::ai_service::AiErrorDetail::BindingMismatch {
+            bound: "/songs/a.ocp".into(),
+            open: "/songs/b.ocp".into(),
+        });
+        let (status, text) = complete_failure(error);
+        assert_eq!(status, 409);
+        let body: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(body["kind"], "session_binding");
+        assert_eq!(body["detail"]["kind"], "binding_mismatch");
+        assert_eq!(body["detail"]["bound"], "/songs/a.ocp");
+        assert_eq!(body["detail"]["open"], "/songs/b.ocp");
+    }
+
     /// Every class the provider layer can produce maps to one of the six
     /// statuses; the two kinds a fake provider cannot stage quickly are here.
     #[test]
@@ -4149,6 +4168,7 @@ providers:
             message: "Sign in again".into(),
             reauth: true,
             retryable: false,
+            detail: None,
         });
         let body: Value = serde_json::from_str(&text).unwrap();
         assert_eq!(status, 401);

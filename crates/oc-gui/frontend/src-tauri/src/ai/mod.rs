@@ -10,6 +10,7 @@ pub mod credential_store;
 pub mod effort;
 pub mod gemini;
 pub mod gemini_generate;
+pub mod host_notice;
 pub mod limits;
 pub mod media;
 pub mod models;

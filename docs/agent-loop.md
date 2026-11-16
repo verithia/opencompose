@@ -48,8 +48,12 @@ to its attached audio references and saved renders. A `/ai/complete` or `/call`
 request's project transaction stays the client's own: an AI panel working in
 the same conversation cannot join, commit or recover it, and each committed
 edit is published to the window like any other external edit. The file must be
-open in that host and the session must belong to its workspace. Requests save
-incoming tool results, audition media and the provider reply through the same
+open in that host and the session must belong to its workspace. A conversation
+is bound to one project file; the `project_path` on a request must name that
+file as well as the open one. A conversation bound to another file refuses the
+turn with 409 `kind` `session_binding`, and a headless caller has no way to
+rebind it: start a new conversation for another project. Requests save incoming
+tool results, audition media and the provider reply through the same
 conversation store as the AI panel. Keep saving the same project path; copies
 for checkpoints do not change the session's working file. Omitting both fields
 keeps the request ephemeral.
@@ -57,9 +61,19 @@ Malformed messages are refused before the conversation is changed. If a
 provider reply arrives but cannot be saved, the response still contains that
 reply and a `session_warning`; do not repeat a paid request merely to recover
 from a transcript write failure.
-A binding that names a conversation or project this host does not have open
-answers 409 with `kind` `session_binding`, before any provider call. A local
+A binding that names a conversation or project this host does not have open,
+or a conversation bound to another project file, answers 409 with `kind`
+`session_binding`, before any provider call. The refusal carries a typed
+`detail` with `kind` `binding_mismatch` and both canonical paths. A local
 conversation-store failure answers 500 with `kind` `session_save`.
+
+A conversation's project binding is durable conversation state, not a field
+each request may choose. An unbound conversation binds to the open project on
+its first turn. An explicit rebind in the panel, and a project move, record a
+pending binding; the next admitted turn writes one typed `project_bound` host
+notice before the person's message, telling the model which file edits apply
+to. A fold or a compaction keeps the newest binding notice, so the model never
+interprets later paths against a file the conversation left.
 
 `POST /ai/turn` runs one whole agent turn on the same backend loop the panel
 uses. Its body carries `provider` (required, non-empty, at most 100
@@ -963,9 +977,9 @@ It also forgets that conversation's stored full results. The answer is
 `{kept, snapshot, unsaved?}`: the revert stands in the document either way, and
 `unsaved` says why the project file was not written.
 
-A message records the project file its snapshot came from. A conversation
-follows its workspace, so a revert to a message sent against another file of
-that workspace is refused rather than written into the open one.
+A message records the project file its snapshot came from. A conversation is
+bound to one project file, so a revert to a message sent against another file
+of that workspace is refused rather than written into the open one.
 
 The operation is refused while any turn runs with `A turn is still running;
 stop it before reverting.` and while a batch is open with `A batch of edits is

@@ -2,6 +2,16 @@
 export type MessageKind = "user" | "assistant" | "tool" | "application_result" | "round_budget"
   | "audition" | "comparison_reference" | "comparison_candidate" | "summary"
   | "transaction_rollback" | "proposal_outcome" | "host_notice";
+export type BindCause = "chosen" | "moved";
+
+/** A typed host notice. Only a `host_notice` row carries one. */
+export type HostNotice = {
+  kind: "project_bound";
+  from?: string;
+  to: string;
+  cause: BindCause;
+};
+
 export interface MessageMeta {
   version: 1;
   kind: MessageKind;
@@ -14,6 +24,8 @@ export interface MessageMeta {
   text_call?: { id: string; tool: string };
   /** The queued row a steered message came from. */
   steer_id?: string;
+  /** The typed cause of a host notice; untyped notices carry none. */
+  notice?: HostNotice;
 }
 interface MessageLike {
   role: string;
@@ -62,6 +74,35 @@ function isMessageKind(value: unknown): value is MessageKind {
   return typeof value === "string" && Object.hasOwn(MESSAGE_KINDS, value);
 }
 
+/** A saved path bound, shared by every notice kind that names one. */
+const MAX_NOTICE_PATH_CHARS = 4096;
+
+function validPath(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && [...value].length <= MAX_NOTICE_PATH_CHARS;
+}
+
+/** Validate an untrusted typed notice; unknown kinds read as no notice. */
+export function hostNotice(value: unknown): HostNotice | null {
+  if (!value || typeof value !== "object") return null;
+  const notice = value as { kind?: unknown; from?: unknown; to?: unknown; cause?: unknown };
+  if (notice.kind !== "project_bound") return null;
+  if (!validPath(notice.to)) return null;
+  if (notice.from !== undefined && notice.from !== null && !validPath(notice.from)) return null;
+  if (notice.cause !== "chosen" && notice.cause !== "moved") return null;
+  return {
+    kind: "project_bound",
+    ...(notice.from === undefined || notice.from === null ? {} : { from: notice.from }),
+    to: notice.to,
+    cause: notice.cause,
+  };
+}
+
+/** The project-bound notice a saved row carries, for the transcript. */
+export function projectBoundNotice(meta: MessageMeta | undefined): Extract<HostNotice, { kind: "project_bound" }> | null {
+  const notice = hostNotice(meta?.notice);
+  return notice?.kind === "project_bound" ? notice : null;
+}
+
 export function messageKind(message: MessageLike): MessageKind {
   if (message.message_meta !== undefined) {
     const meta = message.message_meta;
@@ -78,8 +119,10 @@ export function messageKind(message: MessageLike): MessageKind {
     const invalidRange = range !== undefined && (!range || typeof range !== "object"
       || !Number.isFinite(range.start_seconds) || !Number.isFinite(range.end_seconds)
       || range.start_seconds < 0 || range.end_seconds <= range.start_seconds);
+    const invalidNotice = meta.notice !== undefined
+      && (meta.kind !== "host_notice" || hostNotice(meta.notice) === null);
     if (meta.version !== 1 || !isMessageKind(meta.kind) || !compatible || invalidText || invalidRange
-      || (summaryFields && meta.kind !== "summary") || (meta.audio_range && !isAuditionKind(meta.kind))) return structuralKind(message);
+      || invalidNotice || (summaryFields && meta.kind !== "summary") || (meta.audio_range && !isAuditionKind(meta.kind))) return structuralKind(message);
     return meta.kind;
   }
   const content = message.content ?? "";

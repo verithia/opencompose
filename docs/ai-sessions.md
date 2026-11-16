@@ -98,11 +98,19 @@ changed reads as missing, never as the result the row recorded. Saving the
 same result again, or a fork copying it, replaces such a file.
 
 A conversation belongs to a **workspace**, which is the directory holding the
-project files, not to one `.ocp`. Projects in one directory share one set of
-conversations; opening a file in another directory shows another set. A
-conversation's `meta.json` records the project file it last worked on, and that
-record follows the file the panel has open: switching to another `.ocp` in the
-same workspace continues the same conversation instead of starting a new one.
+project files. Projects in one directory share one set of conversations;
+opening a file in another directory shows another set. Within that workspace a
+conversation is bound to one **project file**, recorded as `project_path` in
+`meta.json`. Every turn runs against the bound file. If another `.ocp` is open,
+the turn is refused until the person rebinds the conversation in the panel or
+starts a new one. An unbound conversation binds to the open project on its
+first turn without a notice.
+
+**Move project** rebinds every conversation that names the old file and records
+a moved notice for the model to read on the next turn. **Save As** leaves
+conversations on the original file: the copy is a new file with no conversations
+of its own. A headless caller never rebinds a conversation; it starts a new one
+for another project.
 
 The **workspace key** is the first eight bytes of the SHA-256 of the canonical
 directory path, as hex. It is stable, opaque, and does not leak the path.
@@ -150,8 +158,9 @@ not.
 Before a saved provider request is sent, the native session layer attaches a
 content-addressed project version (`dsl_sha`) to each newly admitted human
 message. This applies to the panel and explicitly bound headless requests.
-The project path, source and summary facts are captured together; a headless
-request for a different open project is refused.
+The project path, source and summary facts are captured together. A headless
+request for a different open project is refused, and so is any turn on a
+conversation bound to another file than the one that is open.
 
 Replayed human turns retain their original version. Tool results, assistant
 replies and typed host deliveries do not acquire a human-turn snapshot. The
@@ -338,12 +347,17 @@ Limits, all enforced in the store:
 {"id":"18f0c3a72b100004","title":"punchy kick","created":"…","updated":"…",
  "model":"gemini-4-argon","provider":"google","workspace_key":"3f2a…",
  "workspace":"/Users/…/songs","project_path":"/Users/…/songs/song.ocp",
+ "pending_binding":{"from":"/Users/…/songs/old.ocp","cause":"moved"},
  "turns":7,"tokens":9321,"compacted_at":"2026-10-29T07:41:02.019Z"}
 ```
 
-`tokens` is this project's estimate of the saved conversation, not a provider's
-reported usage; `compacted_at` records the last compaction; `parent` names the
-session a fork copied.
+`project_path` is the project file this conversation is bound to, stored in
+canonical form. `pending_binding` is present only between an explicit rebind or
+a move and the next admitted turn: that turn writes one typed `project_bound`
+host notice before the person's message and clears the field. `tokens` is this
+project's estimate of the saved conversation, not a provider's reported usage;
+`compacted_at` records the last compaction; `parent` names the session a fork
+copied.
 
 ## Autosave
 
@@ -352,7 +366,8 @@ There is no save action. Every model turn writes to the store:
 1. The request is appended: a turn that ends in the user's message contributes
    that message, a tool round contributes the results it added. A request that
    the conversation already contains appends nothing, so a retried request does
-   not duplicate history.
+   not duplicate history. A pending binding contributes one typed
+   `project_bound` notice immediately before that turn's message.
 2. The assistant message the provider returned is appended, so an answer is
    saved even if the panel closes before the next turn.
 3. When the estimate says the conversation no longer fits, it is compacted
@@ -817,8 +832,10 @@ the messages that were sent. The panel writes one line into the transcript.
 
 | command | argument | result |
 | --- | --- | --- |
-| `sessions_list` | `workspace?`, `all?` | newest first: id, title, turns, tokens, model, provider, workspace, project file, updated |
+| `sessions_list` | `workspace?`, `all?` | newest first: id, title, turns, tokens, model, provider, workspace, bound project file, updated |
 | `sessions_new` | `project?`, `title?`, `parent?` | the new session; `parent` forks that conversation |
+| `sessions_bind` | `id` | binds the conversation to the open project; the next turn records the notice |
+| `sessions_binding` | `id` | `bound`, `open` and `matches`, compared canonically |
 | `sessions_load` | `id` | metadata plus the wire messages to replay |
 | `sessions_rename` | `id`, `title` | the updated metadata |
 | `sessions_delete` | `id` | removes the directory |
@@ -841,6 +858,8 @@ conversation. No command here writes to the project.
 
 - The exact text of the older turns. Decisions, failures, the standing intent,
   the last answer and the earlier user questions are condensed, not quoted.
+  The newest typed project-binding notice survives beside the summary, because
+  every later path in the conversation is relative to that binding.
 - Tool arguments beyond the retained pairs, and every tool result beyond a
   short summary of it.
 - `provider_state`, thought signatures and reasoning items. A conversation that

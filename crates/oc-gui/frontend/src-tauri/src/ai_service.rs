@@ -236,6 +236,17 @@ pub struct AiError {
     pub message: String,
     pub reauth: bool,
     pub retryable: bool,
+    /// A structured cause a surface reads instead of English prose.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<AiErrorDetail>,
+}
+
+/// A refusal's typed cause. New causes extend this enum; the frontend reads the
+/// tag and never the message.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum AiErrorDetail {
+    BindingMismatch { bound: String, open: String },
 }
 
 impl AiError {
@@ -245,6 +256,7 @@ impl AiError {
             message: message.into(),
             reauth: false,
             retryable: false,
+            detail: None,
         }
     }
 
@@ -260,6 +272,7 @@ impl From<ProviderError> for AiError {
             message: error.message,
             reauth: error.kind == ProviderErrorKind::AuthExpired,
             retryable: error.retryable,
+            detail: None,
         }
     }
 }
@@ -1244,7 +1257,7 @@ pub async fn ai_chat(
         None => Ok(None),
     };
     if session_id.is_some() && preparation.is_err() {
-        let error = preparation.err().expect("checked preparation failure");
+        let error = preparation.expect_err("checked preparation failure");
         let accounting = ai::session_usage::checkpoint_final(
             &stats,
             &app,

@@ -4,11 +4,13 @@
 //! The commands reach the store at `~/.opencompose/ai/sessions` through
 //! [`Store::config`]. Nothing here writes to the project.
 use crate::ai::agent_loop::wire;
+use crate::ai::host_notice::BindCause;
 use crate::ai::sessions::{
-    self, Compaction, Fork, Loaded, LoadedPage, MAX_PAGE_TURNS, PageRead, ProjectFacts, Scope,
-    SessionError, SessionErrorKind, SessionMeta, Store,
+    self, BindingMismatch, BindingStatus, Compaction, Fork, Loaded, LoadedPage, MAX_PAGE_TURNS,
+    PageRead, PrepareFailure, ProjectFacts, Scope, SessionError, SessionErrorKind, SessionMeta,
+    Store,
 };
-use crate::ai_service::AiError;
+use crate::ai_service::{AiError, AiErrorDetail};
 use crate::commands::AiProviderEntry;
 use crate::state::{AppState, AppStateInner};
 use serde_json::{Value, json};
@@ -106,6 +108,32 @@ pub fn sessions_new(
         parent.as_deref(),
         through,
     )
+}
+
+/// Binds a conversation to the project that is open now. The next turn carries
+/// one typed notice for the model; this command writes no transcript row.
+#[tauri::command]
+pub fn sessions_bind(id: String, state: State<AppState>) -> Result<SessionMeta, String> {
+    bind_for(&state, &id)
+}
+
+/// Bind a conversation to the open project.
+pub fn bind_for(state: &AppState, id: &str) -> Result<SessionMeta, String> {
+    let open = state.lock_inner().file_path.clone();
+    store().bind(id, open.as_deref(), BindCause::Chosen)
+}
+
+/// Whether a conversation works on the open project, compared canonically so
+/// the panel never compares raw paths.
+#[tauri::command]
+pub fn sessions_binding(id: String, state: State<AppState>) -> Result<BindingStatus, String> {
+    binding_for(&state, &id)
+}
+
+/// The binding status of a saved conversation.
+pub fn binding_for(state: &AppState, id: &str) -> Result<BindingStatus, String> {
+    let open = state.lock_inner().file_path.clone();
+    store().binding_status(id, open.as_deref())
 }
 
 /// Create a session for a project, optionally forking a whole parent.
@@ -285,6 +313,7 @@ fn compact_checked(
 }
 
 /// One model turn's saved-view decision.
+#[derive(Debug)]
 pub struct PreparedTurn {
     pub session_id: String,
     pub messages: Value,
@@ -311,6 +340,8 @@ pub enum PrepareTurnError {
     ContextOverflow { tokens: u64, window: u64 },
     /// No cut brings the saved conversation under the request's row bound.
     Unreplayable,
+    /// The conversation is bound to another project than the open one.
+    Binding(BindingMismatch),
     /// The store refused or failed.
     Store(String),
 }
@@ -320,6 +351,7 @@ impl PrepareTurnError {
     pub fn kind(&self) -> &'static str {
         match self {
             Self::ContextOverflow { .. } => "context_overflow",
+            Self::Binding(_) => "session_binding",
             Self::Unreplayable | Self::Store(_) => "session_save",
         }
     }
@@ -335,6 +367,7 @@ impl std::fmt::Display for PrepareTurnError {
                  shorten the message or choose a model with a larger window."
             ),
             Self::Unreplayable => formatter.write_str("The saved conversation cannot be replayed"),
+            Self::Binding(mismatch) => formatter.write_str(&mismatch.message()),
             Self::Store(message) => formatter.write_str(message),
         }
     }
@@ -348,7 +381,16 @@ impl From<String> for PrepareTurnError {
 
 impl From<PrepareTurnError> for AiError {
     fn from(error: PrepareTurnError) -> Self {
-        AiError::new(error.kind(), error.to_string())
+        let detail = match &error {
+            PrepareTurnError::Binding(mismatch) => Some(AiErrorDetail::BindingMismatch {
+                bound: mismatch.bound.clone(),
+                open: mismatch.open.clone(),
+            }),
+            _ => None,
+        };
+        let mut error = AiError::new(error.kind(), error.to_string());
+        error.detail = detail;
+        error
     }
 }
 
@@ -421,8 +463,8 @@ fn fitted_request(
 /// Whether the request can be sent is decided before anything is saved: a
 /// refusal (too large for the model, not replayable) leaves the conversation,
 /// its archive and its metadata exactly as they were.
-pub fn prepare_turn_for(
-    app: &tauri::AppHandle,
+pub fn prepare_turn_for<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
     provider: &AiProviderEntry,
     messages: &Value,
     binding: SavedTurnBinding<'_>,
@@ -461,21 +503,27 @@ pub fn prepare_turn_for(
     let overhead = sessions::estimate_tokens(&system) + binding.tool_tokens;
     let context = crate::ai::limits::context_length(provider);
     let tokens = wire::TokenBudget::new(context, binding.tool_tokens);
-    let prepared = store.prepare_admitted(
-        &session_id,
-        incoming,
-        project.as_deref(),
-        crate::ai::sessions::PrepareContext {
-            snapshot: Some(&source),
-            overhead,
-            context_length: context,
-            facts: &facts,
-            provider: &provider.id,
-            model: &provider.model,
-        },
-        Some(binding.incarnation),
-        |planned| fitted_request(&system, planned, tokens).map(|_| ()),
-    )?;
+    let prepared = store
+        .prepare_admitted(
+            &session_id,
+            incoming,
+            project.as_deref(),
+            crate::ai::sessions::PrepareContext {
+                snapshot: Some(&source),
+                overhead,
+                context_length: context,
+                facts: &facts,
+                provider: &provider.id,
+                model: &provider.model,
+            },
+            Some(binding.incarnation),
+            |planned| fitted_request(&system, planned, tokens).map(|_| ()),
+        )
+        .map_err(|failure| match failure {
+            PrepareFailure::Binding(mismatch) => PrepareTurnError::Binding(mismatch),
+            PrepareFailure::Admitted(error) => error,
+            PrepareFailure::Store(message) => PrepareTurnError::Store(message),
+        })?;
     if let Some(error) = prepared.compaction_error.as_ref() {
         let _ = app.emit(
             AUTO_SESSION_EVENT,

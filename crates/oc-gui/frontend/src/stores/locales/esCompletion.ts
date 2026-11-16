@@ -1,5 +1,10 @@
 /** Spanish translations for the gaps in the original locale dictionary. */
 export const esCompletion = {
+  "ai.binding.worksOn": "Esta conversación trabaja con {name}.",
+  "ai.binding.bind": "Vincular a {name}",
+  "ai.binding.newConversation": "Nueva conversación",
+  "ai.binding.bound": "Conversación vinculada a {name}",
+  "ai.binding.moved": "Proyecto movido a {name}",
   "ai.command.compact": "Resumir turnos anteriores",
   "ai.command.dropHistory": "Borrar el historial anterior al resumen indicado y sus archivos sin uso",
   "ai.command.dropped": "Se borraron {records} registros y {assets} archivos sin uso.",

@@ -37,6 +37,9 @@
 #[path = "session_artifacts.rs"]
 mod artifacts;
 #[cfg(test)]
+#[path = "session_binding_tests.rs"]
+mod binding_tests;
+#[cfg(test)]
 #[path = "session_compaction_tests.rs"]
 mod compaction_tests;
 #[path = "session_lookup.rs"]
@@ -51,6 +54,7 @@ pub mod turns;
 mod versions;
 #[path = "session_view.rs"]
 mod view;
+use super::host_notice::{BindCause, HostNotice, PendingBinding};
 use crate::private_fs;
 pub use message_protocol::MessageKind;
 use message_protocol::MessageMeta;
@@ -145,10 +149,14 @@ pub struct SessionMeta {
     pub provider: String,
     /// Directory the session belongs to; `detached` when there is none.
     pub workspace_key: String,
-    /// The project file this session last worked on. It may change: a session
-    /// belongs to a workspace, not to one `.ocp`.
+    /// The project file this conversation is bound to. A turn while another
+    /// project is open is refused until the person binds the conversation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project_path: Option<String>,
+    /// A binding the next admitted turn tells the model about, as one typed
+    /// host notice before that turn's message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_binding: Option<PendingBinding>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<String>,
     /// What a call that changes the project DSL may do without asking. A
@@ -363,6 +371,50 @@ impl From<String> for SessionError {
 impl From<SessionError> for String {
     fn from(error: SessionError) -> Self {
         error.message
+    }
+}
+
+/// The project a conversation is bound to and the one a prepared turn would
+/// run on, both in canonical form.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct BindingMismatch {
+    pub bound: String,
+    pub open: String,
+}
+
+impl BindingMismatch {
+    /// The English refusal a surface without a localized message shows.
+    pub fn message(&self) -> String {
+        format!(
+            "This conversation is bound to {}, but {} is open. Bind the conversation or start a \
+             new one.",
+            self.bound, self.open
+        )
+    }
+}
+
+/// Whether a saved conversation works on the open project, compared in
+/// canonical form so the panel never compares raw paths.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct BindingStatus {
+    pub bound: Option<String>,
+    pub open: Option<String>,
+    pub matches: bool,
+}
+
+/// Why preparation refused before saving anything. The binding case is decided
+/// under the store lock; the admitted case is the request owner's refusal of
+/// the planned request.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PrepareFailure<E> {
+    Binding(BindingMismatch),
+    Admitted(E),
+    Store(String),
+}
+
+impl<E> From<String> for PrepareFailure<E> {
+    fn from(message: String) -> Self {
+        Self::Store(message)
     }
 }
 
@@ -694,6 +746,7 @@ impl Store {
                 .unwrap_or_default(),
             workspace_key: key.clone(),
             project_path: project.map(|path| canonical_path(path).to_string_lossy().to_string()),
+            pending_binding: None,
             workspace: workspace.map(|path| canonical_dir(path).to_string_lossy().to_string()),
             // A fork keeps the mode the conversation was working under.
             permission: parent
@@ -726,6 +779,43 @@ impl Store {
         }
         self.prune(&key, &meta.id)?;
         Ok(meta)
+    }
+
+    /// Binds a conversation to `project`. The next admitted turn tells the
+    /// model through one typed notice; binding to the project it already works
+    /// on changes nothing.
+    pub fn bind(
+        &self,
+        id: &str,
+        project: Option<&Path>,
+        cause: BindCause,
+    ) -> Result<SessionMeta, String> {
+        let _lock = self.mutation_lock()?;
+        let (dir, mut meta) = self.find(id)?;
+        let Some(project) = project else {
+            return Err("Open a project before binding this conversation.".into());
+        };
+        let to = canonical_path(project).to_string_lossy().to_string();
+        if meta.project_path.as_deref() == Some(to.as_str()) {
+            return Ok(meta);
+        }
+        let from = meta.project_path.take();
+        meta.project_path = Some(to);
+        // A second bind before a turn keeps the path the model last saw, so the
+        // one notice it reads names where the conversation started.
+        if meta.pending_binding.is_none() {
+            meta.pending_binding = Some(PendingBinding { from, cause });
+        }
+        meta.updated = now();
+        write_meta(&dir, &meta)?;
+        Ok(meta)
+    }
+
+    /// The project a conversation is bound to beside the open project, both
+    /// canonical and already compared.
+    pub fn binding_status(&self, id: &str, open: Option<&Path>) -> Result<BindingStatus, String> {
+        let (_, meta) = self.find(id)?;
+        Ok(binding_status(&meta, open))
     }
 
     /// Deletes the least recently updated session of a workspace while it holds
@@ -802,7 +892,14 @@ impl Store {
                 if meta.project_path.as_deref() != Some(from_text.as_str()) {
                     continue;
                 }
-                meta.project_path = Some(to_canonical.to_string_lossy().to_string());
+                let to_text = to_canonical.to_string_lossy().to_string();
+                if from_text != to_text {
+                    meta.pending_binding = Some(PendingBinding {
+                        from: Some(from_text.clone()),
+                        cause: BindCause::Moved,
+                    });
+                }
+                meta.project_path = Some(to_text);
                 if from_folder.as_deref() == Some(key.as_str())
                     && let Some(folder) = to_folder
                 {
@@ -1188,9 +1285,14 @@ impl Store {
         context: PrepareContext<'_>,
         incarnation: Option<&str>,
     ) -> Result<Prepared, String> {
-        self.prepare_admitted(id, incoming, project, context, incarnation, |_| {
+        match self.prepare_admitted(id, incoming, project, context, incarnation, |_| {
             Ok::<(), String>(())
-        })
+        }) {
+            Ok(prepared) => Ok(prepared),
+            Err(PrepareFailure::Binding(mismatch)) => Err(mismatch.message()),
+            Err(PrepareFailure::Admitted(message)) => Err(message),
+            Err(PrepareFailure::Store(message)) => Err(message),
+        }
     }
 
     /// [`Self::prepare_owned`] with an admission check: `admit` sees the
@@ -1205,7 +1307,7 @@ impl Store {
         context: PrepareContext<'_>,
         incarnation: Option<&str>,
         admit: impl FnOnce(&[Value]) -> Result<(), E>,
-    ) -> Result<Prepared, E> {
+    ) -> Result<Prepared, PrepareFailure<E>> {
         let PrepareContext {
             snapshot,
             overhead,
@@ -1217,6 +1319,32 @@ impl Store {
         let _lock = self.mutation_lock()?;
         let (dir, mut meta) = self.find(id)?;
         super::session_usage::verify_at(&dir, incarnation).map_err(|error| error.message)?;
+        // The binding is decided under the store lock, before a transcript,
+        // archive or snapshot write, so a refusal leaves every file unchanged.
+        let open = project.map(|path| canonical_path(path).to_string_lossy().to_string());
+        let mut meta_changed = false;
+        match (&meta.project_path, &open) {
+            (Some(bound), Some(open)) => {
+                let bound = canonical_path(Path::new(bound))
+                    .to_string_lossy()
+                    .to_string();
+                if bound != *open {
+                    return Err(PrepareFailure::Binding(BindingMismatch {
+                        bound,
+                        open: open.clone(),
+                    }));
+                }
+            }
+            (None, Some(open)) => {
+                // The first turn binds the conversation without telling the
+                // model: it has no earlier path to disambiguate.
+                meta.project_path = Some(open.clone());
+                meta_changed = true;
+            }
+            _ => {}
+        }
+        let pending_binding = meta.pending_binding.take();
+        meta_changed |= pending_binding.is_some();
         let (mut pending, _) = read_view(&dir)?;
         let mut filtered: Vec<Value> = incoming
             .iter()
@@ -1257,11 +1385,28 @@ impl Store {
                 facts,
                 id,
             },
-        ))?;
+        ))
+        .map_err(PrepareFailure::Admitted)?;
         let audio_settings = crate::gui_settings::load().session_audio;
         let evicted_auditions = persist_auditions(&self.root, &mut filtered, &audio_settings)?;
         let start = pending.len();
         let (appended, absorbed) = absorb(&mut pending, &filtered);
+        // The notice the model reads stands before the turn's new message, in
+        // the same record, so a reload never shows the text without its cause.
+        let mut notice_added = false;
+        if let Some(pending_binding) = pending_binding
+            && let Some(to) = meta.project_path.clone()
+        {
+            let notice = HostNotice::ProjectBound {
+                from: pending_binding.from,
+                to,
+                cause: pending_binding.cause,
+            };
+            if let Some(row) = saved_message(&super::host_notice::notice_row(&notice)) {
+                pending.insert(start, row);
+                notice_added = true;
+            }
+        }
         // Archiving rewrites auditions, which can move where the request
         // joins the saved conversation, so what is written is checked again.
         // Clips archived for a refused request are collected like any orphan.
@@ -1273,7 +1418,7 @@ impl Store {
             .iter()
             .any(|message| message.get("input_audio").is_some());
         let closed_round = !closed.is_empty();
-        if appended > 0 || closed_round {
+        if appended > 0 || closed_round || notice_added {
             let mut added = closed;
             added.extend_from_slice(&pending[start..]);
             append_records(&dir, &[turn_record(&now(), added)])?;
@@ -1289,14 +1434,6 @@ impl Store {
             .filter(|message| is_audition(message))
             .cloned()
             .collect();
-        // A session belongs to a workspace, not to one file: opening another
-        // `.ocp` in the same workspace keeps the conversation and records the file.
-        if let Some(project) = project {
-            let path = canonical_path(project).to_string_lossy().to_string();
-            if meta.project_path.as_deref() != Some(path.as_str()) {
-                meta.project_path = Some(path);
-            }
-        }
         // Re-read: the append may have dropped older messages to stay under the
         // cap, and what is sent must be exactly what is saved.
         let (mut view, _) = read_view(&dir)?;
@@ -1329,7 +1466,12 @@ impl Store {
                 }
             }
         }
-        if appended > 0 || compacted.is_some() || meta.provider != provider || meta.model != model {
+        if appended > 0
+            || compacted.is_some()
+            || meta.provider != provider
+            || meta.model != model
+            || meta_changed
+        {
             meta.provider = provider.to_owned();
             meta.model = model.to_owned();
             meta.tokens = estimate_tokens(&view);
@@ -2669,6 +2811,9 @@ fn plan_compaction(
             json!({ "role": "user", "content": summary, "context": CONTEXT_SUMMARY });
         message_protocol::tag(&mut summary_row, summary_metadata(view, split, retained));
         messages.push(summary_row);
+        // The bound project stays beside the summary: every later path in the
+        // conversation is relative to it.
+        messages.extend(newest_pinned_notices(view).into_iter().map(|(_, row)| row));
         // Preserve the latest labeled pair in a retained round. For other
         // auditions use a single row to keep replay bounded.
         for (start, end) in retained {
@@ -3529,7 +3674,9 @@ fn newest_that_fit(view: &[Value], budget: u64) -> Vec<Value> {
             + 1
     };
     let summary = view.iter().rposition(is_compaction_summary);
-    let reserved = summary.map_or(0, |index| size_of(&view[index]));
+    let pinned = newest_pinned_notices(view);
+    let reserved = summary.map_or(0, |index| size_of(&view[index]))
+        + pinned.iter().map(|(_, row)| size_of(row)).sum::<u64>();
     let mut kept: Vec<Value> = Vec::new();
     let mut used = 0u64;
     for message in view.iter().rev() {
@@ -3546,13 +3693,27 @@ fn newest_that_fit(view: &[Value], budget: u64) -> Vec<Value> {
     while !kept.is_empty() && turns::check_pairing(&kept).is_err() {
         kept.remove(0);
     }
-    // The summary is a user row, so it opens no call and answers none: in
-    // front of a well-paired tail the conversation stays well paired.
-    if let Some(index) = summary
-        && view.len() - kept.len() > index
-        && !kept.is_empty()
-    {
-        kept.insert(0, view[index].clone());
+    // The summary and the pinned notices are user rows, so they open no call
+    // and answer none: in front of a well-paired tail the conversation stays
+    // well paired.
+    let dropped = view.len() - kept.len();
+    if !kept.is_empty() {
+        let mut front = Vec::new();
+        if let Some(index) = summary
+            && dropped > index
+        {
+            front.push(view[index].clone());
+        }
+        front.extend(
+            pinned
+                .into_iter()
+                .filter(|(index, _)| dropped > *index)
+                .map(|(_, row)| row),
+        );
+        if !front.is_empty() {
+            front.extend(kept);
+            return front;
+        }
     }
     kept
 }
@@ -3584,6 +3745,52 @@ const MAX_PROJECT_PATH: usize = 4096;
 
 pub(crate) fn canonical_path(path: &Path) -> PathBuf {
     crate::project_data::canonical_path(path)
+}
+
+/// Compares a conversation's bound project with the open one in canonical form.
+pub fn binding_status(meta: &SessionMeta, open: Option<&Path>) -> BindingStatus {
+    let bound = meta.project_path.as_deref().map(|path| {
+        canonical_path(Path::new(path))
+            .to_string_lossy()
+            .to_string()
+    });
+    let open = open.map(|path| canonical_path(path).to_string_lossy().to_string());
+    let matches = bound
+        .as_ref()
+        .is_none_or(|bound| Some(bound) == open.as_ref());
+    BindingStatus {
+        bound,
+        open,
+        matches,
+    }
+}
+
+/// The view indexes of the newest pinned notice of every pinned kind.
+pub fn pinned_notice_indices(view: &[Value]) -> Vec<usize> {
+    newest_pinned_notices(view)
+        .into_iter()
+        .map(|(index, _)| index)
+        .collect()
+}
+
+/// The newest saved row of every pinned notice kind, with its view index, in
+/// the view's order.
+fn newest_pinned_notices(view: &[Value]) -> Vec<(usize, Value)> {
+    let mut seen = std::collections::HashSet::new();
+    let mut indices = Vec::new();
+    for (index, message) in view.iter().enumerate().rev() {
+        let Some(notice) = message_protocol::notice(message) else {
+            continue;
+        };
+        if notice.pinned() && seen.insert(notice.kind()) {
+            indices.push(index);
+        }
+    }
+    indices.sort_unstable();
+    indices
+        .into_iter()
+        .filter_map(|index| view.get(index).cloned().map(|row| (index, row)))
+        .collect()
 }
 
 fn hashed_key(path: &Path) -> String {

@@ -274,6 +274,8 @@ pub fn run_with_options(path: Option<String>, diag: DiagOptions) {
             // AI conversations
             commands::sessions_list,
             commands::sessions_new,
+            commands::sessions_bind,
+            commands::sessions_binding,
             commands::sessions_load,
             commands::sessions_original,
             commands::sessions_open,

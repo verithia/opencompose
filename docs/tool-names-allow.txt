@@ -58,6 +58,7 @@ plugin_store                             Rust module, not an agent tool
 plugin_store_install                     Tauri command, not a published agent tool
 preset_output_pairs                      Tauri command, not a published agent tool
 preset_output_ports                      Tauri command, not a published agent tool
+project_bound                            Host notice kind, not an agent tool
 project_data                             Rust module, not an agent tool
 project_extent                           Rust module, not an agent tool
 project_instrument_tail_samples          Internal rendering helper, not an agent tool
@@ -80,6 +81,8 @@ render_synth                             Internal rendering helper, not an agent
 render_thread                            Rust module, not an agent tool
 render_to_buffer                         Internal rendering helper, not an agent tool
 render_to_buffer_per_track               Internal rendering helper, not an agent tool
+sessions_bind                            Tauri command, not a published agent tool
+sessions_binding                         Tauri command, not a published agent tool
 sessions_open                            Tauri command, not a published agent tool
 sessions_page                            Tauri command, not a published agent tool
 tempo_follow                             DSL or serialized project field, not an agent tool

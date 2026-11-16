@@ -299,7 +299,10 @@ fn a_refused_admission_saves_nothing() {
             Err("too large".to_owned())
         },
     );
-    assert_eq!(refused.unwrap_err(), "too large");
+    assert_eq!(
+        refused.unwrap_err(),
+        PrepareFailure::Admitted("too large".to_owned())
+    );
     assert_eq!(
         seen.len(),
         2,
@@ -413,4 +416,77 @@ fn a_reshaping_guard_runs_while_the_store_lock_is_held() {
     assert!(store.find(&session.id).is_ok(), "a refused delete keeps it");
     assert!(!held(), "the lock is released after the refusal");
     std::fs::remove_dir_all(store.root().parent().unwrap()).unwrap();
+}
+
+#[test]
+fn a_compaction_keeps_the_newest_pinned_notice_after_the_summary() {
+    use crate::ai::host_notice::{BindCause, HostNotice, notice_row};
+    let mut view = rounds();
+    view.push(notice_row(&HostNotice::ProjectBound {
+        from: None,
+        to: "/songs/first.ocp".into(),
+        cause: BindCause::Chosen,
+    }));
+    view.push(round(&["late"]));
+    view.push(result("late"));
+    view.push(notice_row(&HostNotice::ProjectBound {
+        from: Some("/songs/first.ocp".into()),
+        to: "/songs/second.ocp".into(),
+        cause: BindCause::Moved,
+    }));
+    view.push(user("now the bass"));
+    let compaction = plan_compaction(&view, 0, &facts(), "s").unwrap();
+    let rows = &compaction.messages;
+    assert!(is_compaction_summary(&rows[0]));
+    let notices: Vec<&Value> = rows
+        .iter()
+        .filter(|row| message_protocol::notice(row).is_some())
+        .collect();
+    assert_eq!(notices.len(), 1, "{rows:?}");
+    assert_eq!(
+        notices[0]["message_meta"]["notice"]["to"],
+        "/songs/second.ocp"
+    );
+    assert_eq!(
+        notices[0]["message_meta"]["notice"]["kind"],
+        "project_bound"
+    );
+    assert!(strips_replay_state(rows));
+}
+
+#[test]
+fn a_size_trim_keeps_the_pinned_notice_in_front_with_the_summary() {
+    use crate::ai::host_notice::{BindCause, HostNotice, notice_row};
+    let mut view = rounds();
+    view.push(user("now the bass"));
+    let summary = plan_compaction(&view, 0, &facts(), "s")
+        .unwrap()
+        .messages
+        .first()
+        .cloned()
+        .unwrap();
+    assert!(is_compaction_summary(&summary));
+    let mut conversation = vec![
+        summary,
+        notice_row(&HostNotice::ProjectBound {
+            from: None,
+            to: "/songs/first.ocp".into(),
+            cause: BindCause::Chosen,
+        }),
+        user("the ask after the binding"),
+    ];
+    let big = "x".repeat(4_000);
+    for step in 0..20 {
+        let id = format!("t{step}");
+        conversation.push(round(&[&id]));
+        conversation.push(json!({"role":"tool","tool_call_id":id,"content":big}));
+    }
+    let kept = newest_that_fit(&conversation, 30_000);
+    assert!(kept.len() < conversation.len(), "the trim drops rows");
+    assert!(is_compaction_summary(&kept[0]), "{}", kept[0]);
+    assert_eq!(
+        kept[1]["message_meta"]["notice"]["to"], "/songs/first.ocp",
+        "the binding stays beside the summary"
+    );
+    assert_eq!(turns::check_pairing(&kept), Ok(()));
 }

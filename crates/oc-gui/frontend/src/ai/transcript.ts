@@ -6,7 +6,7 @@
  */
 import type { ToolCall, TurnStop, WireMessage } from "./wire";
 import type { MediaAttachment } from "./media";
-import { isAuditionKind, messageKind, type MessageMeta } from "./messageProtocol";
+import { isAuditionKind, messageKind, projectBoundNotice, type MessageMeta } from "./messageProtocol";
 import { isChangeSet, type ChangeSet } from "../types/change";
 
 export interface DiffResult {
@@ -86,6 +86,8 @@ export interface ChatMessage {
   /** A stopped turn: this row offers Retry, Continue, or both. */
   resume?: StoppedTurn;
   messageMeta?: MessageMeta;
+  /** A typed host notice that changed this conversation's project binding. */
+  binding?: { kind: "project_bound"; from?: string; to: string; cause: "chosen" | "moved" };
   /** A compaction summary the store kept in place of older turns. */
   checkpoint?: boolean;
 }
@@ -225,7 +227,21 @@ export function restoredTranscript(messages: WireMessage[] | null | undefined, s
     }
     if (message.role !== "user" || !content.trim()) continue;
     const kind = messageKind(message);
-    if (kind === "round_budget" || kind === "host_notice") continue;
+    if (kind === "round_budget") continue;
+    if (kind === "host_notice" || message.message_meta?.kind === "host_notice") {
+      const binding = projectBoundNotice(message.message_meta);
+      if (binding) {
+        rows.push({
+          role: "context",
+          content: "",
+          binding,
+          ...(message.message_meta ? { messageMeta: message.message_meta } : {}),
+          wireIndex,
+          ...snapshot,
+        });
+      }
+      continue;
+    }
     if (kind === "application_result") {
       rows.push({ ...toolRowOf(pending.shift(), content.startsWith(APPLICATION_RESULT) ? content.slice(APPLICATION_RESULT.length) : content, message.changes), wireIndex, ...snapshot });
       continue;

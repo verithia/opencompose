@@ -284,6 +284,8 @@ vi.mock("@tauri-apps/api/core", () => {
     if (cmd === "plugin_store_install") return { status: "installed", path: "", message: "" };
     if (cmd === "take_startup_project") return null;
     if (cmd === "get_project") return makeSnapshot();
+    // A fixture conversation is unbound unless a test supplies its own status.
+    if (cmd === "sessions_binding") return { bound: null, open: null, matches: true };
     // The panel asks once, when it mounts; no test previews unless it mocks this.
     if (cmd === "preview_state") return null;
     // No stranded batch unless a test opens one.

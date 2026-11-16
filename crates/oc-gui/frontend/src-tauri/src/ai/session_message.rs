@@ -1,6 +1,7 @@
 //! Versioned host message semantics, independent of translated display prose.
 //! English labels are read only by the migration of untagged saved messages.
 
+use crate::ai::host_notice::HostNotice;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -43,6 +44,10 @@ pub(super) struct MessageMeta {
     /// The caller's id for a person's message delivered into a running turn.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub steer_id: Option<String>,
+    /// The typed value behind a host notice. Only a `host_notice` row carries
+    /// one; an untyped notice stays as its content alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notice: Option<HostNotice>,
 }
 
 /// The id and tool of a text-protocol call, so the store can pair its result
@@ -77,6 +82,7 @@ impl MessageMeta {
             audio_range: None,
             text_call: None,
             steer_id: None,
+            notice: None,
         }
     }
 }
@@ -116,6 +122,13 @@ pub(super) fn read(message: &Value) -> Option<MessageMeta> {
         .steer_id
         .as_ref()
         .is_some_and(|id| meta.kind != MessageKind::User || id.is_empty() || id.len() > 64)
+    {
+        return None;
+    }
+    if meta
+        .notice
+        .as_ref()
+        .is_some_and(|notice| meta.kind != MessageKind::HostNotice || !notice.valid())
     {
         return None;
     }
@@ -267,6 +280,11 @@ pub(super) fn kind(message: &Value) -> Option<MessageKind> {
     legacy(message).map(|meta| meta.kind)
 }
 
+/// The typed notice a saved row carries, if any.
+pub(super) fn notice(message: &Value) -> Option<HostNotice> {
+    read(message)?.notice
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -326,6 +344,28 @@ mod tests {
         assert_eq!(rows, before);
         assert_eq!(kind(&rows[0]), Some(MessageKind::User));
         assert_eq!(kind(&rows[1]), Some(MessageKind::Assistant));
+    }
+
+    #[test]
+    fn a_notice_is_refused_on_any_other_kind() {
+        let notice = crate::ai::host_notice::HostNotice::ProjectBound {
+            from: None,
+            to: "/songs/song.ocp".into(),
+            cause: crate::ai::host_notice::BindCause::Chosen,
+        };
+        let mut row = json!({"role":"user","content":"notice",
+            "message_meta":{"version":1,"kind":"host_notice","notice":notice}});
+        assert!(read(&row).is_some());
+        row["message_meta"]["kind"] = json!("user");
+        assert!(
+            read(&row).is_none(),
+            "a person's message carries no host notice"
+        );
+        row["message_meta"]["kind"] = json!("summary");
+        assert!(read(&row).is_none());
+        row["message_meta"]["kind"] = json!("host_notice");
+        row["message_meta"]["notice"]["to"] = json!("x".repeat(4097));
+        assert!(read(&row).is_none(), "an oversized path is refused");
     }
 
     #[test]

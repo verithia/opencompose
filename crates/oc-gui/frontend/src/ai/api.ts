@@ -34,7 +34,14 @@ export interface TurnOutcome {
   text: string;
   failed: boolean;
   stop?: TurnStop;
-  error?: { kind: string; message: string; reauth?: boolean; retryable?: boolean };
+  error?: {
+    kind: string;
+    message: string;
+    reauth?: boolean;
+    retryable?: boolean;
+    /** A typed cause, such as the two paths of a `session_binding` refusal. */
+    detail?: { kind: string; bound?: string; open?: string };
+  };
 }
 
 /** A person's answer to a question a running turn asked. */
@@ -226,6 +233,16 @@ export function sessionPage(id: string, before: number, revision: string, turns?
     ...(turns === undefined ? {} : { turns }),
     revision,
   });
+}
+
+/** Binds a conversation to the project that is open now. */
+export function bindSession(id: string) {
+  return invoke<SessionMeta>("sessions_bind", { id });
+}
+
+/** Whether a conversation works on the open project. */
+export function sessionBinding(id: string) {
+  return invoke<unknown>("sessions_binding", { id });
 }
 
 export function newSession(title?: string, parent?: string, through?: number) {

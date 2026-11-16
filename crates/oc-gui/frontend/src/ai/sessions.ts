@@ -56,8 +56,10 @@ export interface SessionMeta {
   provider: string;
   /** Directory the conversation belongs to; `detached` when there is none. */
   workspace_key: string;
-  /** The project file it last worked on, which is not its scope. */
+  /** The project file this conversation is bound to. */
   project_path?: string | null;
+  /** A binding the next turn tells the model about. */
+  pending_binding?: { from?: string | null; cause: "chosen" | "moved" } | null;
   workspace?: string | null;
   /** What this conversation may do to the DSL without asking; absent on an
    * older payload, which reads as the default. */
