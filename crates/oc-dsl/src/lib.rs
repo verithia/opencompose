@@ -39,6 +39,7 @@ pub mod arrangement;
 pub mod ast;
 pub mod automation;
 pub mod automation_normalization;
+pub mod change;
 pub mod clips;
 pub mod diagnostics;
 pub mod diff;

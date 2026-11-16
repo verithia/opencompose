@@ -11,6 +11,9 @@ mod audio_clip;
 #[path = "suite/clip_content.rs"]
 mod clip_content;
 
+#[path = "suite/change_describe.rs"]
+mod change_describe;
+
 #[path = "suite/control_links.rs"]
 mod control_links;
 
