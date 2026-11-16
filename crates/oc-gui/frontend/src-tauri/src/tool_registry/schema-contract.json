@@ -345,16 +345,28 @@
     "name": "project_dsl"
   },
   {
-    "description": "Create a new empty project.",
+    "description": "Create a new empty project at an absolute .ocp path, optionally from the starter template. Refuses an existing file.",
     "inputSchema": {
       "additionalProperties": false,
+      "description": "Create a new empty project at an absolute .ocp path.",
       "properties": {
         "expected_revision": {
           "description": "Project revision guard; the call fails if the project moved to another revision",
           "type": "integer"
+        },
+        "path": {
+          "description": "Absolute path to the new .ocp file",
+          "maxLength": 4096,
+          "type": "string"
+        },
+        "template": {
+          "description": "Optional starter content; \"starter\" is the only template",
+          "type": "string"
         }
       },
-      "required": [],
+      "required": [
+        "path"
+      ],
       "type": "object"
     },
     "name": "project_new"

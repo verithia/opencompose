@@ -689,7 +689,9 @@ drops the batch's undo/redo entries and moves the revision forward so stale
 * **No partial persistence.** `project_save` and `redo` refuse while a batch is
   open, so a crash cannot leave a half-applied edit on disk or replay a redo
   under the batch. `project_open` / `project_new` cancel the batch because they
-  replace the whole session.
+  replace the whole session. `project_new` creates the file at the absolute
+  `.ocp` path it is given, optionally from `starter`, and refuses an existing
+  file.
 * **`undo` works inside the batch.** It rewinds the newest edit: the batch's own
   last step, or the edit before the batch when the batch has not edited yet. The
   batch keeps recording, its commit still publishes one entry, and a rollback

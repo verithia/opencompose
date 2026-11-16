@@ -2899,9 +2899,14 @@ fn dispatch_tool(
         }
         ToolId::ProjectNew => {
             use crate::tool_registry::arguments::ToolArguments;
-            let _ = crate::agent_tools::project_mutation::ProjectNewArgs::decode(args)
+            let request = crate::agent_tools::project_mutation::ProjectNewArgs::decode(args)
                 .map_err(|error| error.to_string())?;
-            to_value(block_on(commands::new_project(app.clone()))?)
+            crate::agent_tools::project_mutation::validate_new_project_path(&request.path)?;
+            to_value(block_on(commands::new_project_at(
+                request.path,
+                request.template,
+                app.clone(),
+            ))?)
         }
         ToolId::ProjectOpen => {
             use crate::tool_registry::arguments::ToolArguments;

@@ -327,7 +327,6 @@ pub fn run_with_options(path: Option<String>, diag: DiagOptions) {
             commands::freesound_oauth::freesound_oauth_status,
             commands::freesound_oauth::freesound_oauth_sign_out,
             // Project / DSL
-            commands::new_project,
             commands::new_project_at,
             commands::open_file,
             commands::save_file,

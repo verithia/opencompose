@@ -286,7 +286,7 @@ pub fn catalog() -> Vec<ToolSpec> {
             "Return the current project as OpenCompose DSL text.",
         ),
         arguments::tool::<crate::agent_tools::project_mutation::ProjectNewArgs>(
-            "Create a new empty project.",
+            "Create a new empty project at an absolute .ocp path, optionally from the starter template. Refuses an existing file.",
         ),
         arguments::tool::<crate::agent_tools::project_mutation::ProjectOpenArgs>(
             "Open an .ocp project from disk.",

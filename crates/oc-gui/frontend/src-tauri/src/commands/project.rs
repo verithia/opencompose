@@ -19,17 +19,11 @@ fn has_active_take(inner: &AppStateInner) -> bool {
     inner.audio.recorder.recording() || inner.audio.midi_recorder.recording()
 }
 
-/// Create an untitled project.
-#[tauri::command]
-pub async fn new_project(app: tauri::AppHandle) -> Result<ProjectSnapshot, String> {
-    create_project(app, None, false).await
-}
-
 /// File ▸ New at a chosen path: one command creates the document, names it after
 /// the file and writes it, so the workspace's New is not New + rename + save.
 ///
 /// The name and the directory are part of the document before the first save,
-/// and the graph warms behind the response exactly like [`new_project`].
+/// and the graph warms behind the response.
 #[tauri::command]
 pub async fn new_project_at(
     path: String,

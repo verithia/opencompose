@@ -131,7 +131,8 @@ Edits are guarded so a multi-step change is atomic to the user.
 - While a batch is open, save, undo and redo are refused, so a crash cannot leave
   a half-applied edit on disk or rewind history under the batch.
   `project_open` and `project_new` cancel the batch because they replace the
-  whole session.
+  whole session. `project_new` takes an absolute `.ocp` path and an optional
+  `starter` template, writes the file, and refuses a path that already exists.
 - `transaction_begin` counts as a mutation for `expected_revision`.
 
 Pass the revision you last saw as `expected_revision` on mutation tools; a
