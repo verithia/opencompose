@@ -1987,6 +1987,7 @@ mod tests {
             "transaction_commit",
             "transaction_rollback",
             "edit_subtree",
+            "plan_update",
             "list_skills",
         ] {
             assert!(names.contains(&name.to_string()), "{name}");

@@ -4,6 +4,7 @@
 # One identifier per line; text after the identifier is a comment.
 
 # DSL and mixer identifiers that share a tool area prefix.
+plan_set            a saved session-state row kind, not an agent tool
 plugin_output_pair   a plugin auxiliary output pair, not a tool
 sample_rate          the audio-frame rate of a sample or render, not a tool
 sample_format        the encoded sample format of a WAV, not a tool

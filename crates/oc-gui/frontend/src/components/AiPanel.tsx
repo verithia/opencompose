@@ -53,11 +53,13 @@ import {
   type ActiveTurn,
   type SessionMeta,
 } from "../ai/sessions";
+import type { SessionState } from "../ai/messageProtocol";
 import {
   canContinue,
   canRetry,
   elapsedLabel,
   restoredTranscript,
+  currentSessionState,
   savedWireIndex,
   stopStalled,
   userTurnOf,
@@ -135,6 +137,13 @@ function toolSurfaceRow(surface: NonNullable<ChatMessage["surface"]>): { text: s
   return { text: text.join("; "), names };
 }
 
+/** The localized line a saved goal or plan change shows. */
+function sessionStateRow(state: SessionState): string {
+  if (state.kind === "goal_set") return i18n.t("ai.state.goalSet", { goal: state.text });
+  if (state.kind === "goal_cleared") return i18n.t("ai.state.goalCleared");
+  return i18n.t("ai.state.planUpdated", { count: state.items.length });
+}
+
 /** How often a window that inherited a running turn asks whether it finished. */
 const TURN_POLL_MS = 400;
 /** How long a stopped inherited turn may take to close before the panel repaints anyway. */
@@ -142,6 +151,7 @@ const TURN_SETTLE_MS = 10_000;
 
 export function AiPanel(props: { onClose?: () => void }) {
   const [messages, setMessages] = createSignal<ChatMessage[]>([]);
+  const sessionStateView = createMemo(() => currentSessionState(messages()));
   let transcriptElement: HTMLDivElement | undefined;
   let transcriptFollow: ReturnType<typeof followTranscript> | undefined;
   onMount(() => {
@@ -708,7 +718,8 @@ export function AiPanel(props: { onClose?: () => void }) {
         loaded = loadedPage(await aiApi.openSession(id));
         if (!loaded || disposed || epoch !== scopeEpoch || request !== paintRequest) return false;
       }
-      setMessages(restoredTranscript(loaded.messages, loaded.start));
+      const restored = restoredTranscript(loaded.messages, loaded.start);
+      setMessages(restored);
       setPageStart(loaded.start);
       setPageRevision(loaded.revision);
       setOlderTokens(loaded.older_tokens);
@@ -727,6 +738,27 @@ export function AiPanel(props: { onClose?: () => void }) {
       });
       aiSession.setOpenScoped(sessionScope(), loaded.meta.id);
       setOpenId(loaded.meta.id);
+      // A goal saved by the panel before goals were session state is written
+      // once as a typed row, then dropped from the window's own store.
+      const storedGoal = aiSession.goal();
+      if (storedGoal) {
+        const hasSavedGoal = currentSessionState(restored).goal !== null;
+        try {
+          if (!hasSavedGoal) {
+            await aiApi.setSessionGoal(loaded.meta.id, storedGoal);
+            if (disposed || epoch !== scopeEpoch || request !== paintRequest) return false;
+            setMessages(previous => [...previous, {
+              role: "context",
+              content: "",
+              state: { kind: "goal_set", text: storedGoal, author: "person" },
+              timestamp: Date.now(),
+            }]);
+          }
+          aiSession.setGoal("");
+        } catch {
+          // A failed migration keeps the local value for the next paint.
+        }
+      }
       void readBinding(loaded.meta.id);
       selectStatsSession(loaded.meta.id);
       hydrateSessionUsage(loaded.meta.id, loaded.usage, loaded.usage_error, usageRead);
@@ -822,20 +854,54 @@ export function AiPanel(props: { onClose?: () => void }) {
     setReferenceIndex(0);
   };
 
+  /** Shows a state change at once; the saved row paints it again on reload. */
+  const applySessionState = (state: SessionState): void => {
+    setMessages(previous => [...previous, { role: "context", content: "", state, timestamp: Date.now() }]);
+  };
+
+  /** Saves a person's goal change, or stages it until a conversation exists. */
+  const saveGoal = async (text: string | null): Promise<boolean> => {
+    const id = openId();
+    const state: SessionState = text === null
+      ? { kind: "goal_cleared", author: "person" }
+      : { kind: "goal_set", text, author: "person" };
+    if (!id) {
+      // A conversation starts with its first message; the staged goal is
+      // written once that conversation exists, before its first turn.
+      aiSession.setGoal(text ?? "");
+      applySessionState(state);
+      return true;
+    }
+    try {
+      await aiApi.setSessionGoal(id, text);
+      aiSession.setGoal("");
+      applySessionState(state);
+      return true;
+    } catch (error) {
+      notify(i18n.t("ai.goal.failed", { error: errorMessage(error) }), "error");
+      return false;
+    }
+  };
+
+  const clearGoal = async (): Promise<void> => {
+    await saveGoal(null);
+  };
+
   const runCommand = async (name: string): Promise<void> => {
     const draft = input().trim();
     const argument = draft.slice(1).trimStart().split(/\s+/)[1];
     if (name === "goal") {
-      // The staged plan for this conversation: one step per round instead of a
-      // whole track in one call.
+      // The goal is one typed session row, so a rewind returns to the earlier
+      // goal and a fork carries the one it copied.
       const text = draft.slice(1).replace(/^\s*goal\s*/, "").trim();
       if (!text) {
         setInput("/goal ");
         return;
       }
       setInput("");
-      aiSession.setGoal(text);
-      notify(i18n.t("ai.command.goalSet", { goal: text }), "success");
+      if (await saveGoal(text)) {
+        notify(i18n.t("ai.command.goalSet", { goal: text }), "success");
+      }
       return;
     }
     if (name === "compact") {
@@ -1938,6 +2004,20 @@ export function AiPanel(props: { onClose?: () => void }) {
       }
     }
     const sessionId = openId();
+    // A goal staged before the first message becomes a typed row before the
+    // turn that may act on it is prepared.
+    if (sessionId) {
+      const stagedGoal = aiSession.goal();
+      if (stagedGoal) {
+        try {
+          await aiApi.setSessionGoal(sessionId, stagedGoal);
+          if (!liveTurn(token)) return posted;
+          aiSession.setGoal("");
+        } catch {
+          // The turn still proceeds without the goal; the local value stays.
+        }
+      }
+    }
     // A window that reloads while this turn runs keeps this marker; the next
     // mount asks the backend whether it still holds the turn.
     if (sessionId) aiSession.setTurn({ session: sessionId, started: startedAt });
@@ -1978,13 +2058,9 @@ export function AiPanel(props: { onClose?: () => void }) {
           busCount: store.project.buses.length,
           projectNote: note.text,
         }, { ...provider.capabilities, audioIn: supportsAudio }, tools, Array.isArray(skillIndex) ? skillIndex : undefined);
-        // A goal turns the turn into one step of a plan: the loop creates the
-        // track first and adds its patterns after, instead of one whole block.
-        const goal = aiSession.goal();
-        const guided = goal
-          ? `${systemPrompt}\n\nCurrent goal: ${goal}\nWork one step at a time: create or verify the object first, then add its content in a later call. Do not send a whole track DSL in one call when the goal is still being built.`
-          : systemPrompt;
-        sent = buildMessages(guided, question);
+        // The saved goal and plan ride in the backend's derived context row,
+        // so the prompt does not repeat them and a rewind changes both.
+        sent = buildMessages(systemPrompt, question);
         // Every request carries this text, so the context figure counts it.
         setRequestOverhead(systemPrompt, tools);
       }
@@ -2555,7 +2631,7 @@ export function AiPanel(props: { onClose?: () => void }) {
                 <AiThinking loading={!!msg.liveReasoning && loading()} partial="" approval={false} lastTool={null} identity="" reasoning={msg.reasoning} />
               </Show>
               <Show when={msg.role === "tool"} fallback={
-                <Show when={msg.binding || msg.surface} fallback={
+                <Show when={msg.binding || msg.surface || msg.state} fallback={
                   <Show when={msg.context === "audition"} fallback={
                     <Show when={msg.checkpoint} fallback={<div class="ai-message-content"><Show when={msg.role === "assistant"} fallback={legacyAuditionText(msg.content, i18n.t("ai.media.legacyAudition"))}><AiMarkdown content={msg.content} /></Show></div>}>
                       <LazyDetails
@@ -2570,14 +2646,18 @@ export function AiPanel(props: { onClose?: () => void }) {
                     <AiAudition message={msg} />
                   </Show>
                 }>
-                  <Show when={msg.surface} fallback={
-                    <div class="ai-binding-row" role="status" title={msg.binding!.to}>
-                      {i18n.t(msg.binding!.cause === "moved" ? "ai.binding.moved" : "ai.binding.bound", { name: projectName(msg.binding!.to) })}
-                    </div>
+                  <Show when={msg.state} fallback={
+                    <Show when={msg.surface} fallback={
+                      <div class="ai-binding-row" role="status" title={msg.binding!.to}>
+                        {i18n.t(msg.binding!.cause === "moved" ? "ai.binding.moved" : "ai.binding.bound", { name: projectName(msg.binding!.to) })}
+                      </div>
+                    }>
+                      <div class="ai-binding-row" role="status" title={toolSurfaceRow(msg.surface!).names}>
+                        {toolSurfaceRow(msg.surface!).text}
+                      </div>
+                    </Show>
                   }>
-                    <div class="ai-binding-row" role="status" title={toolSurfaceRow(msg.surface!).names}>
-                      {toolSurfaceRow(msg.surface!).text}
-                    </div>
+                    <div class="ai-state-row" role="status">{sessionStateRow(msg.state!)}</div>
                   </Show>
                 </Show>
               }>
@@ -3153,8 +3233,9 @@ export function AiPanel(props: { onClose?: () => void }) {
 
       <AiComposer
         blockedNotice={blockedNotice()}
-        goal={aiSession.goal()}
-        onClearGoal={() => aiSession.setGoal("")}
+        goal={sessionStateView().goal ?? ""}
+        plan={sessionStateView().plan ?? []}
+        onClearGoal={() => void clearGoal()}
         commands={commandMatches()}
         commandIndex={commandIndex()}
         onCommandHover={setCommandIndex}

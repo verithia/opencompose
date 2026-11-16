@@ -2,6 +2,7 @@
 //! English labels are read only by the migration of untagged saved messages.
 
 use crate::ai::host_notice::HostNotice;
+use crate::ai::session_state::SessionState;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -20,6 +21,7 @@ pub enum MessageKind {
     TransactionRollback,
     ProposalOutcome,
     HostNotice,
+    SessionState,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -48,6 +50,9 @@ pub(super) struct MessageMeta {
     /// one; an untyped notice stays as its content alone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notice: Option<HostNotice>,
+    /// The typed goal or plan change. Only a `session_state` row carries one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<SessionState>,
 }
 
 /// The id and tool of a text-protocol call, so the store can pair its result
@@ -83,6 +88,7 @@ impl MessageMeta {
             text_call: None,
             steer_id: None,
             notice: None,
+            state: None,
         }
     }
 }
@@ -129,6 +135,13 @@ pub(super) fn read(message: &Value) -> Option<MessageMeta> {
         .notice
         .as_ref()
         .is_some_and(|notice| meta.kind != MessageKind::HostNotice || !notice.valid())
+    {
+        return None;
+    }
+    if meta
+        .state
+        .as_ref()
+        .is_some_and(|state| meta.kind != MessageKind::SessionState || !state.valid())
     {
         return None;
     }
@@ -285,6 +298,11 @@ pub(super) fn notice(message: &Value) -> Option<HostNotice> {
     read(message)?.notice
 }
 
+/// The typed goal or plan change a saved row carries, if any.
+pub(super) fn state(message: &Value) -> Option<SessionState> {
+    read(message)?.state
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -410,6 +428,37 @@ mod tests {
         for key in ["tool_calls", "thinking", "provider_state", "content"] {
             assert_eq!(row[key], before[key]);
         }
+    }
+
+    #[test]
+    fn a_session_state_value_belongs_only_to_its_own_kind() {
+        let mut row = json!({"role":"user","content":"Goal: finish",
+            "message_meta":{"version":1,"kind":"session_state","state":{
+                "kind":"goal_set","text":"finish","author":"person"}}});
+        assert_eq!(
+            read(&row)
+                .and_then(|meta| meta.state)
+                .map(|state| state.model_text()),
+            Some("Goal: finish".into())
+        );
+        row["message_meta"]["kind"] = json!("user");
+        assert!(read(&row).is_none(), "a state on a user row is refused");
+        row["message_meta"]["kind"] = json!("host_notice");
+        row["message_meta"]["notice"] = json!({
+            "kind":"project_bound","to":"/songs/song.ocp","cause":"chosen"
+        });
+        assert!(read(&row).is_none(), "a state on a notice row is refused");
+        row["message_meta"]["kind"] = json!("session_state");
+        row["message_meta"]["state"]["text"] =
+            json!("x".repeat(crate::ai::session_state::MAX_GOAL_CHARS + 1));
+        assert!(read(&row).is_none(), "an oversized goal is refused");
+        row["message_meta"]["state"] = json!({
+            "kind":"plan_set","items":[
+                {"text":"one","status":"in_progress"},
+                {"text":"two","status":"in_progress"},
+            ]
+        });
+        assert!(read(&row).is_none(), "two in-progress steps are refused");
     }
 
     #[test]

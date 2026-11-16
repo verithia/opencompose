@@ -252,6 +252,7 @@ pub fn is_round_delivery(message: &Value) -> bool {
                     | MessageKind::ComparisonReference
                     | MessageKind::ComparisonCandidate
                     | MessageKind::HostNotice
+                    | MessageKind::SessionState
                     | MessageKind::RoundBudget
                     | MessageKind::ProposalOutcome
             )

@@ -6,7 +6,7 @@
  */
 import type { ToolCall, TurnStop, WireMessage } from "./wire";
 import type { MediaAttachment } from "./media";
-import { isAuditionKind, messageKind, projectBoundNotice, toolSurfaceNotice, type HostNotice, type MessageMeta } from "./messageProtocol";
+import { isAuditionKind, messageKind, projectBoundNotice, sessionState as sessionStateOf, toolSurfaceNotice, type HostNotice, type MessageMeta, type PlanItem, type SessionState } from "./messageProtocol";
 import { isChangeSet, type ChangeSet } from "../types/change";
 
 export interface DiffResult {
@@ -92,6 +92,8 @@ export interface ChatMessage {
   binding?: { kind: "project_bound"; from?: string; to: string; cause: "chosen" | "moved" };
   /** A typed host notice that changed the tools or permission this turn offers. */
   surface?: Extract<HostNotice, { kind: "tool_surface" }>;
+  /** A typed goal or plan change the conversation saved. */
+  state?: SessionState;
   /** A compaction summary the store kept in place of older turns. */
   checkpoint?: boolean;
 }
@@ -251,6 +253,11 @@ export function restoredTranscript(messages: WireMessage[] | null | undefined, s
       }
       continue;
     }
+    if (kind === "session_state") {
+      const state = message.message_meta ? sessionStateOf(message.message_meta.state) : null;
+      if (state) rows.push({ role: "context", content: "", state, wireIndex, ...snapshot });
+      continue;
+    }
     if (kind === "application_result") {
       rows.push({ ...toolRowOf(pending.shift(), content.startsWith(APPLICATION_RESULT) ? content.slice(APPLICATION_RESULT.length) : content, message.changes), wireIndex, ...snapshot });
       continue;
@@ -266,6 +273,29 @@ export function restoredTranscript(messages: WireMessage[] | null | undefined, s
     });
   }
   return rows;
+}
+
+/** The goal and plan the newest saved state rows hold. A cut or a fork reads
+ * only the rows it copied, so the panel needs no separate state field. */
+export function currentSessionState(rows: readonly ChatMessage[]): { goal: string | null; plan: PlanItem[] | null } {
+  let goal: string | null = null;
+  let plan: PlanItem[] | null = null;
+  let goalSeen = false;
+  let planSeen = false;
+  for (let index = rows.length - 1; index >= 0; index--) {
+    const state = rows[index].state;
+    if (!state) continue;
+    if (!goalSeen && (state.kind === "goal_set" || state.kind === "goal_cleared")) {
+      goalSeen = true;
+      goal = state.kind === "goal_set" ? state.text : null;
+    }
+    if (!planSeen && state.kind === "plan_set") {
+      planSeen = true;
+      plan = state.items.length ? state.items : null;
+    }
+    if (goalSeen && planSeen) break;
+  }
+  return { goal, plan };
 }
 
 /**

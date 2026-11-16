@@ -354,6 +354,7 @@ Limits, all enforced in the store:
  "model":"gemini-4-argon","provider":"google","workspace_key":"3f2a…",
  "workspace":"/Users/…/songs","project_path":"/Users/…/songs/song.ocp",
  "pending_binding":{"from":"/Users/…/songs/old.ocp","cause":"moved"},
+ "pending_state":{"kind":"goal_set","text":"finish the bridge","author":"person"},
  "history_mark":{"project":"/Users/…/songs/song.ocp","at":42,"max_id":42},
  "tool_surface":{"names":["tracks_list","tracks_mix"],"permission":"write"},
  "turns":7,"tokens":9321,"compacted_at":"2026-10-29T07:41:02.019Z"}
@@ -367,6 +368,9 @@ the edit-history cursor the conversation ended its previous turn at: the
 canonical `project` it belongs to, the id of the newest applied entry `at`
 (absent before the first edit), and the largest id the history held. A rebind or
 a move clears it, because the `project_bound` notice covers that boundary.
+`pending_state` is present only between a goal change made while the
+conversation had an open tool round and the next admitted turn: that turn writes
+the typed row before the person's message and clears the field.
 `tool_surface` holds the tool names and permission mode the conversation's
 latest prepared turn offered. The first turn records it silently. A later turn
 whose tools or permission differ writes one typed `tool_surface` host notice
@@ -403,6 +407,35 @@ which the panel rebuilds every turn. The panel therefore sends the system prompt
 and the pending user message only: every earlier turn, tool calls and tool
 results included, is replayed from the store instead of being rebuilt from the
 prose rows the transcript shows.
+
+### Goal and plan rows
+
+The goal and the plan are typed conversation state, saved like any other row:
+
+- `goal_set` carries the goal text (at most 600 characters) and its author,
+  `person` or `agent`.
+- `goal_cleared` records that the goal was cleared.
+- `plan_set` carries at most 32 items of at most 200 characters each, each
+  `pending`, `in_progress` or `done`, with at most one item in progress.
+
+The newest goal row and the newest plan row define the current state. There is
+no separate metadata field: a rewind that cuts before a row removes its effect,
+and a fork that copies the conversation copies the state it had at the cut. A
+`goal_cleared` row and an empty `plan_set` clear that part. The row's `content`
+is the English text the model reads, derived only from the typed value.
+
+The person writes a goal with the composer's `/goal <text>` command, which
+appends one `goal_set` row, and clears it with the chip, which appends a
+`goal_cleared` row. The agent writes both through the panel-local `plan_update`
+tool. While a turn has a tool round open, a goal change waits in `meta.json` as
+`pending_state`; the next admitted turn writes it before the new message,
+because a state row cannot follow calls that have no result yet.
+
+On every request the backend adds one short derived row after the system rows,
+naming the current goal and plan. It is not saved, and the loop rebuilds it after
+a `plan_update` call, so every round carries the same state. A fold keeps the
+newest goal and plan rows, and a compaction or a size trim re-inserts them after
+its summary, so the model never follows a plan the conversation has replaced.
 
 Inline audio clips are not saved. A turn that carries one goes out as the stored
 conversation plus the client's own messages, so the model still hears the clip,

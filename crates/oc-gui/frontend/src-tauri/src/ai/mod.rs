@@ -21,6 +21,7 @@ pub mod project_instructions;
 pub mod responses;
 pub mod route;
 pub mod secret;
+pub mod session_state;
 pub mod session_usage;
 pub mod sessions;
 pub mod skill_hints;

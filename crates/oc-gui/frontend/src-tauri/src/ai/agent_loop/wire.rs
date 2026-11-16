@@ -615,9 +615,19 @@ pub fn fold_wire(
             .into_iter()
             .map(|offset| head + offset)
             .collect();
+    // The derived goal-and-plan row is not saved, so it names itself with a
+    // context marker; the newest goal and plan rows are pinned through the
+    // store's indexes. Both must survive a fold.
+    let state_context: std::collections::HashSet<usize> = messages
+        .iter()
+        .enumerate()
+        .filter(|(_, message)| message["context"] == crate::ai::session_state::CONTEXT_STATE)
+        .map(|(index, _)| index)
+        .collect();
     let pinned = |index: usize| {
         Some(index) == summary
             || notices.contains(&index)
+            || state_context.contains(&index)
             || ask.is_some_and(|ask| {
                 index >= ask && message_kind(&messages[index]) == Some(MessageKind::User)
             })
@@ -969,6 +979,73 @@ mod tests {
                 .any(|row| row["message_meta"]["notice"]["to"] == "/songs/first.ocp"),
             "the older binding is folded away"
         );
+        assert_eq!(turns::check_pairing(&wire[1..]), Ok(()));
+    }
+
+    #[test]
+    fn a_fold_keeps_the_newest_goal_and_plan_and_the_derived_context_row() {
+        use crate::ai::session_state::{
+            Goal, PlanItem, PlanStatus, SessionState, StateAuthor, context_row, state_row,
+        };
+        let goal = |text: &str| {
+            state_row(&SessionState::GoalSet {
+                text: text.into(),
+                author: StateAuthor::Person,
+            })
+        };
+        let plan = |text: &str| {
+            state_row(&SessionState::PlanSet {
+                items: vec![PlanItem {
+                    text: text.into(),
+                    status: PlanStatus::InProgress,
+                }],
+            })
+        };
+        let context = |goal: &str, plan: &str| {
+            context_row(
+                Some(&Goal {
+                    text: goal.into(),
+                    author: StateAuthor::Person,
+                }),
+                Some(&[PlanItem {
+                    text: plan.into(),
+                    status: PlanStatus::InProgress,
+                }]),
+            )
+            .unwrap()
+        };
+        let mut wire = vec![
+            json!({"role":"system","content":"s"}),
+            context("new goal", "new plan"),
+            user("the first ask"),
+            goal("old goal"),
+            plan("old plan"),
+            goal("new goal"),
+            plan("new plan"),
+        ];
+        for round in 0..120 {
+            native_round(&mut wire, &format!("c{round}"), 200);
+        }
+        wire.push(user("the current ask"));
+        let ask = turn_ask(&wire);
+        fold_wire(&mut wire, &FoldLimits::round(None), ask).unwrap();
+        let kinds: Vec<&str> = wire
+            .iter()
+            .filter_map(|row| row["message_meta"]["state"]["kind"].as_str())
+            .collect();
+        assert_eq!(kinds, ["goal_set", "plan_set"]);
+        let (goal, plan) = crate::ai::session_state::current_state(&wire);
+        assert_eq!(goal.unwrap().text, "new goal");
+        assert_eq!(plan.unwrap()[0].text, "new plan");
+        let context_row = wire
+            .iter()
+            .find(|row| row["context"] == crate::ai::session_state::CONTEXT_STATE)
+            .expect("the derived row survives the fold");
+        assert_eq!(
+            context_row["content"],
+            "Goal: new goal\nPlan:\n1. [in progress] new plan"
+        );
+        assert!(context_row.get("message_meta").is_none());
         assert_eq!(turns::check_pairing(&wire[1..]), Ok(()));
     }
 

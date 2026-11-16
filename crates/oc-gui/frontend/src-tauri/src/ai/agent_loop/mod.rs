@@ -43,6 +43,8 @@ const TRANSACTION_TOOLS: [&str; 3] = [
 ];
 /// The panel-local pager over truncated results.
 pub const READ_TOOLCALL: &str = "read_toolcall";
+/// The panel-local goal and plan writer.
+pub const PLAN_UPDATE: &str = "plan_update";
 
 /// How a running turn is stopped. Cloned into every place that waits.
 #[derive(Clone)]
@@ -373,6 +375,9 @@ struct Ran {
     declined: bool,
     mutates: bool,
     deferred: bool,
+    /// Delivery rows the call produced after its result, such as the state
+    /// rows a plan_update records for the round.
+    rows: Vec<Value>,
 }
 
 struct Turn<'a, H: Host> {
@@ -440,6 +445,7 @@ pub async fn run_turn<H: Host>(host: &H, spec: TurnSpec, cancel: Cancel) -> Turn
         wire::offered_tool_tokens(turn.spec.toolsets.as_deref(), true),
     );
     turn.ask = wire::turn_ask(&turn.wire);
+    turn.refresh_state_context();
     let ending = match turn.rounds().await {
         Ok(ending) | Err(ending) => ending,
     };
@@ -562,9 +568,48 @@ impl<H: Host> Turn<'_, H> {
             }
             if !deliveries.is_empty() {
                 self.push(deliveries).await?;
+                self.refresh_state_context();
             }
         }
         Ok(Ending::Cap)
+    }
+
+    /// Keeps the one derived goal-and-plan row in front of the conversation.
+    /// It is rebuilt from the saved state rows after a round writes them, and
+    /// it is never saved.
+    fn refresh_state_context(&mut self) {
+        let (goal, plan) = crate::ai::session_state::current_state(&self.wire);
+        let row = crate::ai::session_state::context_row(goal.as_ref(), plan.as_deref());
+        let context = crate::ai::session_state::CONTEXT_STATE;
+        let existing = self
+            .wire
+            .iter()
+            .position(|message| message["context"] == context);
+        match (existing, row) {
+            (Some(index), Some(row)) => self.wire[index] = row,
+            (Some(index), None) => {
+                self.wire.remove(index);
+                if let Some(ask) = self.ask.as_mut()
+                    && *ask > index
+                {
+                    *ask -= 1;
+                }
+            }
+            (None, Some(row)) => {
+                let head = self
+                    .wire
+                    .iter()
+                    .take_while(|message| message["role"] == "system")
+                    .count();
+                self.wire.insert(head, row);
+                if let Some(ask) = self.ask.as_mut()
+                    && *ask >= head
+                {
+                    *ask += 1;
+                }
+            }
+            (None, None) => {}
+        }
     }
 
     async fn deliver_steering(&mut self, boundary: steering::Boundary) -> Result<bool, Ending> {
@@ -707,6 +752,7 @@ impl<H: Host> Turn<'_, H> {
             declined: false,
             mutates: gate.modifies,
             deferred: false,
+            rows: Vec::new(),
         };
         let args = match call.args() {
             Ok(args) => args,
@@ -778,6 +824,30 @@ impl<H: Host> Turn<'_, H> {
             } else {
                 json!({ "active": true, "label": self.spec.label, "note": "this turn is already one transaction" })
             };
+            return Ok(ran);
+        }
+        if name == PLAN_UPDATE {
+            if let Some(selection) = self.spec.toolsets.as_deref()
+                && !crate::ai::toolsets::offers(name, selection)
+            {
+                ran.result =
+                    crate::ai::skill_hints::refusal(&crate::ai::toolsets::refusal(name, selection));
+                ran.failed = true;
+                return Ok(ran);
+            }
+            match crate::ai::session_state::plan_update_states(&args) {
+                Ok(states) => {
+                    ran.rows = states
+                        .iter()
+                        .map(crate::ai::session_state::state_row)
+                        .collect();
+                    ran.result = json!({ "status": "ok" });
+                }
+                Err(error) => {
+                    ran.result = json!({ "error": error });
+                    ran.failed = true;
+                }
+            }
             return Ok(ran);
         }
         if name == "edit_subtree" {
@@ -991,6 +1061,7 @@ impl<H: Host> Turn<'_, H> {
             declined,
             mutates,
             deferred,
+            rows,
         } = ran;
         // Typed edit facts are local message data: they describe the row in
         // the panel and are never part of the tool result the model reads.
@@ -1063,6 +1134,7 @@ impl<H: Host> Turn<'_, H> {
         if name == "audio_compare" && self.spec.audio.is_some() {
             deliveries.extend(wire::delivered_comparison(&result));
         }
+        deliveries.extend(rows);
         Ok(())
     }
 

@@ -567,3 +567,81 @@ fn a_compaction_keeps_the_newest_tool_surface_notice() {
     );
     assert_eq!(turns::check_pairing(&compaction.messages), Ok(()));
 }
+
+#[test]
+fn a_compaction_keeps_the_newest_goal_and_plan_rows() {
+    use crate::ai::session_state::{
+        PlanItem, PlanStatus, SessionState, StateAuthor, current_state, state_row,
+    };
+    let goal = |text: &str| {
+        state_row(&SessionState::GoalSet {
+            text: text.into(),
+            author: StateAuthor::Person,
+        })
+    };
+    let plan = |text: &str| {
+        state_row(&SessionState::PlanSet {
+            items: vec![PlanItem {
+                text: text.into(),
+                status: PlanStatus::Pending,
+            }],
+        })
+    };
+    let mut view = vec![goal("first"), user("before"), plan("first plan")];
+    view.extend(rounds());
+    view.push(goal("second"));
+    view.push(plan("second plan"));
+    view.push(user("now the bass"));
+    let compaction = plan_compaction(&view, 0, &facts(), "s").unwrap();
+    let (goal, plan) = current_state(&compaction.messages);
+    assert_eq!(goal.unwrap().text, "second");
+    assert_eq!(plan.unwrap()[0].text, "second plan");
+    let states: Vec<&Value> = compaction
+        .messages
+        .iter()
+        .filter(|row| message_protocol::state(row).is_some())
+        .collect();
+    assert_eq!(states.len(), 2, "{:?}", compaction.messages);
+    assert!(is_compaction_summary(&compaction.messages[0]));
+    assert_eq!(turns::check_pairing(&compaction.messages), Ok(()));
+    assert!(strips_replay_state(&compaction.messages));
+}
+
+#[test]
+fn a_size_trim_keeps_the_goal_and_plan_beside_the_summary() {
+    use crate::ai::session_state::{SessionState, StateAuthor, current_state, state_row};
+    let mut view = rounds();
+    view.push(user("now the bass"));
+    let summary = plan_compaction(&view, 0, &facts(), "s")
+        .unwrap()
+        .messages
+        .first()
+        .cloned()
+        .unwrap();
+    let goal = state_row(&SessionState::GoalSet {
+        text: "finish".into(),
+        author: StateAuthor::Person,
+    });
+    let plan = state_row(&SessionState::PlanSet { items: Vec::new() });
+    let mut conversation = vec![
+        summary,
+        goal.clone(),
+        plan.clone(),
+        user("the ask after the goal"),
+    ];
+    let big = "x".repeat(4_000);
+    for step in 0..20 {
+        let id = format!("t{step}");
+        conversation.push(round(&[&id]));
+        conversation.push(json!({"role":"tool","tool_call_id":id,"content":big}));
+    }
+    let kept = newest_that_fit(&conversation, 30_000);
+    assert!(kept.len() < conversation.len(), "the trim drops rows");
+    assert!(is_compaction_summary(&kept[0]));
+    assert!(kept.contains(&goal), "the goal stays beside the summary");
+    assert!(kept.contains(&plan), "the plan stays beside the summary");
+    let (goal, plan) = current_state(&kept);
+    assert_eq!(goal.unwrap().text, "finish");
+    assert_eq!(plan, Some(Vec::new()));
+    assert_eq!(turns::check_pairing(&kept), Ok(()));
+}

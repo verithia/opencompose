@@ -167,5 +167,6 @@ tool_ids! {
     SessionsDelete => ("sessions_delete", "sessions", Panel::Excluded("removes a saved conversation"), false, Automatic, Backend),
     SessionsCompact => ("sessions_compact", "sessions", Panel::Enabled, false, Automatic, Backend),
     EditSubtree => ("edit_subtree", "project", Panel::Enabled, false, Automatic, PanelLocal),
+    PlanUpdate => ("plan_update", "sessions", Panel::Enabled, false, Automatic, PanelLocal),
     PluginIndexStatus => ("plugin_index_status", "unmapped", Panel::Excluded("not enabled for the built-in panel"), false, Automatic, HiddenBackend),
 }

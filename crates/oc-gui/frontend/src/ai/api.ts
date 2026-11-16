@@ -308,6 +308,11 @@ export function setSessionPermission(id: string, permission: PermissionMode) {
   return invoke<void>("sessions_set_permission", { id, permission });
 }
 
+/** Sets the conversation's goal, or clears it with `null`. */
+export function setSessionGoal(id: string, text: string | null) {
+  return invoke<SessionMeta>("sessions_set_goal", { id, text });
+}
+
 export function compactSession(id: string) {
   return invoke<CompactionResult>("sessions_compact", { id });
 }

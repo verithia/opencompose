@@ -9,7 +9,7 @@ analysis, compare, transaction and plugin program/state tools are enabled in
 the panel.
 
 The MCP catalog has 126 tools. The panel enables 98 of them and adds its local
-`edit_subtree` tool, for 99 panel tools.
+`edit_subtree` and `plan_update` tools, for 100 panel tools.
 
 Use `effects_set_bypass` for a reversible comparison of an existing insert.
 Read its original bypass state and chain index with `project_extract`. Pass
@@ -94,6 +94,18 @@ notice names the tools added and removed, in sorted order, and the permission
 mode it moved from and to when that changed. It tells the model not to call a
 removed tool again. A fold or a compaction keeps the newest tool-surface notice,
 so the model never calls a tool the turn does not offer.
+
+The conversation's goal and plan are typed `session_state` rows rather than
+prompt text. `plan_update` is a panel-local tool in the `dsl-edit` set: it takes
+an optional `goal` (a string, or `null` to clear it) and optional `items`, each
+with `text` and a `status` of `pending`, `in_progress` or `done`. The loop
+validates the bounds, writes one row for each changed part as a round delivery,
+and answers `{"status": "ok"}`. The newest goal row and the newest plan row are
+the current state, so a rewind drops their effect and a fork copies it. Every
+request carries one short derived row after its system rows naming the current
+goal and plan; the loop rebuilds it after a `plan_update` call and never saves
+it. A fold keeps the newest goal and plan rows, and a compaction or a size trim
+re-inserts them after its summary.
 
 `POST /ai/turn` runs one whole agent turn on the same backend loop the panel
 uses. Its body carries `provider` (required, non-empty, at most 100

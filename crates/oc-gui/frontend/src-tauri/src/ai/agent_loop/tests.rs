@@ -431,6 +431,60 @@ fn the_turn_outcome_carries_the_committed_batches_changes_once() {
 }
 
 #[test]
+fn plan_update_records_typed_rows_and_refreshes_the_derived_context_row() {
+    let call = json!({
+        "role": "assistant",
+        "content": null,
+        "tool_calls": [{
+            "id": "p1",
+            "type": "function",
+            "function": {
+                "name": "plan_update",
+                "arguments": json!({
+                    "goal": "finish the bridge",
+                    "items": [
+                        {"text": "write", "status": "done"},
+                        {"text": "mix", "status": "in_progress"}
+                    ]
+                }).to_string()
+            }
+        }]
+    });
+    let fake = Fake::new(vec![call, json!({"role":"assistant","content":"Planned."})]);
+    let outcome = block_on(fake.run(SessionPermission::Write));
+    assert_eq!((outcome.text.as_str(), outcome.failed), ("Planned.", false));
+    let saved = fake.saved();
+    assert_eq!(check_pairing(&saved), Ok(()));
+    let state_kinds: Vec<&str> = saved
+        .iter()
+        .filter_map(|row| row["message_meta"]["state"]["kind"].as_str())
+        .collect();
+    assert_eq!(state_kinds, ["goal_set", "plan_set"]);
+    let (goal, plan) = crate::ai::session_state::current_state(&saved);
+    assert_eq!(goal.unwrap().text, "finish the bridge");
+    assert_eq!(plan.unwrap().len(), 2);
+    assert!(
+        saved
+            .iter()
+            .all(|row| row["context"] != crate::ai::session_state::CONTEXT_STATE),
+        "the derived row is never saved"
+    );
+    // The next request carries the refreshed row after its system prompt.
+    let world = fake.world();
+    let second = &world.sent[1];
+    let context = second
+        .iter()
+        .position(|row| row["context"] == crate::ai::session_state::CONTEXT_STATE)
+        .expect("the next round carries the state");
+    assert_eq!(second[context]["role"], "user");
+    assert_eq!(
+        second[context]["content"],
+        "Goal: finish the bridge\nPlan:\n1. [done] write\n2. [in progress] mix"
+    );
+    assert!(context < crate::ai::agent_loop::wire::turn_ask(second).unwrap());
+}
+
+#[test]
 fn cancel_mid_round_keeps_completed_results_and_marks_the_rest_not_run() {
     let fake = Fake::new(vec![round(&[
         ("a", "tracks_add"),

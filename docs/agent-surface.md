@@ -43,10 +43,11 @@ agent_api::dispatch  ◄──  POST /call, POST /mcp tools/call, panel calls
 
 <!-- tool-registry: mcp=126 panel=98 -->
 
-The catalog holds one entry per MCP tool. The built-in panel adds one
-panel-local tool: its handler lives in the frontend, not in `dispatch`, because
-it proposes a replacement for the user to accept, or applies it in the turn when
-the session has nobody to ask (see [Agent feedback loop](agent-loop.md)).
+The catalog holds one entry per MCP tool. The built-in panel adds two
+panel-local tools: their handlers live in the frontend, not in `dispatch`.
+`edit_subtree` proposes a replacement for the user to accept, or applies it in
+the turn when the session has nobody to ask; `plan_update` records the
+conversation's goal and plan (see [Agent feedback loop](agent-loop.md)).
 
 Tool areas: project and arrangement, tracks, presets, effects and devices,
 buses, transport, render, analysis, MIDI, plugins, content, undo and
@@ -54,7 +55,7 @@ transactions, skills, and system capability.
 
 ## What the panel may call
 
-`ToolId` metadata decides that, independently of the transport. The panel advertises only enabled tools and adds `edit_subtree`. A refusal names
+`ToolId` metadata decides that, independently of the transport. The panel advertises only enabled tools and adds `edit_subtree` and `plan_update`. A refusal names
 the reason the tool is excluded.
 
 The panel excludes what would escape it: reading or writing an arbitrary file

@@ -3,7 +3,7 @@ import { isChangeSet, type ChangeSet, type EditCause } from "../types/change";
 /** Local transcript semantics. These tags are never provider API fields. */
 export type MessageKind = "user" | "assistant" | "tool" | "application_result" | "round_budget"
   | "audition" | "comparison_reference" | "comparison_candidate" | "summary"
-  | "transaction_rollback" | "proposal_outcome" | "host_notice";
+  | "transaction_rollback" | "proposal_outcome" | "host_notice" | "session_state";
 export type BindCause = "chosen" | "moved";
 
 /** Who made an edit another conversation reports. */
@@ -28,6 +28,18 @@ export interface PermissionChange {
   from: SessionPermission;
   to: SessionPermission;
 }
+
+/** Who wrote a goal change. */
+export type StateAuthor = "person" | "agent";
+/** Where one plan step stands. */
+export type PlanStatus = "pending" | "in_progress" | "done";
+/** One step of a plan. */
+export interface PlanItem { text: string; status: PlanStatus }
+/** A typed goal or plan change. Only a `session_state` row carries one. */
+export type SessionState =
+  | { kind: "goal_set"; text: string; author: StateAuthor }
+  | { kind: "goal_cleared"; author: StateAuthor }
+  | { kind: "plan_set"; items: PlanItem[] };
 
 /** A typed host notice. Only a `host_notice` row carries one. */
 export type HostNotice =
@@ -65,6 +77,8 @@ export interface MessageMeta {
   steer_id?: string;
   /** The typed cause of a host notice; untyped notices carry none. */
   notice?: HostNotice;
+  /** The typed goal or plan change; only a `session_state` row carries one. */
+  state?: SessionState;
 }
 interface MessageLike {
   role: string;
@@ -106,6 +120,7 @@ const MESSAGE_KINDS: Readonly<Record<MessageKind, true>> = {
   transaction_rollback: true,
   proposal_outcome: true,
   host_notice: true,
+  session_state: true,
 };
 
 /** Validate an untrusted saved row against the exhaustive kind table. */
@@ -183,6 +198,50 @@ function outsideChange(value: unknown): OutsideChange | null {
   const cause = value.cause;
   if (cause !== undefined && cause !== "edit" && cause !== "conversation_revert") return null;
   return { author, ...(cause === undefined ? {} : { cause }), changes: value.changes };
+}
+
+/** Longest goal the store accepts. */
+const MAX_GOAL_CHARS = 600;
+/** Most plan items one plan may carry. */
+const MAX_PLAN_ITEMS = 32;
+/** Longest plan item text the store accepts. */
+const MAX_PLAN_ITEM_CHARS = 200;
+
+function stateAuthor(value: unknown): StateAuthor | null {
+  return value === "person" || value === "agent" ? value : null;
+}
+
+function planStatus(value: unknown): PlanStatus | null {
+  return value === "pending" || value === "in_progress" || value === "done" ? value : null;
+}
+
+function textWithin(value: unknown, max: number): string | null {
+  return typeof value === "string" && value.trim().length > 0 && [...value].length <= max ? value : null;
+}
+
+/** Validate an untrusted goal or plan change; unknown shapes read as none. */
+export function sessionState(value: unknown): SessionState | null {
+  if (!isRecord(value)) return null;
+  if (value.kind === "goal_cleared") {
+    const author = stateAuthor(value.author);
+    return author ? { kind: "goal_cleared", author } : null;
+  }
+  if (value.kind === "goal_set") {
+    const author = stateAuthor(value.author);
+    const text = textWithin(value.text, MAX_GOAL_CHARS);
+    return author !== null && text !== null ? { kind: "goal_set", text, author } : null;
+  }
+  if (value.kind !== "plan_set" || !Array.isArray(value.items) || value.items.length > MAX_PLAN_ITEMS) return null;
+  const items: PlanItem[] = [];
+  for (const entry of value.items) {
+    if (!isRecord(entry)) return null;
+    const text = textWithin(entry.text, MAX_PLAN_ITEM_CHARS);
+    const status = planStatus(entry.status);
+    if (text === null || status === null) return null;
+    items.push({ text, status });
+  }
+  if (items.filter(item => item.status === "in_progress").length > 1) return null;
+  return { kind: "plan_set", items };
 }
 
 /** Validate an untrusted typed notice; unknown kinds read as no notice. */
@@ -269,8 +328,10 @@ export function messageKind(message: MessageLike): MessageKind {
       || range.start_seconds < 0 || range.end_seconds <= range.start_seconds);
     const invalidNotice = meta.notice !== undefined
       && (meta.kind !== "host_notice" || hostNotice(meta.notice) === null);
+    const invalidState = meta.state !== undefined
+      && (meta.kind !== "session_state" || sessionState(meta.state) === null);
     if (meta.version !== 1 || !isMessageKind(meta.kind) || !compatible || invalidText || invalidRange
-      || invalidNotice || (summaryFields && meta.kind !== "summary") || (meta.audio_range && !isAuditionKind(meta.kind))) return structuralKind(message);
+      || invalidNotice || invalidState || (summaryFields && meta.kind !== "summary") || (meta.audio_range && !isAuditionKind(meta.kind))) return structuralKind(message);
     return meta.kind;
   }
   const content = message.content ?? "";

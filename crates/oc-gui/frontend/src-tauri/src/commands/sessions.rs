@@ -274,6 +274,14 @@ pub fn sessions_set_permission(
     store().set_permission(&id, permission)
 }
 
+/// Sets or clears this conversation's goal. `None` clears it. The change is
+/// one typed row, so it rewinds with the conversation; a change during an open
+/// round waits for the next admitted turn.
+#[tauri::command]
+pub fn sessions_set_goal(id: String, text: Option<String>) -> Result<SessionMeta, String> {
+    store().set_goal(&id, text.as_deref())
+}
+
 #[tauri::command]
 /// Delete one saved session.
 pub fn sessions_delete(id: String) -> Result<(), String> {
@@ -561,6 +569,16 @@ pub fn prepare_turn_for<R: tauri::Runtime>(
     outbound.insert(0, json!({"role": "system", "content": format!(
         "Authoritative current project state at request time: DSL sha256 {}; track count {}. Historical tool successes may have been rolled back or superseded. Inspect current project when continuing edits; do not assume historical mutations remain applied.", facts.dsl_digest, facts.track_count
     )}));
+    // The current goal and plan ride once, after the system rows. The row is
+    // derived from the saved state rows, so a rewind or a fork changes it.
+    let (goal, plan) = crate::ai::session_state::current_state(&outbound);
+    if let Some(row) = crate::ai::session_state::context_row(goal.as_ref(), plan.as_deref()) {
+        let head = outbound
+            .iter()
+            .take_while(|message| message["role"] == "system")
+            .count();
+        outbound.insert(head, row);
+    }
     if crate::ai::media::audio_supported(provider) {
         sessions::describe_audition_renders(store.root(), &mut outbound);
     } else {

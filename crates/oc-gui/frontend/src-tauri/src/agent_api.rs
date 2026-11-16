@@ -2702,7 +2702,7 @@ fn dispatch_tool(
     match id {
         ToolId::ListSkills | ToolId::ReadSkill => dispatch_skill(id, args)
             .ok_or_else(|| format!("No reference handler for '{}'", id.name()))?,
-        ToolId::EditSubtree => Err(format!("unknown tool '{}'", id.name())),
+        ToolId::EditSubtree | ToolId::PlanUpdate => Err(format!("unknown tool '{}'", id.name())),
         // ---- system -----------------------------------------------------
         ToolId::SystemCapabilities => {
             let _ = crate::agent_tools::misc::SystemCapabilitiesArgs::decode(args)

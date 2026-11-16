@@ -1268,5 +1268,15 @@
       "enabled": true
     },
     "handler": "panel_local"
+  },
+  {
+    "name": "plan_update",
+    "area": "sessions",
+    "mutation": false,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "panel_local"
   }
 ]

@@ -55,6 +55,7 @@ pub(crate) mod versions;
 #[path = "session_view.rs"]
 mod view;
 use super::host_notice::{BindCause, HostNotice, PendingBinding, ToolSurface};
+use super::session_state::{self, SessionState, StateAuthor};
 use crate::edit_history::HistoryMark;
 use crate::private_fs;
 pub use message_protocol::MessageKind;
@@ -159,6 +160,10 @@ pub struct SessionMeta {
     /// host notice before that turn's message.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_binding: Option<PendingBinding>,
+    /// A goal change a person made while the conversation had an open round.
+    /// The next admitted turn writes it before that turn's message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_state: Option<SessionState>,
     /// The project's history cursor after this conversation's previous turn,
     /// so the next turn can tell the model what changed outside it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -776,6 +781,7 @@ impl Store {
             workspace_key: key.clone(),
             project_path: project.map(|path| canonical_path(path).to_string_lossy().to_string()),
             pending_binding: None,
+            pending_state: None,
             history_mark: None,
             workspace: workspace.map(|path| canonical_dir(path).to_string_lossy().to_string()),
             // A fork keeps the mode the conversation was working under.
@@ -1020,6 +1026,49 @@ impl Store {
         let (dir, mut meta) = self.find(id)?;
         meta.permission = permission;
         meta.updated = now();
+        write_meta(&dir, &meta)?;
+        Ok(meta)
+    }
+
+    /// Records a person's goal change. Each call appends one `session_state`
+    /// row, so a rewind before it restores the previous goal. While the
+    /// conversation has an open round the change waits in the metadata: a row
+    /// may not follow calls that have no result yet, and the next admitted
+    /// turn writes it before that turn's message.
+    pub fn set_goal(&self, id: &str, text: Option<&str>) -> Result<SessionMeta, String> {
+        let state = match text.map(str::trim) {
+            None => SessionState::GoalCleared {
+                author: StateAuthor::Person,
+            },
+            Some("") => {
+                return Err("A goal needs some text.".into());
+            }
+            Some(text) => SessionState::GoalSet {
+                text: text.to_owned(),
+                author: StateAuthor::Person,
+            },
+        };
+        if !state.valid() {
+            return Err(format!(
+                "A goal is at most {} characters.",
+                session_state::MAX_GOAL_CHARS
+            ));
+        }
+        let _lock = self.mutation_lock()?;
+        let (dir, mut meta) = self.find(id)?;
+        let (view, _) = read_view(&dir)?;
+        let open_round = crate::ai::agent_loop::host::session_running(id)
+            || !turns::open_calls(&view).is_empty();
+        meta.updated = now();
+        if open_round {
+            meta.pending_state = Some(state);
+            write_meta(&dir, &meta)?;
+            return Ok(meta);
+        }
+        let row = session_state::state_row(&state);
+        append_records(&dir, &[turn_record(&now(), vec![row])])?;
+        let (view, _) = read_view(&dir)?;
+        meta.tokens = estimate_tokens(&view);
         write_meta(&dir, &meta)?;
         Ok(meta)
     }
@@ -1416,6 +1465,8 @@ impl Store {
         }
         let pending_binding = meta.pending_binding.take();
         meta_changed |= pending_binding.is_some();
+        let pending_state = meta.pending_state.take();
+        meta_changed |= pending_state.is_some();
         let (mut pending, _) = read_view(&dir)?;
         let mut filtered: Vec<Value> = incoming
             .iter()
@@ -1493,6 +1544,11 @@ impl Store {
             if let Some(row) = saved_message(&super::host_notice::notice_row(notice)) {
                 notice_rows.push(row);
             }
+        }
+        if let Some(state) = pending_state
+            && let Some(row) = saved_message(&session_state::state_row(&state))
+        {
+            notice_rows.push(row);
         }
         let notice_added = !notice_rows.is_empty();
         for (offset, row) in notice_rows.into_iter().enumerate() {
@@ -2922,7 +2978,7 @@ fn plan_compaction(
         messages.push(summary_row);
         // The bound project stays beside the summary: every later path in the
         // conversation is relative to it.
-        messages.extend(newest_pinned_notices(view).into_iter().map(|(_, row)| row));
+        messages.extend(newest_pinned_rows(view).into_iter().map(|(_, row)| row));
         // Preserve the latest labeled pair in a retained round. For other
         // auditions use a single row to keep replay bounded.
         for (start, end) in retained {
@@ -3783,7 +3839,7 @@ fn newest_that_fit(view: &[Value], budget: u64) -> Vec<Value> {
             + 1
     };
     let summary = view.iter().rposition(is_compaction_summary);
-    let pinned = newest_pinned_notices(view);
+    let pinned = newest_pinned_rows(view);
     let reserved = summary.map_or(0, |index| size_of(&view[index]))
         + pinned.iter().map(|(_, row)| size_of(row)).sum::<u64>();
     let mut kept: Vec<Value> = Vec::new();
@@ -3874,25 +3930,48 @@ pub fn binding_status(meta: &SessionMeta, open: Option<&Path>) -> BindingStatus 
     }
 }
 
-/// The view indexes of the newest pinned notice of every pinned kind.
+/// The typed goal or plan change a saved row carries, if any.
+pub(crate) fn saved_session_state(message: &Value) -> Option<SessionState> {
+    message_protocol::state(message)
+}
+
+/// The view indexes of the newest pinned notice of every pinned kind, plus the
+/// newest goal and plan rows: a fold keeps the state the model needs to read
+/// later paths and the plan it is following.
 pub fn pinned_notice_indices(view: &[Value]) -> Vec<usize> {
-    newest_pinned_notices(view)
+    newest_pinned_rows(view)
         .into_iter()
         .map(|(index, _)| index)
         .collect()
 }
 
-/// The newest saved row of every pinned notice kind, with its view index, in
-/// the view's order.
-fn newest_pinned_notices(view: &[Value]) -> Vec<(usize, Value)> {
-    let mut seen = std::collections::HashSet::new();
+/// The newest saved row of every pinned notice kind and of the goal and plan,
+/// with its view index, in the view's order.
+fn newest_pinned_rows(view: &[Value]) -> Vec<(usize, Value)> {
+    let mut seen_notice = std::collections::HashSet::new();
+    let mut goal = false;
+    let mut plan = false;
     let mut indices = Vec::new();
     for (index, message) in view.iter().enumerate().rev() {
-        let Some(notice) = message_protocol::notice(message) else {
+        if let Some(notice) = message_protocol::notice(message) {
+            if notice.pinned() && seen_notice.insert(notice.kind()) {
+                indices.push(index);
+            }
+            continue;
+        }
+        let Some(state) = message_protocol::state(message) else {
             continue;
         };
-        if notice.pinned() && seen.insert(notice.kind()) {
-            indices.push(index);
+        match state {
+            SessionState::GoalSet { .. } | SessionState::GoalCleared { .. } if !goal => {
+                goal = true;
+                indices.push(index);
+            }
+            SessionState::PlanSet { .. } if !plan => {
+                plan = true;
+                indices.push(index);
+            }
+            _ => {}
         }
     }
     indices.sort_unstable();
@@ -6536,6 +6615,175 @@ mod tests {
             .unwrap();
         assert_eq!(store.load(&parent.id).unwrap().messages.len(), 2);
         assert_eq!(store.load(&fork.id).unwrap().messages.len(), 3);
+        std::fs::remove_dir_all(store.root().parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn a_goal_is_one_typed_row_that_a_fork_copies() {
+        let (store, project) = fixture("goal-row");
+        let place = workspace(&project);
+        let parent = store
+            .create(Some(&place), Some(&project), Some("parent"), None)
+            .unwrap();
+        let context = facts(&project);
+        store
+            .prepare(
+                &parent.id,
+                &[user("first")],
+                Some(&project),
+                crate::ai::sessions::PrepareContext {
+                    snapshot: None,
+                    history: None,
+                    overhead: 0,
+                    context_length: 0,
+                    facts: &context,
+                    provider: "p",
+                    model: "m",
+                    outside: None,
+                    surface: None,
+                },
+            )
+            .unwrap();
+        store
+            .record_reply(&parent.id, &reply("on it"), &context, "p", "m")
+            .unwrap();
+        store
+            .set_goal(&parent.id, Some("finish the bridge"))
+            .unwrap();
+        let view = store.view(&parent.id).unwrap();
+        let (goal, _) = crate::ai::session_state::current_state(&view);
+        assert_eq!(goal.unwrap().text, "finish the bridge");
+        assert_eq!(
+            view.iter()
+                .filter(|row| message_protocol::state(row).is_some())
+                .count(),
+            1
+        );
+
+        let fork = store
+            .create(
+                Some(&place),
+                Some(&project),
+                None,
+                Some(Fork {
+                    parent: &parent.id,
+                    through: None,
+                }),
+            )
+            .unwrap();
+        let (goal, _) = crate::ai::session_state::current_state(&store.view(&fork.id).unwrap());
+        assert_eq!(goal.unwrap().text, "finish the bridge");
+
+        // A cut before the goal row copies the conversation without it.
+        let before_goal = store
+            .create(
+                Some(&place),
+                Some(&project),
+                None,
+                Some(Fork {
+                    parent: &parent.id,
+                    through: Some(2),
+                }),
+            )
+            .unwrap();
+        let (goal, _) =
+            crate::ai::session_state::current_state(&store.view(&before_goal.id).unwrap());
+        assert!(goal.is_none());
+        std::fs::remove_dir_all(store.root().parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn a_goal_set_during_an_open_round_waits_for_the_next_turn() {
+        let (store, project) = fixture("goal-pending");
+        let place = workspace(&project);
+        let session = store
+            .create(Some(&place), Some(&project), Some("pending"), None)
+            .unwrap();
+        let context = facts(&project);
+        store
+            .prepare(
+                &session.id,
+                &[user("first")],
+                Some(&project),
+                crate::ai::sessions::PrepareContext {
+                    snapshot: None,
+                    history: None,
+                    overhead: 0,
+                    context_length: 0,
+                    facts: &context,
+                    provider: "p",
+                    model: "m",
+                    outside: None,
+                    surface: None,
+                },
+            )
+            .unwrap();
+        store
+            .append_turn(
+                &session.id,
+                &[json!({
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "open-1",
+                        "type": "function",
+                        "function": {"name": "tracks_list", "arguments": "{}"}
+                    }]
+                })],
+                None,
+            )
+            .unwrap();
+        store.set_goal(&session.id, None).unwrap();
+        assert!(
+            store
+                .view(&session.id)
+                .unwrap()
+                .iter()
+                .all(|row| { message_protocol::state(row).is_none() }),
+            "a state row may not follow an open round"
+        );
+        assert_eq!(
+            store.find(&session.id).unwrap().1.pending_state,
+            Some(SessionState::GoalCleared {
+                author: StateAuthor::Person
+            })
+        );
+        // The next admission closes the open round and writes the state row
+        // before the new message.
+        store
+            .prepare(
+                &session.id,
+                &[user("second")],
+                Some(&project),
+                crate::ai::sessions::PrepareContext {
+                    snapshot: None,
+                    history: None,
+                    overhead: 0,
+                    context_length: 0,
+                    facts: &context,
+                    provider: "p",
+                    model: "m",
+                    outside: None,
+                    surface: None,
+                },
+            )
+            .unwrap();
+        let (_, meta) = store.find(&session.id).unwrap();
+        assert!(meta.pending_state.is_none());
+        let view = store.view(&session.id).unwrap();
+        let states: Vec<usize> = view
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| message_protocol::state(row).is_some())
+            .map(|(index, _)| index)
+            .collect();
+        assert_eq!(states.len(), 1);
+        let second = view
+            .iter()
+            .position(|row| row["content"] == "second")
+            .unwrap();
+        assert!(states[0] < second, "the state row leads the new message");
+        assert_eq!(turns::check_pairing(&view), Ok(()));
         std::fs::remove_dir_all(store.root().parent().unwrap()).unwrap();
     }
 

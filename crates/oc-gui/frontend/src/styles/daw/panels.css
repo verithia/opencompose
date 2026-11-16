@@ -3096,6 +3096,56 @@ button:disabled {
   cursor: pointer;
 }
 
+/* The plan the conversation follows, above its goal. */
+.ai-plan-strip {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0 8px 4px;
+  padding: 4px 8px;
+  list-style: none;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.ai-plan-item {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.ai-plan-index {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+}
+
+.ai-plan-status {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 9.5px;
+}
+
+.ai-plan-item.done .ai-plan-text {
+  text-decoration: line-through;
+  color: var(--text-muted);
+}
+
+.ai-plan-item.in_progress .ai-plan-status { color: var(--accent); }
+
+.ai-plan-text {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* The staged goal the conversation is working toward. */
 .ai-goal-chip {
   display: flex;
@@ -3134,6 +3184,15 @@ button:disabled {
 }
 
 .ai-goal-clear:hover { color: var(--text-primary); }
+
+/* A saved goal or plan change, shown as a small host row. */
+.ai-state-row {
+  margin: 2px 8px;
+  padding: 2px 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+  border-left: 2px solid var(--border-light);
+}
 
 /* The endpoint is a full request URL, not a base URL; the hint is allowed to
    wrap because the path suffix is the part people miss. */

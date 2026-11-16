@@ -101,6 +101,7 @@ ${capabilities.nativeToolCalling ? "Use the provided native function tools, neve
 ${toolDocs}
 ${skillDocs}
 ${workflow(tools, capabilities)}
+${planning(tools)}
 ${names(tools)}
 ${listening(capabilities, tools)}
 ${approvals(tools)}## Output format
@@ -205,6 +206,19 @@ function workflow(tools: ToolDef[], capabilities: ModelCapabilities): string {
   return `
 ## How to work
 Read the project, or the one subtree you are about to change, before editing. Make the change, then check it before claiming it worked: ${sense}.${skill} Search with \`providers\` and a small \`limit\`.
+`;
+}
+
+/**
+ * The goal and plan row is conversation state, not a project edit. State the
+ * one call that changes it only when the panel offers it.
+ */
+function planning(tools: ToolDef[]): string {
+  if (!tools.some((tool) => tool.name === "plan_update")) return "";
+  return `
+## Planning
+The request carries the conversation's current goal and plan. Change them with \`plan_update\`: pass \`goal\` and/or \`items\` (each with \`text\` and a \`status\` of \`pending\`, \`in_progress\` or \`done\`; at most one is in progress), and pass \`goal: null\` or an empty \`items\` list to clear one. Keep the plan current instead of restating it in prose.
+
 `;
 }
 

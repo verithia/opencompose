@@ -1,11 +1,13 @@
 import { For, Show } from "solid-js";
 import type { ProjectReference } from "../ai/references";
+import type { PlanItem } from "../ai/messageProtocol";
 import { i18n, type I18nKey } from "../stores/i18n";
 import { useTooltip } from "./Tooltip";
 
 export function AiComposer(props: {
   blockedNotice: I18nKey | null;
   goal: string;
+  plan: readonly PlanItem[];
   onClearGoal: () => void;
   commands: readonly { name: string; summary: I18nKey }[];
   commandIndex: number;
@@ -40,6 +42,20 @@ export function AiComposer(props: {
       <Show when={props.blockedNotice}>
         <div class="ai-send-blocked"><small>{i18n.t(props.blockedNotice!)}</small></div>
       </Show>
+      <Show when={props.plan.length > 0}>
+        <ol class="ai-plan-strip" aria-label={i18n.t("ai.plan.label")}>
+          <For each={props.plan}>
+            {(item, index) => (
+              <li class={`ai-plan-item ${item.status}`}>
+                <span class="ai-plan-index">{index() + 1}.</span>
+                <span class="ai-plan-status">{i18n.t(`ai.plan.status.${item.status}` as I18nKey)}</span>
+                <span class="ai-plan-text selectable">{item.text}</span>
+              </li>
+            )}
+          </For>
+        </ol>
+      </Show>
+
       <Show when={props.goal}>
         <div class="ai-goal-chip">
           <span class="ai-goal-label">{i18n.t("ai.goal.label")}</span>

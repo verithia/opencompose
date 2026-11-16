@@ -285,6 +285,7 @@ pub fn run_with_options(path: Option<String>, diag: DiagOptions) {
             commands::sessions_version,
             commands::sessions_rename,
             commands::sessions_set_permission,
+            commands::sessions_set_goal,
             commands::sessions_delete,
             commands::sessions_compact,
             // Workspaces

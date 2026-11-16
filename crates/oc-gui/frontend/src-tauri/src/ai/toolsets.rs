@@ -39,7 +39,7 @@ const BUNDLED: &[(&str, &str, &str, &[ToolId], bool)] = &[
     (
         "dsl-edit",
         "DSL edit",
-        "Read a subtree and propose one whole-subtree replacement",
+        "Read a subtree, propose one whole-subtree replacement, and keep the goal and plan",
         &[
             ToolId::ProjectGet,
             ToolId::PictureTimecode,
@@ -50,6 +50,7 @@ const BUNDLED: &[(&str, &str, &str, &[ToolId], bool)] = &[
             ToolId::ProjectContext,
             ToolId::ProjectGenerateContext,
             ToolId::EditSubtree,
+            ToolId::PlanUpdate,
             ToolId::ListSkills,
             ToolId::ReadSkill,
         ],
@@ -540,7 +541,7 @@ mod tests {
         sorted.sort_unstable();
         sorted.dedup();
         assert_eq!(sorted.len(), everything.len());
-        assert_eq!(everything.last().map(String::as_str), Some("edit_subtree"));
+        assert_eq!(everything.last().map(String::as_str), Some("plan_update"));
     }
 
     #[test]

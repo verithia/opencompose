@@ -93,19 +93,55 @@ pub fn is_panel_tool(name: &str) -> bool {
 
 /// Tools whose handler lives in the panel frontend, not in `agent_api::dispatch`.
 pub fn local_tools() -> Vec<ToolSpec> {
-    vec![ToolSpec {
-        id: ToolId::EditSubtree,
-        description: "Propose one complete subtree replacement. A session with a user asks for acceptance; a session with nobody to ask applies it in the same turn, as one undo entry.",
-        schema: json!({
-            "type": "object",
-            "properties": {
-                "path": { "type": "string", "description": "OCP subtree path, e.g. project or track:bass" },
-                "new_dsl": { "type": "string" }
-            },
-            "required": ["path", "new_dsl"],
-            "additionalProperties": false
-        }),
-    }]
+    vec![
+        ToolSpec {
+            id: ToolId::EditSubtree,
+            description: "Propose one complete subtree replacement. A session with a user asks for acceptance; a session with nobody to ask applies it in the same turn, as one undo entry.",
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "OCP subtree path, e.g. project or track:bass" },
+                    "new_dsl": { "type": "string" }
+                },
+                "required": ["path", "new_dsl"],
+                "additionalProperties": false
+            }),
+        },
+        ToolSpec {
+            id: ToolId::PlanUpdate,
+            description: "Record the goal this conversation works toward and the plan it follows. Omit goal or items to leave that part unchanged; pass goal: null or an empty items list to clear it. At most one item may be in progress.",
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "goal": {
+                        "type": ["string", "null"],
+                        "maxLength": crate::ai::session_state::MAX_GOAL_CHARS,
+                        "description": "The goal, or null to clear it"
+                    },
+                    "items": {
+                        "type": "array",
+                        "maxItems": crate::ai::session_state::MAX_PLAN_ITEMS,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "text": {
+                                    "type": "string",
+                                    "maxLength": crate::ai::session_state::MAX_PLAN_ITEM_CHARS
+                                },
+                                "status": {
+                                    "type": "string",
+                                    "enum": ["pending", "in_progress", "done"]
+                                }
+                            },
+                            "required": ["text", "status"],
+                            "additionalProperties": false
+                        }
+                    }
+                },
+                "additionalProperties": false
+            }),
+        },
+    ]
 }
 
 /// Resolve a panel tool call to its DAW definition, or explain the refusal.
@@ -1611,7 +1647,7 @@ mod tests {
         assert_eq!(excluded, 28);
         let unique: std::collections::HashSet<_> = panel_daw_names().into_iter().collect();
         assert_eq!(unique.len(), 98);
-        assert_eq!(panel_tools_for(None).len(), 99);
+        assert_eq!(panel_tools_for(None).len(), 100);
     }
 
     /// The panel loop groups a turn by opening one transaction around its
@@ -1636,6 +1672,7 @@ mod tests {
             // must not open a new transaction for the call that discards one.
             ("transaction_rollback", false),
             ("edit_subtree", false),
+            ("plan_update", false),
         ] {
             assert_eq!(find(name)["mutation"], json!(mutation), "{name}");
         }
@@ -1886,11 +1923,13 @@ mod tests {
 
     #[test]
     fn panel_local_tools_are_not_dispatched_and_skills_are() {
-        assert!(
-            panel_tool("edit_subtree")
-                .unwrap_err()
-                .contains("handled inside the panel")
-        );
+        for name in ["edit_subtree", "plan_update"] {
+            assert!(
+                panel_tool(name)
+                    .unwrap_err()
+                    .contains("handled inside the panel")
+            );
+        }
         for name in ["list_skills", "read_skill"] {
             assert!(panel_tool(name).is_ok(), "{name} must reach the dispatcher");
             assert!(
@@ -1899,11 +1938,13 @@ mod tests {
                     .any(|tool| tool["name"] == name)
             );
         }
-        assert!(
-            panel_tools_for(None)
-                .iter()
-                .any(|tool| tool["name"] == "edit_subtree")
-        );
+        for name in ["edit_subtree", "plan_update"] {
+            assert!(
+                panel_tools_for(None)
+                    .iter()
+                    .any(|tool| tool["name"] == name)
+            );
+        }
     }
 
     #[test]

@@ -148,7 +148,8 @@ The **AI** sidebar tab is a chat client with the same tools, minus the ones that
 would escape the panel.
 
 - It advertises every catalog tool the panel policy enables, plus the
-  panel-local `edit_subtree`. The enabled set follows the catalog.
+  panel-local `edit_subtree` and `plan_update`. The enabled set follows the
+  catalog.
 - Excluded from the panel: plugin scan/load/install/sidecar-state and native
   plugin windows, content-library writes, `render_offline` and `render_stems`,
   host audio device configuration, device-level mute, tools that list filesystem
@@ -162,6 +163,12 @@ would escape the panel.
   the turn's batch. A headless turn with nobody to ask applies a validated
   replacement itself in the same turn (see
   [Agent feedback loop](../agent-loop.md)).
+- Type `/goal <text>` to set the goal for the conversation, or use the chip's
+  clear button to remove it. The goal and the plan are saved with the
+  conversation: the model reads them every round, the composer shows the goal
+  and a plan strip, and the agent updates them through `plan_update`. Rewinding
+  before a goal or plan change restores the earlier one, and a fork keeps the
+  state it copied.
 - A turn is limited to sixty-four model rounds and thirty-two tool calls per
   round; a turn that reaches the round cap commits the edits it applied.
 - Provider settings require HTTPS, except on loopback. Keys are stored in the OS

@@ -52,6 +52,35 @@ describe("versioned local message semantics", () => {
     expect(rows[1].checkpoint).toBe(true);
   });
 
+  it("reads a typed goal and plan only on a session_state row", () => {
+    const goal = {
+      role: "user", content: "Goal: finish",
+      message_meta: { version: 1, kind: "session_state", state: { kind: "goal_set", text: "finish", author: "person" } },
+    } as WireMessage;
+    const plan = {
+      role: "user", content: "Plan",
+      message_meta: {
+        version: 1, kind: "session_state",
+        state: { kind: "plan_set", items: [{ text: "write", status: "done" }] },
+      },
+    } as WireMessage;
+    expect(messageKind(goal)).toBe("session_state");
+    const rows = restoredTranscript([goal, plan]);
+    expect(rows.map(row => row.state?.kind)).toEqual(["goal_set", "plan_set"]);
+    // The same value on another kind is refused and falls back to the role.
+    expect(messageKind({ ...goal, message_meta: { ...goal.message_meta!, kind: "user" } } as WireMessage)).toBe("user");
+    expect(messageKind({
+      ...goal,
+      message_meta: {
+        version: 1, kind: "session_state",
+        state: { kind: "plan_set", items: [
+          { text: "one", status: "in_progress" },
+          { text: "two", status: "in_progress" },
+        ] },
+      },
+    } as WireMessage)).toBe("user");
+  });
+
   it("still reads untagged legacy notices and summaries", () => {
     expect(messageKind({ role: "user", content: "You have 3 tool rounds left in this turn." })).toBe("round_budget");
     expect(messageKind({ role: "user", content: "Conversation summary written yesterday." })).toBe("summary");
