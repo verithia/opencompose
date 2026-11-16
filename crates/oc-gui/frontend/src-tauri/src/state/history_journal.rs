@@ -486,11 +486,9 @@ impl AppStateInner {
                 return;
             }
         };
-        let head = journal.head().and_then(|head| {
-            let mut project = oc_dsl::parse(head).ok()?;
-            oc_dsl::instruments::apply_defaults(&mut project);
-            Some(project)
-        });
+        let head = journal
+            .head()
+            .and_then(|head| crate::commands::installed_project(head).ok());
         if head.is_none() && journal.len() > 0 {
             // Patches without the document they apply to cannot be undone.
             log::warn!("[history] the history has no usable document; starting a new one");

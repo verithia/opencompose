@@ -222,6 +222,42 @@ fn a_file_changed_outside_gets_one_bridging_entry() {
 }
 
 #[test]
+fn a_file_without_a_version_header_reopens_without_a_bridge() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = opened(dir.path(), SOURCE);
+    let path = project_file(dir.path());
+    {
+        let mut inner = state.lock_inner();
+        set_tempo(&mut inner, 132.0);
+        // A restored snapshot can omit the version; the history records the
+        // document exactly as it is installed.
+        let old = inner.project.clone();
+        inner.project.ocp_version = None;
+        crate::commands::shared::resync_with_undo(
+            &mut inner,
+            old,
+            UndoEdit::new("revert conversation", UndoScope::Project),
+        )
+        .unwrap();
+        assert!(!inner.dsl_source.contains("@ocp"));
+        std::fs::write(&path, &inner.dsl_source).unwrap();
+        inner.sync_history();
+    }
+    drop(state);
+    let source = std::fs::read_to_string(&path).unwrap();
+    let reopened = AppState::new();
+    let mut inner = reopened.lock_inner();
+    crate::commands::open_project(&mut inner, &source, Some(path)).unwrap();
+    let page = inner.undo.history_page(None, 64).unwrap();
+    assert_eq!((page.total, page.applied), (2, 2));
+    assert!(
+        page.entries
+            .iter()
+            .all(|entry| entry.author != Author::Outside)
+    );
+}
+
+#[test]
 fn an_unchanged_file_reopens_without_a_bridge() {
     let dir = tempfile::tempdir().unwrap();
     let state = opened(dir.path(), SOURCE);

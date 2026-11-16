@@ -215,11 +215,20 @@ pub(crate) struct ProjectText {
 pub(crate) fn parse_project_source(source: String) -> Result<(Project, ProjectText), String> {
     let parsed = oc_dsl::parse(&source).map_err(|e| format!("Parse error: {}", e))?;
     let mut project = parsed.clone();
-    // Upgrade: set version if missing
     if project.ocp_version.is_none() {
         project.ocp_version = Some(oc_dsl::DSL_VERSION.to_string());
     }
     Ok((project, ProjectText { source, parsed }))
+}
+
+/// The document a project text installs as: the parse with the added version
+/// and the injected defaults the loader applies. The history compares its
+/// recorded document through the same steps, so a file that reopens unchanged
+/// never reads as an edit made outside the app.
+pub(crate) fn installed_project(source: &str) -> Result<Project, String> {
+    let (mut project, _) = parse_project_source(source.to_string())?;
+    oc_dsl::instruments::apply_defaults(&mut project);
+    Ok(project)
 }
 
 pub(crate) fn begin_project_load(state: &AppState) -> u64 {
