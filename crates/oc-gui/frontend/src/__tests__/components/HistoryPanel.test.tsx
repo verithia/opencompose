@@ -7,7 +7,10 @@ import { render, fireEvent, waitFor } from "@solidjs/testing-library";
 import type { HistoryPage, UndoHistoryEntry } from "../../stores/api";
 import { expectInvoked, invokeMock, makeSnapshot, TRANSPORT_STOPPED } from "../setup";
 import { store } from "../../stores/project";
-import { HistoryPanel } from "../../components/HistoryPanel";
+import { HistoryPanel, formatTimestamp } from "../../components/HistoryPanel";
+import { i18n } from "../../stores/i18n";
+import { formatSavedAt } from "../../stores/recovery";
+import { updatedLabel } from "../../ai/sessions";
 import { rememberSessionTitles } from "../../stores/sessionTitles";
 
 const dialog = vi.hoisted(() => ({ ask: vi.fn(async () => true) }));
@@ -143,5 +146,26 @@ describe("HistoryPanel", () => {
     fireEvent.click(getByText("Clear older history"));
     await waitFor(() => expect(dialog.ask).toHaveBeenCalledTimes(1));
     expect(invokeMock.mock.calls.some(([name]) => name === "history_clear_older")).toBe(false);
+  });
+});
+
+describe("times in the app's language", () => {
+  const at = Date.UTC(2026, 10, 16, 9, 30);
+  it("follows the selected locale rather than the system one", () => {
+    try {
+      i18n.setLocale("zh-Hans");
+      expect(formatTimestamp(at)).toBe(new Date(at).toLocaleString("zh-Hans", {
+        month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
+      }));
+      expect(formatSavedAt(at)).toBe(new Date(at).toLocaleString("zh-Hans"));
+      expect(updatedLabel(new Date(at).toISOString())).toBe(new Date(at).toLocaleString("zh-Hans", {
+        year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
+      }));
+      expect(formatTimestamp(at)).not.toBe(new Date(at).toLocaleString("en", {
+        month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
+      }));
+    } finally {
+      i18n.setLocale("en");
+    }
   });
 });

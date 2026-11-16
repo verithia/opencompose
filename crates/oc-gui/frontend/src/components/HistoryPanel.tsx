@@ -20,9 +20,10 @@ function scopeLabel(scope: UndoScope): string {
   return i18n.t(`history.scope.${scope}` as Parameters<typeof i18n.t>[0]);
 }
 
-function formatTimestamp(timestamp: number): string {
+/** An entry's time in the app's language, not the system's. */
+export function formatTimestamp(timestamp: number): string {
   if (!Number.isFinite(timestamp) || timestamp <= 0) return "";
-  return new Date(timestamp).toLocaleString([], {
+  return new Date(timestamp).toLocaleString(i18n.locale(), {
     month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
   });
 }

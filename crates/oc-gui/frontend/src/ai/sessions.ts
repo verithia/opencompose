@@ -270,5 +270,5 @@ export function directoryName(path: string | null | undefined): string | null {
 export function updatedLabel(updated: string): string {
   const at = new Date(updated);
   if (Number.isNaN(at.getTime())) return "";
-  return at.toLocaleString([], { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+  return at.toLocaleString(i18n.locale(), { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
 }

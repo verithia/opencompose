@@ -22,7 +22,7 @@ let prompted = false;
 
 /** Human-readable time for a copy; the row and the prompt share it. */
 export function formatSavedAt(savedAtMs: number): string {
-  return new Date(savedAtMs).toLocaleString();
+  return new Date(savedAtMs).toLocaleString(i18n.locale());
 }
 
 /**
