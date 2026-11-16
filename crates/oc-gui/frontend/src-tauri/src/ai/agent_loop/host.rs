@@ -493,10 +493,14 @@ impl Host for AppHost {
             self.incarnation.clone(),
             messages.to_vec(),
         );
-        let (dsl, project) = {
+        let (dsl, project, history) = {
             let state = self.state();
             let inner = state.lock_inner();
-            (inner.dsl_source.clone(), inner.file_path.clone())
+            (
+                inner.dsl_source.clone(),
+                inner.file_path.clone(),
+                crate::ai::sessions::HistoryAt::of(&inner),
+            )
         };
         self.blocking(move |_| {
             super::steering::record(
@@ -506,6 +510,7 @@ impl Host for AppHost {
                 incarnation.as_deref(),
                 &dsl,
                 project.as_deref(),
+                history.as_ref(),
             )
         })
         .await?
@@ -1066,28 +1071,99 @@ pub fn cancel(request_id: &str) -> bool {
     }
 }
 
-/// Restores the project to the snapshot a person's message was sent against
-/// and cuts the conversation just before that message, as one step: the
-/// project change is one undo entry, and a cut that fails puts the document
-/// back. Refused while any turn runs.
-pub fn revert_before(app: &AppHandle, session_id: &str, index: usize) -> Result<Value, String> {
+/// What a window asks a recall to do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RecallRequest {
+    pub index: usize,
+    /// Whether to move the project's history cursor back to the position the
+    /// message recorded, undoing the edits made since.
+    pub undo_edits: bool,
+    /// Whether the caller accepted undoing edits by other authors.
+    pub confirmed: bool,
+}
+
+/// One author whose edits a recall would undo, and how many.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RecallOther {
+    pub author: crate::edit_history::Author,
+    pub count: usize,
+}
+
+/// Why a recall did not run. The frontend localizes these; no prose crosses
+/// the command boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecallRefusal {
+    TurnRunning,
+    BatchOpen,
+    OtherProject,
+    NoRecordedPosition,
+    PositionCleared,
+    NotAPersonMessage,
+    ConversationChanged,
+}
+
+/// What the cut message gives back to the composer.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct RecallMessage {
+    pub content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub media: Option<Value>,
+}
+
+/// The answer to a recall.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum RecallOutcome {
+    Recalled {
+        kept: usize,
+        message: RecallMessage,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        snapshot: Option<Box<crate::commands::shared::ProjectSnapshot>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        unsaved: Option<String>,
+    },
+    NeedsConfirmation {
+        others: Vec<RecallOther>,
+    },
+    Refused {
+        reason: RecallRefusal,
+    },
+}
+
+impl RecallOutcome {
+    fn refused(reason: RecallRefusal) -> Self {
+        Self::Refused { reason }
+    }
+}
+
+/// Cuts the conversation just before a person's message and returns that
+/// message. With `undo_edits` it also moves the project's history cursor back
+/// to the position the message recorded, as one history jump: a redo brings
+/// the edits back, and no new entry is pushed. Refused while any turn runs.
+pub fn recall(
+    app: &AppHandle,
+    session_id: &str,
+    request: RecallRequest,
+) -> Result<RecallOutcome, String> {
     let state = app.state::<AppState>();
     let revision = state.lock_inner().revision;
-    let reverted = revert_in(
+    let outcome = recall_in(
         &app.state::<Requests>(),
         &state,
         &Store::config(),
         session_id,
-        index,
+        request,
     );
-    // A failed cut puts the document back under a new revision; the window
-    // hears it, so its next edit is not refused as stale.
-    if reverted.is_err()
+    // A cut that failed after moving the cursor puts the document back under a
+    // new revision. The window hears it, so its next edit is not refused as
+    // stale. A successful recall returns its snapshot to the caller instead.
+    if !matches!(outcome, Ok(RecallOutcome::Recalled { .. }))
         && let Some(snapshot) = moved_since(&state, revision)
     {
         let _ = app.emit(PROJECT_EVENT, snapshot);
     }
-    reverted
+    outcome
 }
 
 /// The document, when its revision moved past `revision`.
@@ -1099,80 +1175,125 @@ fn moved_since(
     (inner.revision != revision).then(|| crate::commands::shared::snapshot(&inner))
 }
 
-/// [`revert_before`] over its parts.
-fn revert_in(
+/// [`recall`] over its parts.
+fn recall_in(
     requests: &Requests,
     state: &AppState,
     store: &Store,
     session_id: &str,
-    index: usize,
-) -> Result<Value, String> {
-    revert_with(requests, state, store, session_id, index, |store, point| {
-        store.cut_before_user(session_id, point)
-    })
+    request: RecallRequest,
+) -> Result<RecallOutcome, String> {
+    recall_with(
+        requests,
+        state,
+        store,
+        session_id,
+        request,
+        |store, point| store.cut_before_user(session_id, point),
+    )
 }
 
-/// The revert with its cut supplied, so a test can make the cut fail.
+/// The recall with its cut supplied, so a test can make the cut fail.
 ///
-/// The document lock is held from the restore through the cut, so no other
-/// edit lands between them and an undo after a failed cut removes exactly
-/// the restore. Nothing is written to disk until the cut has succeeded.
-fn revert_with(
+/// The document lock is held from the cursor move through the cut, so no
+/// other edit lands between them and a failed cut puts the cursor, the
+/// document and both history stacks back exactly. Nothing is written to disk
+/// until the cut has succeeded.
+fn recall_with(
     requests: &Requests,
     state: &AppState,
     store: &Store,
     session_id: &str,
-    index: usize,
-    cut: impl FnOnce(&Store, &crate::ai::sessions::turns::RevertPoint) -> Result<usize, String>,
-) -> Result<Value, String> {
-    // Holding the slot for the whole revert keeps a turn from starting in it.
-    let slot = format!("revert-{session_id}");
+    request: RecallRequest,
+    cut: impl FnOnce(
+        &Store,
+        &crate::ai::sessions::turns::RecallPoint,
+    ) -> Result<usize, crate::ai::sessions::turns::CutFailure>,
+) -> Result<RecallOutcome, String> {
+    use crate::ai::sessions::turns::{CutFailure, RecallPointError};
+
+    // Holding the slot for the whole recall keeps a turn from starting in it.
+    let slot = format!("recall-{session_id}");
     let Some(claim) = requests.claim_internal(&slot)? else {
-        return Err("A turn is still running; stop it before reverting.".into());
+        return Ok(RecallOutcome::refused(RecallRefusal::TurnRunning));
     };
     let _release = scopeguard(requests, &slot, &claim.identity);
-    let point = store.revert_point(session_id, index)?;
-    let dsl = store.dsl_version(session_id, &point.dsl_sha)?;
+    let point = match store.recall_point(session_id, request.index) {
+        Ok(point) => point,
+        Err(RecallPointError::NotAPersonMessage) => {
+            return Ok(RecallOutcome::refused(RecallRefusal::NotAPersonMessage));
+        }
+        Err(RecallPointError::Store(message)) => return Err(message),
+    };
     let mut inner = state.lock_inner();
     if inner.transaction.is_some() {
-        return Err("A batch of edits is still open; finish it before reverting.".into());
+        return Ok(RecallOutcome::refused(RecallRefusal::BatchOpen));
     }
-    // A conversation follows its workspace, not one file: a snapshot taken
-    // against another file never overwrites the one that is open.
-    let open = inner
-        .file_path
-        .as_deref()
-        .map(crate::ai::sessions::canonical_path);
-    if let Some(sent) = &point.project
-        && open.as_deref() != Some(sent.as_path())
-    {
-        return Err(
-            "This message was sent against another project file; open that file to revert to it."
-                .into(),
-        );
-    }
-    let restored = inner.dsl_source != dsl;
-    // Everything the restore touches, so a failed cut puts it back exactly:
-    // both history stacks, the project, its text and the dirty flag.
-    let before = restored.then(|| {
-        (
-            inner.project.clone(),
-            inner.dsl_source.clone(),
-            inner.dirty,
-            inner.undo.take_copy(),
-        )
-    });
-    if restored {
-        crate::commands::restore_dsl_with_undo(
-            &mut inner,
-            dsl,
-            "revert conversation",
-            crate::edit_history::EditCause::ConversationRevert,
-        )?;
+    let mut moved = false;
+    let mut before = None;
+    if request.undo_edits {
+        let Some(recorded) = point.history_at.as_ref() else {
+            return Ok(RecallOutcome::refused(RecallRefusal::NoRecordedPosition));
+        };
+        // The position names one project file; moving another file's history
+        // would undo edits the message never saw.
+        let open = inner
+            .file_path
+            .as_deref()
+            .map(crate::ai::sessions::canonical_path)
+            .map(|path| path.to_string_lossy().into_owned());
+        if open.as_deref() != Some(recorded.project.as_str()) {
+            return Ok(RecallOutcome::refused(RecallRefusal::OtherProject));
+        }
+        let applied = inner.undo.applied_level();
+        let level = match recorded.at {
+            None => 0,
+            Some(id) => match inner.undo.level_of(id) {
+                Some(level) => level,
+                None => return Ok(RecallOutcome::refused(RecallRefusal::PositionCleared)),
+            },
+        };
+        if applied > level {
+            if !request.confirmed {
+                let entries =
+                    inner
+                        .undo
+                        .entries_between(level, applied, &inner.project.properties)?;
+                let mut others: Vec<RecallOther> = Vec::new();
+                for (author, _cause, _changes) in entries {
+                    let own = matches!(
+                        &author,
+                        crate::edit_history::Author::Agent { session: Some(session) }
+                            if session == session_id
+                    );
+                    if own {
+                        continue;
+                    }
+                    match others.iter_mut().find(|other| other.author == author) {
+                        Some(other) => other.count += 1,
+                        None => others.push(RecallOther { author, count: 1 }),
+                    }
+                }
+                if !others.is_empty() {
+                    return Ok(RecallOutcome::NeedsConfirmation { others });
+                }
+            }
+            // Everything the move touches, so a failed cut puts it back
+            // exactly: both history stacks, the project, its text and the
+            // dirty flag.
+            before = Some((
+                inner.project.clone(),
+                inner.dsl_source.clone(),
+                inner.dirty,
+                inner.undo.take_copy(),
+            ));
+            inner.restore_level(level)?;
+            moved = true;
+        }
     }
     // The session store never takes the document lock, so holding it here
-    // cannot deadlock. The cut checks that the message still names the same
-    // snapshot, so a compaction in between cannot move it.
+    // cannot deadlock. The cut checks that the message is still the one that
+    // was chosen, so a compaction in between cannot move it.
     if let Err(error) = cut(store, &point) {
         if let Some((project, source, dirty, history)) = before {
             inner.project = project;
@@ -1181,21 +1302,38 @@ fn revert_with(
             inner.dsl_source = source;
             inner.dirty = dirty;
         }
-        return Err(error);
+        return match error {
+            CutFailure::ConversationChanged => {
+                Ok(RecallOutcome::refused(RecallRefusal::ConversationChanged))
+            }
+            CutFailure::Store(message) => Err(message),
+        };
     }
-    let unsaved = if restored {
+    let unsaved = if moved {
         crate::commands::publish_restored(&mut inner).err()
     } else {
         None
     };
-    let snapshot = crate::commands::shared::snapshot(&inner);
+    let snapshot = moved.then(|| Box::new(crate::commands::shared::snapshot(&inner)));
+    let message = RecallMessage {
+        content: point.message["content"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned(),
+        media: point
+            .message
+            .get("media")
+            .filter(|media| media.as_array().is_some_and(|entries| !entries.is_empty()))
+            .cloned(),
+    };
     drop(inner);
     super::results::with_results(|results| results.forget(session_id));
-    let mut answer = json!({ "kept": index, "snapshot": snapshot });
-    if let Some(reason) = unsaved {
-        answer["unsaved"] = json!(reason);
-    }
-    Ok(answer)
+    Ok(RecallOutcome::Recalled {
+        kept: point.keep,
+        message,
+        snapshot,
+        unsaved,
+    })
 }
 
 /// The questions a running turn is waiting on, for a window that reloaded
@@ -1212,6 +1350,8 @@ pub fn questions(request_id: &str) -> Vec<ApprovalRequest> {
 mod tests {
     use super::*;
     use crate::ai::sessions;
+    use crate::ai::sessions::HistoryAt;
+    use crate::ai::sessions::turns::SnapshotAt;
     use serde_json::Map;
 
     #[test]
@@ -1251,8 +1391,8 @@ mod tests {
         );
     }
 
-    const BEFORE: &str = "@project \"Revert\"\n  tempo: 120\n";
-    const AFTER: &str = "@project \"Revert\"\n  tempo: 150\n";
+    const BEFORE: &str = "@project \"Recall\"\n  tempo: 120\n";
+    const AFTER: &str = "@project \"Recall\"\n  tempo: 150\n";
 
     fn user(text: &str, sha: &str) -> Value {
         json!({
@@ -1261,140 +1401,262 @@ mod tests {
         })
     }
 
-    /// A conversation of two user messages, the first sent against `BEFORE`,
-    /// and a project that has moved on to `AFTER`.
-    fn fixture() -> (tempfile::TempDir, Store, String, AppState) {
-        let root = tempfile::tempdir().unwrap();
-        let store = Store::new(root.path().join("sessions"));
-        let id = store.create(None, None, Some("Revert"), None).unwrap().id;
-        let before = store
-            .snapshot_dsl(&id, &oc_dsl::serialize(&oc_dsl::parse(BEFORE).unwrap()))
-            .unwrap();
-        let after = store.snapshot_dsl(&id, AFTER).unwrap();
+    /// Records a person's message from the state's current document, with the
+    /// history position beside it.
+    fn record_user(state: &AppState, store: &Store, id: &str, text: &str) -> HistoryAt {
+        let (dsl, project, history) = {
+            let inner = state.lock_inner();
+            (
+                inner.dsl_source.clone(),
+                inner.file_path.clone(),
+                HistoryAt::of(&inner).expect("the fixture has a project file"),
+            )
+        };
+        let sha = store.snapshot_dsl(id, &dsl).unwrap();
         store
-            .append_turn(
-                &id,
-                &[
-                    user("first", &before),
-                    json!({"role": "assistant", "content": "done"}),
-                ],
+            .append_turn_with_snapshot(
+                id,
+                &[user(text, &sha)],
                 None,
+                SnapshotAt {
+                    dsl: &dsl,
+                    project: project.as_deref(),
+                    history: Some(&history),
+                },
             )
             .unwrap();
-        store
-            .append_turn(&id, &[user("second", &after)], None)
-            .unwrap();
+        history
+    }
+
+    fn apply_edit(state: &AppState, source: &str) {
+        let mut inner = state.lock_inner();
+        crate::commands::update_dsl_inner(source.to_string(), &mut inner).unwrap();
+    }
+
+    /// A conversation of two person messages, the first sent against `BEFORE`.
+    /// The project has moved on to `AFTER`, by the conversation's own agent
+    /// when `own` is set.
+    fn fixture_edited_as(
+        own: bool,
+    ) -> (
+        tempfile::TempDir,
+        Store,
+        String,
+        AppState,
+        std::path::PathBuf,
+    ) {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("song.ocp");
+        std::fs::write(&path, BEFORE).unwrap();
+        let store = Store::new(root.path().join("sessions"));
+        let id = store.create(None, None, Some("Recall"), None).unwrap().id;
         let state = AppState::new();
         {
             let mut inner = state.lock_inner();
-            inner.project = oc_dsl::parse(AFTER).unwrap();
+            inner.project = oc_dsl::parse(BEFORE).unwrap();
             inner.dsl_source = oc_dsl::serialize(&inner.project);
+            inner.file_path = Some(path.clone());
         }
-        (root, store, id, state)
+        record_user(&state, &store, &id, "first");
+        store
+            .append_turn(
+                &id,
+                &[json!({"role": "assistant", "content": "done"})],
+                None,
+            )
+            .unwrap();
+        let author = if own {
+            crate::edit_history::Author::Agent {
+                session: Some(id.clone()),
+            }
+        } else {
+            crate::edit_history::Author::Person
+        };
+        let _acting = crate::edit_history::act_as(author);
+        apply_edit(&state, AFTER);
+        record_user(&state, &store, &id, "second");
+        (root, store, id, state, path)
+    }
+
+    fn fixture() -> (
+        tempfile::TempDir,
+        Store,
+        String,
+        AppState,
+        std::path::PathBuf,
+    ) {
+        fixture_edited_as(false)
+    }
+
+    fn recalled(outcome: RecallOutcome) -> (usize, RecallMessage, Option<Value>, Option<String>) {
+        match outcome {
+            RecallOutcome::Recalled {
+                kept,
+                message,
+                snapshot,
+                unsaved,
+            } => (
+                kept,
+                message,
+                snapshot.and_then(|snapshot| serde_json::to_value(snapshot).ok()),
+                unsaved,
+            ),
+            other => panic!("expected a recall, got {other:?}"),
+        }
+    }
+
+    fn refused(outcome: RecallOutcome) -> RecallRefusal {
+        match outcome {
+            RecallOutcome::Refused { reason } => reason,
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+    }
+
+    fn plain(index: usize) -> RecallRequest {
+        RecallRequest {
+            index,
+            undo_edits: false,
+            confirmed: false,
+        }
+    }
+
+    fn with_undo(index: usize) -> RecallRequest {
+        RecallRequest {
+            index,
+            undo_edits: true,
+            confirmed: true,
+        }
     }
 
     #[test]
-    fn revert_restores_cuts_and_undoes_as_one_step() {
-        let (_root, store, id, state) = fixture();
+    fn a_plain_recall_cuts_without_touching_the_document_or_history() {
+        let (_root, store, id, state, _path) = fixture();
+        let (source, history, revision) = {
+            let inner = state.lock_inner();
+            (
+                inner.dsl_source.clone(),
+                serde_json::to_value(inner.undo.history(&inner.project.properties)).unwrap(),
+                inner.revision,
+            )
+        };
         let requests = Requests::default();
-        let answer = revert_in(&requests, &state, &store, &id, 0).unwrap();
-        assert_eq!(answer["kept"], 0);
-        assert_eq!(state.lock_inner().project.properties.tempo, 120.0);
+        let (kept, message, snapshot, unsaved) =
+            recalled(recall_in(&requests, &state, &store, &id, plain(0)).unwrap());
+        assert_eq!(kept, 0);
+        assert_eq!(message.content, "first");
+        assert!(message.media.is_none());
+        assert!(snapshot.is_none(), "the project is untouched");
+        assert!(unsaved.is_none());
+        let inner = state.lock_inner();
+        assert_eq!(inner.dsl_source, source);
+        assert_eq!(inner.project.properties.tempo, 150.0);
+        assert_eq!(inner.revision, revision, "no document revision moved");
+        assert_eq!(
+            serde_json::to_value(inner.undo.history(&inner.project.properties)).unwrap(),
+            history,
+            "no history entry was pushed"
+        );
+        drop(inner);
         assert!(
             store.view(&id).unwrap().is_empty(),
             "the conversation is cut before the message"
         );
         assert!(requests.active().unwrap().is_none(), "the slot is released");
-        state.lock_inner().undo_step().unwrap();
+    }
+
+    #[test]
+    fn a_recall_and_undo_moves_the_cursor_back_and_a_redo_restores_the_edits() {
+        let (_root, store, id, state, _path) = fixture_edited_as(true);
+        let requests = Requests::default();
+        let (kept, message, snapshot, unsaved) =
+            recalled(recall_in(&requests, &state, &store, &id, with_undo(0)).unwrap());
+        assert_eq!(kept, 0);
+        assert_eq!(message.content, "first");
+        assert!(snapshot.is_some(), "the undone document is published");
+        assert!(unsaved.is_none());
+        {
+            let inner = state.lock_inner();
+            assert_eq!(inner.project.properties.tempo, 120.0);
+            assert_eq!(inner.undo.applied_level(), 0);
+            assert_eq!(inner.undo.redo.len(), 1, "the edit is one redo away");
+        }
+        assert!(store.view(&id).unwrap().is_empty());
+        state.lock_inner().redo_step().unwrap();
         assert_eq!(
             state.lock_inner().project.properties.tempo,
             150.0,
-            "one undo takes it back"
+            "a redo brings the edit back"
         );
     }
 
     #[test]
-    fn revert_is_refused_while_a_turn_runs_and_changes_nothing() {
-        let (_root, store, id, state) = fixture();
+    fn edits_by_another_author_need_confirmation_and_confirmed_recall_proceeds() {
+        let (_root, store, id, state, _path) = fixture();
         let requests = Requests::default();
-        let _turn = requests
-            .claim("turn-1")
-            .unwrap()
-            .expect("the turn holds the slot");
-        let error = revert_in(&requests, &state, &store, &id, 0).unwrap_err();
-        assert!(error.contains("still running"), "{error}");
-        assert_eq!(state.lock_inner().project.properties.tempo, 150.0);
-        assert_eq!(store.view(&id).unwrap().len(), 3);
-    }
-
-    #[test]
-    fn revert_is_refused_on_anything_but_a_user_message() {
-        let (_root, store, id, state) = fixture();
-        let requests = Requests::default();
-        assert!(
-            revert_in(&requests, &state, &store, &id, 1).is_err(),
-            "an assistant row"
-        );
-        assert!(
-            revert_in(&requests, &state, &store, &id, 9).is_err(),
-            "past the end"
-        );
-        assert_eq!(state.lock_inner().project.properties.tempo, 150.0);
-        assert_eq!(store.view(&id).unwrap().len(), 3);
-        assert!(requests.active().unwrap().is_none());
-    }
-
-    #[test]
-    fn an_attended_turn_keeps_its_mode_and_an_unattended_one_writes() {
-        for mode in [
-            SessionPermission::RequireApproval,
-            SessionPermission::Autoreview,
-            SessionPermission::Write,
-        ] {
-            assert_eq!(turn_permission(true, mode), mode);
-            assert_eq!(turn_permission(false, mode), SessionPermission::Write);
-            // A confirm call still needs a person in the mode a headless turn
-            // runs under, and the headless host has nobody to answer.
+        let (source, history) = {
+            let inner = state.lock_inner();
+            (
+                inner.dsl_source.clone(),
+                serde_json::to_value(inner.undo.history(&inner.project.properties)).unwrap(),
+            )
+        };
+        let outcome = recall_in(
+            &requests,
+            &state,
+            &store,
+            &id,
+            RecallRequest {
+                index: 0,
+                undo_edits: true,
+                confirmed: false,
+            },
+        )
+        .unwrap();
+        match outcome {
+            RecallOutcome::NeedsConfirmation { others } => assert_eq!(
+                others,
+                vec![RecallOther {
+                    author: crate::edit_history::Author::Person,
+                    count: 1,
+                }]
+            ),
+            other => panic!("expected a confirmation, got {other:?}"),
+        }
+        {
+            let inner = state.lock_inner();
+            assert_eq!(inner.dsl_source, source, "nothing moved");
+            assert_eq!(inner.project.properties.tempo, 150.0);
             assert_eq!(
-                super::super::gate::gate("tracks_remove", turn_permission(false, mode), &[]).need,
-                super::super::gate::Need::Approval
+                serde_json::to_value(inner.undo.history(&inner.project.properties)).unwrap(),
+                history
             );
         }
+        assert_eq!(store.view(&id).unwrap().len(), 3);
+
+        let (kept, _, snapshot, _) =
+            recalled(recall_in(&requests, &state, &store, &id, with_undo(0)).unwrap());
+        assert_eq!(kept, 0);
+        assert!(snapshot.is_some());
+        assert_eq!(state.lock_inner().project.properties.tempo, 120.0);
     }
 
     #[test]
-    fn a_loop_owned_batch_counts_as_stranded_and_a_client_batch_never_does() {
-        let panel = crate::state::panel_batch_owner(Some("s1"));
-        let other = crate::state::panel_batch_owner(Some("s2"));
-        let turn = crate::state::turn_batch_owner("turn-1", "s1");
-        let http = crate::state::http_session_owner("s1");
-        // The asking turn holds the slot, so a loop batch has no live turn.
-        assert!(stranded_loop_batch(Some(&panel)));
-        assert!(stranded_loop_batch(Some(&other)));
-        assert!(stranded_loop_batch(Some(&turn)));
-        assert!(
-            !stranded_loop_batch(Some(&http)),
-            "a headless client's open transaction is its own"
-        );
-        assert!(!stranded_loop_batch(Some(crate::state::HTTP_BATCH_OWNER)));
-        assert!(!stranded_loop_batch(None));
-    }
-
-    #[test]
-    fn a_failed_cut_leaves_the_document_and_its_history_as_they_were() {
-        let (_root, store, id, state) = fixture();
-        let (source, history, redo) = {
+    fn a_failed_cut_after_the_cursor_moved_puts_everything_back() {
+        let (_root, store, id, state, _path) = fixture_edited_as(true);
+        let (source, history, redo, revision) = {
             let inner = state.lock_inner();
             (
                 inner.dsl_source.clone(),
                 serde_json::to_value(inner.undo.history(&inner.project.properties)).unwrap(),
                 inner.undo.redo.len(),
+                inner.revision,
             )
         };
         let requests = Requests::default();
-        let revision = state.lock_inner().revision;
-        let error = revert_with(&requests, &state, &store, &id, 0, |_, _| {
-            Err("the session store is read-only".into())
+        let error = recall_with(&requests, &state, &store, &id, with_undo(0), |_, _| {
+            Err(crate::ai::sessions::turns::CutFailure::Store(
+                "the session store is read-only".into(),
+            ))
         })
         .unwrap_err();
         assert!(error.contains("read-only"), "{error}");
@@ -1407,7 +1669,7 @@ mod tests {
         assert_eq!(
             serde_json::to_value(inner.undo.history(&inner.project.properties)).unwrap(),
             history,
-            "no undo entry stays"
+            "the cursor is back where it was"
         );
         assert_eq!(inner.undo.redo.len(), redo, "and no redo entry appears");
         drop(inner);
@@ -1420,12 +1682,27 @@ mod tests {
     }
 
     #[test]
+    fn a_changed_conversation_is_a_typed_refusal_and_puts_the_cursor_back() {
+        let (_root, store, id, state, _path) = fixture_edited_as(true);
+        let source = state.lock_inner().dsl_source.clone();
+        let requests = Requests::default();
+        let outcome = recall_with(&requests, &state, &store, &id, with_undo(0), |_, _| {
+            Err(crate::ai::sessions::turns::CutFailure::ConversationChanged)
+        })
+        .unwrap();
+        assert_eq!(refused(outcome), RecallRefusal::ConversationChanged);
+        assert_eq!(state.lock_inner().dsl_source, source);
+        assert_eq!(state.lock_inner().project.properties.tempo, 150.0);
+        assert_eq!(store.view(&id).unwrap().len(), 3);
+    }
+
+    #[test]
     fn a_failed_cut_keeps_a_full_history_and_its_redo_entries_exactly() {
-        let (_root, store, id, state) = fixture();
+        let (_root, store, id, state, _path) = fixture_edited_as(true);
         {
             let mut inner = state.lock_inner();
-            // A full undo stack and two redo entries: the restore's push would
-            // evict the oldest entry and clear the redo stack.
+            // A full undo stack and two redo entries: a restore that pushed an
+            // entry would evict the oldest one and clear the redo stack.
             for tempo in 0..crate::state::MAX_UNDO + 2 {
                 let source = AFTER.replace("150", &(151 + tempo).to_string());
                 crate::commands::update_dsl_inner(source, &mut inner).unwrap();
@@ -1444,8 +1721,10 @@ mod tests {
         };
         assert_eq!(redo, 2);
         let requests = Requests::default();
-        revert_with(&requests, &state, &store, &id, 0, |_, _| {
-            Err("the session store is read-only".into())
+        recall_with(&requests, &state, &store, &id, with_undo(0), |_, _| {
+            Err(crate::ai::sessions::turns::CutFailure::Store(
+                "the session store is read-only".into(),
+            ))
         })
         .unwrap_err();
         let mut inner = state.lock_inner();
@@ -1464,60 +1743,146 @@ mod tests {
     }
 
     #[test]
-    fn a_revert_refuses_a_snapshot_of_another_file_and_reports_an_unwritten_file() {
-        let (root, store, _, state) = fixture();
-        let a = root.path().join("a.ocp");
-        let b = root.path().join("b.ocp");
-        std::fs::write(&a, AFTER).unwrap();
-        std::fs::write(&b, AFTER).unwrap();
-        let id = store.create(None, None, Some("Files"), None).unwrap().id;
-        let first =
-            json!({"role":"user","content":"first","message_meta":{"version":1,"kind":"user"}});
-        store
-            .append_turn_with_snapshot(&id, &[first], None, BEFORE, Some(&a))
-            .unwrap();
+    fn recall_is_refused_while_a_turn_runs_and_changes_nothing() {
+        let (_root, store, id, state, _path) = fixture();
         let requests = Requests::default();
-        state.lock_inner().file_path = Some(b.clone());
-        let error = revert_in(&requests, &state, &store, &id, 0).unwrap_err();
-        assert!(error.contains("another project file"), "{error}");
+        let _turn = requests
+            .claim("turn-1")
+            .unwrap()
+            .expect("the turn holds the slot");
+        let outcome = recall_in(&requests, &state, &store, &id, plain(0)).unwrap();
+        assert_eq!(refused(outcome), RecallRefusal::TurnRunning);
         assert_eq!(state.lock_inner().project.properties.tempo, 150.0);
-        assert_eq!(store.view(&id).unwrap().len(), 1);
-
-        // The file it was sent against: the revert lands even when the file
-        // cannot be written, and says so.
-        let blocked = root.path().join("blocked");
-        std::fs::write(&blocked, "not a directory").unwrap();
-        state.lock_inner().file_path = Some(a.clone());
-        let id_blocked = {
-            let id = store.create(None, None, Some("Blocked"), None).unwrap().id;
-            let first =
-                json!({"role":"user","content":"first","message_meta":{"version":1,"kind":"user"}});
-            store
-                .append_turn_with_snapshot(&id, &[first], None, BEFORE, None)
-                .unwrap();
-            id
-        };
-        state.lock_inner().file_path = Some(blocked.join("song.ocp"));
-        let answer = revert_in(&requests, &state, &store, &id_blocked, 0).unwrap();
-        assert!(
-            answer["unsaved"]
-                .as_str()
-                .is_some_and(|reason| reason.contains("not written")),
-            "{answer}"
-        );
-        assert_eq!(state.lock_inner().project.properties.tempo, 120.0);
+        assert_eq!(store.view(&id).unwrap().len(), 3);
     }
 
     #[test]
-    fn revert_with_an_open_batch_changes_nothing() {
-        let (_root, store, id, state) = fixture();
+    fn recall_is_refused_on_anything_but_a_person_message() {
+        let (_root, store, id, state, _path) = fixture();
+        let requests = Requests::default();
+        assert_eq!(
+            refused(recall_in(&requests, &state, &store, &id, plain(1)).unwrap()),
+            RecallRefusal::NotAPersonMessage,
+            "an assistant row"
+        );
+        assert_eq!(
+            refused(recall_in(&requests, &state, &store, &id, plain(9)).unwrap()),
+            RecallRefusal::NotAPersonMessage,
+            "past the end"
+        );
+        assert_eq!(state.lock_inner().project.properties.tempo, 150.0);
+        assert_eq!(store.view(&id).unwrap().len(), 3);
+        assert!(requests.active().unwrap().is_none());
+    }
+
+    #[test]
+    fn recall_with_an_open_batch_changes_nothing() {
+        let (_root, store, id, state, _path) = fixture();
         state
             .begin_transaction("turn".into(), "panel:x".into())
             .unwrap();
         let requests = Requests::default();
-        assert!(revert_in(&requests, &state, &store, &id, 0).is_err());
+        assert_eq!(
+            refused(recall_in(&requests, &state, &store, &id, plain(0)).unwrap()),
+            RecallRefusal::BatchOpen
+        );
         assert_eq!(store.view(&id).unwrap().len(), 3);
         assert_eq!(state.lock_inner().project.properties.tempo, 150.0);
+    }
+
+    #[test]
+    fn a_recall_and_undo_refuses_a_position_from_another_project_file() {
+        let (root, store, id, state, _path) = fixture();
+        let other = root.path().join("other.ocp");
+        std::fs::write(&other, AFTER).unwrap();
+        state.lock_inner().file_path = Some(other);
+        let requests = Requests::default();
+        assert_eq!(
+            refused(recall_in(&requests, &state, &store, &id, with_undo(0)).unwrap()),
+            RecallRefusal::OtherProject
+        );
+        assert_eq!(state.lock_inner().project.properties.tempo, 150.0);
+        assert_eq!(store.view(&id).unwrap().len(), 3);
+        // A plain recall does not touch the document, so it still runs.
+        assert!(matches!(
+            recall_in(&requests, &state, &store, &id, plain(0)).unwrap(),
+            RecallOutcome::Recalled { .. }
+        ));
+        assert!(store.view(&id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_recall_and_undo_refuses_a_message_without_a_recorded_position() {
+        let (_root, store, id, state, _path) = fixture();
+        let row = user("no position", &"c".repeat(64));
+        store.append_turn(&id, &[row], None).unwrap();
+        let requests = Requests::default();
+        // The fixture's rows are indices 0..2; the appended row is 3.
+        assert_eq!(
+            refused(recall_in(&requests, &state, &store, &id, with_undo(3)).unwrap()),
+            RecallRefusal::NoRecordedPosition
+        );
+        assert_eq!(store.view(&id).unwrap().len(), 4);
+        assert_eq!(state.lock_inner().project.properties.tempo, 150.0);
+        // A plain recall still cuts at that message.
+        assert!(matches!(
+            recall_in(&requests, &state, &store, &id, plain(3)).unwrap(),
+            RecallOutcome::Recalled { .. }
+        ));
+        assert_eq!(store.view(&id).unwrap().len(), 3);
+    }
+
+    #[test]
+    fn a_recall_and_undo_refuses_a_cleared_position() {
+        let (_root, store, id, state, path) = fixture();
+        let project = crate::ai::sessions::canonical_path(&path)
+            .to_string_lossy()
+            .into_owned();
+        let row = json!({
+            "role": "user", "content": "lost",
+            "message_meta": sessions::message_meta(sessions::MessageKind::User),
+            "history_at": { "project": project, "level": 3, "at": 999_999_u64 },
+        });
+        store.append_turn(&id, &[row], None).unwrap();
+        let requests = Requests::default();
+        assert_eq!(
+            refused(recall_in(&requests, &state, &store, &id, with_undo(3)).unwrap()),
+            RecallRefusal::PositionCleared
+        );
+        assert_eq!(store.view(&id).unwrap().len(), 4);
+    }
+
+    #[test]
+    fn a_recall_reports_a_file_it_could_not_write() {
+        let root = tempfile::tempdir().unwrap();
+        let blocked = root.path().join("blocked");
+        std::fs::write(&blocked, "not a directory").unwrap();
+        let path = blocked.join("song.ocp");
+        let store = Store::new(root.path().join("sessions"));
+        let id = store.create(None, None, Some("Blocked"), None).unwrap().id;
+        let state = AppState::new();
+        {
+            let mut inner = state.lock_inner();
+            inner.project = oc_dsl::parse(BEFORE).unwrap();
+            inner.dsl_source = oc_dsl::serialize(&inner.project);
+            inner.file_path = Some(path);
+        }
+        record_user(&state, &store, &id, "first");
+        let _acting = crate::edit_history::act_as(crate::edit_history::Author::Agent {
+            session: Some(id.clone()),
+        });
+        apply_edit(&state, AFTER);
+        let requests = Requests::default();
+        let (_, _, snapshot, unsaved) =
+            recalled(recall_in(&requests, &state, &store, &id, with_undo(0)).unwrap());
+        assert!(snapshot.is_some());
+        assert!(
+            unsaved
+                .as_deref()
+                .is_some_and(|reason| reason.contains("not written")),
+            "{unsaved:?}"
+        );
+        assert_eq!(state.lock_inner().project.properties.tempo, 120.0);
     }
 
     #[test]

@@ -259,6 +259,7 @@ impl UndoEdit {
     }
 
     /// Record why the edit exists, beyond what its patches describe.
+    #[cfg(test)]
     pub fn cause(mut self, cause: crate::edit_history::EditCause) -> Self {
         self.cause = cause;
         self

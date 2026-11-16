@@ -4419,6 +4419,7 @@ providers:
                 None,
                 crate::ai::sessions::PrepareContext {
                     snapshot: None,
+                    history: None,
                     overhead: 0,
                     context_length: 1_000_000,
                     facts: &crate::ai::sessions::ProjectFacts::default(),
@@ -4489,6 +4490,7 @@ providers:
                 None,
                 crate::ai::sessions::PrepareContext {
                     snapshot: None,
+                    history: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &facts,
@@ -4506,6 +4508,7 @@ providers:
                 None,
                 crate::ai::sessions::PrepareContext {
                     snapshot: None,
+                    history: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &facts,

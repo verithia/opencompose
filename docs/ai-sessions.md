@@ -159,10 +159,14 @@ not.
 
 Before a saved provider request is sent, the native session layer attaches a
 content-addressed project version (`dsl_sha`) to each newly admitted human
-message. This applies to the panel and explicitly bound headless requests.
-The project path, source and summary facts are captured together. A headless
-request for a different open project is refused, and so is any turn on a
-conversation bound to another file than the one that is open.
+message. Beside it, `history_at` records the edit-history position the message
+was sent from: `{project, level, at}`, where `project` is the canonical project
+path, `level` is the number of applied entries and `at` is the id of the entry
+at that level (absent at the start of the history). A recall that undoes edits
+uses this position to move the history cursor back. The project path, source
+and summary facts are captured together. A headless request for a different
+open project is refused, and so is any turn on a conversation bound to another
+file than the one that is open.
 
 Replayed human turns retain their original version. Tool results, assistant
 replies and typed host deliveries do not acquire a human-turn snapshot. The
@@ -744,7 +748,8 @@ purpose.
 Compaction leaves nothing to replay: the output is one `user` message plus any
 trailing prose messages. Those carry their `role`, `content` and message kind;
 a person's message also keeps its attachments as canonical descriptors, the
-snapshot a revert restores (`dsl_sha`, `dsl_project`) and its steering id. The
+snapshot and history position a recall uses (`dsl_sha`, `dsl_project`,
+`history_at`) and its steering id. The
 pending message, the one the model is about to answer, is always carried this
 way, even when it directly follows a tool round. There is no assistant message
 with `tool_calls` or a text-protocol call, no `provider_state`, and no signature

@@ -749,7 +749,7 @@ turn running and its question open. A question nobody answers within 30
 minutes is refused: the call reads `"expired": true`, nothing changes, and the
 turn goes on without it. A question whose wait is dropped unanswered is refused
 too. Neither is the nobody-attends answer, so neither lets an `edit_subtree`
-apply. `ai_cancel` stops a turn; the slot a revert or a recovery holds is the
+apply. `ai_cancel` stops a turn; the slot a recall or a recovery holds is the
 host's own, so `ai_cancel` cannot release it and `ai_active_turn` does not
 report it. `ai_tool_result` returns the full text behind a truncated result
 while the process keeps it, scoped to the conversation; the newest 64 results
@@ -770,7 +770,7 @@ runs.
 A turn is one undo step. No stop discards it: cancel, provider failure, timeout
 and the round cap all keep the batch and report how many edits stayed. The
 stopped row offers Continue (and Retry when the last request failed), and the
-transcript points at the user message's context menu for a deliberate revert.
+transcript points at the user message's context menu for a deliberate recall.
 
 * **Opening the batch.** Every mutating call carries a `mutation` flag from the
   registry, and `edit_subtree` is a write path too. The loop opens the batch
@@ -802,7 +802,7 @@ transcript points at the user message's context menu for a deliberate revert.
   are committed in memory and in undo, and only the file is behind) or
   `commit` (the batch did not commit), with the host's reason in
   `commit_error`.
-  The notice points at the user message's context menu for a deliberate revert.
+  The notice points at the user message's context menu for a deliberate recall.
 * **The round cap is the same rule.** The cap is a budget stop, not a failure:
   when the loop reaches its last round it commits the open batch like an answer
   and says how many edits were kept, so an over-budget turn keeps the work that
@@ -913,7 +913,7 @@ message reads `outcome unknown`. The round open at the end is left to the loop.
 The transcript line is built from the loop's counts: the calls the model had
 requested, the calls that returned, and the applied edits that were kept. A
 cancel before any edit ran says the project is unchanged. The line points at the
-user message's context menu for a deliberate revert; the project keeps the edits
+user message's context menu for a deliberate recall; the project keeps the edits
 until that action runs.
 
 The line is transcript-only: the saved conversation keeps the turn's user
@@ -961,7 +961,7 @@ the panel's provider layer decides that and the error carries `retryable`.
   asks for again runs inside that batch, never outside it.
 * **A kept turn says so.** A failed or cancelled turn that applied edits commits
   them before its row appears, and the row states how many edits were kept and
-  points at the message menu for a deliberate revert. A kept failure or timeout
+  points at the message menu for a deliberate recall. A kept failure or timeout
   still offers Retry: it sends the saved conversation again, with the applied
   results already in it.
 * **A stop can land mid-round.** The model may have asked for more calls than
@@ -984,39 +984,56 @@ the panel's provider layer decides that and the error carries `retryable`.
 * **A failure does not eat the composer.** A request refused before the turn
   starts saved nothing, so its message and attachment chips go back to the
   composer, or a queued row goes back to the head of the queue. A turn that
-  started has saved the message: Retry and Continue resend it, and **Revert to
-  before this message** puts it back in the composer.
+  started has saved the message: Retry and Continue resend it, and **Recall
+  message** puts it back in the composer.
 
-### Reverting a turn
+### Recalling a message
 
-Revert is offered only from a right-click on a person's own message: **Revert to
-before this message**. It is one backend operation, `ai_revert_before`
-`{session_id, index}`. It restores the project snapshot the message was sent
-against as one undo entry labelled `Revert conversation`, only when the document
-differs, and cuts the conversation just before that message. If the cut fails,
-the project, its text, the dirty flag and both history stacks are put back
-exactly, so no redo entry is lost and no undo entry is evicted, and the window
-is sent the document under its new revision. The cut checks that the saved
-message is still the one that was chosen, not only its snapshot: two messages
-sent against one document share a snapshot, and a compaction from another
-window in between refuses the revert instead of cutting elsewhere.
-It also forgets that conversation's stored full results. The answer is
-`{kept, snapshot, unsaved?}`: the revert stands in the document either way, and
-`unsaved` says why the project file was not written.
+Recall is offered only from a right-click on a person's own message, as
+**Recall message** and **Recall message and undo edits**. Both are the one
+backend operation `ai_recall` `{session_id, index, undo_edits, confirmed}`. It
+cuts the conversation just before that message and returns the message's
+content and media for the composer. The cut checks that the saved message is
+still the one that was chosen, so a compaction from another window refuses it
+with `conversation_changed` instead of cutting elsewhere. It also forgets that
+conversation's stored full results.
 
-A message records the project file its snapshot came from. A conversation is
-bound to one project file, so a revert to a message sent against another file
-of that workspace is refused rather than written into the open one.
+Each admitted person message records `history_at` beside its snapshot: the
+canonical project file, the applied history level and the id of the entry at
+that level. **Recall message** leaves the project and its history untouched.
+**Recall message and undo edits** requires that position. When the cursor is
+ahead of the recorded level it moves the history cursor back to that level, as
+one history jump: no new entry is written, and a redo brings the edits back.
+Then it cuts the conversation. When the cursor is already at or behind the
+recorded level there is nothing to undo, so the action behaves like a plain
+recall. If the cut fails after the cursor moved, the cursor, the document, its
+text, the dirty flag and both history stacks are put back exactly, and the
+window is sent the document under its new revision.
 
-The operation is refused while any turn runs with `A turn is still running;
-stop it before reverting.` and while a batch is open with `A batch of edits is
-still open; finish it before reverting.` No other row offers revert; there is no
-per-call revert and no roll-back item for a turn. While a turn runs, its
-conversation also cannot be compacted, have its history dropped or be deleted:
-those would move the round the turn is writing. The check runs under the store
-lock every write of the turn takes, and a turn is registered as running before
-its first write, so a turn that starts during the command waits for the command
-and then reads what it left.
+Undoing edits by anyone other than this conversation's own agent asks first.
+That call answers `needs_confirmation` with the grouped authors and counts and
+changes nothing; a call with `confirmed: true` proceeds. The answer is a tagged
+result: `{status: "recalled", kept, message: {content, media?}, snapshot?,
+unsaved?}`, `{status: "needs_confirmation", others: [{author, count}]}` or
+`{status: "refused", reason}`. The reasons are `turn_running`, `batch_open`,
+`other_project`, `no_recorded_position`, `position_cleared`,
+`not_a_person_message` and `conversation_changed`; the panel localizes them.
+`snapshot` is present only when the cursor moved, and `unsaved` says why the
+project file was not written.
+
+A message saved before positions were recorded has no `history_at`, so it can
+be recalled but not with undo edits (`no_recorded_position`). A position names
+one project file, so undo edits from a message sent against another file of the
+workspace are refused (`other_project`) rather than applied to the open one.
+Both actions are refused while any turn runs (`turn_running`) or a batch is
+open (`batch_open`).
+
+No other row offers recall; there is no per-call recall and no roll-back item
+for a turn. While a turn runs, its conversation also cannot be compacted, have
+its history dropped or be deleted: those would move the round the turn is
+writing. The check runs under the store lock every write of the turn takes, and
+a turn is registered as running before its first write, so a turn that starts
+during the command waits for the command and then reads what it left.
 
 ## 5. `render_offline` — full-song export
 

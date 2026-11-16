@@ -477,7 +477,7 @@ pub fn prepare_turn_for<R: tauri::Runtime>(
     let session_id = binding.id;
     let store = store();
     let (_, meta) = store.find(session_id)?;
-    let (project, place, facts, source, outside) = {
+    let (project, place, facts, source, outside, history) = {
         let inner = state.lock_inner();
         if let Some(expected) = binding.project {
             validate_saved_project(expected, inner.file_path.as_deref())?;
@@ -491,6 +491,7 @@ pub fn prepare_turn_for<R: tauri::Runtime>(
             facts(&inner),
             inner.dsl_source.clone(),
             outside,
+            crate::ai::sessions::HistoryAt::of(&inner),
         )
     };
     let key = store.workspace_key(place.as_deref());
@@ -521,6 +522,7 @@ pub fn prepare_turn_for<R: tauri::Runtime>(
             project.as_deref(),
             crate::ai::sessions::PrepareContext {
                 snapshot: Some(&source),
+                history: history.as_ref(),
                 overhead,
                 context_length: context,
                 facts: &facts,

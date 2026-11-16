@@ -962,6 +962,107 @@ fn a_sessions_own_edit_is_not_listed_but_another_sessions_is() {
 }
 
 #[test]
+fn level_of_finds_a_mark_on_either_side_of_the_cursor() {
+    for journaled in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut stack = stack(journaled, dir.path());
+        let mut project = tempo(100);
+        let mut ids = Vec::new();
+        for tempo_value in [110, 120, 130] {
+            let before = project.clone();
+            project = tempo(tempo_value);
+            push_edit(&mut stack, &before, &project, Author::Person);
+            ids.push(stack.undo.last().unwrap().id);
+            if journaled {
+                stack.sync_journal(&oc_dsl::serialize(&project)).unwrap();
+            }
+        }
+        assert_eq!(stack.level_of(ids[0]), Some(1));
+        assert_eq!(stack.level_of(ids[1]), Some(2));
+        assert_eq!(stack.level_of(ids[2]), Some(3));
+        stack.undo(&mut project).unwrap();
+        if journaled {
+            stack.sync_journal(&oc_dsl::serialize(&project)).unwrap();
+        }
+        assert_eq!(
+            stack.level_of(ids[1]),
+            Some(2),
+            "a redo entry keeps its level"
+        );
+        assert_eq!(stack.level_of(999_999), None);
+    }
+}
+
+#[test]
+fn entries_between_reads_only_the_requested_applied_levels() {
+    for journaled in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut stack = stack(journaled, dir.path());
+        let mut project = tempo(100);
+        for (tempo_value, author) in [
+            (110, Author::Person),
+            (
+                120,
+                Author::Agent {
+                    session: Some("s2".into()),
+                },
+            ),
+            (
+                130,
+                Author::Agent {
+                    session: Some("s1".into()),
+                },
+            ),
+        ] {
+            let before = project.clone();
+            project = tempo(tempo_value);
+            push_edit(&mut stack, &before, &project, author);
+        }
+        if journaled {
+            stack.sync_journal(&oc_dsl::serialize(&project)).unwrap();
+        }
+        let entries = stack.entries_between(1, 3, &project.properties).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(
+            entries[0].0,
+            Author::Agent {
+                session: Some("s2".into())
+            }
+        );
+        assert_eq!(
+            entries[0].2.changes,
+            vec![Change::Tempo {
+                from: 110.0,
+                to: 120.0,
+            }]
+        );
+        assert_eq!(
+            entries[1].0,
+            Author::Agent {
+                session: Some("s1".into())
+            }
+        );
+        assert_eq!(
+            entries[1].2.changes,
+            vec![Change::Tempo {
+                from: 120.0,
+                to: 130.0,
+            }]
+        );
+        assert!(stack.entries_between(2, 1, &project.properties).is_err());
+        assert!(stack.entries_between(0, 4, &project.properties).is_err());
+        stack.undo(&mut project).unwrap();
+        if journaled {
+            stack.sync_journal(&oc_dsl::serialize(&project)).unwrap();
+        }
+        assert!(
+            stack.entries_between(0, 3, &project.properties).is_err(),
+            "redo levels are not applied entries"
+        );
+    }
+}
+
+#[test]
 fn an_undo_past_the_mark_reports_the_steps_without_entries() {
     for journaled in [false, true] {
         let dir = tempfile::tempdir().unwrap();

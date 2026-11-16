@@ -47,7 +47,7 @@
   <text class="name" x="36" y="226">commands</text>
   <text class="note" x="36" y="244">IPC adapters for the UI:</text>
   <text class="note" x="36" y="260">project, sessions, preview,</text>
-  <text class="note" x="36" y="276">ai_revert_before, ai_tool_result</text>
+  <text class="note" x="36" y="276">ai_recall, ai_tool_result</text>
   <rect class="box" x="250" y="206" width="210" height="80"/>
   <text class="name" x="262" y="226">agent_api</text>
   <text class="note" x="262" y="244">HTTP and MCP routes, the</text>
@@ -85,7 +85,7 @@
   <rect class="box" x="796" y="354" width="220" height="100"/>
   <text class="name" x="808" y="374">ai::sessions</text>
   <text class="note" x="808" y="392">saved conversations, project</text>
-  <text class="note" x="808" y="408">versions, compaction, revert</text>
+  <text class="note" x="808" y="408">versions, compaction, recall</text>
   <text class="note" x="808" y="424">points, started-call markers</text>
 
   <!-- Engine -->

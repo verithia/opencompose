@@ -59,7 +59,7 @@ const backend = {
   stale: false,
   pageReads: [] as { id: string; before: number; revision: string }[],
   openReads: [] as string[],
-  reverts: [] as { sessionId: string; index: number }[],
+  recalls: [] as { sessionId: string; index: number; undoEdits: boolean; confirmed: boolean }[],
 };
 
 function page(messages: WireMessage[], start: number, older: number, revision = "rev-1"): SessionPageRead {
@@ -119,10 +119,21 @@ function installBackend() {
         }
         return backend.page ?? { status: "stale" };
       }
-      case "ai_revert_before": {
+      case "ai_recall": {
         const index = Number(typed.index);
-        backend.reverts.push({ sessionId: String(typed.sessionId), index });
-        return { kept: index, snapshot: makeSnapshot() };
+        const undoEdits = typed.undoEdits === true;
+        backend.recalls.push({
+          sessionId: String(typed.sessionId),
+          index,
+          undoEdits,
+          confirmed: typed.confirmed === true,
+        });
+        return {
+          status: "recalled",
+          kept: index,
+          message: { content: "middle question" },
+          ...(undoEdits ? { snapshot: makeSnapshot() } : {}),
+        };
       }
       default: return makeSnapshot();
     }
@@ -162,7 +173,7 @@ beforeEach(() => {
   backend.stale = false;
   backend.pageReads = [];
   backend.openReads = [];
-  backend.reverts = [];
+  backend.recalls = [];
   i18n.setLocale("en");
   aiSession.reset();
   resetContextMeter();
@@ -205,7 +216,7 @@ describe("opening a paged conversation", () => {
     expect(earlier()).toBeNull();
   });
 
-  it("reverts a row from an older page at its absolute wire index", async () => {
+  it("recalls a row from an older page at its absolute wire index", async () => {
     backend.page = page(CONVERSATION.slice(2, 4), 2, 40);
     await mountPanel();
     await openConversation("paged conversation", "newest answer");
@@ -215,8 +226,15 @@ describe("opening a paged conversation", () => {
     const row = [...document.querySelectorAll(".ai-message.user")]
       .find((element) => element.textContent === "middle question")!;
     fireEvent.contextMenu(row);
-    fireEvent.click(screen.getByRole("menuitem", { name: /Revert to before this message/ }));
-    await waitFor(() => expect(backend.reverts).toEqual([{ sessionId: "s1", index: 2 }]));
+    const recall = screen
+      .getAllByRole("menuitem")
+      .find((item) => item.querySelector(".context-menu-label")?.textContent === "Recall message")!;
+    fireEvent.click(recall);
+    await waitFor(() =>
+      expect(backend.recalls).toEqual([
+        { sessionId: "s1", index: 2, undoEdits: false, confirmed: false },
+      ]),
+    );
   });
 
   it("repaints the conversation when the saved view changed shape", async () => {

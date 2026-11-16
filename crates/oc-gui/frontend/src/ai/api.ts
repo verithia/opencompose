@@ -2,6 +2,7 @@ import { Channel } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { ProjectSnapshot } from "../types/project";
 import type { ChangeSet } from "../types/change";
+import type { HistoryAuthor } from "../types/undo";
 import type { ModelLimits } from "../stores/aiLimits";
 import type { AuthKind, Wire } from "./config";
 import type { ApprovalRequest, ToolDef, TurnStop, WireMessage } from "./wire";
@@ -10,7 +11,7 @@ import type { CompactionResult, SessionMeta } from "./sessions";
 import type { SkillRef } from "./system-prompt";
 import { toolsetArg } from "./toolsets";
 import type { DiffResult } from "./transcript";
-import type { MediaNotice } from "./media";
+import type { MediaAttachment, MediaNotice } from "./media";
 import { invoke } from "./transport";
 
 export function cancel(requestId: string) {
@@ -113,12 +114,47 @@ export function listenTurnProject(handler: (snapshot: ProjectSnapshot) => void) 
   return listen<ProjectSnapshot>("ai_turn_project", (event) => handler(event.payload));
 }
 
+/** Why a recall did not run; the panel localizes each reason. */
+export type RecallRefusal =
+  | "turn_running"
+  | "batch_open"
+  | "other_project"
+  | "no_recorded_position"
+  | "position_cleared"
+  | "not_a_person_message"
+  | "conversation_changed";
+
+/** One author whose edits a recall would undo, and how many. */
+export interface RecallOther {
+  author: HistoryAuthor;
+  count: number;
+}
+
+/** The message a recall cut, for the composer to take back. */
+export interface RecallMessage {
+  content: string;
+  media?: MediaAttachment[];
+}
+
+/** The answer to a recall. */
+export type RecallOutcome =
+  | {
+    status: "recalled";
+    kept: number;
+    message: RecallMessage;
+    snapshot?: ProjectSnapshot;
+    unsaved?: string;
+  }
+  | { status: "needs_confirmation"; others: RecallOther[] }
+  | { status: "refused"; reason: RecallRefusal };
+
 /**
- * Restores the project to the snapshot a person's message was sent against
- * and cuts the conversation before it, as one undo step.
+ * Cuts the conversation before a person's message. With `undoEdits` it also
+ * moves the project's history cursor back to the position that message
+ * recorded; a redo brings the edits back.
  */
-export function revertBefore(sessionId: string, index: number) {
-  return invoke<{ kept: number; snapshot: ProjectSnapshot; unsaved?: string }>("ai_revert_before", { sessionId, index });
+export function recall(sessionId: string, index: number, undoEdits: boolean, confirmed: boolean) {
+  return invoke<RecallOutcome>("ai_recall", { sessionId, index, undoEdits, confirmed });
 }
 
 /** The full result behind a truncated preview, while the backend keeps it. */

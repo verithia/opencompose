@@ -136,6 +136,36 @@ impl UndoStack {
         self.below + self.undo.len() + self.redo.len() + self.above
     }
 
+    /// The level entry `id` rests at, searching newest first so a mark near
+    /// the cursor is cheap. This reads positions only, never an entry.
+    pub fn level_of(&self, id: u64) -> Option<usize> {
+        (1..=self.total_levels())
+            .rev()
+            .find(|&level| self.id_at_level(level - 1) == Some(id))
+    }
+
+    /// The applied entries in `from_level..to_level`, oldest first, as the
+    /// author, cause and typed changes each one describes.
+    pub fn entries_between(
+        &self,
+        from_level: usize,
+        to_level: usize,
+        properties: &ProjectProperties,
+    ) -> Result<Vec<(Author, EditCause, oc_dsl::change::ChangeSet)>, String> {
+        let applied = self.applied_level();
+        if from_level > to_level || to_level > applied {
+            return Err("The requested history levels are not applied".into());
+        }
+        (from_level..to_level)
+            .map(|position| {
+                let (author, cause, forward, inverse) = self
+                    .applied_entry_at(position)
+                    .ok_or_else(|| "An applied history entry could not be read".to_string())?;
+                Ok((author, cause, entry_changes(&forward, &inverse, properties)))
+            })
+            .collect()
+    }
+
     /// The id at a zero-based position in the whole history, from the window
     /// where it holds the entry and from the journal elsewhere.
     fn id_at_level(&self, position: usize) -> Option<u64> {
@@ -187,15 +217,10 @@ impl UndoStack {
         session_id: &str,
         properties: &ProjectProperties,
     ) -> Option<OutsideChanges> {
-        let total = self.total_levels();
         let applied = self.applied_level();
         let found = match mark.at {
             None => Some(0),
-            // A mark usually sits near the newest entry, so the search runs
-            // newest first.
-            Some(id) => (1..=total)
-                .rev()
-                .find(|&position| self.id_at_level(position - 1) == Some(id)),
+            Some(id) => self.level_of(id),
         };
         let mut positions = Vec::new();
         let mut undone = 0;

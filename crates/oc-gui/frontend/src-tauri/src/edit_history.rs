@@ -123,9 +123,10 @@ pub fn start_fresh(project: &std::path::Path) {
 
 /// What a patch cannot say about why an entry exists.
 ///
-/// A revert through [`crate::commands::restore_dsl_with_undo`] restores a saved
-/// document, so its diff names the same facts as an ordinary edit. The cause
-/// lets a UI describe it as a conversation revert instead.
+/// A conversation restore writes a saved document, so its diff names the same
+/// facts as an ordinary edit. The persisted cause lets a UI describe an entry
+/// written by that flow as a conversation revert instead. Recall moves the
+/// cursor and never writes one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EditCause {

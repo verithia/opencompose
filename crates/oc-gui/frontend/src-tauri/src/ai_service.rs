@@ -111,7 +111,7 @@ impl Requests {
         self.claim_as(request_id, false)
     }
 
-    /// Claims the slot for a host operation (a revert, a batch recovery). It
+    /// Claims the slot for a host operation (a recall, a batch recovery). It
     /// blocks turns like any claim, but it is no turn: `ai_active_turn` does
     /// not report it and `ai_cancel` cannot release it.
     pub(crate) fn claim_internal(&self, slot: &str) -> Result<Option<RequestClaim>, String> {
@@ -1465,15 +1465,25 @@ pub fn ai_turn_answer(
     ai::agent_loop::host::answer(&request_id, &call_id, decision)
 }
 
-/// Restores the project to before a person's message and cuts the
-/// conversation there, as one step. Refused while a turn runs.
+/// Cuts the conversation just before a person's message and, on request,
+/// moves the project's history cursor back to the position it recorded.
 #[tauri::command]
-pub fn ai_revert_before(
+pub fn ai_recall(
     app: tauri::AppHandle,
     session_id: String,
     index: usize,
-) -> Result<Value, String> {
-    ai::agent_loop::host::revert_before(&app, &session_id, index)
+    undo_edits: bool,
+    confirmed: bool,
+) -> Result<ai::agent_loop::host::RecallOutcome, String> {
+    ai::agent_loop::host::recall(
+        &app,
+        &session_id,
+        ai::agent_loop::host::RecallRequest {
+            index,
+            undo_edits,
+            confirmed,
+        },
+    )
 }
 
 /// The questions a running turn waits on, for a window that reloaded mid-turn.

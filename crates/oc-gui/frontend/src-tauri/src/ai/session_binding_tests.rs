@@ -13,6 +13,7 @@ fn user(text: &str) -> Value {
 fn context(facts: &ProjectFacts) -> PrepareContext<'_> {
     PrepareContext {
         snapshot: None,
+        history: None,
         overhead: 0,
         context_length: 0,
         facts,

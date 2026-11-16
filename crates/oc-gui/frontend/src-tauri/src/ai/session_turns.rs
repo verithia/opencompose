@@ -366,17 +366,51 @@ fn write_started(dir: &Path, started: &HashSet<String>) -> Result<(), String> {
     crate::private_fs::write_atomic(&path, &bytes).map_err(|error| format!("sessions: {error}"))
 }
 
-/// Where a revert cuts: the index of a user message and the snapshot that was
-/// taken just before it was sent.
+/// Where a recall cuts: the index of a person's message and the history
+/// position it recorded.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-pub struct RevertPoint {
+pub struct RecallPoint {
     pub keep: usize,
-    pub dsl_sha: String,
     /// The saved message itself: a cut checks it is still the message at
     /// `keep`, so a compaction in between refuses the cut instead of moving it.
     pub message: Value,
-    /// The project file the message was sent against, when it was recorded.
-    pub project: Option<std::path::PathBuf>,
+    /// The edit-history position the message was sent from, when it has one.
+    pub history_at: Option<super::HistoryAt>,
+}
+
+/// Why a row is not a recall point.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RecallPointError {
+    /// No message at the index, or it is not a person's message.
+    NotAPersonMessage,
+    Store(String),
+}
+
+impl From<String> for RecallPointError {
+    fn from(message: String) -> Self {
+        Self::Store(message)
+    }
+}
+
+/// Why the cut did not happen.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CutFailure {
+    /// The conversation moved since the point was chosen.
+    ConversationChanged,
+    Store(String),
+}
+
+impl From<String> for CutFailure {
+    fn from(message: String) -> Self {
+        Self::Store(message)
+    }
+}
+
+/// The project a person's turn was sent against, written beside its snapshot.
+pub struct SnapshotAt<'a> {
+    pub dsl: &'a str,
+    pub project: Option<&'a Path>,
+    pub history: Option<&'a super::HistoryAt>,
 }
 
 impl Store {
@@ -399,10 +433,9 @@ impl Store {
         id: &str,
         messages: &[Value],
         incarnation: Option<&str>,
-        dsl: &str,
-        project: Option<&Path>,
+        snapshot: SnapshotAt<'_>,
     ) -> Result<Vec<Value>, String> {
-        self.append_turn_at(id, messages, incarnation, Some((dsl, project)))
+        self.append_turn_at(id, messages, incarnation, Some(snapshot))
     }
 
     fn append_turn_at(
@@ -410,7 +443,7 @@ impl Store {
         id: &str,
         messages: &[Value],
         incarnation: Option<&str>,
-        snapshot: Option<(&str, Option<&Path>)>,
+        snapshot: Option<SnapshotAt<'_>>,
     ) -> Result<Vec<Value>, String> {
         let _lock = self.mutation_lock()?;
         let (dir, mut meta) = self.find(id)?;
@@ -431,8 +464,14 @@ impl Store {
         if added.is_empty() {
             return Ok(added);
         }
-        if let Some((dsl, project)) = snapshot {
-            super::versions::attach(&dir, &mut added, Some(dsl), project)?;
+        if let Some(snapshot) = snapshot {
+            super::versions::attach(
+                &dir,
+                &mut added,
+                Some(snapshot.dsl),
+                snapshot.project,
+                snapshot.history,
+            )?;
         }
         let start = view.len();
         view.extend(added.iter().cloned());
@@ -518,26 +557,27 @@ impl Store {
         Ok(closed)
     }
 
-    /// The user message a revert targets, checked against the saved
-    /// conversation: it must be a person's message that carries a snapshot.
-    pub fn revert_point(&self, id: &str, index: usize) -> Result<RevertPoint, String> {
+    /// The person's message a recall targets, checked against the saved
+    /// conversation.
+    pub fn recall_point(&self, id: &str, index: usize) -> Result<RecallPoint, RecallPointError> {
         let (dir, _) = self.find(id)?;
         let (view, _) = read_view(&dir)?;
-        revert_point_in(&view, index)
+        recall_point_in(&view, index)
     }
 
-    /// Cuts the conversation just before the user message `expected` names.
-    /// The cut lands on a user message, so it never separates a call from its
-    /// result, and the compaction history behind the view is kept. Two messages
-    /// sent against one document share a snapshot, so the whole message is
-    /// compared, not only its snapshot.
-    pub fn cut_before_user(&self, id: &str, expected: &RevertPoint) -> Result<usize, String> {
+    /// Cuts the conversation just before the person's message `expected`
+    /// names. The cut lands on a user message, so it never separates a call
+    /// from its result, and the compaction history behind the view is kept.
+    /// Two messages sent against one document share a snapshot, so the whole
+    /// message is compared, not only its snapshot.
+    pub fn cut_before_user(&self, id: &str, expected: &RecallPoint) -> Result<usize, CutFailure> {
         let index = expected.keep;
         let _lock = self.mutation_lock()?;
         let (dir, mut meta) = self.find(id)?;
         let (view, _) = read_view(&dir)?;
-        if revert_point_in(&view, index)?.message != expected.message {
-            return Err("The conversation changed since this revert was chosen; try again.".into());
+        let point = recall_point_in(&view, index).map_err(|_| CutFailure::ConversationChanged)?;
+        if point.message != expected.message {
+            return Err(CutFailure::ConversationChanged);
         }
         let kept: Vec<Value> = view[..index].to_vec();
         // A trim record replaces the view and keeps the turns before it on
@@ -564,25 +604,18 @@ impl Store {
     }
 }
 
-fn revert_point_in(view: &[Value], index: usize) -> Result<RevertPoint, String> {
-    let message = view
-        .get(index)
-        .ok_or_else(|| format!("No message {index} in this conversation"))?;
+fn recall_point_in(view: &[Value], index: usize) -> Result<RecallPoint, RecallPointError> {
+    let message = view.get(index).ok_or(RecallPointError::NotAPersonMessage)?;
     if message["role"] != "user" || message_protocol::kind(message) != Some(MessageKind::User) {
-        return Err("Only a message you sent can be reverted to".into());
+        return Err(RecallPointError::NotAPersonMessage);
     }
-    let dsl_sha = message["dsl_sha"]
-        .as_str()
-        .ok_or("This message has no project snapshot to restore")?
-        .to_owned();
-    let project = message["dsl_project"]
-        .as_str()
-        .map(std::path::PathBuf::from);
-    Ok(RevertPoint {
+    let history_at = message
+        .get("history_at")
+        .and_then(super::HistoryAt::from_saved);
+    Ok(RecallPoint {
         keep: index,
-        dsl_sha,
-        project,
         message: message.clone(),
+        history_at,
     })
 }
 
@@ -645,6 +678,7 @@ mod tests {
                 None,
                 super::super::PrepareContext {
                     snapshot: None,
+                    history: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &facts,
@@ -827,6 +861,7 @@ mod tests {
         let facts = super::super::ProjectFacts::default();
         let context = || super::super::PrepareContext {
             snapshot: None,
+            history: None,
             overhead: 0,
             context_length: 0,
             facts: &facts,
@@ -1116,8 +1151,10 @@ mod tests {
         let (_root, store, id) = fixture();
         let mut first = user("first");
         first["dsl_sha"] = json!("a".repeat(64));
+        first["history_at"] = json!({"project": "/songs/song.ocp", "level": 0});
         let mut second = user("second");
         second["dsl_sha"] = json!("b".repeat(64));
+        second["history_at"] = json!({"project": "/songs/song.ocp", "level": 2, "at": 7});
         store
             .append_turn(
                 &id,
@@ -1133,15 +1170,22 @@ mod tests {
             )
             .unwrap();
         assert!(
-            store.revert_point(&id, 2).is_err(),
-            "a tool result is not a revert point"
+            store.recall_point(&id, 2).is_err(),
+            "a tool result is not a recall point"
         );
         assert!(
-            store.revert_point(&id, 1).is_err(),
+            store.recall_point(&id, 1).is_err(),
             "an assistant round is not one either"
         );
-        let point = store.revert_point(&id, 4).unwrap();
-        assert_eq!(point.dsl_sha, "b".repeat(64));
+        let point = store.recall_point(&id, 4).unwrap();
+        assert_eq!(
+            point.history_at,
+            Some(super::super::HistoryAt {
+                project: "/songs/song.ocp".into(),
+                level: 2,
+                at: Some(7),
+            })
+        );
         // A cut chosen against another message (the conversation moved under
         // the revert) changes nothing, even when that message names the same
         // snapshot.

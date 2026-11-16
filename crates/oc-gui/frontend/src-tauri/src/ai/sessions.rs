@@ -51,7 +51,7 @@ pub mod tool_results;
 #[path = "session_turns.rs"]
 pub mod turns;
 #[path = "session_versions.rs"]
-mod versions;
+pub(crate) mod versions;
 #[path = "session_view.rs"]
 mod view;
 use super::host_notice::{BindCause, HostNotice, PendingBinding, ToolSurface};
@@ -67,6 +67,7 @@ use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
+pub(crate) use versions::HistoryAt;
 pub use view::MAX_PAGE_TURNS;
 
 const AUDITION_RENDER_STAGE: &str = ".audition-render.part";
@@ -446,6 +447,8 @@ pub type Guard<'a> = &'a dyn Fn() -> Result<(), SessionError>;
 pub struct PrepareContext<'a> {
     /// The current document, captured with the request's project identity.
     pub snapshot: Option<&'a str>,
+    /// The edit-history position the document was at, beside its snapshot.
+    pub history: Option<&'a HistoryAt>,
     pub overhead: u64,
     pub context_length: u64,
     pub facts: &'a ProjectFacts,
@@ -1375,6 +1378,7 @@ impl Store {
     ) -> Result<Prepared, PrepareFailure<E>> {
         let PrepareContext {
             snapshot,
+            history,
             overhead,
             context_length,
             facts,
@@ -1500,7 +1504,7 @@ impl Store {
         turns::check_pairing(&pending).map_err(|error| format!("sessions: {error}"))?;
         // A version and its first transcript reference share the store lock,
         // so collection cannot remove the version between the two writes.
-        versions::attach(&dir, &mut pending[start..], snapshot, project)?;
+        versions::attach(&dir, &mut pending[start..], snapshot, project, history)?;
         let inline_audio = filtered
             .iter()
             .any(|message| message.get("input_audio").is_some());
@@ -2530,6 +2534,15 @@ fn saved_message(message: &Value) -> Option<Value> {
     {
         saved.insert("dsl_project".into(), json!(project));
     }
+    // A person's edit-history position, kept beside the snapshot it belongs to.
+    // Only a person's message records one; any other row or shape is dropped.
+    if role == "user"
+        && message_protocol::kind(message) == Some(MessageKind::User)
+        && let Some(history) = message.get("history_at").and_then(HistoryAt::from_saved)
+        && let Ok(value) = serde_json::to_value(&history)
+    {
+        saved.insert("history_at".into(), value);
+    }
     // The file holding the full result behind a truncated preview. The sweep
     // reads the hash as that file's owner, so dropping it here deletes it.
     if let Some(sha) = message[tool_results::RESULT_SHA]
@@ -2747,8 +2760,9 @@ fn is_audition(message: &Value) -> bool {
 
 /// The replay-free form of a prose message. A person's message keeps what is
 /// theirs, verbatim: the text, the attachments as canonical descriptors, the
-/// snapshot a revert restores (`dsl_sha`, `dsl_project`) and the steering id.
-/// Calls, provider state and inline audio never survive.
+/// snapshot and history position a recall uses (`dsl_sha`, `dsl_project`,
+/// `history_at`) and the steering id. Calls, provider state and inline audio
+/// never survive.
 fn plain_message(message: &Value) -> Option<Value> {
     let role = message["role"].as_str()?;
     if role != "user" && role != "assistant" {
@@ -2786,14 +2800,21 @@ fn plain_message(message: &Value) -> Option<Value> {
                 plain[key] = value.clone();
             }
         }
+        if let Some(value) = message
+            .get("history_at")
+            .and_then(HistoryAt::from_saved)
+            .and_then(|history| serde_json::to_value(history).ok())
+        {
+            plain["history_at"] = value;
+        }
     }
     message_protocol::tag(&mut plain, meta);
     Some(plain)
 }
 
 /// Compacted messages retain prose, validated file descriptors and a person's
-/// revert snapshot, never tool calls, provider state or signatures. Audio
-/// content remains available on disk.
+/// snapshot and history position, never tool calls, provider state or
+/// signatures. Audio content remains available on disk.
 pub fn strips_replay_state(messages: &[Value]) -> bool {
     messages.iter().all(|message| {
         message.as_object().is_some_and(|object| {
@@ -2808,12 +2829,13 @@ pub fn strips_replay_state(messages: &[Value]) -> bool {
                         | "message_meta"
                         | "dsl_sha"
                         | "dsl_project"
+                        | "history_at"
                 )
             }) && object
                 .get("message_meta")
                 .is_none_or(|_| message_protocol::read(message).is_some())
                 && message_protocol::text_call(message).is_none()
-                && ["dsl_sha", "dsl_project"].iter().all(|key| {
+                && ["dsl_sha", "dsl_project", "history_at"].iter().all(|key| {
                     object
                         .get(*key)
                         .is_none_or(|_| message_protocol::kind(message) == Some(MessageKind::User))
@@ -4257,6 +4279,7 @@ mod tests {
                     Some(&project),
                     crate::ai::sessions::PrepareContext {
                         snapshot: None,
+                        history: None,
                         overhead: 0,
                         context_length: 0,
                         facts: &context,
@@ -4395,6 +4418,7 @@ mod tests {
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
                     snapshot: None,
+                    history: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &context,
@@ -4421,6 +4445,7 @@ mod tests {
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
                     snapshot: None,
+                    history: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &context,
@@ -4465,6 +4490,7 @@ mod tests {
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
                     snapshot: None,
+                    history: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &context,
@@ -4503,6 +4529,7 @@ mod tests {
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
                     snapshot: None,
+                    history: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &context,
@@ -4541,6 +4568,7 @@ mod tests {
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
                     snapshot: None,
+                    history: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &context,
@@ -4566,6 +4594,7 @@ mod tests {
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
                     snapshot: None,
+                    history: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &context,
@@ -4610,6 +4639,7 @@ mod tests {
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
                     snapshot: None,
+                    history: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &context,
@@ -5083,6 +5113,7 @@ mod tests {
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
                     snapshot: None,
+                    history: None,
                     overhead: 0,
                     context_length: 1_000_000,
                     facts: &facts(&project),
@@ -5304,6 +5335,7 @@ mod tests {
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
                     snapshot: None,
+                    history: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &context,
@@ -5667,6 +5699,7 @@ mod tests {
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
                     snapshot: None,
+                    history: None,
                     overhead: 0,
                     context_length: 1_000_000,
                     facts: &facts(&project),
@@ -5813,6 +5846,7 @@ mod tests {
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
                     snapshot: None,
+                    history: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &facts(&project),
@@ -5857,6 +5891,7 @@ mod tests {
                     None,
                     crate::ai::sessions::PrepareContext {
                         snapshot: None,
+                        history: None,
                         overhead: 0,
                         context_length: 0,
                         facts: &context,
@@ -6013,6 +6048,7 @@ mod tests {
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
                     snapshot: None,
+                    history: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &facts(&project),
@@ -6168,6 +6204,7 @@ mod tests {
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
                     snapshot: None,
+                    history: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &context,
@@ -6295,6 +6332,7 @@ mod tests {
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
                     snapshot: None,
+                    history: None,
                     overhead: 0,
                     context_length: window,
                     facts: &context,
@@ -6333,6 +6371,7 @@ mod tests {
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
                     snapshot: None,
+                    history: None,
                     overhead: 0,
                     context_length: 1_000_000,
                     facts: &context,
@@ -6434,13 +6473,16 @@ mod tests {
             )
             .unwrap();
         let context = facts(&project);
+        let mut first = user("first");
+        first["history_at"] = json!({"project": "/songs/song.ocp", "level": 2, "at": 5});
         store
             .prepare(
                 &parent.id,
-                &[user("first")],
+                &[first],
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
                     snapshot: None,
+                    history: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &context,
@@ -6467,7 +6509,12 @@ mod tests {
             .unwrap();
         assert_eq!(fork.parent.as_deref(), Some(parent.id.as_str()));
         assert_eq!(fork.title, "parent (fork)");
-        assert_eq!(store.load(&fork.id).unwrap().messages.len(), 2);
+        let inherited = store.load(&fork.id).unwrap().messages;
+        assert_eq!(inherited.len(), 2);
+        assert_eq!(
+            inherited[0]["history_at"],
+            json!({"project": "/songs/song.ocp", "level": 2, "at": 5})
+        );
         // The fork is independent: a new turn leaves the parent untouched.
         store
             .prepare(
@@ -6476,6 +6523,7 @@ mod tests {
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
                     snapshot: None,
+                    history: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &context,
@@ -6527,6 +6575,7 @@ mod tests {
                     Some(&project),
                     crate::ai::sessions::PrepareContext {
                         snapshot: None,
+                        history: None,
                         overhead: 0,
                         context_length: 0,
                         facts: &context,
@@ -6619,6 +6668,7 @@ mod tests {
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
                     snapshot: None,
+                    history: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &context,
@@ -6660,6 +6710,7 @@ mod tests {
                     Some(&project),
                     crate::ai::sessions::PrepareContext {
                         snapshot: None,
+                        history: None,
                         overhead: 0,
                         context_length: 0,
                         facts: &context,
@@ -6766,6 +6817,7 @@ mod tests {
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
                     snapshot: None,
+                    history: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &context,
@@ -6811,6 +6863,7 @@ mod tests {
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
                     snapshot: None,
+                    history: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &context,
@@ -6900,6 +6953,7 @@ mod tests {
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
                     snapshot: None,
+                    history: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &context,
@@ -6945,6 +6999,7 @@ mod tests {
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
                     snapshot: None,
+                    history: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &context,
@@ -7018,6 +7073,7 @@ mod tests {
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
                     snapshot: None,
+                    history: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &context,
@@ -7041,6 +7097,7 @@ mod tests {
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
                     snapshot: None,
+                    history: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &context,
@@ -7124,6 +7181,7 @@ mod tests {
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
                     snapshot: None,
+                    history: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &facts(&project),
@@ -7164,6 +7222,7 @@ mod tests {
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
                     snapshot: None,
+                    history: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &context,
@@ -7195,6 +7254,7 @@ mod tests {
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
                     snapshot: None,
+                    history: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &context,
@@ -7235,6 +7295,7 @@ mod tests {
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
                     snapshot: None,
+                    history: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &context,
@@ -7270,6 +7331,7 @@ mod tests {
         let system = json!({ "role": "system", "content": "you are the panel" });
         let context_for = || crate::ai::sessions::PrepareContext {
             snapshot: None,
+            history: None,
             overhead: 0,
             context_length: 0,
             facts: &context,
@@ -7346,6 +7408,7 @@ mod tests {
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
                     snapshot: None,
+                    history: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &context,
@@ -7379,6 +7442,7 @@ mod tests {
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
                     snapshot: None,
+                    history: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &context,
@@ -7399,6 +7463,7 @@ mod tests {
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
                     snapshot: None,
+                    history: None,
                     overhead: 0,
                     context_length: 0,
                     facts: &context,
@@ -7535,6 +7600,7 @@ mod tests {
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
                     snapshot: None,
+                    history: None,
                     overhead: 0,
                     context_length: 1_000_000,
                     facts: &facts(&project),
@@ -7594,6 +7660,49 @@ mod tests {
         let saved = saved_message(&raw).unwrap();
         assert_eq!(saved["source_render"], "/saved/render.wav");
         assert_eq!(saved["message_meta"]["kind"], "audition");
+    }
+
+    #[test]
+    fn a_person_row_keeps_a_well_formed_history_position_only() {
+        let history = json!({"project": "/songs/song.ocp", "level": 3, "at": 9});
+        let row = json!({
+            "role": "user",
+            "content": "tighten the low end",
+            "message_meta": message_meta(MessageKind::User),
+            "history_at": history,
+        });
+        let saved = saved_message(&row).unwrap();
+        assert_eq!(saved["history_at"], history);
+        assert!(crate::ai::is_local_message_field("history_at"));
+        assert!(strips_replay_state(std::slice::from_ref(&saved)));
+        assert!(crate::ai::message_extra(&saved).is_none());
+
+        let assistant = json!({
+            "role": "assistant",
+            "content": "done",
+            "history_at": history,
+        });
+        assert!(
+            saved_message(&assistant)
+                .unwrap()
+                .get("history_at")
+                .is_none(),
+            "only a person's row records a position"
+        );
+        for bad in [
+            json!({"project": "/songs/song.ocp", "at": 1}),
+            json!({"project": "", "level": 0}),
+            json!({"project": "/songs/song.ocp", "level": -1}),
+            json!({"project": "/songs/song.ocp", "level": 1.5}),
+            json!({"project": "/songs/song.ocp", "level": 0, "at": "nine"}),
+        ] {
+            let mut row = row.clone();
+            row["history_at"] = bad;
+            assert!(
+                saved_message(&row).unwrap().get("history_at").is_none(),
+                "a malformed position is dropped"
+            );
+        }
     }
 
     #[test]
@@ -7694,6 +7803,7 @@ mod tests {
                 Some(&project),
                 crate::ai::sessions::PrepareContext {
                     snapshot: None,
+                    history: None,
                     overhead: 0,
                     context_length: 1_000_000,
                     facts: &facts(&project),

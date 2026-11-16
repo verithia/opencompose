@@ -5,7 +5,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Show } from "solid-js";
 import { cleanup, fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
-import { invokeMock, makeSnapshot, openStepGroups } from "./setup";
+import { askDialogMock, invokeMock, makeSnapshot, openStepGroups } from "./setup";
 import { store } from "../stores/project";
 import { AiPanel } from "../components/AiPanel";
 import { WorkspaceChooserDialog } from "../components/WorkspaceChooser";
@@ -136,9 +136,11 @@ const backend = {
   /** Whether the next `sessions_open` reports a compaction. */
   loadedCompacted: false,
   newCalls: [] as Record<string, unknown>[],
-  /** The reverts the panel asked for, and the document they restore. */
-  reverts: [] as { sessionId: string; index: number }[],
-  revertSnapshot: makeSnapshot(),
+  /** The recalls the panel asked for, and the document they restore. */
+  recalls: [] as { sessionId: string; index: number; undoEdits: boolean; confirmed: boolean }[],
+  recallSnapshot: makeSnapshot(),
+  /** Whether the next recall with undo asks before undoing others' edits. */
+  needsConfirmation: false,
   /** The request and conversation of the most recent turn start. */
   lastTurn: null as { requestId: string; sessionId: string } | null,
   /** The turn the backend reports running, if any. */
@@ -253,11 +255,27 @@ function installBackend() {
       case "sessions_delete":
         backend.sessions = backend.sessions.filter((entry) => entry.id !== typed.id);
         return undefined;
-      case "ai_revert_before": {
+      case "ai_recall": {
+        const sessionId = String(typed.sessionId);
         const index = Number(typed.index);
-        backend.reverts.push({ sessionId: String(typed.sessionId), index });
-        backend.conversations[String(typed.sessionId)] = (backend.conversations[String(typed.sessionId)] ?? []).slice(0, index);
-        return { kept: index, snapshot: backend.revertSnapshot };
+        const undoEdits = typed.undoEdits === true;
+        const confirmed = typed.confirmed === true;
+        backend.recalls.push({ sessionId, index, undoEdits, confirmed });
+        if (undoEdits && !confirmed && backend.needsConfirmation) {
+          return { status: "needs_confirmation", others: [{ author: { kind: "person" }, count: 3 }] };
+        }
+        const conversation = backend.conversations[sessionId] ?? [];
+        const cut = conversation[index];
+        backend.conversations[sessionId] = conversation.slice(0, index);
+        return {
+          status: "recalled",
+          kept: index,
+          message: {
+            content: typeof cut?.content === "string" ? cut.content : "",
+            ...(cut?.media?.length ? { media: cut.media } : {}),
+          },
+          ...(undoEdits ? { snapshot: backend.recallSnapshot } : {}),
+        };
       }
       case "ai_active_turn": return backend.active;
       case "sessions_compact":
@@ -339,8 +357,9 @@ beforeEach(() => {
   backend.compacted = [];
   backend.loadedCompacted = false;
   backend.newCalls = [];
-  backend.reverts = [];
-  backend.revertSnapshot = makeSnapshot();
+  backend.recalls = [];
+  backend.recallSnapshot = makeSnapshot();
+  backend.needsConfirmation = false;
   backend.lastTurn = null;
   backend.active = null;
   backend.compactedSessions = [];
@@ -1458,20 +1477,25 @@ describe("restored transcript", () => {
   });
 });
 
-describe("reverting before a message", () => {
+describe("recalling a message", () => {
   const hiddenCall: WireMessage = {
     role: "assistant", content: null,
     tool_calls: [{ id: "call-1", type: "function", function: { name: "tracks_list", arguments: "{}" } }],
   };
   const conversation: WireMessage[] = [
-    { role: "user", content: "first take", dsl_sha: "a".repeat(64) },
+    { role: "user", content: "first take", dsl_sha: "a".repeat(64), history_at: { project: "/songs/song.ocp", level: 0 } },
     hiddenCall,
     { role: "tool", tool_call_id: "call-1", content: '{"ok":true}' },
-    { role: "user", content: "second take", dsl_sha: "b".repeat(64) },
+    { role: "user", content: "second take", dsl_sha: "b".repeat(64), history_at: { project: "/songs/song.ocp", level: 2, at: 5 } },
     { role: "assistant", content: "Done." },
   ];
+  const labeledItem = (label: string) => screen
+    .getAllByRole("menuitem")
+    .find((item) => item.querySelector(".context-menu-label")?.textContent === label)!;
+  const plainItem = () => labeledItem("Recall message");
+  const undoItem = () => labeledItem("Recall message and undo edits");
 
-  it("offers the revert only on a person's row", async () => {
+  it("offers both recall actions only on a person's row", async () => {
     backend.conversations = { s1: conversation };
     await mountPanel();
     await openSwitcher();
@@ -1481,26 +1505,30 @@ describe("reverting before a message", () => {
     // The answer and the tool row are not points a person asked from.
     for (const index of [1, 3]) {
       fireEvent.contextMenu(messageRows()[index]);
-      expect(screen.queryByRole("menuitem", { name: /Revert to before this message/ })).toBeNull();
+      expect(screen.queryByRole("menuitem", { name: /^Recall message$/ })).toBeNull();
       fireEvent.keyDown(document, { key: "Escape" });
     }
 
     fireEvent.contextMenu(messageRows()[2]);
-    expect(screen.getByRole("menuitem", { name: /Revert to before this message/ })).toBeTruthy();
+    expect(plainItem()).toBeTruthy();
+    expect(undoItem()).toBeTruthy();
     fireEvent.keyDown(document, { key: "Escape" });
   });
 
-  it("can rewind the first prompt and restores it to the composer", async () => {
+  it("recalls the first prompt and restores it to the composer", async () => {
     backend.conversations = { s1: conversation };
     await mountPanel();
     await openSwitcher();
     fireEvent.click(document.querySelector(".ai-session-row-title")!);
     await waitFor(() => expect(messageRows()).toHaveLength(4));
     fireEvent.contextMenu(messageRows()[0]);
-    const rewind = screen.getByRole("menuitem", { name: /Revert to before this message/ });
-    expect(rewind.getAttribute("aria-disabled")).not.toBe("true");
-    fireEvent.click(rewind);
-    await waitFor(() => expect(backend.reverts).toEqual([{ sessionId: "s1", index: 0 }]));
+    expect(plainItem().getAttribute("aria-disabled")).not.toBe("true");
+    fireEvent.click(plainItem());
+    await waitFor(() =>
+      expect(backend.recalls).toEqual([
+        { sessionId: "s1", index: 0, undoEdits: false, confirmed: false },
+      ]),
+    );
     await waitFor(() => expect(input().value).toBe("first take"));
     expect(messageRows()).toHaveLength(0);
   });
@@ -1514,13 +1542,18 @@ describe("reverting before a message", () => {
 
     // Row 2 is the second ask; its message is wire 3 because of the envelope.
     fireEvent.contextMenu(messageRows()[2]);
-    fireEvent.click(screen.getByRole("menuitem", { name: /Revert to before this message/ }));
-    // One command does both halves: it keeps the wire prefix and returns the
-    // document that goes with it.
-    const reverts = () => invokeMock.mock.calls.filter(([command]) => command === "ai_revert_before");
-    await waitFor(() => expect(reverts()).toHaveLength(1));
-    expect(reverts()[0][1]).toEqual({ sessionId: "s1", index: 3 });
-    expect(backend.reverts).toEqual([{ sessionId: "s1", index: 3 }]);
+    fireEvent.click(plainItem());
+    const recalls = () => invokeMock.mock.calls.filter(([command]) => command === "ai_recall");
+    await waitFor(() => expect(recalls()).toHaveLength(1));
+    expect(recalls()[0][1]).toEqual({
+      sessionId: "s1",
+      index: 3,
+      undoEdits: false,
+      confirmed: false,
+    });
+    expect(backend.recalls).toEqual([
+      { sessionId: "s1", index: 3, undoEdits: false, confirmed: false },
+    ]);
     await waitFor(() => expect(input().value).toBe("second take"));
   });
 
@@ -1550,16 +1583,118 @@ describe("reverting before a message", () => {
     ];
     const liveUser = messageRows().find((row) => row.textContent?.includes("list the mix"))!;
     fireEvent.contextMenu(liveUser);
-    fireEvent.click(screen.getByRole("menuitem", { name: /Revert to before this message/ }));
-    await waitFor(() => expect(backend.reverts).toEqual([{ sessionId: "s1", index: 2 }]));
+    fireEvent.click(plainItem());
+    await waitFor(() =>
+      expect(backend.recalls).toEqual([
+        { sessionId: "s1", index: 2, undoEdits: false, confirmed: false },
+      ]),
+    );
   });
 
-  it("applies a revert the file did not take and says the file is behind", async () => {
+  it("recalls and undoes edits in one command, applying the moved document", async () => {
+    backend.conversations = { s1: conversation };
+    const restored = '@project "Recalled"\n  tempo: 90\n';
+    backend.recallSnapshot = { ...makeSnapshot(), dsl_source: restored };
+    await mountPanel();
+    await openSwitcher();
+    fireEvent.click(document.querySelector(".ai-session-row-title")!);
+    await waitFor(() => expect(messageRows()).toHaveLength(4));
+
+    fireEvent.contextMenu(messageRows()[2]);
+    expect(undoItem().getAttribute("aria-disabled")).not.toBe("true");
+    fireEvent.click(undoItem());
+    await waitFor(() =>
+      expect(backend.recalls).toEqual([
+        { sessionId: "s1", index: 3, undoEdits: true, confirmed: false },
+      ]),
+    );
+    await waitFor(() => expect(store.dslSource()).toBe(restored));
+    await waitFor(() => expect(input().value).toBe("second take"));
+    expect(messageRows()).toHaveLength(2);
+  });
+
+  it("asks before undoing edits by another author, and a declined ask changes nothing", async () => {
+    backend.conversations = { s1: conversation };
+    backend.needsConfirmation = true;
+    askDialogMock.mockResolvedValueOnce(false);
+    await mountPanel();
+    await openSwitcher();
+    fireEvent.click(document.querySelector(".ai-session-row-title")!);
+    await waitFor(() => expect(messageRows()).toHaveLength(4));
+    const before = store.dslSource();
+
+    fireEvent.contextMenu(messageRows()[2]);
+    fireEvent.click(undoItem());
+    await waitFor(() => expect(askDialogMock).toHaveBeenCalledTimes(1));
+    expect(askDialogMock.mock.calls[0][0]).toBe(
+      i18n.t("ai.recall.confirm", {
+        edits: i18n.t("ai.recall.otherEdits", {
+          count: "3",
+          author: i18n.t("history.author.person"),
+        }),
+      }),
+    );
+    await waitFor(() => expect(backend.recalls).toHaveLength(1));
+    expect(backend.recalls[0]).toEqual({
+      sessionId: "s1",
+      index: 3,
+      undoEdits: true,
+      confirmed: false,
+    });
+    expect(store.dslSource()).toBe(before);
+    expect(input().value).toBe("");
+    expect(messageRows()).toHaveLength(4);
+  });
+
+  it("proceeds with confirmed undo after the person accepts", async () => {
+    backend.conversations = { s1: conversation };
+    backend.needsConfirmation = true;
+    askDialogMock.mockResolvedValueOnce(true);
+    await mountPanel();
+    await openSwitcher();
+    fireEvent.click(document.querySelector(".ai-session-row-title")!);
+    await waitFor(() => expect(messageRows()).toHaveLength(4));
+
+    fireEvent.contextMenu(messageRows()[2]);
+    fireEvent.click(undoItem());
+    await waitFor(() => expect(askDialogMock).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(backend.recalls).toHaveLength(2));
+    expect(backend.recalls[1]).toEqual({
+      sessionId: "s1",
+      index: 3,
+      undoEdits: true,
+      confirmed: true,
+    });
+    await waitFor(() => expect(input().value).toBe("second take"));
+    expect(messageRows()).toHaveLength(2);
+  });
+
+  it("disables undo edits when the row recorded no history position", async () => {
+    backend.conversations = { s1: [
+      { role: "user", content: "first take" },
+      { role: "assistant", content: "Done." },
+      { role: "user", content: "second take" },
+      { role: "assistant", content: "Done again." },
+    ] };
+    await mountPanel();
+    await openSwitcher();
+    fireEvent.click(document.querySelector(".ai-session-row-title")!);
+    await waitFor(() => expect(messageRows()).toHaveLength(4));
+
+    fireEvent.contextMenu(messageRows()[2]);
+    const item = undoItem();
+    expect(item.getAttribute("aria-disabled")).toBe("true");
+    expect(item.querySelector(".context-menu-hint")?.textContent).toBe(i18n.t("ai.recall.noPosition"));
+    fireEvent.click(item);
+    expect(backend.recalls).toHaveLength(0);
+  });
+
+  it("applies a recall the file did not take and says the file is behind", async () => {
     backend.conversations = { s1: conversation };
     const base = invokeMock.getMockImplementation()!;
     invokeMock.mockImplementation(async (command: string, args?: unknown) => {
       const answer = await base(command, args);
-      return command === "ai_revert_before" ? { ...(answer as object), unsaved: "disk full" } : answer;
+      return command === "ai_recall" ? { ...(answer as object), unsaved: "disk full" } : answer;
     });
     await mountPanel();
     await openSwitcher();
@@ -1567,26 +1702,26 @@ describe("reverting before a message", () => {
     await waitFor(() => expect(messageRows()).toHaveLength(4));
 
     fireEvent.contextMenu(messageRows()[2]);
-    fireEvent.click(screen.getByRole("menuitem", { name: /Revert to before this message/ }));
-    await waitFor(() => expect(backend.reverts).toHaveLength(1));
-    // The panel settles on the reverted conversation, and the warning stays.
+    fireEvent.click(undoItem());
+    await waitFor(() => expect(backend.recalls).toHaveLength(1));
+    // The panel settles on the recalled conversation, and the warning stays.
     await waitFor(() => expect(messageRows()).toHaveLength(2));
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(aiWorkspace.notice()).toEqual({
       // The backend sends only the reason; the sentence around it is the panel's.
-      text: "Reverted, but the project file was not written: disk full. Save the project to keep the reverted version.",
+      text: "Recalled, but the project file was not written: disk full. Save the project to keep the recalled version.",
       tone: "error",
     });
   });
 
-  it("leaves the document alone when the revert is refused", async () => {
+  it("leaves the document alone when the recall is refused", async () => {
     backend.conversations = { s1: conversation };
     const base = invokeMock.getMockImplementation()!;
     let attempts = 0;
     invokeMock.mockImplementation(async (command: string, args?: unknown) => {
-      if (command === "ai_revert_before") {
+      if (command === "ai_recall") {
         attempts += 1;
-        throw new Error("the session store refused the revert");
+        throw new Error("the session store refused the recall");
       }
       return base(command, args);
     });
@@ -1597,22 +1732,47 @@ describe("reverting before a message", () => {
     const before = store.dslSource();
 
     fireEvent.contextMenu(messageRows()[2]);
-    fireEvent.click(screen.getByRole("menuitem", { name: /Revert to before this message/ }));
+    fireEvent.click(plainItem());
     await waitFor(() => expect(attempts).toBe(1));
 
     // Nothing is applied when the command refuses: the document and the
     // conversation still describe one moment.
     expect(store.dslSource()).toBe(before);
-    expect(backend.reverts).toHaveLength(0);
+    expect(backend.recalls).toHaveLength(0);
   });
 
-  it("holds the conversation while a revert is in flight, and applies its document after the panel moved", async () => {
+  it("localizes a typed refusal from the backend", async () => {
+    backend.conversations = { s1: conversation };
+    const base = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation(async (command: string, args?: unknown) => {
+      if (command === "ai_recall") {
+        return { status: "refused", reason: "other_project" };
+      }
+      return base(command, args);
+    });
+    await mountPanel();
+    await openSwitcher();
+    fireEvent.click(document.querySelector(".ai-session-row-title")!);
+    await waitFor(() => expect(messageRows()).toHaveLength(4));
+
+    fireEvent.contextMenu(messageRows()[2]);
+    fireEvent.click(plainItem());
+    await waitFor(() =>
+      expect(aiWorkspace.notice()).toEqual({
+        text: i18n.t("ai.recall.refused.otherProject"),
+        tone: "error",
+      }),
+    );
+    expect(messageRows()).toHaveLength(4);
+  });
+
+  it("holds the conversation while a recall is in flight, and applies its document after the panel moved", async () => {
     backend.conversations = { s1: conversation };
     const base = invokeMock.getMockImplementation()!;
     let release!: () => void;
     const replied = new Promise<void>((resolve) => { release = resolve; });
     invokeMock.mockImplementation(async (command: string, args?: unknown) => {
-      if (command === "ai_revert_before") {
+      if (command === "ai_recall") {
         await replied;
       }
       return base(command, args);
@@ -1623,9 +1783,9 @@ describe("reverting before a message", () => {
     await waitFor(() => expect(messageRows()).toHaveLength(4));
 
     fireEvent.contextMenu(messageRows()[2]);
-    fireEvent.click(screen.getByRole("menuitem", { name: /Revert to before this message/ }));
-    await waitFor(() => expect(invokeMock.mock.calls.some(([command]) => command === "ai_revert_before")).toBe(true));
-    // The revert rewrites this conversation: no other one opens meanwhile, and
+    fireEvent.click(undoItem());
+    await waitFor(() => expect(invokeMock.mock.calls.some(([command]) => command === "ai_recall")).toBe(true));
+    // The recall rewrites this conversation: no other one opens meanwhile, and
     // "New conversation" says why. The list itself still opens.
     expect(switcher().disabled).toBe(false);
     const fresh = document.querySelector(".ai-session-new") as HTMLButtonElement;
@@ -1637,12 +1797,12 @@ describe("reverting before a message", () => {
     expect(messageRows()).toHaveLength(4);
 
     // The panel moves to another workspace before the reply lands. The backend
-    // already restored the document, so it is published; the conversation it
+    // already moved the document, so it is published; the conversation it
     // belonged to is off screen, so nothing is repainted into this one.
     await workspaceStore.open("/Users/me/other");
     await waitFor(() => expect(aiSession.open()).toBeNull());
-    const restored = '@project "Reverted"\n  tempo: 90\n';
-    backend.revertSnapshot = { ...makeSnapshot(), dsl_source: restored };
+    const restored = '@project "Recalled"\n  tempo: 90\n';
+    backend.recallSnapshot = { ...makeSnapshot(), dsl_source: restored };
     release();
     await waitFor(() => expect(store.dslSource()).toBe(restored));
     expect(aiSession.open()).toBeNull();
@@ -1650,7 +1810,7 @@ describe("reverting before a message", () => {
     expect(messageRows()).toHaveLength(0);
   });
 
-  it("withholds the revert in the history a compaction replaced", async () => {
+  it("withholds the recall in the history a compaction replaced", async () => {
     backend.conversations = { s1: conversation };
     backend.compactedSessions = ["s1"];
     backend.original = { s1: conversation };
@@ -1662,14 +1822,14 @@ describe("reverting before a message", () => {
     fireEvent.click(document.querySelector(".ai-transcript-earlier")!);
     await waitFor(() => expect(document.querySelector(".ai-original-banner")).toBeTruthy());
     fireEvent.contextMenu(messageRows()[2]);
-    const item = screen.getByRole("menuitem", { name: /Revert to before this message/ });
+    const item = plainItem();
     expect(item.getAttribute("aria-disabled")).toBe("true");
     expect(item.querySelector(".context-menu-hint")?.textContent).toBe(i18n.t("ai.revert.originalView"));
     fireEvent.click(item);
-    expect(backend.reverts).toHaveLength(0);
+    expect(backend.recalls).toHaveLength(0);
   });
 
-  it("withholds the revert while a turn is still writing the history", async () => {
+  it("withholds the recall while a turn is still writing the history", async () => {
     backend.conversations = { s1: conversation };
     // The conversation the inherited turn writes is the one on screen: while
     // the turn runs, the panel does not switch to another one.
@@ -1681,14 +1841,14 @@ describe("reverting before a message", () => {
     await waitFor(() => expect(document.querySelector(".ai-turn-orphan")).toBeTruthy());
 
     fireEvent.contextMenu(messageRows()[2]);
-    const item = screen.getByRole("menuitem", { name: /Revert to before this message/ });
+    const item = plainItem();
     expect(item.getAttribute("aria-disabled")).toBe("true");
     expect(item.querySelector(".context-menu-hint")?.textContent).toBe(i18n.t("ai.revert.turnRunning"));
     fireEvent.click(item);
-    expect(backend.reverts).toHaveLength(0);
+    expect(backend.recalls).toHaveLength(0);
   });
 
-  it("withholds the revert while the panel is sending a message", async () => {
+  it("withholds the recall while the panel is sending a message", async () => {
     backend.conversations = { s1: conversation };
     await mountPanel();
     await openSwitcher();
@@ -1702,7 +1862,7 @@ describe("reverting before a message", () => {
     await waitFor(() => expect(document.querySelector(".ai-send-btn.cancel")).toBeTruthy());
 
     fireEvent.contextMenu(messageRows()[2]);
-    const item = screen.getByRole("menuitem", { name: /Revert to before this message/ });
+    const item = plainItem();
     expect(item.getAttribute("aria-disabled")).toBe("true");
     expect(item.querySelector(".context-menu-hint")?.textContent).toBe(i18n.t("ai.revert.turnRunning"));
     pending.resolve({ role: "assistant", content: "Done." });

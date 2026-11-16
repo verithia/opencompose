@@ -916,10 +916,11 @@ pub fn update_dsl(source: String, state: State<AppState>) -> Result<ProjectSnaps
 }
 
 /// Replaces the whole document with saved DSL as one labelled undo entry,
-/// keeping the saved text exactly. A revert restores a conversation's
-/// snapshot through this, so one undo takes it back. Nothing is written to
-/// disk: the caller publishes with [`publish_restored`] once the rest of its
-/// step has succeeded, so a step that fails leaves the files as they were.
+/// keeping the saved text exactly. Tests use it to build an entry that a
+/// restored snapshot leaves behind. Nothing is written to disk: the caller
+/// publishes with [`publish_restored`] once the rest of its step has
+/// succeeded, so a step that fails leaves the files as they were.
+#[cfg(test)]
 pub(crate) fn restore_dsl_with_undo(
     inner: &mut AppStateInner,
     source: String,

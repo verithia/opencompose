@@ -2,10 +2,58 @@
 
 use super::{MessageKind, message_protocol};
 use crate::private_fs;
+use crate::state::AppStateInner;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::io::Read;
 use std::path::Path;
+
+/// The edit-history position a person's message was sent from: the applied
+/// level and the id of the entry at that level, in one project file. A recall
+/// that undoes edits moves the cursor back here. Older rows carry none, which
+/// reads as "no recorded position".
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HistoryAt {
+    /// The canonical project path the position belongs to.
+    pub project: String,
+    /// Applied entries below the cursor when the message was sent.
+    pub level: usize,
+    /// The entry the cursor rested on; absent at the start of the history.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<u64>,
+}
+
+impl HistoryAt {
+    /// The open document's position, when it has a file to name.
+    pub fn of(inner: &AppStateInner) -> Option<Self> {
+        let path = inner.file_path.as_deref()?;
+        Some(Self {
+            project: super::canonical_path(path).to_string_lossy().into_owned(),
+            level: inner.undo.applied_level(),
+            at: inner.undo.mark().at,
+        })
+    }
+
+    /// Reads a saved row field, rejecting anything this shape cannot mean.
+    pub fn from_saved(value: &Value) -> Option<Self> {
+        let object = value.as_object()?;
+        let project = object
+            .get("project")?
+            .as_str()
+            .filter(|path| !path.is_empty() && path.chars().count() <= super::MAX_PROJECT_PATH)?;
+        let level = usize::try_from(object.get("level")?.as_u64()?).ok()?;
+        let at = match object.get("at") {
+            None | Some(Value::Null) => None,
+            Some(value) => Some(value.as_u64()?),
+        };
+        Some(Self {
+            project: project.to_owned(),
+            level,
+            at,
+        })
+    }
+}
 
 fn limit() -> usize {
     let limits = oc_dsl::source_map::SourceLimits::default().document;
@@ -63,6 +111,7 @@ pub(super) fn attach(
     messages: &mut [Value],
     snapshot: Option<&str>,
     project: Option<&Path>,
+    history: Option<&HistoryAt>,
 ) -> Result<(), String> {
     let Some(snapshot) = snapshot else {
         return Ok(());
@@ -84,6 +133,10 @@ pub(super) fn attach(
         message["dsl_sha"] = json!(hash);
         if let Some(project) = &project {
             message["dsl_project"] = json!(project);
+        }
+        if let Some(history) = history {
+            message["history_at"] =
+                serde_json::to_value(history).map_err(|error| format!("sessions: {error}"))?;
         }
     }
     Ok(())
@@ -127,6 +180,7 @@ mod tests {
                     None,
                     PrepareContext {
                         snapshot: Some(dsl),
+                        history: None,
                         overhead: 0,
                         context_length: 1_000_000,
                         facts: &facts,
@@ -162,6 +216,50 @@ mod tests {
     }
 
     #[test]
+    fn admission_writes_a_person_rows_history_position() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::new(root.path().join("sessions"));
+        let meta = store.create(None, None, Some("Fixture"), None).unwrap();
+        let facts = ProjectFacts {
+            path: None,
+            dsl_digest: "fixture".into(),
+            track_count: 0,
+        };
+        let history = HistoryAt {
+            project: "/songs/song.ocp".into(),
+            level: 4,
+            at: Some(9),
+        };
+        let context = || PrepareContext {
+            snapshot: Some("first document"),
+            history: Some(&history),
+            overhead: 0,
+            context_length: 1_000_000,
+            facts: &facts,
+            provider: "fixture",
+            model: "fixture",
+            outside: None,
+            surface: None,
+        };
+        let prepared = store
+            .prepare(
+                &meta.id,
+                &[json!({"role":"user","content":"Compose"})],
+                None,
+                context(),
+            )
+            .unwrap();
+        let expected = serde_json::to_value(&history).unwrap();
+        assert_eq!(prepared.messages[0]["history_at"], expected);
+        // A replayed row keeps its own position; a later admission does not
+        // rewrite the message that was already there.
+        let replay = store
+            .prepare(&meta.id, &prepared.messages, None, context())
+            .unwrap();
+        assert_eq!(replay.messages[0]["history_at"], expected);
+    }
+
+    #[test]
     fn host_context_has_no_human_snapshot() {
         let dir = tempfile::tempdir().unwrap();
         let mut messages = vec![
@@ -171,7 +269,7 @@ mod tests {
             json!({"role":"user","context":"audition","content":"Clip"}),
             json!({"role":"user","message_meta":{"version":1,"kind":"round_budget"},"content":"Continue"}),
         ];
-        attach(dir.path(), &mut messages, Some("document"), None).unwrap();
+        attach(dir.path(), &mut messages, Some("document"), None, None).unwrap();
         assert!(messages[0].get("dsl_sha").is_some());
         assert!(messages[1..].iter().all(|row| row.get("dsl_sha").is_none()));
     }
@@ -212,6 +310,7 @@ mod tests {
                     None,
                     PrepareContext {
                         snapshot: Some("document"),
+                        history: None,
                         overhead: 0,
                         context_length: 1_000_000,
                         facts: &facts,
@@ -244,6 +343,7 @@ mod tests {
                 None,
                 PrepareContext {
                     snapshot: None,
+                    history: None,
                     overhead: 0,
                     context_length: 1_000_000,
                     facts: &facts,

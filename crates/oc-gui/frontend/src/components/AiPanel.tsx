@@ -17,7 +17,7 @@ import { store } from "../stores/project";
 import { previewStore } from "../stores/preview";
 import { log } from "../stores/log";
 import type { ApprovalRequest, TurnStop, WireMessage } from "../ai/wire";
-import type { TurnEnvelope, TurnOutcome } from "../ai/api";
+import type { RecallOther, RecallRefusal, TurnEnvelope, TurnOutcome } from "../ai/api";
 import { changeSetText } from "../stores/changeText";
 import { hasChangeFacts, isChangeSet } from "../types/change";
 import { approvalEffect, approvalTarget } from "../ai/approval";
@@ -73,6 +73,7 @@ import {
 } from "../ai/transcript";
 import { filterReferences, projectReferences, referenceQuery, withoutReferenceQuery, type ProjectReference } from "../ai/references";
 import { i18n, type I18nKey } from "../stores/i18n";
+import { authorName } from "../stores/historyText";
 import { aiLimits, effectiveLimits, type ModelLimitsView } from "../stores/aiLimits";
 import { aiSession, type QueuedMessage } from "../stores/aiSession";
 import { workspaceStore } from "../stores/workspace";
@@ -892,16 +893,43 @@ export function AiPanel(props: { onClose?: () => void }) {
     }
   };
 
+  /** The sentence a confirmation shows, built from the grouped authors. */
+  const recallOtherText = (other: RecallOther): string =>
+    other.count === 1
+      ? i18n.t("ai.recall.otherEdit", { author: authorName(other.author) })
+      : i18n.t("ai.recall.otherEdits", {
+        count: String(other.count),
+        author: authorName(other.author),
+      });
+
+  const recallConfirmText = (others: RecallOther[]): string =>
+    i18n.t("ai.recall.confirm", {
+      edits: others.map(recallOtherText).join(", "),
+    });
+
+  const recallRefusalText = (reason: RecallRefusal): string => {
+    switch (reason) {
+      case "turn_running": return i18n.t("ai.revert.turnRunning");
+      case "batch_open": return i18n.t("ai.recall.refused.batchOpen");
+      case "other_project": return i18n.t("ai.recall.refused.otherProject");
+      case "no_recorded_position": return i18n.t("ai.recall.refused.noRecordedPosition");
+      case "position_cleared": return i18n.t("ai.recall.refused.positionCleared");
+      case "not_a_person_message": return i18n.t("ai.recall.refused.notAPersonMessage");
+      case "conversation_changed": return i18n.t("ai.recall.refused.conversationChanged");
+    }
+  };
+
   /**
-   * Revert to before a person's message: the message and everything after it
-   * leave the conversation, and the project returns to the snapshot it was
-   * sent against. The backend does both as one step and one undo entry.
+   * Recall a person's message: the message and everything after it leave the
+   * conversation. With `undoEdits` the project's history cursor also moves
+   * back to the position the message recorded, as one history jump that a
+   * redo reverses.
    *
    * The cut takes a wire index, not a row index: a restored row carries the
    * message it came from, and a row the live turn painted is matched against
    * the saved wire, because rows hide envelopes and delivery messages.
    */
-  const revertToBefore = async (msg: ChatMessage): Promise<void> => {
+  const recallMessage = async (msg: ChatMessage, undoEdits: boolean): Promise<void> => {
     const id = openId();
     if (!id || msg.role !== "user") return;
     const epoch = scopeEpoch;
@@ -911,10 +939,15 @@ export function AiPanel(props: { onClose?: () => void }) {
       return;
     }
     // The original view shows the history a compaction replaced, whose indices
-    // do not address the saved wire a revert cuts.
+    // do not address the saved wire a recall cuts.
     if (originalView() || sessionBusy()) return;
+    // Older rows recorded no position, so there is nothing to move the cursor to.
+    if (undoEdits && !msg.historyAt) {
+      notify(i18n.t("ai.recall.noPosition"), "error");
+      return;
+    }
     // The conversation stays on screen until the reply lands: switching away
-    // would leave the restored project without the history that goes with it.
+    // would leave a moved history without the transcript that goes with it.
     setSessionBusy(true);
     try {
       let keep = msg.wireIndex;
@@ -923,26 +956,41 @@ export function AiPanel(props: { onClose?: () => void }) {
         keep = (loaded && savedWireIndex(msg, loaded.messages)) ?? undefined;
       }
       if (keep === undefined) {
-        notify(i18n.t("ai.revert.unsaved"), "error");
+        notify(i18n.t("ai.recall.unsaved"), "error");
         return;
       }
-      const reverted = await aiApi.revertBefore(id, keep);
-      // The backend already restored this document, so it is published for the
+      let outcome = await aiApi.recall(id, keep, undoEdits, false);
+      if (outcome.status === "needs_confirmation") {
+        const { ask } = await import("@tauri-apps/plugin-dialog");
+        const confirmed = await ask(recallConfirmText(outcome.others), {
+          title: i18n.t("ai.recall.andUndoEdits"),
+        });
+        if (!confirmed) return;
+        outcome = await aiApi.recall(id, keep, true, true);
+      }
+      if (outcome.status === "refused") {
+        notify(recallRefusalText(outcome.reason), "error");
+        return;
+      }
+      if (outcome.status !== "recalled") return;
+      // The backend already moved this document, so it is published for the
       // project it names even when the panel moved on or closed; only the
       // repaint of a conversation that is off screen is skipped.
-      if (reverted.snapshot.file_path === store.filePath()) store.applyAiSnapshot(reverted.snapshot);
-      // The revert stands either way; a file that did not take it is the one
+      if (outcome.snapshot?.file_path === store.filePath()) store.applyAiSnapshot(outcome.snapshot);
+      // The recall stands either way; a file that did not take it is the one
       // thing the person must hear, so it is never replaced by a success.
-      const unsaved = reverted.unsaved;
-      if (unsaved) notify(i18n.t("ai.revert.fileUnsaved", { error: unsaved }), "error");
+      const unsaved = outcome.unsaved;
+      if (unsaved) notify(i18n.t("ai.recall.fileUnsaved", { error: unsaved }), "error");
       if (disposed || epoch !== scopeEpoch || openId() !== id) return;
       setOriginalView(false);
       if (!(await paintSession(id)) || disposed || epoch !== scopeEpoch || openId() !== id) return;
-      setInput(msg.content);
-      setAttachments(msg.media ?? []);
-      if (!unsaved) notify(i18n.t("ai.revert.beforeDone"), "success");
+      setInput(outcome.message.content);
+      setAttachments(outcome.message.media ?? []);
+      if (!unsaved) {
+        notify(i18n.t(undoEdits ? "ai.recall.doneUndo" : "ai.recall.done"), "success");
+      }
     } catch (error) {
-      notify(i18n.t("ai.revert.beforeFailed", { error: errorMessage(error) }), "error");
+      notify(i18n.t("ai.recall.failed", { error: errorMessage(error) }), "error");
     } finally {
       setSessionBusy(false);
     }
@@ -2468,10 +2516,10 @@ export function AiPanel(props: { onClose?: () => void }) {
                         : i18n.t("ai.fork.hint"),
                     onSelect: () => void forkFromTurn(msg),
                   }] : []),
-                  // Only a person's message is a point to revert to: the backend
-                  // restores the project it was sent against and cuts there.
+                  // Only a person's message is a point to recall to: the
+                  // backend cuts there and can move the history cursor back.
                   ...(msg.role === "user" ? [{
-                    label: i18n.t("ai.revert.before"),
+                    label: i18n.t("ai.recall.message"),
                     // A running turn keeps writing into the history this
                     // rewrites, so the item is withheld until it settles.
                     disabled: busy || originalView(),
@@ -2479,8 +2527,21 @@ export function AiPanel(props: { onClose?: () => void }) {
                       ? i18n.t("ai.revert.turnRunning")
                       : originalView()
                         ? i18n.t("ai.revert.originalView")
-                        : i18n.t("ai.revert.actionHint"),
-                    onSelect: () => void revertToBefore(msg),
+                        : i18n.t("ai.recall.messageHint"),
+                    onSelect: () => void recallMessage(msg, false),
+                  }, {
+                    label: i18n.t("ai.recall.andUndoEdits"),
+                    // A row saved before positions were recorded has none to
+                    // move the cursor back to.
+                    disabled: busy || originalView() || !msg.historyAt,
+                    hint: busy
+                      ? i18n.t("ai.revert.turnRunning")
+                      : originalView()
+                        ? i18n.t("ai.revert.originalView")
+                        : !msg.historyAt
+                          ? i18n.t("ai.recall.noPosition")
+                          : i18n.t("ai.recall.andUndoEditsHint"),
+                    onSelect: () => void recallMessage(msg, true),
                   }] : []),
                 ];
                 if (items.length) openContextMenu({ x: event.clientX, y: event.clientY, items });

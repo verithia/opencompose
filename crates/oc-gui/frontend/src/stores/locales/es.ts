@@ -1305,7 +1305,6 @@ export const es = {
   "ai.failure.commitFailed": "No se pudieron finalizar los cambios: {error}. Haz clic derecho en tu mensaje para revertir este turno.",
   "ai.failure.saveFailed": "Ediciones aplicadas: {edits}; están en el proyecto, pero su archivo no se escribió: {error}. Guarda el proyecto para conservarlas.",
   "ai.turn.wireFolded": "La conversación era demasiado grande para enviarla, así que {folded} pasos de herramientas antiguos se resumieron en uno ({before} a {after} mensajes).",
-  "ai.revert.fileUnsaved": "Se revirtió, pero el archivo del proyecto no se escribió: {error}. Guarda el proyecto para conservar la versión revertida.",
   "ai.recover.unsaved": "Se conservaron las ediciones de un turno interrumpido, pero el archivo del proyecto no se escribió: {error}. Guarda el proyecto para conservarlas.",
   "ai.cap.kept": "Se alcanzó el límite de rondas. Ediciones aplicadas: {edits}; se conservan en el proyecto. Pulsa Continuar para reanudar.",
   "ai.cap.keptNone": "Se alcanzó el límite de rondas antes de cualquier edición. Pulsa Continuar para reanudar.",

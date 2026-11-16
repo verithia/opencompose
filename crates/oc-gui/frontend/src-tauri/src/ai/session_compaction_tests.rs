@@ -81,7 +81,7 @@ fn the_pending_ask_after_a_tool_round_keeps_its_image_or_audio() {
 }
 
 #[test]
-fn retained_user_rows_keep_their_snapshot_and_steering_id() {
+fn retained_user_rows_keep_their_snapshot_history_position_and_steering_id() {
     let mut view = rounds();
     let mut steer = user("and softer highs");
     steer["message_meta"]["steer_id"] = json!("row-7");
@@ -89,6 +89,7 @@ fn retained_user_rows_keep_their_snapshot_and_steering_id() {
     let mut ask = user("now the bass");
     ask["dsl_sha"] = json!("c".repeat(64));
     ask["dsl_project"] = json!("/songs/song.ocp");
+    ask["history_at"] = json!({"project": "/songs/song.ocp", "level": 4, "at": 11});
     view.push(ask);
     let compaction = plan_compaction(&view, 0, &facts(), "s").unwrap();
     let rows = &compaction.messages;
@@ -100,11 +101,15 @@ fn retained_user_rows_keep_their_snapshot_and_steering_id() {
     let ask = rows.last().unwrap();
     assert_eq!(ask["dsl_sha"], "c".repeat(64));
     assert_eq!(ask["dsl_project"], "/songs/song.ocp");
+    assert_eq!(
+        ask["history_at"],
+        json!({"project": "/songs/song.ocp", "level": 4, "at": 11})
+    );
     assert!(strips_replay_state(rows));
 }
 
 #[test]
-fn revert_to_the_newest_message_works_after_auto_compaction_with_a_snapshot() {
+fn recall_to_the_newest_message_works_after_auto_compaction_with_a_snapshot() {
     let (store, project) = fixture("compaction-revert");
     let session = store
         .create(Some(project.parent().unwrap()), Some(&project), None, None)
@@ -112,6 +117,13 @@ fn revert_to_the_newest_message_works_after_auto_compaction_with_a_snapshot() {
     let mut view = rounds();
     view.push(user("now the bass"));
     let window = estimate_tokens(&view);
+    let history = crate::ai::sessions::HistoryAt {
+        project: crate::ai::sessions::canonical_path(&project)
+            .to_string_lossy()
+            .into_owned(),
+        level: 1,
+        at: Some(42),
+    };
     let prepared = store
         .prepare(
             &session.id,
@@ -119,6 +131,7 @@ fn revert_to_the_newest_message_works_after_auto_compaction_with_a_snapshot() {
             Some(&project),
             PrepareContext {
                 snapshot: Some("@project\n  tempo: 120\n"),
+                history: Some(&history),
                 overhead: 0,
                 context_length: window,
                 facts: &facts(),
@@ -132,9 +145,19 @@ fn revert_to_the_newest_message_works_after_auto_compaction_with_a_snapshot() {
     assert!(prepared.compacted.is_some(), "the turn compacts");
     let index = prepared.messages.len() - 1;
     assert_eq!(prepared.messages[index]["content"], "now the bass");
-    let point = store.revert_point(&session.id, index).unwrap();
+    let point = store.recall_point(&session.id, index).unwrap();
     assert_eq!(
-        store.dsl_version(&session.id, &point.dsl_sha).unwrap(),
+        point.history_at,
+        Some(history),
+        "compaction kept the position"
+    );
+    assert_eq!(
+        store
+            .dsl_version(
+                &session.id,
+                prepared.messages[index]["dsl_sha"].as_str().unwrap()
+            )
+            .unwrap(),
         "@project\n  tempo: 120\n"
     );
     assert_eq!(store.cut_before_user(&session.id, &point).unwrap(), index);
@@ -232,6 +255,7 @@ fn a_failed_auto_compaction_is_reported_and_the_turn_still_prepares() {
             Some(&project),
             PrepareContext {
                 snapshot: None,
+                history: None,
                 overhead: 0,
                 context_length: 0,
                 facts: &facts(),
@@ -278,6 +302,7 @@ fn a_refused_admission_saves_nothing() {
     let project_facts = facts();
     let context = || PrepareContext {
         snapshot: Some("@project\n"),
+        history: None,
         overhead: 0,
         context_length: 0,
         facts: &project_facts,
@@ -297,6 +322,7 @@ fn a_refused_admission_saves_nothing() {
         Some(&project),
         PrepareContext {
             snapshot: Some("@project\n  tempo: 90\n"),
+            history: None,
             outside: None,
             ..context()
         },
@@ -346,6 +372,7 @@ fn a_landed_compaction_succeeds_even_when_its_metadata_cannot_be_written() {
             Some(&project),
             PrepareContext {
                 snapshot: None,
+                history: None,
                 overhead: 0,
                 context_length: 0,
                 facts: &facts(),
@@ -380,6 +407,7 @@ fn a_second_requested_compaction_of_the_same_state_is_a_conflict() {
             Some(&project),
             PrepareContext {
                 snapshot: None,
+                history: None,
                 overhead: 0,
                 context_length: 0,
                 facts: &facts(),
