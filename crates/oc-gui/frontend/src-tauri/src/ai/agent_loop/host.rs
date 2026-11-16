@@ -468,6 +468,69 @@ impl Host for AppHost {
         lock(&self.allowed).clone()
     }
 
+    async fn compact(&self) -> Result<Vec<Value>, crate::ai::sessions::CompactionFailure> {
+        use crate::ai::sessions::CompactionFailure;
+        let facts = {
+            let state = self.state();
+            let inner = state.lock_inner();
+            crate::commands::facts(&inner)
+        };
+        let context = crate::ai::limits::context_length(&self.provider);
+        let target = (context as f64 * crate::ai::sessions::AUTO_COMPACT_TARGET_FRACTION) as u64;
+        let id = self.session_id.clone();
+        let planned = {
+            let (id, facts) = (id.clone(), facts.clone());
+            self.blocking(move |_| Store::config().plan_compaction_now(&id, target, &facts))
+                .await
+                .map_err(|_| CompactionFailure::ProviderError)?
+        };
+        let plan = match planned {
+            Ok(plan) => plan,
+            Err(_) => return Err(CompactionFailure::Conflict),
+        };
+        let summary = crate::ai_service::compaction_summary(
+            &self.app,
+            self.provider.clone(),
+            &id,
+            plan.input.clone(),
+        )
+        .await;
+        let (summary, mut failure) = match summary {
+            Ok(summary) => (Some(summary), None),
+            Err(failure) => (None, Some(failure)),
+        };
+        let outcome = match Store::config().commit_compaction(plan, summary.as_deref()) {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                failure.get_or_insert(CompactionFailure::Conflict);
+                let retried = Store::config().mechanical_recompaction(&id, target, &facts);
+                match retried {
+                    Ok(Some(outcome)) => outcome,
+                    Ok(None) => return Err(CompactionFailure::Conflict),
+                    Err(_) => {
+                        log::warn!("[ai] session {id} mid-turn compaction failed: {error}");
+                        return Err(CompactionFailure::Conflict);
+                    }
+                }
+            }
+        };
+        match failure {
+            Some(failure) => {
+                let _ = self.app.emit(
+                    crate::commands::AUTO_SESSION_EVENT,
+                    crate::commands::compaction_failed_event(&id, failure),
+                );
+            }
+            None => {
+                let _ = self.app.emit(
+                    crate::commands::AUTO_SESSION_EVENT,
+                    crate::commands::compaction_recorded_event(&id, &outcome),
+                );
+            }
+        }
+        Ok(outcome.messages)
+    }
+
     async fn record(&self, messages: &[Value]) -> Result<Vec<Value>, String> {
         let (id, incarnation, messages) = (
             self.session_id.clone(),
@@ -915,39 +978,20 @@ async fn run_claimed(
     };
     // Preparation closes any round a dead turn left open, saves the new user
     // message with its snapshot, and compacts when the window needs it.
-    let prepared = {
-        let (app, provider, id, incarnation, project, surface) = (
-            app.clone(),
-            provider.clone(),
-            start.session_id.clone(),
-            incarnation.clone(),
-            start.project.clone(),
-            surface,
-        );
-        tauri::async_runtime::spawn_blocking(move || {
-            crate::commands::prepare_turn_for(
-                &app,
-                &provider,
-                &messages,
-                crate::commands::SavedTurnBinding {
-                    id: &id,
-                    incarnation: &incarnation,
-                    project: project.as_deref(),
-                    tool_tokens,
-                    surface: Some(surface),
-                },
-            )
-            .map_err(AiError::from)
-        })
-        .await
-        .map_err(|error| {
-            AiError::new(
-                "session_save",
-                format!("Session persistence task failed: {error}"),
-            )
-        })
-        .and_then(|result| result)
-    };
+    let prepared = crate::commands::prepare_turn_for(
+        app,
+        provider,
+        &messages,
+        crate::commands::SavedTurnBinding {
+            id: &start.session_id,
+            incarnation: &incarnation,
+            project: start.project.as_deref(),
+            tool_tokens,
+            surface: Some(surface),
+        },
+    )
+    .await
+    .map_err(AiError::from);
     let prepared = match prepared {
         Ok(prepared) => prepared,
         Err(error) => {
@@ -990,6 +1034,7 @@ async fn run_claimed(
             .text_protocol
             .unwrap_or(!provider.capabilities.native_tool_calling),
         context_length: crate::ai::limits::context_length(provider),
+        max_output: crate::ai::limits::max_output(provider),
     };
     let outcome = super::run_turn(&host, spec, control.cancel).await;
     // The next turn compares the project's history against this mark, whether
@@ -2059,7 +2104,10 @@ mod tests {
         let state = AppState::new();
         for error in [
             crate::commands::sessions_delete(id.into()).unwrap_err(),
-            crate::commands::sessions_drop_history(id.into(), 0).unwrap_err(),
+            crate::commands::sessions_clear_history(id.into())
+                .map(|_| ())
+                .map_err(|error| error.message)
+                .unwrap_err(),
             crate::commands::compact_for(&state, id, None)
                 .map(|_| ())
                 .unwrap_err(),

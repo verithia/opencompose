@@ -210,11 +210,19 @@ pub fn sessions_page(
     store().page(&id, before, turns.unwrap_or(MAX_PAGE_TURNS), &revision)
 }
 
-/// Drop all history before the `keep`-th compaction, then collect assets no
-/// remaining message refers to.
+/// Drop every record before this conversation's second-newest compaction, then
+/// collect assets no remaining message refers to. A conversation with fewer
+/// than three compactions keeps everything.
 #[tauri::command]
-pub fn sessions_drop_history(id: String, keep: u64) -> Result<Value, String> {
-    Ok(store().drop_history_guarded(&id, keep, &|| refuse_while_running(&id))?)
+pub fn sessions_clear_history(id: String) -> Result<sessions::ClearReport, SessionError> {
+    store().clear_old_history_guarded(&id, &|| refuse_while_running(&id))
+}
+
+/// Drop old history for every conversation, skipping the ones a turn is
+/// writing. Preferences offers this as one action with one confirmation.
+#[tauri::command]
+pub fn sessions_clear_all_history() -> Result<sessions::ClearReport, String> {
+    store().clear_all_old_history(&|id| crate::ai::agent_loop::host::session_running(id))
 }
 
 /// A conversation a turn is writing keeps its shape until the turn ends.
@@ -475,7 +483,7 @@ fn fitted_request(
 /// Whether the request can be sent is decided before anything is saved: a
 /// refusal (too large for the model, not replayable) leaves the conversation,
 /// its archive and its metadata exactly as they were.
-pub fn prepare_turn_for<R: tauri::Runtime>(
+pub async fn prepare_turn_for<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     provider: &AiProviderEntry,
     messages: &Value,
@@ -522,8 +530,11 @@ pub fn prepare_turn_for<R: tauri::Runtime>(
     // in the conversation and are measured there.
     let overhead = sessions::estimate_tokens(&system) + binding.tool_tokens;
     let context = crate::ai::limits::context_length(provider);
-    let tokens = wire::TokenBudget::new(context, binding.tool_tokens);
-    let prepared = store
+    let max_output = crate::ai::limits::max_output(provider);
+    let prompt_tokens = crate::ai::compaction_prompt::prompt_tokens();
+    let tokens = wire::TokenBudget::new(context, binding.tool_tokens)
+        .map(|budget| budget.for_compaction(max_output, prompt_tokens));
+    let mut prepared = store
         .prepare_admitted(
             &session_id,
             incoming,
@@ -533,6 +544,8 @@ pub fn prepare_turn_for<R: tauri::Runtime>(
                 history: history.as_ref(),
                 overhead,
                 context_length: context,
+                max_output,
+                prompt_tokens,
                 facts: &facts,
                 provider: &provider.id,
                 model: &provider.model,
@@ -547,11 +560,61 @@ pub fn prepare_turn_for<R: tauri::Runtime>(
             PrepareFailure::Admitted(error) => error,
             PrepareFailure::Store(message) => PrepareTurnError::Store(message),
         })?;
+    // The summary call is slow, so it runs with the store lock released. The
+    // commit appends one compaction record only if the conversation still
+    // matches the plan; a failure compacts mechanically instead.
+    if let Some(plan) = prepared.pending_compaction.take() {
+        let target = (context as f64 * sessions::AUTO_COMPACT_TARGET_FRACTION) as u64;
+        let summary = crate::ai_service::compaction_summary(
+            app,
+            provider.clone(),
+            &session_id,
+            plan.input.clone(),
+        )
+        .await;
+        let (summary, mut failure) = match summary {
+            Ok(summary) => (Some(summary), None),
+            Err(failure) => (None, Some(failure)),
+        };
+        let outcome = match store.commit_compaction(plan, summary.as_deref()) {
+            Ok(outcome) => Some(outcome),
+            Err(error) if error.kind == SessionErrorKind::Conflict => {
+                // The conversation moved after planning. One retry from the
+                // current view still compacts, and the panel is told why the
+                // model text was replaced.
+                failure.get_or_insert(sessions::CompactionFailure::Conflict);
+                match store.mechanical_recompaction(&session_id, target, &facts) {
+                    Ok(outcome) => outcome,
+                    Err(error) => {
+                        prepared.compaction_error = Some(error.message);
+                        None
+                    }
+                }
+            }
+            Err(error) => {
+                prepared.compaction_error = Some(error.message);
+                None
+            }
+        };
+        if let Some(outcome) = outcome {
+            prepared.messages = outcome.messages.clone();
+            prepared.meta.tokens = outcome.tokens_after;
+            prepared.meta.compacted_at = Some(outcome.compacted_at.clone());
+            prepared.compacted = Some(outcome);
+        }
+        if let Some(failure) = failure {
+            let _ = app.emit(
+                AUTO_SESSION_EVENT,
+                compaction_failed_event(&session_id, failure),
+            );
+        }
+    }
     if let Some(error) = prepared.compaction_error.as_ref() {
         let _ = app.emit(
             AUTO_SESSION_EVENT,
-            compaction_failed_event(&session_id, error),
+            compaction_failed_event(&session_id, sessions::CompactionFailure::ProviderError),
         );
+        log::warn!("[ai] session {session_id} auto-compaction failed: {error}");
     }
     let saved = match prepared.live {
         Some(live) => live,
@@ -683,13 +746,27 @@ pub fn compaction_event(
     })
 }
 
-/// The payload of [`AUTO_SESSION_EVENT`] when the compaction a turn needed
-/// failed: the turn went out uncompacted, and the panel can say so.
-pub fn compaction_failed_event(session_id: &str, error: &str) -> Value {
+/// The payload of [`AUTO_SESSION_EVENT`] after a mid-turn compaction landed.
+pub fn compaction_recorded_event(session_id: &str, compaction: &Compaction) -> Value {
+    json!({
+        "session_id": session_id,
+        "compacted": true,
+        "dropped_from": compaction.dropped_from,
+        "dropped_to": compaction.dropped_to,
+        "tokens_before": compaction.tokens_before,
+        "tokens_after": compaction.tokens_after,
+        "retained_pairs": compaction.retained_pairs,
+    })
+}
+
+/// The payload of [`AUTO_SESSION_EVENT`] when the summary call for a
+/// compaction failed: the mechanical summary replaced it, and the panel says
+/// why the model text is missing.
+pub fn compaction_failed_event(session_id: &str, reason: sessions::CompactionFailure) -> Value {
     json!({
         "session_id": session_id,
         "notice": "compaction_failed",
-        "message": error,
+        "reason": reason,
     })
 }
 

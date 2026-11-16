@@ -69,10 +69,12 @@ function report(overrides: Partial<StorageReport> = {}): StorageReport {
 
 let cleared = false;
 let clearedAuditions = false;
+let clearedHistory = false;
 
 function mockStorage(initial: StorageReport = report()) {
   cleared = false;
   clearedAuditions = false;
+  clearedHistory = false;
   invokeMock.mockImplementation(async (cmd: string) => {
     if (cmd === "storage_report") return initial;
     if (cmd === "clear_sample_cache") {
@@ -96,6 +98,10 @@ function mockStorage(initial: StorageReport = report()) {
           },
         },
       };
+    }
+    if (cmd === "sessions_clear_all_history") {
+      clearedHistory = true;
+      return { sessions: 2, dropped_records: 5, removed_assets: 1, freed_bytes: 2048 };
     }
     if (cmd === "open_storage_folder") return undefined;
     return undefined;
@@ -239,6 +245,30 @@ describe("the Storage page", () => {
     expect(
       invokeMock.mock.calls.some(([command]) => command === "clear_sample_cache"),
     ).toBe(false);
+  });
+
+  it("clears old conversation history after confirming", async () => {
+    askDialogMock.mockResolvedValue(true);
+    const { container } = await renderPage();
+
+    fireEvent.click(container.querySelector(".preferences-clear-history")!);
+    await vi.waitFor(() => expect(askDialogMock).toHaveBeenCalled());
+    expect(askDialogMock.mock.calls[0][0]).toBe(
+      i18n.t("preferences.storage.clearHistoryConfirm"),
+    );
+    await vi.waitFor(() =>
+      expect(container.querySelector(".preferences-history-cleared")).toBeTruthy(),
+    );
+    expect(clearedHistory).toBe(true);
+  });
+
+  it("leaves conversation history alone when the operator cancels", async () => {
+    askDialogMock.mockResolvedValue(false);
+    const { container } = await renderPage();
+
+    fireEvent.click(container.querySelector(".preferences-clear-history")!);
+    await vi.waitFor(() => expect(askDialogMock).toHaveBeenCalled());
+    expect(clearedHistory).toBe(false);
   });
 
   it("states that the sample cache needs a saved project", async () => {

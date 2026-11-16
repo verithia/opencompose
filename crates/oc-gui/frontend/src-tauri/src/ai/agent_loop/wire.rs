@@ -447,6 +447,10 @@ pub struct TokenBudget {
     /// provider whose tokenizer counts more than the estimate is measured by
     /// what it reported.
     pub scale: f64,
+    /// Output tokens the model may write; held back from the trigger.
+    pub max_output: u64,
+    /// Tokens the compaction prompt costs; held back from the trigger.
+    pub prompt_tokens: u64,
 }
 
 /// The highest scale a report may set; anything above is a broken report.
@@ -459,6 +463,8 @@ impl TokenBudget {
             window,
             fixed,
             scale: 1.0,
+            max_output: 0,
+            prompt_tokens: 0,
         })
     }
 
@@ -485,10 +491,18 @@ impl TokenBudget {
         }
     }
 
-    /// The share of the window above which a wire is folded, the same share
-    /// that triggers the store's compaction.
+    /// The size above which a wire compacts, from the same function the store
+    /// uses so admission and the loop never disagree.
     pub fn limit(&self) -> u64 {
-        (self.window as f64 * crate::ai::sessions::AUTO_COMPACT_FRACTION) as u64
+        crate::ai::sessions::compaction_threshold(self.window, self.max_output, self.prompt_tokens)
+    }
+
+    /// Holds back the output the model may write and the compaction prompt, so
+    /// the trigger leaves room for both.
+    pub fn for_compaction(mut self, max_output: u64, prompt_tokens: u64) -> Self {
+        self.max_output = max_output;
+        self.prompt_tokens = prompt_tokens;
+        self
     }
 
     /// The share a fold aims for, so the next rounds do not fold again at once.

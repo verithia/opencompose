@@ -5,6 +5,7 @@
 import { createSignal } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
 import * as api from "./api";
+import type { ClearReport } from "../ai/sessions";
 import type { DataKind, StorageReport } from "./api";
 
 const [report, setReport] = createSignal<StorageReport | null>(null);
@@ -86,6 +87,24 @@ async function clearAuditions(): Promise<boolean> {
   } catch (failure) {
     setError(String(failure));
     return false;
+  } finally {
+    setClearing(false);
+  }
+}
+
+/** Drop old conversation history in every session and adopt the new size. */
+async function clearOldSessionHistory(): Promise<ClearReport | null> {
+  setClearing(true);
+  try {
+    const cleared = await api.aiApi.clearAllSessionHistory();
+    const next = await api.storageReport();
+    if (isReport(next)) setReport(next);
+    setError(null);
+    setStatus(cleared && cleared.sessions > 0 ? "history-cleared" : "history-empty");
+    return cleared;
+  } catch (failure) {
+    setError(String(failure));
+    return null;
   } finally {
     setClearing(false);
   }
@@ -193,6 +212,7 @@ export const storageStore = {
   clearSamples,
   clearClipPcmCache,
   clearAuditions,
+  clearOldSessionHistory,
   removeProjectData,
   openFolder,
   reset,

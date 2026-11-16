@@ -5,6 +5,7 @@ pub mod anthropic;
 pub mod auth;
 pub mod catalog;
 pub mod chat_completions;
+pub mod compaction_prompt;
 pub mod credential_lifecycle;
 pub mod credential_store;
 pub mod effort;

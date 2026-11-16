@@ -93,14 +93,25 @@ pub const MAX_SESSION_BYTES: u64 = 1024 * 1024 * 1024;
 /// One message of a turn is refused above this, so a single tool result cannot
 /// consume the whole file.
 pub const MAX_MESSAGE_CHARS: usize = 400_000;
-/// Auto-compaction fires when the estimated request exceeds this share of the
-/// model's context window...
-pub const AUTO_COMPACT_FRACTION: f64 = 0.75;
-/// ...but only when the conversation itself is above this share, so a large
-/// system prompt alone does not compact on every turn.
-pub const AUTO_COMPACT_CONVERSATION_FLOOR: f64 = 0.15;
+/// The smallest share of the context window at which auto-compaction fires.
+pub const COMPACTION_MIN_FRACTION: f64 = 0.6;
+/// Space held back for the compaction prompt when the prompt itself is small.
+pub const COMPACTION_RESERVE_FLOOR: u64 = 1000;
 /// The target a compaction aims for, as a share of the context window.
 pub const AUTO_COMPACT_TARGET_FRACTION: f64 = 0.5;
+
+/// The token size at which a request compacts.
+///
+/// The threshold leaves room for the output the model may write and for the
+/// compaction prompt, but never drops below the share that keeps almost half
+/// the window free. A window of 0 or 1 means unknown and is the caller's to
+/// reject before calling this.
+pub fn compaction_threshold(window: u64, max_output: u64, prompt_tokens: u64) -> u64 {
+    let reserve = prompt_tokens.max(COMPACTION_RESERVE_FLOOR);
+    let headroom = window.saturating_sub(max_output).saturating_sub(reserve);
+    let share = (window as f64 * COMPACTION_MIN_FRACTION) as u64;
+    share.max(headroom).max(1)
+}
 /// Tool pairs carried into the summary as plain text.
 pub const RETAINED_TOOL_PAIRS: usize = 6;
 /// Marks an audition the host delivered for a listening call. The row is
@@ -352,6 +363,50 @@ pub struct Compaction {
     pub retained_pairs: usize,
 }
 
+/// What clearing old conversation history dropped and freed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct ClearReport {
+    pub sessions: usize,
+    pub dropped_records: u64,
+    pub removed_assets: u64,
+    pub freed_bytes: u64,
+}
+
+/// Why a model-written compaction did not produce a summary. Every case still
+/// compacts with the mechanical summary, and the panel says which happened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompactionFailure {
+    ProviderError,
+    Cancelled,
+    Empty,
+    Conflict,
+}
+
+/// What a compaction that needs a model call decides under the store lock.
+///
+/// The plan holds the dropped part as plain text, the deterministic fallback
+/// and the pieces of the first message the summary fills in. It writes nothing:
+/// the commit appends one compaction record only when the view still matches.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompactionPlan {
+    pub(crate) id: String,
+    pub(crate) view_digest: String,
+    pub(crate) dropped_from: usize,
+    pub(crate) dropped_to: usize,
+    pub(crate) retained_pairs: usize,
+    pub(crate) tokens_before: u64,
+    pub(crate) compacted_at: String,
+    /// The dropped turns as plain text, bounded for one request.
+    pub(crate) input: String,
+    /// The deterministic summary's header, before the model's answer.
+    pub(crate) prefix: String,
+    /// The retained tool digest and artifact inventory after the answer.
+    pub(crate) digest: String,
+    /// The mechanical summary the store writes when no model answer is used.
+    pub(crate) fallback: Vec<Value>,
+}
+
 /// What a refused reshaping of a conversation (compact, drop history, delete)
 /// is about. The panel tells the cases apart by this, never by the message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -456,6 +511,8 @@ pub struct PrepareContext<'a> {
     pub history: Option<&'a HistoryAt>,
     pub overhead: u64,
     pub context_length: u64,
+    pub max_output: u64,
+    pub prompt_tokens: u64,
     pub facts: &'a ProjectFacts,
     pub provider: &'a str,
     pub model: &'a str,
@@ -478,6 +535,9 @@ pub struct Prepared {
     pub live: Option<Vec<Value>>,
     pub appended: usize,
     pub compacted: Option<Compaction>,
+    /// A compaction the turn needs but whose summary call runs after the lock
+    /// is released. `messages` stays the uncompacted view until it commits.
+    pub pending_compaction: Option<CompactionPlan>,
     /// Why the automatic compaction this turn needed did not happen. The turn
     /// still goes out; the caller tells the panel.
     pub compaction_error: Option<String>,
@@ -1253,6 +1313,7 @@ impl Store {
     }
 
     /// [`Self::drop_history`] after `guard` admits it under the store lock.
+    #[cfg(test)]
     pub fn drop_history_guarded(
         &self,
         id: &str,
@@ -1402,14 +1463,29 @@ impl Store {
         context: PrepareContext<'_>,
         incarnation: Option<&str>,
     ) -> Result<Prepared, String> {
-        match self.prepare_admitted(id, incoming, project, context, incarnation, |_| {
-            Ok::<(), String>(())
-        }) {
-            Ok(prepared) => Ok(prepared),
-            Err(PrepareFailure::Binding(mismatch)) => Err(mismatch.message()),
-            Err(PrepareFailure::Admitted(message)) => Err(message),
-            Err(PrepareFailure::Store(message)) => Err(message),
+        let mut prepared =
+            match self.prepare_admitted(id, incoming, project, context, incarnation, |_| {
+                Ok::<(), String>(())
+            }) {
+                Ok(prepared) => prepared,
+                Err(PrepareFailure::Binding(mismatch)) => return Err(mismatch.message()),
+                Err(PrepareFailure::Admitted(message)) => return Err(message),
+                Err(PrepareFailure::Store(message)) => return Err(message),
+            };
+        // The mechanical path commits the plan it just built. A real turn keeps
+        // the plan, asks the model outside the lock and commits the answer.
+        if let Some(plan) = prepared.pending_compaction.take() {
+            match self.commit_compaction(plan, None) {
+                Ok(outcome) => {
+                    prepared.messages = outcome.messages.clone();
+                    prepared.meta.tokens = outcome.tokens_after;
+                    prepared.meta.compacted_at = Some(outcome.compacted_at.clone());
+                    prepared.compacted = Some(outcome);
+                }
+                Err(error) => prepared.compaction_error = Some(error.message),
+            }
         }
+        Ok(prepared)
     }
 
     /// [`Self::prepare_owned`] with an admission check: `admit` sees the
@@ -1430,6 +1506,8 @@ impl Store {
             history,
             overhead,
             context_length,
+            max_output,
+            prompt_tokens,
             facts,
             provider,
             model,
@@ -1504,6 +1582,8 @@ impl Store {
             &PlanInputs {
                 overhead,
                 context_length,
+                max_output,
+                prompt_tokens,
                 facts,
                 id,
             },
@@ -1583,7 +1663,7 @@ impl Store {
             .collect();
         // Re-read: the append may have dropped older messages to stay under the
         // cap, and what is sent must be exactly what is saved.
-        let (mut view, _) = read_view(&dir)?;
+        let (view, _) = read_view(&dir)?;
         let live = inline_audio.then(|| {
             // `absorbed` indexes the client's current-turn history; `start`
             // indexes the saved conversation. A restored session can be much
@@ -1592,21 +1672,17 @@ impl Store {
             merged.extend(filtered.drain(absorbed..));
             merged
         });
-        let mut compacted = None;
+        let mut pending_compaction = None;
         let mut compaction_error = None;
-        if !inline_audio && should_compact(&view, overhead, context_length) {
+        if !inline_audio
+            && should_compact(&view, overhead, context_length, max_output, prompt_tokens)
+        {
             let target = (context_length as f64 * AUTO_COMPACT_TARGET_FRACTION) as u64;
-            // A failed compaction does not fail the turn: the conversation is
-            // sent as saved and the admission above already bounded it. The
-            // failure is still reported, so a window that keeps growing is
-            // not silent.
-            match self.compact_locked(id, Some(target), facts) {
-                Ok(outcome) => {
-                    view = outcome.messages.clone();
-                    meta.compacted_at = Some(outcome.compacted_at.clone());
-                    meta.tokens = outcome.tokens_after;
-                    compacted = Some(outcome);
-                }
+            // Planning builds the mechanical fallback and the request input
+            // but writes nothing. A failed plan does not fail the turn: the
+            // conversation is sent as saved and admission already bounded it.
+            match plan_compaction_request(&view, target, facts, id) {
+                Ok(plan) => pending_compaction = Some(plan),
                 Err(error) => {
                     log::warn!("[ai] session {id} auto-compaction failed: {error}");
                     compaction_error = Some(error);
@@ -1614,7 +1690,7 @@ impl Store {
             }
         }
         if appended > 0
-            || compacted.is_some()
+            || pending_compaction.is_some()
             || meta.provider != provider
             || meta.model != model
             || meta_changed
@@ -1633,7 +1709,8 @@ impl Store {
             messages: view,
             live,
             appended,
-            compacted,
+            compacted: None,
+            pending_compaction,
             compaction_error,
             evicted_auditions,
             saved_auditions,
@@ -1762,6 +1839,178 @@ impl Store {
             log::warn!("[ai] session {id} compacted, but its metadata was not updated: {error}");
         }
         Ok(outcome)
+    }
+
+    /// Writes a planned compaction, or refuses when the conversation changed
+    /// while the summary was being written. The model answer replaces the
+    /// mechanical summary's text; `None` keeps the mechanical text.
+    pub fn commit_compaction(
+        &self,
+        plan: CompactionPlan,
+        summary: Option<&str>,
+    ) -> Result<Compaction, SessionError> {
+        let _lock = self.mutation_lock()?;
+        let (dir, mut meta) = self.find(&plan.id)?;
+        let (view, _) = read_view(&dir)?;
+        if view_digest(&view) != plan.view_digest {
+            return Err(SessionError::new(
+                SessionErrorKind::Conflict,
+                "The conversation changed while its summary was being written.",
+            ));
+        }
+        let messages = planned_messages(&plan, summary);
+        if !strips_replay_state(&messages) {
+            return Err(SessionError::new(
+                SessionErrorKind::SessionStore,
+                "Compaction produced a message that still replays provider state.",
+            ));
+        }
+        let tokens_after = estimate_tokens(&messages);
+        let outcome = Compaction {
+            id: plan.id.clone(),
+            compacted_at: plan.compacted_at.clone(),
+            messages,
+            dropped_from: plan.dropped_from,
+            dropped_to: plan.dropped_to,
+            tokens_before: plan.tokens_before,
+            tokens_after,
+            retained_pairs: plan.retained_pairs,
+        };
+        let record = Record {
+            v: VERSION,
+            kind: RecordKind::Compaction,
+            at: outcome.compacted_at.clone(),
+            dropped: Some(Dropped {
+                from: outcome.dropped_from,
+                to: outcome.dropped_to,
+            }),
+            tokens_before: Some(outcome.tokens_before),
+            tokens_after: Some(outcome.tokens_after),
+            truncated: None,
+            messages: outcome.messages.clone(),
+        };
+        append_records(&dir, &[record])?;
+        meta.compacted_at = Some(outcome.compacted_at.clone());
+        meta.tokens = outcome.tokens_after;
+        meta.updated = now();
+        if let Err(error) = write_meta(&dir, &meta) {
+            log::warn!(
+                "[ai] session {} compacted, but its metadata was not updated: {error}",
+                plan.id
+            );
+        }
+        Ok(outcome)
+    }
+
+    /// Plans a compaction from the conversation as it stands now, under the
+    /// store lock, and writes nothing. A turn's round boundary uses this before
+    /// it asks the model, so the split it commits covers the saved view.
+    pub fn plan_compaction_now(
+        &self,
+        id: &str,
+        target: u64,
+        facts: &ProjectFacts,
+    ) -> Result<CompactionPlan, String> {
+        let _lock = self.mutation_lock()?;
+        let view = self.view(id)?;
+        plan_compaction_request(&view, target, facts, id)
+    }
+
+    /// Plans again from the conversation as it stands now and commits the
+    /// mechanical summary. Used when a model summary's plan met a change it
+    /// must not overwrite, so one retry still compacts without a second call.
+    pub fn mechanical_recompaction(
+        &self,
+        id: &str,
+        target: u64,
+        facts: &ProjectFacts,
+    ) -> Result<Option<Compaction>, SessionError> {
+        let view = self.view(id)?;
+        match plan_compaction_request(&view, target, facts, id) {
+            Ok(plan) => self.commit_compaction(plan, None).map(Some),
+            Err(_) => Ok(None),
+        }
+    }
+
+    /// Drops every record before a conversation's second-newest compaction and
+    /// collects the assets no remaining message names. A conversation with
+    /// fewer than three compactions has nothing older to drop.
+    pub fn clear_old_history_guarded(
+        &self,
+        id: &str,
+        guard: Guard<'_>,
+    ) -> Result<ClearReport, SessionError> {
+        let _lock = self.mutation_lock()?;
+        guard()?;
+        let before = root_size(&self.root);
+        let (dir, meta) = self.find(id)?;
+        let records = read_records(&dir)?;
+        let compactions = compaction_indices(&records);
+        if compactions.len() < 3 {
+            return Ok(ClearReport::default());
+        }
+        let from = compactions[compactions.len() - 2];
+        let dropped = records.len() - from;
+        let kept = records[from..].to_vec();
+        write_records(&dir, &kept)?;
+        let mut meta = meta;
+        meta.updated = now();
+        write_meta(&dir, &meta)?;
+        let removed_assets = self.collect_unreferenced_locked();
+        let after = root_size(&self.root);
+        Ok(ClearReport {
+            sessions: 1,
+            dropped_records: dropped as u64,
+            removed_assets,
+            freed_bytes: before.saturating_sub(after),
+        })
+    }
+
+    /// [`Self::clear_old_history_guarded`] for every conversation, skipping the
+    /// ones `skip` names. The whole sweep runs under one store lock, so a
+    /// failure leaves every conversation as it was.
+    pub fn clear_all_old_history(
+        &self,
+        skip: &dyn Fn(&str) -> bool,
+    ) -> Result<ClearReport, String> {
+        let _lock = self.mutation_lock()?;
+        let before = root_size(&self.root);
+        let mut report = ClearReport::default();
+        let mut keys = self.workspace_keys();
+        if !keys.iter().any(|key| key == DETACHED_KEY) {
+            keys.push(DETACHED_KEY.to_owned());
+        }
+        for key in keys {
+            let Ok(entries) = std::fs::read_dir(self.root.join(&key)) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if !is_valid_id(&name) || skip(&name) {
+                    continue;
+                }
+                let dir = entry.path();
+                let Ok(records) = read_records(&dir) else {
+                    continue;
+                };
+                let compactions = compaction_indices(&records);
+                if compactions.len() < 3 {
+                    continue;
+                }
+                let from = compactions[compactions.len() - 2];
+                let kept = records[from..].to_vec();
+                write_records(&dir, &kept)?;
+                if let Some(mut meta) = read_meta(&dir.join(META_FILE)) {
+                    meta.updated = now();
+                    let _ = write_meta(&dir, &meta);
+                }
+                report.sessions += 1;
+                report.dropped_records += (records.len() - from) as u64;
+            }
+        }
+        report.removed_assets = self.collect_unreferenced_locked();
+        report.freed_bytes = before.saturating_sub(root_size(&self.root));
+        Ok(report)
     }
 }
 
@@ -2916,6 +3165,8 @@ pub fn strips_replay_state(messages: &[Value]) -> bool {
 struct PlanInputs<'a> {
     overhead: u64,
     context_length: u64,
+    max_output: u64,
+    prompt_tokens: u64,
     facts: &'a ProjectFacts,
     id: &'a str,
 }
@@ -2935,7 +3186,13 @@ fn planned_request(pending: &[Value], incoming: &[Value], plan: &PlanInputs<'_>)
         merged.extend_from_slice(&incoming[absorbed.min(incoming.len())..]);
         return merged;
     }
-    if should_compact(&view, plan.overhead, plan.context_length) {
+    if should_compact(
+        &view,
+        plan.overhead,
+        plan.context_length,
+        plan.max_output,
+        plan.prompt_tokens,
+    ) {
         let target = (plan.context_length as f64 * AUTO_COMPACT_TARGET_FRACTION) as u64;
         if let Ok(outcome) = plan_compaction(&view, target, plan.facts, plan.id) {
             return outcome.messages;
@@ -3060,6 +3317,133 @@ fn plan_compaction(
             retained_pairs: 0,
         });
     }
+}
+
+/// A compaction that may ask a model for its summary.
+///
+/// It plans exactly what the mechanical path would write, then keeps the
+/// dropped turns as text for the request and the mechanical messages as the
+/// fallback. Nothing is written until the commit sees the same view.
+fn plan_compaction_request(
+    view: &[Value],
+    target: u64,
+    facts: &ProjectFacts,
+    id: &str,
+) -> Result<CompactionPlan, String> {
+    let outcome = plan_compaction(view, target, facts, id)?;
+    let blocks = tool_blocks(view);
+    let keep = outcome.retained_pairs.min(blocks.len());
+    let retained: &[(usize, usize)] = if keep == 0 {
+        &[]
+    } else {
+        &blocks[blocks.len() - keep..]
+    };
+    let split = outcome.dropped_to;
+    Ok(CompactionPlan {
+        id: id.to_owned(),
+        view_digest: view_digest(view),
+        dropped_from: outcome.dropped_from,
+        dropped_to: split,
+        retained_pairs: outcome.retained_pairs,
+        tokens_before: outcome.tokens_before,
+        compacted_at: outcome.compacted_at.clone(),
+        input: compaction_input(view, split),
+        prefix: summary_intro(view, split, retained, facts, &outcome.compacted_at),
+        digest: summary_digest(view, split, retained, outcome.tokens_before),
+        fallback: outcome.messages,
+    })
+}
+
+/// The dropped turns as plain text for the summary request, bounded so a huge
+/// tool result cannot become the request. Tool results keep their shape but
+/// never their whole payload.
+fn compaction_input(view: &[Value], split: usize) -> String {
+    const MAX_INPUT_CHARS: usize = 80_000;
+    const MAX_TURN_CHARS: usize = 4_000;
+    let mut text = String::new();
+    for (index, message) in view[..split].iter().enumerate() {
+        let line = match message["role"].as_str() {
+            Some("user") => {
+                let Some(plain) = plain_message(message) else {
+                    continue;
+                };
+                let content = clip(
+                    &collapse(plain["content"].as_str().unwrap_or_default()),
+                    MAX_TURN_CHARS,
+                );
+                if content.is_empty() {
+                    continue;
+                }
+                format!("User: {content}\n")
+            }
+            Some("assistant") => {
+                let mut line = String::new();
+                if let Some(content) = message["content"]
+                    .as_str()
+                    .filter(|content| !content.trim().is_empty())
+                {
+                    line.push_str(&format!(
+                        "Assistant: {}\n",
+                        clip(&collapse(content), MAX_TURN_CHARS)
+                    ));
+                }
+                for call in message["tool_calls"].as_array().into_iter().flatten() {
+                    line.push_str(&format!(
+                        "Assistant called {} with {}\n",
+                        call["function"]["name"].as_str().unwrap_or("tool"),
+                        clip(
+                            &collapse(call["function"]["arguments"].as_str().unwrap_or_default()),
+                            MAX_TURN_CHARS
+                        )
+                    ));
+                }
+                line
+            }
+            Some("tool") => format!(
+                "Tool {} result: {}\n",
+                tool_name_of(view, index),
+                clip(
+                    &collapse(message["content"].as_str().unwrap_or_default()),
+                    MAX_TURN_CHARS
+                )
+            ),
+            _ => continue,
+        };
+        if text.len() + line.len() > MAX_INPUT_CHARS {
+            text.push_str("Earlier turns omitted from this input to keep it bounded.\n");
+            break;
+        }
+        text.push_str(&line);
+    }
+    text
+}
+
+/// Names one view exactly, so a commit can tell that the conversation it
+/// planned from is still the conversation on disk.
+fn view_digest(view: &[Value]) -> String {
+    let mut hasher = Sha256::new();
+    for message in view {
+        hasher.update(message.to_string().as_bytes());
+        hasher.update(b"\n");
+    }
+    hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// The messages a planned compaction writes, with `summary` as their first
+/// row. `None` keeps the mechanical summary the plan already holds.
+fn planned_messages(plan: &CompactionPlan, summary: Option<&str>) -> Vec<Value> {
+    let mut messages = plan.fallback.clone();
+    if let Some(summary) = summary {
+        let summary = summary.trim();
+        if let Some(row) = messages.first_mut() {
+            row["content"] = json!(format!("{}{summary}\n\n{}", plan.prefix, plan.digest));
+        }
+    }
+    messages
 }
 
 /// The messages after `split` that are safe to keep: prose only, never a
@@ -3252,7 +3636,21 @@ fn summary_text(
     tokens_before: u64,
     at: &str,
 ) -> String {
-    let old = &view[..split];
+    let mut text = summary_intro(view, split, retained, facts, at);
+    text.push_str(&summary_decisions(view, split));
+    text.push_str(&summary_digest(view, split, retained, tokens_before));
+    text
+}
+
+/// The deterministic header a summary starts with: the project it was written
+/// against and the intent a later compaction must keep.
+fn summary_intro(
+    view: &[Value],
+    split: usize,
+    retained: &[(usize, usize)],
+    facts: &ProjectFacts,
+    at: &str,
+) -> String {
     let mut text = String::new();
     text.push_str(&format!(
         "Conversation summary written {at}. Everything older than the most recent tool calls \
@@ -3284,7 +3682,13 @@ fn summary_text(
         text.push_str(&outcome);
         text.push('\n');
     }
+    text
+}
 
+/// The decisions, failures, proposals and asks the mechanical summary states.
+fn summary_decisions(view: &[Value], split: usize) -> String {
+    let old = &view[..split];
+    let mut text = String::new();
     let mut decisions = Vec::new();
     let mut failures = Vec::new();
     let mut proposals = Vec::new();
@@ -3318,7 +3722,7 @@ fn summary_text(
                 let summary = summary_of_result(message);
                 if is_failure(message) {
                     if failures.len() < 6 {
-                        failures.push(format!("{name} → {summary}"));
+                        failures.push(format!("{name} \u{2192} {summary}"));
                     }
                 } else if crate::tool_registry::is_mutation_tool(&name) && decisions.len() < 6 {
                     decisions.push(format!("{name} reported success at that time ({summary}); consult current project state"));
@@ -3362,6 +3766,17 @@ fn summary_text(
             text.push_str(&format!("- \"{ask}\"\n"));
         }
     }
+    text
+}
+
+/// The newest tool calls as text, the audio kept, and the artifact inventory.
+fn summary_digest(
+    view: &[Value],
+    split: usize,
+    retained: &[(usize, usize)],
+    tokens_before: u64,
+) -> String {
+    let mut text = String::new();
     text.push_str(&format!(
         "Retained recent tool calls (newest {}, oldest first):\n",
         retained.len()
@@ -3529,7 +3944,13 @@ fn summary_of_result(message: &Value) -> String {
     clip(&collapse(content), MAX_SUMMARY_RESULT_CHARS)
 }
 
-fn should_compact(view: &[Value], overhead: u64, context_length: u64) -> bool {
+fn should_compact(
+    view: &[Value],
+    overhead: u64,
+    context_length: u64,
+    max_output: u64,
+    prompt_tokens: u64,
+) -> bool {
     if view.len() > MAX_AUTO_COMPACT_MESSAGES {
         return true;
     }
@@ -3537,10 +3958,8 @@ fn should_compact(view: &[Value], overhead: u64, context_length: u64) -> bool {
     if context_length <= 1 {
         return false;
     }
-    let tokens = estimate_tokens(view);
-    let limit = (context_length as f64 * AUTO_COMPACT_FRACTION) as u64;
-    let floor = (context_length as f64 * AUTO_COMPACT_CONVERSATION_FLOOR) as u64;
-    tokens + media_tokens(view) + overhead > limit.max(1) && tokens > floor
+    let tokens = estimate_tokens(view) + media_tokens(view) + overhead;
+    tokens > compaction_threshold(context_length, max_output, prompt_tokens)
 }
 
 /// Versioned metadata for a host message of `kind`, as saved on the wire.
@@ -3576,6 +3995,12 @@ fn message_tokens(message: &Value) -> u64 {
         }
     }
     tokens
+}
+
+/// Tokens of plain text under the conversation estimator, for callers that
+/// size a prompt rather than a saved message.
+pub fn estimate_text_tokens(text: &str) -> u64 {
+    text_tokens(text)
 }
 
 fn text_tokens(text: &str) -> u64 {
@@ -3741,6 +4166,33 @@ fn read_records(dir: &Path) -> Result<Vec<Record>, String> {
         }
     }
     Ok(records)
+}
+
+/// The record indices of every compaction, oldest first.
+fn compaction_indices(records: &[Record]) -> Vec<usize> {
+    records
+        .iter()
+        .enumerate()
+        .filter(|(_, record)| record.kind == RecordKind::Compaction)
+        .map(|(index, _)| index)
+        .collect()
+}
+
+/// Total bytes of the files under a directory, for a before/after report.
+fn root_size(root: &Path) -> u64 {
+    let mut total = 0u64;
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            match entry.metadata() {
+                Ok(meta) if meta.is_dir() => pending.push(path),
+                Ok(meta) => total += meta.len(),
+                Err(_) => {}
+            }
+        }
+    }
+    total
 }
 
 fn write_records(dir: &Path, records: &[Record]) -> Result<(), String> {
@@ -4361,6 +4813,8 @@ mod tests {
                         history: None,
                         overhead: 0,
                         context_length: 0,
+                        max_output: 0,
+                        prompt_tokens: 0,
                         facts: &context,
                         provider: "fixture-provider",
                         model: "fixture-model",
@@ -4500,6 +4954,8 @@ mod tests {
                     history: None,
                     overhead: 0,
                     context_length: 0,
+                    max_output: 0,
+                    prompt_tokens: 0,
                     facts: &context,
                     provider: "fixture",
                     model: "model",
@@ -4527,6 +4983,8 @@ mod tests {
                     history: None,
                     overhead: 0,
                     context_length: 0,
+                    max_output: 0,
+                    prompt_tokens: 0,
                     facts: &context,
                     provider: "fixture",
                     model: "model",
@@ -4572,6 +5030,8 @@ mod tests {
                     history: None,
                     overhead: 0,
                     context_length: 0,
+                    max_output: 0,
+                    prompt_tokens: 0,
                     facts: &context,
                     provider: "fixture-provider",
                     model: "fixture-model",
@@ -4611,6 +5071,8 @@ mod tests {
                     history: None,
                     overhead: 0,
                     context_length: 0,
+                    max_output: 0,
+                    prompt_tokens: 0,
                     facts: &context,
                     provider: "fixture-provider",
                     model: "fixture-model",
@@ -4650,6 +5112,8 @@ mod tests {
                     history: None,
                     overhead: 0,
                     context_length: 0,
+                    max_output: 0,
+                    prompt_tokens: 0,
                     facts: &context,
                     provider: "fixture-provider",
                     model: "fixture-model",
@@ -4676,6 +5140,8 @@ mod tests {
                     history: None,
                     overhead: 0,
                     context_length: 0,
+                    max_output: 0,
+                    prompt_tokens: 0,
                     facts: &context,
                     provider: "fixture-provider",
                     model: "fixture-model",
@@ -4721,6 +5187,8 @@ mod tests {
                     history: None,
                     overhead: 0,
                     context_length: 0,
+                    max_output: 0,
+                    prompt_tokens: 0,
                     facts: &context,
                     provider: "fixture-provider",
                     model: "fixture-model",
@@ -5195,6 +5663,8 @@ mod tests {
                     history: None,
                     overhead: 0,
                     context_length: 1_000_000,
+                    max_output: 0,
+                    prompt_tokens: 0,
                     facts: &facts(&project),
                     provider: "fixture",
                     model: "model",
@@ -5417,6 +5887,8 @@ mod tests {
                     history: None,
                     overhead: 0,
                     context_length: 0,
+                    max_output: 0,
+                    prompt_tokens: 0,
                     facts: &context,
                     provider: "fixture-provider",
                     model: "fixture-model",
@@ -5781,6 +6253,8 @@ mod tests {
                     history: None,
                     overhead: 0,
                     context_length: 1_000_000,
+                    max_output: 0,
+                    prompt_tokens: 0,
                     facts: &facts(&project),
                     provider: "fixture",
                     model: "model",
@@ -5928,6 +6402,8 @@ mod tests {
                     history: None,
                     overhead: 0,
                     context_length: 0,
+                    max_output: 0,
+                    prompt_tokens: 0,
                     facts: &facts(&project),
                     provider: "fixture",
                     model: "model",
@@ -5973,6 +6449,8 @@ mod tests {
                         history: None,
                         overhead: 0,
                         context_length: 0,
+                        max_output: 0,
+                        prompt_tokens: 0,
                         facts: &context,
                         provider: "fixture",
                         model: "model",
@@ -6130,6 +6608,8 @@ mod tests {
                     history: None,
                     overhead: 0,
                     context_length: 0,
+                    max_output: 0,
+                    prompt_tokens: 0,
                     facts: &facts(&project),
                     provider: "fixture",
                     model: "model",
@@ -6286,6 +6766,8 @@ mod tests {
                     history: None,
                     overhead: 0,
                     context_length: 0,
+                    max_output: 0,
+                    prompt_tokens: 0,
                     facts: &context,
                     provider: "fixture-provider",
                     model: "fixture-model",
@@ -6414,6 +6896,8 @@ mod tests {
                     history: None,
                     overhead: 0,
                     context_length: window,
+                    max_output: 0,
+                    prompt_tokens: 0,
                     facts: &context,
                     provider: "fixture-provider",
                     model: "fixture-model",
@@ -6453,6 +6937,8 @@ mod tests {
                     history: None,
                     overhead: 0,
                     context_length: 1_000_000,
+                    max_output: 0,
+                    prompt_tokens: 0,
                     facts: &context,
                     provider: "p",
                     model: "m",
@@ -6564,6 +7050,8 @@ mod tests {
                     history: None,
                     overhead: 0,
                     context_length: 0,
+                    max_output: 0,
+                    prompt_tokens: 0,
                     facts: &context,
                     provider: "p",
                     model: "m",
@@ -6605,6 +7093,8 @@ mod tests {
                     history: None,
                     overhead: 0,
                     context_length: 0,
+                    max_output: 0,
+                    prompt_tokens: 0,
                     facts: &context,
                     provider: "p",
                     model: "m",
@@ -6636,6 +7126,8 @@ mod tests {
                     history: None,
                     overhead: 0,
                     context_length: 0,
+                    max_output: 0,
+                    prompt_tokens: 0,
                     facts: &context,
                     provider: "p",
                     model: "m",
@@ -6710,6 +7202,8 @@ mod tests {
                     history: None,
                     overhead: 0,
                     context_length: 0,
+                    max_output: 0,
+                    prompt_tokens: 0,
                     facts: &context,
                     provider: "p",
                     model: "m",
@@ -6760,6 +7254,8 @@ mod tests {
                     history: None,
                     overhead: 0,
                     context_length: 0,
+                    max_output: 0,
+                    prompt_tokens: 0,
                     facts: &context,
                     provider: "p",
                     model: "m",
@@ -6826,6 +7322,8 @@ mod tests {
                         history: None,
                         overhead: 0,
                         context_length: 0,
+                        max_output: 0,
+                        prompt_tokens: 0,
                         facts: &context,
                         provider: "p",
                         model: "m",
@@ -6919,6 +7417,8 @@ mod tests {
                     history: None,
                     overhead: 0,
                     context_length: 0,
+                    max_output: 0,
+                    prompt_tokens: 0,
                     facts: &context,
                     provider: "fixture-provider",
                     model: "fixture-model",
@@ -6961,6 +7461,8 @@ mod tests {
                         history: None,
                         overhead: 0,
                         context_length: 0,
+                        max_output: 0,
+                        prompt_tokens: 0,
                         facts: &context,
                         provider: "fixture-provider",
                         model: "fixture-model",
@@ -7068,6 +7570,8 @@ mod tests {
                     history: None,
                     overhead: 0,
                     context_length: 0,
+                    max_output: 0,
+                    prompt_tokens: 0,
                     facts: &context,
                     provider: "fixture-provider",
                     model: "fixture-model",
@@ -7114,6 +7618,8 @@ mod tests {
                     history: None,
                     overhead: 0,
                     context_length: 0,
+                    max_output: 0,
+                    prompt_tokens: 0,
                     facts: &context,
                     provider: "fixture-provider",
                     model: "fixture-model",
@@ -7204,6 +7710,8 @@ mod tests {
                     history: None,
                     overhead: 0,
                     context_length: 0,
+                    max_output: 0,
+                    prompt_tokens: 0,
                     facts: &context,
                     provider: "fixture-provider",
                     model: "fixture-model",
@@ -7250,6 +7758,8 @@ mod tests {
                     history: None,
                     overhead: 0,
                     context_length: 0,
+                    max_output: 0,
+                    prompt_tokens: 0,
                     facts: &context,
                     provider: "fixture-provider",
                     model: "fixture-model",
@@ -7324,6 +7834,8 @@ mod tests {
                     history: None,
                     overhead: 0,
                     context_length: 0,
+                    max_output: 0,
+                    prompt_tokens: 0,
                     facts: &context,
                     provider: "fixture-provider",
                     model: "fixture-model",
@@ -7348,6 +7860,8 @@ mod tests {
                     history: None,
                     overhead: 0,
                     context_length: 0,
+                    max_output: 0,
+                    prompt_tokens: 0,
                     facts: &context,
                     provider: "fixture-provider",
                     model: "fixture-model",
@@ -7432,6 +7946,8 @@ mod tests {
                     history: None,
                     overhead: 0,
                     context_length: 0,
+                    max_output: 0,
+                    prompt_tokens: 0,
                     facts: &facts(&project),
                     provider: "fixture-provider",
                     model: "fixture-model",
@@ -7473,6 +7989,8 @@ mod tests {
                     history: None,
                     overhead: 0,
                     context_length: 0,
+                    max_output: 0,
+                    prompt_tokens: 0,
                     facts: &context,
                     provider: "fixture-provider",
                     model: "fixture-model",
@@ -7505,6 +8023,8 @@ mod tests {
                     history: None,
                     overhead: 0,
                     context_length: 0,
+                    max_output: 0,
+                    prompt_tokens: 0,
                     facts: &context,
                     provider: "fixture-provider",
                     model: "fixture-model",
@@ -7546,6 +8066,8 @@ mod tests {
                     history: None,
                     overhead: 0,
                     context_length: 0,
+                    max_output: 0,
+                    prompt_tokens: 0,
                     facts: &context,
                     provider: "fixture-provider",
                     model: "fixture-model",
@@ -7582,6 +8104,8 @@ mod tests {
             history: None,
             overhead: 0,
             context_length: 0,
+            max_output: 0,
+            prompt_tokens: 0,
             facts: &context,
             provider: "fixture-provider",
             model: "fixture-model",
@@ -7659,6 +8183,8 @@ mod tests {
                     history: None,
                     overhead: 0,
                     context_length: 0,
+                    max_output: 0,
+                    prompt_tokens: 0,
                     facts: &context,
                     provider: "fixture-provider",
                     model: "fixture-model",
@@ -7693,6 +8219,8 @@ mod tests {
                     history: None,
                     overhead: 0,
                     context_length: 0,
+                    max_output: 0,
+                    prompt_tokens: 0,
                     facts: &context,
                     provider: "fixture-provider",
                     model: "fixture-model",
@@ -7714,6 +8242,8 @@ mod tests {
                     history: None,
                     overhead: 0,
                     context_length: 0,
+                    max_output: 0,
+                    prompt_tokens: 0,
                     facts: &context,
                     provider: "fixture-provider",
                     model: "fixture-model",
@@ -7851,6 +8381,8 @@ mod tests {
                     history: None,
                     overhead: 0,
                     context_length: 1_000_000,
+                    max_output: 0,
+                    prompt_tokens: 0,
                     facts: &facts(&project),
                     provider: "fixture",
                     model: "model",
@@ -8054,6 +8586,8 @@ mod tests {
                     history: None,
                     overhead: 0,
                     context_length: 1_000_000,
+                    max_output: 0,
+                    prompt_tokens: 0,
                     facts: &facts(&project),
                     provider: "fixture",
                     model: "model",

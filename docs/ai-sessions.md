@@ -51,7 +51,7 @@ delivery still carries its clip. A clip whose render is gone is stored once.
 An encode the encoder cannot express falls back to WAV. The archive is capped at
 **256 MiB across both directories**: `audition-media/` (the bounded clip a
 request replays) and `audition-renders/` (the full-rate render kept for
-listening). `drop_history` and `sessions_delete` collect the files no remaining
+listening). `sessions_clear_history` and `sessions_delete` collect the files no remaining
 message names, in both directories.
 
 A full archive does not refuse a turn. Before a new clip or render is written,
@@ -773,10 +773,35 @@ that already carry one row per audition still open; their rows render as
 captions, and the next successful compaction bounds them.
 ```
 
-The summary is built from the messages themselves, deterministically: no model
-call, so compaction works with the panel closed and costs nothing. It names the
-project's DSL **digest** rather than carrying the DSL, which would defeat the
+A compaction asks the same provider and model for the summary. The request
+carries no tools and is accounted as its own `Purpose::Compaction` request in
+the conversation, so its tokens appear in the session's usage. The summary
+prompt lives in the backend and asks, in order, for the person's goals and
+constraints, the decisions and rejected options, the current state by project
+path, the open problems and errors, and what remains. The input is the dropped
+part of the saved view rendered as plain text, with each turn and tool result
+bounded; it is never the whole history on disk. The model's answer becomes the
+first row of the new view, followed by the mechanical digest of the newest six
+tool pairs and the artifact inventory, so the compacted conversation never
+depends on the model having copied exact paths or results. The row keeps the
+conversation's `standing_intent`, discarded audition count and rollback or
+proposal notices, and the newest pinned host notices stay beside it. The
+project's DSL is named by **digest** rather than carried, which would defeat the
 purpose.
+
+When the provider errors, the person cancels, the reply is empty or the
+conversation changes before the answer lands, the store writes its deterministic
+summary instead and the turn goes on. The caller reports the typed reason as
+`{session_id, notice: "compaction_failed", reason}`, where `reason` is
+`provider_error`, `cancelled`, `empty` or `conflict`.
+
+Compaction is two-phase because the model call is slow. The store plans under
+its mutation lock: it chooses the split, renders the request input and builds
+the mechanical fallback, writing nothing. The summary call then runs with no
+store lock held. The commit takes the lock again and appends one compaction
+record only when the conversation still matches the planned view; otherwise it
+retries once from the current view with the mechanical summary. Until that
+record lands, the conversation on disk is unchanged.
 
 Compaction leaves nothing to replay: the output is one `user` message plus any
 trailing prose messages. Those carry their `role`, `content` and message kind;
@@ -831,10 +856,9 @@ The estimate has three parts:
 The panel also counts the **system prompt and the tool schemas**, which ride on
 every request and are the largest part of a small conversation. The backend
 counts them too when a turn is prepared: the system prompt and the serialized
-tool list of the conversation's toolsets are the overhead the 75 % threshold
-adds to the conversation, and attachments are estimated by kind (1,600 tokens
-per image, 32 tokens per second of audio; a disk-only reference costs nothing).
-The 15 % floor still describes the conversation alone.
+tool list of the conversation's toolsets are the overhead the threshold adds to
+the conversation, and attachments are estimated by kind (1,600 tokens per image,
+32 tokens per second of audio; a disk-only reference costs nothing).
 
 The figure under the composer is labelled an estimate, and the pre-send guard
 warns rather than refuses: only the provider can reject a request for size.
@@ -843,20 +867,27 @@ schemas, conversation, project text, draft and attachments, so a large request
 names what is using the window. The card's **Compact at** field sets the
 fraction at which **Compact now** appears (50-95 %, stored as a panel
 preference) and runs the same `sessions_compact` command as the session menu.
-The backend's automatic compaction still uses its own 75 % threshold; the
-manual field only decides when the card offers the action.
+The backend's automatic compaction uses the trigger below; the manual field
+only decides when the card offers the action.
 
 ### Automatic compaction
 
-A turn is compacted before it is sent when **both** hold:
+One function owns the trigger, and admission and the agent loop both call it:
 
-- the estimate of the system prompt plus the saved conversation exceeds **75 %**
-  of the model's context window, and
-- the conversation alone is above **15 %** of that window, so a large system
-  prompt cannot trigger a compaction on every turn.
+```
+threshold = max(0.6 * window, window - max_output - reserve)
+reserve   = max(1000, tokens(compaction prompt))
+```
 
-It also compacts when the conversation passes **80 messages**, because the wire
-admits 100. The target is **50 %** of the context window.
+A turn is compacted before it is sent when the estimate of the system prompt,
+the conversation and its attachments exceeds that threshold. Holding back the
+model's output limit and the compaction prompt leaves room for the summary
+request and the answer the turn will write. The conversation also compacts when
+it passes **80 messages**, because the wire admits 100. The target is **50 %**
+of the context window.
+
+A window the entry stores as 0 or 1 is unknown, not tiny: no token threshold
+applies and only the 80-message rule does.
 
 The window is the one a request uses, in this order: the per-model override the
 panel stores, the bundled catalog entry, the known-window list, and only then the
@@ -865,9 +896,6 @@ saved id first and the id without one leading `<vendor>/` segment or a trailing
 `:suffix` second, so a saved `google/gemini-4-argon:free` reads the catalog's
 `gemini-4-argon` window rather than the entry's guess. The panel shows that
 number next to the provider default when the two differ.
-
-A window the entry stores as 0 or 1 is unknown, not tiny: the size thresholds
-are skipped and only the 80-message rule applies.
 
 Whether a turn can be sent is decided before anything is saved. The request is
 measured as it would go out, compacted if it would be: when the system prompt,
@@ -878,13 +906,24 @@ the row bound is refused the same way, as `session_save`. A request over 96
 rows is folded like a running turn's wire (see the agent loop's request
 budget), keeping the latest compaction summary and the turn's ask.
 
-An automatic compaction that fails does not fail the turn: the conversation is
-sent as saved, the failure is logged, and `ai_session` carries
-`{session_id, notice: "compaction_failed", message}`.
+An automatic compaction whose summary call fails still compacts: the mechanical
+summary replaces the model text, and `ai_session` carries the typed reason
+described above.
 
 The panel is told: an auto-compaction emits `ai_session` with `compacted: true`,
-the dropped range, the token counts before and after, the retained pair count and
-the messages that were sent. The panel writes one line into the transcript.
+the dropped range, the token counts before and after and the retained pair
+count. The panel writes one line into the transcript: **Conversation compacted:
+N messages summarized**, with the earlier history behind the usual
+**Show earlier history** chip.
+
+A running turn compacts its saved conversation at a round boundary when the wire
+it is about to send reaches the same threshold. It asks the host to compact, and
+the host plans, calls the model with no store lock and commits one record; the
+loop then rebuilds its wire from the leading system rows, the new saved view and
+everything already saved for the open round. The open round is never dropped.
+Folding the wire into one summary remains the last-resort fallback when
+compaction cannot reduce the request, and a fold row is not shown as a
+compaction checkpoint.
 
 ## Commands and agent tools
 
@@ -898,10 +937,20 @@ the messages that were sent. The panel writes one line into the transcript.
 | `sessions_rename` | `id`, `title` | the updated metadata |
 | `sessions_delete` | `id` | removes the directory |
 | `sessions_compact` | `id`, `target_tokens?` | the summary, the dropped range and the token counts; a refusal is `{kind, message}` with `busy` or `conflict` |
+| `sessions_clear_history` | `id` | drops records older than the second-newest compaction and unused assets, returning `{sessions, dropped_records, removed_assets, freed_bytes}` |
+| `sessions_clear_all_history` | none | the same sweep for every conversation that no turn is writing |
 
 A requested compaction whose conversation already ends in a compaction is a
 `conflict`: when two windows ask at once, both run under the store lock one
 after the other, and the second finds the state the first produced.
+
+The panel's `/clear` command, and **Clear old conversation history** in
+Preferences > Storage, drop every record older than a conversation's
+second-newest compaction and collect the assets only those records named. A
+conversation with fewer than three compactions keeps everything. The panel asks
+before it clears anything, then reports the records dropped, the assets removed
+and the space freed. The Storage action sweeps every conversation that no turn
+is writing; the `/clear` command acts on the open conversation.
 
 `sessions_list` covers the open workspace; `all` covers every workspace, and each
 entry names its workspace so a client can group the answer. A `project` argument

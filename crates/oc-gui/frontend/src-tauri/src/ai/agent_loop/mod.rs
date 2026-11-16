@@ -25,7 +25,7 @@ pub mod wire;
 
 use crate::ai::sessions::tool_results::FULL_RESULT;
 use crate::ai::sessions::turns::APPLICATION_RESULT_PREFIX;
-use crate::ai::sessions::{MessageKind, SessionPermission, message_meta};
+use crate::ai::sessions::{CompactionFailure, MessageKind, SessionPermission, message_meta};
 use crate::ai_service::AiError;
 use gate::{Need, call_path};
 use serde::{Deserialize, Serialize};
@@ -274,6 +274,9 @@ pub struct TurnSpec {
     /// The model's input window in tokens; 0 when unknown. The loop folds
     /// the wire to stay inside it and refuses a send that cannot fit.
     pub context_length: u64,
+    /// Output tokens the model may write, held back from the compaction
+    /// trigger so a summary-sized answer still fits after the request.
+    pub max_output: u64,
 }
 
 /// Everything outside the loop. Every method that touches the project or
@@ -312,6 +315,12 @@ pub trait Host: Sync {
     /// and returns their saved form: that is what the next request sends.
     fn record(&self, messages: &[Value])
     -> impl Future<Output = Result<Vec<Value>, String>> + Send;
+    /// Compacts the saved conversation mid-turn and returns the new saved
+    /// view. The host plans, calls the model with no store lock, and commits
+    /// one record; a failure leaves the saved conversation unchanged.
+    fn compact(&self) -> impl Future<Output = Result<Vec<Value>, CompactionFailure>> + Send {
+        std::future::ready(Err(CompactionFailure::ProviderError))
+    }
     /// The full result behind the newest saved preview of `call`, read from
     /// the saved conversation when the in-memory cache does not hold it.
     fn stored_result(&self, _call: &str) -> impl Future<Output = Option<String>> + Send {
@@ -399,7 +408,15 @@ struct Turn<'a, H: Host> {
     /// where the turn's ask sits in the wire.
     budget: Option<wire::TokenBudget>,
     ask: Option<usize>,
+    /// Leading system rows, which every resend keeps in front of the saved view.
+    system_len: usize,
+    /// Successful mid-turn compactions, bounded so a request that cannot
+    /// shrink does not call the model again every round.
+    mid_compactions: usize,
 }
+
+/// How many times one turn may compact its saved conversation.
+const MAX_MID_TURN_COMPACTIONS: usize = 2;
 
 /// Runs one turn to its end. Never returns with the batch open unless its
 /// commit failed, and never leaves a call of the last round unanswered.
@@ -423,6 +440,10 @@ pub async fn run_turn<H: Host>(host: &H, spec: TurnSpec, cancel: Cancel) -> Turn
         }
     }
     let expected = host.refresh().await.dsl;
+    let system_len = wire
+        .iter()
+        .take_while(|message| message["role"] == "system")
+        .count();
     let mut turn = Turn {
         host,
         spec,
@@ -439,11 +460,19 @@ pub async fn run_turn<H: Host>(host: &H, spec: TurnSpec, cancel: Cancel) -> Turn
         nonce: turn_nonce(),
         budget: None,
         ask: None,
+        system_len,
+        mid_compactions: 0,
     };
     turn.budget = wire::TokenBudget::new(
         turn.spec.context_length,
         wire::offered_tool_tokens(turn.spec.toolsets.as_deref(), true),
-    );
+    )
+    .map(|budget| {
+        budget.for_compaction(
+            turn.spec.max_output,
+            crate::ai::compaction_prompt::prompt_tokens(),
+        )
+    });
     turn.ask = wire::turn_ask(&turn.wire);
     turn.refresh_state_context();
     let ending = match turn.rounds().await {
@@ -460,6 +489,7 @@ impl<H: Host> Turn<'_, H> {
         for round in 0..MAX_TOOL_ROUNDS {
             self.stop_if_cancelled()?;
             self.deliver_steering(steering::Boundary::Continue).await?;
+            self.compact_saved().await?;
             self.fit_wire()?;
             let reply = tokio::select! {
                 biased;
@@ -667,6 +697,33 @@ impl<H: Host> Turn<'_, H> {
             });
             self.wire.push(message);
         }
+    }
+
+    /// Asks the host to compact the saved conversation when the wire reaches
+    /// the compaction threshold, then rebuilds the wire from the saved view.
+    /// The open round stays verbatim because rounds are saved as they happen.
+    async fn compact_saved(&mut self) -> Result<(), Ending> {
+        let Some(budget) = self.budget else {
+            return Ok(());
+        };
+        if self.mid_compactions >= MAX_MID_TURN_COMPACTIONS {
+            return Ok(());
+        }
+        if budget.measure(&self.wire) <= budget.limit() {
+            return Ok(());
+        }
+        let saved = match self.host.compact().await {
+            Ok(saved) if !saved.is_empty() => saved,
+            // A failed compaction leaves the saved conversation unchanged; the
+            // fold below still keeps the request inside the provider bounds.
+            Ok(_) | Err(_) => return Ok(()),
+        };
+        let mut wire = self.wire[..self.system_len].to_vec();
+        wire.extend(saved);
+        self.wire = wire;
+        self.ask = wire::turn_ask(&self.wire);
+        self.mid_compactions += 1;
+        Ok(())
     }
 
     /// Keeps the request under the provider bounds by folding the oldest

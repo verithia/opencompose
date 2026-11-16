@@ -134,7 +134,11 @@ workspace directory, not to one `.ocp`, and lives under the workspace key:
   budget covers both directories.
 
 Directories are `0700` and files are `0600` on Unix. A workspace holds at most
-32 conversations. See [Saved AI conversations](ai-sessions.md).
+32 conversations. **Clear old conversation history**, in Preferences > Storage,
+rewrites each conversation's transcript from its second-newest compaction and
+then removes the assets only the dropped records named; the panel's `/clear`
+command does the same for the open conversation. Both report the records
+dropped and the space freed. See [Saved AI conversations](ai-sessions.md).
 
 ## Caches
 

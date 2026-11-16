@@ -45,7 +45,7 @@ describe("versioned local message semantics", () => {
     const rows = restoredTranscript([
       { role: "user", content: "Actual request", message_meta: messageMeta("user") },
       { role: "user", content: "Budget text without an English protocol prefix", message_meta: messageMeta("round_budget") },
-      { role: "user", content: "Summary display text without an English protocol prefix", message_meta: messageMeta("summary") },
+      { role: "user", content: "Summary display text without an English protocol prefix", message_meta: { ...messageMeta("summary"), discarded_auditions: 0 } },
     ]);
     expect(rows.map(row => row.role)).toEqual(["user", "context"]);
     expect(rows[1].context).toBe("summary");

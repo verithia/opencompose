@@ -954,16 +954,22 @@ the panel's provider layer decides that and the error carries `retryable`.
   reach them. It also measures the wire in tokens against the model's window,
   with the estimator the store's compaction uses plus the tool list, and takes
   the larger of that estimate and what the provider reported for the previous
-  round. When any bound is near (75 % of the window for tokens), the oldest part
-  of the wire is folded into one summary row, aiming for half the window: the
+  round. When the tokens reach the same threshold the store uses for
+  admission, the loop first asks the host to compact the saved conversation:
+  the store plans under its lock, the model writes the summary with no lock
+  held, and the commit appends one compaction record when the view still
+  matches. The loop rebuilds its wire from the leading system rows, the new
+  saved view and everything already saved for the open round, so the open round
+  is never lost. If that compaction fails, the oldest part of the wire is
+  folded into one summary row as a last resort, aiming for half the window: the
   turn's ask, the steering delivered after it, the latest compaction summary
   and the newest six call/result pairs stay whole. A cut lands only where the
   pairing rules allow a new message, never on a tool or text-protocol result
   or a delivery, so a call is never separated from its result. A wire that
   still exceeds the whole window is not sent; the turn fails with
   `context_overflow`. The fold is reported as its own transcript line, the
-  summary row is marked `summary`, and a Retry refolds the replayed
-  conversation rather than sending the oversized one.
+  summary row is marked `summary` without a checkpoint caption, and a Retry
+  refolds the replayed conversation rather than sending the oversized one.
 * **No second question.** The store already holds the turn's user message; a
   request whose tail the conversation has appends nothing (`absorb` in
   `ai/sessions.rs`), so `sessions_load` keeps one user row for the turn.

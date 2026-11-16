@@ -113,6 +113,21 @@ function contextOf(message: WireMessage): ContextKind | null {
   return kind === "summary" ? "summary" : isAuditionKind(kind) ? "audition" : null;
 }
 
+/**
+ * A store compaction carries intent metadata; a loop fold row is tagged as a
+ * summary but has none. A legacy summary saved before the metadata is treated
+ * as a compaction because the loop never wrote one without a tag.
+ */
+function isCompactionSummary(message: WireMessage): boolean {
+  const meta = message.message_meta;
+  if (!meta) return true;
+  return meta.kind === "summary"
+    && (meta.standing_intent !== undefined
+      || meta.discarded_auditions !== undefined
+      || meta.rollback_notice !== undefined
+      || meta.proposal_notice !== undefined);
+}
+
 export function oneLine(text: string, max: number): string {
   const line = text.replace(/\s+/g, " ").trim();
   return line.length > max ? `${line.slice(0, max - 1)}…` : line;
@@ -223,7 +238,7 @@ export function restoredTranscript(messages: WireMessage[] | null | undefined, s
           ...(message.message_meta ? { messageMeta: message.message_meta } : {}),
           wireIndex,
           ...(message.media?.length ? { media: message.media } : {}),
-          ...(context === "summary" ? { checkpoint: true } : {}),
+          ...(context === "summary" && isCompactionSummary(message) ? { checkpoint: true } : {}),
           ...(context === "audition" && (
             message.source_render_missing || message.source_render_unavailable
               ? { auditionRenderUnavailable: true }

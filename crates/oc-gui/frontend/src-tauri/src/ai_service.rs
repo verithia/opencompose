@@ -1163,6 +1163,118 @@ pub async fn ai_name_session(
     Ok(json!({ "title": meta.title }))
 }
 
+/// Writes one model summary for a compaction, accounted as its own request in
+/// the same conversation. It reads no store state; the caller planned the
+/// input under the store lock and commits the answer only if the view is
+/// unchanged.
+pub(crate) async fn compaction_summary<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    provider: AiProviderEntry,
+    session_id: &str,
+    input: String,
+) -> Result<String, ai::sessions::CompactionFailure> {
+    use ai::session_usage::Purpose;
+    let p = provider;
+    let stats = ai::timing::TurnStatsHandle::new(&p.id, &p.model, p.wire());
+    let request = ai::session_usage::title_id()
+        .map_err(|_| ai::sessions::CompactionFailure::ProviderError)?;
+    let lease = ai::session_usage::SessionLease::admit(
+        ai::sessions::Store::config(),
+        session_id,
+        &request,
+        Purpose::Compaction,
+    )
+    .map_err(|_| ai::sessions::CompactionFailure::ProviderError)?;
+    stats.set_accounting(lease);
+    let outcome = send(
+        p,
+        TurnRequest {
+            messages: compaction_request(input),
+            use_tools: false,
+            toolsets: None,
+            pager: false,
+        },
+        TurnChannels::default(),
+        &stats,
+    )
+    .await;
+    let _ = ai::session_usage::checkpoint_final(
+        &stats,
+        app,
+        &request,
+        ai::session_usage::Purpose::Compaction,
+    )
+    .await;
+    compaction_text(outcome)
+}
+
+/// The summary request body both the production path and its test send.
+fn compaction_request(input: String) -> Value {
+    json!([
+        {"role": "system", "content": ai::compaction_prompt::COMPACTION_PROMPT},
+        {"role": "user", "content": input},
+    ])
+}
+
+/// The accounting and result handling shared by the credential-resolving path
+/// and the explicit-credential test path.
+fn compaction_text(
+    outcome: Result<Value, AiError>,
+) -> Result<String, ai::sessions::CompactionFailure> {
+    let reply = outcome.map_err(|error| {
+        if error.kind == "cancelled" {
+            ai::sessions::CompactionFailure::Cancelled
+        } else {
+            ai::sessions::CompactionFailure::ProviderError
+        }
+    })?;
+    let text = reply["content"].as_str().unwrap_or_default().trim();
+    if text.is_empty() {
+        Err(ai::sessions::CompactionFailure::Empty)
+    } else {
+        Ok(text.to_owned())
+    }
+}
+
+/// Test path: one summary request over a canned server with a fixed credential,
+/// so the request shape and accounting run without touching the OS key store.
+#[cfg(test)]
+pub(crate) async fn compaction_summary_with_credential(
+    provider: AiProviderEntry,
+    session_id: &str,
+    input: String,
+    credential: Credential,
+) -> Result<String, ai::sessions::CompactionFailure> {
+    use ai::session_usage::Purpose;
+    let stats = ai::timing::TurnStatsHandle::new(&provider.id, &provider.model, provider.wire());
+    let request = ai::session_usage::title_id()
+        .map_err(|_| ai::sessions::CompactionFailure::ProviderError)?;
+    let lease = ai::session_usage::SessionLease::admit(
+        ai::sessions::Store::config(),
+        session_id,
+        &request,
+        Purpose::Compaction,
+    )
+    .map_err(|_| ai::sessions::CompactionFailure::ProviderError)?;
+    stats.set_accounting(lease);
+    let outcome = send_http(
+        provider,
+        TurnRequest {
+            messages: compaction_request(input),
+            use_tools: false,
+            toolsets: None,
+            pager: false,
+        },
+        TurnChannels::default(),
+        credential,
+        |_| async { Err(AiError::config("unexpected refresh")) },
+        &stats,
+    )
+    .await;
+    let _ = ai::session_usage::checkpoint(&stats, true).await;
+    compaction_text(outcome)
+}
+
 #[tauri::command]
 #[expect(
     clippy::too_many_arguments,
@@ -1222,39 +1334,27 @@ pub async fn ai_chat(
         0
     };
     let preparation = match session_id.as_ref() {
-        Some(session_id) => tauri::async_runtime::spawn_blocking({
-            let app = app.clone();
-            let p = p.clone();
-            let messages = messages.clone();
-            let session_id = session_id.clone();
+        Some(session_id) => {
             let incarnation = stats
                 .accounting()
                 .expect("saved requests have an admitted accounting owner")
                 .update()
                 .incarnation;
-            move || {
-                crate::commands::prepare_turn_for(
-                    &app,
-                    &p,
-                    &messages,
-                    crate::commands::SavedTurnBinding {
-                        id: &session_id,
-                        incarnation: &incarnation,
-                        project: None,
-                        tool_tokens,
-                        surface: None,
-                    },
-                )
-                .map(Some)
-            }
-        })
-        .await
-        .map_err(|error| {
-            crate::commands::PrepareTurnError::Store(format!(
-                "Session persistence task failed: {error}"
-            ))
-        })
-        .and_then(|result| result),
+            crate::commands::prepare_turn_for(
+                &app,
+                &p,
+                &messages,
+                crate::commands::SavedTurnBinding {
+                    id: session_id,
+                    incarnation: &incarnation,
+                    project: None,
+                    tool_tokens,
+                    surface: None,
+                },
+            )
+            .await
+            .map(Some)
+        }
         None => Ok(None),
     };
     if session_id.is_some() && preparation.is_err() {

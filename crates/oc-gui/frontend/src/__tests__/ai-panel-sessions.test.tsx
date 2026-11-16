@@ -133,6 +133,7 @@ const backend = {
   workspacePath: null as string | null,
   recents: [] as { name: string; path: string; opened: string }[],
   compacted: [] as Record<string, unknown>[],
+  cleared: [] as Record<string, unknown>[],
   /** Whether the next `sessions_open` reports a compaction. */
   loadedCompacted: false,
   newCalls: [] as Record<string, unknown>[],
@@ -278,6 +279,9 @@ function installBackend() {
         };
       }
       case "ai_active_turn": return backend.active;
+      case "sessions_clear_history":
+        backend.cleared.push(typed);
+        return { sessions: 1, dropped_records: 12, removed_assets: 1, freed_bytes: 4096 };
       case "sessions_compact":
         backend.compacted.push(typed);
         return {
@@ -355,6 +359,7 @@ beforeEach(() => {
     { name: "other", path: "/Users/me/other", opened: "2026-10-28T09:00:00.000Z" },
   ];
   backend.compacted = [];
+  backend.cleared = [];
   backend.loadedCompacted = false;
   backend.newCalls = [];
   backend.recalls = [];
@@ -387,7 +392,7 @@ describe("AI panel session announcements", () => {
   it("shows a compaction the backend performed on its own", async () => {
     const view = await mountPanel();
     await waitFor(() => expect(handlers.ai_session?.length).toBe(1));
-    expect(view.container.textContent ?? "").not.toContain("Context compacted");
+    expect(view.container.textContent ?? "").not.toContain("Conversation compacted");
 
     emitSession({
       session_id: "0a1b2c3d4e5f0001",
@@ -402,7 +407,7 @@ describe("AI panel session announcements", () => {
       messages: [{ role: "user", content: "summary" }],
     });
 
-    await waitFor(() => expect(view.container.textContent ?? "").toContain("Context compacted: 24 messages"));
+    await waitFor(() => expect(view.container.textContent ?? "").toContain("Conversation compacted: 24 messages"));
     expect(view.container.textContent).toContain("12400 → 1800 tokens");
     expect(view.container.textContent).toContain("6 recent tool calls kept as text");
   });
@@ -432,7 +437,7 @@ describe("AI panel session announcements", () => {
     emitSession({ session_id: "x", compacted: false, tokens_before: 1, tokens_after: 1 });
     emitSession(null);
     await new Promise(resolve => setTimeout(resolve, 10));
-    expect(view.container.textContent ?? "").not.toContain("Context compacted");
+    expect(view.container.textContent ?? "").not.toContain("Conversation compacted");
   });
 });
 
@@ -881,7 +886,7 @@ describe("conversation switcher", () => {
     fireEvent.scroll(transcript);
     emitSession({ session_id: "s1", compacted: true, dropped_from: 0, dropped_to: 2,
       tokens_before: 1000, tokens_after: 500, retained_pairs: 1, messages: [] });
-    await waitFor(() => expect(transcript.textContent).toContain("Context compacted"));
+    await waitFor(() => expect(transcript.textContent).toContain("Conversation compacted"));
     expect(transcript.scrollTop).toBe(80);
   });
 
@@ -1230,10 +1235,10 @@ describe("conversation switcher", () => {
 
     await waitFor(() => expect(backend.compacted).toHaveLength(1));
     expect(backend.compacted[0]).toEqual({ id: "s2" });
-    await waitFor(() => expect(document.querySelector(".ai-messages")?.textContent).toContain("Context compacted"));
+    await waitFor(() => expect(document.querySelector(".ai-messages")?.textContent).toContain("Conversation compacted"));
     const text = document.querySelector(".ai-messages")?.textContent ?? "";
-    expect(text.match(/Context compacted/g)?.length).toBe(1);
-    expect(text).toContain("Context compacted: 24 messages became a summary (12400 → 1800 tokens); 6 recent tool calls kept as text.");
+    expect(text.match(/Conversation compacted/g)?.length).toBe(1);
+    expect(text).toContain("Conversation compacted: 24 messages summarized (12400 → 1800 tokens); 6 recent tool calls kept as text.");
   });
 });
 
@@ -1310,7 +1315,7 @@ describe("session compaction payload", () => {
       messages: [],
     };
     expect(compactionNotice(compaction)).toBe(
-      "Context compacted: 1 messages became a summary (900 → 120 tokens); 1 recent tool call kept as text.",
+      "Conversation compacted: 1 messages summarized (900 → 120 tokens); 1 recent tool call kept as text.",
     );
   });
 
@@ -1472,7 +1477,7 @@ describe("restored transcript", () => {
     expect(savedWireIndex({ role: "user", content: "second", dslSha: sha }, saved)).toBe(3);
     expect(savedWireIndex({ role: "assistant", content: "done" }, saved)).toBe(4);
     // A row that stands for no saved message has nothing to cut to.
-    expect(savedWireIndex({ role: "system", content: "Context compacted" }, saved)).toBeNull();
+    expect(savedWireIndex({ role: "system", content: "Conversation compacted" }, saved)).toBeNull();
     expect(savedWireIndex(tool, [])).toBeNull();
   });
 });
@@ -2022,3 +2027,72 @@ describe("a stopped turn", () => {
   });
 });
 
+
+describe("compaction failures and clearing history", () => {
+  beforeEach(() => {
+    askDialogMock.mockReset();
+  });
+
+  it("writes a localized row when the summary call failed", async () => {
+    backend.sessions = [session({ id: "s1", title: "intro idea" })];
+    backend.conversations = { s1: [{ role: "user", content: "an intro" }] };
+    aiSession.setOpen("s1");
+    await mountPanel();
+    await waitFor(() => expect(openTitle()).toBe("intro idea"));
+    emitSession({ session_id: "s1", notice: "compaction_failed", reason: "provider_error" });
+    await waitFor(() => {
+      expect(document.querySelector(".ai-messages")?.textContent)
+        .toContain("the provider did not answer");
+    });
+  });
+
+  it("asks before clearing old history and reports what it freed", async () => {
+    backend.sessions = [session({ id: "s1", title: "intro idea" })];
+    backend.conversations = { s1: [{ role: "user", content: "an intro" }] };
+    askDialogMock.mockResolvedValue(true);
+    aiSession.setOpen("s1");
+    await mountPanel();
+    await waitFor(() => expect(openTitle()).toBe("intro idea"));
+    const field = input();
+    fireEvent.input(field, { target: { value: "/clear" } });
+    await waitFor(() => expect(document.querySelector(".ai-command-row")).toBeTruthy());
+    fireEvent.click(document.querySelector(".ai-command-row")!);
+    await waitFor(() => expect(askDialogMock).toHaveBeenCalled());
+    await waitFor(() => expect(backend.cleared).toEqual([{ id: "s1" }]));
+  });
+
+  it("clears nothing when the confirmation is declined", async () => {
+    backend.sessions = [session({ id: "s1", title: "intro idea" })];
+    backend.conversations = { s1: [{ role: "user", content: "an intro" }] };
+    askDialogMock.mockResolvedValue(false);
+    aiSession.setOpen("s1");
+    await mountPanel();
+    await waitFor(() => expect(openTitle()).toBe("intro idea"));
+    const field = input();
+    fireEvent.input(field, { target: { value: "/clear" } });
+    await waitFor(() => expect(document.querySelector(".ai-command-row")).toBeTruthy());
+    fireEvent.click(document.querySelector(".ai-command-row")!);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(backend.cleared).toEqual([]);
+  });
+
+  it("marks a store compaction as a checkpoint but not a loop fold row", () => {
+    const rows = restoredTranscript([
+      {
+        role: "user",
+        context: "summary",
+        content: "Conversation summary written 2026-11-03. Standing intent: mix.",
+        message_meta: { version: 1, kind: "summary", discarded_auditions: 0 },
+      },
+      {
+        role: "user",
+        context: "summary",
+        content: "Wire compaction: older messages were folded into this line.",
+        message_meta: { version: 1, kind: "summary" },
+      },
+    ]);
+    expect(rows[0].checkpoint).toBe(true);
+    expect(rows[1].context).toBe("summary");
+    expect(rows[1].checkpoint).toBeUndefined();
+  });
+});

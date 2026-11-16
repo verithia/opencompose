@@ -107,6 +107,7 @@ impl Fake {
             toolsets: None,
             text_protocol: self.world().text_protocol,
             context_length: 0,
+            max_output: 0,
         }
     }
 
@@ -253,6 +254,19 @@ impl Host for Fake {
 
     fn allowed(&self) -> Vec<String> {
         Vec::new()
+    }
+
+    async fn compact(&self) -> Result<Vec<Value>, CompactionFailure> {
+        let dsl = self.world().dsl.clone();
+        let facts = crate::ai::sessions::ProjectFacts {
+            path: None,
+            dsl_digest: crate::ai::sessions::dsl_digest(&dsl),
+            track_count: 1,
+        };
+        self.store
+            .compact(&self.session, None, &facts)
+            .map(|compaction| compaction.messages)
+            .map_err(|_| CompactionFailure::Conflict)
     }
 
     async fn record(&self, messages: &[Value]) -> Result<Vec<Value>, String> {
@@ -1194,4 +1208,70 @@ fn a_mutating_tool_row_saves_typed_changes_and_a_read_only_row_does_not() {
         .find(|message| message["tool_call_id"] == "b")
         .unwrap();
     assert!(read.get("changes").is_none(), "{read}");
+}
+
+#[test]
+fn a_mid_turn_compaction_keeps_the_open_round_and_pairing() {
+    let fake = Fake::new(vec![
+        round(&[("a", "project_get")]),
+        json!({"role":"assistant","content":"done"}),
+    ]);
+    let mut older = Vec::new();
+    for step in 0..24 {
+        let id = format!("old{step}");
+        older.push(round(&[(&id, "project_get")]));
+        older.push(json!({
+            "role":"tool",
+            "tool_call_id": id,
+            "content": json!({"ok": true, "data": "x".repeat(600)}).to_string(),
+        }));
+    }
+    fake.store.append_turn(&fake.session, &older, None).unwrap();
+    let mut wire = vec![json!({"role":"system","content":"sys"})];
+    wire.extend(fake.saved());
+    let person =
+        json!({"role":"user","content":"make it","message_meta":{"version":1,"kind":"user"}});
+    wire.push(person.clone());
+    fake.store
+        .append_turn(&fake.session, std::slice::from_ref(&person), None)
+        .unwrap();
+    let spec = TurnSpec {
+        wire,
+        permission: SessionPermission::Write,
+        label: "AI edit".into(),
+        audio: None,
+        scope: fake.session.clone(),
+        // An empty set keeps the fixed tool-list cost small, so the
+        // conversation itself drives the trigger.
+        toolsets: Some(Vec::new()),
+        text_protocol: true,
+        context_length: 4_000,
+        max_output: 0,
+    };
+    let outcome = block_on(run_turn(&fake, spec, fake.cancel.clone()));
+    assert!(!outcome.failed, "{outcome:?}");
+    let sent = fake.world().sent.clone();
+    let compacted = sent
+        .iter()
+        .find(|wire| wire.len() > 1 && wire[1]["context"] == "summary")
+        .expect("a later round was sent after a compaction");
+    assert_eq!(
+        compacted[1]["message_meta"]["kind"], "summary",
+        "the first saved row is the compaction summary"
+    );
+    assert!(
+        compacted[1]["message_meta"]
+            .get("discarded_auditions")
+            .is_some(),
+        "the store's summary metadata is kept"
+    );
+    // The open round is recorded after the compaction and survives verbatim.
+    let second = &sent[1];
+    assert!(
+        second.iter().any(|row| row["tool_call_id"] == "a"),
+        "the open round's result stays in the next request: {second:?}"
+    );
+    let saved = fake.saved();
+    assert_eq!(check_pairing(&saved), Ok(()));
+    assert!(saved.iter().any(|row| row["tool_call_id"] == "a"));
 }

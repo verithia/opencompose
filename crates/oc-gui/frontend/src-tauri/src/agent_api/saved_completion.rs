@@ -106,6 +106,7 @@ impl SavedTurn {
                 surface: None,
             },
         )
+        .await
         .map_err(AiError::from);
         let prepared = match prepared {
             Ok(prepared) => prepared,

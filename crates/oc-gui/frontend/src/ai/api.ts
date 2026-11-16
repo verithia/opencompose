@@ -7,7 +7,7 @@ import type { ModelLimits } from "../stores/aiLimits";
 import type { AuthKind, Wire } from "./config";
 import type { ApprovalRequest, ToolDef, TurnStop, WireMessage } from "./wire";
 import type { PermissionMode } from "./permission";
-import type { CompactionResult, SessionMeta } from "./sessions";
+import type { ClearReport, CompactionResult, SessionMeta } from "./sessions";
 import type { SkillRef } from "./system-prompt";
 import { toolsetArg } from "./toolsets";
 import type { DiffResult } from "./transcript";
@@ -317,8 +317,12 @@ export function compactSession(id: string) {
   return invoke<CompactionResult>("sessions_compact", { id });
 }
 
-export function dropSessionHistory(id: string, keep: number) {
-  return invoke<{ dropped_records: number; removed_assets: number }>("sessions_drop_history", { id, keep });
+export function clearSessionHistory(id: string) {
+  return invoke<ClearReport>("sessions_clear_history", { id });
+}
+
+export function clearAllSessionHistory() {
+  return invoke<ClearReport>("sessions_clear_all_history");
 }
 
 export function originalSession(id: string) {

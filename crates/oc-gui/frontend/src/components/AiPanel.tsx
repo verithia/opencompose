@@ -41,12 +41,14 @@ import { followsOpenProject, projectName, sessionBinding, type SessionBinding } 
 import {
   activeTurn,
   archiveNotice,
+  compactionFailureNotice,
   compactionNotice,
   directoryName,
   loadedPage,
   loadedSession,
   sessionArchiveEviction,
   sessionCompaction,
+  sessionCompactionFailure,
   sessionList,
   sessionPageRead,
   workspaceScope,
@@ -805,12 +807,12 @@ export function AiPanel(props: { onClose?: () => void }) {
   }
 
   /**
-   * The `/` palette: local conversation commands. `/compact` runs at once;
-   * `/drop_history <n>` needs its count, so choosing it fills the composer.
+   * The `/` palette: local conversation commands. `/compact` and `/clear` ask
+   * before they reshape history; `/goal` stages text in the composer.
    */
   const COMMANDS = [
     { name: "compact", summary: "ai.command.compact" },
-    { name: "drop_history", summary: "ai.command.dropHistory" },
+    { name: "clear", summary: "ai.command.clear" },
     { name: "goal", summary: "ai.command.goal" },
   ] as const;
 
@@ -889,7 +891,6 @@ export function AiPanel(props: { onClose?: () => void }) {
 
   const runCommand = async (name: string): Promise<void> => {
     const draft = input().trim();
-    const argument = draft.slice(1).trimStart().split(/\s+/)[1];
     if (name === "goal") {
       // The goal is one typed session row, so a rewind returns to the earlier
       // goal and a fork carries the one it copied.
@@ -911,28 +912,29 @@ export function AiPanel(props: { onClose?: () => void }) {
       await compactSession(id);
       return;
     }
-    if (name === "drop_history") {
-      const keep = Number(argument);
-      if (!Number.isInteger(keep) || keep < 1) {
-        setInput("/drop_history ");
-        return;
-      }
+    if (name === "clear") {
       const id = openId();
       if (!id) return;
       setInput("");
+      const { ask } = await import("@tauri-apps/plugin-dialog");
+      const confirmed = await ask(
+        i18n.t("ai.command.clearConfirm"),
+        { title: i18n.t("ai.command.clear"), kind: "warning" },
+      );
+      if (!confirmed) return;
       try {
-        const result = await aiApi.dropSessionHistory(id, keep);
+        const result = await aiApi.clearSessionHistory(id);
         notify(
-          i18n.t("ai.command.dropped", {
+          i18n.t("ai.command.cleared", {
             records: result.dropped_records,
-            assets: result.removed_assets,
+            size: formatBytes(result.freed_bytes),
           }),
           "success",
         );
         setOriginalView(false);
         await paintSession(id);
       } catch (error) {
-        notify(String(error), "error");
+        notify(errorMessage(error), "error");
       }
     }
   };
@@ -1593,6 +1595,12 @@ export function AiPanel(props: { onClose?: () => void }) {
       if (evicted) {
         log.info("ai", `session ${evicted.session_id} evicted ${evicted.evicted.length} archive file(s)`);
         setMessages(previous => [...previous, { role: "system", content: archiveNotice(evicted), timestamp: Date.now() }]);
+        return;
+      }
+      const failure = sessionCompactionFailure(payload);
+      if (failure) {
+        log.warn("ai", `session ${failure.session_id} compaction summary failed: ${failure.reason}`);
+        setMessages(previous => [...previous, { role: "system", content: compactionFailureNotice(failure), timestamp: Date.now() }]);
         return;
       }
       const compaction = sessionCompaction(payload);

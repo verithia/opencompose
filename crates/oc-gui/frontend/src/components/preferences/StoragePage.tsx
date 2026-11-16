@@ -126,6 +126,15 @@ export function StoragePage(props: { onClose: () => void }) {
     }
   };
 
+  /** Clears old conversation history in every session, after confirming. */
+  const clearHistory = async () => {
+    const confirmed = await ask(
+      i18n.t("preferences.storage.clearHistoryConfirm"),
+      { title: i18n.t("preferences.storage.clearHistory"), kind: "warning" },
+    );
+    if (confirmed) await storageStore.clearOldSessionHistory();
+  };
+
   /** Clears both audition directories, after the operator confirms. */
   const clearAuditions = async () => {
     const confirmed = await ask(
@@ -336,6 +345,14 @@ export function StoragePage(props: { onClose: () => void }) {
                     class="toolbar-btn text-btn preferences-open-folder"
                     onClick={() => void storageStore.openFolder(loaded().sessions.root)}
                   >{i18n.t("preferences.storage.openFolder")}</button>
+                </div>
+                <div class="preferences-path-row">
+                  <button
+                    type="button"
+                    class="toolbar-btn text-btn preferences-clear-history"
+                    disabled={storageStore.clearing()}
+                    onClick={() => void clearHistory()}
+                  >{i18n.t("preferences.storage.clearHistory")}</button>
                 </div>
 
                 {/* The audition archive: delivery clips, and the renders the
@@ -614,6 +631,18 @@ export function StoragePage(props: { onClose: () => void }) {
       <Show when={storageStore.status() === "auditions-cleared"}>
               <p class="preferences-hint preferences-auditions-cleared" role="status">
                 {i18n.t("preferences.storage.auditionsCleared")}
+              </p>
+            </Show>
+
+      <Show when={storageStore.status() === "history-cleared"}>
+              <p class="preferences-hint preferences-history-cleared" role="status">
+                {i18n.t("preferences.storage.historyCleared")}
+              </p>
+            </Show>
+
+      <Show when={storageStore.status() === "history-empty"}>
+              <p class="preferences-hint preferences-history-cleared" role="status">
+                {i18n.t("preferences.storage.historyEmpty")}
               </p>
             </Show>
           </>

@@ -134,6 +134,8 @@ fn recall_to_the_newest_message_works_after_auto_compaction_with_a_snapshot() {
                 history: Some(&history),
                 overhead: 0,
                 context_length: window,
+                max_output: 0,
+                prompt_tokens: 0,
                 facts: &facts(),
                 provider: "p",
                 model: "m",
@@ -185,7 +187,7 @@ fn retained_pairs_name_every_call_of_a_parallel_batch() {
 fn a_placeholder_window_never_compacts_a_small_conversation() {
     let view = vec![user("hello"), reply("hi"), user("again")];
     for window in [0, 1] {
-        assert!(!should_compact(&view, 0, window), "{window}");
+        assert!(!should_compact(&view, 0, window, 0, 0), "{window}");
     }
 }
 
@@ -194,10 +196,10 @@ fn attachments_count_toward_the_compaction_threshold() {
     let mut view = vec![user(&"words ".repeat(400)), reply("ok")];
     let text = estimate_tokens(&view);
     let window = text * 2;
-    assert!(!should_compact(&view, 0, window));
+    assert!(!should_compact(&view, 0, window, 0, 0));
     view[0]["media"] = json!([image(), image()]);
     assert!(media_tokens(&view) >= 2 * IMAGE_TOKENS);
-    assert!(should_compact(&view, 0, window));
+    assert!(should_compact(&view, 0, window, 0, 0));
 }
 
 #[test]
@@ -258,6 +260,8 @@ fn a_failed_auto_compaction_is_reported_and_the_turn_still_prepares() {
                 history: None,
                 overhead: 0,
                 context_length: 0,
+                max_output: 0,
+                prompt_tokens: 0,
                 facts: &facts(),
                 provider: "p",
                 model: "m",
@@ -305,6 +309,8 @@ fn a_refused_admission_saves_nothing() {
         history: None,
         overhead: 0,
         context_length: 0,
+        max_output: 0,
+        prompt_tokens: 0,
         facts: &project_facts,
         provider: "p",
         model: "m",
@@ -375,6 +381,8 @@ fn a_landed_compaction_succeeds_even_when_its_metadata_cannot_be_written() {
                 history: None,
                 overhead: 0,
                 context_length: 0,
+                max_output: 0,
+                prompt_tokens: 0,
                 facts: &facts(),
                 provider: "p",
                 model: "m",
@@ -410,6 +418,8 @@ fn a_second_requested_compaction_of_the_same_state_is_a_conflict() {
                 history: None,
                 overhead: 0,
                 context_length: 0,
+                max_output: 0,
+                prompt_tokens: 0,
                 facts: &facts(),
                 provider: "p",
                 model: "m",
@@ -644,4 +654,233 @@ fn a_size_trim_keeps_the_goal_and_plan_beside_the_summary() {
     assert_eq!(goal.unwrap().text, "finish");
     assert_eq!(plan, Some(Vec::new()));
     assert_eq!(turns::check_pairing(&kept), Ok(()));
+}
+
+#[test]
+fn the_compaction_threshold_holds_back_output_and_the_prompt() {
+    // Output and the prompt's reserve come off the window; the share is the
+    // floor a small output cannot push lower.
+    assert_eq!(compaction_threshold(100_000, 10_000, 2_000), 88_000);
+    assert_eq!(compaction_threshold(100_000, 50_000, 0), 60_000);
+    assert_eq!(compaction_threshold(10_000, 100, 0), 8_900);
+    // A prompt smaller than the floor still reserves the floor.
+    assert_eq!(compaction_threshold(100_000, 0, 0), 99_000);
+}
+
+#[test]
+fn a_large_output_limit_lowers_the_trigger_to_the_share() {
+    let window = 200_000;
+    assert_eq!(compaction_threshold(window, 100_000, 0), 120_000);
+    assert_eq!(compaction_threshold(window, 1_000, 0), 198_000);
+}
+
+fn canned_provider(base: &str) -> crate::commands::AiProviderEntry {
+    crate::commands::AiProviderEntry {
+        id: "compaction-fixture".into(),
+        name: "compaction fixture".into(),
+        kind: crate::commands::ProviderKind::OpenAiChatCompletions,
+        wire: Some(crate::commands::Wire::OpenAiChatCompletions),
+        auth: crate::commands::AuthKind::ApiKey,
+        auth_provider: None,
+        oauth_allowed_hosts: Vec::new(),
+        endpoint: format!("{base}v1/chat/completions"),
+        model: "fixture-model".into(),
+        models: Vec::new(),
+        context_length: 32_000,
+        max_tokens: 4_096,
+        temperature: 0.3,
+        thinking_level: "medium".into(),
+        capabilities: Default::default(),
+    }
+}
+
+#[test]
+fn a_model_summary_becomes_the_first_row_with_the_digest_and_pinned_rows() {
+    use crate::ai::host_notice::{BindCause, HostNotice, notice_row};
+    let (store, project) = fixture("model-summary");
+    let _root = crate::ai::sessions::test_root(store.root().to_path_buf());
+    let session = store
+        .create(Some(project.parent().unwrap()), Some(&project), None, None)
+        .unwrap();
+    let mut view = rounds();
+    view.push(notice_row(&HostNotice::ProjectBound {
+        from: None,
+        to: "/songs/song.ocp".into(),
+        cause: BindCause::Chosen,
+    }));
+    view.push(user("now the bass"));
+    store.append_turn(&session.id, &view, None).unwrap();
+    let saved = store.view(&session.id).unwrap();
+    let plan = plan_compaction_request(&saved, 0, &facts(), &session.id).unwrap();
+
+    let (base, server) = crate::ai::test_support::canned(
+        200,
+        r#"{"choices":[{"message":{"role":"assistant","content":"MODEL SUMMARY"},"finish_reason":"stop"}],"usage":{"prompt_tokens":11,"completion_tokens":3}}"#,
+    );
+    let summary =
+        tauri::async_runtime::block_on(crate::ai_service::compaction_summary_with_credential(
+            canned_provider(&base),
+            &session.id,
+            plan.input.clone(),
+            crate::ai::auth::Credential::ApiKey(Some("fixture-secret".into())),
+        ))
+        .unwrap();
+    assert_eq!(summary, "MODEL SUMMARY");
+    let request = server.join().unwrap();
+    assert!(
+        request.contains("Summarize the conversation below"),
+        "{request}"
+    );
+    assert!(
+        request.contains("make the kick punchier"),
+        "the dropped turns are the input"
+    );
+
+    let outcome = store.commit_compaction(plan, Some(&summary)).unwrap();
+    let rows = &outcome.messages;
+    let first = rows[0]["content"].as_str().unwrap();
+    assert!(first.contains("MODEL SUMMARY"), "{first}");
+    assert!(first.contains("Retained recent tool calls"), "{first}");
+    assert!(
+        first.contains("tool_c7"),
+        "the newest pair's digest is kept: {first}"
+    );
+    assert!(is_compaction_summary(&rows[0]));
+    assert!(
+        rows.iter()
+            .any(|row| row["message_meta"]["notice"]["kind"] == "project_bound"),
+        "the pinned row stays beside the summary"
+    );
+    assert_eq!(rows.last().unwrap()["content"], "now the bass");
+    assert_eq!(turns::check_pairing(rows), Ok(()));
+    // The request was accounted in the same conversation.
+    let loaded = store.load(&session.id).unwrap();
+    assert!(loaded.usage.is_some_and(|usage| usage.totals.requests >= 1));
+    std::fs::remove_dir_all(store.root().parent().unwrap()).unwrap();
+}
+
+#[test]
+fn a_failed_summary_call_falls_back_to_the_mechanical_summary() {
+    let (store, project) = fixture("summary-failure");
+    let _root = crate::ai::sessions::test_root(store.root().to_path_buf());
+    let session = store
+        .create(Some(project.parent().unwrap()), Some(&project), None, None)
+        .unwrap();
+    let mut view = rounds();
+    view.push(user("now the bass"));
+    store.append_turn(&session.id, &view, None).unwrap();
+    let saved = store.view(&session.id).unwrap();
+    let plan = plan_compaction_request(&saved, 0, &facts(), &session.id).unwrap();
+    let (base, server) = crate::ai::test_support::canned(500, "provider broke");
+    let failure =
+        tauri::async_runtime::block_on(crate::ai_service::compaction_summary_with_credential(
+            canned_provider(&base),
+            &session.id,
+            plan.input.clone(),
+            crate::ai::auth::Credential::ApiKey(Some("fixture-secret".into())),
+        ))
+        .unwrap_err();
+    assert_eq!(failure, CompactionFailure::ProviderError);
+    let _ = server.join();
+    let outcome = store.commit_compaction(plan, None).unwrap();
+    let first = outcome.messages[0]["content"].as_str().unwrap();
+    assert!(
+        first.starts_with("Conversation summary written "),
+        "{first}"
+    );
+    assert!(first.contains("Decisions taken:"), "{first}");
+    assert_eq!(
+        crate::commands::compaction_failed_event(&session.id, failure)["reason"],
+        json!("provider_error")
+    );
+    std::fs::remove_dir_all(store.root().parent().unwrap()).unwrap();
+}
+
+#[test]
+fn an_empty_summary_reply_is_a_typed_failure() {
+    let (store, project) = fixture("summary-empty");
+    let _root = crate::ai::sessions::test_root(store.root().to_path_buf());
+    let session = store
+        .create(Some(project.parent().unwrap()), Some(&project), None, None)
+        .unwrap();
+    let mut view = rounds();
+    view.push(user("now the bass"));
+    store.append_turn(&session.id, &view, None).unwrap();
+    let saved = store.view(&session.id).unwrap();
+    let plan = plan_compaction_request(&saved, 0, &facts(), &session.id).unwrap();
+    let (base, server) = crate::ai::test_support::canned(
+        200,
+        r#"{"choices":[{"message":{"role":"assistant","content":"   "},"finish_reason":"stop"}]}"#,
+    );
+    let failure =
+        tauri::async_runtime::block_on(crate::ai_service::compaction_summary_with_credential(
+            canned_provider(&base),
+            &session.id,
+            plan.input.clone(),
+            crate::ai::auth::Credential::ApiKey(Some("fixture-secret".into())),
+        ))
+        .unwrap_err();
+    assert_eq!(failure, CompactionFailure::Empty);
+    let _ = server.join();
+    std::fs::remove_dir_all(store.root().parent().unwrap()).unwrap();
+}
+
+#[test]
+fn a_commit_after_the_conversation_changed_is_a_conflict_and_loses_nothing() {
+    let (store, project) = fixture("summary-conflict");
+    let session = store
+        .create(Some(project.parent().unwrap()), Some(&project), None, None)
+        .unwrap();
+    let mut view = rounds();
+    view.push(user("now the bass"));
+    store.append_turn(&session.id, &view, None).unwrap();
+    let saved = store.view(&session.id).unwrap();
+    let plan = plan_compaction_request(&saved, 0, &facts(), &session.id).unwrap();
+    store
+        .append_turn(&session.id, &[user("a newer ask")], None)
+        .unwrap();
+    let error = store
+        .commit_compaction(plan, Some("late summary"))
+        .unwrap_err();
+    assert_eq!(error.kind, SessionErrorKind::Conflict);
+    let current = store.view(&session.id).unwrap();
+    assert_eq!(current.last().unwrap()["content"], "a newer ask");
+    assert!(current.iter().any(|row| row["content"] == "now the bass"));
+    std::fs::remove_dir_all(store.root().parent().unwrap()).unwrap();
+}
+
+#[test]
+fn clearing_history_keeps_from_the_second_newest_compaction() {
+    let (store, project) = fixture("clear-history");
+    let session = store
+        .create(Some(project.parent().unwrap()), Some(&project), None, None)
+        .unwrap();
+    for round in 0..4 {
+        let mut view = rounds();
+        view.push(user(&format!("ask {round}")));
+        store.append_turn(&session.id, &view, None).unwrap();
+        store.compact(&session.id, None, &facts()).unwrap();
+    }
+    let dir = store.find(&session.id).unwrap().0;
+    let before = read_records(&dir).unwrap();
+    let compactions = before
+        .iter()
+        .filter(|record| record.kind == RecordKind::Compaction)
+        .count();
+    assert_eq!(compactions, 4);
+    let report = store
+        .clear_old_history_guarded(&session.id, &|| Ok(()))
+        .unwrap();
+    let after = read_records(&dir).unwrap();
+    assert_eq!(
+        after
+            .iter()
+            .filter(|record| record.kind == RecordKind::Compaction)
+            .count(),
+        2,
+        "the second-newest compaction and the newest stay"
+    );
+    assert_eq!(after[0].kind, RecordKind::Compaction);
+    assert!(report.dropped_records > 0);
+    std::fs::remove_dir_all(store.root().parent().unwrap()).unwrap();
 }

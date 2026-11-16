@@ -430,7 +430,7 @@ fn a_headless_turn_bound_to_another_open_file_is_refused_as_session_binding() {
         .manage(state)
         .build(mock_context(noop_assets()))
         .unwrap();
-    let error = prepare_turn_for(
+    let error = tauri::async_runtime::block_on(prepare_turn_for(
         &app.handle().clone(),
         &provider,
         &messages,
@@ -441,7 +441,7 @@ fn a_headless_turn_bound_to_another_open_file_is_refused_as_session_binding() {
             tool_tokens: 0,
             surface: None,
         },
-    )
+    ))
     .unwrap_err();
     assert_eq!(error.kind(), "session_binding");
     let error: AiError = error.into();
@@ -554,7 +554,7 @@ fn a_prepared_turn_reports_edits_made_outside_its_conversation() {
         .manage(state)
         .build(mock_context(noop_assets()))
         .unwrap();
-    let prepared = prepare_turn_for(
+    let prepared = tauri::async_runtime::block_on(prepare_turn_for(
         &app.handle().clone(),
         &provider,
         &messages,
@@ -565,7 +565,7 @@ fn a_prepared_turn_reports_edits_made_outside_its_conversation() {
             tool_tokens: wire::offered_tool_tokens(None, false),
             surface: None,
         },
-    )
+    ))
     .unwrap();
     let rows = prepared.messages.as_array().unwrap();
     assert_eq!(rows.last().unwrap()["content"], "hi");
@@ -638,7 +638,7 @@ fn a_pending_binding_suppresses_the_outside_changes_notice() {
         .manage(state)
         .build(mock_context(noop_assets()))
         .unwrap();
-    let prepared = prepare_turn_for(
+    let prepared = tauri::async_runtime::block_on(prepare_turn_for(
         &app.handle().clone(),
         &provider,
         &messages,
@@ -649,7 +649,7 @@ fn a_pending_binding_suppresses_the_outside_changes_notice() {
             tool_tokens: wire::offered_tool_tokens(None, false),
             surface: None,
         },
-    )
+    ))
     .unwrap();
     let rows = prepared.messages.as_array().unwrap();
     assert_eq!(rows.last().unwrap()["content"], "hi");

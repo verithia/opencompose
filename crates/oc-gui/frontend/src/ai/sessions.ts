@@ -135,10 +135,51 @@ export interface CompactionResult extends CompactionReport {
   messages: WireMessage[];
 }
 
+/** Why a model-written summary was replaced by the mechanical one. */
+export type CompactionFailure = "provider_error" | "cancelled" | "empty" | "conflict";
+
+/** Payload of the backend's `ai_session` event after a failed summary call. */
+export interface SessionCompactionFailure {
+  session_id: string;
+  notice: "compaction_failed";
+  reason: CompactionFailure;
+}
+
+/** What clearing old conversation history dropped and freed. */
+export interface ClearReport {
+  sessions: number;
+  dropped_records: number;
+  removed_assets: number;
+  freed_bytes: number;
+}
+
 export function sessionCompaction(event: unknown): SessionCompaction | null {
   const value = event as Partial<SessionCompaction> | null;
   if (!value || value.compacted !== true || typeof value.tokens_after !== "number") return null;
   return value as SessionCompaction;
+}
+
+/** The failure notice a compaction's `ai_session` event carries, if any. */
+export function sessionCompactionFailure(event: unknown): SessionCompactionFailure | null {
+  const value = event as Partial<SessionCompactionFailure> | null;
+  if (!value || value.notice !== "compaction_failed" || typeof value.session_id !== "string") return null;
+  if (value.reason !== "provider_error" && value.reason !== "cancelled"
+    && value.reason !== "empty" && value.reason !== "conflict") return null;
+  return value as SessionCompactionFailure;
+}
+
+const COMPACTION_FAILURE_KEYS = {
+  provider_error: "ai.sessions.compactionFailedProvider",
+  cancelled: "ai.sessions.compactionFailedCancelled",
+  empty: "ai.sessions.compactionFailedEmpty",
+  conflict: "ai.sessions.compactionFailedConflict",
+} as const;
+
+/** The transcript line for a compaction whose summary call failed. */
+export function compactionFailureNotice(failure: SessionCompactionFailure): string {
+  return i18n.t("ai.sessions.compactionFailed", {
+    reason: i18n.t(COMPACTION_FAILURE_KEYS[failure.reason]),
+  });
 }
 
 /** The eviction report a turn's `ai_session` event carries, if it has one. */

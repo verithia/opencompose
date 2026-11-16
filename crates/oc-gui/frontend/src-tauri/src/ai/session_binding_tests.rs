@@ -16,6 +16,8 @@ fn context(facts: &ProjectFacts) -> PrepareContext<'_> {
         history: None,
         overhead: 0,
         context_length: 0,
+        max_output: 0,
+        prompt_tokens: 0,
         facts,
         provider: "fixture-provider",
         model: "fixture-model",
