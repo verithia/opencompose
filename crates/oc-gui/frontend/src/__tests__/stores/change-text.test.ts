@@ -90,7 +90,13 @@ describe("change text", () => {
     expect(changeText({ kind: "markers_edited", added: 1, removed: 2, changed: 0 }))
       .toBe("Edit markers: 1 added, 2 removed, 0 changed");
     expect(changeText({ kind: "preset_added", preset: "warm pad" })).toBe("Add preset “warm pad”");
+    expect(changeText({ kind: "preset_renamed", from: "pad", to: "warm pad" }))
+      .toBe("Rename preset “pad” to “warm pad”");
+    expect(changeText({ kind: "pattern_renamed", from: "riff", to: "hook" }))
+      .toBe("Rename pattern “riff” to “hook”");
     expect(changeText({ kind: "bus_removed", bus: "verb" })).toBe("Remove bus “verb”");
+    expect(changeText({ kind: "bus_renamed", from: "verb", to: "space" }))
+      .toBe("Rename bus “verb” to “space”");
     expect(changeText({ kind: "groups_edited" })).toBe("Edit clip groups");
   });
 

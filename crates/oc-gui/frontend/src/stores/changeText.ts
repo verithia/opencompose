@@ -244,15 +244,21 @@ export function changeText(change: Change, options: ChangeSetOptions = {}): stri
         });
       case "preset_added": return i18n.t("change.presetAdded", { preset: nameText(value.preset) });
       case "preset_removed": return i18n.t("change.presetRemoved", { preset: nameText(value.preset) });
+      case "preset_renamed":
+        return i18n.t("change.presetRenamed", { from: nameText(value.from), to: nameText(value.to) });
       case "preset_changed": return i18n.t("change.presetChanged", { preset: nameText(value.preset) });
       case "pattern_added": return i18n.t("change.patternAdded", { pattern: nameText(value.pattern) });
       case "pattern_removed": return i18n.t("change.patternRemoved", { pattern: nameText(value.pattern) });
+      case "pattern_renamed":
+        return i18n.t("change.patternRenamed", { from: nameText(value.from), to: nameText(value.to) });
       case "pattern_changed":
         return i18n.t("change.patternChanged", {
           pattern: nameText(value.pattern), range: rangeSuffix(value.span, options),
         });
       case "bus_added": return i18n.t("change.busAdded", { bus: nameText(value.bus) });
       case "bus_removed": return i18n.t("change.busRemoved", { bus: nameText(value.bus) });
+      case "bus_renamed":
+        return i18n.t("change.busRenamed", { from: nameText(value.from), to: nameText(value.to) });
       case "bus_changed": return i18n.t("change.busChanged", { bus: nameText(value.bus) });
       case "bus_mix": return i18n.t("change.busMix", { bus: nameText(value.bus), params: mixText(value.params) });
       case "master_changed": return i18n.t("change.masterChanged");

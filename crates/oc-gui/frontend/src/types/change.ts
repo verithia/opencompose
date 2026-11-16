@@ -80,9 +80,12 @@ export type Change =
   | { kind: "clips_edited"; track: string; span: BeatSpan | null }
   | { kind: "automation_edited"; owner: Owner; span: BeatSpan | null }
   | { kind: "preset_added" | "preset_removed" | "preset_changed"; preset: string }
+  | { kind: "preset_renamed"; from: string; to: string }
   | { kind: "pattern_added" | "pattern_removed"; pattern: string }
+  | { kind: "pattern_renamed"; from: string; to: string }
   | { kind: "pattern_changed"; pattern: string; span: BeatSpan | null }
   | { kind: "bus_added" | "bus_removed" | "bus_changed"; bus: string }
+  | { kind: "bus_renamed"; from: string; to: string }
   | { kind: "bus_mix"; bus: string; params: MixParam[] }
   | { kind: "master_changed" }
   | { kind: "presets_reordered" }

@@ -8007,7 +8007,8 @@ providers:
                 .iter()
                 .any(|change| matches!(
                     change,
-                    oc_dsl::change::Change::PresetAdded { preset } if preset == "lead warm"
+                    oc_dsl::change::Change::PresetRenamed { from, to }
+                        if from == "lead" && to == "lead warm"
                 ))
         );
         assert_eq!(inner.revision, saved["revision"].as_u64().unwrap());
@@ -8114,8 +8115,11 @@ providers:
         assert!(entries[0].get("subject").is_none());
         assert_eq!(entries[1]["index"], json!(2));
         let facts = entries[1]["changes"]["changes"].as_array().unwrap();
-        assert!(facts.contains(&json!({"kind": "preset_removed", "preset": "lead"})));
-        assert!(facts.contains(&json!({"kind": "preset_added", "preset": "lead warm"})));
+        assert!(facts.contains(&json!({
+            "kind": "preset_renamed",
+            "from": "lead",
+            "to": "lead warm",
+        })));
         assert_eq!(entries[1]["scopes"], json!(["preset"]));
         assert_eq!(history["applied"], json!(2));
         assert_eq!(history["redoable"], json!(0));

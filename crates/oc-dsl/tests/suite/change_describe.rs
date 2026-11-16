@@ -135,6 +135,87 @@ fn tracks_add_remove_rename_and_reorder_as_their_own_facts() {
 }
 
 #[test]
+fn presets_patterns_and_buses_report_a_rename_as_its_own_fact() {
+    let preset_before =
+        "@project\n@preset lead\n  source: builtin\n  plugin: \"builtin.open_synth\"\n";
+    let preset_after =
+        "@project\n@preset lead_two\n  source: builtin\n  plugin: \"builtin.open_synth\"\n";
+    let renamed = describe_sources(preset_before, preset_after);
+    assert_eq!(
+        only(&renamed),
+        Change::PresetRenamed {
+            from: "lead".into(),
+            to: "lead_two".into(),
+        }
+    );
+
+    let pattern_before =
+        "@project\n@pattern riff | instrument: piano/acoustic_grand\n  events:\n    C4 q mf\n";
+    let pattern_after =
+        "@project\n@pattern riff_two | instrument: piano/acoustic_grand\n  events:\n    C4 q mf\n";
+    let renamed = describe_sources(pattern_before, pattern_after);
+    assert_eq!(
+        only(&renamed),
+        Change::PatternRenamed {
+            from: "riff".into(),
+            to: "riff_two".into(),
+        }
+    );
+
+    let bus_before = "@project\n@bus space\n  routes: [master]\n";
+    let bus_after = "@project\n@bus room\n  routes: [master]\n";
+    let renamed = describe_sources(bus_before, bus_after);
+    assert_eq!(
+        only(&renamed),
+        Change::BusRenamed {
+            from: "space".into(),
+            to: "room".into(),
+        }
+    );
+    assert_eq!(
+        serde_json::to_value(Change::PresetRenamed {
+            from: "a".into(),
+            to: "b".into(),
+        })
+        .unwrap(),
+        serde_json::json!({"kind": "preset_renamed", "from": "a", "to": "b"})
+    );
+    assert_eq!(
+        serde_json::to_value(Change::PatternRenamed {
+            from: "a".into(),
+            to: "b".into(),
+        })
+        .unwrap(),
+        serde_json::json!({"kind": "pattern_renamed", "from": "a", "to": "b"})
+    );
+    assert_eq!(
+        serde_json::to_value(Change::BusRenamed {
+            from: "a".into(),
+            to: "b".into(),
+        })
+        .unwrap(),
+        serde_json::json!({"kind": "bus_renamed", "from": "a", "to": "b"})
+    );
+}
+
+#[test]
+fn an_in_place_declaration_rename_is_a_rename_not_a_change() {
+    let (old, mut new) = projects(
+        "@project\n@bus space\n  routes: [master]\n",
+        "@project\n@bus space\n  routes: [master]\n",
+    );
+    new.buses[0].name = "room".into();
+    let (_, _, set) = describe_pair(&old, &new);
+    assert_eq!(
+        only(&set),
+        Change::BusRenamed {
+            from: "space".into(),
+            to: "room".into(),
+        }
+    );
+}
+
+#[test]
 fn removing_several_tracks_resolves_each_name_from_the_inverse_set() {
     let set = describe_sources(
         "@project\n@track a | instrument: piano/acoustic_grand\n@track b | instrument: piano/acoustic_grand\n@track c | instrument: piano/acoustic_grand\n",

@@ -234,6 +234,10 @@ pub enum Change {
     PresetRemoved {
         preset: String,
     },
+    PresetRenamed {
+        from: String,
+        to: String,
+    },
     PresetChanged {
         preset: String,
     },
@@ -242,6 +246,10 @@ pub enum Change {
     },
     PatternRemoved {
         pattern: String,
+    },
+    PatternRenamed {
+        from: String,
+        to: String,
     },
     PatternChanged {
         pattern: String,
@@ -252,6 +260,10 @@ pub enum Change {
     },
     BusRemoved {
         bus: String,
+    },
+    BusRenamed {
+        from: String,
+        to: String,
     },
     BusMix {
         bus: String,
@@ -430,35 +442,34 @@ impl SpanAccumulator {
 
 fn describe_in(context: &Context, mutations: &[Mutation]) -> ChangeSet {
     let mut out = Vec::new();
+    let tracks = pair_renames(
+        mutations,
+        removal_track,
+        addition_track,
+        same_track_except_name,
+    );
+    let presets = pair_renames(
+        mutations,
+        removal_preset,
+        addition_preset,
+        same_preset_except_name,
+    );
+    let patterns = pair_renames(
+        mutations,
+        removal_pattern,
+        addition_pattern,
+        same_pattern_except_name,
+    );
+    let buses = pair_renames(mutations, removal_bus, addition_bus, same_bus_except_name);
     let mut discarded = vec![false; mutations.len()];
-    let mut rename_target: Vec<Option<&Track>> = vec![None; mutations.len()];
-
-    let removals: Vec<usize> = mutations
-        .iter()
-        .enumerate()
-        .filter_map(|(index, mutation)| removal_track(mutation).map(|_| index))
-        .collect();
-    let additions: Vec<usize> = mutations
-        .iter()
-        .enumerate()
-        .filter_map(|(index, mutation)| addition_track(mutation).map(|_| index))
-        .collect();
-    for &removal in &removals {
-        let Some(before) = removal_track(&mutations[removal]) else {
-            continue;
-        };
-        for &addition in &additions {
-            if discarded[addition] {
-                continue;
-            }
-            let Some(after) = addition_track(&mutations[addition]) else {
-                continue;
-            };
-            if same_track_except_name(before, after) {
-                discarded[addition] = true;
-                rename_target[removal] = Some(after);
-                break;
-            }
+    for pairing in [
+        &tracks.discarded,
+        &presets.discarded,
+        &patterns.discarded,
+        &buses.discarded,
+    ] {
+        for (index, dropped) in pairing.iter().enumerate() {
+            discarded[index] |= dropped;
         }
     }
 
@@ -466,10 +477,37 @@ fn describe_in(context: &Context, mutations: &[Mutation]) -> ChangeSet {
         if discarded[index] {
             continue;
         }
-        if let Some(after) = rename_target[index]
+        if let Some(after) = tracks.target[index]
             && let Some(before) = removal_track(mutation)
         {
             out.push(Change::TrackRenamed {
+                from: before.name.clone(),
+                to: after.name.clone(),
+            });
+            continue;
+        }
+        if let Some(after) = presets.target[index]
+            && let Some(before) = removal_preset(mutation)
+        {
+            out.push(Change::PresetRenamed {
+                from: before.name.clone(),
+                to: after.name.clone(),
+            });
+            continue;
+        }
+        if let Some(after) = patterns.target[index]
+            && let Some(before) = removal_pattern(mutation)
+        {
+            out.push(Change::PatternRenamed {
+                from: before.name.clone(),
+                to: after.name.clone(),
+            });
+            continue;
+        }
+        if let Some(after) = buses.target[index]
+            && let Some(before) = removal_bus(mutation)
+        {
+            out.push(Change::BusRenamed {
                 from: before.name.clone(),
                 to: after.name.clone(),
             });
@@ -541,7 +579,10 @@ impl Change {
             | Change::TrackChanged { track }
             | Change::NotesEdited { track, .. }
             | Change::ClipsEdited { track, .. } => clip_text(track, max),
-            Change::TrackRenamed { from, to } => {
+            Change::TrackRenamed { from, to }
+            | Change::PresetRenamed { from, to }
+            | Change::PatternRenamed { from, to }
+            | Change::BusRenamed { from, to } => {
                 clip_text(from, max);
                 clip_text(to, max);
             }
@@ -594,6 +635,105 @@ fn addition_track<'b>(mutation: &Mutation<'b>) -> Option<&'b Track> {
         }) => Some(track),
         _ => None,
     }
+}
+
+fn removal_preset<'b>(mutation: &Mutation<'b>) -> Option<&'b PresetDef> {
+    match mutation {
+        Mutation::Subtree(SubtreeChange {
+            before: Some(Subtree::Preset(preset)),
+            after: None,
+        }) => Some(preset),
+        _ => None,
+    }
+}
+
+fn addition_preset<'b>(mutation: &Mutation<'b>) -> Option<&'b PresetDef> {
+    match mutation {
+        Mutation::Subtree(SubtreeChange {
+            before: None,
+            after: Some(Subtree::Preset(preset)),
+        }) => Some(preset),
+        _ => None,
+    }
+}
+
+fn removal_pattern<'b>(mutation: &Mutation<'b>) -> Option<&'b PatternDef> {
+    match mutation {
+        Mutation::Subtree(SubtreeChange {
+            before: Some(Subtree::Pattern(pattern)),
+            after: None,
+        }) => Some(pattern),
+        _ => None,
+    }
+}
+
+fn addition_pattern<'b>(mutation: &Mutation<'b>) -> Option<&'b PatternDef> {
+    match mutation {
+        Mutation::Subtree(SubtreeChange {
+            before: None,
+            after: Some(Subtree::Pattern(pattern)),
+        }) => Some(pattern),
+        _ => None,
+    }
+}
+
+fn removal_bus<'b>(mutation: &Mutation<'b>) -> Option<&'b Bus> {
+    match mutation {
+        Mutation::Subtree(SubtreeChange {
+            before: Some(Subtree::Bus(bus)),
+            after: None,
+        }) => Some(bus),
+        _ => None,
+    }
+}
+
+fn addition_bus<'b>(mutation: &Mutation<'b>) -> Option<&'b Bus> {
+    match mutation {
+        Mutation::Subtree(SubtreeChange {
+            before: None,
+            after: Some(Subtree::Bus(bus)),
+        }) => Some(bus),
+        _ => None,
+    }
+}
+
+/// A removal paired with the addition that carried the same object renamed.
+struct RenamePairing<'b, T> {
+    target: Vec<Option<&'b T>>,
+    discarded: Vec<bool>,
+}
+
+/// Pair each removal with an addition that differs only in its name. The
+/// pairing is per declaration kind and uses the patch's own order.
+fn pair_renames<'b, T>(
+    mutations: &[Mutation<'b>],
+    removal: fn(&Mutation<'b>) -> Option<&'b T>,
+    addition: fn(&Mutation<'b>) -> Option<&'b T>,
+    same_except_name: fn(&T, &T) -> bool,
+) -> RenamePairing<'b, T> {
+    let mut pairing = RenamePairing {
+        target: vec![None; mutations.len()],
+        discarded: vec![false; mutations.len()],
+    };
+    for (index, mutation) in mutations.iter().enumerate() {
+        let Some(before) = removal(mutation) else {
+            continue;
+        };
+        for (candidate, addition_mutation) in mutations.iter().enumerate() {
+            if pairing.discarded[candidate] {
+                continue;
+            }
+            let Some(after) = addition(addition_mutation) else {
+                continue;
+            };
+            if same_except_name(before, after) {
+                pairing.discarded[candidate] = true;
+                pairing.target[index] = Some(after);
+                break;
+            }
+        }
+    }
+    pairing
 }
 
 fn describe_mutation(context: &Context, mutation: &Mutation, out: &mut Vec<Change>) {
@@ -804,9 +944,19 @@ fn describe_preset(before: Option<&PresetDef>, after: Option<&PresetDef>, out: &
         (Some(preset), None) => out.push(Change::PresetRemoved {
             preset: preset.name.clone(),
         }),
-        (Some(before), Some(after)) if before != after => out.push(Change::PresetChanged {
-            preset: after.name.clone(),
-        }),
+        (Some(before), Some(after)) if before != after => {
+            if before.name != after.name {
+                out.push(Change::PresetRenamed {
+                    from: before.name.clone(),
+                    to: after.name.clone(),
+                });
+            }
+            if !same_preset_except_name(before, after) {
+                out.push(Change::PresetChanged {
+                    preset: after.name.clone(),
+                });
+            }
+        }
         _ => {}
     }
 }
@@ -824,15 +974,23 @@ fn describe_pattern(
             pattern: pattern.name.clone(),
         }),
         (Some(before), Some(after)) if before != after => {
-            let content_changed = before.events != after.events || before.hits != after.hits;
-            let span = content_changed.then(|| BeatSpan {
-                start: 0.0,
-                end: before.content_quarters().max(after.content_quarters()),
-            });
-            out.push(Change::PatternChanged {
-                pattern: after.name.clone(),
-                span,
-            });
+            if before.name != after.name {
+                out.push(Change::PatternRenamed {
+                    from: before.name.clone(),
+                    to: after.name.clone(),
+                });
+            }
+            if !same_pattern_except_name(before, after) {
+                let content_changed = before.events != after.events || before.hits != after.hits;
+                let span = content_changed.then(|| BeatSpan {
+                    start: 0.0,
+                    end: before.content_quarters().max(after.content_quarters()),
+                });
+                out.push(Change::PatternChanged {
+                    pattern: after.name.clone(),
+                    span,
+                });
+            }
         }
         _ => {}
     }
@@ -1340,6 +1498,12 @@ fn describe_bus(
         return;
     }
     let start = out.len();
+    if before.name != after.name {
+        out.push(Change::BusRenamed {
+            from: before.name.clone(),
+            to: after.name.clone(),
+        });
+    }
 
     let mut mix = Vec::new();
     if before.routes != after.routes {
@@ -1587,6 +1751,47 @@ fn describe_audio_clips(
             span: span.finish(),
         });
     }
+}
+
+fn same_preset_except_name(before: &PresetDef, after: &PresetDef) -> bool {
+    before.name != after.name
+        && before.source == after.source
+        && before.plugin == after.plugin
+        && before.program == after.program
+        && before.patch == after.patch
+        && before.file == after.file
+        && before.root_note == after.root_note
+        && before.params == after.params
+        && before.effects == after.effects
+        && before.extends == after.extends
+}
+
+fn same_pattern_except_name(before: &PatternDef, after: &PatternDef) -> bool {
+    before.name != after.name
+        && before.instrument == after.instrument
+        && before.preset == after.preset
+        && before.engine == after.engine
+        && before.transpose == after.transpose
+        && before.swing == after.swing
+        && before.bars == after.bars
+        && before.effects == after.effects
+        && before.events == after.events
+        && before.pedals == after.pedals
+        && before.hairpins == after.hairpins
+        && before.hits == after.hits
+        && before.color == after.color
+}
+
+fn same_bus_except_name(before: &Bus, after: &Bus) -> bool {
+    before.name != after.name
+        && before.routes == after.routes
+        && before.effects == after.effects
+        && before.gain_automation == after.gain_automation
+        && before.automation == after.automation
+        && before.volume_db == after.volume_db
+        && before.mute == after.mute
+        && before.solo == after.solo
+        && before.input_routes == after.input_routes
 }
 
 fn same_track_except_name(before: &Track, after: &Track) -> bool {
