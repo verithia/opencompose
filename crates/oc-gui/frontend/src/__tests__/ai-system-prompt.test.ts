@@ -207,6 +207,7 @@ describe("panel system prompt", () => {
     def("content_library_register", "plugin", {path:{type:"string"}}, ["path"]),
     def("project_search", "project", {query:{type:"string"},kinds:{type:"array"},limit:{type:"integer"}}, ["query"]),
     def("ask_user", "project", {question:{type:"string"},options:{type:"array"},free_text:{type:"boolean"}}, ["question"]),
+    def("plan_update", "sessions", {goal:{type:["string","null"]},items:{type:"array"}}),
   ];
 
   it("teaches the capabilities the DSL supports beyond the basic reference", () => {
@@ -306,19 +307,23 @@ describe("panel system prompt", () => {
     // former cost a measured session five rounds, so they are taught here
     // too. The hairpin section is one line plus the notes it spans. The
     // approval paragraph plus the tool doc that advertises a removal costs a
-    // section, so the ceiling is measured with a destructive tool present.
-    expect(lines, `${lines} lines`).toBeLessThanOrEqual(291);
-    expect(tokens, `${tokens} chars/4`).toBeLessThanOrEqual(3673);
+    // section, so the ceiling is measured with a destructive tool present. The
+    // surface carries the panel-local tools too, so their gated sections
+    // (asking the user, planning) count against the budget.
+    expect(lines, `${lines} lines`).toBeLessThanOrEqual(300);
+    expect(tokens, `${tokens} chars/4`).toBeLessThanOrEqual(3828);
     // Worst case: a surface that also offers a destructive tool pays for the
     // approval section, so the budget is measured with it present.
     const deleting = [...panelTools(), {...def("tracks_remove", "tracks", {index:{type:"integer"}}, ["index"]), approval:"confirm" as const}];
     const withApproval = buildSystemPrompt(ctx, {...capabilities, audioIn: true}, deleting, skillIndex);
-    expect(withApproval.split("\n").length, `${withApproval.split("\n").length} lines with approval`).toBeLessThanOrEqual(291);
-    expect(Math.ceil(withApproval.length / 4), `${Math.ceil(withApproval.length / 4)} chars/4 with approval`).toBeLessThanOrEqual(3673);
+    expect(withApproval).toContain("## Planning");
+    expect(withApproval).toContain("## Asking the user");
+    expect(withApproval.split("\n").length, `${withApproval.split("\n").length} lines with approval`).toBeLessThanOrEqual(300);
+    expect(Math.ceil(withApproval.length / 4), `${Math.ceil(withApproval.length / 4)} chars/4 with approval`).toBeLessThanOrEqual(3828);
     // The project note is counted against the same budget. A note at the
     // store's cap costs its own share, PROJECT_NOTE_TOKEN_BUDGET, plus the
-    // heading and the one sentence that introduces it: measured 291 lines /
-    // 3673 tokens without a note, 316 lines / 4712 tokens with a full 20-line
+    // heading and the one sentence that introduces it: measured 300 lines /
+    // 3828 tokens without a note, 325 lines / 4867 tokens with a full 20-line
     // note. The ceilings below are the base budget plus that share.
     const note = maxNote(20);
     expect(note.length).toBeLessThanOrEqual(PROJECT_NOTE_MAX_CHARS);
@@ -328,8 +333,8 @@ describe("panel system prompt", () => {
     );
     const noteLines = withNote.split("\n").length;
     const noteTokensUsed = Math.ceil(withNote.length / 4);
-    expect(noteLines, `${noteLines} lines with a full note`).toBeLessThanOrEqual(291 + 20 + 8);
+    expect(noteLines, `${noteLines} lines with a full note`).toBeLessThanOrEqual(300 + 20 + 8);
     expect(noteTokensUsed, `${noteTokensUsed} chars/4 with a full note`)
-      .toBeLessThanOrEqual(3673 + PROJECT_NOTE_TOKEN_BUDGET + 60);
+      .toBeLessThanOrEqual(3828 + PROJECT_NOTE_TOKEN_BUDGET + 60);
   });
 });
