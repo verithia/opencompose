@@ -105,11 +105,11 @@ const backend = {
   /** Arguments of each `ai_cancel`, in order. */
   cancels: [] as { requestId: string }[],
   sessions: [] as SessionMeta[],
-  /** What `sessions_load` returns; the panel repaints this after a reload. */
+  /** What `sessions_open` returns; the panel repaints this after a reload. */
   loaded: [] as WireMessage[],
-  /** Answers of `sessions_load`, oldest first; the last one repeats. */
+  /** Answers of `sessions_open`, oldest first; the last one repeats. */
   loads: [] as WireMessage[][],
-  /** The conversation each `sessions_load` asked for, in order. */
+  /** The conversation each `sessions_open` asked for, in order. */
   loadedIds: [] as string[],
   /** What `ai_batch_recover` answers: the committed document, or null. */
   recovered: null as { snapshot: ProjectSnapshot; unsaved?: string } | null,
@@ -129,7 +129,7 @@ const backend = {
   steerMessages: [] as Record<string, unknown>[],
   /** Held `ai_active_turn` replies: one test holds the next answers until it releases them. */
   activeReply: null as Promise<ActiveTurn | null> | null,
-  /** Held `sessions_load` replies: the next load waits on this once. */
+  /** Held `sessions_open` replies: the next load waits on this once. */
   loadReply: null as Promise<void> | null,
   /** Every `sessions_new`, in order. */
   newCalls: [] as Record<string, unknown>[],
@@ -213,7 +213,8 @@ function installBackend() {
       case "sessions_delete": backend.deletes.push(String(typed.id)); return undefined;
       case "sessions_compact": backend.compacts.push(String(typed.id)); return null;
       case "sessions_original": backend.originals.push(String(typed.id)); return { messages: [], compactions: 1 };
-      case "sessions_load": {
+      case "sessions_load":
+      case "sessions_open": {
         const hold = backend.loadReply;
         if (hold) {
           backend.loadReply = null;
@@ -222,7 +223,7 @@ function installBackend() {
         const id = String(typed.id ?? "s1");
         backend.loadedIds.push(id);
         const next = backend.loads.length > 0 ? backend.loads.shift()! : backend.loaded;
-        return { meta: session({ id }), messages: next, skipped: 0 };
+        return { meta: session({ id }), messages: next, skipped: 0, start: 0, total: next.length, revision: "0", older_tokens: 0 };
       }
       default: return makeSnapshot();
     }
@@ -941,9 +942,9 @@ describe("a reloaded window", () => {
     // The turn ends, and the repaint that reports it is held.
     const gate = deferred<void>();
     backend.loadReply = gate.promise;
-    const loads = backend.calls.filter((command) => command === "sessions_load").length;
+    const loads = backend.calls.filter((command) => command === "sessions_open").length;
     backend.active = null;
-    await waitFor(() => expect(backend.calls.filter((command) => command === "sessions_load").length).toBeGreaterThan(loads), { timeout: 2000 });
+    await waitFor(() => expect(backend.calls.filter((command) => command === "sessions_open").length).toBeGreaterThan(loads), { timeout: 2000 });
 
     // The panel leaves and comes back: the same conversation is open again, in
     // another visit of the workspace.

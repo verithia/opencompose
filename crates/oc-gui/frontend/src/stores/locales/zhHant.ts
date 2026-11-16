@@ -2204,6 +2204,7 @@ export const zhHant = {
   "ai.sessions.originalBanner": "這是壓縮前的完整歷史；模型看到的是摘要。",
   "ai.sessions.originalBack": "返回壓縮檢視",
   "ai.transcript.earlier": "展開更早的 {count} 則訊息",
+  "ai.transcript.earlierTurns": "展開更早的對話輪次",
   "ai.transcript.earlierHistory": "展開更早的對話",
   "ai.sessions.renameOf": "重新命名 {title}",
   "ai.sessions.renameLabel": "工作階段標題",

@@ -59,7 +59,7 @@ function mockBackend(options: { audioIn: boolean; chat?: (args: Record<string, u
     if (cmd === "ai_tools") return [];
     if (cmd === "sessions_new") return { id: "s1", title: String(typed.title ?? "new") };
     if (cmd === "sessions_list") return [];
-    if (cmd === "sessions_load") return { meta: { id: "s1", title: "new" }, messages: [], skipped: 0 };
+    if (cmd === "sessions_load" || cmd === "sessions_open") return { meta: { id: "s1", title: "new" }, messages: [], skipped: 0, start: 0, total: 0, revision: "0", older_tokens: 0 };
     if (cmd === "ai_turn_start") {
       return runFakeTurn(typed as unknown as TurnStartArgs, {
         chat: async (round) => options.chat?.(round as unknown as Record<string, unknown>) ?? { role: "assistant", content: "ok" },

@@ -141,7 +141,8 @@ function installBackend() {
         backend.sessions = [meta, ...backend.sessions];
         return meta;
       }
-      case "sessions_load": return { meta: session(), messages: [], skipped: 0 };
+      case "sessions_load":
+      case "sessions_open": return { meta: session(), messages: [], skipped: 0, start: 0, total: 0, revision: "0", older_tokens: 0 };
       default: return makeSnapshot();
     }
   });

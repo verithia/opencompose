@@ -46,6 +46,7 @@ Storage page can show what an item belongs to.
         <session id>/
           meta.json             title, times, provider, model, project path
           messages.jsonl        one record per model turn
+          view.json             where the current view starts in messages.jsonl
           results/<sha256>.txt  full tool result a saved row names
           versions/<sha256>.ocp project version a human turn was sent against
       audition-media/           clip a listening request replays
@@ -112,6 +113,9 @@ workspace directory, not to one `.ocp`, and lives under the workspace key:
 - `<session id>/meta.json` records the title, times, provider, model, workspace
   and project path.
 - `<session id>/messages.jsonl` is the append-only transcript.
+- `<session id>/view.json` names the newest record that replaced the
+  conversation, so a read parses only the current view. A read checks it and
+  rebuilds it when it does not match the file.
 - `<session id>/results/<sha256>.txt` holds a full tool result that is too large
   for its message row. The row keeps `result_sha` in place of the text. The
   sweep removes a result file no saved line of its session names, a fork copies

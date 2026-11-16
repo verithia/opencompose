@@ -135,6 +135,7 @@ export const esCompletion = {
   "ai.toolsets.toolCount": "{count} herramientas",
   "ai.toolsets.tooltipTitle": "{title} · {count} herramientas",
   "ai.transcript.earlier": "Mostrar {count} mensajes anteriores",
+  "ai.transcript.earlierTurns": "Mostrar turnos anteriores",
   "ai.transcript.earlierHistory": "Mostrar conversaciones anteriores",
 
   "automation.drivenBadge": "Valor automatizado",

@@ -93,7 +93,8 @@ function installBackend() {
       case "sessions_snapshot": return { sha: "a".repeat(64) };
       case "sessions_list": return [];
       case "sessions_new": return SESSION;
-      case "sessions_load": return { meta: SESSION, messages: [], skipped: 0 };
+      case "sessions_load":
+      case "sessions_open": return { meta: SESSION, messages: [], skipped: 0, start: 0, total: 0, revision: "0", older_tokens: 0 };
       case "get_project": return makeSnapshot({ tracks: [makeTrack("Bass", 0), makeTrack("Pad", 1)] });
       default: return makeSnapshot();
     }

@@ -269,6 +269,8 @@ pub fn run_with_options(path: Option<String>, diag: DiagOptions) {
             commands::sessions_new,
             commands::sessions_load,
             commands::sessions_original,
+            commands::sessions_open,
+            commands::sessions_page,
             commands::sessions_snapshot,
             commands::sessions_drop_history,
             commands::sessions_version,

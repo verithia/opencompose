@@ -12,6 +12,7 @@ conversation inside a model's context window.
   <workspace key>/workspace.json            the directory this key was derived from
   <workspace key>/<session id>/meta.json
   <workspace key>/<session id>/messages.jsonl
+  <workspace key>/<session id>/view.json               where the current view starts
   <workspace key>/<session id>/results/<sha256>.txt    full tool results
   <workspace key>/<session id>/versions/<sha256>.ocp   project versions
   detached/<session id>/...                 a conversation with no workspace
@@ -225,9 +226,48 @@ turn:
 | `compaction` | replaces the whole conversation with a summary |
 | `trim` | replaces the whole conversation with the newest messages that fit the size cap |
 
-Only `compaction` and `trim` rewrite the file, and each states what it dropped
-(`dropped.from`, `dropped.to`, `tokens_before`, `tokens_after`). A line that
-cannot be read is skipped and counted; it never hides the rest of the file.
+A `compaction` or `trim` record replaces the conversation, and each states what
+it dropped (`dropped.from`, `dropped.to`, `tokens_before`, `tokens_after`). Both
+are appended like a turn; the file is rewritten only when the size cap trims it
+or the history before a compaction is dropped. A line that cannot be read is
+skipped and counted; it never hides the rest of the file.
+
+### The current view and `view.json`
+
+The conversation a turn continues, the **view**, is the newest `compaction` or
+`trim` record plus the `turn` records after it. `view.json` names the byte
+offset, length and timestamp of that record, so a read seeks to it and parses
+only what follows; the turns a compaction replaced stay on disk for the
+original view without being read again on every turn.
+
+The index is a hint, never the truth. A read checks that the line it names
+still starts a line, has that length, and is a replacing record with that
+timestamp; otherwise it scans the whole file and writes a fresh index. An index
+one replacement behind builds the same view from an older starting point, so a
+crash between an append and the index write costs one longer read. A rewrite
+removes the index before it replaces the file.
+
+### Opening a long conversation
+
+The panel opens a conversation at its newest **64 turns** (`sessions_open`).
+A turn starts at a message the person sent, so a page never separates a tool
+call from its result. A page also stops adding older turns once it passes
+4 MiB, and always carries at least one whole turn.
+
+Scrolling to the top shows **Show earlier turns**; it asks for the page before
+the first row (`sessions_page {id, before, turns, revision}`) and prepends it
+while the reader keeps their place. Each row keeps its position in the whole
+view, so rewinding or forking from a row of any page cuts at the right message.
+`revision` names the record the view starts from: appends keep it, while a
+compaction, a trim or a rewind changes it, and a page asked for under an older
+revision is answered `stale`, upon which the panel reopens the conversation.
+Once every turn of the view is loaded and a compaction replaced earlier ones,
+the same control opens the original view.
+
+The composer's context estimate counts the turns not loaded yet:
+`sessions_open` and `sessions_page` return `older_tokens`, the panel's own
+estimate of the messages above the page. The agent tool `sessions_load` and the
+JSON export still read the whole view.
 
 A `user` message may carry a `media` array: one descriptor per attached file.
 The descriptor is what the panel picked, never the bytes:
@@ -552,9 +592,9 @@ copied to the clipboard or downloaded under the conversation's title:
 `<title>.md` and `<title>.json`.
 
 Export stays available while a turn runs. The Markdown document is the
-transcript on screen at that moment, including the rows of the running turn;
-the JSON document is the stored wire, which holds the turns that were already
-saved.
+transcript on screen at that moment, including the rows of the running turn,
+with the saved turns above the loaded page in front of it; the JSON document is
+the stored wire, which holds the turns that were already saved.
 
 ### Markdown
 

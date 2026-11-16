@@ -5,8 +5,8 @@
 //! [`Store::config`]. Nothing here writes to the project.
 use crate::ai::agent_loop::wire;
 use crate::ai::sessions::{
-    self, Compaction, Fork, Loaded, ProjectFacts, Scope, SessionError, SessionErrorKind,
-    SessionMeta, Store,
+    self, Compaction, Fork, Loaded, LoadedPage, MAX_PAGE_TURNS, PageRead, ProjectFacts, Scope,
+    SessionError, SessionErrorKind, SessionMeta, Store,
 };
 use crate::ai_service::AiError;
 use crate::commands::AiProviderEntry;
@@ -158,6 +158,27 @@ fn create_session(
 #[tauri::command]
 pub fn sessions_load(id: String) -> Result<Loaded, String> {
     store().load(&id)
+}
+
+/// The conversation at its newest turns, for the panel to open.
+#[tauri::command]
+pub fn sessions_open(id: String, turns: Option<usize>) -> Result<LoadedPage, String> {
+    store().open_page(&id, turns.unwrap_or(MAX_PAGE_TURNS))
+}
+
+/// The older turns before message `before`, refused as stale when the view
+/// changed shape since `revision`.
+#[tauri::command]
+pub fn sessions_page(
+    id: String,
+    before: usize,
+    turns: Option<usize>,
+    revision: String,
+) -> Result<PageRead, String> {
+    if revision.len() > 256 {
+        return Err("That page revision is not one this app wrote.".into());
+    }
+    store().page(&id, before, turns.unwrap_or(MAX_PAGE_TURNS), &revision)
 }
 
 /// Drop all history before the `keep`-th compaction, then collect assets no

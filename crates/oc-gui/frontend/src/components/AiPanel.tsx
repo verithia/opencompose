@@ -40,10 +40,12 @@ import {
   archiveNotice,
   compactionNotice,
   directoryName,
+  loadedPage,
   loadedSession,
   sessionArchiveEviction,
   sessionCompaction,
   sessionList,
+  sessionPageRead,
   workspaceScope,
   type ActiveTurn,
   type SessionMeta,
@@ -200,6 +202,21 @@ export function AiPanel(props: { onClose?: () => void }) {
   const [renderLimit, setRenderLimit] = createSignal(TRANSCRIPT_RENDER_LIMIT);
   /** The open conversation was compacted, so its older turns are behind a chip. */
   const [compactedSession, setCompactedSession] = createSignal(false);
+  /** Where the rows on screen begin in the whole saved view. */
+  const [pageStart, setPageStart] = createSignal(0);
+  /** The view shape the loaded page belongs to; an older page must match it. */
+  const [pageRevision, setPageRevision] = createSignal("");
+  /** The panel's estimate of the turns above the page on screen. */
+  const [olderTokens, setOlderTokens] = createSignal(0);
+  /** Empties the screen and forgets the page it showed, for a switch or a new
+   * conversation: no older page of the previous one remains to load. */
+  const clearTranscript = () => {
+    setMessages([]);
+    setPageStart(0);
+    setPageRevision("");
+    setOlderTokens(0);
+    setRenderLimit(TRANSCRIPT_RENDER_LIMIT);
+  };
   /** Whether this conversation already carries a chosen title. */
   const [sessionNamed, setSessionNamed] = createSignal(false);
   /** True while the transcript is scrolled to its top. */
@@ -371,7 +388,7 @@ export function AiPanel(props: { onClose?: () => void }) {
    * once per change instead of once per keystroke. */
   const estimateBase = createMemo(() =>
     `${messages().map(message => message.content).join("\n")}\n${store.dslSource()}`);
-  const estimateBaseTokens = createMemo(() => textTokens(estimateBase()));
+  const estimateBaseTokens = createMemo(() => textTokens(estimateBase()) + olderTokens());
   /** The estimate for a draft: the floor the composer shows, and the send guard. */
   const estimateFor = (draft: string) => estimateFromBase(estimateBaseTokens(), draft);
   /** The same estimate split into the parts a compaction would remove or keep. */
@@ -381,7 +398,7 @@ export function AiPanel(props: { onClose?: () => void }) {
     return {
       system: Math.round((contextMeter.systemChars() / 4) * ratio),
       tools: Math.round((contextMeter.toolChars() / 4) * ratio),
-      history: Math.round(textTokens(history) * ratio),
+      history: Math.round((textTokens(history) + olderTokens()) * ratio),
       project: Math.round(textTokens(store.dslSource()) * ratio),
       draft: Math.round(textTokens(input()) * ratio),
       attachments: attachments().filter(item => !item.missing).length,
@@ -592,7 +609,7 @@ export function AiPanel(props: { onClose?: () => void }) {
     aiWorkspace.adoptPermission(DEFAULT_PERMISSION);
     aiWorkspace.setTargetPath("project");
     setAllowed([]);
-    setMessages([]);
+    clearTranscript();
     const epoch = scopeEpoch;
     void refreshSessions().then((ok) => {
       if (ok) void restoreScope(sessionScope(), epoch);
@@ -623,13 +640,17 @@ export function AiPanel(props: { onClose?: () => void }) {
     const usageRead = beginUsageHydration(id);
     pendingUsageRead = usageRead;
     try {
-      let loaded = loadedSession(await aiApi.loadSession(id));
+      let loaded = loadedPage(await aiApi.openSession(id));
       if (!loaded || disposed || epoch !== scopeEpoch || request !== paintRequest) return false;
       if (usageHydrationNeedsReconcile(usageRead, loaded.usage)) {
-        loaded = loadedSession(await aiApi.loadSession(id));
+        loaded = loadedPage(await aiApi.openSession(id));
         if (!loaded || disposed || epoch !== scopeEpoch || request !== paintRequest) return false;
       }
-      setMessages(restoredTranscript(loaded.messages));
+      setMessages(restoredTranscript(loaded.messages, loaded.start));
+      setPageStart(loaded.start);
+      setPageRevision(loaded.revision);
+      setOlderTokens(loaded.older_tokens);
+      setRenderLimit(TRANSCRIPT_RENDER_LIMIT);
       setCompactedSession(loaded.compacted === true);
       setSessionNamed(loaded.meta.named === true);
       // The conversation's stored mode; one saved before the field existed reads
@@ -877,10 +898,61 @@ export function AiPanel(props: { onClose?: () => void }) {
       const loaded = await aiApi.originalSession(id);
       if (disposed || epoch !== scopeEpoch || request !== paintRequest) return;
       setMessages(restoredTranscript(loaded.messages));
+      // The original view carries the whole history, so no older page remains.
+      setPageStart(0);
+      setPageRevision("");
+      setOlderTokens(0);
       setOriginalView(true);
       queueMicrotask(() => transcriptFollow?.resume());
     } catch {
       // A session that cannot be read keeps the compacted view.
+    }
+  };
+
+  /** Whether an older page is already on its way. */
+  let olderPageLoading = false;
+  /**
+   * Prepends the turns before the page on screen. The saved view may have
+   * changed shape since it was painted, in which case the whole conversation
+   * is read again instead of gluing an older page onto rows it does not
+   * match.
+   */
+  const loadOlderPage = async (id: string): Promise<void> => {
+    if (olderPageLoading || originalView() || conversationLocked() || pageStart() <= 0) return;
+    const epoch = scopeEpoch;
+    // A later paint supersedes this page, and the page must still match it.
+    const request = paintRequest;
+    const before = pageStart();
+    const revision = pageRevision();
+    olderPageLoading = true;
+    setSessionError(null);
+    try {
+      const page = sessionPageRead(await aiApi.sessionPage(id, before, revision));
+      if (!page || disposed || epoch !== scopeEpoch || request !== paintRequest || openId() !== id) return;
+      if (page.status === "stale") {
+        await paintSession(id);
+        return;
+      }
+      const older = restoredTranscript(page.messages, page.start);
+      const transcript = transcriptElement;
+      const oldTop = transcript?.scrollTop ?? 0;
+      const oldHeight = transcript?.scrollHeight ?? 0;
+      // Keep the existing row objects; only the page above them is new.
+      setMessages(previous => [...older, ...previous]);
+      setPageStart(page.start);
+      setPageRevision(page.revision);
+      setOlderTokens(page.older_tokens);
+      // The prepended rows must be visible once the page arrives.
+      setRenderLimit(limit => limit + older.length);
+      queueMicrotask(() => {
+        if (!transcript || disposed) return;
+        const added = transcript.scrollHeight - oldHeight;
+        transcript.scrollTop = oldTop + added;
+      });
+    } catch (error) {
+      setSessionError(errorMessage(error));
+    } finally {
+      olderPageLoading = false;
     }
   };
 
@@ -1119,7 +1191,7 @@ export function AiPanel(props: { onClose?: () => void }) {
       void cancel();
       abandonTurn();
     }
-    setMessages([]);
+    clearTranscript();
     setSessionError(null);
     aiSession.setOpenScoped(sessionScope(), null);
     setOpenId(null);
@@ -1230,7 +1302,7 @@ export function AiPanel(props: { onClose?: () => void }) {
     try {
       await aiApi.deleteSession(id);
       if (openId() === id) {
-        setMessages([]);
+        clearTranscript();
         aiSession.setOpenScoped(sessionScope(), null);
         aiSession.clearQueue();
         setOpenId(null);
@@ -1259,17 +1331,23 @@ export function AiPanel(props: { onClose?: () => void }) {
     finally { setSessionBusy(false); }
   };
   /**
-   * The document to copy or download. Markdown is the transcript on screen,
-   * JSON is the stored wire; both carry the metadata `sessions_load` returns.
+   * The document to copy or download. Markdown is the transcript on screen
+   * with the saved turns above the loaded page in front of it, so a running
+   * turn's rows and unloaded turns both appear; the original view already
+   * shows its whole history. JSON is the stored wire. Both carry the metadata
+   * `sessions_load` returns.
    */
   const buildExport = async (format: ExportFormat): Promise<{ name: string; text: string } | null> => {
     const id = openId();
     if (!id) return null;
     const loaded = loadedSession(await aiApi.loadSession(id));
     if (!loaded) return null;
-    return format === "markdown"
-      ? { name: exportFileName(loaded.meta, "md"), text: exportMarkdown(loaded.meta, messages()) }
-      : { name: exportFileName(loaded.meta, "json"), text: exportJson(loaded.meta, loaded.messages) };
+    if (format === "json") {
+      return { name: exportFileName(loaded.meta, "json"), text: exportJson(loaded.meta, loaded.messages) };
+    }
+    const above = originalView() ? [] : restoredTranscript(loaded.messages.slice(0, pageStart()));
+    const rows = [...above, ...messages()];
+    return { name: exportFileName(loaded.meta, "md"), text: exportMarkdown(loaded.meta, rows) };
   };
   const runExport = async (format: ExportFormat, noteKey: I18nKey, deliver: (name: string, text: string) => Promise<void>) => {
     setExportBusy(true);
@@ -2656,7 +2734,7 @@ export function AiPanel(props: { onClose?: () => void }) {
             >{i18n.t("ai.sessions.originalBack")}</button>
           </div>
         </Show>
-        <Show when={hiddenMessages() > 0 || (compactedSession() && !originalView())}>
+        <Show when={hiddenMessages() > 0 || pageStart() > 0 || (compactedSession() && !originalView())}>
           <button
             type="button"
             class="ai-transcript-earlier"
@@ -2666,13 +2744,17 @@ export function AiPanel(props: { onClose?: () => void }) {
             onClick={() => {
               if (hiddenMessages() > 0) {
                 setRenderLimit((limit) => limit + TRANSCRIPT_RENDER_LIMIT);
+              } else if (pageStart() > 0) {
+                if (openId()) void loadOlderPage(openId()!);
               } else if (openId()) {
                 void paintOriginal(openId()!);
               }
             }}
           >{hiddenMessages() > 0
             ? i18n.t("ai.transcript.earlier", { count: hiddenMessages() })
-            : i18n.t("ai.transcript.earlierHistory")}</button>
+            : pageStart() > 0
+              ? i18n.t("ai.transcript.earlierTurns")
+              : i18n.t("ai.transcript.earlierHistory")}</button>
         </Show>
         <Index each={transcriptEntries()}>
           {(entry) => (

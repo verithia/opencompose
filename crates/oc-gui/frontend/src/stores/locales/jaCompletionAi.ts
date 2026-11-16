@@ -123,6 +123,7 @@ export const jaCompletionAi = {
   "ai.sessions.originalBanner": "要約前の履歴です。モデルには、この履歴の代わりに要約が送られます。",
   "ai.sessions.originalBack": "要約後の会話に戻る",
   "ai.transcript.earlier": "以前のメッセージ {count} 件を表示",
+  "ai.transcript.earlierTurns": "以前のターンを表示",
   "ai.transcript.earlierHistory": "以前の会話を表示",
   "ai.preview.start": "変更をプレビュー",
   "ai.preview.apply": "変更を適用",

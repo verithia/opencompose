@@ -80,6 +80,8 @@ render_synth                             Internal rendering helper, not an agent
 render_thread                            Rust module, not an agent tool
 render_to_buffer                         Internal rendering helper, not an agent tool
 render_to_buffer_per_track               Internal rendering helper, not an agent tool
+sessions_open                            Tauri command, not a published agent tool
+sessions_page                            Tauri command, not a published agent tool
 tempo_follow                             DSL or serialized project field, not an agent tool
 tempo_map                                DSL or serialized project field, not an agent tool
 time_l                                   Delay parameter identifier, not an agent tool

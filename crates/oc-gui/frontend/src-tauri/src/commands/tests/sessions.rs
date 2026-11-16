@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use crate::ai::sessions;
 use crate::commands::{
     compact_for, current_for, facts, list_for, new_for, new_fork, open_for, sessions_delete,
-    sessions_load, sessions_rename, sessions_set_permission,
+    sessions_load, sessions_open, sessions_page, sessions_rename, sessions_set_permission,
 };
 use crate::state::AppState;
 use crate::workspaces;
@@ -143,6 +143,46 @@ fn renaming_and_deleting_act_on_the_saved_conversation() {
     assert!(list_for(&state, None, false).unwrap().is_empty());
     // Deleting twice is a refusal, not a panic.
     assert!(sessions_delete(session.id).is_err());
+}
+
+#[test]
+fn the_panel_opens_a_conversation_at_its_newest_turns_and_pages_back_through_the_commands() {
+    use serde_json::json;
+    let fixture = fixture("pages");
+    let state = state_with_project(&fixture.dir, PROJECT);
+    let session = new_for(&state, None, Some("pages"), None).unwrap();
+    let store = sessions::Store::config();
+    for index in 0..3 {
+        store
+            .append_turn(
+                &session.id,
+                &[
+                    json!({"role":"user","content":format!("ask {index}"),
+                        "message_meta":{"version":1,"kind":"user"}}),
+                    json!({"role":"assistant","content":format!("done {index}"),
+                        "message_meta":{"version":1,"kind":"assistant"}}),
+                ],
+                None,
+            )
+            .unwrap();
+    }
+    let opened = serde_json::to_value(sessions_open(session.id.clone(), Some(1)).unwrap()).unwrap();
+    assert_eq!(opened["start"], 4);
+    assert_eq!(opened["total"], 6);
+    assert_eq!(opened["messages"].as_array().unwrap().len(), 2);
+    assert_eq!(opened["meta"]["id"], json!(session.id));
+    let revision = opened["revision"].as_str().unwrap().to_owned();
+    let page =
+        serde_json::to_value(sessions_page(session.id.clone(), 4, None, revision.clone()).unwrap())
+            .unwrap();
+    assert_eq!(page["status"], "page");
+    assert_eq!(page["start"], 0);
+    assert_eq!(page["messages"][0]["content"], "ask 0");
+    let stale =
+        serde_json::to_value(sessions_page(session.id.clone(), 4, None, "1:2:3".into()).unwrap())
+            .unwrap();
+    assert_eq!(stale, json!({"status": "stale"}));
+    assert!(sessions_page(session.id, 4, None, "x".repeat(257)).is_err());
 }
 
 #[test]

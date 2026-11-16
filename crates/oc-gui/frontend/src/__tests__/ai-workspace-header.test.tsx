@@ -106,9 +106,11 @@ function installBackend() {
       };
       case "workspaces_list": return [];
       case "sessions_list": return backend.sessions.map((entry) => ({ ...entry }));
-      case "sessions_load": {
+      case "sessions_load":
+      case "sessions_open": {
         const meta = backend.sessions.find((entry) => entry.id === "s1")!;
-        return { meta: { ...meta }, messages: [{ role: "user", content: "make the kick punchier" }], skipped: 0 };
+        const messages = [{ role: "user", content: "make the kick punchier" }];
+        return { meta: { ...meta }, messages, skipped: 0, start: 0, total: messages.length, revision: "0", older_tokens: 0 };
       }
       case "get_project": return makeSnapshot();
       default: return makeSnapshot();

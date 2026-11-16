@@ -133,7 +133,7 @@ const backend = {
   workspacePath: null as string | null,
   recents: [] as { name: string; path: string; opened: string }[],
   compacted: [] as Record<string, unknown>[],
-  /** Whether the next `sessions_load` reports a compaction. */
+  /** Whether the next `sessions_open` reports a compaction. */
   loadedCompacted: false,
   newCalls: [] as Record<string, unknown>[],
   /** The reverts the panel asked for, and the document they restore. */
@@ -205,14 +205,20 @@ function installBackend() {
           : backend.sessions.filter((entry) => entry.workspace === place);
         return listed.map((entry) => ({ ...entry }));
       }
-      case "sessions_load": {
+      case "sessions_load":
+      case "sessions_open": {
         const meta = backend.sessions.find((entry) => entry.id === typed.id);
         if (!meta) throw "no session";
+        const messages = backend.conversations[meta.id] ?? [];
         return {
           meta: { ...meta },
-          messages: backend.conversations[meta.id] ?? [],
+          messages,
           skipped: 0,
           compacted: backend.compactedSessions.includes(meta.id) || backend.loadedCompacted,
+          start: 0,
+          total: messages.length,
+          revision: "0",
+          older_tokens: 0,
         };
       }
       case "sessions_original": {
@@ -551,14 +557,14 @@ describe("conversation switcher", () => {
     hydrateSessionUsage("s1", usageSnapshot("s1", 1, 120));
     const delayed = held();
     const original = invokeMock.getMockImplementation()!;
-    invokeMock.mockImplementation((command: string, args?: unknown) => command === "sessions_load" && (args as { id?: string })?.id === "s2"
+    invokeMock.mockImplementation((command: string, args?: unknown) => command === "sessions_open" && (args as { id?: string })?.id === "s2"
       ? delayed.promise : original(command, args));
     await openSwitcher(); fireEvent.click(screen.getByText("two"));
-    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("sessions_load", { id: "s2" }));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("sessions_open", { id: "s2" }));
     emitUsage(usageSnapshot("s2", 2, 2400));
     expect(openTitle()).toBe("one");
     expect(aiStats.session().input).toBe(120);
-    delayed.resolve({ meta: session({ id: "s2", title: "two" }), messages: [], skipped: 0, usage: usageSnapshot("s2", 1, 1000) });
+    delayed.resolve({ meta: session({ id: "s2", title: "two" }), messages: [], skipped: 0, usage: usageSnapshot("s2", 1, 1000), start: 0, total: 0, revision: "0", older_tokens: 0 });
     await waitFor(() => expect(openTitle()).toBe("two"));
     expect(aiStats.snapshot()?.revision).toBe(2);
     expect(aiStats.session().input).toBe(2400);
@@ -572,16 +578,16 @@ describe("conversation switcher", () => {
     const original = invokeMock.getMockImplementation()!;
     let loads = 0;
     invokeMock.mockImplementation((command: string, args?: unknown) => {
-      if (command === "sessions_load" && (args as { id?: string })?.id === "s2") {
+      if (command === "sessions_open" && (args as { id?: string })?.id === "s2") {
         loads += 1;
-        return loads === 1 ? delayed.promise : Promise.resolve({ meta: session({ id: "s2", title: "two" }), messages: [], skipped: 0, usage: usageSnapshot("s2", 2, 2400) });
+        return loads === 1 ? delayed.promise : Promise.resolve({ meta: session({ id: "s2", title: "two" }), messages: [], skipped: 0, usage: usageSnapshot("s2", 2, 2400), start: 0, total: 0, revision: "0", older_tokens: 0 });
       }
       return original(command, args);
     });
     await openSwitcher(); fireEvent.click(screen.getByText("two"));
     await waitFor(() => expect(loads).toBe(1));
     emitUsage(usageSnapshot("s2", 2, 2400));
-    delayed.resolve({ meta: session({ id: "s2", title: "two" }), messages: [], skipped: 0 });
+    delayed.resolve({ meta: session({ id: "s2", title: "two" }), messages: [], skipped: 0, start: 0, total: 0, revision: "0", older_tokens: 0 });
     await waitFor(() => expect(openTitle()).toBe("two"));
     expect(loads).toBe(2); expect(aiStats.session().input).toBe(2400);
   });
@@ -593,10 +599,10 @@ describe("conversation switcher", () => {
     let reject!: (reason: Error) => void;
     const delayed = new Promise<unknown>((_resolve, fail) => { reject = fail; });
     const original = invokeMock.getMockImplementation()!;
-    invokeMock.mockImplementation((command: string, args?: unknown) => command === "sessions_load" && (args as { id?: string })?.id === "s2"
+    invokeMock.mockImplementation((command: string, args?: unknown) => command === "sessions_open" && (args as { id?: string })?.id === "s2"
       ? delayed : original(command, args));
     await openSwitcher(); fireEvent.click(screen.getByText("two"));
-    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("sessions_load", { id: "s2" }));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("sessions_open", { id: "s2" }));
     emitUsage(usageSnapshot("s2", 2, 2400));
     reject(new Error("cannot read conversation"));
     await waitFor(() => expect(document.body.textContent).toContain("cannot read conversation"));
@@ -611,7 +617,7 @@ describe("conversation switcher", () => {
     await openSwitcher();
     const original = invokeMock.getMockImplementation()!;
     let finish!: (value: unknown) => void;
-    invokeMock.mockImplementation((command: string, args?: unknown) => command === "sessions_load"
+    invokeMock.mockImplementation((command: string, args?: unknown) => command === "sessions_open"
       ? new Promise(resolve => { finish = resolve; }) : original(command, args));
     fireEvent.click(document.querySelector(".ai-session-row-title") as HTMLElement);
     await waitFor(() => expect(finish).toBeTypeOf("function"));
@@ -619,7 +625,7 @@ describe("conversation switcher", () => {
     backend.projectPath = "/Users/me/other/next.ocp";
     backend.sessions = [];
     await store.initProject();
-    finish({ meta: session({ id: "s1", title: "old songs" }), messages: [{ role: "assistant", content: "DELAYED OLD TRANSCRIPT" }], skipped: 0, usage: usageSnapshot("s1", 1, 120) });
+    finish({ meta: session({ id: "s1", title: "old songs" }), messages: [{ role: "assistant", content: "DELAYED OLD TRANSCRIPT" }], skipped: 0, usage: usageSnapshot("s1", 1, 120), start: 0, total: 1, revision: "0", older_tokens: 0 });
     await new Promise(resolve => setTimeout(resolve, 20));
     expect(view.container.textContent).not.toContain("DELAYED OLD TRANSCRIPT");
     expect(aiSession.open()).toBeNull();
@@ -818,7 +824,7 @@ describe("conversation switcher", () => {
     await mountPanel();
     await openSwitcher();
     fireEvent.click(document.querySelector(".ai-session-row-title")!);
-    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("sessions_load", { id: "s1" }));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("sessions_open", { id: "s1" }));
     const pending = held();
     backend.chat = () => pending.promise;
     fireEvent.input(input(), { target: { value: "Listen to the mix" } });
@@ -989,7 +995,7 @@ describe("conversation switcher", () => {
     fireEvent.click(document.querySelector(".ai-session-row-title") as HTMLElement);
 
     await waitFor(() => expect(openTitle()).toBe("punchier kick"));
-    expect(invokeMock.mock.calls.some(([command, args]) => command === "sessions_load" && (args as Record<string, unknown>).id === "s2")).toBe(true);
+    expect(invokeMock.mock.calls.some(([command, args]) => command === "sessions_open" && (args as Record<string, unknown>).id === "s2")).toBe(true);
 
     // User row, both assistant messages and the tool call the turn made.
     expect(messagesOf("user").map((row) => row.textContent)).toEqual([expect.stringContaining("make the kick punchier")]);
@@ -1263,7 +1269,7 @@ describe("the draft and the open conversation outlive the panel", () => {
     await mountPanel();
     await waitFor(() => expect(openTitle()).toBe("punchier kick"));
     await waitFor(() => expect(toolRows()).toHaveLength(1));
-    expect(invokeMock.mock.calls.filter(([command]) => command === "sessions_load")).toHaveLength(2);
+    expect(invokeMock.mock.calls.filter(([command]) => command === "sessions_open")).toHaveLength(2);
   });
 });
 
@@ -1769,7 +1775,7 @@ describe("the history a compaction replaced", () => {
     await waitFor(() => expect(banner()).toBeTruthy());
 
     // Back starts a repaint the test holds; the original is asked for again.
-    const gate = holdNext("sessions_load");
+    const gate = holdNext("sessions_open");
     fireEvent.click(document.querySelector(".ai-original-back")!);
     await waitFor(() => expect(earlier()).toBeTruthy());
     fireEvent.click(earlier());

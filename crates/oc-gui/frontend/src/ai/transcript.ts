@@ -171,15 +171,18 @@ export function exposedThinking(message: WireMessage): string {
  * The saved conversation as transcript rows. A tool result is joined to its call
  * by id, and on a wire without native tool calling by call order. Every row
  * names the wire message it came from, so a rewind cuts at the message rather
- * than at the row: rows hide envelopes and delivery messages.
+ * than at the row: rows hide envelopes and delivery messages. `start` is the
+ * page's offset in the whole view, so a row from any page keeps the absolute
+ * index a rewind uses.
  */
-export function restoredTranscript(messages: WireMessage[] | null | undefined): ChatMessage[] {
+export function restoredTranscript(messages: WireMessage[] | null | undefined, start = 0): ChatMessage[] {
   const rows: ChatMessage[] = [];
   const byId = new Map<string, ToolCall>();
   let pending: ToolCall[] = [];
   const wire = Array.isArray(messages) ? messages : [];
-  for (let wireIndex = 0; wireIndex < wire.length; wireIndex++) {
-    const message = wire[wireIndex];
+  for (let local = 0; local < wire.length; local++) {
+    const message = wire[local];
+    const wireIndex = start + local;
     const content = typeof message.content === "string" ? message.content : "";
     const snapshot = message.dsl_sha ? { dslSha: message.dsl_sha } : {};
     if (message.role === "assistant") {

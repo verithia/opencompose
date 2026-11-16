@@ -9,6 +9,7 @@
 //!   <workspace key>/workspace.json  the directory this key was derived from
 //!   <workspace key>/<session id>/meta.json
 //!   <workspace key>/<session id>/messages.jsonl
+//!   <workspace key>/<session id>/view.json
 //!   <workspace key>/<session id>/results/<sha256>.txt
 //!   <workspace key>/<session id>/versions/<sha256>.ocp
 //!   detached/<session id>/...       a conversation with no workspace
@@ -22,9 +23,11 @@
 //! again.
 //!
 //! `messages.jsonl` holds one record per model turn. A record is appended whole
-//! (`O_APPEND`, one write); the file is rewritten only when a compaction or the
-//! size cap replaces the whole conversation. Limits are stated with the
-//! constants below and enforced in `append`.
+//! (`O_APPEND`, one write); the file is rewritten only when the size cap trims
+//! it or the history before a compaction is dropped. Limits are stated with the
+//! constants below and enforced in `append`. `view.json` names the newest
+//! record that replaced the conversation, so a read parses only the current
+//! view; the panel reads that view a page of whole turns at a time.
 //!
 //! A tool result too large for its message row is written to
 //! `results/<sha256>.txt`; the row keeps `result_sha` in place of the text. The
@@ -46,6 +49,8 @@ pub mod tool_results;
 pub mod turns;
 #[path = "session_versions.rs"]
 mod versions;
+#[path = "session_view.rs"]
+mod view;
 use crate::private_fs;
 pub use message_protocol::MessageKind;
 use message_protocol::MessageMeta;
@@ -57,6 +62,7 @@ use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
+pub use view::MAX_PAGE_TURNS;
 
 const AUDITION_RENDER_STAGE: &str = ".audition-render.part";
 
@@ -263,6 +269,39 @@ pub struct Loaded {
     /// Whether a compaction replaced older turns, so the panel can offer the
     /// history behind the summary.
     pub compacted: bool,
+}
+
+/// A conversation opened at its newest turns.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct LoadedPage {
+    #[serde(flatten)]
+    pub loaded: Loaded,
+    /// Where the loaded messages start in the whole view.
+    pub start: usize,
+    /// How many messages the whole view holds.
+    pub total: usize,
+    /// The view's shape; a page asked for under another one is stale.
+    pub revision: String,
+    /// The panel's estimate of the messages before `start`.
+    pub older_tokens: u64,
+}
+
+/// Older turns of a conversation, in view order.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Page {
+    pub start: usize,
+    pub total: usize,
+    pub revision: String,
+    pub older_tokens: u64,
+    pub messages: Vec<Value>,
+}
+
+/// A page, or the answer that the view changed shape since the panel read it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum PageRead {
+    Page(Page),
+    Stale,
 }
 
 /// The outcome of folding a conversation into a summary.
@@ -910,21 +949,84 @@ impl Store {
 
     pub fn load(&self, id: &str) -> Result<Loaded, String> {
         let (dir, meta) = self.find(id)?;
-        let (mut messages, skipped) = read_view(&dir)?;
+        let current = read_current(&dir)?;
+        Ok(self.loaded(
+            id,
+            meta,
+            current.messages,
+            current.skipped,
+            current.compacted,
+        ))
+    }
+
+    fn loaded(
+        &self,
+        id: &str,
+        meta: SessionMeta,
+        mut messages: Vec<Value>,
+        skipped: u64,
+        compacted: bool,
+    ) -> Loaded {
         mark_missing_media(&mut messages);
         let (usage, usage_error) =
             match self.with_usage(id, |dir| super::session_usage::snapshot_at(dir, id)) {
                 Ok(usage) => (usage, None),
                 Err(error) => (None, Some(error)),
             };
-        Ok(Loaded {
+        Loaded {
             meta,
             usage,
             usage_error,
             messages,
             skipped,
-            compacted: has_compaction(&dir),
+            compacted,
+        }
+    }
+
+    /// The conversation with only its newest `turns` turns, for the panel to
+    /// open; older pages come from [`Store::page`].
+    pub fn open_page(&self, id: &str, turns: usize) -> Result<LoadedPage, String> {
+        let (dir, meta) = self.find(id)?;
+        let mut current = read_current(&dir)?;
+        let total = current.messages.len();
+        let start = view::page_start(&current.messages, total, turns);
+        let page = current.messages.split_off(start);
+        let older_tokens = view::panel_tokens(&current.messages);
+        Ok(LoadedPage {
+            loaded: self.loaded(id, meta, page, current.skipped, current.compacted),
+            start,
+            total,
+            revision: current.revision,
+            older_tokens,
         })
+    }
+
+    /// The page of whole turns that ends before message `before`, when the
+    /// view still has the shape `revision` names.
+    pub fn page(
+        &self,
+        id: &str,
+        before: usize,
+        turns: usize,
+        revision: &str,
+    ) -> Result<PageRead, String> {
+        let (dir, _) = self.find(id)?;
+        let mut current = read_current(&dir)?;
+        if current.revision != revision || before > current.messages.len() {
+            return Ok(PageRead::Stale);
+        }
+        let total = current.messages.len();
+        let start = view::page_start(&current.messages, before, turns);
+        current.messages.truncate(before);
+        let mut messages = current.messages.split_off(start);
+        mark_missing_media(&mut messages);
+        Ok(PageRead::Page(Page {
+            start,
+            total,
+            revision: current.revision,
+            older_tokens: view::panel_tokens(&current.messages),
+            messages,
+        }))
     }
 
     /// Drop every record before the `keep`-th compaction, then remove assets no
@@ -3289,48 +3391,19 @@ pub fn read_meta_for_storage(dir: &Path) -> Option<SessionMeta> {
     read_meta(&dir.join(META_FILE))
 }
 
-/// Whether the file holds a compaction record, without building the view.
-fn has_compaction(dir: &Path) -> bool {
-    let path = dir.join(MESSAGES_FILE);
-    let Ok(file) = std::fs::File::open(&path) else {
-        return false;
-    };
-    for line in std::io::BufReader::new(file).lines() {
-        let Ok(line) = line else { return false };
-        if line.contains("\"kind\":\"compaction\"") {
-            return true;
-        }
-    }
-    false
+fn read_view(dir: &Path) -> Result<(Vec<Value>, u64), String> {
+    read_current(dir).map(|current| (current.messages, current.skipped))
 }
 
-fn read_view(dir: &Path) -> Result<(Vec<Value>, u64), String> {
-    let path = dir.join(MESSAGES_FILE);
-    let file = match std::fs::File::open(&path) {
-        Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok((Vec::new(), 0)),
-        Err(error) => return Err(format!("sessions: {error}")),
-    };
-    let mut view = Vec::new();
-    let mut skipped = 0;
-    for line in std::io::BufReader::new(file).lines() {
-        let line = line.map_err(|error| format!("sessions: {error}"))?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        match serde_json::from_str::<Record>(&line) {
-            Ok(record) => match record.kind {
-                RecordKind::Turn => view.extend(record.messages),
-                RecordKind::Compaction | RecordKind::Trim => view = record.messages,
-            },
-            Err(_) => skipped += 1,
-        }
-    }
-    canonicalize_media(&mut view);
-    message_protocol::migrate(&mut view);
-    artifacts::repair(&mut view);
-    turns::repair_pairing(&mut view);
-    Ok((view, skipped))
+/// The repaired view with what the read learned about the file.
+fn read_current(dir: &Path) -> Result<view::Tail, String> {
+    let mut current = view::read_tail(dir)?;
+    let view = &mut current.messages;
+    canonicalize_media(view);
+    message_protocol::migrate(view);
+    artifacts::repair(view);
+    turns::repair_pairing(view);
+    Ok(current)
 }
 
 /// Every record in order. Unlike [`read_view`] this keeps the compaction and
@@ -3356,6 +3429,9 @@ fn read_records(dir: &Path) -> Result<Vec<Record>, String> {
 }
 
 fn write_records(dir: &Path, records: &[Record]) -> Result<(), String> {
+    // The index points into the file this replaces; without it the next read
+    // scans the new file and indexes it.
+    view::forget(dir)?;
     let mut bytes = Vec::new();
     for record in records {
         bytes.extend(

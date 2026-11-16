@@ -2180,6 +2180,7 @@ export const en = {
   "ai.sessions.originalBanner": "This is the history before compaction; the model sees the summary instead.",
   "ai.sessions.originalBack": "Back to compacted view",
   "ai.transcript.earlier": "Show {count} earlier messages",
+  "ai.transcript.earlierTurns": "Show earlier turns",
   "ai.transcript.earlierHistory": "Show earlier conversations",
     "ai.sessions.renameOf": "Rename {title}",
     "ai.sessions.renameLabel": "Conversation title",

@@ -213,6 +213,21 @@ export function loadSession(id: string) {
   return invoke<unknown>("sessions_load", { id });
 }
 
+/** The newest page of a saved conversation, with where it sits in the whole. */
+export function openSession(id: string, turns?: number) {
+  return invoke<unknown>("sessions_open", { id, ...(turns === undefined ? {} : { turns }) });
+}
+
+/** The page of turns before `before`, or a refusal when the view changed. */
+export function sessionPage(id: string, before: number, revision: string, turns?: number) {
+  return invoke<unknown>("sessions_page", {
+    id,
+    before,
+    ...(turns === undefined ? {} : { turns }),
+    revision,
+  });
+}
+
 export function newSession(title?: string, parent?: string, through?: number) {
   return invoke<SessionMeta>("sessions_new", {
     ...(title ? { title } : {}),

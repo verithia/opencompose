@@ -100,6 +100,32 @@ export interface LoadedSession {
   usage_error?: AccountingError;
 }
 
+/** `sessions_open`: the newest page of a saved conversation and its span. */
+export interface LoadedPage extends LoadedSession {
+  /** Index in the whole view where `messages` begins. */
+  start: number;
+  /** Length of the whole view. */
+  total: number;
+  /** The view's shape, which a later page must still match. */
+  revision: string;
+  /** The panel estimate of the messages before `start`. */
+  older_tokens: number;
+}
+
+/** One older page of the whole view. */
+export interface SessionPage {
+  messages: WireMessage[];
+  start: number;
+  total: number;
+  revision: string;
+  older_tokens: number;
+}
+
+/** `sessions_page`: the page, or a refusal when the view changed shape. */
+export type SessionPageRead =
+  | ({ status: "page" } & SessionPage)
+  | { status: "stale" };
+
 /** `sessions_compact`: the conversation after folding. */
 export interface CompactionResult extends CompactionReport {
   id: string;
@@ -184,6 +210,32 @@ export function loadedSession(payload: unknown): LoadedSession | null {
   if (!value.meta || typeof value.meta.id !== "string") return null;
   if (!Array.isArray(value.messages)) return null;
   return value as LoadedSession;
+}
+
+function pageSpan(value: Partial<SessionPage>): value is SessionPage {
+  return typeof value.start === "number"
+    && typeof value.total === "number"
+    && typeof value.revision === "string"
+    && typeof value.older_tokens === "number";
+}
+
+/** The newest page of a conversation, or `null` when the payload is not one. */
+export function loadedPage(payload: unknown): LoadedPage | null {
+  const session = loadedSession(payload);
+  if (!session) return null;
+  const value = payload as Partial<LoadedPage>;
+  return pageSpan(value) ? value as LoadedPage : null;
+}
+
+/** An older page, or `null` when the payload names neither status. */
+export function sessionPageRead(payload: unknown): SessionPageRead | null {
+  const value = payload as Partial<{ status: string }> | null;
+  if (!value || typeof value !== "object") return null;
+  if (value.status === "stale") return { status: "stale" };
+  if (value.status !== "page") return null;
+  const page = payload as Partial<SessionPage> & { status?: string };
+  if (!Array.isArray(page.messages) || !pageSpan(page)) return null;
+  return { status: "page", ...page } as SessionPageRead;
 }
 
 /**

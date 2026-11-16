@@ -2204,6 +2204,7 @@ export const zhHans = {
   "ai.sessions.originalBanner": "这是压缩前的完整历史；模型看到的是摘要。",
   "ai.sessions.originalBack": "返回压缩视图",
   "ai.transcript.earlier": "展开更早的 {count} 条消息",
+  "ai.transcript.earlierTurns": "展开更早的对话轮次",
   "ai.transcript.earlierHistory": "展开更早的对话",
   "ai.sessions.renameOf": "重命名 {title}",
   "ai.sessions.renameLabel": "对话标题",
