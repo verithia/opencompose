@@ -2,14 +2,20 @@
 //! its localization stay separate: the row carries the typed value, and its
 //! English text is derived from that value alone.
 
+use crate::ai::sessions::SessionPermission;
 use crate::edit_history::{
     Author, MAX_OUTSIDE_AUTHOR_CHARS, MAX_OUTSIDE_COUNT, MAX_OUTSIDE_ENTRIES, OutsideEntry,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::collections::BTreeSet;
 
 /// Longest project path a notice may carry.
 pub const MAX_NOTICE_PATH_CHARS: usize = 4096;
+/// Most tool names one surface or notice may carry.
+pub const MAX_TOOL_SURFACE_NAMES: usize = 512;
+/// Longest tool name one surface or notice may carry.
+pub const MAX_TOOL_NAME_CHARS: usize = 128;
 
 /// A host notice a saved conversation carries. New variants extend this enum;
 /// each kind states whether a fold and a compaction keep it.
@@ -32,6 +38,36 @@ pub enum HostNotice {
         #[serde(default)]
         rewritten: bool,
     },
+    /// The tools or permission mode a turn offers changed since an earlier
+    /// turn, so the model does not call a tool the turn does not offer.
+    ToolSurface {
+        added: Vec<String>,
+        removed: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        permission: Option<PermissionChange>,
+    },
+}
+
+/// The tools and permission mode a conversation last offered a turn.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolSurface {
+    pub names: Vec<String>,
+    pub permission: SessionPermission,
+}
+
+impl ToolSurface {
+    /// Whether every name is bounded, so an untrusted saved surface cannot
+    /// grow the session metadata without limit.
+    pub fn valid(&self) -> bool {
+        self.names.len() <= MAX_TOOL_SURFACE_NAMES && self.names.iter().all(|name| valid_name(name))
+    }
+}
+
+/// A permission mode change between two turns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PermissionChange {
+    pub from: SessionPermission,
+    pub to: SessionPermission,
 }
 
 /// Why a conversation's project binding changed.
@@ -58,13 +94,14 @@ impl HostNotice {
         match self {
             Self::ProjectBound { .. } => "project_bound",
             Self::OutsideChanges { .. } => "outside_changes",
+            Self::ToolSurface { .. } => "tool_surface",
         }
     }
 
     /// Whether a fold or a compaction keeps the newest row of this kind: the
     /// model needs the current binding to interpret every later path.
     pub fn pinned(&self) -> bool {
-        matches!(self, Self::ProjectBound { .. })
+        matches!(self, Self::ProjectBound { .. } | Self::ToolSurface { .. })
     }
 
     /// Whether every path and count is bounded, so an untrusted saved row
@@ -88,6 +125,16 @@ impl HostNotice {
                     && *more <= MAX_OUTSIDE_COUNT
                     && *undone <= MAX_OUTSIDE_COUNT
                     && entries.iter().all(valid_outside_entry)
+            }
+            Self::ToolSurface {
+                added,
+                removed,
+                permission: _,
+            } => {
+                added.len() <= MAX_TOOL_SURFACE_NAMES
+                    && removed.len() <= MAX_TOOL_SURFACE_NAMES
+                    && added.iter().all(|name| valid_name(name))
+                    && removed.iter().all(|name| valid_name(name))
             }
         }
     }
@@ -141,6 +188,37 @@ impl HostNotice {
                 }
                 text
             }
+            Self::ToolSurface {
+                added,
+                removed,
+                permission,
+            } => {
+                let mut text = String::new();
+                if !added.is_empty() || !removed.is_empty() {
+                    text.push_str("Your tools changed since earlier in this conversation.");
+                    if !added.is_empty() {
+                        text.push_str(&format!(" Added: {}.", added.join(", ")));
+                    }
+                    if !removed.is_empty() {
+                        text.push_str(&format!(" Removed: {}.", removed.join(", ")));
+                        text.push_str(
+                            " Do not call removed tools; earlier calls to them in this \
+                             conversation cannot be repeated.",
+                        );
+                    }
+                }
+                if let Some(change) = permission {
+                    if !text.is_empty() {
+                        text.push(' ');
+                    }
+                    text.push_str(&format!(
+                        "Permission mode changed from {} to {}.",
+                        permission_wire(change.from),
+                        permission_wire(change.to)
+                    ));
+                }
+                text
+            }
         }
     }
 
@@ -171,8 +249,67 @@ impl HostNotice {
                     rewritten: *rewritten,
                 }
             }
+            Self::ToolSurface {
+                added,
+                removed,
+                permission,
+            } => Self::ToolSurface {
+                added: bounded_names(added),
+                removed: bounded_names(removed),
+                permission: *permission,
+            },
         }
     }
+
+    /// The notice that tells the model how a turn's tool surface changed, or
+    /// `None` when the previous surface and the new one are the same.
+    pub fn tool_surface_change(previous: &ToolSurface, next: &ToolSurface) -> Option<Self> {
+        let was: BTreeSet<&str> = previous.names.iter().map(String::as_str).collect();
+        let is: BTreeSet<&str> = next.names.iter().map(String::as_str).collect();
+        let added: Vec<String> = is.difference(&was).map(|name| (*name).to_owned()).collect();
+        let removed: Vec<String> = was.difference(&is).map(|name| (*name).to_owned()).collect();
+        let permission = (previous.permission != next.permission).then_some(PermissionChange {
+            from: previous.permission,
+            to: next.permission,
+        });
+        if added.is_empty() && removed.is_empty() && permission.is_none() {
+            return None;
+        }
+        Some(Self::ToolSurface {
+            added,
+            removed,
+            permission,
+        })
+    }
+}
+
+fn valid_name(name: &str) -> bool {
+    !name.is_empty() && name.chars().count() <= MAX_TOOL_NAME_CHARS
+}
+
+fn bounded_names(names: &[String]) -> Vec<String> {
+    names
+        .iter()
+        .take(MAX_TOOL_SURFACE_NAMES)
+        .map(|name| {
+            if name.chars().count() <= MAX_TOOL_NAME_CHARS {
+                return name.clone();
+            }
+            let mut clipped: String = name
+                .chars()
+                .take(MAX_TOOL_NAME_CHARS.saturating_sub(1))
+                .collect();
+            clipped.push('…');
+            clipped
+        })
+        .collect()
+}
+
+fn permission_wire(permission: SessionPermission) -> String {
+    serde_json::to_value(permission)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .unwrap_or_default()
 }
 
 fn valid_outside_entry(entry: &OutsideEntry) -> bool {
@@ -312,5 +449,65 @@ mod tests {
         let notice: HostNotice =
             serde_json::from_value(row["message_meta"]["notice"].clone()).unwrap();
         assert!(notice.valid(), "a saved notice stays readable");
+    }
+
+    #[test]
+    fn a_tool_surface_notice_lists_only_the_applicable_sentences() {
+        let added = HostNotice::ToolSurface {
+            added: vec!["tracks_add".into()],
+            removed: Vec::new(),
+            permission: None,
+        };
+        let text = added.model_text();
+        assert!(text.contains("Added: tracks_add."));
+        assert!(!text.contains("Removed:"));
+        assert!(!text.contains("Do not call removed tools"));
+        assert!(!text.contains("Permission mode"));
+
+        let removed = HostNotice::ToolSurface {
+            added: Vec::new(),
+            removed: vec!["tracks_remove".into()],
+            permission: None,
+        };
+        let text = removed.model_text();
+        assert!(text.contains("Removed: tracks_remove."));
+        assert!(text.contains("Do not call removed tools"));
+        assert!(!text.contains("Added:"));
+
+        let permission = HostNotice::ToolSurface {
+            added: Vec::new(),
+            removed: Vec::new(),
+            permission: Some(PermissionChange {
+                from: SessionPermission::RequireApproval,
+                to: SessionPermission::Write,
+            }),
+        };
+        assert_eq!(
+            permission.model_text(),
+            "Permission mode changed from require_approval to write."
+        );
+        assert!(permission.pinned());
+        assert!(permission.valid());
+    }
+
+    #[test]
+    fn a_tool_surface_notice_is_bounded_when_written() {
+        let names: Vec<String> = (0..MAX_TOOL_SURFACE_NAMES + 2)
+            .map(|index| format!("tool_{index}"))
+            .collect();
+        let long = "x".repeat(MAX_TOOL_NAME_CHARS + 20);
+        let row = notice_row(&HostNotice::ToolSurface {
+            added: names,
+            removed: vec![long],
+            permission: None,
+        });
+        let notice: HostNotice =
+            serde_json::from_value(row["message_meta"]["notice"].clone()).unwrap();
+        let HostNotice::ToolSurface { added, removed, .. } = notice else {
+            panic!("expected a tool surface notice");
+        };
+        assert_eq!(added.len(), MAX_TOOL_SURFACE_NAMES);
+        assert_eq!(removed[0].chars().count(), MAX_TOOL_NAME_CHARS);
+        assert!(removed[0].ends_with('…'));
     }
 }

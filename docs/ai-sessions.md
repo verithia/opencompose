@@ -349,6 +349,7 @@ Limits, all enforced in the store:
  "workspace":"/Users/…/songs","project_path":"/Users/…/songs/song.ocp",
  "pending_binding":{"from":"/Users/…/songs/old.ocp","cause":"moved"},
  "history_mark":{"project":"/Users/…/songs/song.ocp","at":42,"max_id":42},
+ "tool_surface":{"names":["tracks_list","tracks_mix"],"permission":"write"},
  "turns":7,"tokens":9321,"compacted_at":"2026-10-29T07:41:02.019Z"}
 ```
 
@@ -360,6 +361,12 @@ the edit-history cursor the conversation ended its previous turn at: the
 canonical `project` it belongs to, the id of the newest applied entry `at`
 (absent before the first edit), and the largest id the history held. A rebind or
 a move clears it, because the `project_bound` notice covers that boundary.
+`tool_surface` holds the tool names and permission mode the conversation's
+latest prepared turn offered. The first turn records it silently. A later turn
+whose tools or permission differ writes one typed `tool_surface` host notice
+before its message and replaces the field. A path without the loop leaves the
+field unchanged. A saved surface over its name or length bound is dropped on
+load, and the next turn records the current one.
 `tokens` is this project's estimate of the saved conversation, not a provider's
 reported usage; `compacted_at` records the last compaction; `parent` names the
 session a fork copied.
@@ -375,7 +382,10 @@ There is no save action. Every model turn writes to the store:
    `project_bound` notice immediately before that turn's message. When the
    conversation carries a `history_mark` and its bound project changed since
    then, one typed `outside_changes` notice follows it with the entries other
-   authors made, the steps undo moved back, and any rewrite of the history.
+   authors made, the steps undo moved back, and any rewrite of the history. A
+   turn whose tools or permission differ from the saved `tool_surface`
+   contributes one typed `tool_surface` notice after those and records the new
+   surface.
 2. The assistant message the provider returned is appended, so an answer is
    saved even if the panel closes before the next turn.
 3. When the estimate says the conversation no longer fits, it is compacted
@@ -866,8 +876,9 @@ conversation. No command here writes to the project.
 
 - The exact text of the older turns. Decisions, failures, the standing intent,
   the last answer and the earlier user questions are condensed, not quoted.
-  The newest typed project-binding notice survives beside the summary, because
-  every later path in the conversation is relative to that binding.
+  The newest typed project-binding and tool-surface notices survive beside the
+  summary, because every later path in the conversation is relative to that
+  binding and the model must not call a tool the turn does not offer.
 - Tool arguments beyond the retained pairs, and every tool result beyond a
   short summary of it.
 - `provider_state`, thought signatures and reasoning items. A conversation that

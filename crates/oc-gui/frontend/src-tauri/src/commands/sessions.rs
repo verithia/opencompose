@@ -332,6 +332,9 @@ pub struct SavedTurnBinding<'a> {
     /// Tokens of the tool list the request carries beside its messages
     /// ([`wire::offered_tool_tokens`]); 0 for a request without tools.
     pub tool_tokens: u64,
+    /// The tools and permission this turn offers, compared with the last saved
+    /// surface before the turn's message.
+    pub surface: Option<crate::ai::host_notice::ToolSurface>,
 }
 
 /// Why a turn was not prepared. Every variant leaves the store unchanged.
@@ -524,6 +527,7 @@ pub fn prepare_turn_for<R: tauri::Runtime>(
                 provider: &provider.id,
                 model: &provider.model,
                 outside,
+                surface: binding.surface,
             },
             Some(binding.incarnation),
             |planned| fitted_request(&system, planned, tokens).map(|_| ()),

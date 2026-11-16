@@ -103,6 +103,7 @@ impl SavedTurn {
                 } else {
                     0
                 },
+                surface: None,
             },
         )
         .map_err(AiError::from);

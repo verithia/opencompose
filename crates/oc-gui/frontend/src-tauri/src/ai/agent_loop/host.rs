@@ -892,15 +892,25 @@ async fn run_claimed(
         .ok_or_else(|| AiError::new("accounting_request", "The turn has no accounting owner"))?;
     let messages = Value::Array(start.messages.clone());
     let tool_tokens = super::wire::offered_tool_tokens(start.toolsets.as_deref(), true);
+    let permission = Store::config()
+        .find(&start.session_id)
+        .map(|(_, meta)| meta.permission)
+        .unwrap_or_default();
+    let permission = turn_permission(attended, permission);
+    let surface = crate::ai::host_notice::ToolSurface {
+        names: super::wire::offered_tool_names(start.toolsets.as_deref()),
+        permission,
+    };
     // Preparation closes any round a dead turn left open, saves the new user
     // message with its snapshot, and compacts when the window needs it.
     let prepared = {
-        let (app, provider, id, incarnation, project) = (
+        let (app, provider, id, incarnation, project, surface) = (
             app.clone(),
             provider.clone(),
             start.session_id.clone(),
             incarnation.clone(),
             start.project.clone(),
+            surface,
         );
         tauri::async_runtime::spawn_blocking(move || {
             crate::commands::prepare_turn_for(
@@ -912,6 +922,7 @@ async fn run_claimed(
                     incarnation: &incarnation,
                     project: project.as_deref(),
                     tool_tokens,
+                    surface: Some(surface),
                 },
             )
             .map_err(AiError::from)
@@ -938,10 +949,6 @@ async fn run_claimed(
             crate::commands::compaction_event(&prepared, compaction, provider),
         );
     }
-    let permission = Store::config()
-        .find(&start.session_id)
-        .map(|(_, meta)| meta.permission)
-        .unwrap_or_default();
     let host = AppHost {
         steering: control.steering,
         app: app.clone(),
@@ -958,7 +965,7 @@ async fn run_claimed(
     };
     let spec = TurnSpec {
         wire: prepared.messages.as_array().cloned().unwrap_or_default(),
-        permission: turn_permission(attended, permission),
+        permission,
         label: start
             .label
             .clone()

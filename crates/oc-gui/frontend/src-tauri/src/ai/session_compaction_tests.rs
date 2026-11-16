@@ -125,6 +125,7 @@ fn revert_to_the_newest_message_works_after_auto_compaction_with_a_snapshot() {
                 provider: "p",
                 model: "m",
                 outside: None,
+                surface: None,
             },
         )
         .unwrap();
@@ -237,6 +238,7 @@ fn a_failed_auto_compaction_is_reported_and_the_turn_still_prepares() {
                 provider: "p",
                 model: "m",
                 outside: None,
+                surface: None,
             },
         )
         .unwrap();
@@ -282,6 +284,7 @@ fn a_refused_admission_saves_nothing() {
         provider: "p",
         model: "m",
         outside: None,
+        surface: None,
     };
     store
         .prepare(&session.id, &[user("first")], Some(&project), context())
@@ -349,6 +352,7 @@ fn a_landed_compaction_succeeds_even_when_its_metadata_cannot_be_written() {
                 provider: "p",
                 model: "m",
                 outside: None,
+                surface: None,
             },
         )
         .unwrap();
@@ -382,6 +386,7 @@ fn a_second_requested_compaction_of_the_same_state_is_a_conflict() {
                 provider: "p",
                 model: "m",
                 outside: None,
+                surface: None,
             },
         )
         .unwrap();
@@ -495,4 +500,42 @@ fn a_size_trim_keeps_the_pinned_notice_in_front_with_the_summary() {
         "the binding stays beside the summary"
     );
     assert_eq!(turns::check_pairing(&kept), Ok(()));
+}
+
+#[test]
+fn a_compaction_keeps_the_newest_tool_surface_notice() {
+    use crate::ai::host_notice::{HostNotice, notice_row};
+    let mut view = vec![
+        user("first"),
+        notice_row(&HostNotice::ToolSurface {
+            added: vec!["tracks_add".into()],
+            removed: Vec::new(),
+            permission: None,
+        }),
+        user("second"),
+        notice_row(&HostNotice::ToolSurface {
+            added: Vec::new(),
+            removed: vec!["tracks_add".into()],
+            permission: None,
+        }),
+    ];
+    view.extend(rounds());
+    view.push(user("the current ask"));
+    let compaction = plan_compaction(&view, 0, &facts(), "s").unwrap();
+    let notices: Vec<&str> = compaction
+        .messages
+        .iter()
+        .filter_map(|row| row["message_meta"]["notice"]["kind"].as_str())
+        .collect();
+    assert_eq!(notices, ["tool_surface"]);
+    let kept = compaction
+        .messages
+        .iter()
+        .find(|row| row["message_meta"]["notice"]["kind"] == "tool_surface")
+        .expect("the newest surface is kept");
+    assert_eq!(
+        kept["message_meta"]["notice"]["removed"],
+        json!(["tracks_add"])
+    );
+    assert_eq!(turns::check_pairing(&compaction.messages), Ok(()));
 }

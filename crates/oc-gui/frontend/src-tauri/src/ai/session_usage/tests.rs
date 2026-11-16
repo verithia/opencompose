@@ -72,6 +72,7 @@ fn accounting_queued_preparation_cannot_mutate_a_replaced_session_incarnation() 
                         provider: "old-provider",
                         model: "old-model",
                         outside: None,
+                        surface: None,
                     },
                     Some(&admitted),
                 )
@@ -120,6 +121,7 @@ fn accounting_queued_preparation_cannot_mutate_a_replaced_session_incarnation() 
                 provider: "current-provider",
                 model: "current-model",
                 outside: None,
+                surface: None,
             },
             Some(&replacement),
         )

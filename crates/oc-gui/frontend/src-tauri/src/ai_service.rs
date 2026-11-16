@@ -1242,6 +1242,7 @@ pub async fn ai_chat(
                         incarnation: &incarnation,
                         project: None,
                         tool_tokens,
+                        surface: None,
                     },
                 )
                 .map(Some)

@@ -4420,6 +4420,7 @@ providers:
                     provider: "fixture",
                     model: "fixture",
                     outside: None,
+                    surface: None,
                 },
             )
             .unwrap();
@@ -4489,6 +4490,7 @@ providers:
                     provider: "test",
                     model: "test",
                     outside: None,
+                    surface: None,
                 },
             )
             .unwrap();
@@ -4505,6 +4507,7 @@ providers:
                     provider: "test",
                     model: "test",
                     outside: None,
+                    surface: None,
                 },
             )
             .unwrap();

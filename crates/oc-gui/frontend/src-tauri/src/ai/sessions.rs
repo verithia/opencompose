@@ -54,7 +54,7 @@ pub mod turns;
 mod versions;
 #[path = "session_view.rs"]
 mod view;
-use super::host_notice::{BindCause, HostNotice, PendingBinding};
+use super::host_notice::{BindCause, HostNotice, PendingBinding, ToolSurface};
 use crate::edit_history::HistoryMark;
 use crate::private_fs;
 pub use message_protocol::MessageKind;
@@ -168,6 +168,11 @@ pub struct SessionMeta {
     /// session saved before this field reads as the default.
     #[serde(default)]
     pub permission: SessionPermission,
+    /// The tools and permission a turn last offered, so a later turn tells the
+    /// model what changed. A session saved before this field reads as `None`
+    /// and records its first surface silently.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_surface: Option<ToolSurface>,
     pub turns: u64,
     pub tokens: u64,
     /// Whether a person or the title pass named this session. Until then the
@@ -449,6 +454,9 @@ pub struct PrepareContext<'a> {
     /// What changed outside this conversation since its previous turn, saved
     /// as a typed notice before the turn's message.
     pub outside: Option<HostNotice>,
+    /// The tools and permission this turn offers, compared with the last
+    /// saved surface before the turn's message.
+    pub surface: Option<ToolSurface>,
 }
 
 /// One autosave step: what the store now holds and whether it compacted.
@@ -772,6 +780,7 @@ impl Store {
                 .as_ref()
                 .map(|parent| parent.permission)
                 .unwrap_or_default(),
+            tool_surface: None,
             turns: 0,
             tokens: inherited.as_deref().map(estimate_tokens).unwrap_or(0),
             named: false,
@@ -1372,6 +1381,7 @@ impl Store {
             provider,
             model,
             outside,
+            surface,
         } = context;
         let _lock = self.mutation_lock()?;
         let (dir, mut meta) = self.find(id)?;
@@ -1462,6 +1472,17 @@ impl Store {
         }
         if let Some(outside) = outside {
             notices.push(outside);
+        }
+        if let Some(surface) = surface {
+            if let Some(previous) = &meta.tool_surface
+                && let Some(notice) = HostNotice::tool_surface_change(previous, &surface)
+            {
+                notices.push(notice);
+            }
+            if meta.tool_surface.as_ref() != Some(&surface) {
+                meta.tool_surface = Some(surface);
+                meta_changed = true;
+            }
         }
         let mut notice_rows = Vec::new();
         for notice in &notices {
@@ -4242,6 +4263,7 @@ mod tests {
                         provider: "fixture-provider",
                         model: "fixture-model",
                         outside: None,
+                        surface: None,
                     },
                 )
                 .unwrap();
@@ -4379,6 +4401,7 @@ mod tests {
                     provider: "fixture",
                     model: "model",
                     outside: None,
+                    surface: None,
                 },
             )
             .unwrap();
@@ -4404,6 +4427,7 @@ mod tests {
                     provider: "fixture",
                     model: "model",
                     outside: None,
+                    surface: None,
                 },
             )
             .unwrap();
@@ -4447,6 +4471,7 @@ mod tests {
                     provider: "fixture-provider",
                     model: "fixture-model",
                     outside: None,
+                    surface: None,
                 },
             )
             .unwrap();
@@ -4484,6 +4509,7 @@ mod tests {
                     provider: "fixture-provider",
                     model: "fixture-model",
                     outside: None,
+                    surface: None,
                 },
             )
             .unwrap();
@@ -4521,6 +4547,7 @@ mod tests {
                     provider: "fixture-provider",
                     model: "fixture-model",
                     outside: None,
+                    surface: None,
                 },
             )
             .unwrap();
@@ -4545,6 +4572,7 @@ mod tests {
                     provider: "fixture-provider",
                     model: "fixture-model",
                     outside: None,
+                    surface: None,
                 },
             )
             .unwrap();
@@ -4588,6 +4616,7 @@ mod tests {
                     provider: "fixture-provider",
                     model: "fixture-model",
                     outside: None,
+                    surface: None,
                 },
             )
             .unwrap();
@@ -5060,6 +5089,7 @@ mod tests {
                     provider: "fixture",
                     model: "model",
                     outside: None,
+                    surface: None,
                 },
             )
             .unwrap();
@@ -5280,6 +5310,7 @@ mod tests {
                     provider: "fixture-provider",
                     model: "fixture-model",
                     outside: None,
+                    surface: None,
                 },
             )
             .unwrap();
@@ -5642,6 +5673,7 @@ mod tests {
                     provider: "fixture",
                     model: "model",
                     outside: None,
+                    surface: None,
                 },
             )
             .expect("a full archive does not refuse the turn");
@@ -5787,6 +5819,7 @@ mod tests {
                     provider: "fixture",
                     model: "model",
                     outside: None,
+                    surface: None,
                 },
             )
             .unwrap();
@@ -5830,6 +5863,7 @@ mod tests {
                         provider: "fixture",
                         model: "model",
                         outside: None,
+                        surface: None,
                     },
                 )
                 .unwrap();
@@ -5985,6 +6019,7 @@ mod tests {
                     provider: "fixture",
                     model: "model",
                     outside: None,
+                    surface: None,
                 },
             )
             .unwrap();
@@ -6139,6 +6174,7 @@ mod tests {
                     provider: "fixture-provider",
                     model: "fixture-model",
                     outside: None,
+                    surface: None,
                 },
             )
             .unwrap();
@@ -6265,6 +6301,7 @@ mod tests {
                     provider: "fixture-provider",
                     model: "fixture-model",
                     outside: None,
+                    surface: None,
                 },
             )
             .unwrap();
@@ -6302,6 +6339,7 @@ mod tests {
                     provider: "p",
                     model: "m",
                     outside: None,
+                    surface: None,
                 },
             )
             .unwrap();
@@ -6409,6 +6447,7 @@ mod tests {
                     provider: "p",
                     model: "m",
                     outside: None,
+                    surface: None,
                 },
             )
             .unwrap();
@@ -6443,6 +6482,7 @@ mod tests {
                     provider: "p",
                     model: "m",
                     outside: None,
+                    surface: None,
                 },
             )
             .unwrap();
@@ -6493,6 +6533,7 @@ mod tests {
                         provider: "p",
                         model: "m",
                         outside: None,
+                        surface: None,
                     },
                 )
                 .unwrap();
@@ -6584,6 +6625,7 @@ mod tests {
                     provider: "fixture-provider",
                     model: "fixture-model",
                     outside: None,
+                    surface: None,
                 },
             )
             .unwrap();
@@ -6624,6 +6666,7 @@ mod tests {
                         provider: "fixture-provider",
                         model: "fixture-model",
                         outside: None,
+                        surface: None,
                     },
                 )
                 .unwrap()
@@ -6729,6 +6772,7 @@ mod tests {
                     provider: "fixture-provider",
                     model: "fixture-model",
                     outside: None,
+                    surface: None,
                 },
             )
             .unwrap();
@@ -6773,6 +6817,7 @@ mod tests {
                     provider: "fixture-provider",
                     model: "fixture-model",
                     outside: None,
+                    surface: None,
                 },
             )
             .unwrap();
@@ -6861,6 +6906,7 @@ mod tests {
                     provider: "fixture-provider",
                     model: "fixture-model",
                     outside: None,
+                    surface: None,
                 },
             )
             .unwrap();
@@ -6905,6 +6951,7 @@ mod tests {
                     provider: "fixture-provider",
                     model: "fixture-model",
                     outside: None,
+                    surface: None,
                 },
             )
             .unwrap();
@@ -6977,6 +7024,7 @@ mod tests {
                     provider: "fixture-provider",
                     model: "fixture-model",
                     outside: None,
+                    surface: None,
                 },
             )
             .unwrap();
@@ -6999,6 +7047,7 @@ mod tests {
                     provider: "fixture-provider",
                     model: "fixture-model",
                     outside: None,
+                    surface: None,
                 },
             )
             .unwrap();
@@ -7081,6 +7130,7 @@ mod tests {
                     provider: "fixture-provider",
                     model: "fixture-model",
                     outside: None,
+                    surface: None,
                 },
             )
             .unwrap();
@@ -7120,6 +7170,7 @@ mod tests {
                     provider: "fixture-provider",
                     model: "fixture-model",
                     outside: None,
+                    surface: None,
                 },
             )
             .unwrap();
@@ -7150,6 +7201,7 @@ mod tests {
                     provider: "fixture-provider",
                     model: "fixture-model",
                     outside: None,
+                    surface: None,
                 },
             )
             .unwrap();
@@ -7189,6 +7241,7 @@ mod tests {
                     provider: "fixture-provider",
                     model: "fixture-model",
                     outside: None,
+                    surface: None,
                 },
             )
             .unwrap();
@@ -7223,6 +7276,7 @@ mod tests {
             provider: "fixture-provider",
             model: "fixture-model",
             outside: None,
+            surface: None,
         };
         let ask = user("make it punchy");
         let call = tool_call("tracks_mix", "{\"track\":\"kick\"}", "sig-0");
@@ -7298,6 +7352,7 @@ mod tests {
                     provider: "fixture-provider",
                     model: "fixture-model",
                     outside: None,
+                    surface: None,
                 },
             )
             .unwrap();
@@ -7330,6 +7385,7 @@ mod tests {
                     provider: "fixture-provider",
                     model: "fixture-model",
                     outside: None,
+                    surface: None,
                 },
             )
             .unwrap();
@@ -7349,6 +7405,7 @@ mod tests {
                     provider: "fixture-provider",
                     model: "fixture-model",
                     outside: None,
+                    surface: None,
                 },
             )
             .unwrap();
@@ -7484,6 +7541,7 @@ mod tests {
                     provider: "fixture",
                     model: "model",
                     outside: None,
+                    surface: None,
                 },
             )
             .unwrap();
@@ -7642,6 +7700,7 @@ mod tests {
                     provider: "fixture",
                     model: "model",
                     outside: None,
+                    surface: None,
                 },
             )
             .unwrap();

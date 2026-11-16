@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { bindingBar, projectName, sessionBinding } from "../ai/binding";
-import { hostNotice, messageKind, projectBoundNotice, type MessageMeta } from "../ai/messageProtocol";
+import { hostNotice, messageKind, projectBoundNotice, toolSurfaceNotice, type MessageMeta } from "../ai/messageProtocol";
 import { restoredTranscript } from "../ai/transcript";
 import type { WireMessage } from "../ai/wire";
 
@@ -62,6 +62,39 @@ describe("typed host notices in the transcript", () => {
     expect(projectBoundNotice(noticeMeta({ kind: "project_bound", to: "/songs/song.ocp", cause: "elsewhere" }))).toBeNull();
     expect(hostNotice({ kind: "project_bound", to: "x".repeat(4097), cause: "chosen" })).toBeNull();
     expect(messageKind({ role: "user", content: "x", message_meta: { version: 1, kind: "user", notice: { kind: "project_bound", to: "/songs/song.ocp", cause: "chosen" } } as MessageMeta })).toBe("user");
+  });
+
+  it("renders a tool-surface change as one small context row", () => {
+    const notice = {
+      kind: "tool_surface",
+      added: ["tracks_remove"],
+      removed: ["tracks_add"],
+      permission: { from: "autoreview", to: "write" },
+    };
+    const rows = restoredTranscript([
+      { role: "user", content: "changed", message_meta: noticeMeta(notice) } as WireMessage,
+      { role: "user", content: "next", message_meta: { version: 1, kind: "user" } } as WireMessage,
+    ]);
+    expect(rows).toHaveLength(2);
+    expect(rows[0].role).toBe("context");
+    expect(rows[0].surface).toEqual(notice);
+    expect(rows[0].binding).toBeUndefined();
+    expect(rows[0].content).toBe("");
+    expect(rows[1].content).toBe("next");
+  });
+
+  it("validates a tool-surface notice and ignores a malformed one", () => {
+    expect(toolSurfaceNotice(noticeMeta({
+      kind: "tool_surface", added: ["tracks_add"], removed: [], permission: { from: "write", to: "autoreview" },
+    }))).toEqual({ kind: "tool_surface", added: ["tracks_add"], removed: [], permission: { from: "write", to: "autoreview" } });
+    expect(hostNotice({ kind: "tool_surface", added: Array(513).fill("tracks_add"), removed: [] })).toBeNull();
+    expect(hostNotice({ kind: "tool_surface", added: ["x".repeat(129)], removed: [] })).toBeNull();
+    expect(hostNotice({ kind: "tool_surface", added: [], removed: [], permission: { from: "write", to: "elsewhere" } })).toBeNull();
+    expect(hostNotice({ kind: "tool_surface", added: [], removed: [], permission: { from: "write" } })).toBeNull();
+    const rows = restoredTranscript([
+      { role: "user", content: "bad", message_meta: noticeMeta({ kind: "tool_surface", added: ["x".repeat(129)], removed: [] }) } as WireMessage,
+    ]);
+    expect(rows).toEqual([]);
   });
 });
 

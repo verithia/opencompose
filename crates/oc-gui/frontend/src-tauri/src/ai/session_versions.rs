@@ -133,6 +133,7 @@ mod tests {
                         provider: "fixture",
                         model: "fixture",
                         outside: None,
+                        surface: None,
                     },
                 )
                 .unwrap()
@@ -217,6 +218,7 @@ mod tests {
                         provider: "fixture",
                         model: "fixture",
                         outside: None,
+                        surface: None,
                     },
                 )
                 .is_err()
@@ -248,6 +250,7 @@ mod tests {
                     provider: "fixture",
                     model: "fixture",
                     outside: None,
+                    surface: None,
                 },
             )
             .unwrap();

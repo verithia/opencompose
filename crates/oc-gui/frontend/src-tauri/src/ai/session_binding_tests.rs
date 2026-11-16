@@ -19,7 +19,23 @@ fn context(facts: &ProjectFacts) -> PrepareContext<'_> {
         provider: "fixture-provider",
         model: "fixture-model",
         outside: None,
+        surface: None,
     }
+}
+
+fn surface(names: &[&str], permission: SessionPermission) -> ToolSurface {
+    ToolSurface {
+        names: names.iter().map(|name| (*name).to_owned()).collect(),
+        permission,
+    }
+}
+
+fn tool_surface_notices(messages: &[Value]) -> Vec<HostNotice> {
+    messages
+        .iter()
+        .filter_map(message_protocol::notice)
+        .filter(|notice| notice.kind() == "tool_surface")
+        .collect()
 }
 
 fn facts(project: &Path) -> ProjectFacts {
@@ -430,5 +446,256 @@ fn a_history_mark_is_recorded_for_the_bound_project_and_cleared_on_rebind() {
         .unwrap();
     assert_eq!(store.relocate_project(&second, &moved).unwrap(), 1);
     assert_eq!(store.find(&session.id).unwrap().1.history_mark, None);
+    std::fs::remove_dir_all(store.root().parent().unwrap()).unwrap();
+}
+
+#[test]
+fn a_first_turn_records_the_tool_surface_without_a_notice() {
+    let (store, project) = fixture("surface-first");
+    let session = store
+        .create(
+            Some(project.parent().unwrap()),
+            Some(&project),
+            Some("surface"),
+            None,
+        )
+        .unwrap();
+    let project_facts = facts(&project);
+    let mut context = context(&project_facts);
+    context.surface = Some(surface(
+        &["tracks_add", "tracks_list"],
+        SessionPermission::Write,
+    ));
+    let prepared = store
+        .prepare(&session.id, &[user("first")], Some(&project), context)
+        .unwrap();
+    assert!(tool_surface_notices(&prepared.messages).is_empty());
+    assert_eq!(
+        store.find(&session.id).unwrap().1.tool_surface,
+        Some(surface(
+            &["tracks_add", "tracks_list"],
+            SessionPermission::Write
+        ))
+    );
+    std::fs::remove_dir_all(store.root().parent().unwrap()).unwrap();
+}
+
+#[test]
+fn a_changed_surface_writes_one_notice_and_updates_the_meta() {
+    let (store, project) = fixture("surface-changed");
+    let session = store
+        .create(
+            Some(project.parent().unwrap()),
+            Some(&project),
+            Some("surface"),
+            None,
+        )
+        .unwrap();
+    let project_facts = facts(&project);
+    let mut first = context(&project_facts);
+    first.surface = Some(surface(
+        &["tracks_add", "tracks_list"],
+        SessionPermission::Write,
+    ));
+    store
+        .prepare(&session.id, &[user("first")], Some(&project), first)
+        .unwrap();
+    let mut second = context(&project_facts);
+    second.surface = Some(surface(
+        &["tracks_list", "tracks_remove"],
+        SessionPermission::Write,
+    ));
+    let prepared = store
+        .prepare(&session.id, &[user("second")], Some(&project), second)
+        .unwrap();
+    let notices = tool_surface_notices(&prepared.messages);
+    assert_eq!(notices.len(), 1);
+    let HostNotice::ToolSurface {
+        added,
+        removed,
+        permission,
+    } = notices[0].clone()
+    else {
+        panic!("expected a tool surface notice");
+    };
+    assert_eq!(added, ["tracks_remove"]);
+    assert_eq!(removed, ["tracks_add"]);
+    assert_eq!(permission, None);
+    assert_eq!(
+        store.find(&session.id).unwrap().1.tool_surface,
+        Some(surface(
+            &["tracks_list", "tracks_remove"],
+            SessionPermission::Write
+        ))
+    );
+
+    let mut third = context(&project_facts);
+    third.surface = Some(surface(
+        &["tracks_list", "tracks_remove"],
+        SessionPermission::Write,
+    ));
+    let prepared = store
+        .prepare(&session.id, &[user("third")], Some(&project), third)
+        .unwrap();
+    assert_eq!(
+        tool_surface_notices(&prepared.messages).len(),
+        1,
+        "an unchanged surface adds no notice"
+    );
+    std::fs::remove_dir_all(store.root().parent().unwrap()).unwrap();
+}
+
+#[test]
+fn a_permission_change_alone_writes_only_the_permission_sentence() {
+    let (store, project) = fixture("surface-permission");
+    let session = store
+        .create(
+            Some(project.parent().unwrap()),
+            Some(&project),
+            Some("surface"),
+            None,
+        )
+        .unwrap();
+    let project_facts = facts(&project);
+    let mut first = context(&project_facts);
+    first.surface = Some(surface(&["tracks_list"], SessionPermission::Write));
+    store
+        .prepare(&session.id, &[user("first")], Some(&project), first)
+        .unwrap();
+    let mut second = context(&project_facts);
+    second.surface = Some(surface(&["tracks_list"], SessionPermission::Autoreview));
+    let prepared = store
+        .prepare(&session.id, &[user("second")], Some(&project), second)
+        .unwrap();
+    let notices = tool_surface_notices(&prepared.messages);
+    assert_eq!(notices.len(), 1);
+    let HostNotice::ToolSurface {
+        added,
+        removed,
+        permission,
+    } = notices[0].clone()
+    else {
+        panic!("expected a tool surface notice");
+    };
+    assert!(added.is_empty());
+    assert!(removed.is_empty());
+    assert_eq!(
+        permission,
+        Some(crate::ai::host_notice::PermissionChange {
+            from: SessionPermission::Write,
+            to: SessionPermission::Autoreview,
+        })
+    );
+    let row = prepared
+        .messages
+        .iter()
+        .find(|message| message["message_meta"]["notice"]["kind"] == "tool_surface")
+        .expect("the permission change stands in its own notice row");
+    assert_eq!(
+        row["content"],
+        "Permission mode changed from write to autoreview."
+    );
+    std::fs::remove_dir_all(store.root().parent().unwrap()).unwrap();
+}
+
+#[test]
+fn notices_stand_in_order_before_the_turn_message() {
+    let (store, first) = fixture("surface-order");
+    let second = first.parent().unwrap().join("second.ocp");
+    std::fs::write(&second, "@project\n").unwrap();
+    let session = store
+        .create(
+            Some(first.parent().unwrap()),
+            Some(&first),
+            Some("surface"),
+            None,
+        )
+        .unwrap();
+    let first_facts = facts(&first);
+    let mut first_context = context(&first_facts);
+    first_context.surface = Some(surface(&["tracks_add"], SessionPermission::Write));
+    store
+        .prepare(&session.id, &[user("first")], Some(&first), first_context)
+        .unwrap();
+    store
+        .bind(&session.id, Some(&second), BindCause::Chosen)
+        .unwrap();
+    let second_facts = facts(&second);
+    let mut context = context(&second_facts);
+    context.outside = Some(outside_notice());
+    context.surface = Some(surface(&["tracks_remove"], SessionPermission::Write));
+    let prepared = store
+        .prepare(&session.id, &[user("second")], Some(&second), context)
+        .unwrap();
+    let kinds: Vec<&str> = prepared
+        .messages
+        .iter()
+        .filter_map(message_protocol::notice)
+        .map(|notice| notice.kind())
+        .collect();
+    assert_eq!(kinds, ["project_bound", "outside_changes", "tool_surface"]);
+    assert_eq!(prepared.messages.last().unwrap()["content"], "second");
+    std::fs::remove_dir_all(store.root().parent().unwrap()).unwrap();
+}
+
+#[test]
+fn a_refused_admission_saves_neither_the_notice_nor_the_new_surface() {
+    let (store, project) = fixture("surface-refused");
+    let session = store
+        .create(
+            Some(project.parent().unwrap()),
+            Some(&project),
+            Some("surface"),
+            None,
+        )
+        .unwrap();
+    let project_facts = facts(&project);
+    let mut first = context(&project_facts);
+    first.surface = Some(surface(&["tracks_add"], SessionPermission::Write));
+    store
+        .prepare(&session.id, &[user("first")], Some(&project), first)
+        .unwrap();
+    let before_meta = store.find(&session.id).unwrap().1;
+    let before_view = store.view(&session.id).unwrap();
+    let before_tree = tree(store.root());
+    let mut second = context(&project_facts);
+    second.surface = Some(surface(&["tracks_remove"], SessionPermission::Autoreview));
+    let refused = store.prepare_admitted(
+        &session.id,
+        &[user("refused")],
+        Some(&project),
+        second,
+        None,
+        |_| Err("too large".to_owned()),
+    );
+    assert!(matches!(refused, Err(PrepareFailure::Admitted(_))));
+    assert_eq!(store.find(&session.id).unwrap().1, before_meta);
+    assert_eq!(store.view(&session.id).unwrap(), before_view);
+    assert_eq!(tree(store.root()), before_tree, "nothing was written");
+    std::fs::remove_dir_all(store.root().parent().unwrap()).unwrap();
+}
+
+#[test]
+fn an_oversized_saved_tool_surface_is_dropped_on_load() {
+    let (store, project) = fixture("surface-invalid");
+    let session = store
+        .create(
+            Some(project.parent().unwrap()),
+            Some(&project),
+            Some("surface"),
+            None,
+        )
+        .unwrap();
+    let (dir, meta) = store.find(&session.id).unwrap();
+    let mut saved = serde_json::to_value(meta).unwrap();
+    saved["tool_surface"] = serde_json::json!({
+        "names": (0..crate::ai::host_notice::MAX_TOOL_SURFACE_NAMES + 1)
+            .map(|index| format!("tool_{index}"))
+            .collect::<Vec<_>>(),
+        "permission": "write",
+    });
+    std::fs::write(dir.join(META_FILE), serde_json::to_vec(&saved).unwrap()).unwrap();
+    let (_, loaded) = store.find(&session.id).unwrap();
+    assert_eq!(loaded.tool_surface, None);
     std::fs::remove_dir_all(store.root().parent().unwrap()).unwrap();
 }

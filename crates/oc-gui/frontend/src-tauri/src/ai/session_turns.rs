@@ -636,6 +636,7 @@ mod tests {
                     provider: "p",
                     model: "m",
                     outside: None,
+                    surface: None,
                 },
             )
             .unwrap();
@@ -817,6 +818,7 @@ mod tests {
             provider: "p",
             model: "m",
             outside: None,
+            surface: None,
         };
         // A client's orphan result would refuse every later append.
         let error = store

@@ -439,6 +439,7 @@ fn a_headless_turn_bound_to_another_open_file_is_refused_as_session_binding() {
             incarnation: &incarnation,
             project: Some(&open),
             tool_tokens: 0,
+            surface: None,
         },
     )
     .unwrap_err();
@@ -562,6 +563,7 @@ fn a_prepared_turn_reports_edits_made_outside_its_conversation() {
             incarnation: &incarnation,
             project: Some(&open),
             tool_tokens: wire::offered_tool_tokens(None, false),
+            surface: None,
         },
     )
     .unwrap();
@@ -645,6 +647,7 @@ fn a_pending_binding_suppresses_the_outside_changes_notice() {
             incarnation: &incarnation,
             project: Some(&second),
             tool_tokens: wire::offered_tool_tokens(None, false),
+            surface: None,
         },
     )
     .unwrap();

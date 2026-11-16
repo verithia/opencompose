@@ -6,7 +6,7 @@
  */
 import type { ToolCall, TurnStop, WireMessage } from "./wire";
 import type { MediaAttachment } from "./media";
-import { isAuditionKind, messageKind, projectBoundNotice, type MessageMeta } from "./messageProtocol";
+import { isAuditionKind, messageKind, projectBoundNotice, toolSurfaceNotice, type HostNotice, type MessageMeta } from "./messageProtocol";
 import { isChangeSet, type ChangeSet } from "../types/change";
 
 export interface DiffResult {
@@ -88,6 +88,8 @@ export interface ChatMessage {
   messageMeta?: MessageMeta;
   /** A typed host notice that changed this conversation's project binding. */
   binding?: { kind: "project_bound"; from?: string; to: string; cause: "chosen" | "moved" };
+  /** A typed host notice that changed the tools or permission this turn offers. */
+  surface?: Extract<HostNotice, { kind: "tool_surface" }>;
   /** A compaction summary the store kept in place of older turns. */
   checkpoint?: boolean;
 }
@@ -230,11 +232,13 @@ export function restoredTranscript(messages: WireMessage[] | null | undefined, s
     if (kind === "round_budget") continue;
     if (kind === "host_notice" || message.message_meta?.kind === "host_notice") {
       const binding = projectBoundNotice(message.message_meta);
-      if (binding) {
+      const surface = toolSurfaceNotice(message.message_meta);
+      if (binding || surface) {
         rows.push({
           role: "context",
           content: "",
-          binding,
+          ...(binding ? { binding } : {}),
+          ...(surface ? { surface } : {}),
           ...(message.message_meta ? { messageMeta: message.message_meta } : {}),
           wireIndex,
           ...snapshot,

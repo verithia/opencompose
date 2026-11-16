@@ -411,4 +411,20 @@ mod tests {
             assert_eq!(row[key], before[key]);
         }
     }
+
+    #[test]
+    fn an_oversized_tool_surface_notice_is_refused() {
+        let notice = |added: Vec<String>, removed: Vec<String>| {
+            json!({"role":"user","content":"notice",
+                "message_meta":{"version":1,"kind":"host_notice","notice":{
+                    "kind":"tool_surface","added":added,"removed":removed}}})
+        };
+        let long = "x".repeat(crate::ai::host_notice::MAX_TOOL_NAME_CHARS + 1);
+        assert!(read(&notice(vec![long], Vec::new())).is_none());
+        let many: Vec<String> = (0..crate::ai::host_notice::MAX_TOOL_SURFACE_NAMES + 1)
+            .map(|index| format!("tool_{index}"))
+            .collect();
+        assert!(read(&notice(Vec::new(), many)).is_none());
+        assert!(read(&notice(vec!["tracks_add".into()], Vec::new())).is_some());
+    }
 }

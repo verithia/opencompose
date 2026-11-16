@@ -85,6 +85,15 @@ entries are gone. It is model context, so a fold may drop it and the transcript
 does not show it. The notice is skipped on the first turn and when a
 `project_bound` notice already explains a file boundary.
 
+Before each turn, the backend compares the tools the turn offers and the
+permission mode it runs under with the surface the conversation last saw. The
+first turn records that surface silently. A later turn whose surface differs
+writes one typed `tool_surface` host notice before the person's message. The
+notice names the tools added and removed, in sorted order, and the permission
+mode it moved from and to when that changed. It tells the model not to call a
+removed tool again. A fold or a compaction keeps the newest tool-surface notice,
+so the model never calls a tool the turn does not offer.
+
 `POST /ai/turn` runs one whole agent turn on the same backend loop the panel
 uses. Its body carries `provider` (required, non-empty, at most 100
 characters), `messages`, `session_id` and the absolute `project_path` (both

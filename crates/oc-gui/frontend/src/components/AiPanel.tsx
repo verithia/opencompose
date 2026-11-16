@@ -112,6 +112,26 @@ const EXPORT_FORMATS: { format: ExportFormat; label: I18nKey }[] = [
   { format: "json", label: "ai.export.json" },
 ];
 
+/** The localized line and full tool list a tool-surface notice shows. */
+function toolSurfaceRow(surface: NonNullable<ChatMessage["surface"]>): { text: string; names: string } {
+  const parts: string[] = [];
+  if (surface.added.length) parts.push(i18n.t("ai.toolSurface.added", { count: surface.added.length }));
+  if (surface.removed.length) parts.push(i18n.t("ai.toolSurface.removed", { count: surface.removed.length }));
+  const text: string[] = [];
+  if (parts.length) text.push(i18n.t("ai.toolSurface.changed", { detail: parts.join(", ") }));
+  if (surface.permission) {
+    text.push(i18n.t("ai.toolSurface.permission", {
+      mode: i18n.t(`ai.permission.${surface.permission.to}` as I18nKey),
+    }));
+  }
+  const names = [
+    ...surface.added.map(name => `+ ${name}`),
+    ...surface.removed.map(name => `- ${name}`),
+    ...(surface.permission ? [`${surface.permission.from} -> ${surface.permission.to}`] : []),
+  ].join("\n");
+  return { text: text.join("; "), names };
+}
+
 /** How often a window that inherited a running turn asks whether it finished. */
 const TURN_POLL_MS = 400;
 /** How long a stopped inherited turn may take to close before the panel repaints anyway. */
@@ -2471,7 +2491,7 @@ export function AiPanel(props: { onClose?: () => void }) {
                 <AiThinking loading={!!msg.liveReasoning && loading()} partial="" approval={false} lastTool={null} identity="" reasoning={msg.reasoning} />
               </Show>
               <Show when={msg.role === "tool"} fallback={
-                <Show when={msg.binding} fallback={
+                <Show when={msg.binding || msg.surface} fallback={
                   <Show when={msg.context === "audition"} fallback={
                     <Show when={msg.checkpoint} fallback={<div class="ai-message-content"><Show when={msg.role === "assistant"} fallback={legacyAuditionText(msg.content, i18n.t("ai.media.legacyAudition"))}><AiMarkdown content={msg.content} /></Show></div>}>
                       <LazyDetails
@@ -2486,9 +2506,15 @@ export function AiPanel(props: { onClose?: () => void }) {
                     <AiAudition message={msg} />
                   </Show>
                 }>
-                  <div class="ai-binding-row" role="status" title={msg.binding!.to}>
-                    {i18n.t(msg.binding!.cause === "moved" ? "ai.binding.moved" : "ai.binding.bound", { name: projectName(msg.binding!.to) })}
-                  </div>
+                  <Show when={msg.surface} fallback={
+                    <div class="ai-binding-row" role="status" title={msg.binding!.to}>
+                      {i18n.t(msg.binding!.cause === "moved" ? "ai.binding.moved" : "ai.binding.bound", { name: projectName(msg.binding!.to) })}
+                    </div>
+                  }>
+                    <div class="ai-binding-row" role="status" title={toolSurfaceRow(msg.surface!).names}>
+                      {toolSurfaceRow(msg.surface!).text}
+                    </div>
+                  </Show>
                 </Show>
               }>
                 {/* A restored tool row: the call's name, what it was asked and what came back. */}

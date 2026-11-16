@@ -146,8 +146,17 @@ pub(super) fn read_meta(path: &Path) -> Result<Option<SessionMeta>, Error> {
     if bytes.len() as u64 > MAX_BYTES {
         return Err(Error::Corrupt("Metadata exceeds its storage budget".into()));
     }
-    let meta: SessionMeta =
+    let mut meta: SessionMeta =
         serde_json::from_slice(&bytes).map_err(|error| Error::Corrupt(error.to_string()))?;
+    if meta
+        .tool_surface
+        .as_ref()
+        .is_some_and(|surface| !surface.valid())
+    {
+        // An oversized saved surface is dropped rather than failing the whole
+        // conversation; the next turn records the current one.
+        meta.tool_surface = None;
+    }
     if !is_valid_id(&meta.id) {
         return Err(Error::Corrupt("Invalid session identity".into()));
     }

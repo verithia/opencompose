@@ -20,6 +20,15 @@ export interface OutsideChange {
   changes: ChangeSet;
 }
 
+/** What a tool call that changes the project may do without asking. */
+export type SessionPermission = "require_approval" | "autoreview" | "write";
+
+/** A permission mode change between two turns. */
+export interface PermissionChange {
+  from: SessionPermission;
+  to: SessionPermission;
+}
+
 /** A typed host notice. Only a `host_notice` row carries one. */
 export type HostNotice =
   | {
@@ -34,6 +43,12 @@ export type HostNotice =
     more: number;
     undone: number;
     rewritten: boolean;
+  }
+  | {
+    kind: "tool_surface";
+    added: string[];
+    removed: string[];
+    permission?: PermissionChange;
   };
 
 export interface MessageMeta {
@@ -110,8 +125,22 @@ const MAX_OUTSIDE_COUNT = 1_000_000;
 /** Longest author identity an outside-changes notice may carry. */
 const MAX_OUTSIDE_AUTHOR_CHARS = 512;
 
+/** Most tool names one surface notice may carry. */
+const MAX_TOOL_SURFACE_NAMES = 512;
+
+/** Longest tool name one surface notice may carry. */
+const MAX_TOOL_NAME_CHARS = 128;
+
 function validPath(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 && [...value].length <= MAX_NOTICE_PATH_CHARS;
+}
+
+function validToolName(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && [...value].length <= MAX_TOOL_NAME_CHARS;
+}
+
+function permissionName(value: unknown): SessionPermission | null {
+  return value === "require_approval" || value === "autoreview" || value === "write" ? value : null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -174,6 +203,29 @@ export function hostNotice(value: unknown): HostNotice | null {
       rewritten: value.rewritten,
     };
   }
+  if (value.kind === "tool_surface") {
+    const names = (list: unknown): string[] | null => {
+      if (!Array.isArray(list) || list.length > MAX_TOOL_SURFACE_NAMES) return null;
+      return list.every(validToolName) ? list as string[] : null;
+    };
+    const added = names(value.added);
+    const removed = names(value.removed);
+    if (added === null || removed === null) return null;
+    let permission: PermissionChange | undefined;
+    if (value.permission !== undefined && value.permission !== null) {
+      if (!isRecord(value.permission)) return null;
+      const from = permissionName(value.permission.from);
+      const to = permissionName(value.permission.to);
+      if (from === null || to === null) return null;
+      permission = { from, to };
+    }
+    return {
+      kind: "tool_surface",
+      added,
+      removed,
+      ...(permission ? { permission } : {}),
+    };
+  }
   const notice = value as { kind?: unknown; from?: unknown; to?: unknown; cause?: unknown };
   if (notice.kind !== "project_bound") return null;
   if (!validPath(notice.to)) return null;
@@ -191,6 +243,12 @@ export function hostNotice(value: unknown): HostNotice | null {
 export function projectBoundNotice(meta: MessageMeta | undefined): Extract<HostNotice, { kind: "project_bound" }> | null {
   const notice = hostNotice(meta?.notice);
   return notice?.kind === "project_bound" ? notice : null;
+}
+
+/** The tool-surface notice a saved row carries, for the transcript. */
+export function toolSurfaceNotice(meta: MessageMeta | undefined): Extract<HostNotice, { kind: "tool_surface" }> | null {
+  const notice = hostNotice(meta?.notice);
+  return notice?.kind === "tool_surface" ? notice : null;
 }
 
 export function messageKind(message: MessageLike): MessageKind {

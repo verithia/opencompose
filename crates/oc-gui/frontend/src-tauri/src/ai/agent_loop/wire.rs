@@ -532,11 +532,7 @@ impl FoldLimits {
 /// Tokens the tool list of one request costs: the registry tools the
 /// selection offers, plus the result pager when the request carries it.
 pub fn offered_tool_tokens(toolsets: Option<&[String]>, pager: bool) -> u64 {
-    let mut specs = crate::ai::tool_specs_for(toolsets);
-    if pager {
-        specs.push(read_toolcall_spec());
-    }
-    specs
+    offered_tool_specs(toolsets, pager)
         .iter()
         .map(|spec| {
             crate::ai::sessions::value_tokens(&json!({
@@ -546,6 +542,28 @@ pub fn offered_tool_tokens(toolsets: Option<&[String]>, pager: bool) -> u64 {
             }))
         })
         .sum()
+}
+
+/// The tools one request offers, from the same selection the provider request
+/// uses: the registry's panel tools, plus the result pager when it applies.
+pub fn offered_tool_specs(toolsets: Option<&[String]>, pager: bool) -> Vec<crate::ai::ToolSpec> {
+    let mut specs = crate::ai::tool_specs_for(toolsets);
+    if pager {
+        specs.push(read_toolcall_spec());
+    }
+    specs
+}
+
+/// The sorted, deduplicated names a loop turn offers under a toolset
+/// selection. The transcript compares these names between turns.
+pub fn offered_tool_names(toolsets: Option<&[String]>) -> Vec<String> {
+    let mut names: Vec<String> = offered_tool_specs(toolsets, true)
+        .into_iter()
+        .map(|spec| spec.name)
+        .collect();
+    names.sort();
+    names.dedup();
+    names
 }
 
 /// The turn's ask: the newest message a person wrote that is not steering.
@@ -955,9 +973,94 @@ mod tests {
     }
 
     #[test]
+    fn a_fold_keeps_the_newest_tool_surface_notice() {
+        use crate::ai::host_notice::{HostNotice, notice_row};
+        let mut wire = vec![
+            json!({"role":"system","content":"s"}),
+            user("the first ask"),
+            notice_row(&HostNotice::ToolSurface {
+                added: vec!["tracks_add".into()],
+                removed: Vec::new(),
+                permission: None,
+            }),
+            notice_row(&HostNotice::ToolSurface {
+                added: vec!["tracks_remove".into()],
+                removed: vec!["tracks_add".into()],
+                permission: None,
+            }),
+        ];
+        for round in 0..120 {
+            native_round(&mut wire, &format!("c{round}"), 200);
+        }
+        wire.push(user("the current ask"));
+        let ask = turn_ask(&wire);
+        fold_wire(&mut wire, &FoldLimits::round(None), ask).unwrap();
+        let kinds: Vec<&str> = wire
+            .iter()
+            .filter_map(|row| row["message_meta"]["notice"]["kind"].as_str())
+            .collect();
+        assert_eq!(kinds, ["tool_surface"]);
+        let kept = wire
+            .iter()
+            .find(|row| row["message_meta"]["notice"]["kind"] == "tool_surface")
+            .expect("the newest surface is kept");
+        assert_eq!(
+            kept["message_meta"]["notice"]["removed"],
+            json!(["tracks_add"])
+        );
+        assert_eq!(turns::check_pairing(&wire[1..]), Ok(()));
+    }
+
+    #[test]
     fn an_unknown_window_has_no_token_budget() {
         assert!(TokenBudget::new(0, 10).is_none());
         assert!(TokenBudget::new(1, 10).is_none());
         assert!(offered_tool_tokens(None, true) > offered_tool_tokens(None, false));
+    }
+
+    #[test]
+    fn offered_tool_names_match_the_loop_request_for_each_selection() {
+        let provider = crate::commands::AiProviderEntry {
+            id: "wire-names".into(),
+            name: "Wire names".into(),
+            kind: crate::commands::ProviderKind::OpenAiChatCompletions,
+            wire: Some(crate::commands::Wire::OpenAiChatCompletions),
+            auth: Default::default(),
+            auth_provider: None,
+            oauth_allowed_hosts: Vec::new(),
+            endpoint: "https://models.example/v1/chat/completions".into(),
+            model: "third-party-model".into(),
+            models: Vec::new(),
+            context_length: 32_000,
+            max_tokens: 262_144,
+            temperature: 0.3,
+            thinking_level: "medium".into(),
+            capabilities: crate::commands::AiCapabilities {
+                text: true,
+                streaming: true,
+                ..Default::default()
+            },
+        };
+        for selection in [
+            None,
+            Some(vec!["ears".to_owned()]),
+            Some(vec!["dsl-edit".to_owned(), "transport".to_owned()]),
+        ] {
+            let toolsets = selection.as_deref();
+            // The loop sends the wire's request with the result pager attached;
+            // build both from the same production call path.
+            let (mut request, _) = crate::ai::request_from_wire(
+                &provider,
+                json!([{"role":"user","content":"hi"}]),
+                true,
+                toolsets,
+            )
+            .unwrap();
+            request.tools.push(read_toolcall_spec());
+            let mut built: Vec<String> = request.tools.into_iter().map(|tool| tool.name).collect();
+            built.sort();
+            built.dedup();
+            assert_eq!(offered_tool_names(toolsets), built, "{selection:?}");
+        }
     }
 }
