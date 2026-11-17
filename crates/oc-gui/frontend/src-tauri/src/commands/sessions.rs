@@ -439,6 +439,14 @@ pub(crate) fn validate_saved_project(expected: &Path, actual: Option<&Path>) -> 
     Ok(())
 }
 
+/// The system row that names the project the model is about to read, so a
+/// historical tool success cannot be mistaken for current state.
+fn authoritative_row(facts: &ProjectFacts) -> Value {
+    json!({"role": "system", "content": format!(
+        "Authoritative current project state at request time: DSL sha256 {}; track count {}. Historical tool successes may have been rolled back or superseded. Inspect current project when continuing edits; do not assume historical mutations remain applied.", facts.dsl_digest, facts.track_count
+    )})
+}
+
 /// The request a saved conversation becomes: the client's system rows, then
 /// the conversation, folded under the row bound and, when the window is
 /// known, toward it. `Err` names why it cannot be sent; the caller decides
@@ -492,11 +500,7 @@ fn request_with_state(system: &[Value], saved: &[Value]) -> Vec<Value> {
     outbound.extend_from_slice(saved);
     let (goal, plan) = crate::ai::session_state::current_state(&outbound);
     if let Some(row) = crate::ai::session_state::context_row(goal.as_ref(), plan.as_deref()) {
-        let head = outbound
-            .iter()
-            .take_while(|message| message["role"] == "system")
-            .count();
-        outbound.insert(head, row);
+        crate::ai::session_state::insert_after_system(&mut outbound, row);
     }
     outbound
 }
@@ -572,11 +576,14 @@ where
     let incoming = messages
         .as_array()
         .ok_or_else(|| "Invalid AI request messages".to_string())?;
-    let system: Vec<Value> = incoming
+    let mut system: Vec<Value> = incoming
         .iter()
         .filter(|message| message["role"] == "system")
         .cloned()
         .collect();
+    // Every derived row is part of the request for admission, so the window is
+    // measured over what is actually sent.
+    system.insert(0, authoritative_row(&facts));
     // What a request carries besides the saved conversation counts against
     // the window too: the system prompt and the tool list. Attachments ride
     // in the conversation and are measured there.
@@ -680,9 +687,6 @@ where
         log::warn!("[ai] session {session_id} was saved but does not fit: {error}");
         request_with_state(&system, &saved)
     });
-    outbound.insert(0, json!({"role": "system", "content": format!(
-        "Authoritative current project state at request time: DSL sha256 {}; track count {}. Historical tool successes may have been rolled back or superseded. Inspect current project when continuing edits; do not assume historical mutations remain applied.", facts.dsl_digest, facts.track_count
-    )}));
     if crate::ai::media::audio_supported(provider) {
         sessions::describe_audition_renders(store.root(), &mut outbound);
     } else {
@@ -859,6 +863,29 @@ mod fit_tests {
         );
         assert_eq!(outbound[2]["content"], "continue the arrangement");
         assert_eq!(turns::check_pairing(&outbound[1..]), Ok(()));
+    }
+
+    #[test]
+    fn the_authoritative_row_is_measured_before_admission() {
+        let facts = ProjectFacts {
+            path: None,
+            dsl_digest: "a".repeat(16),
+            track_count: 1,
+        };
+        let system = vec![
+            authoritative_row(&facts),
+            json!({"role":"system","content":"prompt"}),
+        ];
+        let saved = [user("continue")];
+        let budget = wire::TokenBudget::new(1_000_000, 0).unwrap();
+        let mut without_row = vec![system[1].clone()];
+        without_row.extend(saved.iter().cloned());
+        let window = budget.measure(&without_row) + 1;
+        let error = fitted_request(&system, &saved, wire::TokenBudget::new(window, 0)).unwrap_err();
+        assert!(matches!(error, PrepareTurnError::ContextOverflow { .. }));
+        // The measured system is the one the caller sends.
+        let outbound = fitted_request(&system, &saved, None).unwrap();
+        assert!(outbound.iter().any(|row| row == &system[0]));
     }
 
     #[test]

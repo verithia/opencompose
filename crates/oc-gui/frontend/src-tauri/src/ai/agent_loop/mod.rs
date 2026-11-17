@@ -686,12 +686,7 @@ impl<H: Host> Turn<'_, H> {
                 }
             }
             (None, Some(row)) => {
-                let head = self
-                    .wire
-                    .iter()
-                    .take_while(|message| message["role"] == "system")
-                    .count();
-                self.wire.insert(head, row);
+                let head = crate::ai::session_state::insert_after_system(&mut self.wire, row);
                 if let Some(ask) = self.ask.as_mut()
                     && *ask >= head
                 {

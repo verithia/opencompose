@@ -257,6 +257,17 @@ pub fn latest_states(view: &[Value]) -> Vec<SessionState> {
     states
 }
 
+/// Insert one derived row after the leading system rows, so the model reads it
+/// before the conversation. Returns the index it took.
+pub fn insert_after_system(messages: &mut Vec<Value>, row: Value) -> usize {
+    let head = messages
+        .iter()
+        .take_while(|message| message["role"] == "system")
+        .count();
+    messages.insert(head, row);
+    head
+}
+
 /// The one short context row a request carries before its conversation. The
 /// row is derived, never saved, and refreshed after `plan_update`.
 pub fn context_row(goal: Option<&Goal>, plan: Option<&[PlanItem]>) -> Option<Value> {
