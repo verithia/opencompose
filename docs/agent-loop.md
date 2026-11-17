@@ -1236,8 +1236,8 @@ unchanged; six of the seven are panel-enabled.
   to edit or delete.
 * **History read.** `undo_history` is read-only and never moves the cursor; it
   exists so a model can describe what happened. Each entry carries the typed
-  facts its patches describe and a `cause` (`edit` or `conversation_revert`),
-  never caller-written English. `undo`/`redo` are the only cursor movers, and
+  facts its patches describe and a `cause` (`edit`), never caller-written
+  English. `undo`/`redo` are the only cursor movers, and
   neither is hidden behind the history tool.
 * **Stems.** `render_stems` is the toolbar's Export stems: mix + every track
   and bus + `stems.json` into an existing directory. The reply includes the set's

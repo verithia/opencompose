@@ -91,7 +91,7 @@ described in [Saved AI conversations](ai-sessions.md).
 | File | Contents |
 |---|---|
 | `project.json` | Marker `{version: 1, path, sha256}`: the canonical project path and the file's content SHA-256 as the app last read or wrote it. Every successful project write updates it, including an agent publish, an exit flush and a project created by New. |
-| `entries.jsonl` | One stored entry per line, with its compressed forward and inverse patches, author, scope and an optional `cause` (`conversation_revert`; an ordinary edit omits it). Display text is not stored. The file only grows; a line a redo branch replaced stays as garbage until the history is rewritten. |
+| `entries.jsonl` | One stored entry per line, with its compressed forward and inverse patches, author and scope. The optional `cause` is omitted for an ordinary edit; a cause this build does not know loads as an ordinary edit. Display text is not stored. The file only grows; a line a redo branch replaced stays as garbage until the history is rewritten. |
 | `index.bin` | Fixed-size rows for the live linear history, oldest first. Dropping a redo branch truncates it. |
 | `state.json` | The cursor, the id of the applied entry it rests on, and the document text at the cursor, written in one atomic replace. An open follows the id when a shorter index moved its row; only an id the index no longer has discards the head, so a torn write never pairs a cursor with another document. |
 
