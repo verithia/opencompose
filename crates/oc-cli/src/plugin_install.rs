@@ -19,7 +19,7 @@ use oc_market::install::{
 use oc_market::{Candidate, Mode, Refusal};
 use serde::Serialize;
 
-use crate::plugin_index::{Catalog, Entry, Install, load_public_key, validate_catalog};
+use crate::plugin_index::{Catalog, Entry, Install, load_trusted_keys, validate_catalog};
 
 /// Size cap for one artifact, matching the GUI store limit.
 const MAX_DOWNLOAD_BYTES: u64 = 256 * 1024 * 1024;
@@ -396,12 +396,12 @@ fn fetch_index_at(options: IndexSourceOptions<'_>) -> Result<LoadedCatalog, Stri
         cache_root,
     } = options;
     let base = format!("{}/", base.trim_end_matches('/'));
-    let public_key = match public_key_path {
-        Some(path) => load_public_key(path).map_err(|error| format!("{error:#}"))?,
-        None => require_index_key(oc_market::configured_public_key()?)?,
+    let keys = match public_key_path {
+        Some(path) => load_trusted_keys(path).map_err(|error| format!("{error:#}"))?,
+        None => require_index_key(oc_market::configured_keys()?)?,
     };
     let policy = Policy {
-        public_key,
+        keys,
         origins: if base == oc_market::index::PRIMARY_BASE_URL {
             vec![base, oc_market::index::FALLBACK_BASE_URL.into()]
         } else {
@@ -431,6 +431,10 @@ fn fetch_index_at(options: IndexSourceOptions<'_>) -> Result<LoadedCatalog, Stri
                 .get(&request.url)
                 .header(reqwest::header::CACHE_CONTROL, "no-cache")
                 .header(
+                    reqwest::header::ACCEPT_ENCODING,
+                    oc_market::index::ACCEPT_ENCODING,
+                )
+                .header(
                     reqwest::header::ACCEPT,
                     "application/json, application/octet-stream",
                 );
@@ -438,6 +442,12 @@ fn fetch_index_at(options: IndexSourceOptions<'_>) -> Result<LoadedCatalog, Stri
                 fetch = fetch.header(reqwest::header::IF_NONE_MATCH, etag);
             }
             let mut response = fetch.send().map_err(|error| error.to_string())?;
+            oc_market::index::check_content_encoding(
+                response
+                    .headers()
+                    .get(reqwest::header::CONTENT_ENCODING)
+                    .and_then(|value| value.to_str().ok()),
+            )?;
             let status = response.status().as_u16();
             let etag = response
                 .headers()
@@ -489,7 +499,9 @@ fn fetch_index_at(options: IndexSourceOptions<'_>) -> Result<LoadedCatalog, Stri
     })
 }
 
-fn require_index_key(configured: Option<Vec<u8>>) -> Result<Vec<u8>, String> {
+fn require_index_key(
+    configured: Option<oc_market::TrustedKeys>,
+) -> Result<oc_market::TrustedKeys, String> {
     configured.ok_or_else(|| {
         "Remote plugin-index trust is not configured; supply --public-key for the chosen index"
             .to_string()
@@ -1057,7 +1069,8 @@ mod tests {
                 .unwrap_err()
                 .contains("trust is not configured")
         );
-        assert_eq!(require_index_key(Some(vec![7; 32])).unwrap(), vec![7; 32]);
+        let keys = oc_market::TrustedKeys::single(&[7; 32]).unwrap();
+        assert_eq!(require_index_key(Some(keys.clone())).unwrap(), keys);
     }
 
     #[cfg(target_os = "macos")]

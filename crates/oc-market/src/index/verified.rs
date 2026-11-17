@@ -7,15 +7,19 @@ use std::sync::Arc;
 use chrono::{DateTime, Timelike, Utc};
 use serde::{Deserialize, Serialize};
 
-use super::{key_id, verify_manifest_signature};
+use super::{TrustedKeys, verify_manifest_signature};
 use crate::sha256_hex;
 
-/// Primary base URL for the signed plugin index.
-// TODO(release): replace the placeholder with the self-hosted origin. Remote
-// catalogs stay disabled while `plugin-index.pub` is empty.
-pub const PRIMARY_BASE_URL: &str = "https://plugin-index.invalid/";
-/// Raw-content fallback base URL for the signed index.
-pub const FALLBACK_BASE_URL: &str = "https://plugin-index-fallback.invalid/";
+/// Primary base URL for the signed plugin index: the documentation site, which
+/// deploys the committed `plugin-index/` directory byte for byte.
+pub const PRIMARY_BASE_URL: &str = "https://verithia.github.io/opencompose/plugin-index/";
+/// Fallback base URL: the same committed files served from the default branch,
+/// so an index stays reachable while a site deployment is failing or pending.
+pub const FALLBACK_BASE_URL: &str =
+    "https://raw.githubusercontent.com/verithia/opencompose/main/plugin-index/";
+/// The `Accept-Encoding` every index request sends. Signatures and hashes cover
+/// the published bytes, so a transfer encoding must never reach verification.
+pub const ACCEPT_ENCODING: &str = "identity";
 /// Manifest file name inside an index base.
 pub const MANIFEST_FILE: &str = "index.json";
 /// Detached signature file name.
@@ -127,6 +131,17 @@ pub struct Mirror {
     #[serde(default)]
     pub name: String,
     pub base_url: String,
+}
+
+/// Refuse a response whose `Content-Encoding` is anything but identity.
+pub fn check_content_encoding(content_encoding: Option<&str>) -> Result<(), String> {
+    match content_encoding.map(str::trim) {
+        None | Some("") => Ok(()),
+        Some(value) if value.eq_ignore_ascii_case(ACCEPT_ENCODING) => Ok(()),
+        Some(value) => Err(format!(
+            "Index response uses Content-Encoding {value}; only identity bytes are verified"
+        )),
+    }
 }
 
 /// Parse the canonical UTC `generated_at` timestamp.
@@ -241,7 +256,7 @@ pub fn validate_manifest(manifest: &Manifest) -> Result<(), IndexError> {
 #[derive(Debug, Clone)]
 /// Trust inputs for verifying an index.
 pub struct Policy {
-    pub public_key: Vec<u8>,
+    pub keys: TrustedKeys,
     pub origins: Vec<String>,
     /// Publisher verification validates syntax without targeting an app build.
     pub app_version: Option<String>,
@@ -250,7 +265,7 @@ impl Policy {
     /// Stable scope string for the pinned key and origins.
     pub fn scope(&self) -> String {
         super::trust_scope(
-            &self.public_key,
+            &self.keys,
             &self.origins.iter().map(String::as_str).collect::<Vec<_>>(),
         )
     }
@@ -277,7 +292,7 @@ impl Policy {
 pub fn authenticate(
     manifest_bytes: &[u8],
     signature: &[u8],
-    public_key: &[u8],
+    keys: &TrustedKeys,
 ) -> Result<Manifest, IndexError> {
     if manifest_bytes.len() > MAX_MANIFEST_BYTES {
         return Err(IndexError::new("schema", "Manifest exceeds the size limit"));
@@ -294,12 +309,12 @@ pub fn authenticate(
             "Unsupported signature algorithm, encoding or path",
         ));
     }
-    if public_key.len() != 32 || info.key_id != key_id(public_key) {
-        return Err(IndexError::new(
+    let public_key = keys.find(&info.key_id).ok_or_else(|| {
+        IndexError::new(
             "key_id",
-            "manifest key id does not match the pinned key",
-        ));
-    }
+            format!("manifest key id {} is not a trusted key", info.key_id),
+        )
+    })?;
     verify_manifest_signature(manifest_bytes, signature, public_key)
         .map_err(|error| IndexError::new("signature", error))?;
     validate_manifest(&manifest)?;
@@ -352,8 +367,12 @@ pub struct Stamp {
 }
 impl Stamp {
     /// Authenticate manifest bytes and record their digest.
-    pub fn authenticated(bytes: &[u8], signature: &[u8], key: &[u8]) -> Result<Self, IndexError> {
-        let manifest = authenticate(bytes, signature, key)?;
+    pub fn authenticated(
+        bytes: &[u8],
+        signature: &[u8],
+        keys: &TrustedKeys,
+    ) -> Result<Self, IndexError> {
+        let manifest = authenticate(bytes, signature, keys)?;
         Ok(Self {
             generated_at: generated_at(&manifest.generated_at)?,
             digest: sha256_hex(bytes),
@@ -416,7 +435,7 @@ pub fn verify_parts(
     source_base: String,
     etag: Option<String>,
 ) -> Result<VerifiedIndex, IndexError> {
-    let manifest = authenticate(&manifest_bytes, &signature, &policy.public_key)?;
+    let manifest = authenticate(&manifest_bytes, &signature, &policy.keys)?;
     policy.compatible(&manifest)?;
     if !policy.origins.is_empty()
         && !policy.origins.contains(&source_base)
@@ -511,10 +530,10 @@ impl FetchSession {
         cache: Option<VerifiedIndex>,
         watermark: Option<Stamp>,
     ) -> Result<Self, IndexError> {
-        if policy.public_key.len() != 32 || policy.origins.is_empty() || policy.origins.len() > 8 {
+        if policy.origins.is_empty() || policy.origins.len() > 8 {
             return Err(IndexError::new(
                 "trust",
-                "Configure a signing authority and index origins",
+                "Configure one to eight index origins",
             ));
         }
         for origin in &mut policy.origins {
@@ -597,11 +616,8 @@ impl FetchSession {
             index.etag,
         )?;
         self.policy.compatible(&index.manifest)?;
-        let stamp = Stamp::authenticated(
-            &index.manifest_bytes,
-            &index.signature,
-            &self.policy.public_key,
-        )?;
+        let stamp =
+            Stamp::authenticated(&index.manifest_bytes, &index.signature, &self.policy.keys)?;
         if let Some(highest) = &self.watermark {
             highest.check(&stamp)?;
         }
@@ -681,17 +697,11 @@ impl FetchSession {
                 self.error = None;
             }
             Phase::Signature => {
-                let manifest = authenticate(
-                    &self.manifest_bytes,
-                    &response.body,
-                    &self.policy.public_key,
-                )?;
+                let manifest =
+                    authenticate(&self.manifest_bytes, &response.body, &self.policy.keys)?;
                 self.policy.compatible(&manifest)?;
-                let incoming = Stamp::authenticated(
-                    &self.manifest_bytes,
-                    &response.body,
-                    &self.policy.public_key,
-                )?;
+                let incoming =
+                    Stamp::authenticated(&self.manifest_bytes, &response.body, &self.policy.keys)?;
                 if let Some(highest) = &self.watermark {
                     highest.check(&incoming)?;
                 }

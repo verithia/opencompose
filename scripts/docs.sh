@@ -5,6 +5,7 @@
 #
 #   book/            the mdBook built from docs/
 #   book/api/        rustdoc for every workspace crate (cargo doc --no-deps)
+#   book/plugin-index/  the committed signed plugin index, copied byte for byte
 #
 # The book's pages link into `api/`, so `build` always produces both halves;
 # `serve` rebuilds the API reference first, then runs `mdbook serve`.
@@ -53,6 +54,14 @@ build_book() {
     echo "docs: book written to book/ (entry point book/index.html)"
 }
 
+# The app verifies the exact signed bytes, so the index is copied, never
+# rendered or rewritten by the book build.
+copy_plugin_index() {
+    rm -rf book/plugin-index
+    cp -R plugin-index book/plugin-index
+    echo "docs: signed plugin index copied to book/plugin-index/"
+}
+
 build_api() {
     # RUSTDOCFLAGS makes a broken intra-doc link a failure, which is the same
     # rule the CI documentation job applies.
@@ -71,6 +80,7 @@ case "${1:-}" in
     build)
         build_book
         build_api
+        copy_plugin_index
         ;;
     serve)
         shift || true

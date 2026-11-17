@@ -55,7 +55,7 @@ impl Fixture {
     }
     fn policy(&self) -> Policy {
         Policy {
-            public_key: self.key.public_key().as_ref().to_vec(),
+            keys: TrustedKeys::single(self.key.public_key().as_ref()).unwrap(),
             origins: vec!["https://index.example.test/".into()],
             app_version: Some("0.1.0".into()),
         }
@@ -282,7 +282,40 @@ fn unsigned_and_oversized_objects_stop_before_catalog_requests() {
             }))
             .is_err()
     );
-    assert!(authenticate(&fixture.manifest, &[0; 65], &fixture.policy().public_key).is_err());
+    assert!(authenticate(&fixture.manifest, &[0; 65], &fixture.policy().keys).is_err());
+}
+
+#[test]
+fn only_identity_content_encoding_reaches_verification() {
+    assert!(check_content_encoding(None).is_ok());
+    assert!(check_content_encoding(Some("identity")).is_ok());
+    assert!(check_content_encoding(Some(" Identity ")).is_ok());
+    for encoding in ["gzip", "br", "zstd", "gzip, identity"] {
+        let error = check_content_encoding(Some(encoding)).unwrap_err();
+        assert!(error.contains(encoding), "{error}");
+    }
+}
+
+#[test]
+fn a_manifest_signed_by_any_listed_key_authenticates_and_an_unlisted_one_does_not() {
+    let primary = Fixture::new();
+    let spare = Fixture::new();
+    let both = TrustedKeys::new(vec![
+        primary.policy().keys.keys()[0],
+        spare.policy().keys.keys()[0],
+    ])
+    .unwrap();
+    for fixture in [&primary, &spare] {
+        authenticate(&fixture.manifest, &fixture.signature, &both).unwrap();
+    }
+    let error =
+        authenticate(&spare.manifest, &spare.signature, &primary.policy().keys).unwrap_err();
+    assert_eq!(error.stage, "key_id", "{error}");
+    let forged = spare.changed(|value| {
+        value["signature"]["key_id"] = key_id(primary.key.public_key().as_ref()).into();
+    });
+    let error = authenticate(&forged.manifest, &forged.signature, &both).unwrap_err();
+    assert_eq!(error.stage, "signature", "{error}");
 }
 
 #[test]
@@ -525,7 +558,7 @@ fn index_store_writer_child() {
     let root =
         PathBuf::from(std::env::var_os("OCP_INDEX_TEST_CHILD_CACHE").expect("child cache root"));
     let policy = Policy {
-        public_key: fs::read(fixture.join("public-key")).unwrap(),
+        keys: TrustedKeys::single(&fs::read(fixture.join("public-key")).unwrap()).unwrap(),
         origins: vec!["https://index.example.test/".into()],
         app_version: Some("0.1.0".into()),
     };

@@ -115,7 +115,7 @@ impl IndexStore {
                 "Signed index pointer does not match its manifest",
             ));
         }
-        Stamp::authenticated(&manifest, &signature, &self.policy.public_key).map(Some)
+        Stamp::authenticated(&manifest, &signature, &self.policy.keys).map(Some)
     }
     /// The highest signed catalog this store has accepted.
     pub fn watermark(&self) -> Result<Option<Stamp>, IndexError> {
@@ -159,7 +159,7 @@ impl IndexStore {
         }
         let manifest_bytes = read_bounded_file(&directory.join(MANIFEST_FILE), MAX_MANIFEST_BYTES)?;
         let signature = read_bounded_file(&directory.join(SIGNATURE_FILE), MAX_SIGNATURE_BYTES)?;
-        let manifest = authenticate(&manifest_bytes, &signature, &self.policy.public_key)?;
+        let manifest = authenticate(&manifest_bytes, &signature, &self.policy.keys)?;
         self.policy.compatible(&manifest)?;
         if crate::sha256_hex(&manifest_bytes) != state.manifest_sha256 {
             return Err(IndexError::storage(

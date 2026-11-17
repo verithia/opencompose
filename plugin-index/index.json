@@ -1,0 +1,20 @@
+{
+  "catalog": {
+    "bytes": 8613,
+    "compression_level": 9,
+    "encoding": "zstd",
+    "path": "catalog-5ca057b385edc11da6a2c4732290333c076604aad6bde2f31b8dc899c1749b6c.json.zst",
+    "sha256": "5ca057b385edc11da6a2c4732290333c076604aad6bde2f31b8dc899c1749b6c",
+    "uncompressed_bytes": 90420
+  },
+  "catalog_version": "2026.11.17.125622",
+  "generated_at": "2026-11-17T12:56:22Z",
+  "min_app_version": "0.1.0",
+  "schema": 1,
+  "signature": {
+    "algorithm": "ed25519",
+    "encoding": "raw",
+    "key_id": "ed25519:bcb4e9972d740701",
+    "path": "index.json.sig"
+  }
+}

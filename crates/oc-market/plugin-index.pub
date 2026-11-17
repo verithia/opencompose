@@ -1,0 +1,5 @@
+# Release plugin-index signing keys: one hex Ed25519 public key per line.
+# Every publish is signed by the primary key. The spare key is kept offline
+# and signs only after the primary is lost or retired.
+f6ab893966bc2e3d6ac7ff7f112465bf716997496da850cd200d7f3473a3ed2f # primary ed25519:bcb4e9972d740701
+70007fe7f638fee7f3e7fcaf0f24b8166ee9f430750ad09f6a3d5a5323c8aa70 # spare ed25519:450b5ca039023d95

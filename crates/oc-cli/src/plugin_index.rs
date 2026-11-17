@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result, bail};
 use oc_diag::time::format_unix_seconds as format_rfc3339;
-use oc_market::{index::hex_decode, key_id, sha256_hex, verify::hex as hex_encode};
+use oc_market::{TrustedKeys, index::hex_decode, key_id, sha256_hex, verify::hex as hex_encode};
 use ring::rand::SystemRandom;
 use ring::signature::{Ed25519KeyPair, KeyPair};
 use serde::Serialize;
@@ -182,15 +182,15 @@ pub fn verify(dir: &Path, public_key_path: &Path) -> Result<VerifyReport> {
         &dir.join(SIGNATURE_FILE),
         oc_market::index::MAX_SIGNATURE_BYTES,
     )?;
-    let public_key = load_public_key(public_key_path)?;
-    let manifest = oc_market::index::authenticate(&manifest_bytes, &signature, &public_key)?;
+    let keys = load_trusted_keys(public_key_path)?;
+    let manifest = oc_market::index::authenticate(&manifest_bytes, &signature, &keys)?;
     let compressed = oc_market::index::read_bounded_file(
         &dir.join(&manifest.catalog.path),
         oc_market::index::MAX_CATALOG_DOWNLOAD_BYTES,
     )?;
     let index = oc_market::index::verify_parts(
         &oc_market::index::Policy {
-            public_key,
+            keys,
             origins: Vec::new(),
             app_version: None,
         },
@@ -335,20 +335,20 @@ fn load_signing_key(explicit: Option<&Path>) -> Result<Ed25519KeyPair> {
         .map_err(|error| anyhow::anyhow!("parse PKCS#8 ed25519 signing key: {error:?}"))
 }
 
-pub fn load_public_key(path: &Path) -> Result<Vec<u8>> {
-    let bytes = oc_market::index::read_bounded_file(path, 256)
+/// Read trusted keys from 32 raw bytes or a trust file: one hex key per line,
+/// with `#` comments, as `keygen` writes and `plugin-index.pub` lists.
+pub fn load_trusted_keys(path: &Path) -> Result<TrustedKeys> {
+    let bytes = oc_market::index::read_bounded_file(path, 4096)
         .with_context(|| format!("read public key {}", path.display()))?;
+    // A hex key is 64 characters, so a 32-byte file is always a raw key.
     if bytes.len() == 32 {
-        return Ok(bytes);
+        return TrustedKeys::single(&bytes).map_err(anyhow::Error::msg);
     }
     let text = std::str::from_utf8(&bytes).context("public key is not raw bytes or ASCII hex")?;
-    let key = hex_decode(text.trim())
+    TrustedKeys::parse(text)
         .map_err(anyhow::Error::msg)
-        .context("public key is not 32 bytes or 64 hex characters")?;
-    if key.len() != 32 {
-        bail!("public key must be 32 bytes, got {}", key.len());
-    }
-    Ok(key)
+        .with_context(|| format!("public key file {}", path.display()))?
+        .with_context(|| format!("public key file {} lists no keys", path.display()))
 }
 
 fn write_file(path: &Path, bytes: &[u8]) -> Result<()> {
@@ -589,6 +589,31 @@ mod tests {
         assert_eq!(verified.catalog_version, "2026.10.22.1");
         assert_eq!(verified.key_id, report.key_id);
         assert_eq!(verified.compressed_bytes, report.compressed_bytes);
+    }
+
+    #[test]
+    fn verify_accepts_an_index_signed_by_any_key_in_a_trust_file() {
+        let dir = TestDir::new("trust-file");
+        let primary = keygen(&dir.path().join("primary"), false).unwrap();
+        let spare = keygen(&dir.path().join("spare"), false).unwrap();
+        let trust = dir.path().join("trusted.pub");
+        fs::write(
+            &trust,
+            format!(
+                "# primary\n{}\n{} # spare\n",
+                primary.public_key, spare.public_key
+            ),
+        )
+        .unwrap();
+        let report = build_fixture(dir.path(), &sample_catalog(), &spare.key_path);
+        let verified = verify(&dir.path().join("out"), &trust).expect("spare-signed index");
+        assert_eq!(verified.key_id, spare.key_id);
+        assert_eq!(report.key_id, spare.key_id);
+        let error = verify(&dir.path().join("out"), &primary.public_key_path).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("not a trusted key"),
+            "{error:#}"
+        );
     }
 
     #[test]

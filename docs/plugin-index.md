@@ -7,34 +7,29 @@ It does not cover the local catalog/store UI or the plugin scanner.
 Status: builder and verifier implemented in `crates/oc-cli`; the Tauri
 client (fetch, pinned-signature verification, anti-rollback, atomic cache, refresh
 policy) is implemented in `crates/oc-gui/frontend/src-tauri/src/plugin_index.rs`.
+The signed index is published from `plugin-index/` (sections 1 and 7).
 
 ## 1. Hosting
 
-The index is **self-hosted** at a static base URL supplied by the operator
-(scheme, host, port, and optional path prefix). GitHub Pages and
-`raw.githubusercontent.com` are not used. The two compiled base URLs in the app
-are placeholders on the reserved `.invalid` domain until the self-hosted address
-is set and `plugin-index.pub` holds the release key; this document deliberately
-contains no host or port.
+The signed index lives in the repository, in `plugin-index/`, and is served
+from two origins compiled into the app and the CLI as `PRIMARY_BASE_URL` and
+`FALLBACK_BASE_URL` in `crates/oc-market/src/index/verified.rs`:
 
-### Base URL and path prefix
+| Origin | Base URL | Updated by |
+|---|---|---|
+| Primary | `https://verithia.github.io/opencompose/plugin-index/` | The documentation workflow, on every push to `main` that touches `plugin-index/` |
+| Fallback | `https://raw.githubusercontent.com/verithia/opencompose/main/plugin-index/` | The push itself |
 
-The base URL is whatever directory the operator serves `dist/` under:
+Both serve the same committed bytes. The primary is the documentation site:
+`scripts/docs.sh build` copies `plugin-index/` into `book/plugin-index/`
+unchanged, and `.github/workflows/docs.yml` deploys `book/` to GitHub Pages.
+The fallback reads the default branch directly, so the index stays reachable
+while a site deployment is pending or failing.
 
-```
-http://<host>:<port>/
-http://<host>:<port>/plugin-index/
-https://plugins.example.com/marketplace/
-```
-
-It must end with `/`. The client concatenates file names directly
-(`{base}index.json`), so a path prefix is simply part of the base and applies to
-all three files. A server that maps `/plugin-index/index.json` to the file and
-ignores the query string on `/index.json.sig?v=...` is all that is required; there
-is no API, no routing logic, and no dynamic component.
-
-The native Tauri client does not need CORS. Add
-`access-control-allow-origin: *` only if a browser/webview ever fetches the files.
+Hosting the files next to the code keeps a publish reviewable: the signed bytes
+are a commit, and `cargo test -p oc-market` verifies the committed index
+against the release keys on every CI run. The hosts are trusted only to serve
+bytes; authenticity comes from the signature (section 4).
 
 ### Required file layout
 
@@ -47,122 +42,70 @@ Everything sits directly at the base; see section 2 for the format:
 ```
 
 `index.json` and `index.json.sig` have fixed names. Catalog names are
-content-addressed and immutable; old catalogs stay available for rollback and for
-clients mid-refresh.
+content-addressed. `plugin-index/` keeps the current catalog and the previous
+one, so a client that read the old manifest just before a deployment can still
+finish its fetch.
+
+`.gitattributes` marks `plugin-index/` as binary, so checkouts never convert
+line endings and the signature keeps matching the exact manifest bytes.
 
 ### Requests the client makes
 
 Exactly three kinds of request, all `GET`, all with
-`User-Agent: OpenCompose/<version> plugin-index`, a 10-second connect timeout, and
-a 30-second total timeout:
+`User-Agent: OpenCompose/<version> plugin-index`, `Accept-Encoding: identity`,
+a 10-second connect timeout, and a 30-second total timeout:
 
 1. `GET <base>index.json` with `Cache-Control: no-cache`, plus `If-None-Match`
    when the cached copy came from the same base. A `304 Not Modified` keeps the
    cache. The body is capped at 512 KiB.
-2. `GET <base>index.json.sig?v=<sha256-of-manifest>` — the detached Ed25519
+2. `GET <base>index.json.sig?v=<sha256-of-manifest>`: the detached Ed25519
    signature over the exact manifest bytes, exactly 64 raw bytes (capped at
-   4 KiB). The query is a cache-buster: a stale signature must not pair with a new
-   manifest.
-3. `GET <base>catalog-<sha256>.json.zst` — only when the manifest names a catalog
+   4 KiB). The query keeps a cache from pairing a stale signature with a new
+   manifest; a static host ignores it.
+3. `GET <base>catalog-<sha256>.json.zst`, only when the manifest names a catalog
    the client does not already have in its content-addressed cache. Capped at
    16 MiB compressed.
 
-On failure the manifest request may be retried against the compiled fallback base;
-catalog requests may also try the signed manifest's `mirrors[]`. Today both
-compiled bases are the retired GitHub origins, so a self-hosted deployment needs
-both constants re-pointed (see below).
+A manifest request that fails on the primary is retried on the fallback.
+Catalog requests try the serving base, then the signed manifest's `mirrors[]`.
 
-### What the server must do
+### Transfer encoding
 
-- **Serve bytes unchanged.** No rewrite, minify, pretty-print, or newline
-  normalization of `index.json`: the signature covers the exact bytes, including
-  the trailing newline the builder emits.
-- **Do not apply HTTP `Content-Encoding` to the `.zst` file** (or to any index
-  file). Re-compressing an already compressed catalog corrupts it. Send it as
-  `application/zstd` or `application/octet-stream` with no content-encoding.
-- **Send sane content types:** `application/json` for `index.json`,
-  `application/octet-stream` for `index.json.sig`, `application/zstd` or
-  `application/octet-stream` for catalogs. The native client ignores the type, but
-  proxies and browsers behave better with correct values.
-- **Ignore the query string** when resolving `index.json.sig?v=...` to a file
-  (normal static servers do this).
-- **Cache headers:** `index.json` gets a short TTL (60-600 seconds) plus an
-  `ETag`; never `immutable`. `index.json.sig` gets a short or `no-cache` TTL.
-  `catalog-*.json.zst` gets `public, max-age=31536000, immutable`.
-- **Publish order:** catalog, then `index.json.sig`, then `index.json`. The
-  manifest is the commit point; a client that sees a new manifest before its
-  signature is visible fails closed and keeps the last-good catalog. A directory
-  copy over rsync/scp is fine because the window is short and fail-closed; an
-  atomic directory rename is nicer but not required.
-- **HTTPS strongly recommended, plain HTTP supported.** See below.
+Signatures and hashes cover the published bytes, so verification never sees a
+transfer encoding. Both clients send `Accept-Encoding: identity`, and both
+refuse a response that still carries a `Content-Encoding` other than identity
+(`oc_market::index::check_content_encoding`). GitHub Pages and
+`raw.githubusercontent.com` compress only when a client asks, so they serve the
+files unchanged.
 
-### TLS vs plain HTTP
+### Freshness
 
-The Ed25519 signature guarantees integrity and authenticity — an attacker cannot
-forge or modify a manifest. It does **not** guarantee freshness: over plain HTTP
-an on-path attacker can replay an *older but still validly signed* manifest and
-catalog. The client rejects a manifest whose `generated_at` is older than the
-highest committed catalog's, with stage `rollback`, keeping the last-good catalog. A legitimate
-rollback republished with a fresh `generated_at` is still accepted (section 7).
+GitHub Pages sends `Cache-Control: max-age=600` and an `ETag` for every file,
+so a publish reaches every client within about ten minutes of its deployment.
+The raw origin caches for a few minutes. Catalog names are content-addressed,
+so a cached catalog is never wrong, only possibly absent.
 
-Residual risks that anti-rollback does not remove:
+The Ed25519 signature guarantees integrity and authenticity. Freshness comes
+from TLS on both origins and from anti-rollback: the client rejects a manifest
+whose `generated_at` is older than the highest one it has committed, with stage
+`rollback`, and keeps its last-good catalog. Residual risks:
 
-- **First fetch (TOFU).** A fresh install has no cache to compare against, so an
-  on-path attacker could serve an arbitrarily old valid manifest once. TLS is the
-  only defense for that case.
-- **Freezing.** An attacker can withhold updates entirely, or keep serving the
-  same valid manifest. The app shows staleness (`stale_warning` at 14 days) but
-  cannot distinguish a freeze from an idle publisher.
-- **Mirrors require TLS regardless.** Mirror entries are filtered to `https://`
-  only, so a mirror cannot be plain HTTP even when the primary is.
+- **First fetch.** A fresh install has no cache to compare against; TLS is the
+  defense.
+- **Freezing.** Withheld updates look like an idle publisher. The app shows
+  staleness (`stale_warning` at 14 days).
 
-If the deployment is plain HTTP (for example a temporary IP:port), point the
-primary at it and accept that existing installs are protected against downgrade
-but not against first-fetch replay or freezing. Prefer TLS — a self-signed or
-Let's Encrypt certificate in Caddy/nginx is cheap — and use HTTPS for every mirror.
+### Moving the index
 
-### Deployment options
-
-- **rsync/scp of a `dist/` directory.** `scripts/publish-plugin-index.sh` builds,
-  verifies, and prints the two rsync commands (catalog + signature first, manifest
-  last) with the host left as an argument. This is the recommended path for a VPS.
-- **Any static file server that serves exact bytes.** nginx, Caddy, Apache, or an
-  object store (S3/R2/Bunny) behind a custom domain. Configure the cache headers
-  above and disable content-type/encoding transforms. Object stores serve
-  `index.json.sig?v=...` fine as long as the query is not interpreted as a
-  required signature parameter.
-- **A CDN may front catalogs only.** Catalog filenames are immutable, so caching
-  them for a year is safe. Never put `index.json` behind a long TTL or an
-  immutable cache: a stale manifest defeats rollback and security fixes.
-
-GitHub Releases remains an archive option for signed snapshots, not a primary
-origin: the manifest is mutable and the asset host does not send the cache headers
-this design wants.
-
-### Re-pointing the app
-
-The address is not known yet, so `PRIMARY_BASE_URL` and `FALLBACK_BASE_URL` in
-`crates/oc-gui/frontend/src-tauri/src/plugin_index.rs` are unchanged. When the
-operator fixes the origin:
-
-1. Set `PRIMARY_BASE_URL` to the full base, including any path prefix and with a
-   trailing `/` (for example `https://<host>/plugin-index/`).
-2. Set `FALLBACK_BASE_URL` to a second origin that serves the same bytes, or leave
-   the primary as the only practical attempt. The fallback is tried only when the
-   primary fails; it may be plain HTTP if that is the deployment, but mirrors are
-   always filtered to `https://`.
-3. Ship an app release. Clients cannot discover the origin from the manifest (a
-   manifest cannot advertise its own base), and a signature does not help if the
-   client cannot fetch the file.
-
-No catalog or key change is needed to move origins: the files are portable and
-content-addressed. If the prefix changes, only the two constants change.
-
+A manifest cannot advertise its own base, so moving the index means changing
+the two constants and shipping an app release. The files are portable and
+content-addressed; no catalog or key change is needed. Keep publishing to the
+old origins until the release that drops them has reached users.
 
 ## 2. File layout
 
 ```
-dist/
+plugin-index/
   index.json                      # small, uncompressed, signed manifest
   index.json.sig                  # 64-byte detached Ed25519 signature over index.json bytes
   catalog-<sha256>.json.zst       # compressed catalog, name = sha256 of these bytes
@@ -386,8 +329,8 @@ learn which catalog to fetch. It also keeps a failed signature cheap to diagnose
 (`xxd index.json`, diff two versions) without a decompression step.
 
 The catalog is 60-100x larger and changes as a unit, so it is compressed and cached
-forever by content hash. HTTP-level gzip/brotli must not be applied to the `.zst`
-file; a server that re-compresses an already compressed object only adds bytes.
+forever by content hash. The clients request identity encoding for every index
+file (section 1), so neither file is ever transfer-compressed.
 
 ### Catalog content
 
@@ -460,9 +403,11 @@ Three independent checks:
    `uncompressed_bytes`; both are checked, and decompression is capped by the
    declared uncompressed size (16 MiB hard ceiling) to avoid compression bombs.
 2. **Authenticity:** `index.json.sig` is a 64-byte raw Ed25519 signature over the
-   exact `index.json` bytes. The public key is **pinned in the app** (32 raw bytes,
-   shipped as hex in source), not fetched over the network. The manifest's `key_id`
-   (`ed25519:` + first 8 bytes of SHA-256 of the public key) must match the pinned key.
+   exact `index.json` bytes. The trusted public keys are **pinned in the app**
+   (`crates/oc-market/plugin-index.pub`, compiled in), never fetched over the
+   network. The manifest's `key_id` (`ed25519:` + first 8 bytes of SHA-256 of the
+   public key) selects exactly one trusted key, and the signature must verify
+   under it; a `key_id` outside the list fails with stage `key_id`.
 3. **Freshness (anti-rollback):** each signing-authority/origin scope records its
    highest committed signed manifest. Older `generated_at` values are rejected
    with stage `rollback`. Equal timestamps are accepted only for the exact same
@@ -501,9 +446,9 @@ the defense there, not the signature.
 
 | Object | Cache policy | Client behavior |
 |---|---|---|
-| `index.json` | `max-age=60..600` (configured on the host), must send `ETag` | Store `ETag`; send `If-None-Match`. 304 keeps the cache and updates `checked_at`. 200 with identical bytes is treated as unchanged. |
-| `index.json.sig` | Short TTL, revalidate | Fetch with `Cache-Control: no-cache` and a manifest-hash query (`index.json.sig?v=<sha256-of-manifest>`) so a cached old signature cannot be paired with a new manifest. |
-| `catalog-<hash>.json.zst` | `public, max-age=31536000, immutable` | Cache forever by hash; never revalidate. If the host ignores `immutable`, a periodic 304 is cheap. |
+| `index.json` | `max-age=600` and an `ETag` on GitHub Pages | Store `ETag`; send `If-None-Match`. 304 keeps the cache and updates `checked_at`. 200 with identical bytes is treated as unchanged. |
+| `index.json.sig` | Same as the manifest | Fetch with `Cache-Control: no-cache` and a manifest-hash query (`index.json.sig?v=<sha256-of-manifest>`) so a cached old signature cannot be paired with a new manifest. |
+| `catalog-<hash>.json.zst` | Same as the manifest; the name never changes meaning | Cache forever by hash; never revalidate. |
 | Installed plugin binaries | N/A | Downloaded from vendor URLs, not proxied or cached by us. |
 
 The GUI and CLI use the same verifier and scoped cache root,
@@ -569,9 +514,11 @@ plugin-index`, a 10-second connect timeout, a 30-second total timeout, and
 `Cache-Control: no-cache`; the manifest is capped at 512 KiB, the signature at
 4 KiB, and the compressed catalog at 16 MiB. The signature request carries
 `?v=<sha256-of-manifest>` so a stale signature cannot pair with a new manifest.
-Manifest fetches may fall back to the compiled fallback base (currently the retired
-raw URL); catalog fetches try the serving base, then the signed manifest's
-`mirrors[]` filtered to `https://`.
+Manifest fetches fall back to the compiled fallback base (the raw origin in
+section 1); catalog fetches try the serving base, then the signed manifest's
+`mirrors[]` filtered to `https://`. Every request sends `Accept-Encoding:
+identity`, and a response with another `Content-Encoding` fails at stage
+`network`.
 
 Failure stages are reported as `network`, `signature`, `key_id`, `rollback`,
 `schema`, `min_app_version`, `catalog_size`, `catalog_hash`, `decompression`,
@@ -614,62 +561,83 @@ so conversational AI can search the catalog but cannot trigger network refreshes
 
 ## 7. Publishing cadence and rollback
 
-- Publish on a weekly schedule, plus immediately for security issues, delistings, or
-  a vendor URL fix. Each publish produces a new content-addressed catalog; unchanged
-  catalogs produce the same hash and need no upload.
-- Keep old catalogs for at least 90 days (or the last 20 versions) so rollback and
-  clients mid-refresh remain valid. Never edit or delete the current catalog.
-- Publish order for manual/release uploads: **catalog file, `index.json.sig`,
-  then `index.json`**. The manifest is the commit point; clients that see a new
-  manifest before its signature is visible fail closed and keep the last good copy.
-  With rsync/scp the window is short; with a static server, avoid replacing
-  `index.json` before the signature is readable.
-- **Rollback:** rebuild only the manifest to point `catalog.path`/`sha256`/`bytes` at
-  the previous `catalog-<hash>.json.zst`, keep or restore its `catalog_version`, set
-  a fresh `generated_at`, re-sign, and publish `index.json.sig` + `index.json`.
-  No catalog recompression or re-upload is needed; the old file is already immutable
-  and cached. The fresh `generated_at` is required: clients reject a manifest older
-  than their cache with stage `rollback`. Worst-case propagation is the manifest TTL
-  (60-600 seconds on the self-hosted origin).
-- Bad-catalog detection: CI runs `ocp plugin-index verify`, a smoke test downloads the
-  published files, and a link checker samples vendor URLs. A bad entry is fixed by a
-  normal republish; a bad release is rolled back by the manifest repoint above.
-- Because clients keep the last-good catalog and reject bad signatures/hashes, a
-  faulty publish degrades to "stale but working" rather than a broken marketplace.
+- Publish whenever the catalog changes, plus immediately for security issues,
+  delistings, or a vendor URL fix. An unchanged catalog produces the same hash,
+  so a publish that only moves `generated_at` adds no catalog file.
+- Every publish needs a `generated_at` later than the committed one; the script
+  refuses anything else, because clients would reject it with stage `rollback`
+  or `equivocation`.
+- **Never revert an index commit.** A reverted manifest carries an older
+  `generated_at`, and every client that saw the newer one refuses it. Roll back
+  by publishing again.
+- **Rollback:** restore the older catalog JSON (for example with
+  `git checkout <commit> -- crates/oc-gui/frontend/src/data/plugin-catalog.json`)
+  and publish it. The build is deterministic, so the catalog gets its old hash
+  and file name back, and the manifest gets a fresh `generated_at`. Propagation
+  is the ten-minute origin cache.
+- A broken documentation build blocks the primary origin, not the fallback: the
+  raw origin serves the pushed files immediately, and clients fall back to it
+  when the primary fails. Fix the docs build so both origins agree again.
+- Because clients keep the last-good catalog and reject bad signatures or
+  hashes, a faulty publish degrades to "stale but working" rather than a broken
+  marketplace.
 
 ### Publishing workflow
 
-Publishing is a manual, local action:
+Publishing is a local action on the machine that holds the private key:
 
 ```sh
-scripts/publish-plugin-index.sh --key ~/.config/opencompose/plugin-index.key \
-  --catalog crates/oc-gui/frontend/src/data/plugin-catalog.json \
-  user@host:/srv/plugin-index/
+cargo build --release -p oc-cli
+scripts/publish-plugin-index.sh --key ~/.config/opencompose/plugin-index-release/plugin-index.key
+git add plugin-index
+git commit -m "Publish the plugin index for <generated_at>"
+git push origin HEAD:main            # or merge a pull request
+scripts/check-plugin-index-live.sh --wait 900
 ```
 
-The script builds the signed index into `dist/`, verifies it against the public
-key, and prints the ordered rsync commands (catalog + signature first, manifest
-last). The host is an argument; the script contains no hardcoded host and refuses
-to run without a key path.
+The script signs the catalog, verifies the result against
+`crates/oc-market/plugin-index.pub`, checks that `generated_at` moves forward,
+and writes `index.json`, `index.json.sig` and the catalog into `plugin-index/`,
+keeping the previous catalog and deleting older ones. It never commits, pushes
+or uploads. A signing key that the app does not trust fails verification before
+any file is written.
 
-The GitHub Pages deploy is retired: the index is served from a static host
-chosen by the operator. Do not add a CI job that deploys to an external host. CI
-may build and `verify` an index as a pre-merge check, but publishing stays an
-explicit local action with the private key on the publishing machine.
+The push is the publish. GitHub Pages deploys the whole site atomically, so the
+manifest, its signature and its catalog change together. The live check
+downloads each file from both origins, compares it with `plugin-index/` byte
+for byte, and verifies the downloaded set; `--wait` keeps retrying while the
+deployment and the CDN catch up.
 
-### Key rotation
+The private key never enters CI. CI only verifies the committed result: the
+`the_committed_plugin_index_verifies_against_the_release_keys` test in
+`oc-market` authenticates the manifest, checks the catalog hash and size, and
+checks that the directory holds only the expected files.
 
-1. Generate a new keypair offline: `ocp plugin-index keygen --out <offline-dir>`.
-   Keep the private key on the publishing machine (mode 0600) and back it up; it
-   must never enter the repository or CI logs.
-2. Put the new public key's 64 hexadecimal characters in
-   `crates/oc-market/plugin-index.pub`, the shared GUI and CLI release authority.
-3. Ship an app release. Old clients reject the new manifests with stage
-   `key_id`, keep their last-good cache, and prompt for an update.
-4. Rebuild and republish the index with the new private key.
+### Keys and rotation
 
-There is no dual-signing or key-list format yet, so a rotation is a hard cutover
-for clients that have not updated.
+`crates/oc-market/plugin-index.pub` lists two release keys, one hex public key
+per line with `#` comments:
+
+| Role | Key id | Use |
+|---|---|---|
+| Primary | `ed25519:bcb4e9972d740701` | Signs every publish |
+| Spare | `ed25519:450b5ca039023d95` | Kept offline; signs only after the primary is lost or retired |
+
+Because every shipped app already trusts the spare, losing or retiring the
+primary needs no emergency release:
+
+1. Publish with the spare key. Every client accepts it immediately.
+2. Generate a new spare offline with `ocp plugin-index keygen --out <offline-dir>`.
+3. In the next app release, list the spare as the primary and the new key as the
+   spare, removing the old primary.
+
+A leaked primary is handled the same way, but until the release that removes it
+has reached users, a holder of the leaked key can still sign an index those
+users accept. Anti-rollback limits the damage to manifests newer than the last
+legitimate publish, which is why publishing promptly with the spare matters.
+
+Losing both private keys requires a release with a new list; installed apps keep
+their last-good catalog and bundled catalog until they update.
 
 ## 8. CLI
 
@@ -709,26 +677,18 @@ section 9.
 
 ### Publishing script
 
-`scripts/publish-plugin-index.sh` wraps build + verify and prints the ordered
-rsync commands. It never uploads anything itself and has no hardcoded host:
-
-```sh
-scripts/publish-plugin-index.sh \
-  --key ~/.config/opencompose/plugin-index.key \
-  --catalog crates/oc-gui/frontend/src/data/plugin-catalog.json \
-  user@host:/srv/plugin-index/
-```
+`scripts/publish-plugin-index.sh` wraps build and verify and writes the result
+into `plugin-index/` (section 7):
 
 - The key path is mandatory (`--key` or `OCP_PLUGIN_INDEX_KEY`); the script exits
   without it.
-- The final positional argument is the only deployment target.
-- `--public-key` defaults to the committed
-  `crates/oc-market/plugin-index.pub`; pass the matching `.pub`
-  when signing with a different key.
+- Verification always uses the committed `crates/oc-market/plugin-index.pub`, so
+  only a release key can publish.
+- `--catalog`, `--min-app-version`, `--catalog-version`, `--generated-at` and
+  `--mirror` pass through to `ocp plugin-index build`. `--dest` writes somewhere
+  other than `plugin-index/`, for rehearsals.
 - `OCP_BIN` selects the `ocp` binary (default `target/release/ocp`); build it with
   `cargo build --release -p oc-cli`.
-- Output goes to `dist/` by default. The two printed commands copy the catalog and
-  signature first, then `index.json` last, preserving the commit-point order.
 
 ### Key handling
 
@@ -736,39 +696,28 @@ scripts/publish-plugin-index.sh \
   (64 hex characters + newline). The public key is safe to commit; the private key is
   not.
 - Build key resolution: `--key FILE`, else `OCP_PLUGIN_INDEX_KEY` (path), else
-  `OCP_PLUGIN_INDEX_KEY_PKCS8_HEX` (hex-encoded PKCS#8 bytes, for CI secrets that
-  should not be written to disk).
-- Verify key: `--public-key FILE` or `OCP_PLUGIN_INDEX_PUBKEY`. The file may be 32 raw
-  bytes or 64 hex characters.
-- Pin the public key in the app and commit the `.pub` file for verification. Rotate
-  by shipping a new pinned key, then signing with the new private key; there is no
-  dual-signing or key-list format yet (documented limitation).
+  `OCP_PLUGIN_INDEX_KEY_PKCS8_HEX` (hex-encoded PKCS#8 bytes).
+- Verify keys: `--public-key FILE` or `OCP_PLUGIN_INDEX_PUBKEY`. The file is
+  either 32 raw bytes or a trust list: one 64-character hex key per line, with
+  blank lines and `#` comments ignored. A `keygen` `.pub` file is a one-key list.
+  A list holds at most eight distinct keys.
 
 ### Explicit remote trust
 
-`crates/oc-market/plugin-index.pub` is the single release trust configuration.
-It is empty until a production authority has been chosen. With an empty file,
-the app starts with its bundled catalog and reports remote trust as unconfigured.
-Remote refresh does not make network requests. CLI installs from the bundled or
-an explicitly supplied local catalog remain available. A remote CLI index requires
-`--public-key FILE` or a configured release authority.
+`crates/oc-market/plugin-index.pub` is the single release trust configuration,
+shared by the GUI and the CLI. An empty list disables remote refresh: the app
+starts with its bundled catalog and reports remote trust as unconfigured. The
+retired development authority is rejected as a release key.
 
-Generate a production keypair offline with `ocp plugin-index keygen --out <offline-dir>`.
-Keep the private key outside the repository, mode 0600. Copy only its public key's
-64 hexadecimal characters into the shared configuration, ship the app, then sign
-and publish with the matching private key. The retired development authority is
-rejected as a release configuration.
-
-For local debugging, explicitly pass `--index URL --public-key FILE` to the CLI.
+For local debugging, pass `--index URL --public-key FILE` to the CLI.
 Debug GUI builds accept `OPENCOMPOSE_INDEX_BASE_URL` and
 `OPENCOMPOSE_INDEX_PUBLIC_KEY` (hex); release GUI builds ignore those overrides.
 Tests create throwaway authorities in process and never implicitly trust a fixture key.
 
-Cached remote state is scoped to its signing authority and configured origins.
-Old unscoped caches and caches from a different authority or origin are left on
-disk and ignored; successful refreshes publish into the matching scope. Key rotation therefore
-requires an app update and refresh rather than adopting the old catalog under a
-new trust configuration. There is no dual-signing or key-list format.
+Cached remote state is scoped to the trusted key list and the configured
+origins. Caches from a different list or origin are left on disk and ignored,
+and successful refreshes publish into the matching scope. A release that
+changes the list therefore starts a new scope and refetches once.
 
 ### Determinism
 
@@ -786,15 +735,12 @@ Editing the catalog is a normal source change; there is no generated step.
 # 1. validate the committed catalog end to end (no network, throwaway key)
 cargo test -p oc-cli bundled_catalog_builds_and_verifies
 
-# 2. build and verify a signed index the way a publish does
-ocp plugin-index build --catalog crates/oc-gui/frontend/src/data/plugin-catalog.json \
-  --out dist --key ~/.config/opencompose/plugin-index.key --min-app-version 0.1.0
-ocp plugin-index verify dist --public-key crates/oc-market/plugin-index.pub
-
-# 3. publish (prints the ordered rsync commands; uploads nothing itself)
-scripts/publish-plugin-index.sh --key ~/.config/opencompose/plugin-index.key \
-  --catalog crates/oc-gui/frontend/src/data/plugin-catalog.json host:/srv/plugin-index/
+# 2. sign it into plugin-index/, then commit and push (section 7)
+scripts/publish-plugin-index.sh --key ~/.config/opencompose/plugin-index-release/plugin-index.key
 ```
+
+A catalog edit is not live until it is published: the app keeps using the last
+signed index (or its bundled copy) until then.
 
 Remote link checking is manual and deliberately outside `cargo test`, which never
 touches the network:
@@ -1137,14 +1083,18 @@ records the exact reason.
 - `crates/oc-market/src/verify.rs` — the size-and-sha256 rule for downloads.
 - `crates/oc-market/src/install.rs` — install-target selection and path-safe
   zip/tar extraction.
-- `crates/oc-market/src/index.rs` — the pinned index key and the manifest
-  signature check.
+- `crates/oc-market/src/index.rs` — the trusted key list, the manifest
+  signature check, and the test that verifies the committed `plugin-index/`.
 - `crates/oc-market/src/loopback.rs` — the HTTP fixture server the install tests
   run against.
 - `crates/oc-cli/src/plugin_install.rs` — `ocp plugin install`.
 - `scripts/install-plugin.sh` — thin wrapper over that subcommand.
 - `crates/oc-cli/tests/fixtures/plugin-catalog-60.json` — canonical sample.
-- `scripts/publish-plugin-index.sh` — local build/verify and rsync command printer.
+- `plugin-index/` — the published signed index.
+- `scripts/publish-plugin-index.sh` — signs and verifies the catalog into
+  `plugin-index/`.
+- `scripts/check-plugin-index-live.sh` — compares both live origins with
+  `plugin-index/` byte for byte and verifies what they serve.
 
 CLI tests (run with `CARGO_TARGET_DIR=... cargo test -p oc-cli`):
 
@@ -1225,9 +1175,8 @@ inject a scripted `IndexFetch` or use the loopback server.
 
 ## 11. Not implemented here
 
-- Published-site link checking; the local script builds, verifies, and prints the
-  upload commands but does not crawl vendor URLs or confirm the host serves the
-  files.
-- Key rotation/dual signatures and an app-side pinned-key list.
+- Vendor URL crawling; the live check confirms the index origins only.
+- Signatures from more than one key on the same manifest; a manifest names one
+  signer.
 - JSON Schema publication; validation is in Rust and is the source of truth.
 - Brotli/gzip output; zstd only.

@@ -70,9 +70,9 @@ installed and licensed on each system that opens the project.
 The GUI's Store section lists free plugins from two sources:
 
 1. a **bundled catalog** compiled into the app, and
-2. a **signed remote index** that the app refreshes over HTTP(S), caches on disk
-   and verifies with a pinned Ed25519 key. A build with no pinned key
-   (`crates/oc-market/plugin-index.pub` empty) uses only the bundled catalog.
+2. a **signed remote index** that the app refreshes over HTTPS from the
+   project's documentation site, caches on disk and verifies with the Ed25519
+   keys pinned in the app. See [the plugin index design](../plugin-index.md).
 
 Both carry the same document: an entry per plugin with a name, vendor, one-line
 description, category tags, license, homepage and one or more installs. An install
