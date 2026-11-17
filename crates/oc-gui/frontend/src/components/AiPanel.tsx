@@ -1179,7 +1179,10 @@ export function AiPanel(props: { onClose?: () => void }) {
     setSessionError(null);
     try {
       const page = sessionPageRead(await aiApi.sessionPage(id, before, revision));
-      if (!page || disposed || epoch !== scopeEpoch || request !== paintRequest || openId() !== id) return;
+      // The conversation may lock while the page is in flight; repainting a
+      // stale view would drop a live turn's rows.
+      if (!page || disposed || epoch !== scopeEpoch || request !== paintRequest
+          || openId() !== id || conversationLocked()) return;
       if (page.status === "stale") {
         await paintSession(id);
         return;

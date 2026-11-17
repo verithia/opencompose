@@ -17,6 +17,7 @@ import { resetContextMeter, textTokens } from "../stores/aiContext";
 import { restoredTranscript } from "../ai/transcript";
 import type { SessionPageRead } from "../ai/sessions";
 import type { WireMessage } from "../ai/wire";
+import { resetFakeTurns, runFakeTurn, type TurnStartArgs } from "./helpers/fakeTurn";
 
 const META = {
   id: "s1",
@@ -60,6 +61,7 @@ const backend = {
   pageReads: [] as { id: string; before: number; revision: string }[],
   openReads: [] as string[],
   recalls: [] as { sessionId: string; index: number; undoEdits: boolean; confirmed: boolean }[],
+  chat: async (): Promise<unknown> => ({ role: "assistant", content: "Alright." }),
 };
 
 function page(messages: WireMessage[], start: number, older: number, revision = "rev-1"): SessionPageRead {
@@ -119,6 +121,8 @@ function installBackend() {
         }
         return backend.page ?? { status: "stale" };
       }
+      case "ai_turn_start":
+        return runFakeTurn(typed as unknown as TurnStartArgs, { chat: async () => backend.chat() });
       case "ai_recall": {
         const index = Number(typed.index);
         const undoEdits = typed.undoEdits === true;
@@ -143,6 +147,8 @@ function installBackend() {
 const switcher = () => document.querySelector(".ai-session-current") as HTMLButtonElement;
 const earlier = () => document.querySelector(".ai-transcript-earlier") as HTMLButtonElement | null;
 const userRows = () => [...document.querySelectorAll(".ai-message.user")].map((row) => row.textContent ?? "");
+const input = () => document.querySelector(".ai-input") as HTMLInputElement;
+const sendButton = () => document.querySelector(".ai-send-btn") as HTMLButtonElement;
 
 async function mountPanel() {
   await store.initProject();
@@ -174,6 +180,8 @@ beforeEach(() => {
   backend.pageReads = [];
   backend.openReads = [];
   backend.recalls = [];
+  backend.chat = async () => ({ role: "assistant", content: "Alright." });
+  resetFakeTurns();
   i18n.setLocale("en");
   aiSession.reset();
   resetContextMeter();
@@ -183,6 +191,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   aiSession.reset();
+  resetFakeTurns();
   vi.restoreAllMocks();
 });
 
@@ -272,6 +281,34 @@ describe("opening a paged conversation", () => {
     expect(document.body.textContent).toContain("second only");
     expect(document.body.textContent).not.toContain("middle question");
     expect(backend.pageReads).toHaveLength(1);
+  });
+
+  it("drops an older page that arrives after a turn started", async () => {
+    let releasePage!: () => void;
+    backend.holdPage = new Promise<void>((resolve) => { releasePage = resolve; });
+    backend.page = page(CONVERSATION.slice(2, 4), 2, 40);
+    await mountPanel();
+    await openConversation("paged conversation", "newest answer");
+    fireEvent.click(earlier()!);
+    await waitFor(() => expect(backend.pageReads).toHaveLength(1));
+
+    let releaseChat!: () => void;
+    backend.chat = () => new Promise((resolve) => {
+      releaseChat = () => resolve({ role: "assistant", content: "answered later" });
+    });
+    fireEvent.input(input(), { target: { value: "ask during the page" } });
+    fireEvent.click(sendButton());
+    await waitFor(() => expect(document.body.textContent).toContain("ask during the page"));
+    await waitFor(() => expect(document.querySelector(".ai-pending")).not.toBeNull());
+
+    backend.stale = true;
+    releasePage();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(backend.openReads).toEqual(["s1"]);
+    expect(document.body.textContent).toContain("ask during the page");
+
+    releaseChat();
+    await waitFor(() => expect(document.querySelector(".ai-pending")).toBeNull());
   });
 
   it("keeps the reader's scroll position when the older page is prepended", async () => {
