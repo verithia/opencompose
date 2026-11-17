@@ -1667,21 +1667,29 @@ export function AiPanel(props: { onClose?: () => void }) {
         setMessages(previous => [...previous, ...rows]);
         return;
       }
+      const evicted = sessionArchiveEviction(payload);
+      const failure = evicted ? null : sessionCompactionFailure(payload);
+      const compaction = evicted || failure ? null : sessionCompaction(payload);
+      const notice = evicted ?? failure ?? compaction;
+      if (!notice) return;
+      // Every notice names the conversation it belongs to; another one's is
+      // logged but never painted into this transcript.
+      if (notice.session_id !== openId()) {
+        log.warn("ai", `session ${notice.session_id} sent a notice for another conversation`);
+        return;
+      }
       // A full audition archive made room for this turn's listening clips: the
       // transcript names what went, so the operator's copy is not a silent loss.
-      const evicted = sessionArchiveEviction(payload);
       if (evicted) {
         log.info("ai", `session ${evicted.session_id} evicted ${evicted.evicted.length} archive file(s)`);
         setMessages(previous => [...previous, { role: "system", content: archiveNotice(evicted), timestamp: Date.now() }]);
         return;
       }
-      const failure = sessionCompactionFailure(payload);
       if (failure) {
         log.warn("ai", `session ${failure.session_id} compaction summary failed: ${failure.reason}`);
         setMessages(previous => [...previous, { role: "system", content: compactionFailureNotice(failure), timestamp: Date.now() }]);
         return;
       }
-      const compaction = sessionCompaction(payload);
       if (!compaction) return;
       log.info("ai", `session ${compaction.session_id} compacted ${compaction.dropped_from}..${compaction.dropped_to}`);
       setMessages(previous => [...previous, { role: "system", content: compactionNotice(compaction), timestamp: Date.now() }]);

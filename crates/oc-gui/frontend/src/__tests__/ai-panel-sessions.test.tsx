@@ -409,12 +409,14 @@ afterEach(() => {
 
 describe("AI panel session announcements", () => {
   it("shows a compaction the backend performed on its own", async () => {
+    aiSession.setOpen("s1");
     const view = await mountPanel();
+    await waitFor(() => expect(openTitle()).toBe("intro idea"));
     await waitFor(() => expect(handlers.ai_session?.length).toBe(1));
     expect(view.container.textContent ?? "").not.toContain("Conversation compacted");
 
     emitSession({
-      session_id: "0a1b2c3d4e5f0001",
+      session_id: "s1",
       compacted: true,
       provider: "google",
       model: "gemini-4-argon",
@@ -432,11 +434,13 @@ describe("AI panel session announcements", () => {
   });
 
   it("says which archive files an audition turn evicted", async () => {
+    aiSession.setOpen("s1");
     const view = await mountPanel();
+    await waitFor(() => expect(openTitle()).toBe("intro idea"));
     await waitFor(() => expect(handlers.ai_session?.length).toBe(1));
 
     emitSession({
-      session_id: "0a1b2c3d4e5f0001",
+      session_id: "s1",
       evicted: [
         { dir: "audition-media", file: "ab12.wav", bytes: 2_000_000 },
         { dir: "audition-renders", file: "cd34.wav", bytes: 6_000_000 },
@@ -448,6 +452,31 @@ describe("AI panel session announcements", () => {
     );
     expect(view.container.textContent).toContain("audition-media/ab12.wav");
     expect(view.container.textContent).toContain("audition-renders/cd34.wav");
+  });
+
+  it("keeps another conversation's notices out of the transcript", async () => {
+    aiSession.setOpen("s1");
+    const view = await mountPanel();
+    await waitFor(() => expect(openTitle()).toBe("intro idea"));
+    emitSession({
+      session_id: "s2",
+      compacted: true,
+      provider: "google",
+      model: "gemini-4-argon",
+      dropped_from: 0,
+      dropped_to: 24,
+      tokens_before: 12400,
+      tokens_after: 1800,
+      retained_pairs: 6,
+      messages: [{ role: "user", content: "summary" }],
+    });
+    emitSession({
+      session_id: "s2",
+      evicted: [{ dir: "audition-media", file: "ab12.wav", bytes: 2_000_000 }],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(view.container.textContent ?? "").not.toContain("Conversation compacted");
+    expect(view.container.textContent ?? "").not.toContain("removed 1 file(s)");
   });
 
   it("ignores an event that is not a compaction", async () => {
@@ -2149,6 +2178,31 @@ describe("compaction failures and clearing history", () => {
       expect(document.querySelector(".ai-messages")?.textContent)
         .toContain("the provider did not answer");
     });
+  });
+
+  it("names a rejected summary in the transcript", async () => {
+    backend.sessions = [session({ id: "s1", title: "intro idea" })];
+    backend.conversations = { s1: [{ role: "user", content: "an intro" }] };
+    aiSession.setOpen("s1");
+    await mountPanel();
+    await waitFor(() => expect(openTitle()).toBe("intro idea"));
+    emitSession({ session_id: "s1", notice: "compaction_failed", reason: "rejected" });
+    await waitFor(() => {
+      expect(document.querySelector(".ai-messages")?.textContent)
+        .toContain("not smaller than the mechanical one");
+    });
+  });
+
+  it("ignores another conversation's failure notice", async () => {
+    backend.sessions = [session({ id: "s1", title: "intro idea" }), session({ id: "s2", title: "another idea" })];
+    backend.conversations = { s1: [{ role: "user", content: "an intro" }] };
+    aiSession.setOpen("s1");
+    await mountPanel();
+    await waitFor(() => expect(openTitle()).toBe("intro idea"));
+    emitSession({ session_id: "s2", notice: "compaction_failed", reason: "provider_error" });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(document.querySelector(".ai-messages")?.textContent)
+      .not.toContain("the provider did not answer");
   });
 
   it("asks before clearing old history and reports what it freed", async () => {
