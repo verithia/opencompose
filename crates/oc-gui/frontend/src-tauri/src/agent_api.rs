@@ -620,9 +620,7 @@ fn turn_request(
     body: &[u8],
 ) -> Result<(crate::ai::agent_loop::host::TurnStart, String), AiError> {
     let (start, binding) = parse_turn(body)?;
-    binding
-        .caller(app)
-        .map_err(|error| AiError::new("session_binding", error))?;
+    binding.caller(app)?;
     // The turn's batch is its own: a `/call` client bound to the same
     // conversation runs as another owner and cannot commit or roll it back.
     let owner = crate::state::turn_batch_owner(&start.request_id, &start.session_id);
@@ -990,7 +988,7 @@ fn handle_call(app: &AppHandle, body: &[u8]) -> (u16, String) {
     let caller = match binding {
         Some(binding) => match binding.caller(app) {
             Ok(caller) => caller,
-            Err(error) => return (400, error_body(error)),
+            Err(error) => return complete_failure(error),
         },
         None => HTTP_BATCH_OWNER.to_owned(),
     };
