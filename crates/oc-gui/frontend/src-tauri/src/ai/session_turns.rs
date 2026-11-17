@@ -599,10 +599,18 @@ impl Store {
             messages: kept.clone(),
         };
         append_records(&dir, &[record])?;
-        write_started(&dir, &HashSet::new())?;
+        // The saved record is the commit point: the cut happened even when the
+        // marker or the metadata cannot follow it, and both are derived state
+        // a reload rebuilds from the record.
+        spend_started(&dir, &HashSet::new());
         meta.tokens = super::estimate_tokens(&kept);
         meta.updated = now();
-        write_meta(&dir, &meta)?;
+        if let Err(error) = write_meta(&dir, &meta) {
+            log::warn!(
+                "[ai] session metadata not written in {}: {error}",
+                dir.display()
+            );
+        }
         Ok(kept.len())
     }
 }

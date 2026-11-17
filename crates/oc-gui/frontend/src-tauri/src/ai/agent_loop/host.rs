@@ -1910,6 +1910,29 @@ mod tests {
         assert_eq!(state.lock_inner().project.properties.tempo, 120.0);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn a_recall_stands_when_the_session_metadata_cannot_be_written() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_root, store, id, state, _path) = fixture_edited_as(true);
+        let (dir, _) = store.find(&id).unwrap();
+        let outcome = {
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+            let requests = Requests::default();
+            let outcome = recall_in(&requests, &state, &store, &id, with_undo(&state, 0));
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+            outcome
+        };
+        let (kept, _, snapshot, _) = recalled(outcome.unwrap());
+        assert_eq!(kept, 0);
+        assert!(snapshot.is_some(), "the moved document is published");
+        let inner = state.lock_inner();
+        assert_eq!(inner.project.properties.tempo, 120.0, "the history moved");
+        assert_eq!(inner.undo.applied_level(), 0);
+        drop(inner);
+        assert!(store.view(&id).unwrap().is_empty(), "the cut is committed");
+    }
+
     #[test]
     fn a_confirmation_refuses_when_edits_land_after_it_was_shown() {
         let (_root, store, id, state, _path) = fixture();
