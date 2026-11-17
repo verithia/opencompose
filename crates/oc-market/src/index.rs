@@ -244,6 +244,39 @@ mod tests {
     }
 
     #[test]
+    fn the_committed_plugin_index_verifies_against_the_release_keys() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugin-index");
+        let read = |name: &str| std::fs::read(dir.join(name)).unwrap();
+        let keys = configured_keys().unwrap().expect("release keys are configured");
+        let manifest = read(MANIFEST_FILE);
+        let signature = read(SIGNATURE_FILE);
+        let declared = authenticate(&manifest, &signature, &keys).unwrap();
+        let catalog = read(&declared.catalog.path);
+        let policy = Policy {
+            keys,
+            origins: Vec::new(),
+            app_version: Some(env!("CARGO_PKG_VERSION").into()),
+        };
+        let index = verify_parts(&policy, manifest, signature, catalog, String::new(), None)
+            .unwrap_or_else(|error| panic!("committed index: {error}"));
+        assert!(!index.document.entries.is_empty());
+        // The directory holds the manifest, its signature, the current catalog
+        // and at most the previous one, which in-flight clients may still fetch.
+        let mut names: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        let catalogs = names
+            .iter()
+            .filter(|name| name.starts_with("catalog-") && name.ends_with(".json.zst"))
+            .count();
+        assert!((1..=2).contains(&catalogs), "{names:?}");
+        assert_eq!(names.len(), catalogs + 2, "{names:?}");
+        assert!(names.contains(&declared.catalog.path));
+    }
+
+    #[test]
     fn a_trust_list_selects_the_key_a_manifest_names() {
         let (_, primary) = keypair();
         let (_, spare) = keypair();
