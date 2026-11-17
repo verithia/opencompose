@@ -448,7 +448,7 @@ enum PluginCommand {
         #[arg(long, value_name = "FILE")]
         catalog: Option<PathBuf>,
 
-        /// Pinned Ed25519 public key for --index (32 raw bytes or hex)
+        /// Trusted Ed25519 keys for --index: 32 raw bytes, or one hex key per line
         #[arg(long, value_name = "FILE", env = "OCP_PLUGIN_INDEX_PUBKEY")]
         public_key: Option<PathBuf>,
 
@@ -548,7 +548,7 @@ enum PluginIndexCommand {
         #[arg(value_name = "DIR")]
         dir: PathBuf,
 
-        /// Pinned Ed25519 public key (32 raw bytes or hex; or OCP_PLUGIN_INDEX_PUBKEY)
+        /// Trusted Ed25519 keys: 32 raw bytes, or one hex key per line (or OCP_PLUGIN_INDEX_PUBKEY)
         #[arg(long, value_name = "FILE", env = "OCP_PLUGIN_INDEX_PUBKEY")]
         public_key: PathBuf,
     },

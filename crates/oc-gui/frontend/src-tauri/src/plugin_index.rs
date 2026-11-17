@@ -8,6 +8,8 @@
 //! at application setup, and a fetch happens only when the plugin browser opens
 //! or a caller asks for a refresh.
 
+use oc_market::TrustedKeys;
+#[cfg(test)]
 use oc_market::index::hex_decode;
 #[cfg(test)]
 use oc_market::{key_id, sha256_hex};
@@ -96,6 +98,10 @@ impl IndexFetch for HttpFetch {
                 .get(url)
                 .header(reqwest::header::CACHE_CONTROL, "no-cache")
                 .header(
+                    reqwest::header::ACCEPT_ENCODING,
+                    oc_market::index::ACCEPT_ENCODING,
+                )
+                .header(
                     reqwest::header::ACCEPT,
                     "application/json, application/octet-stream",
                 );
@@ -107,6 +113,12 @@ impl IndexFetch for HttpFetch {
                 .await
                 .map_err(|error| format!("request failed: {error}"))?;
             let status = response.status().as_u16();
+            oc_market::index::check_content_encoding(
+                response
+                    .headers()
+                    .get(reqwest::header::CONTENT_ENCODING)
+                    .and_then(|value| value.to_str().ok()),
+            )?;
             let etag = response
                 .headers()
                 .get(reqwest::header::ETAG)
@@ -253,7 +265,7 @@ type BundledCatalog = Arc<Vec<CatalogEntry>>;
 
 pub struct IndexClient {
     dir: PathBuf,
-    public_key: Option<Vec<u8>>,
+    keys: Option<TrustedKeys>,
     primary_base: String,
     fallback_base: String,
     active: Mutex<Option<ActiveCatalog>>,
@@ -294,19 +306,16 @@ fn override_public_key() -> Option<String> {
 
 impl IndexClient {
     pub fn new(dir: PathBuf) -> Result<Self, String> {
-        let public_key = match override_public_key() {
-            Some(key) => {
-                let key = hex_decode(&key)
-                    .map_err(|error| format!("Configured plugin-index key is invalid: {error}"))?;
-                if key.len() != 32 {
-                    return Err("Configured plugin-index key must be 32 bytes".into());
-                }
-                Some(key)
-            }
-            None => oc_market::configured_public_key()?,
+        let keys = match override_public_key() {
+            Some(key) => Some(
+                TrustedKeys::parse(&key)
+                    .map_err(|error| format!("Configured plugin-index key is invalid: {error}"))?
+                    .ok_or("Configured plugin-index key is empty")?,
+            ),
+            None => oc_market::configured_keys()?,
         };
         let (primary, fallback) = override_base_urls();
-        Ok(Self::with_optional_key(dir, public_key, primary, fallback))
+        Ok(Self::with_optional_keys(dir, keys, primary, fallback))
     }
 
     #[cfg(test)]
@@ -326,18 +335,19 @@ impl IndexClient {
         primary_base: String,
         fallback_base: String,
     ) -> Self {
-        Self::with_optional_key(dir, Some(public_key), primary_base, fallback_base)
+        let keys = TrustedKeys::single(&public_key).expect("test key is 32 bytes");
+        Self::with_optional_keys(dir, Some(keys), primary_base, fallback_base)
     }
 
-    fn with_optional_key(
+    fn with_optional_keys(
         dir: PathBuf,
-        public_key: Option<Vec<u8>>,
+        keys: Option<TrustedKeys>,
         primary_base: String,
         fallback_base: String,
     ) -> Self {
         let client = Self {
             dir,
-            public_key,
+            keys,
             primary_base,
             fallback_base,
             active: Mutex::new(None),
@@ -345,7 +355,7 @@ impl IndexClient {
             last_error: Mutex::new(None),
             bundled: Mutex::new(None),
         };
-        if client.public_key.is_some() {
+        if client.keys.is_some() {
             let loaded = client.index_store().and_then(|store| {
                 let active = store
                     .load()?
@@ -404,7 +414,7 @@ impl IndexClient {
 
     fn status_at(&self, now: u64) -> PluginIndexStatus {
         let active = lock(&self.active).clone();
-        let last_error = lock(&self.last_error).clone().or_else(|| self.public_key.is_none().then(||
+        let last_error = lock(&self.last_error).clone().or_else(|| self.keys.is_none().then(||
             "Remote plugin-index trust is not configured; the bundled catalog remains available".into()));
         let (source, generated_at, fetched_at, catalog_version, min_app_version, stale_days) =
             match &active {
@@ -423,7 +433,7 @@ impl IndexClient {
             .map(|last| MANUAL_FLOOR_SECONDS.saturating_sub(now.saturating_sub(last)))
             .unwrap_or(0);
         PluginIndexStatus {
-            trust: if self.public_key.is_some() {
+            trust: if self.keys.is_some() {
                 IndexTrust::Configured
             } else {
                 IndexTrust::Unconfigured
@@ -457,7 +467,7 @@ impl IndexClient {
         force: bool,
         now: u64,
     ) -> Result<RefreshOutcome, IndexError> {
-        if self.public_key.is_none() {
+        if self.keys.is_none() {
             return Err(IndexError::new(
                 "trust",
                 "Remote plugin-index trust is not configured; the bundled catalog remains available",
@@ -510,7 +520,7 @@ impl IndexClient {
 
     fn policy(&self) -> Result<Policy, IndexError> {
         Ok(Policy {
-            public_key: self.public_key.clone().ok_or_else(|| {
+            keys: self.keys.clone().ok_or_else(|| {
                 IndexError::new("trust", "Remote plugin-index trust is not configured")
             })?,
             origins: vec![self.primary_base.clone(), self.fallback_base.clone()],
@@ -867,7 +877,7 @@ mod tests {
     #[test]
     fn unconfigured_trust_keeps_startup_bundled_and_never_fetches() {
         let dir = TempDir::new("unconfigured-trust");
-        let client = IndexClient::with_optional_key(
+        let client = IndexClient::with_optional_keys(
             dir.0.clone(),
             None,
             PRIMARY_BASE_URL.into(),
@@ -1194,7 +1204,7 @@ mod tests {
         let error = tauri::async_runtime::block_on(client.refresh(&fetch, true))
             .expect_err("wrong pinned key");
         assert_eq!(error.stage, "key_id");
-        assert!(error.message.contains("does not match the pinned key"));
+        assert!(error.message.contains("is not a trusted key"), "{error}");
         assert_eq!(client.status().source, "bundled");
     }
 
@@ -1540,6 +1550,7 @@ mod tests {
         status: u16,
         body: Vec<u8>,
         content_type: &'static str,
+        content_encoding: Option<&'static str>,
     }
 
     impl HttpReply {
@@ -1548,6 +1559,7 @@ mod tests {
                 status: 200,
                 body,
                 content_type,
+                content_encoding: None,
             }
         }
     }
@@ -1702,6 +1714,7 @@ mod tests {
                 status: 404,
                 body: Vec::new(),
                 content_type: "text/plain",
+                content_encoding: None,
             });
         let reason = match reply.status {
             200 => "OK",
@@ -1711,6 +1724,9 @@ mod tests {
         let mut response = format!("HTTP/1.1 {} {reason}\r\n", reply.status).into_bytes();
         response.extend_from_slice(format!("Content-Length: {}\r\n", reply.body.len()).as_bytes());
         response.extend_from_slice(format!("Content-Type: {}\r\n", reply.content_type).as_bytes());
+        if let Some(encoding) = reply.content_encoding {
+            response.extend_from_slice(format!("Content-Encoding: {encoding}\r\n").as_bytes());
+        }
         response.extend_from_slice(b"Connection: close\r\n\r\n");
         response.extend_from_slice(&reply.body);
         let _ = stream.write_all(&response);
@@ -1756,6 +1772,10 @@ mod tests {
             assert!(
                 headers.contains("user-agent: opencompose/"),
                 "missing user agent: {headers}"
+            );
+            assert!(
+                headers.contains("accept-encoding: identity"),
+                "missing identity encoding: {headers}"
             );
         }
     }
@@ -1898,6 +1918,32 @@ mod tests {
             tauri::async_runtime::block_on(client.refresh(&fetch, true)).expect_err("foreign key");
         assert_eq!(error.stage, "key_id");
         assert_eq!(client.status().source, "bundled");
+    }
+
+    #[test]
+    fn selfhosted_rehearsal_refuses_a_transfer_encoded_manifest() {
+        let dir = TempDir::new("http-gzip-manifest");
+        let (key, _, public_key) = rehearsal_key(&dir.0.join("signing"));
+        let built = build_index(&dir.0, &key, "gzip", "2026-10-22T08:00:00Z", "2026.10.22.1");
+        let server = LoopbackServer::start();
+        server.publish("/", &built);
+        server.set(
+            &format!("/{}", builder::MANIFEST_FILE),
+            HttpReply {
+                content_encoding: Some("gzip"),
+                ..HttpReply::ok(built.manifest.clone(), "application/json")
+            },
+        );
+
+        let client = http_client(&dir.0.join("cache"), &public_key, &server.base("/"));
+        let fetch = HttpFetch::new().expect("http client");
+        let error =
+            tauri::async_runtime::block_on(client.refresh(&fetch, true)).expect_err("gzip refused");
+        assert_eq!(error.stage, "network", "{error}");
+        assert!(error.message.contains("Content-Encoding gzip"), "{error}");
+        assert_eq!(client.status().source, "bundled");
+        let requests = server.take_requests();
+        assert_eq!(requests.len(), 1, "{requests:#?}");
     }
 
     #[test]

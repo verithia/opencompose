@@ -26,7 +26,7 @@ pub use catalog::{
     Candidate, InstallStatus, Mode, Plan, Refusal, choose, choose_index, install_kind,
     is_install_url, plan, status,
 };
-pub use index::{configured_public_key, key_id, trust_scope, verify_manifest_signature};
+pub use index::{TrustedKeys, configured_keys, key_id, trust_scope, verify_manifest_signature};
 pub use install::{
     BundleFormat, HostDirs, HostOs, InstallArchive, InstallFormat, InstallKind, InstallOutcome,
     InstallSource, InstallTarget, MAX_ZIP_ENTRIES, MAX_ZIP_ENTRY_BYTES, MAX_ZIP_TOTAL_BYTES,
