@@ -9,7 +9,7 @@
 //! quarter-note beats from the project start; turning them into bars is the
 //! frontend's job because it holds the current meter.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -18,7 +18,7 @@ use crate::ast::{
     KeyMode, KeySignature, Marker, Master, MixState, NoteEvent, NoteName, PatternDef, Phrase,
     PresetDef, ProjectProperties, Section, TimeRange, TimeSignature, Track,
 };
-use crate::diff::{Mutation, OrderedList, Subtree, SubtreeChange};
+use crate::diff::{Mutation, OrderChange, OrderedList, Subtree, SubtreeChange};
 use crate::timing::ProjectClock;
 
 /// Largest number of facts one change set carries.
@@ -311,13 +311,19 @@ impl ChangeSet {
 
 /// Describe paired mutations, using a clock derived from any properties they
 /// carry and the default meter when they carry none.
+///
+/// `mutations` comes from [`crate::diff::mutations`]: a subtree change with both
+/// sides known pairs the same declaration key, so its two names are equal.
+/// Renames are a removal plus an addition, never a same-key pair with different
+/// names.
 pub fn describe(mutations: &[Mutation]) -> ChangeSet {
     let context = Context::from_mutations(mutations);
     describe_in(&context, mutations)
 }
 
 /// Describe paired mutations against the caller's current project properties,
-/// so bar-beat spans use the real meter.
+/// so bar-beat spans use the real meter. `mutations` has the same contract as
+/// [`describe`].
 pub fn describe_with_properties(
     mutations: &[Mutation],
     properties: &ProjectProperties,
@@ -446,21 +452,56 @@ fn describe_in(context: &Context, mutations: &[Mutation]) -> ChangeSet {
         mutations,
         removal_track,
         addition_track,
+        |track| track.name.as_str(),
         same_track_except_name,
+        reorder_of(mutations, OrderedList::Tracks),
     );
     let presets = pair_renames(
         mutations,
         removal_preset,
         addition_preset,
+        |preset| preset.name.as_str(),
         same_preset_except_name,
+        reorder_of(mutations, OrderedList::Presets),
     );
     let patterns = pair_renames(
         mutations,
         removal_pattern,
         addition_pattern,
+        |pattern| pattern.name.as_str(),
         same_pattern_except_name,
+        reorder_of(mutations, OrderedList::Patterns),
     );
-    let buses = pair_renames(mutations, removal_bus, addition_bus, same_bus_except_name);
+    let buses = pair_renames(
+        mutations,
+        removal_bus,
+        addition_bus,
+        |bus| bus.name.as_str(),
+        same_bus_except_name,
+        reorder_of(mutations, OrderedList::Buses),
+    );
+    let renames = Renames {
+        tracks: tracks
+            .renames
+            .iter()
+            .map(|(before, after)| (before.name.as_str(), after.name.as_str()))
+            .collect(),
+        presets: presets
+            .renames
+            .iter()
+            .map(|(before, after)| (before.name.as_str(), after.name.as_str()))
+            .collect(),
+        patterns: patterns
+            .renames
+            .iter()
+            .map(|(before, after)| (before.name.as_str(), after.name.as_str()))
+            .collect(),
+        buses: buses
+            .renames
+            .iter()
+            .map(|(before, after)| (before.name.as_str(), after.name.as_str()))
+            .collect(),
+    };
     let mut discarded = vec![false; mutations.len()];
     for pairing in [
         &tracks.discarded,
@@ -473,47 +514,52 @@ fn describe_in(context: &Context, mutations: &[Mutation]) -> ChangeSet {
         }
     }
 
+    for (before, after) in &tracks.renames {
+        out.push(Change::TrackRenamed {
+            from: before.name.clone(),
+            to: after.name.clone(),
+        });
+    }
+    for (before, after) in &presets.renames {
+        out.push(Change::PresetRenamed {
+            from: before.name.clone(),
+            to: after.name.clone(),
+        });
+    }
+    for (before, after) in &patterns.renames {
+        out.push(Change::PatternRenamed {
+            from: before.name.clone(),
+            to: after.name.clone(),
+        });
+    }
+    for (before, after) in &buses.renames {
+        out.push(Change::BusRenamed {
+            from: before.name.clone(),
+            to: after.name.clone(),
+        });
+    }
+
     for (index, mutation) in mutations.iter().enumerate() {
-        if discarded[index] {
-            continue;
-        }
-        if let Some(after) = tracks.target[index]
-            && let Some(before) = removal_track(mutation)
+        if discarded[index]
+            || tracks.paired[index]
+            || presets.paired[index]
+            || patterns.paired[index]
+            || buses.paired[index]
         {
-            out.push(Change::TrackRenamed {
-                from: before.name.clone(),
-                to: after.name.clone(),
-            });
             continue;
         }
-        if let Some(after) = presets.target[index]
-            && let Some(before) = removal_preset(mutation)
-        {
-            out.push(Change::PresetRenamed {
-                from: before.name.clone(),
-                to: after.name.clone(),
-            });
+        if let Mutation::Reordered { list, order } = mutation {
+            if common_order_changed(order) {
+                out.push(match list {
+                    OrderedList::Tracks => Change::TracksReordered,
+                    OrderedList::Presets => Change::PresetsReordered,
+                    OrderedList::Patterns => Change::PatternsReordered,
+                    OrderedList::Buses => Change::BusesReordered,
+                });
+            }
             continue;
         }
-        if let Some(after) = patterns.target[index]
-            && let Some(before) = removal_pattern(mutation)
-        {
-            out.push(Change::PatternRenamed {
-                from: before.name.clone(),
-                to: after.name.clone(),
-            });
-            continue;
-        }
-        if let Some(after) = buses.target[index]
-            && let Some(before) = removal_bus(mutation)
-        {
-            out.push(Change::BusRenamed {
-                from: before.name.clone(),
-                to: after.name.clone(),
-            });
-            continue;
-        }
-        describe_mutation(context, mutation, &mut out);
+        describe_mutation(context, mutation, &renames, &mut out);
     }
 
     let more = out.len().saturating_sub(MAX_CHANGES);
@@ -699,56 +745,415 @@ fn addition_bus<'b>(mutation: &Mutation<'b>) -> Option<&'b Bus> {
 
 /// A removal paired with the addition that carried the same object renamed.
 struct RenamePairing<'b, T> {
-    target: Vec<Option<&'b T>>,
+    /// Removal mutations that became a rename fact.
+    paired: Vec<bool>,
+    /// Addition mutations that became the other side of a rename fact.
     discarded: Vec<bool>,
+    /// The paired sides in old declaration order.
+    renames: Vec<(&'b T, &'b T)>,
 }
 
-/// Pair each removal with an addition that differs only in its name. The
-/// pairing is per declaration kind and uses the patch's own order.
+type DeclarationGap<'a> = (Option<&'a str>, Option<&'a str>);
+
+/// Map every changed name to the surviving declarations on either side of it.
+///
+/// A rename keeps its place between the same neighbours; a removal and an
+/// unrelated addition elsewhere in the list must not pair even when their
+/// content matches.
+fn gap_keys<'a>(
+    names: &[&'a str],
+    survivors: &HashSet<&'a str>,
+) -> HashMap<&'a str, DeclarationGap<'a>> {
+    let mut next = vec![None; names.len()];
+    let mut next_survivor = None;
+    for index in (0..names.len()).rev() {
+        next[index] = next_survivor;
+        if survivors.contains(names[index]) {
+            next_survivor = Some(names[index]);
+        }
+    }
+    let mut previous = None;
+    let mut gaps = HashMap::new();
+    for (index, name) in names.iter().enumerate() {
+        if survivors.contains(*name) {
+            previous = Some(*name);
+        } else {
+            gaps.insert(*name, (previous, next[index]));
+        }
+    }
+    gaps
+}
+
+/// Pair renames within the gap between the same surviving declarations, by
+/// their rank in that gap.
+///
+/// The reorder each patch recorded supplies absolute positions; when neither
+/// side recorded one, membership edits place removals at the old list's end and
+/// additions at the new list's end, and the shared rank is the same position.
 fn pair_renames<'b, T>(
     mutations: &[Mutation<'b>],
     removal: fn(&Mutation<'b>) -> Option<&'b T>,
     addition: fn(&Mutation<'b>) -> Option<&'b T>,
+    name: fn(&T) -> &str,
     same_except_name: fn(&T, &T) -> bool,
+    order: Option<OrderChange<'b>>,
 ) -> RenamePairing<'b, T> {
     let mut pairing = RenamePairing {
-        target: vec![None; mutations.len()],
+        paired: vec![false; mutations.len()],
         discarded: vec![false; mutations.len()],
+        renames: Vec::new(),
     };
-    for (index, mutation) in mutations.iter().enumerate() {
-        let Some(before) = removal(mutation) else {
+    let removals: Vec<(usize, &'b T)> = mutations
+        .iter()
+        .enumerate()
+        .filter_map(|(index, mutation)| removal(mutation).map(|item| (index, item)))
+        .collect();
+    let additions: Vec<(usize, &'b T)> = mutations
+        .iter()
+        .enumerate()
+        .filter_map(|(index, mutation)| addition(mutation).map(|item| (index, item)))
+        .collect();
+
+    let mut before: Option<Vec<&'b str>> = order
+        .and_then(|order| order.before)
+        .map(|names| names.iter().map(String::as_str).collect());
+    let mut after: Option<Vec<&'b str>> = order
+        .and_then(|order| order.after)
+        .map(|names| names.iter().map(String::as_str).collect());
+    if before.is_none()
+        && let Some(after) = &after
+    {
+        let added: HashSet<&str> = additions.iter().map(|(_, item)| name(item)).collect();
+        let mut rebuilt: Vec<&str> = after
+            .iter()
+            .copied()
+            .filter(|item| !added.contains(item))
+            .collect();
+        rebuilt.extend(removals.iter().map(|(_, item)| name(item)));
+        before = Some(rebuilt);
+    }
+    if after.is_none()
+        && let Some(before) = &before
+    {
+        let removed: HashSet<&str> = removals.iter().map(|(_, item)| name(item)).collect();
+        let mut rebuilt: Vec<&str> = before
+            .iter()
+            .copied()
+            .filter(|item| !removed.contains(item))
+            .collect();
+        rebuilt.extend(additions.iter().map(|(_, item)| name(item)));
+        after = Some(rebuilt);
+    }
+
+    let mut removals = removals;
+    if let Some(before) = &before {
+        let old_index: HashMap<&str, usize> = before
+            .iter()
+            .enumerate()
+            .map(|(index, name)| (*name, index))
+            .collect();
+        removals.sort_by_key(|(_, item)| old_index.get(name(*item)).copied().unwrap_or(usize::MAX));
+    }
+    let (removal_gaps, addition_gaps) = match (&before, &after) {
+        (Some(before), Some(after)) => {
+            let after_names: HashSet<&str> = after.iter().copied().collect();
+            let before_names: HashSet<&str> = before.iter().copied().collect();
+            let survivors: HashSet<&str> = before
+                .iter()
+                .copied()
+                .filter(|name| after_names.contains(name))
+                .collect();
+            debug_assert_eq!(
+                survivors.len(),
+                after
+                    .iter()
+                    .filter(|name| before_names.contains(*name))
+                    .count(),
+            );
+            (gap_keys(before, &survivors), gap_keys(after, &survivors))
+        }
+        _ => (HashMap::new(), HashMap::new()),
+    };
+
+    let mut additions_by_gap: HashMap<DeclarationGap<'_>, Vec<(usize, &'b T)>> = HashMap::new();
+    for (index, item) in &additions {
+        let gap = addition_gaps
+            .get(name(item))
+            .copied()
+            .unwrap_or((None, None));
+        additions_by_gap
+            .entry(gap)
+            .or_default()
+            .push((*index, *item));
+    }
+    let mut cursors: HashMap<DeclarationGap<'_>, usize> = HashMap::new();
+    for (removal_index, before_item) in &removals {
+        let before_item = *before_item;
+        let gap = removal_gaps
+            .get(name(before_item))
+            .copied()
+            .unwrap_or((None, None));
+        let rank = {
+            let cursor = cursors.entry(gap).or_insert(0);
+            let rank = *cursor;
+            *cursor += 1;
+            rank
+        };
+        let Some((addition_index, after_item)) = additions_by_gap
+            .get(&gap)
+            .and_then(|list| list.get(rank))
+            .copied()
+        else {
             continue;
         };
-        for (candidate, addition_mutation) in mutations.iter().enumerate() {
-            if pairing.discarded[candidate] {
-                continue;
-            }
-            let Some(after) = addition(addition_mutation) else {
-                continue;
-            };
-            if same_except_name(before, after) {
-                pairing.discarded[candidate] = true;
-                pairing.target[index] = Some(after);
-                break;
-            }
+        if same_except_name(before_item, after_item) {
+            pairing.paired[*removal_index] = true;
+            pairing.discarded[addition_index] = true;
+            pairing.renames.push((before_item, after_item));
         }
     }
     pairing
 }
 
-fn describe_mutation(context: &Context, mutation: &Mutation, out: &mut Vec<Change>) {
-    let change = match mutation {
-        Mutation::Reordered(list) => {
-            out.push(match list {
-                OrderedList::Tracks => Change::TracksReordered,
-                OrderedList::Presets => Change::PresetsReordered,
-                OrderedList::Patterns => Change::PatternsReordered,
-                OrderedList::Buses => Change::BusesReordered,
-            });
-            return;
+fn reorder_of<'b>(mutations: &[Mutation<'b>], list: OrderedList) -> Option<OrderChange<'b>> {
+    mutations.iter().find_map(|mutation| match mutation {
+        Mutation::Reordered { list: found, order } if *found == list => Some(*order),
+        _ => None,
+    })
+}
+
+/// Whether two recorded orders disagree about the declarations both contain.
+fn common_order_changed(order: &OrderChange<'_>) -> bool {
+    let (Some(before), Some(after)) = (order.before, order.after) else {
+        return false;
+    };
+    let after_names: HashSet<&str> = after.iter().map(String::as_str).collect();
+    let before_names: HashSet<&str> = before.iter().map(String::as_str).collect();
+    let old_common: Vec<&str> = before
+        .iter()
+        .map(String::as_str)
+        .filter(|item| after_names.contains(item))
+        .collect();
+    let new_common: Vec<&str> = after
+        .iter()
+        .map(String::as_str)
+        .filter(|item| before_names.contains(item))
+        .collect();
+    old_common != new_common
+}
+
+/// The declarations that were renamed in one edit, by kind.
+#[derive(Default)]
+struct Renames<'a> {
+    tracks: BTreeMap<&'a str, &'a str>,
+    buses: BTreeMap<&'a str, &'a str>,
+    presets: BTreeMap<&'a str, &'a str>,
+    patterns: BTreeMap<&'a str, &'a str>,
+}
+
+fn mapped<'a>(names: &BTreeMap<&'a str, &'a str>, name: &str) -> Option<String> {
+    names.get(name).map(|name| (*name).to_owned())
+}
+
+fn rename_in(names: &BTreeMap<&str, &str>, value: &mut String) {
+    if let Some(name) = mapped(names, value) {
+        *value = name;
+    }
+}
+
+fn rename_optional(names: &BTreeMap<&str, &str>, value: &mut Option<String>) {
+    if let Some(name) = value.as_deref().and_then(|name| mapped(names, name)) {
+        *value = Some(name);
+    }
+}
+
+fn renamed_track_or_bus(renames: &Renames<'_>, name: &str) -> Option<String> {
+    mapped(&renames.tracks, name).or_else(|| mapped(&renames.buses, name))
+}
+
+fn apply_effect_references(effect: &mut Effect, renames: &Renames<'_>) {
+    if let Some(source) = &mut effect.sidechain_source
+        && let Some(name) = renamed_track_or_bus(renames, source)
+    {
+        *source = name;
+    }
+}
+
+fn apply_input_route_references(route: &mut crate::ast::InputRoute, renames: &Renames<'_>) {
+    if let Some(name) = renamed_track_or_bus(renames, &route.source) {
+        route.source = name;
+    }
+}
+
+fn apply_pattern_references(pattern: &PatternDef, renames: &Renames<'_>) -> PatternDef {
+    let mut next = pattern.clone();
+    rename_optional(&renames.presets, &mut next.preset);
+    for effect in &mut next.effects {
+        apply_effect_references(effect, renames);
+    }
+    next
+}
+
+fn apply_preset_references(preset: &PresetDef, renames: &Renames<'_>) -> PresetDef {
+    let mut next = preset.clone();
+    rename_optional(&renames.presets, &mut next.extends);
+    for effect in &mut next.effects {
+        apply_effect_references(effect, renames);
+    }
+    next
+}
+
+fn apply_track_references(track: &Track, renames: &Renames<'_>) -> Track {
+    let mut next = track.clone();
+    rename_optional(&renames.presets, &mut next.preset);
+    rename_optional(&renames.buses, &mut next.mix.output);
+    for send in &mut next.mix.sends {
+        rename_in(&renames.buses, &mut send.target);
+        if let Some(source) = &mut send.source
+            && let Some(name) = mapped(&renames.tracks, &source.owner)
+                .or_else(|| mapped(&renames.presets, &source.owner))
+        {
+            source.owner = name;
         }
+    }
+    for effect in &mut next.effects {
+        apply_effect_references(effect, renames);
+    }
+    for clip in next.clips.pattern_clips_mut() {
+        rename_in(&renames.patterns, &mut clip.pattern);
+    }
+    for clip in next.clips.audio_clips_mut() {
+        rename_in(&renames.tracks, &mut clip.track);
+    }
+    for pattern in &mut next.inline_patterns {
+        *pattern = apply_pattern_references(pattern, renames);
+    }
+    for route in &mut next.input_routes {
+        apply_input_route_references(route, renames);
+    }
+    next
+}
+
+fn apply_bus_references(bus: &Bus, renames: &Renames<'_>) -> Bus {
+    let mut next = bus.clone();
+    for route in &mut next.routes {
+        rename_in(&renames.buses, route);
+    }
+    for effect in &mut next.effects {
+        apply_effect_references(effect, renames);
+    }
+    for route in &mut next.input_routes {
+        apply_input_route_references(route, renames);
+    }
+    next
+}
+
+fn apply_master_references(master: &Option<Master>, renames: &Renames<'_>) -> Option<Master> {
+    let mut next = master.clone();
+    if let Some(master) = &mut next {
+        for effect in &mut master.effects {
+            apply_effect_references(effect, renames);
+        }
+        for route in &mut master.input_routes {
+            apply_input_route_references(route, renames);
+        }
+    }
+    next
+}
+
+fn audio_clip_follows_rename(before: &AudioClip, after: &AudioClip, renames: &Renames<'_>) -> bool {
+    let Some(track) = mapped(&renames.tracks, &before.track) else {
+        return false;
+    };
+    track == after.track
+        && before.name == after.name
+        && before.file == after.file
+        && before.time_range == after.time_range
+        && before.placement == after.placement
+        && before.offset_seconds == after.offset_seconds
+        && before.gain_db == after.gain_db
+        && before.fade_in_seconds == after.fade_in_seconds
+        && before.fade_out_seconds == after.fade_out_seconds
+        && before.invert == after.invert
+        && before.crossfade_seconds == after.crossfade_seconds
+        && before.stretch == after.stretch
+        && before.stretch_mode == after.stretch_mode
+        && before.bypass_processing == after.bypass_processing
+        && before.tempo_follow == after.tempo_follow
+        && before.pitch == after.pitch
+        && before.formant == after.formant
+        && before.preserve_formants == after.preserve_formants
+        && before.warp_markers == after.warp_markers
+        && before.loop_seconds == after.loop_seconds
+        && before.take_group == after.take_group
+        && before.take == after.take
+        && before.muted == after.muted
+        && before.gain_envelope == after.gain_envelope
+}
+
+#[cfg(debug_assertions)]
+fn paired_declaration_names_match(change: &SubtreeChange<'_>) -> bool {
+    match (change.before, change.after) {
+        (Some(Subtree::Preset(before)), Some(Subtree::Preset(after))) => before.name == after.name,
+        (Some(Subtree::Pattern(before)), Some(Subtree::Pattern(after))) => {
+            before.name == after.name
+        }
+        (Some(Subtree::Track(before)), Some(Subtree::Track(after))) => before.name == after.name,
+        (Some(Subtree::Bus(before)), Some(Subtree::Bus(after))) => before.name == after.name,
+        _ => true,
+    }
+}
+
+/// Whether the only difference between the two sides is a reference rewritten
+/// by a rename that is already its own fact.
+fn reference_only(change: &SubtreeChange<'_>, renames: &Renames<'_>) -> bool {
+    let (Some(before), Some(after)) = (change.before, change.after) else {
+        return false;
+    };
+    match (before, after) {
+        (Subtree::Track(before), Subtree::Track(after)) => {
+            apply_track_references(before, renames) == *after
+        }
+        (Subtree::Preset(before), Subtree::Preset(after)) => {
+            apply_preset_references(before, renames) == *after
+        }
+        (Subtree::Pattern(before), Subtree::Pattern(after)) => {
+            apply_pattern_references(before, renames) == *after
+        }
+        (Subtree::Bus(before), Subtree::Bus(after)) => {
+            apply_bus_references(before, renames) == *after
+        }
+        (Subtree::Master(before), Subtree::Master(after)) => {
+            apply_master_references(before, renames) == *after
+        }
+        (Subtree::AudioClips(before), Subtree::AudioClips(after)) => {
+            before.len() == after.len()
+                && before.iter().zip(after).all(|(before, after)| {
+                    before.order == after.order
+                        && audio_clip_follows_rename(&before.clip, &after.clip, renames)
+                })
+        }
+        _ => false,
+    }
+}
+
+fn describe_mutation(
+    context: &Context,
+    mutation: &Mutation,
+    renames: &Renames<'_>,
+    out: &mut Vec<Change>,
+) {
+    let change = match mutation {
+        Mutation::Reordered { .. } => return,
         Mutation::Subtree(change) => change,
     };
+    debug_assert!(
+        paired_declaration_names_match(change),
+        "describe expects mutations() output: a paired declaration keeps its name",
+    );
+    if reference_only(change, renames) {
+        return;
+    }
     let representative = change.after.as_ref().or(change.before.as_ref());
     match representative {
         Some(Subtree::Header(_)) => describe_header(
@@ -809,6 +1214,7 @@ fn describe_mutation(context: &Context, mutation: &Mutation, out: &mut Vec<Chang
             context,
             change.before.as_ref().and_then(Subtree::as_audio_clips),
             change.after.as_ref().and_then(Subtree::as_audio_clips),
+            renames,
             out,
         ),
         None => {}
@@ -945,17 +1351,9 @@ fn describe_preset(before: Option<&PresetDef>, after: Option<&PresetDef>, out: &
             preset: preset.name.clone(),
         }),
         (Some(before), Some(after)) if before != after => {
-            if before.name != after.name {
-                out.push(Change::PresetRenamed {
-                    from: before.name.clone(),
-                    to: after.name.clone(),
-                });
-            }
-            if !same_preset_except_name(before, after) {
-                out.push(Change::PresetChanged {
-                    preset: after.name.clone(),
-                });
-            }
+            out.push(Change::PresetChanged {
+                preset: after.name.clone(),
+            });
         }
         _ => {}
     }
@@ -974,23 +1372,15 @@ fn describe_pattern(
             pattern: pattern.name.clone(),
         }),
         (Some(before), Some(after)) if before != after => {
-            if before.name != after.name {
-                out.push(Change::PatternRenamed {
-                    from: before.name.clone(),
-                    to: after.name.clone(),
-                });
-            }
-            if !same_pattern_except_name(before, after) {
-                let content_changed = before.events != after.events || before.hits != after.hits;
-                let span = content_changed.then(|| BeatSpan {
-                    start: 0.0,
-                    end: before.content_quarters().max(after.content_quarters()),
-                });
-                out.push(Change::PatternChanged {
-                    pattern: after.name.clone(),
-                    span,
-                });
-            }
+            let content_changed = before.events != after.events || before.hits != after.hits;
+            let span = content_changed.then(|| BeatSpan {
+                start: 0.0,
+                end: before.content_quarters().max(after.content_quarters()),
+            });
+            out.push(Change::PatternChanged {
+                pattern: after.name.clone(),
+                span,
+            });
         }
         _ => {}
     }
@@ -1018,13 +1408,6 @@ fn describe_track(
         return;
     }
     let start = out.len();
-    if before.name != after.name {
-        out.push(Change::TrackRenamed {
-            from: before.name.clone(),
-            to: after.name.clone(),
-        });
-    }
-
     if before.instrument != after.instrument
         || before.preset != after.preset
         || before.engine != after.engine
@@ -1498,13 +1881,6 @@ fn describe_bus(
         return;
     }
     let start = out.len();
-    if before.name != after.name {
-        out.push(Change::BusRenamed {
-            from: before.name.clone(),
-            to: after.name.clone(),
-        });
-    }
-
     let mut mix = Vec::new();
     if before.routes != after.routes {
         mix.push(MixParam::Routes);
@@ -1720,6 +2096,7 @@ fn describe_audio_clips(
     context: &Context,
     before: Option<&[crate::diff::OrderedAudioClip]>,
     after: Option<&[crate::diff::OrderedAudioClip]>,
+    renames: &Renames<'_>,
     out: &mut Vec<Change>,
 ) {
     let before = before.unwrap_or(&[]);
@@ -1737,6 +2114,13 @@ fn describe_audio_clips(
         let previous = before_map.get(&order).copied();
         let current = after_map.get(&order).copied();
         if previous == current {
+            continue;
+        }
+        // A renamed track rewrites every clip that points at it. The rename is
+        // already one fact, so the clip rows that only follow it add nothing.
+        if let (Some(previous), Some(current)) = (previous, current)
+            && audio_clip_follows_rename(previous, current, renames)
+        {
             continue;
         }
         let mut span = SpanAccumulator::default();
@@ -1850,4 +2234,66 @@ fn inline_container_differs(before: &PatternDef, after: &PatternDef) -> bool {
         || before.hairpins != after.hairpins
         || before.hits != after.hits
         || before.color != after.color
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::diff::{Subtree, SubtreeChange};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static COMPARISONS: AtomicUsize = AtomicUsize::new(0);
+
+    fn counted_same(_before: &Track, _after: &Track) -> bool {
+        COMPARISONS.fetch_add(1, Ordering::Relaxed);
+        true
+    }
+
+    #[test]
+    fn pairing_many_identical_renames_stays_linear() {
+        const COUNT: usize = 5000;
+        let template = crate::parse("@project\n@track template\n")
+            .expect("fixture parses")
+            .tracks
+            .pop()
+            .expect("fixture has a track");
+        let mut old = Vec::with_capacity(COUNT);
+        let mut new = Vec::with_capacity(COUNT);
+        for index in 0..COUNT {
+            let mut before = template.clone();
+            before.name = format!("old{index}");
+            old.push(before);
+            let mut after = template.clone();
+            after.name = format!("new{index}");
+            new.push(after);
+        }
+        let mut mutations = Vec::with_capacity(COUNT * 2);
+        for track in &old {
+            mutations.push(Mutation::Subtree(SubtreeChange {
+                before: Some(Subtree::Track(track)),
+                after: None,
+            }));
+        }
+        for track in &new {
+            mutations.push(Mutation::Subtree(SubtreeChange {
+                before: None,
+                after: Some(Subtree::Track(track)),
+            }));
+        }
+
+        COMPARISONS.store(0, Ordering::Relaxed);
+        let pairing = pair_renames(
+            &mutations,
+            removal_track,
+            addition_track,
+            |track| track.name.as_str(),
+            counted_same,
+            None,
+        );
+        assert_eq!(pairing.renames.len(), COUNT);
+        assert!(
+            COMPARISONS.load(Ordering::Relaxed) <= COUNT,
+            "a rename comparison must not multiply by the addition count"
+        );
+    }
 }

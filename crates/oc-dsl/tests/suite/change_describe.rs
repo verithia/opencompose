@@ -225,8 +225,8 @@ fn removing_several_tracks_resolves_each_name_from_the_inverse_set() {
     assert_eq!(
         set.changes,
         vec![
-            Change::TrackRemoved { track: "c".into() },
             Change::TrackRemoved { track: "a".into() },
+            Change::TrackRemoved { track: "c".into() },
         ]
     );
 }
@@ -535,4 +535,412 @@ fn a_long_declaration_name_is_clipped_in_the_fact() {
         }
         other => panic!("{other:?}"),
     }
+}
+
+#[test]
+fn membership_edits_do_not_report_a_declaration_reorder() {
+    let tracks = |order: &str| format!("@project\n{order}");
+    let rename_middle = tracks("@track a\n@track b\n@track c\n");
+    let renamed = tracks("@track a\n@track x\n@track c\n");
+    assert_eq!(
+        only(&describe_sources(&rename_middle, &renamed)),
+        Change::TrackRenamed {
+            from: "b".into(),
+            to: "x".into(),
+        }
+    );
+    assert_eq!(
+        only(&describe_sources(
+            &tracks("@track a\n@track c\n"),
+            &rename_middle
+        )),
+        Change::TrackAdded { track: "b".into() }
+    );
+    assert_eq!(
+        only(&describe_sources(
+            &rename_middle,
+            &tracks("@track a\n@track c\n")
+        )),
+        Change::TrackRemoved { track: "b".into() }
+    );
+    let reversed = tracks("@track c\n@track b\n@track a\n");
+    assert_eq!(
+        only(&describe_sources(&rename_middle, &reversed)),
+        Change::TracksReordered
+    );
+    assert_eq!(
+        only(&describe_sources(&reversed, &rename_middle)),
+        Change::TracksReordered
+    );
+
+    let buses = |order: &str| format!("@project\n{order}");
+    let bus = |name: &str| format!("@bus {name}\n  routes: [master]\n");
+    let bus_list = |names: &[&str]| buses(&names.iter().map(|name| bus(name)).collect::<String>());
+    let abc = bus_list(&["a", "b", "c"]);
+    let axc = bus_list(&["a", "x", "c"]);
+    assert_eq!(
+        only(&describe_sources(&abc, &axc)),
+        Change::BusRenamed {
+            from: "b".into(),
+            to: "x".into(),
+        }
+    );
+    assert_eq!(
+        only(&describe_sources(&bus_list(&["a", "c"]), &abc)),
+        Change::BusAdded { bus: "b".into() }
+    );
+    assert_eq!(
+        only(&describe_sources(&abc, &bus_list(&["a", "c"]))),
+        Change::BusRemoved { bus: "b".into() }
+    );
+    let cba = bus_list(&["c", "b", "a"]);
+    assert_eq!(only(&describe_sources(&abc, &cba)), Change::BusesReordered);
+    assert_eq!(only(&describe_sources(&cba, &abc)), Change::BusesReordered);
+
+    let presets = |order: &str| format!("@project\n{order}");
+    let preset = |name: &str| {
+        format!("@preset {name}\n  source: builtin\n  plugin: \"builtin.open_synth\"\n")
+    };
+    let preset_list =
+        |names: &[&str]| presets(&names.iter().map(|name| preset(name)).collect::<String>());
+    assert_eq!(
+        only(&describe_sources(
+            &preset_list(&["a", "b", "c"]),
+            &preset_list(&["a", "x", "c"])
+        )),
+        Change::PresetRenamed {
+            from: "b".into(),
+            to: "x".into(),
+        }
+    );
+    assert_eq!(
+        only(&describe_sources(
+            &preset_list(&["a", "c"]),
+            &preset_list(&["a", "b", "c"])
+        )),
+        Change::PresetAdded { preset: "b".into() }
+    );
+
+    let patterns = |order: &str| format!("@project\n{order}");
+    let pattern = |name: &str| {
+        format!("@pattern {name} | instrument: piano/acoustic_grand\n  events:\n    C4 q mf\n")
+    };
+    let pattern_list =
+        |names: &[&str]| patterns(&names.iter().map(|name| pattern(name)).collect::<String>());
+    assert_eq!(
+        only(&describe_sources(
+            &pattern_list(&["a", "b", "c"]),
+            &pattern_list(&["a", "x", "c"])
+        )),
+        Change::PatternRenamed {
+            from: "b".into(),
+            to: "x".into(),
+        }
+    );
+    assert_eq!(
+        only(&describe_sources(
+            &pattern_list(&["a", "c"]),
+            &pattern_list(&["a", "b", "c"])
+        )),
+        Change::PatternAdded {
+            pattern: "b".into()
+        }
+    );
+}
+
+#[test]
+fn identical_content_renames_pair_in_declaration_order() {
+    let set = describe_sources(
+        "@project\n@track a\n@track b\n",
+        "@project\n@track x\n@track y\n",
+    );
+    assert_eq!(
+        set.changes,
+        vec![
+            Change::TrackRenamed {
+                from: "a".into(),
+                to: "x".into(),
+            },
+            Change::TrackRenamed {
+                from: "b".into(),
+                to: "y".into(),
+            },
+        ]
+    );
+}
+
+#[test]
+fn a_removed_and_an_appended_bus_are_not_a_rename() {
+    let buses = |names: &[(&str, &str)]| {
+        let mut source = String::from("@project\n");
+        for (name, route) in names {
+            source.push_str(&format!("@bus {name}\n  routes: [{route}]\n"));
+        }
+        source
+    };
+    let before = buses(&[("verb", "master"), ("a", "master"), ("b", "master")]);
+    let after = buses(&[("a", "master"), ("b", "master"), ("delay", "master")]);
+    assert_eq!(
+        describe_sources(&before, &after).changes,
+        vec![
+            Change::BusRemoved { bus: "verb".into() },
+            Change::BusAdded {
+                bus: "delay".into()
+            },
+        ]
+    );
+    let in_place = buses(&[("delay", "master"), ("a", "master"), ("b", "master")]);
+    assert_eq!(
+        only(&describe_sources(&before, &in_place)),
+        Change::BusRenamed {
+            from: "verb".into(),
+            to: "delay".into(),
+        }
+    );
+    assert_eq!(
+        describe_sources(&after, &before).changes,
+        vec![
+            Change::BusRemoved {
+                bus: "delay".into()
+            },
+            Change::BusAdded { bus: "verb".into() },
+        ]
+    );
+}
+
+#[test]
+fn renaming_a_track_does_not_report_each_audio_clip_on_it() {
+    let before = "@project\n@audio_clip intro [1:1 - 5:1] | track: tape\n  file: \"a.wav\"\n@audio_clip outro [9:1 - 10:1] | track: tape\n  file: \"b.wav\"\n@track tape\n";
+    let after = "@project\n@audio_clip intro [1:1 - 5:1] | track: reel\n  file: \"a.wav\"\n@audio_clip outro [9:1 - 10:1] | track: reel\n  file: \"b.wav\"\n@track reel\n";
+    assert_eq!(
+        only(&describe_sources(before, after)),
+        Change::TrackRenamed {
+            from: "tape".into(),
+            to: "reel".into(),
+        }
+    );
+}
+
+#[test]
+fn renames_pair_inside_the_gap_between_the_same_survivors() {
+    let tracks = |order: &str| format!("@project\n{order}");
+    let old = tracks("@track a\n@track b\n@track c\n");
+    let inserted = tracks("@track n\n@track a\n@track x\n@track c\n");
+    assert_eq!(
+        describe_sources(&old, &inserted).changes,
+        vec![
+            Change::TrackRenamed {
+                from: "b".into(),
+                to: "x".into(),
+            },
+            Change::TrackAdded { track: "n".into() },
+        ]
+    );
+    assert_eq!(
+        describe_sources(&inserted, &old).changes,
+        vec![
+            Change::TrackRenamed {
+                from: "x".into(),
+                to: "b".into(),
+            },
+            Change::TrackRemoved { track: "n".into() },
+        ]
+    );
+
+    let tail = tracks("@track b\n@track y\n");
+    assert_eq!(
+        describe_sources(&old, &tail).changes,
+        vec![
+            Change::TrackRenamed {
+                from: "c".into(),
+                to: "y".into(),
+            },
+            Change::TrackRemoved { track: "a".into() },
+        ]
+    );
+    assert_eq!(
+        describe_sources(&tail, &old).changes,
+        vec![
+            Change::TrackRenamed {
+                from: "y".into(),
+                to: "c".into(),
+            },
+            Change::TrackAdded { track: "a".into() },
+        ]
+    );
+
+    let buses = |order: &str| format!("@project\n{order}");
+    let bus = |name: &str| format!("@bus {name}\n  routes: [master]\n");
+    let bus_list = |names: &[&str]| buses(&names.iter().map(|name| bus(name)).collect::<String>());
+    let abc = bus_list(&["a", "b", "c"]);
+    let inserted = bus_list(&["n", "a", "x", "c"]);
+    assert_eq!(
+        describe_sources(&abc, &inserted).changes,
+        vec![
+            Change::BusRenamed {
+                from: "b".into(),
+                to: "x".into(),
+            },
+            Change::BusAdded { bus: "n".into() },
+        ]
+    );
+    assert_eq!(
+        describe_sources(&inserted, &abc).changes,
+        vec![
+            Change::BusRenamed {
+                from: "x".into(),
+                to: "b".into(),
+            },
+            Change::BusRemoved { bus: "n".into() },
+        ]
+    );
+    let tail = bus_list(&["b", "y"]);
+    assert_eq!(
+        describe_sources(&abc, &tail).changes,
+        vec![
+            Change::BusRenamed {
+                from: "c".into(),
+                to: "y".into(),
+            },
+            Change::BusRemoved { bus: "a".into() },
+        ]
+    );
+    assert_eq!(
+        describe_sources(&tail, &abc).changes,
+        vec![
+            Change::BusRenamed {
+                from: "y".into(),
+                to: "c".into(),
+            },
+            Change::BusAdded { bus: "a".into() },
+        ]
+    );
+
+    let presets = |order: &str| format!("@project\n{order}");
+    let preset = |name: &str| {
+        format!("@preset {name}\n  source: builtin\n  plugin: \"builtin.open_synth\"\n")
+    };
+    let preset_list =
+        |names: &[&str]| presets(&names.iter().map(|name| preset(name)).collect::<String>());
+    assert_eq!(
+        describe_sources(
+            &preset_list(&["a", "b", "c"]),
+            &preset_list(&["n", "a", "x", "c"])
+        )
+        .changes,
+        vec![
+            Change::PresetRenamed {
+                from: "b".into(),
+                to: "x".into(),
+            },
+            Change::PresetAdded { preset: "n".into() },
+        ]
+    );
+    assert_eq!(
+        describe_sources(
+            &preset_list(&["n", "a", "x", "c"]),
+            &preset_list(&["a", "b", "c"])
+        )
+        .changes,
+        vec![
+            Change::PresetRenamed {
+                from: "x".into(),
+                to: "b".into(),
+            },
+            Change::PresetRemoved { preset: "n".into() },
+        ]
+    );
+
+    let patterns = |order: &str| format!("@project\n{order}");
+    let pattern = |name: &str| {
+        format!("@pattern {name} | instrument: piano/acoustic_grand\n  events:\n    C4 q mf\n")
+    };
+    let pattern_list =
+        |names: &[&str]| patterns(&names.iter().map(|name| pattern(name)).collect::<String>());
+    assert_eq!(
+        describe_sources(
+            &pattern_list(&["a", "b", "c"]),
+            &pattern_list(&["n", "a", "x", "c"])
+        )
+        .changes,
+        vec![
+            Change::PatternRenamed {
+                from: "b".into(),
+                to: "x".into(),
+            },
+            Change::PatternAdded {
+                pattern: "n".into()
+            },
+        ]
+    );
+    assert_eq!(
+        describe_sources(
+            &pattern_list(&["n", "a", "x", "c"]),
+            &pattern_list(&["a", "b", "c"])
+        )
+        .changes,
+        vec![
+            Change::PatternRenamed {
+                from: "x".into(),
+                to: "b".into(),
+            },
+            Change::PatternRemoved {
+                pattern: "n".into()
+            },
+        ]
+    );
+}
+
+#[test]
+fn reference_updates_that_follow_a_rename_are_not_their_own_facts() {
+    let bus_before = "@project\n@bus verb\n  routes: [master]\n@bus glue\n  routes: [verb]\n@track lead | instrument: piano/acoustic_grand\n  mix: send(verb=25%), output=verb\n";
+    let bus_after = "@project\n@bus delay\n  routes: [master]\n@bus glue\n  routes: [delay]\n@track lead | instrument: piano/acoustic_grand\n  mix: send(delay=25%), output=delay\n";
+    assert_eq!(
+        only(&describe_sources(bus_before, bus_after)),
+        Change::BusRenamed {
+            from: "verb".into(),
+            to: "delay".into(),
+        }
+    );
+    assert_eq!(
+        only(&describe_sources(bus_after, bus_before)),
+        Change::BusRenamed {
+            from: "delay".into(),
+            to: "verb".into(),
+        }
+    );
+
+    let preset_before = "@project\n@preset lead\n  source: builtin\n  plugin: \"builtin.open_synth\"\n@track keys | instrument: piano/acoustic_grand, preset: lead\n";
+    let preset_after = "@project\n@preset lead_two\n  source: builtin\n  plugin: \"builtin.open_synth\"\n@track keys | instrument: piano/acoustic_grand, preset: lead_two\n";
+    assert_eq!(
+        only(&describe_sources(preset_before, preset_after)),
+        Change::PresetRenamed {
+            from: "lead".into(),
+            to: "lead_two".into(),
+        }
+    );
+    assert_eq!(
+        only(&describe_sources(preset_after, preset_before)),
+        Change::PresetRenamed {
+            from: "lead_two".into(),
+            to: "lead".into(),
+        }
+    );
+
+    let pattern_before = "@project\n@pattern riff | instrument: piano/acoustic_grand\n  events:\n    C4 q mf\n@track keys | instrument: piano/acoustic_grand\n  clip: riff [1:1 - 2:1]\n";
+    let pattern_after = "@project\n@pattern riff_two | instrument: piano/acoustic_grand\n  events:\n    C4 q mf\n@track keys | instrument: piano/acoustic_grand\n  clip: riff_two [1:1 - 2:1]\n";
+    assert_eq!(
+        only(&describe_sources(pattern_before, pattern_after)),
+        Change::PatternRenamed {
+            from: "riff".into(),
+            to: "riff_two".into(),
+        }
+    );
+    assert_eq!(
+        only(&describe_sources(pattern_after, pattern_before)),
+        Change::PatternRenamed {
+            from: "riff_two".into(),
+            to: "riff".into(),
+        }
+    );
 }

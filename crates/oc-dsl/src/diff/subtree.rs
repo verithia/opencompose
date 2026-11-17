@@ -187,22 +187,38 @@ pub enum OrderedList {
     Buses,
 }
 
+/// The declaration order each side of a reorder recorded.
+///
+/// A patch writes a reorder only when membership edits do not reproduce the
+/// list on their own, so a side that is absent keeps the order implied by the
+/// other side's membership edits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OrderChange<'a> {
+    /// The old declaration order, when the inverse patch recorded one.
+    pub before: Option<&'a [String]>,
+    /// The new declaration order, when the forward patch recorded one.
+    pub after: Option<&'a [String]>,
+}
+
 /// One fact about an edit, borrowed from the two patches.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Mutation<'a> {
     /// One subtree with the value on each side.
     Subtree(SubtreeChange<'a>),
-    /// A declaration list changed order.
-    Reordered(OrderedList),
+    /// A declaration list changed order, with the order each side recorded.
+    Reordered {
+        list: OrderedList,
+        order: OrderChange<'a>,
+    },
 }
 
 /// Pair every forward operation with the inverse operation of the same key.
 ///
-/// The result follows the forward patch's operation order. Inverse-only
-/// reorders from membership bookkeeping produce no entry; only a forward
-/// reorder records an [`OrderedList`]. A forward operation with no inverse
-/// partner still yields the side that is known, or is skipped when no name or
-/// value can be recovered.
+/// The result follows the forward patch's operation order. Reorders carry the
+/// names both patches recorded, so a consumer can tell a real reorder from the
+/// bookkeeping placement of a removed or added declaration. A forward operation
+/// with no inverse partner still yields the side that is known, or is skipped
+/// when no name or value can be recovered.
 pub fn mutations<'a>(forward: &'a ProjectPatch, inverse: &'a ProjectPatch) -> Vec<Mutation<'a>> {
     let forward_track_names: HashSet<&str> = forward
         .changes
@@ -245,7 +261,17 @@ pub fn mutations<'a>(forward: &'a ProjectPatch, inverse: &'a ProjectPatch) -> Ve
     }
 
     let mut out = Vec::with_capacity(forward.changes.len());
-    for (position, op) in forward.changes.iter().enumerate() {
+    // Removals describe in old declaration order even though the patch removes
+    // them back-to-front; a later rename pairing compares them by position.
+    for (_, position) in &removals {
+        if let Some(track) = restored_by_position.get(position) {
+            out.push(Mutation::Subtree(SubtreeChange {
+                before: Some(Subtree::Track(track)),
+                after: None,
+            }));
+        }
+    }
+    for op in &forward.changes {
         match op {
             PatchOp::SetProjectHeader(header) => {
                 let before = find_inverse(inverse, |op| match op {
@@ -325,15 +351,14 @@ pub fn mutations<'a>(forward: &'a ProjectPatch, inverse: &'a ProjectPatch) -> Ve
                     after: Some(Subtree::Track(track)),
                 }));
             }
-            PatchOp::RemoveTrack(_) => {
-                if let Some(track) = restored_by_position.get(&position) {
-                    out.push(Mutation::Subtree(SubtreeChange {
-                        before: Some(Subtree::Track(track)),
-                        after: None,
-                    }));
-                }
-            }
-            PatchOp::ReorderTracks(_) => out.push(Mutation::Reordered(OrderedList::Tracks)),
+            PatchOp::RemoveTrack(_) => {}
+            PatchOp::ReorderTracks(names) => out.push(Mutation::Reordered {
+                list: OrderedList::Tracks,
+                order: OrderChange {
+                    before: reorder_names(inverse, OrderedList::Tracks),
+                    after: Some(names.as_slice()),
+                },
+            }),
             PatchOp::SetBus(bus) => {
                 let before = find_inverse(inverse, |op| match op {
                     PatchOp::SetBus(old) if old.name == bus.name => Some(Subtree::Bus(old)),
@@ -405,12 +430,61 @@ pub fn mutations<'a>(forward: &'a ProjectPatch, inverse: &'a ProjectPatch) -> Ve
                     after: Some(Subtree::AudioClips(clips)),
                 }));
             }
-            PatchOp::ReorderPresets(_) => out.push(Mutation::Reordered(OrderedList::Presets)),
-            PatchOp::ReorderPatterns(_) => out.push(Mutation::Reordered(OrderedList::Patterns)),
-            PatchOp::ReorderBuses(_) => out.push(Mutation::Reordered(OrderedList::Buses)),
+            PatchOp::ReorderPresets(names) => out.push(Mutation::Reordered {
+                list: OrderedList::Presets,
+                order: OrderChange {
+                    before: reorder_names(inverse, OrderedList::Presets),
+                    after: Some(names.as_slice()),
+                },
+            }),
+            PatchOp::ReorderPatterns(names) => out.push(Mutation::Reordered {
+                list: OrderedList::Patterns,
+                order: OrderChange {
+                    before: reorder_names(inverse, OrderedList::Patterns),
+                    after: Some(names.as_slice()),
+                },
+            }),
+            PatchOp::ReorderBuses(names) => out.push(Mutation::Reordered {
+                list: OrderedList::Buses,
+                order: OrderChange {
+                    before: reorder_names(inverse, OrderedList::Buses),
+                    after: Some(names.as_slice()),
+                },
+            }),
+        }
+    }
+    // A membership edit can need an inverse reorder without a forward one when
+    // the added declaration landed at the list's head. The old order is still
+    // the reference a rename pairs against.
+    for list in [
+        OrderedList::Tracks,
+        OrderedList::Presets,
+        OrderedList::Patterns,
+        OrderedList::Buses,
+    ] {
+        if reorder_names(forward, list).is_none()
+            && let Some(before) = reorder_names(inverse, list)
+        {
+            out.push(Mutation::Reordered {
+                list,
+                order: OrderChange {
+                    before: Some(before),
+                    after: None,
+                },
+            });
         }
     }
     out
+}
+
+fn reorder_names(patch: &ProjectPatch, list: OrderedList) -> Option<&[String]> {
+    patch.changes.iter().find_map(|op| match (list, op) {
+        (OrderedList::Tracks, PatchOp::ReorderTracks(names)) => Some(names.as_slice()),
+        (OrderedList::Presets, PatchOp::ReorderPresets(names)) => Some(names.as_slice()),
+        (OrderedList::Patterns, PatchOp::ReorderPatterns(names)) => Some(names.as_slice()),
+        (OrderedList::Buses, PatchOp::ReorderBuses(names)) => Some(names.as_slice()),
+        _ => None,
+    })
 }
 
 fn find_inverse<'a>(

@@ -929,7 +929,9 @@ fn generate_label(changes: &[PatchOp]) -> String {
 pub mod compressed;
 pub mod subtree;
 
-pub use subtree::{Mutation, OrderedList, Subtree, SubtreeChange, SubtreeKind, mutations};
+pub use subtree::{
+    Mutation, OrderChange, OrderedList, Subtree, SubtreeChange, SubtreeKind, mutations,
+};
 
 // ============================================================================
 // Tests
