@@ -19,6 +19,7 @@ import { aiConfig, getActiveProvider, hasUnsavedConfig } from "../ai/config";
 import { elapsedLabel, stopStalled, STOP_STALLED_SECONDS } from "../ai/transcript";
 import type { SessionMeta } from "../ai/sessions";
 import type { WireMessage } from "../ai/wire";
+import type { TurnOutcome } from "../ai/api";
 import { answerFakeTurn, cancelFakeTurn, emitTurnEvent, emitTurnProject, fakeTurnRunning, replyFakeTurn, resetFakeTurns, runFakeTurn, type TurnStartArgs } from "./helpers/fakeTurn";
 
 const CAPABILITIES = { text: true, audio_in: false, audio_out: false, native_tool_calling: true, streaming: true };
@@ -88,6 +89,8 @@ const backend = {
   askUser: (_call: { tool: string; args: Record<string, unknown> }) => false,
   /** Every `ai_turn_reply`, in order. */
   replies: [] as { requestId: string; callId: string; reply: Record<string, unknown> }[],
+  /** The typed facts the turn's committed batch reports once. */
+  changes: undefined as TurnOutcome["changes"],
 };
 
 function installBackend() {
@@ -111,6 +114,7 @@ function installBackend() {
         ask: (call) => call.tool === "edit_subtree" || call.tool === "tracks_remove",
         askUser: (call) => backend.askUser(call),
         late: (message) => backend.late?.(message) ?? false,
+        changes: backend.changes,
       });
       case "ai_turn_answer": return answerFakeTurn(String(typed.requestId), String(typed.callId), typed.decision as never);
       case "ai_turn_reply": {
@@ -196,6 +200,7 @@ beforeEach(() => {
   backend.snapshot = makeSnapshot();
   backend.sessions = [];
   backend.late = undefined;
+  backend.changes = undefined;
   i18n.setLocale("en");
   aiLimits.setActiveContext(null);
   resetStats();
@@ -980,5 +985,21 @@ describe("an unsaved provider draft", () => {
     expect(backend.chatCalls).toHaveLength(0);
     expect(input().value).toBe("do not lose this");
     expect(document.querySelector(".ai-save-notice")?.textContent).toContain("Settings could not be saved");
+  });
+});
+
+describe("a turn's committed batch", () => {
+  it("shows its typed changes once when the turn ends", async () => {
+    backend.changes = {
+      changes: [{ kind: "tempo", from: 120, to: 132 }],
+      more: 0,
+    };
+    await mount();
+    await typeAndSend("speed this up");
+
+    await waitFor(() => expect(systemRows().some(row => row.textContent?.includes("This turn changed:"))).toBe(true));
+    const changed = systemRows().filter(row => row.textContent?.includes("This turn changed:"));
+    expect(changed).toHaveLength(1);
+    expect(changed[0].textContent).toContain("This turn changed: Change tempo from 120 to 132 BPM");
   });
 });

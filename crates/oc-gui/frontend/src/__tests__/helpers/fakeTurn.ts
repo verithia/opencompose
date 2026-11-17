@@ -34,6 +34,8 @@ export interface FakeTurnBackend {
   askUser?: (call: { tool: string; args: Record<string, unknown> }) => boolean;
   /** Tools whose successful result counts as an edit. */
   mutation?: (tool: string) => boolean;
+  /** The committed batch facts the turn reports once when it ends. */
+  changes?: TurnOutcome["changes"];
   /**
    * Saved messages whose `message` event arrives only after `ai_turn_start`
    * has answered. Tauri does not order events with command replies, so a
@@ -188,9 +190,10 @@ export async function runFakeTurn(args: TurnStartArgs, backend: FakeTurnBackend)
       if (!calls.length) {
         if (turn.pending.length) continue;
         const text = typeof reply.content === "string" ? reply.content : "";
-        return text.trim()
+        const outcome: TurnOutcome = text.trim()
           ? { text, failed: false }
           : { text: "Provider returned no text.", failed: true };
+        return backend.changes ? { ...outcome, changes: backend.changes } : outcome;
       }
       planned += calls.length;
       for (const [index, call] of calls.entries()) {
