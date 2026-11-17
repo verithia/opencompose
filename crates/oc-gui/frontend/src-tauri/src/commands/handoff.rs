@@ -685,8 +685,8 @@ mod tests {
         let prepared = prepare(destination, vec![drums.clone(), midi, vocal.clone()]).unwrap();
         let outcome = commit(&mut inner, prepared, None).unwrap();
         assert_eq!((outcome.stem_count, outcome.midi_track_count), (2, 2));
-        assert_eq!(inner.undo.undo.len(), 1);
-        assert_eq!(inner.undo.undo[0].label, "Import aligned stems");
+        assert_eq!(inner.undo.undo_entries().len(), 1);
+        assert_eq!(inner.undo.undo_entries()[0].tag, "Import aligned stems");
         assert!(inner.project.tracks[0].mix.mute);
         assert!(inner.project.tracks[1].mix.mute);
         assert!(!inner.project.tracks[2].mix.mute);
@@ -800,7 +800,7 @@ mod tests {
 
         state.rollback_transaction().unwrap();
         assert!(state.lock_inner().project.tracks.is_empty());
-        assert!(state.lock_inner().undo.undo.is_empty());
+        assert!(state.lock_inner().undo.undo_entries().is_empty());
         assert_eq!(fs::read_dir(root.join("media")).unwrap().count(), 0);
         assert!(staged.join("Vocal.wav").is_file());
 
@@ -813,7 +813,7 @@ mod tests {
         crate::project_persist::flush_state(&state).unwrap();
         fs::remove_dir_all(&staged).unwrap();
         let mut inner = state.lock_inner();
-        assert_eq!(inner.undo.undo.len(), 1);
+        assert_eq!(inner.undo.undo_entries().len(), 1);
         let saved =
             oc_dsl::parse(&fs::read_to_string(root.join("destination.ocp")).unwrap()).unwrap();
         let files = saved
@@ -977,7 +977,7 @@ mod tests {
             oc_dsl::parse(&fs::read_to_string(root.join("destination.ocp")).unwrap()).unwrap();
         assert_eq!(saved.audio_clips().len(), 1);
         assert!(root.join(&saved.audio_clips()[0].file).is_file());
-        assert_eq!(state.lock_inner().undo.undo.len(), 1);
+        assert_eq!(state.lock_inner().undo.undo_entries().len(), 1);
     }
 
     #[test]
@@ -994,7 +994,7 @@ mod tests {
         inner.bump_revision();
         assert!(commit(&mut inner, prepared, None).is_err());
         assert!(inner.project.tracks.is_empty());
-        assert!(inner.undo.undo.is_empty());
+        assert!(inner.undo.undo_entries().is_empty());
         assert_eq!(fs::read_dir(root.join("media")).unwrap().count(), 0);
     }
 }

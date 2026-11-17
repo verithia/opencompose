@@ -88,8 +88,18 @@ pub fn record(
     incarnation: Option<&str>,
     dsl: &str,
     project: Option<&std::path::Path>,
+    history: Option<&crate::ai::sessions::HistoryAt>,
 ) -> Result<Vec<Value>, String> {
-    store.append_turn_with_snapshot(id, messages, incarnation, dsl, project)
+    store.append_turn_with_snapshot(
+        id,
+        messages,
+        incarnation,
+        crate::ai::sessions::turns::SnapshotAt {
+            dsl,
+            project,
+            history,
+        },
+    )
 }
 
 #[cfg(test)]
@@ -137,9 +147,16 @@ mod tests {
         let messages = [
             json!({"role":"user", "content":"soften highs", "message_meta":crate::ai::sessions::message_meta(crate::ai::sessions::MessageKind::User)}),
         ];
-        let saved = record(&store, &id, &messages, None, dsl, None).unwrap();
-        let point = store.revert_point(&id, 0).unwrap();
-        assert_eq!(point.dsl_sha, saved[0]["dsl_sha"].as_str().unwrap());
-        assert_eq!(store.dsl_version(&id, &point.dsl_sha).unwrap(), dsl);
+        let history = crate::ai::sessions::HistoryAt {
+            project: "/songs/song.ocp".into(),
+            level: 2,
+            at: Some(7),
+            max_id: 7,
+        };
+        let saved = record(&store, &id, &messages, None, dsl, None, Some(&history)).unwrap();
+        let point = store.recall_point(&id, 0).unwrap();
+        let sha = saved[0]["dsl_sha"].as_str().unwrap();
+        assert_eq!(store.dsl_version(&id, sha).unwrap(), dsl);
+        assert_eq!(point.history_at, Some(history));
     }
 }

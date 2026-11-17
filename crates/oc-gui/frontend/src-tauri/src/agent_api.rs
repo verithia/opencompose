@@ -425,7 +425,9 @@ fn route(app: &AppHandle, request: &Request, token: &str) -> (u16, String) {
                 ));
             }
         };
+        let requests = app.state::<crate::ai_service::Requests>();
         return match block_on(crate::ai::agent_loop::host::steer(
+            &requests,
             &steer.request_id,
             &steer.session_id,
             steer.message,
@@ -438,7 +440,7 @@ fn route(app: &AppHandle, request: &Request, token: &str) -> (u16, String) {
         if !authorized(&request.headers, token) {
             return (401, error_body("unauthorized"));
         }
-        return cancel_turn(&request.body);
+        return cancel_turn(app, &request.body);
     }
     if request.method == "POST" && path == "/ai/turn" {
         if !authorized(&request.headers, token) {
@@ -564,7 +566,7 @@ fn handle_ai_complete_for(body: &[u8], app: Option<&AppHandle>) -> (u16, String)
 /// `POST /ai/cancel`: stops the named turn of the named conversation. Its
 /// completed calls keep their results and its batch commits, as for any stop;
 /// the turn's own `/ai/turn` request answers with the stop facts.
-fn cancel_turn(body: &[u8]) -> (u16, String) {
+fn cancel_turn(app: &AppHandle, body: &[u8]) -> (u16, String) {
     #[derive(serde::Deserialize)]
     #[serde(deny_unknown_fields)]
     struct Cancel {
@@ -577,7 +579,8 @@ fn cancel_turn(body: &[u8]) -> (u16, String) {
             return complete_failure(AiError::new("request", error.to_string()));
         }
     };
-    if crate::ai::agent_loop::host::cancel_in(&cancel.request_id, &cancel.session_id) {
+    let requests = app.state::<crate::ai_service::Requests>();
+    if crate::ai::agent_loop::host::cancel_in(&requests, &cancel.request_id, &cancel.session_id) {
         (200, json!({"ok": true, "cancelled": true}).to_string())
     } else {
         complete_failure(AiError::new("not_running", "No matching turn is running"))
@@ -596,6 +599,15 @@ fn handle_ai_turn(app: &AppHandle, body: &[u8]) -> (u16, String) {
     let (start, owner) = match turn_request(app, body) {
         Ok(request) => request,
         Err(error) => return complete_failure(error),
+    };
+    // Another process may have this conversation open in its panel or in a
+    // turn; both processes name the same key.
+    let _session_lock = match crate::commands::hold_turn(
+        &crate::ai::sessions::Store::config(),
+        &start.session_id,
+    ) {
+        Ok(lock) => lock,
+        Err(error) => return complete_failure(AiError::from(error)),
     };
     match block_on(crate::ai::agent_loop::host::run(
         app,
@@ -620,9 +632,7 @@ fn turn_request(
     body: &[u8],
 ) -> Result<(crate::ai::agent_loop::host::TurnStart, String), AiError> {
     let (start, binding) = parse_turn(body)?;
-    binding
-        .caller(app)
-        .map_err(|error| AiError::new("session_binding", error))?;
+    binding.caller(app)?;
     // The turn's batch is its own: a `/call` client bound to the same
     // conversation runs as another owner and cannot commit or roll it back.
     let owner = crate::state::turn_batch_owner(&start.request_id, &start.session_id);
@@ -719,8 +729,9 @@ fn complete_status(kind: &str) -> u16 {
         "busy" | "cancelled" | "steer_closed" | "not_running" => 409,
         // The saved endpoint or provider has to change before a retry can work.
         "config" | "redirect" => 409,
-        // The request names a conversation or project this host does not have open.
-        "session_binding" => 409,
+        // The request names a conversation or project this host does not have open,
+        // or another process holds the conversation it names.
+        "session_binding" | "session_in_use" => 409,
         // The conversation does not fit the model's window even compacted.
         "context_overflow" => 413,
         // The local conversation store failed; no provider was at fault.
@@ -769,6 +780,9 @@ fn accounting_status(code: crate::ai::session_usage::AccountingCode) -> u16 {
 fn complete_failure(error: AiError) -> (u16, String) {
     let status = complete_status(&error.kind);
     let mut payload = crate::ai::skill_hints::refusal(&error.message);
+    if let Some(detail) = &error.detail {
+        payload["detail"] = json!(detail);
+    }
     payload["kind"] = json!(error.kind);
     payload["retryable"] = json!(error.retryable);
     payload["reauth"] = json!(error.reauth);
@@ -828,6 +842,15 @@ async fn complete_turn(
     request: &CompleteRequest,
     app: Option<&AppHandle>,
 ) -> Result<Value, AiError> {
+    // A saved turn owns its conversation for the request's duration, in this
+    // process or another.
+    let _session_lock = match request.saved.as_ref() {
+        Some(binding) => Some(
+            crate::commands::hold_turn(&crate::ai::sessions::Store::config(), binding.id())
+                .map_err(AiError::from)?,
+        ),
+        None => None,
+    };
     let entry = crate::ai_service::provider(&request.provider).map_err(AiError::config)?;
     crate::ai::endpoint(&entry.endpoint).map_err(AiError::config)?;
     let stats = crate::ai::timing::TurnStatsHandle::new(&entry.id, &entry.model, entry.wire());
@@ -984,16 +1007,26 @@ fn handle_call(app: &AppHandle, body: &[u8]) -> (u16, String) {
         Ok(binding) => binding,
         Err(error) => return (400, error_body(error)),
     };
-    let caller = match binding {
-        Some(binding) => match binding.caller(app) {
-            Ok(caller) => caller,
-            Err(error) => return (400, error_body(error)),
-        },
-        None => HTTP_BATCH_OWNER.to_owned(),
+    let (caller, _session_lock) = match binding {
+        Some(binding) => {
+            let caller = match binding.caller(app) {
+                Ok(caller) => caller,
+                Err(error) => return complete_failure(error),
+            };
+            let lock = match crate::commands::hold_turn(
+                &crate::ai::sessions::Store::config(),
+                binding.id(),
+            ) {
+                Ok(lock) => lock,
+                Err(error) => return complete_failure(AiError::from(error)),
+            };
+            (caller, Some(lock))
+        }
+        None => (HTTP_BATCH_OWNER.to_owned(), None),
     };
     match dispatch(app, tool, &args, &caller) {
         Ok(result) => (200, ok_body(result)),
-        Err(error) => (400, error_body(error)),
+        Err(error) => (error.status(), error.body()),
     }
 }
 
@@ -1046,7 +1079,7 @@ fn handle_mcp(app: &AppHandle, body: &[u8]) -> (u16, String) {
                         "isError": !ok
                     }))
                 }
-                Err(error) => Ok(mcp_error(error)),
+                Err(error) => Ok(mcp_error(error.message)),
             }
         }
         "ping" => Ok(json!({})),
@@ -1116,8 +1149,8 @@ fn block_on<F: std::future::Future>(future: F) -> F::Output {
     tauri::async_runtime::block_on(future)
 }
 
-fn to_value<T: Serialize>(value: T) -> Result<Value, String> {
-    serde_json::to_value(value).map_err(|error| error.to_string())
+fn to_value<T: Serialize>(value: T) -> Result<Value, ToolError> {
+    serde_json::to_value(value).map_err(|error| ToolError::from(error.to_string()))
 }
 
 /// The shapes `presets_set_params` accepts, spelled once for every refusal.
@@ -1280,10 +1313,109 @@ fn foreign_batch_error(open: &str, caller: &str) -> String {
     )
 }
 
+/// A tool refusal with the stable kind a client may branch on.
+#[derive(Debug)]
+pub struct ToolError {
+    kind: Option<&'static str>,
+    message: String,
+}
+
+impl ToolError {
+    fn new(kind: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            kind: Some(kind),
+            message: message.into(),
+        }
+    }
+
+    /// A refusal caused by another process holding a resource answers 409.
+    fn status(&self) -> u16 {
+        match self.kind {
+            Some("project_in_use" | "session_in_use") => 409,
+            _ => 400,
+        }
+    }
+
+    fn body(&self) -> String {
+        let mut payload = crate::ai::skill_hints::refusal(&self.message);
+        if let Some(kind) = self.kind {
+            payload["kind"] = json!(kind);
+        }
+        payload.to_string()
+    }
+}
+
+impl std::fmt::Display for ToolError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl From<String> for ToolError {
+    fn from(message: String) -> Self {
+        Self {
+            kind: None,
+            message,
+        }
+    }
+}
+
+impl From<&str> for ToolError {
+    fn from(message: &str) -> Self {
+        Self::from(message.to_owned())
+    }
+}
+
+impl From<ToolError> for String {
+    fn from(error: ToolError) -> Self {
+        error.message
+    }
+}
+
+impl From<crate::process_lock::LockError> for ToolError {
+    fn from(error: crate::process_lock::LockError) -> Self {
+        if error.is_in_use() {
+            Self::new(
+                "session_in_use",
+                "Another OpenCompose process has this conversation open.",
+            )
+        } else {
+            error.to_string().into()
+        }
+    }
+}
+
+impl From<crate::ai::sessions::SessionError> for ToolError {
+    fn from(error: crate::ai::sessions::SessionError) -> Self {
+        if error.kind == crate::ai::sessions::SessionErrorKind::InUse {
+            Self::new("session_in_use", error.message)
+        } else {
+            error.message.into()
+        }
+    }
+}
+
+impl From<crate::commands::ProjectError> for ToolError {
+    fn from(error: crate::commands::ProjectError) -> Self {
+        match error {
+            crate::commands::ProjectError::ProjectInUse { message } => {
+                Self::new("project_in_use", message)
+            }
+            crate::commands::ProjectError::Project { message } => message.into(),
+        }
+    }
+}
+
 /// Entry point shared by MCP and the panel. A refused call returns its error and
 /// leaves the batch open, so the turn keeps the edits that already landed.
-pub fn dispatch(app: &AppHandle, tool: &str, args: &Value, caller: &str) -> Result<Value, String> {
-    dispatch_with_policy(app, tool, args, caller, InstallPolicy::External)
+pub fn dispatch(
+    app: &AppHandle,
+    tool: &str,
+    args: &Value,
+    caller: &str,
+) -> Result<Value, ToolError> {
+    dispatch_with_policy(app, tool, args, caller, InstallPolicy::External, false)
+        .map(|dispatched| dispatched.value)
 }
 
 /// The panel's installation authority is selected by its trusted entry point,
@@ -1293,8 +1425,87 @@ pub(crate) fn dispatch_panel(
     tool: &str,
     args: &Value,
     caller: &str,
-) -> Result<Value, String> {
-    dispatch_with_policy(app, tool, args, caller, InstallPolicy::Panel)
+) -> Result<crate::ai::agent_loop::Dispatched, String> {
+    dispatch_with_policy(app, tool, args, caller, InstallPolicy::Panel, true)
+        .map_err(|error| error.message)
+}
+
+/// The document a call starts from. A batch commit leaves the document as it
+/// is, so it describes its base.
+fn baseline_project<'a>(
+    inner: &'a crate::state::AppStateInner,
+    tool: &str,
+) -> Option<&'a oc_dsl::ast::Project> {
+    if tool == "transaction_commit" {
+        return inner.transaction_base_project();
+    }
+    is_mutation_tool(tool).then_some(&inner.project)
+}
+
+/// The document and revision a tool call starts from.
+struct ChangeBaseline {
+    project: oc_dsl::ast::Project,
+    revision: u64,
+}
+
+/// The revision a tool's result reports publishing, read at the JSON boundary.
+#[derive(Clone, Copy)]
+struct PublishedRevision(u64);
+
+fn published_revision(result: &Value) -> Option<PublishedRevision> {
+    let revision = result.get("revision")?;
+    serde_json::from_value::<u64>(revision.clone())
+        .ok()
+        .map(PublishedRevision)
+}
+
+fn changes_baseline(state: &AppState, tool: &str, attach_changes: bool) -> Option<ChangeBaseline> {
+    if !attach_changes {
+        return None;
+    }
+    // The project and the revision that describes it come from one lock, so a
+    // later comparison cannot mix a document with another revision.
+    let inner = state.lock_inner();
+    let project = baseline_project(&inner, tool)?.clone();
+    Some(ChangeBaseline {
+        project,
+        revision: inner.revision,
+    })
+}
+
+/// The typed facts between `baseline` and the current document. The loop puts
+/// them on the saved message row, where they are local-only; the model never
+/// reads them.
+fn tool_changes(
+    state: &AppState,
+    baseline: Option<&ChangeBaseline>,
+    published: Option<PublishedRevision>,
+) -> Option<oc_dsl::change::ChangeSet> {
+    let (baseline, published) = (baseline?, published?);
+    let inner = state.lock_inner();
+    // A document that moved after the tool reported it is no longer the tool's
+    // result, so its edit would be attributed to the wrong caller. A result
+    // without a typed revision fails closed instead of skipping the check.
+    if inner.revision != published.0 || published.0 < baseline.revision {
+        return None;
+    }
+    describe_edit(&baseline.project, &inner.project)
+}
+
+/// The typed facts of the mutation from `before` to `after`, described from
+/// the patch's subtree changes with the meter `after` has. `None` when nothing
+/// changed. Every tool row that edits the project describes itself here.
+pub(crate) fn describe_edit(
+    before: &oc_dsl::ast::Project,
+    after: &oc_dsl::ast::Project,
+) -> Option<oc_dsl::change::ChangeSet> {
+    let patch = oc_dsl::diff::diff(before, after).ok()??;
+    let inverse = oc_dsl::diff::invert_patch(before, after, &patch);
+    Some(oc_dsl::change::describe(
+        &patch,
+        &inverse,
+        &after.properties,
+    ))
 }
 
 fn dispatch_with_policy(
@@ -1303,11 +1514,17 @@ fn dispatch_with_policy(
     args: &Value,
     caller: &str,
     install_policy: InstallPolicy,
-) -> Result<Value, String> {
+    attach_changes: bool,
+) -> Result<crate::ai::agent_loop::Dispatched, ToolError> {
     let tool = tool.replace('.', "_");
     let state = state(app);
     guard_mutation(&state, &tool, args, caller)?;
+    let baseline = changes_baseline(&state, &tool, attach_changes);
+    let acting = crate::edit_history::act_as(crate::edit_history::Author::from_caller(caller));
     let mut result = dispatch_tool(app, &tool, args, caller, install_policy)?;
+    drop(acting);
+    let published = published_revision(&result);
+    let changes = tool_changes(&state, baseline.as_ref(), published);
     // A call that published a document leaves the project file stale, and the
     // file is the durable record the next process reads. A write that failed is
     // put into the result, so the model does not report a save that did not happen.
@@ -1321,7 +1538,10 @@ fn dispatch_with_policy(
             object.insert("ui_sync_warning".into(), json!(error.to_string()));
         }
     }
-    Ok(result)
+    Ok(crate::ai::agent_loop::Dispatched {
+        value: result,
+        changes,
+    })
 }
 
 /// External batches publish one committed snapshot; the panel publishes its
@@ -1535,7 +1755,7 @@ pub(crate) fn audio_analyze_request(
     if decoded_media {
         report.warnings.push("Media decoded to stereo for analysis; channels describes the analyzed signal, not the source channel count.".into());
     }
-    to_value(report)
+    to_value(report).map_err(String::from)
 }
 
 fn read_analysis_media(
@@ -1724,7 +1944,7 @@ pub(crate) fn analyze_notes_request(
     let mut report = oc_engine::note_analysis::analyze_notes(&path, &options)
         .map_err(|error| format!("note analysis failed: {error}"))?;
     report.warnings.splice(0..0, resolved.warnings);
-    to_value(report)
+    to_value(report).map_err(String::from)
 }
 
 /// Separation CLIs `separate_stems` can drive, with the arguments before the
@@ -2381,9 +2601,16 @@ fn presets_duplicate_json(state: &AppState, args: &Value) -> Result<Value, Strin
 
 /// `undo_history`: the stack as a list; the cursor never moves.
 pub fn undo_history(state: &AppState) -> Result<Value, String> {
-    let entries = state.lock_inner().undo.history();
-    let applied = entries.iter().filter(|entry| entry.applied).count();
-    let redoable = entries.len() - applied;
+    // The window around the cursor; older entries stay in the history on disk.
+    let (entries, applied, total) = {
+        let inner = state.lock_inner();
+        (
+            inner.undo.history(&inner.project.properties),
+            inner.undo.applied_level(),
+            inner.undo.total_levels(),
+        )
+    };
+    let redoable = total - applied;
     Ok(json!({
         "entries": serde_json::to_value(&entries).map_err(|error| error.to_string())?,
         "applied": applied,
@@ -2639,12 +2866,15 @@ fn dispatch_tool(
     args: &Value,
     caller: &str,
     install_policy: InstallPolicy,
-) -> Result<Value, String> {
+) -> Result<Value, ToolError> {
     let id = ToolId::parse(tool).ok_or_else(|| format!("unknown tool '{tool}'"))?;
     match id {
         ToolId::ListSkills | ToolId::ReadSkill => dispatch_skill(id, args)
-            .ok_or_else(|| format!("No reference handler for '{}'", id.name()))?,
-        ToolId::EditSubtree => Err(format!("unknown tool '{}'", id.name())),
+            .ok_or_else(|| format!("No reference handler for '{}'", id.name()))?
+            .map_err(ToolError::from),
+        ToolId::EditSubtree | ToolId::PlanUpdate | ToolId::AskUser => {
+            Err(format!("unknown tool '{}'", id.name()).into())
+        }
         // ---- system -----------------------------------------------------
         ToolId::SystemCapabilities => {
             let _ = crate::agent_tools::misc::SystemCapabilitiesArgs::decode(args)
@@ -2672,12 +2902,16 @@ fn dispatch_tool(
         ToolId::SessionsNew => {
             let request = crate::agent_tools::session::SessionsNewArgs::decode(args)
                 .map_err(|error| error.to_string())?;
-            to_value(crate::commands::new_for(
+            let meta = crate::commands::new_for(
                 &state(app),
                 request.project.as_deref(),
                 request.title.as_deref(),
                 request.parent.as_deref(),
-            )?)
+            )
+            .map_err(ToolError::from)?;
+            let _lock = crate::commands::hold_turn(&crate::ai::sessions::Store::config(), &meta.id)
+                .map_err(ToolError::from)?;
+            to_value(meta)
         }
         ToolId::SessionsLoad => {
             let request = crate::agent_tools::session::SessionsLoadArgs::decode(args)
@@ -2692,7 +2926,8 @@ fn dispatch_tool(
         ToolId::SessionsDelete => {
             let request = crate::agent_tools::session::SessionsDeleteArgs::decode(args)
                 .map_err(|error| error.to_string())?;
-            crate::commands::sessions_delete(request.id)?;
+            let requests = app.state::<crate::ai_service::Requests>();
+            crate::commands::delete_session_for(&state(app), &requests, &request.id)?;
             Ok(json!({ "deleted": true }))
         }
         ToolId::SessionsCompact => {
@@ -2700,8 +2935,10 @@ fn dispatch_tool(
                 .map_err(|error| error.to_string())?;
             let id = request.id;
             let target_tokens = request.target_tokens;
+            let requests = app.state::<crate::ai_service::Requests>();
             to_value(crate::commands::compact_for(
                 &state(app),
+                &requests,
                 &id,
                 target_tokens,
             )?)
@@ -2711,17 +2948,17 @@ fn dispatch_tool(
         ToolId::TransactionBegin => {
             let request = crate::agent_tools::session::TransactionBeginArgs::decode(args)
                 .map_err(|error| error.to_string())?;
-            transaction_begin(&state(app), request.label, caller)
+            transaction_begin(&state(app), request.label, caller).map_err(ToolError::from)
         }
         ToolId::TransactionCommit => {
             let _ = crate::agent_tools::session::TransactionCommitArgs::decode(args)
                 .map_err(|error| error.to_string())?;
-            transaction_commit(&state(app), caller)
+            transaction_commit(&state(app), caller).map_err(ToolError::from)
         }
         ToolId::TransactionRollback => {
             let _ = crate::agent_tools::session::TransactionRollbackArgs::decode(args)
                 .map_err(|error| error.to_string())?;
-            transaction_rollback(&state(app), caller)
+            transaction_rollback(&state(app), caller).map_err(ToolError::from)
         }
 
         // ---- project ----------------------------------------------------
@@ -2791,7 +3028,7 @@ fn dispatch_tool(
                 request.duration_seconds.unwrap_or(30.0),
                 request.limit.unwrap_or(24),
             )?;
-            serde_json::to_value(result).map_err(|error| error.to_string())
+            serde_json::to_value(result).map_err(|error| ToolError::from(error.to_string()))
         }
         ToolId::AudioClipEditRange => {
             use crate::tool_registry::arguments::{RevisionGuard, ToolArguments};
@@ -2819,9 +3056,11 @@ fn dispatch_tool(
         }
         ToolId::AudioClipSetPlacement => {
             audio_clip_set_placement_request(state(app).inner(), args, caller)
+                .map_err(ToolError::from)
         }
         ToolId::AudioClipSetPlayback => {
             audio_clip_set_playback_request(state(app).inner(), args, caller)
+                .map_err(ToolError::from)
         }
         ToolId::ImportAlignedStems => {
             use crate::tool_registry::arguments::ToolArguments;
@@ -2841,21 +3080,34 @@ fn dispatch_tool(
         }
         ToolId::ProjectNew => {
             use crate::tool_registry::arguments::ToolArguments;
-            let _ = crate::agent_tools::project_mutation::ProjectNewArgs::decode(args)
+            let request = crate::agent_tools::project_mutation::ProjectNewArgs::decode(args)
                 .map_err(|error| error.to_string())?;
-            to_value(block_on(commands::new_project(app.clone()))?)
+            crate::agent_tools::project_mutation::validate_new_project_path(&request.path)?;
+            to_value(
+                block_on(commands::new_project_at(
+                    request.path,
+                    request.template,
+                    app.clone(),
+                ))
+                .map_err(ToolError::from)?,
+            )
         }
         ToolId::ProjectOpen => {
             use crate::tool_registry::arguments::ToolArguments;
             let request = crate::agent_tools::project_mutation::ProjectOpenArgs::decode(args)
                 .map_err(|error| error.to_string())?;
-            to_value(block_on(commands::open_file(request.path, app.clone()))?)
+            to_value(
+                block_on(commands::open_file(request.path, app.clone()))
+                    .map_err(ToolError::from)?,
+            )
         }
         ToolId::ProjectSave => {
             use crate::tool_registry::arguments::ToolArguments;
             let request = crate::agent_tools::project_mutation::ProjectSaveArgs::decode(args)
                 .map_err(|error| error.to_string())?;
-            Ok(json!({ "path": block_on(commands::save_file(request.path, app.clone()))? }))
+            Ok(
+                json!({ "path": block_on(commands::save_file(request.path, app.clone())).map_err(ToolError::from)? }),
+            )
         }
         ToolId::ProjectSetTempo
         | ToolId::ProjectSetName
@@ -2865,8 +3117,11 @@ fn dispatch_tool(
             let request = crate::agent_tools::project_mutation::Request::decode(id, args)
                 .map_err(|error| error.to_string())?;
             crate::agent_tools::project_mutation::execute(state(app), request)
+                .map_err(ToolError::from)
         }
-        ToolId::TempoMapSet => tempo_map_set_request(state(app).inner(), args),
+        ToolId::TempoMapSet => {
+            tempo_map_set_request(state(app).inner(), args).map_err(ToolError::from)
+        }
         ToolId::PictureClockSet => {
             use crate::tool_registry::arguments::ToolArguments;
             let request = crate::agent_tools::picture::PictureClockSetArgs::decode(args)
@@ -2889,7 +3144,9 @@ fn dispatch_tool(
                 request.0,
             )?)
         }
-        ToolId::TimeSignatureSet => time_signature_set_request(state(app).inner(), args),
+        ToolId::TimeSignatureSet => {
+            time_signature_set_request(state(app).inner(), args).map_err(ToolError::from)
+        }
 
         // ---- MIDI import / export --------------------------------------
         ToolId::MidiImportHandoff => {
@@ -2944,6 +3201,13 @@ fn dispatch_tool(
         }
 
         // ---- DSL context / edits ---------------------------------------
+        ToolId::ProjectSearch => {
+            use crate::tool_registry::arguments::ToolArguments;
+            let request = crate::agent_tools::search::SearchArgs::decode(args)
+                .map_err(|error| error.to_string())?;
+            crate::agent_tools::search::execute(state(app).inner(), request)
+                .map_err(ToolError::from)
+        }
         ToolId::ProjectGet
         | ToolId::ProjectDsl
         | ToolId::ProjectContext
@@ -2954,12 +3218,13 @@ fn dispatch_tool(
             let request = crate::agent_tools::project_query::Request::decode(id, args)
                 .map_err(|error| error.to_string())?;
             crate::agent_tools::project_query::execute(state(app).inner(), request)
+                .map_err(ToolError::from)
         }
         // ---- tracks -----------------------------------------------------
         ToolId::TracksList => {
             let _ = crate::agent_tools::misc::TracksListArgs::decode(args)
                 .map_err(|error| error.to_string())?;
-            tracks_list(state(app).inner())
+            tracks_list(state(app).inner()).map_err(ToolError::from)
         }
         ToolId::TracksAdd => {
             use crate::tool_registry::arguments::ToolArguments;
@@ -3000,7 +3265,7 @@ fn dispatch_tool(
             use crate::tool_registry::arguments::ToolArguments;
             let request = crate::agent_tools::tracks::TracksDuplicateArgs::decode(args)
                 .map_err(|error| error.to_string())?;
-            tracks_duplicate(state(app).inner(), &request)
+            tracks_duplicate(state(app).inner(), &request).map_err(ToolError::from)
         }
         ToolId::TracksRename => {
             use crate::tool_registry::arguments::ToolArguments;
@@ -3097,7 +3362,7 @@ fn dispatch_tool(
                 .map_err(|error| error.to_string())?;
             let app_state = state(app);
             let inner = app_state.lock_inner();
-            commands::summary(&inner.project, inner.revision)
+            commands::summary(&inner.project, inner.revision).map_err(ToolError::from)
         }
         ToolId::SectionsAdd => {
             use crate::tool_registry::arguments::ToolArguments;
@@ -3113,7 +3378,7 @@ fn dispatch_tool(
                 request.label,
                 state(app),
             )?;
-            commands::summary(&snapshot.project, snapshot.revision)
+            commands::summary(&snapshot.project, snapshot.revision).map_err(ToolError::from)
         }
         ToolId::SectionsSet => {
             use crate::tool_registry::arguments::ToolArguments;
@@ -3140,14 +3405,14 @@ fn dispatch_tool(
                 label,
                 state(app),
             )?;
-            commands::summary(&snapshot.project, snapshot.revision)
+            commands::summary(&snapshot.project, snapshot.revision).map_err(ToolError::from)
         }
         ToolId::SectionsRemove => {
             use crate::tool_registry::arguments::ToolArguments;
             let request = crate::agent_tools::sections::SectionsRemoveArgs::decode(args)
                 .map_err(|error| error.to_string())?;
             let snapshot = commands::remove_section(request.name, state(app))?;
-            commands::summary(&snapshot.project, snapshot.revision)
+            commands::summary(&snapshot.project, snapshot.revision).map_err(ToolError::from)
         }
 
         // ---- content libraries ------------------------------------------
@@ -3202,7 +3467,7 @@ fn dispatch_tool(
             if let Some(name) = request.name.as_deref() {
                 let state = state(app);
                 let inner = state.lock_inner();
-                return preset_details(&inner.project, name);
+                return preset_details(&inner.project, name).map_err(ToolError::from);
             }
             let snapshot = commands::get_project(state(app))?;
             // A pack is named by an absolute path, so the listing carries both
@@ -3262,13 +3527,13 @@ fn dispatch_tool(
             use crate::tool_registry::arguments::ToolArguments;
             let request = crate::agent_tools::presets::PresetsRenameArgs::decode(args)
                 .map_err(|error| error.to_string())?;
-            presets_rename(state(app).inner(), &request)
+            presets_rename(state(app).inner(), &request).map_err(ToolError::from)
         }
         ToolId::PresetsDuplicate => {
             use crate::tool_registry::arguments::ToolArguments;
             let request = crate::agent_tools::presets::PresetsDuplicateArgs::decode(args)
                 .map_err(|error| error.to_string())?;
-            presets_duplicate(state(app).inner(), &request)
+            presets_duplicate(state(app).inner(), &request).map_err(ToolError::from)
         }
         ToolId::PresetsSetParam => {
             use crate::tool_registry::arguments::ToolArguments;
@@ -3394,12 +3659,12 @@ fn dispatch_tool(
         ToolId::SampleSearch => {
             let request =
                 crate::samples::SearchArgs::decode(args).map_err(|error| error.to_string())?;
-            crate::samples::search_request(&request)
+            crate::samples::search_request(&request).map_err(ToolError::from)
         }
         ToolId::SamplePull => {
             let request = crate::agent_tools::sample::SamplePullArgs::decode(args)
                 .map_err(|error| error.to_string())?;
-            crate::samples::pull(&state(app), &request)
+            crate::samples::pull(&state(app), &request).map_err(ToolError::from)
         }
         ToolId::PluginsScan => {
             let request = crate::agent_tools::plugins::PluginsScanArgs::decode(args)
@@ -3508,7 +3773,7 @@ fn dispatch_tool(
         | ToolId::TransportUnmute => {
             let request = crate::agent_tools::transport::Request::decode(id, args)
                 .map_err(|error| error.to_string())?;
-            crate::agent_tools::transport::execute(app, request)
+            crate::agent_tools::transport::execute(app, request).map_err(ToolError::from)
         }
 
         // ---- render / audio --------------------------------------------
@@ -3555,7 +3820,9 @@ fn dispatch_tool(
                 .map_err(|error| error.to_string())?;
             to_value(commands::project_compatibility_report_blocking(&state(app)))
         }
-        ToolId::RenderStems => block_on(render_stems(state(app).inner(), args)),
+        ToolId::RenderStems => {
+            block_on(render_stems(state(app).inner(), args)).map_err(ToolError::from)
+        }
         ToolId::AuditionRange => {
             use crate::tool_registry::arguments::ToolArguments;
             let request = crate::agent_tools::render::AuditionRangeArgs::decode(args)
@@ -3588,10 +3855,10 @@ fn dispatch_tool(
                 crate::state::caller_conversation(caller).is_some(),
             )?)
         }
-        ToolId::AudioAnalyze => audio_analyze_tool(args),
-        ToolId::AnalyzeNotes => analyze_notes_tool(args),
-        ToolId::SeparateStems => separate_stems_tool(args),
-        ToolId::AudioCompare => audio_compare_tool(args),
+        ToolId::AudioAnalyze => audio_analyze_tool(args).map_err(ToolError::from),
+        ToolId::AnalyzeNotes => analyze_notes_tool(args).map_err(ToolError::from),
+        ToolId::SeparateStems => separate_stems_tool(args).map_err(ToolError::from),
+        ToolId::AudioCompare => audio_compare_tool(args).map_err(ToolError::from),
         ToolId::AudioDevices => {
             let _ = crate::agent_tools::misc::AudioDevicesArgs::decode(args)
                 .map_err(|error| error.to_string())?;
@@ -3612,7 +3879,7 @@ fn dispatch_tool(
         ToolId::UndoHistory => {
             let _ = crate::agent_tools::misc::UndoHistoryArgs::decode(args)
                 .map_err(|error| error.to_string())?;
-            undo_history(state(app).inner())
+            undo_history(state(app).inner()).map_err(ToolError::from)
         }
 
         // ---- sampler assets --------------------------------------------
@@ -3627,11 +3894,12 @@ fn dispatch_tool(
             let request = crate::agent_tools::metering::decode(id, args)
                 .map_err(|error| error.to_string())?;
             crate::agent_tools::metering::execute(state(app).inner(), request)
+                .map_err(ToolError::from)
         }
         ToolId::DevicesCatalog => {
             let request =
                 crate::device_catalog::Query::decode(args).map_err(|error| error.to_string())?;
-            crate::device_catalog::catalog_request(&request)
+            crate::device_catalog::catalog_request(&request).map_err(ToolError::from)
         }
         ToolId::DevicePresetsList => {
             let request = crate::agent_tools::device::DevicePresetsListArgs::decode(args)
@@ -3640,6 +3908,7 @@ fn dispatch_tool(
                 &crate::device_presets::user_path(),
                 request.device.as_deref(),
             )
+            .map_err(ToolError::from)
         }
         ToolId::DevicePresetApply => {
             let request = crate::agent_tools::device::DevicePresetApplyArgs::decode(args)
@@ -3679,6 +3948,7 @@ fn dispatch_tool(
             )
             .map_err(|error| error.to_string())?;
             effects_set_bypass(state(app).inner(), &request, guard.expected(), caller)
+                .map_err(ToolError::from)
         }
         ToolId::EffectsSetParam => {
             let request = crate::agent_tools::effects::EffectsSetParamArgs::decode(args)
@@ -4059,6 +4329,22 @@ providers:
         }
     }
 
+    #[test]
+    fn a_binding_refusal_carries_both_paths_as_a_typed_detail() {
+        let mut error = AiError::new("session_binding", "bound elsewhere");
+        error.detail = Some(crate::ai_service::AiErrorDetail::BindingMismatch {
+            bound: "/songs/a.ocp".into(),
+            open: "/songs/b.ocp".into(),
+        });
+        let (status, text) = complete_failure(error);
+        assert_eq!(status, 409);
+        let body: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(body["kind"], "session_binding");
+        assert_eq!(body["detail"]["kind"], "binding_mismatch");
+        assert_eq!(body["detail"]["bound"], "/songs/a.ocp");
+        assert_eq!(body["detail"]["open"], "/songs/b.ocp");
+    }
+
     /// Every class the provider layer can produce maps to one of the six
     /// statuses; the two kinds a fake provider cannot stage quickly are here.
     #[test]
@@ -4094,6 +4380,7 @@ providers:
             message: "Sign in again".into(),
             reauth: true,
             retryable: false,
+            detail: None,
         });
         let body: Value = serde_json::from_str(&text).unwrap();
         assert_eq!(status, 401);
@@ -4339,11 +4626,16 @@ providers:
                 None,
                 crate::ai::sessions::PrepareContext {
                     snapshot: None,
+                    history: None,
                     overhead: 0,
                     context_length: 1_000_000,
+                    max_output: 0,
+                    prompt_tokens: 0,
                     facts: &crate::ai::sessions::ProjectFacts::default(),
                     provider: "fixture",
                     model: "fixture",
+                    outside: None,
+                    surface: None,
                 },
             )
             .unwrap();
@@ -4407,11 +4699,16 @@ providers:
                 None,
                 crate::ai::sessions::PrepareContext {
                     snapshot: None,
+                    history: None,
                     overhead: 0,
                     context_length: 0,
+                    max_output: 0,
+                    prompt_tokens: 0,
                     facts: &facts,
                     provider: "test",
                     model: "test",
+                    outside: None,
+                    surface: None,
                 },
             )
             .unwrap();
@@ -4422,11 +4719,16 @@ providers:
                 None,
                 crate::ai::sessions::PrepareContext {
                     snapshot: None,
+                    history: None,
                     overhead: 0,
                     context_length: 0,
+                    max_output: 0,
+                    prompt_tokens: 0,
                     facts: &facts,
                     provider: "test",
                     model: "test",
+                    outside: None,
+                    surface: None,
                 },
             )
             .unwrap();
@@ -4810,7 +5112,7 @@ providers:
         expected.tracks[0].effects[0].bypass = true;
         assert_eq!(inner.project, expected);
         let revision = inner.revision;
-        let undo_count = inner.undo.undo.len();
+        let undo_count = inner.undo.undo_entries().len();
         drop(inner);
         args["expected_revision"] = json!(revision);
         let receipt = effects_set_bypass_json(&state, &args, "panel:test").unwrap();
@@ -4820,7 +5122,7 @@ providers:
         );
         let inner = state.lock_inner();
         assert_eq!(inner.revision, revision);
-        assert_eq!(inner.undo.undo.len(), undo_count);
+        assert_eq!(inner.undo.undo_entries().len(), undo_count);
     }
 
     #[test]
@@ -5760,6 +6062,7 @@ providers:
             "project_new",
             "project_open",
             "project_save",
+            "project_search",
             "project_set_name",
             "project_set_tempo",
             "project_validate",
@@ -5930,6 +6233,61 @@ providers:
             inner.dsl_source = oc_dsl::serialize(&inner.project);
         }
         state
+    }
+
+    #[test]
+    fn a_mutating_tool_result_carries_typed_changes_and_a_read_only_one_does_not() {
+        let state = panel_state(PRODUCER_PROJECT);
+        let before = state.lock_inner().project.clone();
+        {
+            let mut inner = state.lock_inner();
+            let old = inner.project.clone();
+            inner.project.properties.tempo = 132.0;
+            crate::commands::shared::resync_with_undo(
+                &mut inner,
+                old,
+                crate::state::UndoEdit::new("tempo", crate::state::UndoScope::Transport),
+            )
+            .unwrap();
+        }
+        let baseline = ChangeBaseline {
+            project: before.clone(),
+            revision: 0,
+        };
+        let changed = json!({"revision": 1});
+        let published = published_revision(&changed);
+        let changes = tool_changes(&state, Some(&baseline), published).unwrap();
+        assert_eq!(
+            serde_json::to_value(changes).unwrap()["changes"],
+            json!([{"kind": "tempo", "from": 120.0, "to": 132.0}])
+        );
+
+        // A document that moved after the tool answered is not the tool's
+        // edit, so its facts are not attributed to that row.
+        let stale = json!({"revision": 0});
+        let published = published_revision(&stale);
+        assert!(tool_changes(&state, Some(&baseline), published).is_none());
+
+        // A result without the typed revision fails closed instead of skipping
+        // the comparison.
+        let untyped = json!({});
+        let published = published_revision(&untyped);
+        assert!(tool_changes(&state, Some(&baseline), published).is_none());
+        assert!(tool_changes(&state, None, None).is_none());
+        assert!(changes_baseline(&state, "tracks_list", true).is_none());
+        assert!(changes_baseline(&state, "project_set_tempo", true).is_some());
+        // Only the panel path takes the baseline, so an external adapter's
+        // result can never carry the facts.
+        assert!(changes_baseline(&state, "project_set_tempo", false).is_none());
+
+        // A batch commit leaves the document as it is; its base is what the
+        // commit's typed facts compare against.
+        state
+            .begin_transaction("turn".into(), crate::state::panel_batch_owner(Some("s1")))
+            .unwrap();
+        let base = changes_baseline(&state, "transaction_commit", true).unwrap();
+        assert_eq!(base.project.properties.tempo, 132.0);
+        state.rollback_transaction().unwrap();
     }
 
     /// A preview fixture: one pattern, one clip, and a proposal that bumps a note.
@@ -6196,7 +6554,7 @@ providers:
         assert_eq!(committed["label"], "agent transaction");
         assert_eq!(committed["revision"], base + 1);
         assert_eq!(state.lock_inner().project.properties.tempo, 128.0);
-        assert_eq!(state.lock_inner().undo.undo.len(), 1);
+        assert_eq!(state.lock_inner().undo.undo_entries().len(), 1);
         assert!(
             transaction_commit(&state, "test")
                 .unwrap_err()
@@ -6399,7 +6757,7 @@ providers:
             inner.bump_revision();
         }
         transaction_commit(&state, "test").unwrap();
-        let entries_before = state.lock_inner().undo.undo.len();
+        let entries_before = state.lock_inner().undo.undo_entries().len();
 
         // Turn 2 edits, then asks for another write planned against turn 1's revision.
         transaction_begin(&state, Some("turn 2".into()), "test").unwrap();
@@ -6439,7 +6797,7 @@ providers:
         let inner = state.lock_inner();
         assert_eq!(inner.project.properties.tempo, 140.0);
         assert_eq!(
-            inner.undo.undo.len(),
+            inner.undo.undo_entries().len(),
             entries_before + 1,
             "the turn is one undo entry"
         );
@@ -6473,7 +6831,10 @@ providers:
         transaction_commit(&state, "test").unwrap();
         let inner = state.lock_inner();
         assert!(inner.transaction.is_none());
-        assert!(inner.undo.undo.is_empty(), "nothing landed, so no entry");
+        assert!(
+            inner.undo.undo_entries().is_empty(),
+            "nothing landed, so no entry"
+        );
         assert_eq!(inner.revision, base, "nothing landed, so no revision");
     }
 
@@ -7607,7 +7968,7 @@ providers:
         transaction_commit(&state, "panel:test").unwrap();
         let inner = state.lock_inner();
         assert_eq!(inner.project.audio_clip(0).unwrap().offset_seconds, 0.0);
-        assert_eq!(inner.undo.undo.len(), 1);
+        assert_eq!(inner.undo.undo_entries().len(), 1);
     }
 
     #[test]
@@ -7702,7 +8063,16 @@ providers:
                 "{}",
                 inner.dsl_source
             );
-            assert_eq!(inner.undo.undo_labels(), vec!["tempo map"]);
+            assert_eq!(
+                inner
+                    .undo
+                    .history(&inner.project.properties)
+                    .last()
+                    .unwrap()
+                    .changes
+                    .changes,
+                vec![oc_dsl::change::Change::TempoMap]
+            );
             assert_eq!(inner.revision, saved["revision"].as_u64().unwrap());
         }
         // An empty list returns the song to the project tempo.
@@ -7736,7 +8106,10 @@ providers:
         assert!(range.contains("valid tempos"), "{range}");
         let inner = state.lock_inner();
         assert!(inner.project.properties.tempo_map.is_empty());
-        assert!(inner.undo.undo.is_empty(), "a refusal adds no history");
+        assert!(
+            inner.undo.undo_entries().is_empty(),
+            "a refusal adds no history"
+        );
     }
 
     #[test]
@@ -7756,7 +8129,16 @@ providers:
             let inner = state.lock_inner();
             assert_eq!(inner.project.properties.time_sig_map.len(), 1);
             assert!(inner.dsl_source.contains("time_sig_map:"));
-            assert_eq!(inner.undo.undo_labels(), vec!["time signature map"]);
+            assert_eq!(
+                inner
+                    .undo
+                    .history(&inner.project.properties)
+                    .last()
+                    .unwrap()
+                    .changes
+                    .changes,
+                vec![oc_dsl::change::Change::TimeSignatureMap]
+            );
             assert_eq!(inner.revision, saved["revision"].as_u64().unwrap());
         }
     }
@@ -7782,7 +8164,7 @@ providers:
             assert!(error.contains("bar "), "{points}: {error}");
             let inner = state.lock_inner();
             assert!(inner.project.properties.time_sig_map.is_empty());
-            assert!(inner.undo.undo.is_empty());
+            assert!(inner.undo.undo_entries().is_empty());
         }
     }
 
@@ -7804,7 +8186,20 @@ providers:
         assert!(inner.project.presets.iter().any(|p| p.name == "lead copy"));
         // An empty copy, exactly like the GUI's duplicate.
         assert!(copy.pattern_clip_count() == 0 && copy.effects.is_empty());
-        assert_eq!(inner.undo.undo_labels(), vec!["duplicate track"]);
+        assert!(
+            inner
+                .undo
+                .history(&inner.project.properties)
+                .last()
+                .unwrap()
+                .changes
+                .changes
+                .iter()
+                .any(|change| matches!(
+                    change,
+                    oc_dsl::change::Change::TrackAdded { track } if track == "lead 2"
+                ))
+        );
         assert_eq!(inner.revision, saved["revision"].as_u64().unwrap());
     }
 
@@ -7825,7 +8220,7 @@ providers:
         );
         let inner = state.lock_inner();
         assert_eq!(inner.project.tracks.len(), 2);
-        assert!(inner.undo.undo.is_empty());
+        assert!(inner.undo.undo_entries().is_empty());
     }
 
     #[test]
@@ -7841,7 +8236,21 @@ providers:
         assert!(inner.project.presets.iter().any(|p| p.name == "lead warm"));
         assert!(!inner.project.presets.iter().any(|p| p.name == "lead"));
         assert_eq!(inner.project.tracks[0].preset.as_deref(), Some("lead warm"));
-        assert_eq!(inner.undo.undo_labels(), vec!["preset rename"]);
+        assert!(
+            inner
+                .undo
+                .history(&inner.project.properties)
+                .last()
+                .unwrap()
+                .changes
+                .changes
+                .iter()
+                .any(|change| matches!(
+                    change,
+                    oc_dsl::change::Change::PresetRenamed { from, to }
+                        if from == "lead" && to == "lead warm"
+                ))
+        );
         assert_eq!(inner.revision, saved["revision"].as_u64().unwrap());
     }
 
@@ -7863,7 +8272,7 @@ providers:
         );
         let inner = state.lock_inner();
         assert_eq!(inner.project, before);
-        assert!(inner.undo.undo.is_empty());
+        assert!(inner.undo.undo_entries().is_empty());
     }
 
     #[test]
@@ -7879,7 +8288,20 @@ providers:
             let inner = state.lock_inner();
             assert_eq!(inner.project.tracks[0].preset.as_deref(), Some("lead copy"));
             assert!(inner.project.presets.iter().any(|p| p.name == "lead"));
-            assert_eq!(inner.undo.undo_labels(), vec!["preset duplicate"]);
+            assert!(
+                inner
+                    .undo
+                    .history(&inner.project.properties)
+                    .last()
+                    .unwrap()
+                    .changes
+                    .changes
+                    .iter()
+                    .any(|change| matches!(
+                        change,
+                        oc_dsl::change::Change::PresetAdded { preset } if preset == "lead copy"
+                    ))
+            );
         }
         // reassign=false leaves the references where they were.
         let state = panel_state(PRODUCER_PROJECT);
@@ -7910,11 +8332,11 @@ providers:
         );
         let inner = state.lock_inner();
         assert_eq!(inner.project.presets.len(), 2);
-        assert!(inner.undo.undo.is_empty());
+        assert!(inner.undo.undo_entries().is_empty());
     }
 
     #[test]
-    fn the_undo_history_lists_labels_and_scopes_without_moving_the_cursor() {
+    fn the_undo_history_lists_typed_changes_and_scopes_without_moving_the_cursor() {
         let state = panel_state(PRODUCER_PROJECT);
         tempo_map_set_request(&state, &json!({"points": [{"bar": 5, "bpm": 100.0}]})).unwrap();
         presets_rename_json(&state, &json!({"name": "lead", "new_name": "lead warm"})).unwrap();
@@ -7922,16 +8344,27 @@ providers:
         let entries = history["entries"].as_array().unwrap();
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0]["index"], json!(1));
-        assert_eq!(entries[0]["name"], json!("tempo map"));
+        assert_eq!(
+            entries[0]["changes"]["changes"],
+            json!([{"kind": "tempo_map"}])
+        );
+        assert_eq!(entries[0]["cause"], json!("edit"));
         assert_eq!(entries[0]["scopes"], json!(["transport"]));
         assert_eq!(entries[0]["applied"], json!(true));
+        assert!(entries[0].get("name").is_none());
+        assert!(entries[0].get("subject").is_none());
         assert_eq!(entries[1]["index"], json!(2));
-        assert_eq!(entries[1]["name"], json!("preset rename"));
+        let facts = entries[1]["changes"]["changes"].as_array().unwrap();
+        assert!(facts.contains(&json!({
+            "kind": "preset_renamed",
+            "from": "lead",
+            "to": "lead warm",
+        })));
         assert_eq!(entries[1]["scopes"], json!(["preset"]));
         assert_eq!(history["applied"], json!(2));
         assert_eq!(history["redoable"], json!(0));
         // Read-only: nothing was undone and no entry was added.
-        assert_eq!(state.lock_inner().undo.undo.len(), 2);
+        assert_eq!(state.lock_inner().undo.undo_entries().len(), 2);
     }
 
     #[test]
@@ -8203,5 +8636,36 @@ providers:
             note["duration_beats_quantised"].as_f64().is_some(),
             "{report}"
         );
+    }
+
+    #[test]
+    fn a_saved_turn_on_a_conversation_held_elsewhere_answers_409() {
+        let id = "abcdef0123456789";
+        let dir = tempfile::tempdir().unwrap();
+        let _root = crate::ai::sessions::test_root(dir.path().join("sessions"));
+        let store = crate::ai::sessions::Store::config();
+        let path = store.lock_path(id);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let _foreign = crate::private_fs::lock(
+            &path,
+            crate::private_fs::LockMode::Exclusive,
+            crate::private_fs::LockWait::NoWait,
+        )
+        .unwrap();
+        let project = std::env::temp_dir().join("oc-session-in-use.ocp");
+        let body = json!({
+            "provider": "fixture",
+            "messages": [{"role": "user", "content": "hello"}],
+            "session_id": id,
+            "project_path": project,
+        });
+        assert!(
+            saved_completion::Binding::parse(&body).unwrap().is_some(),
+            "{body}"
+        );
+        let (status, body) = handle_ai_complete(&serde_json::to_vec(&body).unwrap());
+        assert_eq!(status, 409);
+        let payload: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(payload["kind"], "session_in_use", "{payload}");
     }
 }

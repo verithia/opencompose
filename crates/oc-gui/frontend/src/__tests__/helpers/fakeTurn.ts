@@ -6,8 +6,8 @@
  * (gating, batches, stop accounting) are tested in Rust.
  */
 import { listenMock } from "../setup";
-import type { ApprovalRequest, ToolCall, TurnStop, WireMessage } from "../../ai/wire";
-import type { TurnDecision, TurnEvent, TurnOutcome } from "../../ai/api";
+import type { ApprovalRequest, ToolCall, TurnStop, UserQuestion, WireMessage } from "../../ai/wire";
+import type { TurnDecision, TurnEvent, TurnOutcome, TurnReply } from "../../ai/api";
 
 /** The arguments the panel sends to `ai_turn_start`. */
 export interface TurnStartArgs {
@@ -30,8 +30,12 @@ export interface FakeTurnBackend {
   tool?: (call: { tool: string; args: Record<string, unknown> }) => Promise<unknown>;
   /** Tools the fake asks about before running; the answer comes through `ai_turn_answer`. */
   ask?: (call: { tool: string; args: Record<string, unknown> }) => boolean;
+  /** Calls the fake turns into an `ask_user` question. */
+  askUser?: (call: { tool: string; args: Record<string, unknown> }) => boolean;
   /** Tools whose successful result counts as an edit. */
   mutation?: (tool: string) => boolean;
+  /** The committed batch facts the turn reports once when it ends. */
+  changes?: TurnOutcome["changes"];
   /**
    * Saved messages whose `message` event arrives only after `ai_turn_start`
    * has answered. Tauri does not order events with command replies, so a
@@ -45,6 +49,7 @@ interface Running {
   pending: { message: WireMessage; saved: () => void }[];
   sessionId: string;
   answers: Map<string, (decision: TurnDecision) => void>;
+  userReplies: Map<string, (reply: TurnReply) => void>;
   stop: () => void;
 }
 
@@ -98,6 +103,13 @@ export function answerFakeTurn(requestId: string, callId: string, decision: Turn
   answer(decision);
 }
 
+/** `ai_turn_reply` for a fake turn. */
+export function replyFakeTurn(requestId: string, callId: string, reply: TurnReply): void {
+  const answer = running.get(requestId)?.userReplies.get(callId);
+  if (!answer) throw new Error("Nothing is waiting for a reply to this question");
+  answer(reply);
+}
+
 /** Whether a fake turn is still running. */
 export function fakeTurnRunning(requestId?: string): boolean {
   return requestId ? running.has(requestId) : running.size > 0;
@@ -132,7 +144,7 @@ const NOT_RUN = JSON.stringify({ error: "the turn stopped before this call ran; 
 export async function runFakeTurn(args: TurnStartArgs, backend: FakeTurnBackend): Promise<TurnOutcome> {
   const { requestId, sessionId } = args;
   let stopRound: () => void = () => {};
-  const turn: Running = { cancelled: false, pending: [], sessionId, answers: new Map(), stop: () => stopRound() };
+  const turn: Running = { cancelled: false, pending: [], sessionId, answers: new Map(), userReplies: new Map(), stop: () => stopRound() };
   running.set(requestId, turn);
   const wire: WireMessage[] = [...args.messages];
   let done = 0;
@@ -178,9 +190,10 @@ export async function runFakeTurn(args: TurnStartArgs, backend: FakeTurnBackend)
       if (!calls.length) {
         if (turn.pending.length) continue;
         const text = typeof reply.content === "string" ? reply.content : "";
-        return text.trim()
+        const outcome: TurnOutcome = text.trim()
           ? { text, failed: false }
           : { text: "Provider returned no text.", failed: true };
+        return backend.changes ? { ...outcome, changes: backend.changes } : outcome;
       }
       planned += calls.length;
       for (const [index, call] of calls.entries()) {
@@ -192,6 +205,34 @@ export async function runFakeTurn(args: TurnStartArgs, backend: FakeTurnBackend)
         try { callArgs = JSON.parse(call.function.arguments || "{}"); } catch { /* the tool reads {} */ }
         const tool = call.function.name;
         let content: string;
+        if (backend.askUser?.({ tool, args: callArgs })) {
+          const options = Array.isArray(callArgs.options) ? callArgs.options.map(String) : [];
+          const request: UserQuestion = {
+            call_id: call.id,
+            question: String(callArgs.question ?? ""),
+            ...(options.length ? { options } : {}),
+            free_text: callArgs.free_text !== false,
+            max_chars: 4_000,
+          };
+          const reply = await new Promise<TurnReply | null>((resolve) => {
+            turn.userReplies.set(call.id, resolve);
+            stopRound = () => resolve(null);
+            emit({ type: "ask_user", request });
+          });
+          turn.userReplies.delete(call.id);
+          if (turn.cancelled || !reply) {
+            for (const left of calls.slice(index)) save({ role: "tool", tool_call_id: left.id, content: NOT_RUN });
+            return { ...cancelled(), stop: stop({ cancelled: true, not_run: calls.length - index }) };
+          }
+          content = JSON.stringify({
+            answered: true,
+            ...(typeof reply.option === "number" && options[reply.option] ? { option: options[reply.option] } : {}),
+            ...(reply.text ? { text: reply.text } : {}),
+          });
+          save({ role: "tool", tool_call_id: call.id, content });
+          done += 1;
+          continue;
+        }
         if (backend.ask?.({ tool, args: callArgs }) && !(args.allowed ?? []).includes(tool)) {
           const request: ApprovalRequest = { call_id: call.id, tool, args: callArgs };
           const decision = await new Promise<TurnDecision | null>((resolve) => {

@@ -34,7 +34,7 @@ beforeEach(async () => {
   invokeMock.mockImplementation(async (cmd: string) => {
     if (cmd === "scan_plugins") return [];
     if (cmd === "get_transport_state") return TRANSPORT_STOPPED();
-    if (cmd === "get_undo_state") return { can_undo: false, can_redo: false, undo_label: null, redo_label: null, undo_labels: [], redo_labels: [] };
+    if (cmd === "get_undo_state") return { can_undo: false, can_redo: false,    };
     if (cmd === "transport_play") return TRANSPORT_PLAYING();
     if (cmd === "transport_stop") return TRANSPORT_STOPPED();
     if (cmd === "transport_pause") return TRANSPORT_STOPPED();
@@ -460,6 +460,7 @@ describe("Toolbar", () => {
     expect(items).toEqual([
       "Switch workspace…",
       "Save As…Cmd/Ctrl+Shift+S",
+      "Move Project…",
       "Recover autosave…",
       "Import MIDI…",
       "Import Aligned Stems…",

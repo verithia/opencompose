@@ -30,9 +30,9 @@ async function mountApp() {
     if (command === "transport_seek") return TRANSPORT_STOPPED();
     if (command === "take_startup_project") return null;
     if (command === "get_undo_state") {
-      return { can_undo: true, can_redo: true, undo_label: "x", redo_label: "x", undo_labels: [], redo_labels: [] };
+      return { can_undo: true, can_redo: true,    };
     }
-    if (command === "undo" || command === "redo") return makeSnapshot();
+    if (command === "history_undo" || command === "history_redo") return { status: "applied", snapshot: makeSnapshot() };
     return makeTimelineProject();
   });
   return mountSurface(() => <App />);
@@ -84,9 +84,10 @@ describe("documented panel shortcuts", () => {
 
   it("cmd+n, cmd+o and cmd+s reach their file actions", async () => {
     const view = await mountApp();
+    saveDialogMock.mockResolvedValueOnce("/tmp/n.ocp");
     fireEvent.keyDown(view.container, { key: "n", metaKey: true });
     await settle();
-    expectInvoked("new_project");
+    expectInvoked("new_project_at", { path: "/tmp/n.ocp" });
 
     invokeMock.mockClear();
     fireEvent.keyDown(view.container, { key: "O", metaKey: true, shiftKey: true });
@@ -110,7 +111,7 @@ describe("documented panel shortcuts", () => {
     const view = await mountApp();
     fireEvent.keyDown(view.container, { key: "Z", metaKey: true, shiftKey: true });
     await settle();
-    expectInvoked("redo");
+    expectInvoked("history_redo");
   });
 
   it("keeps the k drumpad shortcut working even though the keymap omits it", async () => {

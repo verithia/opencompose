@@ -155,7 +155,10 @@ fn new_project_refuses_while_an_agent_batch_is_open() {
             .begin_transaction("agent batch".into(), "agent".into())
             .unwrap();
         let error = create_project_in(&mut inner, None).unwrap_err();
-        assert_eq!(error, crate::state::TRANSACTION_BLOCKS_REPLACEMENT);
+        assert_eq!(
+            error.message(),
+            crate::state::TRANSACTION_BLOCKS_REPLACEMENT
+        );
         assert!(inner.transaction.is_some());
     }
     assert!(state.lock_inner().audio.render_thread.is_none());
@@ -232,6 +235,24 @@ fn starter_is_written_complete_with_builtins_before_installation() {
     assert_eq!(saved, snap.project);
     assert!(!snap.dirty);
     assert!(inner.audio.render_thread.is_none());
+}
+
+#[test]
+fn starter_records_the_file_fingerprint() {
+    let dir = TempDir::new("starter-marker");
+    std::fs::create_dir_all(dir.path()).unwrap();
+    let path = dir.path().join("Marked.ocp");
+    let state = AppState::new();
+    let mut inner = state.lock_inner();
+    crate::commands::create_starter_project_in(&mut inner, path.clone()).unwrap();
+    let marker =
+        crate::edit_history::journal::read_marker(&crate::edit_history::journal::dir_for(&path))
+            .expect("the starter has a history marker");
+    assert_eq!(
+        marker.sha256,
+        crate::project_data::content_sha256(&path),
+        "the starter records the file it wrote"
+    );
 }
 
 #[test]

@@ -588,7 +588,7 @@ fn a_later_pass_open_failure_preserves_the_completed_take() {
         "{report}"
     );
     assert!(report.contains("Recorded 1 take"), "{report}");
-    assert_eq!(inner.undo.undo.len(), 1);
+    assert_eq!(inner.undo.undo_entries().len(), 1);
 }
 
 #[test]
@@ -649,7 +649,7 @@ fn a_refused_placement_reports_the_saved_wav_path() {
         assert!(inner.project.audio_clips().is_empty());
         assert!(!inner.audio.recorder.recording());
         assert_eq!(inner.audio.recorder.report.as_deref(), Some(error.as_str()));
-        assert!(inner.undo.undo.is_empty());
+        assert!(inner.undo.undo_entries().is_empty());
     }
 }
 
@@ -663,7 +663,7 @@ fn replacing_or_moving_the_project_waits_for_the_active_take() {
     let (state, backend) = state(&dir);
     let elsewhere = dir.path().join("elsewhere/song.ocp");
     let elsewhere = elsewhere.to_string_lossy().into_owned();
-    let pending_save = snapshot_for_save(Some(elsewhere.clone()), &state).unwrap();
+    let mut pending_save = snapshot_for_save(Some(elsewhere.clone()), &state).unwrap();
     {
         let mut inner = state.lock_inner();
         inner.audio.recorder.armed = Some("vox".into());
@@ -674,7 +674,7 @@ fn replacing_or_moving_the_project_waits_for_the_active_take() {
     }
     assert!(snapshot_for_save(None, &state).is_ok());
     assert!(snapshot_for_save(Some(elsewhere), &state).is_err());
-    assert_eq!(publish_save(&state, &pending_save), None);
+    assert_eq!(publish_save(&state, &mut pending_save), None);
     backend.push_input(&[0.25; 512], 1);
     let result = crate::commands::transport::stop_inner(&state).unwrap();
     assert_eq!(

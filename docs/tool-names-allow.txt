@@ -4,6 +4,7 @@
 # One identifier per line; text after the identifier is a comment.
 
 # DSL and mixer identifiers that share a tool area prefix.
+plan_set            a saved session-state row kind, not an agent tool
 plugin_output_pair   a plugin auxiliary output pair, not a tool
 sample_rate          the audio-frame rate of a sample or render, not a tool
 sample_format        the encoded sample format of a WAV, not a tool
@@ -20,6 +21,7 @@ audition_render                          Audio or model result field, not an age
 content_library                          Rust module, not an agent tool
 device_buffer_frames                     Audio or model result field, not an agent tool
 device_cpu                               Integration-test module, not an agent tool
+edit_history                             Rust module, not an agent tool
 effects_ceiling_margin_db                Audio or model result field, not an agent tool
 effects_max_gain_reduction_db            Audio or model result field, not an agent tool
 import_summary                           Audio or model result field, not an agent tool
@@ -57,6 +59,8 @@ plugin_store                             Rust module, not an agent tool
 plugin_store_install                     Tauri command, not a published agent tool
 preset_output_pairs                      Tauri command, not a published agent tool
 preset_output_ports                      Tauri command, not a published agent tool
+project_bound                            Host notice kind, not an agent tool
+project_data                             Rust module, not an agent tool
 project_extent                           Rust module, not an agent tool
 project_instrument_tail_samples          Internal rendering helper, not an agent tool
 project_resources                        Rust module, not an agent tool
@@ -78,6 +82,12 @@ render_synth                             Internal rendering helper, not an agent
 render_thread                            Rust module, not an agent tool
 render_to_buffer                         Internal rendering helper, not an agent tool
 render_to_buffer_per_track               Internal rendering helper, not an agent tool
+sessions_bind                            Tauri command, not a published agent tool
+sessions_binding                         Tauri command, not a published agent tool
+sessions_clear_all_history               Tauri command, not a published agent tool
+sessions_clear_history                   Tauri command, not a published agent tool
+sessions_open                            Tauri command, not a published agent tool
+sessions_page                            Tauri command, not a published agent tool
 tempo_follow                             DSL or serialized project field, not an agent tool
 tempo_map                                DSL or serialized project field, not an agent tool
 time_l                                   Delay parameter identifier, not an agent tool
@@ -87,5 +97,9 @@ time_s                                   Audio or model result field, not an age
 time_sig_map                             DSL or serialized project field, not an agent tool
 time_signature                           DSL or serialized project field, not an agent tool
 transport_snapshot                       Internal rendering helper, not an agent tool
+undo_edits                               Recall command option, not an agent tool
 
 project_path                             Saved conversation project-file field, not an agent tool
+
+project_in_use                          An HTTP error kind, not an agent tool
+session_in_use                          An HTTP error kind, not an agent tool

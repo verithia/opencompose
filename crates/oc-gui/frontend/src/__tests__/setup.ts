@@ -284,13 +284,15 @@ vi.mock("@tauri-apps/api/core", () => {
     if (cmd === "plugin_store_install") return { status: "installed", path: "", message: "" };
     if (cmd === "take_startup_project") return null;
     if (cmd === "get_project") return makeSnapshot();
+    // A fixture conversation is unbound unless a test supplies its own status.
+    if (cmd === "sessions_binding") return { bound: null, open: null, matches: true };
     // The panel asks once, when it mounts; no test previews unless it mocks this.
     if (cmd === "preview_state") return null;
     // No stranded batch unless a test opens one.
     if (cmd === "ai_batch_recover") return null;
     if (cmd === "list_recoveries") return [];
     if (cmd === "discard_recovery") return undefined;
-    if (cmd === "get_undo_history") return [];
+    if (cmd === "history_page") return [];
     if (cmd === "begin_undo_gesture" || cmd === "end_undo_gesture") return undefined;
     if (cmd === "begin_owned_undo_gesture" || cmd === "begin_parameter_gesture") {
       if (cmd === "begin_parameter_gesture" && (_args as { expectedStamp?: unknown } | undefined)?.expectedStamp !== TEST_PARAMETER_TARGET_STAMP) {

@@ -47,10 +47,75 @@ that has no lane yet gets one on the first recorded point. The button stays
 enabled while the transport is stopped because writing at the playhead is
 useful — the tooltip states what a stopped gesture does.
 
-The toolbar also holds the file actions (new, open, save, save as), MIDI import
-and export, offline render to WAV, stems export, the theme family/variant
-pickers, and the preferences popover (output device, live MIDI input,
-diagnostics, shortcut list).
+The toolbar also holds the file actions (new, open, save, save as, move
+project), MIDI import and export, offline render to WAV, stems export, the theme
+family/variant pickers, and the preferences popover (output device, live MIDI
+input, diagnostics, shortcut list).
+
+Every project has a file from the start: **New** asks where to put it, writes
+it there and refuses a path that already holds a file, and with no project open
+the start surface offers to open or create one. **Move Project** gives the open
+project another file and takes its edit history and backup along; nothing stays
+at the old place.
+
+A project is open in one process at a time. Opening a project that another
+OpenCompose process already has open is refused, the current project stays
+open, and the window says another process has it open. The same rule keeps a saved
+conversation to one process: opening one elsewhere keeps the conversation the
+panel already shows.
+
+## Edit history
+
+Each project keeps its edit history in the app data folder, under
+`<config>/history/<path key>/`, so undo reaches edits from earlier sessions. The
+history does not sit beside the `.ocp` file. `<config>` is the app profile
+directory (`~/.opencompose`, or the directory named by
+`OPENCOMPOSE_CONFIG_DIR`). The key is the first 8 bytes of the SHA-256 of the
+project's canonical path, in hex.
+
+The folder holds `project.json` (the marker: version, canonical project path and
+the file's content SHA-256), `entries.jsonl` (one entry per line), `index.bin`
+(the live linear history) and `state.json` (the cursor, the applied entry's id
+and the document at it).
+Every entry records who made it (you, the agent of a named conversation, an
+external client, or a change made to the file outside OpenCompose), the typed
+changes its patches describe, and a cause that marks an entry written by an
+older conversation restore. Recall moves the cursor instead and writes no
+entry.
+
+- **Mod+Z** and **Mod+Shift+Z** step through the history. The status bar
+  describes what the step took back or reapplied from the entry's typed changes,
+  formatted in the app's language, and names the author.
+- While an agent turn is running or holds a batch, undo waits: the status bar
+  says `Agent is editing the project, cannot undo.`
+- The **History** tab in the bottom panel lists the entries newest first, 64 at a
+  time, with **Load older entries** for the rest. Clicking an entry moves the
+  project to the state after it; undone entries stay listed until a new edit
+  replaces them.
+- The tab shows the space the history uses. **Clear older history** keeps the
+  newest entries you choose and drops the rest after asking; undo then stops at
+  the oldest kept entry. Entries you undid are never cleared. When a history
+  passes the size set in **Preferences > Storage** (1 GB by default), the tab and
+  the status bar offer the clearing; nothing is cleared without you.
+- The history is matched by path. A file whose path has no history is matched by
+  content: its SHA-256 is compared with the marker of every history, and a
+  history whose project file is gone follows the file. This adopts the history of
+  a file moved or copied outside the app: the history is copied when the old file
+  still exists and moved when the old file is gone. A project created with
+  **New** starts a fresh history and never adopts another file's.
+- **Move Project** gives the history, the AI note, the conversations scoped to
+  the project folder and the recovery copies to the new path, and nothing stays
+  at the old path. **Save As** copies the history and the AI note and leaves the
+  conversations and recovery copies with the old file.
+- When the project file or workspace folder is gone, its data waits 30 days and
+  is then removed by a sweep that runs 60 seconds after start. A file on a
+  volume that is not mounted is not counted as gone, and the open project's data
+  and a running conversation are never removed.
+- **Preferences > Storage** lists the project data of each project and folder
+  (history, AI note, recovery copies and conversations) with its size and its
+  gone or due state. Only gone data offers **Remove**; the page also reports the
+  other app folders and the clip PCM cache. See
+  [On-disk storage](../storage-layout.md).
 
 ## Timeline
 
@@ -441,8 +506,11 @@ preferences list immediately.
 ## Files on disk
 
 - Projects are `.ocp` text. Saving is the same document the CLI reads.
-- Media cache: `~/Library/Caches/OpenCompose/media` (platform cache directory
-  elsewhere). Decoded audio and stretch variants are recomputable.
+- Media cache: `<config>/cache/media` when a profile is selected, otherwise the
+  platform cache directory (`~/Library/Caches/OpenCompose/media` on macOS).
+  Decoded audio, stretch variants and vocal analyses are recomputable.
+- The history, recovery copies, AI conversations and caches are described in
+  [On-disk storage](../storage-layout.md).
 - Preferences for live MIDI: `~/.opencompose/midi.json`.
 - Audio devices, sample rate, buffer, capture layout and monitoring:
   `~/.opencompose/audio.json`. See [Audio devices](../audio-devices.md).

@@ -89,6 +89,7 @@ impl std::fmt::Display for AccountingCode {
 pub enum Purpose {
     Chat,
     Title,
+    Compaction,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -908,9 +909,9 @@ pub async fn checkpoint(stats: &TurnStatsHandle, finish: bool) -> Option<Account
 /// Final publication owns its immutable payload until acknowledgement. The
 /// reporter captures presentation context only, never a timing handle or lease.
 /// Commit and publish the final accounting update.
-pub async fn checkpoint_final(
+pub async fn checkpoint_final<R: tauri::Runtime>(
     stats: &TurnStatsHandle,
-    app: &tauri::AppHandle,
+    app: &tauri::AppHandle<R>,
     client_request_id: &str,
     purpose: Purpose,
 ) -> Option<AccountingUpdate> {

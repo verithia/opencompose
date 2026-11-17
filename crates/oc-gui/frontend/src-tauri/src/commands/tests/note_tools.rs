@@ -133,7 +133,7 @@ fn starts(state: &AppState, phrase_index: usize) -> Vec<f64> {
 }
 
 fn undo_len(state: &AppState) -> usize {
-    state.lock_inner().undo.undo.len()
+    state.lock_inner().undo.undo_entries().len()
 }
 
 #[test]

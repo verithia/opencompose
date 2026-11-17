@@ -1329,13 +1329,15 @@ function SnapshotReceipt(props: { value: RecordValue }) {
  * payload in memory for the conversation that produced it, so the view asks
  * for it; after a restart only the summary and the preview remain.
  */
-function TruncatedResult(props: { tool: string; value: RecordValue; args?: string; sessionId?: string }) {
+function TruncatedResult(props: { tool: string; value: RecordValue; args?: string; sessionId?: string; resultSha?: string }) {
   const [full] = createResource(
     () => {
       const id = string(props.value.tool_call_id);
-      return id && props.sessionId ? { session: props.sessionId, id } : null;
+      return props.sessionId && (id || props.resultSha)
+        ? { session: props.sessionId, id, sha: props.resultSha }
+        : null;
     },
-    ({ session, id }) => aiApi.toolResult(session, id).catch(() => null),
+    ({ session, id, sha }) => aiApi.toolResult(session, id, sha).catch(() => null),
   );
   const parsed = createMemo<unknown>(() => {
     const text = full();
@@ -1537,7 +1539,7 @@ function ArrayTool(props: { tool: string; rows: RecordValue[] }) {
   }
 }
 
-export function AiToolResult(props: { tool: string; content: string; args?: string; sessionId?: string }) {
+export function AiToolResult(props: { tool: string; content: string; args?: string; sessionId?: string; resultSha?: string }) {
   const [raw, setRaw] = createSignal(false);
   const value = createMemo(() => {
     try {
@@ -1561,7 +1563,7 @@ export function AiToolResult(props: { tool: string; content: string; args?: stri
             <Show when={object()!.result_truncated === true} fallback={
               <GenericTool name={props.tool} value={object()!} args={props.args} />
             }>
-              <TruncatedResult tool={props.tool} value={object()!} args={props.args} sessionId={props.sessionId} />
+              <TruncatedResult tool={props.tool} value={object()!} args={props.args} sessionId={props.sessionId} resultSha={props.resultSha} />
             </Show>
           </Show>
         </Show>

@@ -345,16 +345,28 @@
     "name": "project_dsl"
   },
   {
-    "description": "Create a new empty project.",
+    "description": "Create a new empty project at an absolute .ocp path, optionally from the starter template. Refuses an existing file.",
     "inputSchema": {
       "additionalProperties": false,
+      "description": "Create a new empty project at an absolute .ocp path.",
       "properties": {
         "expected_revision": {
           "description": "Project revision guard; the call fails if the project moved to another revision",
           "type": "integer"
+        },
+        "path": {
+          "description": "Absolute path to the new .ocp file",
+          "maxLength": 4096,
+          "type": "string"
+        },
+        "template": {
+          "description": "Optional starter content; \"starter\" is the only template",
+          "type": "string"
         }
       },
-      "required": [],
+      "required": [
+        "path"
+      ],
       "type": "object"
     },
     "name": "project_new"
@@ -1242,6 +1254,55 @@
       "type": "object"
     },
     "name": "project_diff"
+  },
+  {
+    "description": "Search the open project by name before guessing one: tracks, presets, patterns, buses, sections, markers, effects and phrases. Case-insensitive tokens match names and meaningful labels such as an instrument, effect type or section label. Read-only. Returns bounded hits with one addressable `path` per hit, section and marker included.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "definitions": {
+        "ProjectSearchKind": {
+          "description": "Object kind to include in the result",
+          "enum": [
+            "track",
+            "preset",
+            "pattern",
+            "bus",
+            "section",
+            "marker",
+            "effect",
+            "phrase"
+          ],
+          "type": "string"
+        }
+      },
+      "description": "Search the open project for tracks, presets, patterns, buses, sections, markers, effects and phrases by name, label or type. Case-insensitive. Returns addressable paths.",
+      "properties": {
+        "kinds": {
+          "description": "Restrict the result set to these object kinds.",
+          "items": {
+            "$ref": "#/definitions/ProjectSearchKind"
+          },
+          "type": "array"
+        },
+        "limit": {
+          "description": "Maximum hits (default 20)",
+          "maximum": 50.0,
+          "minimum": 1.0,
+          "type": "integer"
+        },
+        "query": {
+          "description": "Case-insensitive tokens matched against names and labels",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "type": "object"
+    },
+    "name": "project_search"
   },
   {
     "description": "List tracks with pattern clip count (clips), audio clip count (audio_clips), preset, instrument, mix, mute/solo, and output.",

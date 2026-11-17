@@ -1008,8 +1008,8 @@ mod tests {
                 inner.revision,
                 inner.dirty,
                 inner.dsl_source.clone(),
-                inner.undo.undo.len(),
-                inner.undo.redo.len(),
+                inner.undo.undo_entries().len(),
+                inner.undo.redo_entries().len(),
             )
         };
 
@@ -1031,8 +1031,8 @@ mod tests {
                 inner.revision,
                 inner.dirty,
                 inner.dsl_source.clone(),
-                inner.undo.undo.len(),
-                inner.undo.redo.len(),
+                inner.undo.undo_entries().len(),
+                inner.undo.redo_entries().len(),
             )
         };
         assert_eq!(after.0, before.0, "audition mutated the project");

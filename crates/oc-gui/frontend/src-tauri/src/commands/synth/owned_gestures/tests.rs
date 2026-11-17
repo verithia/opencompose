@@ -62,8 +62,8 @@ fn observe(inner: &AppStateInner) -> Observed {
         content_epoch: inner.content_epoch,
         render_generation: inner.render_generation,
         dirty: inner.dirty,
-        undo: inner.undo.undo.len(),
-        redo: inner.undo.redo.len(),
+        undo: inner.undo.undo_entries().len(),
+        redo: inner.undo.redo_entries().len(),
         gestures: inner.plugin_automation_gestures.len(),
     }
 }
@@ -148,7 +148,7 @@ fn owned_synth_late_point_and_end_cannot_consume_a_new_same_key_session() {
     point(&mut inner, &current, 0.7).unwrap();
     assert!(end(&mut inner, &current).unwrap().closed);
     assert!(!end(&mut inner, &current).unwrap().closed);
-    assert_eq!(inner.undo.undo.len(), 1);
+    assert_eq!(inner.undo.undo_entries().len(), 1);
 }
 
 #[test]
@@ -202,7 +202,7 @@ fn owned_synth_failed_first_point_has_no_migration_or_parameter_side_effect() {
     assert!(end(&mut inner, &token).unwrap().closed);
     assert!(inner.undo.is_owned_gesture_active(&other));
     assert!(inner.undo.is_in_gesture());
-    assert!(inner.undo.undo.is_empty());
+    assert!(inner.undo.undo_entries().is_empty());
     assert!(inner.undo.end_owned_gesture(&other));
     assert!(!inner.undo.is_in_gesture());
 }
@@ -274,7 +274,7 @@ fn owned_synth_randomize_preserves_seeded_domain_result_and_current_owner() {
     let token = inner.undo.begin_owned_gesture(UndoScope::Preset).unwrap();
     randomize_preset_owned_inner(&mut inner, "Lead", 42, &token).unwrap();
     assert_eq!(inner.project, expected);
-    assert_eq!(inner.undo.undo.len(), 1);
+    assert_eq!(inner.undo.undo_entries().len(), 1);
     assert!(inner.undo.is_owned_gesture_active(&token));
     assert!(inner.undo.end_owned_gesture(&token));
 }
@@ -475,7 +475,7 @@ fn owned_synth_points_survive_dsl_reorder_delete_and_binding_invalidation() {
         let token = begin(&mut inner);
         point(&mut inner, &token, 0.7).unwrap();
         let recorded = inner.project.clone();
-        assert_eq!(inner.undo.undo.len(), 1);
+        assert_eq!(inner.undo.undo_entries().len(), 1);
         let mut candidate = recorded.clone();
         match structural {
             "reorder" => candidate.tracks.swap(0, 1),
@@ -487,7 +487,7 @@ fn owned_synth_points_survive_dsl_reorder_delete_and_binding_invalidation() {
         crate::commands::update_dsl_inner(oc_dsl::serialize(&candidate), &mut inner).unwrap();
         let changed = inner.project.clone();
         assert!(!inner.undo.is_owned_gesture_active(&token));
-        assert_eq!(inner.undo.undo.len(), 2, "{structural}");
+        assert_eq!(inner.undo.undo_entries().len(), 2, "{structural}");
         let before = observe(&inner);
         assert!(!end(&mut inner, &token).unwrap().closed);
         assert_eq!(observe(&inner), before);
@@ -536,7 +536,7 @@ fn owned_synth_concurrent_points_and_ordinary_sibling_do_not_replay_begin_snapsh
     );
     assert!(inner.undo.is_owned_gesture_active(&ordinary));
     assert!(inner.undo.end_owned_gesture(&ordinary));
-    assert_eq!(inner.undo.undo.len(), 1);
+    assert_eq!(inner.undo.undo_entries().len(), 1);
     inner.undo_step().unwrap();
     assert_eq!(inner.project, original);
     redo_recorded_history(&mut inner);
@@ -594,12 +594,12 @@ fn mixed_legacy_synth_then_owned_recording_survives_structural_and_late_close() 
     inner.project.name = Some("ordinary sibling".into());
     resync_with_undo(&mut inner, old, UndoEdit::new("name", UndoScope::Project)).unwrap();
     let recorded = inner.project.clone();
-    assert_eq!(inner.undo.undo.len(), 1);
+    assert_eq!(inner.undo.undo_entries().len(), 1);
     let mut candidate = recorded.clone();
     candidate.tracks[0].name = "Renamed".into();
     crate::commands::update_dsl_inner(oc_dsl::serialize(&candidate), &mut inner).unwrap();
     let changed = inner.project.clone();
-    assert_eq!(inner.undo.undo.len(), 2);
+    assert_eq!(inner.undo.undo_entries().len(), 2);
     inner.undo.begin_gesture(UndoScope::Project);
     let ordinary = inner.undo.begin_owned_gesture(UndoScope::Preset).unwrap();
     let before = observe(&inner);
@@ -665,7 +665,7 @@ fn legacy_synth_begin_and_failed_first_point_do_not_migrate_or_change_patch() {
     assert_eq!(observe(&inner), before);
     end_synth_param_gesture_inner(&mut inner, "Lead", "output.gain").unwrap();
     assert_eq!(inner.project, original);
-    assert!(inner.undo.undo.is_empty());
+    assert!(inner.undo.undo_entries().is_empty());
     assert!(inner.undo.is_in_gesture());
     inner.undo.end_gesture();
     assert!(!inner.undo.is_in_gesture());

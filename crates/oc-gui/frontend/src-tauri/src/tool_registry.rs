@@ -93,19 +93,27 @@ pub fn is_panel_tool(name: &str) -> bool {
 
 /// Tools whose handler lives in the panel frontend, not in `agent_api::dispatch`.
 pub fn local_tools() -> Vec<ToolSpec> {
-    vec![ToolSpec {
-        id: ToolId::EditSubtree,
-        description: "Propose one complete subtree replacement. A session with a user asks for acceptance; a session with nobody to ask applies it in the same turn, as one undo entry.",
-        schema: json!({
-            "type": "object",
-            "properties": {
-                "path": { "type": "string", "description": "OCP subtree path, e.g. project or track:bass" },
-                "new_dsl": { "type": "string" }
-            },
-            "required": ["path", "new_dsl"],
-            "additionalProperties": false
-        }),
-    }]
+    vec![
+        ToolSpec {
+            id: ToolId::EditSubtree,
+            description: "Propose one complete subtree replacement. A session with a user asks for acceptance; a session with nobody to ask applies it in the same turn, as one undo entry.",
+            schema: json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "OCP subtree path, e.g. project or track:bass" },
+                    "new_dsl": { "type": "string" }
+                },
+                "required": ["path", "new_dsl"],
+                "additionalProperties": false
+            }),
+        },
+        arguments::tool::<crate::ai::plan_update::PlanUpdateArgs>(
+            "Record the goal this conversation works toward and the plan it follows. Omit goal or items to leave that part unchanged; pass goal: null or an empty items list to clear it. At most one item may be in progress.",
+        ),
+        arguments::tool::<crate::agent_tools::question::AskUserArgs>(
+            "Ask the person one question when the decision is theirs, such as a creative direction you cannot infer. Offer at most six short options, or omit them for a free-text answer. A session with nobody to ask answers immediately that no user is available.",
+        ),
+    ]
 }
 
 /// Resolve a panel tool call to its DAW definition, or explain the refusal.
@@ -286,7 +294,7 @@ pub fn catalog() -> Vec<ToolSpec> {
             "Return the current project as OpenCompose DSL text.",
         ),
         arguments::tool::<crate::agent_tools::project_mutation::ProjectNewArgs>(
-            "Create a new empty project.",
+            "Create a new empty project at an absolute .ocp path, optionally from the starter template. Refuses an existing file.",
         ),
         arguments::tool::<crate::agent_tools::project_mutation::ProjectOpenArgs>(
             "Open an .ocp project from disk.",
@@ -345,6 +353,9 @@ pub fn catalog() -> Vec<ToolSpec> {
         ),
         arguments::tool::<crate::agent_tools::project_query::DiffArgs>(
             "Line diff between two DSL strings.",
+        ),
+        arguments::tool::<crate::agent_tools::search::SearchArgs>(
+            "Search the open project by name before guessing one: tracks, presets, patterns, buses, sections, markers, effects and phrases. Case-insensitive tokens match names and meaningful labels such as an instrument, effect type or section label. Read-only. Returns bounded hits with one addressable `path` per hit, section and marker included.",
         ),
         // tracks
         arguments::tool::<crate::agent_tools::misc::TracksListArgs>(
@@ -731,7 +742,7 @@ mod tests {
     #[test]
     fn mcp_surface_is_pinned() {
         let tools = mcp_tools();
-        assert_eq!(tools.len(), 126);
+        assert_eq!(tools.len(), 127);
         assert_eq!(tools[0]["name"], "system_capabilities");
         for tool in &tools {
             let mut keys: Vec<_> = tool.as_object().unwrap().keys().cloned().collect();
@@ -796,6 +807,19 @@ mod tests {
             );
         }
         assert!(audition["inputSchema"]["properties"]["stems"].is_null());
+        let search = tools
+            .iter()
+            .find(|tool| tool["name"] == "project_search")
+            .unwrap();
+        assert_eq!(search["inputSchema"]["required"], json!(["query"]));
+        assert_eq!(
+            search["inputSchema"]["properties"]["limit"]["maximum"],
+            json!(50.0)
+        );
+        assert_eq!(
+            search["inputSchema"]["properties"]["kinds"]["type"],
+            "array"
+        );
         let compare = tools
             .iter()
             .find(|tool| tool["name"] == "audio_compare")
@@ -1597,6 +1621,35 @@ mod tests {
     }
 
     #[test]
+    fn project_search_is_read_only_and_on_both_surfaces() {
+        let def = ToolId::ProjectSearch.metadata();
+        assert_eq!(def.area, "project");
+        assert!(!def.mutation);
+        assert_eq!(def.approval, Approval::Automatic);
+        assert!(
+            mcp_tools()
+                .iter()
+                .any(|tool| tool["name"] == "project_search")
+        );
+        assert!(
+            panel_tools_for(None)
+                .iter()
+                .any(|tool| tool["name"] == "project_search")
+        );
+        let mcp = mcp_tools()
+            .into_iter()
+            .find(|tool| tool["name"] == "project_search")
+            .unwrap();
+        assert!(mcp.get("mutation").is_none());
+        let panel = panel_tools_for(None)
+            .into_iter()
+            .find(|tool| tool["name"] == "project_search")
+            .unwrap();
+        assert_eq!(panel["mutation"], false);
+        assert_eq!(panel["approval"], "automatic");
+    }
+
+    #[test]
     fn the_two_surfaces_partition_the_catalog() {
         let (mut enabled, mut excluded) = (0, 0);
         for def in catalog() {
@@ -1606,12 +1659,12 @@ mod tests {
             }
         }
         assert_eq!(enabled, panel_daw_names().len());
-        assert_eq!(enabled + excluded, 126);
-        assert_eq!(enabled, 98);
+        assert_eq!(enabled + excluded, 127);
+        assert_eq!(enabled, 99);
         assert_eq!(excluded, 28);
         let unique: std::collections::HashSet<_> = panel_daw_names().into_iter().collect();
-        assert_eq!(unique.len(), 98);
-        assert_eq!(panel_tools_for(None).len(), 99);
+        assert_eq!(unique.len(), 99);
+        assert_eq!(panel_tools_for(None).len(), 102);
     }
 
     /// The panel loop groups a turn by opening one transaction around its
@@ -1636,6 +1689,7 @@ mod tests {
             // must not open a new transaction for the call that discards one.
             ("transaction_rollback", false),
             ("edit_subtree", false),
+            ("plan_update", false),
         ] {
             assert_eq!(find(name)["mutation"], json!(mutation), "{name}");
         }
@@ -1886,11 +1940,20 @@ mod tests {
 
     #[test]
     fn panel_local_tools_are_not_dispatched_and_skills_are() {
-        assert!(
-            panel_tool("edit_subtree")
-                .unwrap_err()
-                .contains("handled inside the panel")
-        );
+        for name in ["edit_subtree", "plan_update", "ask_user"] {
+            assert!(
+                panel_tool(name)
+                    .unwrap_err()
+                    .contains("handled inside the panel"),
+                "{name}"
+            );
+            assert!(
+                panel_tools_for(None)
+                    .iter()
+                    .any(|tool| tool["name"] == name),
+                "{name}"
+            );
+        }
         for name in ["list_skills", "read_skill"] {
             assert!(panel_tool(name).is_ok(), "{name} must reach the dispatcher");
             assert!(
@@ -1899,11 +1962,6 @@ mod tests {
                     .any(|tool| tool["name"] == name)
             );
         }
-        assert!(
-            panel_tools_for(None)
-                .iter()
-                .any(|tool| tool["name"] == "edit_subtree")
-        );
     }
 
     #[test]

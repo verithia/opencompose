@@ -38,6 +38,14 @@ pub fn serialize_preset_to(preset: &PresetDef, out: &mut String) {
 pub fn serialize_section(section: &Section, out: &mut String) {
     serialize_section_inner(section, out);
 }
+/// Append a timeline marker to DSL text.
+pub fn serialize_marker_to(marker: &Marker, out: &mut String) {
+    out.push_str(&format!(
+        "@marker {} at {}\n",
+        format_name(&marker.name),
+        format_bar_beat(&marker.position)
+    ));
+}
 /// Append an automation lane to DSL text.
 pub fn serialize_automation_to(lane: &AutomationLane, out: &mut String) {
     serialize_automation(lane, out);
@@ -236,11 +244,7 @@ pub fn serialize(project: &Project) -> String {
     // Markers last of the timeline landmarks: they annotate the spans above.
     for marker in &project.markers {
         out.push('\n');
-        out.push_str(&format!(
-            "@marker {} at {}\n",
-            format_name(&marker.name),
-            format_bar_beat(&marker.position)
-        ));
+        serialize_marker_to(marker, &mut out);
     }
 
     // Clip groups, next to the markers: both annotate the arrangement, and a
@@ -1487,23 +1491,7 @@ fn escape_quotes(value: &str) -> String {
 }
 
 fn format_pitch(p: &Pitch) -> String {
-    let note = match p.note {
-        NoteName::C => "C",
-        NoteName::D => "D",
-        NoteName::E => "E",
-        NoteName::F => "F",
-        NoteName::G => "G",
-        NoteName::A => "A",
-        NoteName::B => "B",
-    };
-    let acc = match p.accidental {
-        Accidental::Natural => "",
-        Accidental::Sharp => "#",
-        Accidental::DoubleSharp => "##",
-        Accidental::Flat => "b",
-        Accidental::DoubleFlat => "bb",
-    };
-    format!("{}{}{}", note, acc, p.octave)
+    p.to_text()
 }
 
 fn format_duration(d: &Duration) -> String {
@@ -1602,27 +1590,11 @@ pub(crate) fn format_bar_beat(bb: &BarBeat) -> String {
 }
 
 fn format_key(k: &KeySignature) -> String {
-    let note = match k.root {
-        NoteName::C => "C",
-        NoteName::D => "D",
-        NoteName::E => "E",
-        NoteName::F => "F",
-        NoteName::G => "G",
-        NoteName::A => "A",
-        NoteName::B => "B",
-    };
-    let acc = match k.accidental {
-        Accidental::Natural => "",
-        Accidental::Sharp => "#",
-        Accidental::DoubleSharp => "##",
-        Accidental::Flat => "b",
-        Accidental::DoubleFlat => "bb",
-    };
     let mode = match k.mode {
         KeyMode::Major => "major",
         KeyMode::Minor => "minor",
     };
-    format!("{}{} {}", note, acc, mode)
+    format!("{}{} {}", k.root.as_str(), k.accidental.as_str(), mode)
 }
 
 fn format_param_value(v: &ParamValue) -> String {

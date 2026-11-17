@@ -5,9 +5,10 @@
 use std::path::{Path, PathBuf};
 
 use crate::ai::sessions;
+use crate::ai_service::Requests;
 use crate::commands::{
-    compact_for, current_for, facts, list_for, new_for, new_fork, open_for, sessions_delete,
-    sessions_load, sessions_rename, sessions_set_permission,
+    compact_for, current_for, delete_session_for, facts, list_for, new_for, new_fork, open_for,
+    open_session_for, sessions_load, sessions_page, sessions_rename, sessions_set_permission,
 };
 use crate::state::AppState;
 use crate::workspaces;
@@ -137,12 +138,53 @@ fn renaming_and_deleting_act_on_the_saved_conversation() {
         sessions_load(session.id.clone()).unwrap().meta.title,
         "after the fix"
     );
-    sessions_delete(session.id.clone()).unwrap();
+    delete_session_for(&state, &Requests::default(), &session.id).unwrap();
     let error = sessions_load(session.id.clone()).unwrap_err();
     assert!(error.contains("No matching saved session"), "{error}");
     assert!(list_for(&state, None, false).unwrap().is_empty());
     // Deleting twice is a refusal, not a panic.
-    assert!(sessions_delete(session.id).is_err());
+    assert!(delete_session_for(&state, &Requests::default(), &session.id).is_err());
+}
+
+#[test]
+fn the_panel_opens_a_conversation_at_its_newest_turns_and_pages_back_through_the_commands() {
+    use serde_json::json;
+    let fixture = fixture("pages");
+    let state = state_with_project(&fixture.dir, PROJECT);
+    let session = new_for(&state, None, Some("pages"), None).unwrap();
+    let store = sessions::Store::config();
+    for index in 0..3 {
+        store
+            .append_turn(
+                &session.id,
+                &[
+                    json!({"role":"user","content":format!("ask {index}"),
+                        "message_meta":{"version":1,"kind":"user"}}),
+                    json!({"role":"assistant","content":format!("done {index}"),
+                        "message_meta":{"version":1,"kind":"assistant"}}),
+                ],
+                None,
+            )
+            .unwrap();
+    }
+    let opened =
+        serde_json::to_value(open_session_for(&state, &session.id, Some(1)).unwrap()).unwrap();
+    assert_eq!(opened["start"], 4);
+    assert_eq!(opened["total"], 6);
+    assert_eq!(opened["messages"].as_array().unwrap().len(), 2);
+    assert_eq!(opened["meta"]["id"], json!(session.id));
+    let revision = opened["revision"].as_str().unwrap().to_owned();
+    let page =
+        serde_json::to_value(sessions_page(session.id.clone(), 4, None, revision.clone()).unwrap())
+            .unwrap();
+    assert_eq!(page["status"], "page");
+    assert_eq!(page["start"], 0);
+    assert_eq!(page["messages"][0]["content"], "ask 0");
+    let stale =
+        serde_json::to_value(sessions_page(session.id.clone(), 4, None, "1:2:3".into()).unwrap())
+            .unwrap();
+    assert_eq!(stale, json!({"status": "stale"}));
+    assert!(sessions_page(session.id, 4, None, "x".repeat(257)).is_err());
 }
 
 #[test]
@@ -176,9 +218,9 @@ fn compacting_an_empty_conversation_is_refused_by_name() {
     let fixture = fixture("compact");
     let state = state_with_project(&fixture.dir, PROJECT);
     let session = new_for(&state, None, Some("empty"), None).unwrap();
-    let error = compact_for(&state, &session.id, Some(200)).unwrap_err();
+    let error = compact_for(&state, &Requests::default(), &session.id, Some(200)).unwrap_err();
     assert!(error.contains("nothing older"), "{error}");
-    assert!(compact_for(&state, "not-a-session", None).is_err());
+    assert!(compact_for(&state, &Requests::default(), "not-a-session", None).is_err());
 }
 
 #[test]
@@ -202,8 +244,17 @@ fn a_workspace_holds_one_set_of_sessions_across_its_project_files() {
         Some(fixture.dir.canonicalize().unwrap().to_str().unwrap())
     );
     assert_eq!(
-        listed[0].project_path.as_deref(),
-        Some(first.project_path.as_deref().unwrap())
+        listed[0]
+            .project_path
+            .as_ref()
+            .map(crate::ai::sessions::BoundProject::as_str),
+        Some(
+            first
+                .project_path
+                .as_ref()
+                .map(crate::ai::sessions::BoundProject::as_str)
+                .unwrap()
+        )
     );
 
     // A different directory is a different set.
@@ -337,4 +388,559 @@ fn a_fork_message_count_reaches_the_store_and_a_bare_count_is_refused() {
     let whole = new_fork(&state, None, Some("whole"), Some(&parent.id), None).unwrap();
     assert_eq!(whole.parent.as_deref(), Some(parent.id.as_str()));
     assert_eq!(list_for(&state, None, false).unwrap().len(), 2);
+}
+
+#[test]
+fn a_headless_turn_bound_to_another_open_file_is_refused_as_session_binding() {
+    use crate::ai::session_usage::{Purpose, SessionLease};
+    use crate::ai_service::{AiError, AiErrorDetail};
+    use crate::commands::{
+        AiCapabilities, AiProviderEntry, AuthKind, ProviderKind, SavedTurnBinding, Wire,
+        prepare_turn_for,
+    };
+    use serde_json::json;
+    use tauri::test::{mock_builder, mock_context, noop_assets};
+
+    let fixture = fixture("headless-binding");
+    let state = state_with_project(&fixture.dir, PROJECT);
+    let open = fixture.dir.join("song.ocp");
+    let other = fixture.dir.join("other.ocp");
+    std::fs::write(&other, PROJECT).unwrap();
+    let session = new_for(
+        &state,
+        Some(other.to_str().unwrap()),
+        Some("other file"),
+        None,
+    )
+    .unwrap();
+    let store = sessions::Store::config();
+    let lease = SessionLease::admit(store, &session.id, "binding-request", Purpose::Chat).unwrap();
+    let incarnation = lease.update().incarnation;
+    let provider = AiProviderEntry {
+        id: "p".into(),
+        name: "p".into(),
+        kind: ProviderKind::OpenAiChatCompletions,
+        wire: Some(Wire::OpenAiChatCompletions),
+        auth: AuthKind::ApiKey,
+        auth_provider: None,
+        oauth_allowed_hosts: Vec::new(),
+        endpoint: "https://example.test/v1/chat/completions".into(),
+        model: "fixture-model".into(),
+        models: Vec::new(),
+        context_length: 1_000_000,
+        max_tokens: 16_000,
+        temperature: 0.3,
+        thinking_level: "medium".into(),
+        capabilities: AiCapabilities::default(),
+    };
+    let messages = json!([
+        {"role":"system","content":"prompt"},
+        {"role":"user","content":"hi","message_meta":{"version":1,"kind":"user"}},
+    ]);
+    let app = mock_builder()
+        .manage(state)
+        .build(mock_context(noop_assets()))
+        .unwrap();
+    let error = tauri::async_runtime::block_on(prepare_turn_for(
+        &app.handle().clone(),
+        &provider,
+        &messages,
+        SavedTurnBinding {
+            id: &session.id,
+            request_id: None,
+            incarnation: &incarnation,
+            project: Some(&open),
+            tool_tokens: 0,
+            surface: None,
+            cancel: None,
+        },
+    ))
+    .unwrap_err();
+    assert_eq!(error.kind(), "session_binding");
+    let error: AiError = error.into();
+    assert_eq!(error.kind, "session_binding");
+    assert_eq!(
+        error.detail,
+        Some(AiErrorDetail::BindingMismatch {
+            bound: other.canonicalize().unwrap().to_string_lossy().to_string(),
+            open: open.canonicalize().unwrap().to_string_lossy().to_string(),
+        })
+    );
+    let (_, saved) = sessions::Store::config().find(&session.id).unwrap();
+    assert_eq!(
+        saved
+            .project_path
+            .as_ref()
+            .map(crate::ai::sessions::BoundProject::as_str),
+        Some(other.canonicalize().unwrap().to_string_lossy().as_ref())
+    );
+    drop(lease);
+}
+
+#[test]
+fn the_binding_commands_compare_canonically_and_bind_to_the_open_file() {
+    let fixture = fixture("binding-commands");
+    let state = state_with_project(&fixture.dir, PROJECT);
+    let first = fixture.dir.join("song.ocp");
+    let second = fixture.dir.join("second.ocp");
+    std::fs::write(&second, PROJECT).unwrap();
+    let session = new_for(&state, None, Some("bound"), None).unwrap();
+    {
+        let mut inner = state.lock_inner();
+        inner.file_path = Some(second.clone());
+    }
+    let status = crate::commands::binding_for(&state, &session.id).unwrap();
+    assert_eq!(
+        status
+            .bound
+            .as_ref()
+            .map(crate::ai::sessions::BoundProject::as_str),
+        Some(first.canonicalize().unwrap().to_str().unwrap())
+    );
+    assert_eq!(
+        status
+            .open
+            .as_ref()
+            .map(crate::ai::sessions::BoundProject::as_str),
+        Some(second.canonicalize().unwrap().to_str().unwrap())
+    );
+    assert!(!status.matches);
+    let bound = crate::commands::bind_for(&state, &session.id).unwrap();
+    assert_eq!(
+        bound
+            .project_path
+            .as_ref()
+            .map(crate::ai::sessions::BoundProject::as_str),
+        Some(second.canonicalize().unwrap().to_str().unwrap())
+    );
+    assert_eq!(
+        bound
+            .pending_binding
+            .as_ref()
+            .and_then(|pending| pending.from.as_deref()),
+        Some(first.canonicalize().unwrap().to_str().unwrap())
+    );
+    assert!(
+        crate::commands::binding_for(&state, &session.id)
+            .unwrap()
+            .matches
+    );
+}
+
+fn outside_provider() -> crate::commands::AiProviderEntry {
+    use crate::commands::{AiCapabilities, AuthKind, ProviderKind, Wire};
+    crate::commands::AiProviderEntry {
+        id: "p".into(),
+        name: "p".into(),
+        kind: ProviderKind::OpenAiChatCompletions,
+        wire: Some(Wire::OpenAiChatCompletions),
+        auth: AuthKind::ApiKey,
+        auth_provider: None,
+        oauth_allowed_hosts: Vec::new(),
+        endpoint: "https://example.test/v1/chat/completions".into(),
+        model: "fixture-model".into(),
+        models: Vec::new(),
+        context_length: 1_000_000,
+        max_tokens: 16_000,
+        temperature: 0.3,
+        thinking_level: "medium".into(),
+        capabilities: AiCapabilities::default(),
+    }
+}
+
+#[test]
+fn a_running_turn_keeps_its_conversation_bound_to_the_file_it_started_on() {
+    use crate::commands::bind_if_idle;
+
+    let fixture = fixture("bind-running");
+    let state = state_with_project(&fixture.dir, PROJECT);
+    let first = fixture.dir.join("song.ocp");
+    let second = fixture.dir.join("second.ocp");
+    std::fs::write(&second, PROJECT).unwrap();
+    let session = new_for(&state, None, Some("running"), None).unwrap();
+    let requests = crate::ai_service::Requests::default();
+    let claim = requests
+        .claim_for("turn-1", Some(&session.id))
+        .unwrap()
+        .expect("the slot is free");
+    state.lock_inner().file_path = Some(second.clone());
+
+    let error = bind_if_idle(&state, &session.id, &requests).unwrap_err();
+    assert!(error.contains("running a turn"), "{error}");
+    assert_eq!(
+        sessions::Store::config()
+            .find(&session.id)
+            .unwrap()
+            .1
+            .project_path
+            .as_ref()
+            .map(crate::ai::sessions::BoundProject::as_str),
+        Some(first.canonicalize().unwrap().to_str().unwrap()),
+        "the running turn keeps the binding it started on"
+    );
+
+    requests.release_owned("turn-1", &claim.identity).unwrap();
+    let bound = bind_if_idle(&state, &session.id, &requests).unwrap();
+    assert_eq!(
+        bound
+            .project_path
+            .as_ref()
+            .map(crate::ai::sessions::BoundProject::as_str),
+        Some(second.canonicalize().unwrap().to_str().unwrap())
+    );
+}
+
+#[test]
+fn a_prepared_turn_reports_edits_made_outside_its_conversation() {
+    use crate::ai::agent_loop::wire;
+    use crate::ai::session_usage::{Purpose, SessionLease};
+    use crate::commands::{SavedTurnBinding, prepare_turn_for, update_dsl_inner};
+    use serde_json::json;
+    use tauri::test::{mock_builder, mock_context, noop_assets};
+
+    let fixture = fixture("outside-turn");
+    let state = state_with_project(&fixture.dir, PROJECT);
+    let open = fixture.dir.join("song.ocp");
+    let session = new_for(&state, None, Some("outside"), None).unwrap();
+    let store = sessions::Store::config();
+    {
+        let mut inner = state.lock_inner();
+        update_dsl_inner(PROJECT.replace("tempo: 128", "tempo: 120"), &mut inner).unwrap();
+        let mark = inner.undo.mark();
+        store.record_history_mark(&session.id, &open, mark).unwrap();
+        update_dsl_inner(PROJECT.replace("tempo: 128", "tempo: 132"), &mut inner).unwrap();
+    }
+    let lease = SessionLease::admit(store, &session.id, "outside-request", Purpose::Chat).unwrap();
+    let incarnation = lease.update().incarnation;
+    let provider = outside_provider();
+    let messages = json!([
+        {"role":"system","content":"prompt"},
+        {"role":"user","content":"hi","message_meta":{"version":1,"kind":"user"}},
+    ]);
+    let app = mock_builder()
+        .manage(state)
+        .build(mock_context(noop_assets()))
+        .unwrap();
+    let prepared = tauri::async_runtime::block_on(prepare_turn_for(
+        &app.handle().clone(),
+        &provider,
+        &messages,
+        SavedTurnBinding {
+            id: &session.id,
+            request_id: None,
+            incarnation: &incarnation,
+            project: Some(&open),
+            tool_tokens: wire::offered_tool_tokens(None, false),
+            surface: None,
+            cancel: None,
+        },
+    ))
+    .unwrap();
+    let rows = prepared.messages.as_array().unwrap();
+    assert_eq!(rows.last().unwrap()["content"], "hi");
+    let notice_row = rows
+        .iter()
+        .find(|row| row["message_meta"]["notice"]["kind"] == "outside_changes")
+        .expect("an outside changes row");
+    let notice: crate::ai::host_notice::HostNotice =
+        serde_json::from_value(notice_row["message_meta"]["notice"].clone()).unwrap();
+    match notice {
+        crate::ai::host_notice::HostNotice::OutsideChanges {
+            entries,
+            more,
+            undone,
+            own_undone,
+            rewritten,
+            pruned,
+        } => {
+            assert_eq!(entries.len(), 1);
+            assert_eq!(entries[0].author, crate::edit_history::Author::Person);
+            assert_eq!(more, 0);
+            assert_eq!(undone, 0);
+            assert_eq!(own_undone, 0);
+            assert!(!rewritten);
+            assert!(!pruned);
+        }
+        other => panic!("expected outside changes, got {other:?}"),
+    }
+    assert!(
+        notice_row["content"]
+            .as_str()
+            .is_some_and(|text| text.contains("Edits by others, newest first:"))
+    );
+    drop(lease);
+}
+
+#[test]
+fn a_pending_binding_suppresses_the_outside_changes_notice() {
+    use crate::ai::agent_loop::wire;
+    use crate::ai::host_notice::BindCause;
+    use crate::ai::session_usage::{Purpose, SessionLease};
+    use crate::commands::{SavedTurnBinding, prepare_turn_for, update_dsl_inner};
+    use serde_json::json;
+    use tauri::test::{mock_builder, mock_context, noop_assets};
+
+    let fixture = fixture("outside-suppressed");
+    let state = state_with_project(&fixture.dir, PROJECT);
+    let first = fixture.dir.join("song.ocp");
+    let second = fixture.dir.join("second.ocp");
+    std::fs::write(&second, PROJECT).unwrap();
+    let session = new_for(&state, None, Some("moved"), None).unwrap();
+    let store = sessions::Store::config();
+    store
+        .bind(&session.id, Some(&second), BindCause::Chosen)
+        .unwrap();
+    {
+        let mut inner = state.lock_inner();
+        inner.file_path = Some(second.clone());
+        update_dsl_inner(PROJECT.replace("tempo: 128", "tempo: 120"), &mut inner).unwrap();
+        let mark = inner.undo.mark();
+        store
+            .record_history_mark(&session.id, &second, mark)
+            .unwrap();
+        update_dsl_inner(PROJECT.replace("tempo: 128", "tempo: 132"), &mut inner).unwrap();
+    }
+    let lease = SessionLease::admit(store, &session.id, "moved-request", Purpose::Chat).unwrap();
+    let incarnation = lease.update().incarnation;
+    let provider = outside_provider();
+    let messages = json!([
+        {"role":"system","content":"prompt"},
+        {"role":"user","content":"hi","message_meta":{"version":1,"kind":"user"}},
+    ]);
+    let app = mock_builder()
+        .manage(state)
+        .build(mock_context(noop_assets()))
+        .unwrap();
+    let prepared = tauri::async_runtime::block_on(prepare_turn_for(
+        &app.handle().clone(),
+        &provider,
+        &messages,
+        SavedTurnBinding {
+            id: &session.id,
+            request_id: None,
+            incarnation: &incarnation,
+            project: Some(&second),
+            tool_tokens: wire::offered_tool_tokens(None, false),
+            surface: None,
+            cancel: None,
+        },
+    ))
+    .unwrap();
+    let rows = prepared.messages.as_array().unwrap();
+    assert_eq!(rows.last().unwrap()["content"], "hi");
+    assert!(
+        rows.iter()
+            .any(|row| row["message_meta"]["notice"]["kind"] == "project_bound")
+    );
+    assert!(
+        rows.iter()
+            .all(|row| row["message_meta"]["notice"]["kind"] != "outside_changes")
+    );
+    drop(lease);
+    let _ = first;
+}
+
+#[test]
+fn every_prepared_turn_moves_the_mark_so_the_outside_notice_is_not_repeated() {
+    use crate::ai::agent_loop::wire;
+    use crate::ai::host_notice::HostNotice;
+    use crate::ai::session_usage::{Purpose, SessionLease};
+    use crate::commands::{SavedTurnBinding, prepare_turn_for, update_dsl_inner};
+    use serde_json::json;
+    use tauri::Manager;
+    use tauri::test::{mock_builder, mock_context, noop_assets};
+
+    let fixture = fixture("outside-repeat");
+    let state = state_with_project(&fixture.dir, PROJECT);
+    let open = fixture.dir.join("song.ocp");
+    let session = new_for(&state, None, Some("outside"), None).unwrap();
+    let provider = outside_provider();
+    let app = mock_builder()
+        .manage(state)
+        .build(mock_context(noop_assets()))
+        .unwrap();
+    let prepare = |request: &str| {
+        let messages = json!([
+            {"role":"system","content":"prompt"},
+            {"role":"user","content":request,"message_meta":{"version":1,"kind":"user"}},
+        ]);
+        let lease = SessionLease::admit(
+            sessions::Store::config(),
+            &session.id,
+            request,
+            Purpose::Chat,
+        )
+        .unwrap();
+        let incarnation = lease.update().incarnation;
+        let prepared = tauri::async_runtime::block_on(prepare_turn_for(
+            &app.handle().clone(),
+            &provider,
+            &messages,
+            SavedTurnBinding {
+                id: &session.id,
+                request_id: None,
+                incarnation: &incarnation,
+                project: Some(&open),
+                tool_tokens: wire::offered_tool_tokens(None, false),
+                surface: None,
+                cancel: None,
+            },
+        ))
+        .unwrap();
+        drop(lease);
+        prepared
+    };
+    let outside = |prepared: &crate::commands::PreparedTurn| {
+        prepared
+            .messages
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|row| row["message_meta"]["notice"].as_object())
+            .filter(|notice| notice["kind"] == "outside_changes")
+            .map(|notice| {
+                serde_json::from_value::<HostNotice>(serde_json::Value::Object(notice.clone()))
+                    .unwrap()
+            })
+            .collect::<Vec<_>>()
+    };
+
+    let first = prepare("first");
+    assert!(outside(&first).is_empty(), "the first turn has no mark yet");
+    let mark_after_first = sessions::Store::config()
+        .find(&session.id)
+        .unwrap()
+        .1
+        .history_mark
+        .expect("preparation saved the first mark");
+
+    // A person edit before any batch opens is attributed to the person.
+    {
+        let app_state = app.state::<AppState>();
+        let mut inner = app_state.lock_inner();
+        update_dsl_inner(PROJECT.replace("tempo: 128", "tempo: 120"), &mut inner).unwrap();
+    }
+    // The turn's own edit lands inside its batch and stays the agent's.
+    let owner = crate::state::panel_batch_owner(Some(&session.id));
+    app.state::<AppState>()
+        .begin_transaction("turn".into(), owner.clone())
+        .unwrap();
+    {
+        let app_state = app.state::<AppState>();
+        let mut inner = app_state.lock_inner();
+        let _acting = crate::edit_history::act_as(crate::edit_history::Author::Agent {
+            session: Some(session.id.clone()),
+        });
+        update_dsl_inner(PROJECT.replace("tempo: 128", "tempo: 130"), &mut inner).unwrap();
+    }
+    app.state::<AppState>().commit_transaction().unwrap();
+
+    let second = prepare("second");
+    let notices = outside(&second);
+    assert_eq!(notices.len(), 1, "the person's edit is news");
+    let notice = notices[0].clone();
+    let HostNotice::OutsideChanges {
+        entries,
+        rewritten,
+        pruned,
+        ..
+    } = notice
+    else {
+        panic!("expected outside changes");
+    };
+    assert_eq!(entries.len(), 1, "the agent's own edit is not listed");
+    assert_eq!(entries[0].author, crate::edit_history::Author::Person);
+    assert!(!rewritten && !pruned);
+    let mark_after_second = sessions::Store::config()
+        .find(&session.id)
+        .unwrap()
+        .1
+        .history_mark
+        .expect("preparation moved the mark");
+    assert_ne!(mark_after_first, mark_after_second);
+
+    let third = prepare("third");
+    assert_eq!(
+        outside(&third).len(),
+        1,
+        "the mark now stands after the person's edit, so no new notice is saved"
+    );
+}
+
+fn hold_session_elsewhere(id: &str) -> (sessions::Store, std::fs::File) {
+    let store = sessions::Store::config();
+    let path = store.lock_path(id);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let file = crate::private_fs::lock(
+        &path,
+        crate::private_fs::LockMode::Exclusive,
+        crate::private_fs::LockWait::NoWait,
+    )
+    .unwrap();
+    (store, file)
+}
+
+#[test]
+fn a_conversation_held_elsewhere_is_not_deleted_and_stays_listed() {
+    let fixture = fixture("held-delete");
+    let state = state_with_project(&fixture.dir, PROJECT);
+    let session = new_for(&state, None, Some("held"), None).unwrap();
+    let (_store, foreign) = hold_session_elsewhere(&session.id);
+    let before = list_for(&state, None, true).unwrap();
+
+    let error = delete_session_for(&state, &Requests::default(), &session.id).unwrap_err();
+    assert_eq!(error.kind, sessions::SessionErrorKind::InUse);
+    assert!(sessions::Store::config().find(&session.id).is_ok());
+    let after = list_for(&state, None, true).unwrap();
+    assert_eq!(after.len(), before.len());
+    assert!(
+        after.iter().all(|meta| meta.id != "locks"),
+        "the locks folder is not a workspace"
+    );
+
+    drop(foreign);
+    delete_session_for(&state, &Requests::default(), &session.id).unwrap();
+    assert!(sessions::Store::config().find(&session.id).is_err());
+}
+
+#[test]
+fn opening_a_conversation_held_elsewhere_keeps_the_current_one() {
+    let fixture = fixture("held-open");
+    let state = state_with_project(&fixture.dir, PROJECT);
+    let first = new_for(&state, None, Some("first"), None).unwrap();
+    let second = new_for(&state, None, Some("second"), None).unwrap();
+    open_session_for(&state, &first.id, Some(1)).unwrap();
+    let (_store, foreign) = hold_session_elsewhere(&second.id);
+
+    let error = open_session_for(&state, &second.id, Some(1)).unwrap_err();
+    assert_eq!(error.kind, sessions::SessionErrorKind::InUse);
+    assert_eq!(
+        state
+            .lock_inner()
+            .session_lock
+            .as_ref()
+            .map(|open| open.id.as_str()),
+        Some(first.id.as_str())
+    );
+
+    drop(foreign);
+    open_session_for(&state, &second.id, Some(1)).unwrap();
+    assert_eq!(
+        state
+            .lock_inner()
+            .session_lock
+            .as_ref()
+            .map(|open| open.id.as_str()),
+        Some(second.id.as_str())
+    );
+}
+
+#[test]
+fn a_held_conversation_refusal_uses_the_session_in_use_wire_kind() {
+    let value = serde_json::to_value(sessions::SessionError::new(
+        sessions::SessionErrorKind::InUse,
+        "held",
+    ))
+    .unwrap();
+    assert_eq!(value["kind"], "session_in_use");
 }

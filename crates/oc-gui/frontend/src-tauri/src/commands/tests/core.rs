@@ -363,11 +363,15 @@ fn factory_load_marks_dirty_and_pushes_one_undo_entry() {
     .expect("resync");
 
     assert!(inner.dirty);
-    assert_eq!(inner.undo.undo.len(), 1, "one LOAD is one undo entry");
+    assert_eq!(
+        inner.undo.undo_entries().len(),
+        1,
+        "one LOAD is one undo entry"
+    );
     assert!(
-        inner.undo.undo[0].label.contains("neon_bass"),
+        inner.undo.undo_entries()[0].tag.contains("neon_bass"),
         "unexpected label {}",
-        inner.undo.undo[0].label
+        inner.undo.undo_entries()[0].tag
     );
     // The replacement drops the previous patch, not just the edited keys.
     let preset = snapshot(&inner)
@@ -476,7 +480,7 @@ fn project_replacement_clears_old_edit_transactions() {
     assert_eq!(inner.dsl_source, oc_dsl::serialize(&project));
     assert_eq!(inner.file_path, Some(PathBuf::from("/tmp/Fresh.ocp")));
     assert!(!inner.dirty);
-    assert!(inner.undo.undo.is_empty());
+    assert!(inner.undo.undo_entries().is_empty());
     replace_project(&mut inner, default_project(), None).unwrap();
     assert!(inner.file_path.is_none());
 }
@@ -568,7 +572,7 @@ fn performance_edit_is_atomic_stale_checked_and_undoable() {
             .is_err()
     );
     assert_eq!(inner.dsl_source, oc_dsl::serialize(&original));
-    assert!(inner.undo.undo.is_empty());
+    assert!(inner.undo.undo_entries().is_empty());
     replacement.quarter = 1.25;
     replacement.message = oc_dsl::performance::ChannelCommand::NoteOff {
         note: 60,
@@ -587,7 +591,7 @@ fn performance_edit_is_atomic_stale_checked_and_undoable() {
     );
     apply_performance_event_edit(&mut inner, 0, "t", 1, expected.clone(), replacement.clone())
         .unwrap();
-    assert_eq!(inner.undo.undo.len(), 1);
+    assert_eq!(inner.undo.undo_entries().len(), 1);
     let edited = inner.project.clone();
     assert!(apply_performance_event_edit(&mut inner, 0, "t", 1, expected, replacement).is_err());
     assert_eq!(
@@ -955,7 +959,11 @@ fn tempo_map_command_is_one_dirty_undo_entry() {
     }];
     let saved = set_tempo_map_inner(&mut inner, points.clone()).unwrap();
     assert!(saved.dirty);
-    assert_eq!(inner.undo.undo.len(), 1, "one map edit, one undo entry");
+    assert_eq!(
+        inner.undo.undo_entries().len(),
+        1,
+        "one map edit, one undo entry"
+    );
     assert_eq!(inner.project.properties.tempo_map, points);
     assert_eq!(inner.dsl_source, oc_dsl::serialize(&inner.project));
 
@@ -972,13 +980,17 @@ fn tempo_map_command_does_not_dirty_on_rejection() {
         bpm: 140.0,
     };
     set_tempo_map_inner(&mut inner, vec![point]).unwrap();
-    assert_eq!(inner.undo.undo.len(), 1);
+    assert_eq!(inner.undo.undo_entries().len(), 1);
     let before = inner.project.clone();
     inner.dirty = false;
 
     assert!(set_tempo_map_inner(&mut inner, vec![ast::TempoPoint { bpm: 0.0, ..point }]).is_err());
     assert!(!inner.dirty);
-    assert_eq!(inner.undo.undo.len(), 1, "a rejected map adds no history");
+    assert_eq!(
+        inner.undo.undo_entries().len(),
+        1,
+        "a rejected map adds no history"
+    );
     assert_eq!(inner.project, before);
 }
 
@@ -1101,7 +1113,11 @@ fn time_sig_map_command_is_one_dirty_undo_entry_and_remaps() {
     )
     .unwrap();
     assert!(saved.dirty);
-    assert_eq!(inner.undo.undo.len(), 1, "one map edit, one undo entry");
+    assert_eq!(
+        inner.undo.undo_entries().len(),
+        1,
+        "one map edit, one undo entry"
+    );
     assert_eq!(
         inner.project.tracks[0].phrases[0].time_range.unwrap().end,
         ast::BarBeat::new(5, 3, 0)
@@ -1165,7 +1181,7 @@ fn audio_clip_move_keeps_duration_and_can_change_track() {
     assert_eq!(clip.time_range.start, ast::BarBeat::new(2, 3, 0));
     // Two bars stay two bars.
     assert_eq!(clip.time_range.end, ast::BarBeat::new(4, 3, 0));
-    assert_eq!(inner.undo.undo.len(), 1);
+    assert_eq!(inner.undo.undo_entries().len(), 1);
 }
 
 #[test]
@@ -1182,7 +1198,7 @@ fn audio_clip_trim_shifts_the_media_offset() {
     let clip = inner.project.audio_clip(0).unwrap();
     assert!((clip.offset_seconds - 1.0).abs() < 1e-9);
     assert_eq!(clip.time_range.start, ast::BarBeat::new(1, 3, 0));
-    assert_eq!(inner.undo.undo.len(), 1);
+    assert_eq!(inner.undo.undo_entries().len(), 1);
     assert_eq!(clip.gain_db, -3.0);
     assert_eq!(clip.fade_in_seconds, 0.1);
 }
@@ -1231,7 +1247,7 @@ fn audio_clip_trim_rejects_an_empty_range() {
     .unwrap_err();
     assert!(error.contains("after its start"), "{error}");
     assert_eq!(inner.project.audio_clip_count(), 1);
-    assert_eq!(inner.undo.undo.len(), 0);
+    assert_eq!(inner.undo.undo_entries().len(), 0);
 }
 
 #[test]
@@ -1253,7 +1269,7 @@ fn audio_clip_split_makes_two_clips_with_continuous_offsets() {
     assert_eq!(clips[1].fade_out_seconds, 0.2);
     assert_eq!(clips[1].gain_db, -3.0);
     assert_ne!(clips[0].name, clips[1].name);
-    assert_eq!(inner.undo.undo.len(), 1);
+    assert_eq!(inner.undo.undo_entries().len(), 1);
 }
 
 #[test]
@@ -1299,7 +1315,7 @@ fn audio_clip_split_outside_the_range_is_rejected() {
     let error = split_audio_clip_inner(&mut inner, 0, ast::BarBeat::new(3, 1, 0)).unwrap_err();
     assert!(error.contains("inside the audio clip"), "{error}");
     assert_eq!(inner.project.audio_clip_count(), 1);
-    assert_eq!(inner.undo.undo.len(), 0);
+    assert_eq!(inner.undo.undo_entries().len(), 0);
 }
 
 /// A clip with real media, a zero envelope and its own loop window.
@@ -1341,7 +1357,7 @@ fn audio_clip_split_keeps_the_loop_on_both_halves() {
     assert!((clips[0].loop_seconds - 2.0).abs() < 1e-9);
     assert!((clips[1].offset_seconds - 0.0).abs() < 1e-9);
     assert!((clips[1].loop_seconds - 2.0).abs() < 1e-9);
-    assert_eq!(inner.undo.undo.len(), 1);
+    assert_eq!(inner.undo.undo_entries().len(), 1);
 }
 
 #[test]
@@ -1358,7 +1374,7 @@ fn audio_clip_split_wraps_the_loop_position() {
     let clips = inner.project.audio_clips();
     assert!((clips[1].offset_seconds - 1.0).abs() < 1e-9);
     assert!((clips[1].loop_seconds - 2.0).abs() < 1e-9);
-    assert_eq!(inner.undo.undo.len(), 1);
+    assert_eq!(inner.undo.undo_entries().len(), 1);
 }
 
 #[test]
@@ -1379,7 +1395,7 @@ fn audio_clip_split_clears_a_loop_the_half_cannot_repeat() {
     // same media, which is what the engine accepts.
     assert_eq!(clips[1].loop_seconds, 0.0);
     assert!((clips[1].offset_seconds - 1.0).abs() < 1e-9);
-    assert_eq!(inner.undo.undo.len(), 1);
+    assert_eq!(inner.undo.undo_entries().len(), 1);
 }
 
 #[test]
@@ -1399,7 +1415,7 @@ fn audio_clip_split_clears_the_left_loop_it_cannot_repeat() {
     // The right half resumes one second into the four-second loop.
     assert!((clips[1].offset_seconds - 1.0).abs() < 1e-9);
     assert!((clips[1].loop_seconds - 4.0).abs() < 1e-9);
-    assert_eq!(inner.undo.undo.len(), 1);
+    assert_eq!(inner.undo.undo_entries().len(), 1);
 }
 
 #[test]
@@ -1416,7 +1432,7 @@ fn audio_clip_split_refuses_a_seam_the_right_half_cannot_repeat() {
     let error = split_audio_clip_inner(&mut inner, 0, ast::BarBeat::new(2, 3, 0)).unwrap_err();
     assert_eq!(error, SPLIT_AUDIO_LOOP_SEAM);
     assert_eq!(inner.project.audio_clip_count(), 1);
-    assert_eq!(inner.undo.undo.len(), 0);
+    assert_eq!(inner.undo.undo_entries().len(), 0);
 }
 
 #[test]
@@ -1437,7 +1453,7 @@ fn audio_clip_split_refuses_a_loop_past_the_media() {
     let error = split_audio_clip_inner(&mut inner, 0, ast::BarBeat::new(5, 3, 0)).unwrap_err();
     assert_eq!(error, SPLIT_AUDIO_LOOP_PAST_MEDIA);
     assert_eq!(inner.project.audio_clip_count(), 1);
-    assert_eq!(inner.undo.undo.len(), 0);
+    assert_eq!(inner.undo.undo_entries().len(), 0);
 }
 
 #[test]
@@ -1455,7 +1471,7 @@ fn audio_clip_split_clamps_fades_to_each_half() {
     assert_eq!(clips[0].fade_out_seconds, 0.0);
     assert_eq!(clips[1].fade_in_seconds, 0.0);
     assert!((clips[1].fade_out_seconds - 2.0).abs() < 1e-9);
-    assert_eq!(inner.undo.undo.len(), 1);
+    assert_eq!(inner.undo.undo_entries().len(), 1);
 }
 
 /// Mean |x| of bars 5-8 of the mix, in i16 units, from a full offline render.
@@ -1526,7 +1542,7 @@ fn audio_clip_trim_wraps_the_loop_position() {
     let clip = inner.project.audio_clip(0).unwrap();
     assert!((clip.offset_seconds - 1.0).abs() < 1e-9);
     assert!((clip.loop_seconds - 2.0).abs() < 1e-9);
-    assert_eq!(inner.undo.undo.len(), 1);
+    assert_eq!(inner.undo.undo_entries().len(), 1);
 }
 
 #[test]
@@ -1549,7 +1565,7 @@ fn audio_clip_trim_clears_a_loop_the_clip_cannot_fit() {
     let clip = inner.project.audio_clip(0).unwrap();
     assert_eq!(clip.loop_seconds, 0.0);
     assert!((clip.offset_seconds - 0.0).abs() < 1e-9);
-    assert_eq!(inner.undo.undo.len(), 1);
+    assert_eq!(inner.undo.undo_entries().len(), 1);
 }
 
 #[test]
@@ -1572,7 +1588,7 @@ fn audio_clip_trim_refuses_a_loop_past_the_media() {
     .unwrap_err();
     assert_eq!(error, LOOP_PAST_MEDIA);
     assert_eq!(inner.project.audio_clip_count(), 1);
-    assert_eq!(inner.undo.undo.len(), 0);
+    assert_eq!(inner.undo.undo_entries().len(), 0);
 }
 
 #[test]
@@ -1593,7 +1609,7 @@ fn audio_clip_trim_clamps_fades_to_the_new_length() {
     let clip = inner.project.audio_clip(0).unwrap();
     assert!((clip.fade_in_seconds - 1.5).abs() < 1e-9);
     assert!((clip.fade_out_seconds - 1.5).abs() < 1e-9);
-    assert_eq!(inner.undo.undo.len(), 1);
+    assert_eq!(inner.undo.undo_entries().len(), 1);
 }
 
 #[test]
@@ -1601,7 +1617,7 @@ fn audio_clip_remove_is_one_undo_step() {
     let mut inner = audio_clip_project();
     remove_audio_clip_inner(&mut inner, 0).unwrap();
     assert!(inner.project.audio_clips().is_empty());
-    assert_eq!(inner.undo.undo.len(), 1);
+    assert_eq!(inner.undo.undo_entries().len(), 1);
 }
 
 /// A saved project whose clip media exists: envelope edits require the file.
@@ -1623,7 +1639,11 @@ fn audio_clip_envelope_drag_is_one_undo_entry() {
     set_audio_clip_envelope_inner(&mut inner, 0, Some(-5.0), None, None).unwrap();
     set_audio_clip_envelope_inner(&mut inner, 0, Some(-6.0), None, None).unwrap();
     inner.undo.end_gesture();
-    assert_eq!(inner.undo.undo.len(), 1, "a drag is one history entry");
+    assert_eq!(
+        inner.undo.undo_entries().len(),
+        1,
+        "a drag is one history entry"
+    );
     assert_eq!(inner.project.audio_clip(0).unwrap().gain_db, -6.0);
 
     inner.undo.undo(&mut inner.project).unwrap();
@@ -1641,8 +1661,8 @@ fn audio_clip_gain_is_one_undo_step_and_undo_restores() {
         "{}",
         inner.dsl_source
     );
-    assert_eq!(inner.undo.undo.len(), 1);
-    assert_eq!(inner.undo.undo[0].label, "clip gain");
+    assert_eq!(inner.undo.undo_entries().len(), 1);
+    assert_eq!(inner.undo.undo_entries()[0].tag, "clip gain");
 
     inner.undo.undo(&mut inner.project).unwrap();
     assert_eq!(inner.project, before);
@@ -1695,7 +1715,7 @@ fn audio_clip_fade_shorter_than_20ms_is_refused() {
     let error = set_audio_clip_envelope_inner(&mut inner, 0, None, Some(0.010), None).unwrap_err();
     assert_eq!(error, FADE_TOO_SHORT);
     assert_eq!(inner.project, before);
-    assert_eq!(inner.undo.undo.len(), 0);
+    assert_eq!(inner.undo.undo_entries().len(), 0);
 
     // Exactly 20 ms is the floor, and zero clears the fade.
     set_audio_clip_envelope_inner(&mut inner, 0, None, Some(0.020), None).unwrap();
@@ -1720,10 +1740,10 @@ fn audio_clip_envelope_touches_only_the_named_field() {
     assert_eq!(clip.fade_out_seconds, 0.5);
     assert_eq!(clip.gain_db, -3.0);
     assert_eq!(clip.fade_in_seconds, 0.1);
-    assert_eq!(inner.undo.undo[0].label, "fade out");
+    assert_eq!(inner.undo.undo_entries()[0].tag, "fade out");
 
     set_audio_clip_envelope_inner(&mut inner, 0, None, Some(1.0), None).unwrap();
-    assert_eq!(inner.undo.undo[1].label, "fade in");
+    assert_eq!(inner.undo.undo_entries()[1].tag, "fade in");
 }
 
 #[test]
@@ -1731,7 +1751,7 @@ fn audio_clip_envelope_writes_nothing_when_no_value_changes() {
     let (_dir, mut inner) = audio_clip_project_with_media();
     set_audio_clip_envelope_inner(&mut inner, 0, None, None, None).unwrap();
     set_audio_clip_envelope_inner(&mut inner, 0, Some(-3.0), None, None).unwrap();
-    assert_eq!(inner.undo.undo.len(), 0);
+    assert_eq!(inner.undo.undo_entries().len(), 0);
 }
 
 #[test]
@@ -1742,7 +1762,7 @@ fn audio_clip_without_media_is_refused() {
     let error = set_audio_clip_envelope_inner(&mut inner, 0, Some(-6.0), None, None).unwrap_err();
     assert_eq!(error, CLIP_HAS_NO_MEDIA);
     assert_eq!(inner.project, before);
-    assert_eq!(inner.undo.undo.len(), 0);
+    assert_eq!(inner.undo.undo_entries().len(), 0);
 
     let (_dir, mut inner) = audio_clip_project_with_media();
     inner.project.audio_clip_mut(0).unwrap().file = String::new();
@@ -1755,7 +1775,7 @@ fn audio_clip_envelope_rejects_an_out_of_range_index() {
     let (_dir, mut inner) = audio_clip_project_with_media();
     let error = set_audio_clip_envelope_inner(&mut inner, 9, Some(0.0), None, None).unwrap_err();
     assert!(error.contains("out of range"), "{error}");
-    assert_eq!(inner.undo.undo.len(), 0);
+    assert_eq!(inner.undo.undo_entries().len(), 0);
 }
 
 fn point(position: f64, gain_db: f64) -> oc_dsl::ast::GainEnvelopePoint {
@@ -1785,11 +1805,11 @@ fn audio_clip_envelope_full_writes_crossfade_and_points() {
         inner.dsl_source
     );
     // Two fields at once is still the generic label.
-    assert_eq!(inner.undo.undo[0].label, "clip envelope");
+    assert_eq!(inner.undo.undo_entries()[0].tag, "clip envelope");
 
     let (_dir, mut inner) = audio_clip_project_with_media();
     set_audio_clip_envelope_full(&mut inner, 0, None, None, None, Some(0.1), None).unwrap();
-    assert_eq!(inner.undo.undo[0].label, "crossfade");
+    assert_eq!(inner.undo.undo_entries()[0].tag, "crossfade");
 
     let (_dir, mut inner) = audio_clip_project_with_media();
     set_audio_clip_envelope_full(
@@ -1802,7 +1822,7 @@ fn audio_clip_envelope_full_writes_crossfade_and_points() {
         Some(vec![point(0.0, 0.0), point(1.0, -6.0)]),
     )
     .unwrap();
-    assert_eq!(inner.undo.undo[0].label, "gain envelope");
+    assert_eq!(inner.undo.undo_entries()[0].tag, "gain envelope");
 
     // An empty list clears the envelope again.
     set_audio_clip_envelope_full(&mut inner, 0, None, None, None, None, Some(Vec::new())).unwrap();
@@ -1832,7 +1852,7 @@ fn audio_clip_envelope_full_rejects_a_bad_envelope_position() {
     .unwrap_err();
     assert!(error.contains("gain_envelope"), "{error}");
     assert_eq!(inner.project, before);
-    assert_eq!(inner.undo.undo.len(), 0);
+    assert_eq!(inner.undo.undo_entries().len(), 0);
 
     let error = set_audio_clip_envelope_full(
         &mut inner,
@@ -1854,7 +1874,7 @@ fn audio_clip_crossfade_shorter_than_20ms_is_refused() {
     let error = set_audio_clip_envelope_full(&mut inner, 0, None, None, None, Some(0.010), None)
         .unwrap_err();
     assert_eq!(error, FADE_TOO_SHORT);
-    assert_eq!(inner.undo.undo.len(), 0);
+    assert_eq!(inner.undo.undo_entries().len(), 0);
 }
 
 #[test]
@@ -1968,7 +1988,11 @@ fn multi_block_remove_is_one_undo_step_and_restores_everything() {
     );
     assert_eq!(inner.project.tracks[0].phrases[0].name, "intro");
     assert!(inner.project.tracks[1].patterns.is_empty());
-    assert_eq!(inner.undo.undo.len(), 1, "one gesture, one undo entry");
+    assert_eq!(
+        inner.undo.undo_entries().len(),
+        1,
+        "one gesture, one undo entry"
+    );
 
     inner.undo.undo(&mut inner.project).unwrap();
     assert_eq!(inner.project.tracks[0].pattern_clip_count(), 3);
@@ -2006,7 +2030,7 @@ fn multi_block_remove_rejects_an_out_of_range_block_without_mutating() {
     ];
     assert!(remove_blocks_inner(&mut inner, &blocks).is_err());
     assert_eq!(inner.project, before);
-    assert!(inner.undo.undo.is_empty());
+    assert!(inner.undo.undo_entries().is_empty());
 }
 
 #[test]
@@ -2778,7 +2802,11 @@ fn synth_automation_gesture_writes_one_lane_as_one_undo_entry() {
             && matches!(value, ast::ParamValue::Number(number) if (number - 8000.0).abs() < 1e-9)
     }));
 
-    assert_eq!(inner.undo.undo.len(), 1, "one drag is one undo entry");
+    assert_eq!(
+        inner.undo.undo_entries().len(),
+        1,
+        "one drag is one undo entry"
+    );
     let mut project = inner.project.clone();
     inner.undo.undo(&mut project).expect("one undo entry");
     assert!(project.tracks[0].automation_count() == 0);
@@ -2811,7 +2839,7 @@ fn removing_synth_automation_is_one_undo_entry() {
 
     remove_synth_param_automation_inner(&mut inner, 0, "filter.cutoff").unwrap();
     assert!(inner.project.tracks[0].automation_count() == 0);
-    assert_eq!(inner.undo.undo.len(), 1);
+    assert_eq!(inner.undo.undo_entries().len(), 1);
 
     let mut project = inner.project.clone();
     inner.undo.undo(&mut project).expect("one undo entry");
@@ -3028,7 +3056,7 @@ fn audio_clip_playback_edits_persist_and_invalid_combinations_leave_no_undo() {
     .unwrap_err();
     assert!(error.contains("pitch needs a stretch mode"));
     assert_eq!(inner.project.audio_clip(0), Some(&original));
-    assert!(inner.undo.undo.is_empty());
+    assert!(inner.undo.undo_entries().is_empty());
 
     set_audio_clip_playback_inner(
         &mut inner,
@@ -3046,7 +3074,7 @@ fn audio_clip_playback_edits_persist_and_invalid_combinations_leave_no_undo() {
     assert_eq!(clip.pitch, 7.0);
     assert_eq!(clip.time_range, original.time_range);
     assert_eq!(clip.file, original.file);
-    assert_eq!(inner.undo.undo.len(), 1);
+    assert_eq!(inner.undo.undo_entries().len(), 1);
 
     let mut buffer = vec![0.0_f32; 4 * 48_000 * 2];
     oc_engine::audio_clip::mix_into_track(&mut buffer, &saved, clip, 48_000, Some(dir.path()))
@@ -3134,7 +3162,7 @@ fn audio_clip_playback_fit_source_clears_trim_and_loop_and_plays_the_tail() {
             power.sqrt() > 0.2,
             "the fitted source tail must remain audible"
         );
-        assert_eq!(inner.undo.undo.len(), 1);
+        assert_eq!(inner.undo.undo_entries().len(), 1);
         inner.undo.undo(&mut inner.project).unwrap();
         assert_eq!(inner.project.audio_clip(0), Some(&original));
     }
@@ -3194,7 +3222,7 @@ fn audio_clip_playback_fit_refuses_conflicts_without_writing_an_edit() {
             "{error}"
         );
         assert_eq!(inner.project.audio_clip(0), Some(&original));
-        assert!(inner.undo.undo.is_empty());
+        assert!(inner.undo.undo_entries().is_empty());
     }
 }
 
@@ -3220,7 +3248,7 @@ fn audio_clip_playback_fit_can_resize_the_destination_in_the_same_edit() {
     assert_eq!(clip.time_range.end, end);
     assert_eq!(clip.offset_seconds, 0.0);
     assert_eq!(clip.loop_seconds, 0.0);
-    assert_eq!(inner.undo.undo.len(), 1);
+    assert_eq!(inner.undo.undo_entries().len(), 1);
 }
 
 #[test]
@@ -3313,7 +3341,7 @@ fn audio_clip_playback_varispeed_applies_one_resize_and_persists() {
     assert_eq!(clip.time_range.end, end);
     assert_eq!(clip.stretch, 0.5);
     assert_eq!(clip.pitch, 0.0);
-    assert_eq!(inner.undo.undo.len(), 1);
+    assert_eq!(inner.undo.undo_entries().len(), 1);
 }
 
 #[test]
@@ -3424,8 +3452,8 @@ fn audio_clip_slip_writes_the_offset_and_keeps_the_range() {
         "{}",
         inner.dsl_source
     );
-    assert_eq!(inner.undo.undo.len(), 1);
-    assert_eq!(inner.undo.undo[0].label, "clip slip");
+    assert_eq!(inner.undo.undo_entries().len(), 1);
+    assert_eq!(inner.undo.undo_entries()[0].tag, "clip slip");
 }
 
 #[test]
@@ -3450,7 +3478,11 @@ fn audio_clip_slip_is_one_undo_entry_per_drag() {
     set_audio_clip_offset_inner(&mut inner, 0, 1.0).unwrap();
     set_audio_clip_offset_inner(&mut inner, 0, 1.5).unwrap();
     inner.undo.end_gesture();
-    assert_eq!(inner.undo.undo.len(), 1, "a drag is one history entry");
+    assert_eq!(
+        inner.undo.undo_entries().len(),
+        1,
+        "a drag is one history entry"
+    );
     assert!((inner.project.audio_clip(0).unwrap().offset_seconds - 1.5).abs() < 1e-9);
 
     inner.undo.undo(&mut inner.project).unwrap();
@@ -3474,7 +3506,7 @@ fn audio_clip_slip_refuses_a_whole_content_clip() {
     let error = set_audio_clip_offset_inner(&mut inner, 0, 1.0).unwrap_err();
     assert_eq!(error, SLIP_NOTHING_TO_SLIP);
     assert_eq!(inner.project, before);
-    assert_eq!(inner.undo.undo.len(), 0);
+    assert_eq!(inner.undo.undo_entries().len(), 0);
 }
 
 #[test]
@@ -3545,8 +3577,8 @@ fn pattern_clip_slip_writes_the_offset_and_keeps_the_range() {
         "{}",
         inner.dsl_source
     );
-    assert_eq!(inner.undo.undo.len(), 1);
-    assert_eq!(inner.undo.undo[0].label, "clip slip");
+    assert_eq!(inner.undo.undo_entries().len(), 1);
+    assert_eq!(inner.undo.undo_entries()[0].tag, "clip slip");
 
     inner.undo.undo(&mut inner.project).unwrap();
     assert!(
@@ -3567,7 +3599,7 @@ fn pattern_clip_slip_is_one_undo_entry_per_drag() {
     set_pattern_clip_offset_inner(&mut inner, 0, 0, 1.0).unwrap();
     set_pattern_clip_offset_inner(&mut inner, 0, 0, 1.5).unwrap();
     inner.undo.end_gesture();
-    assert_eq!(inner.undo.undo.len(), 1);
+    assert_eq!(inner.undo.undo_entries().len(), 1);
     assert!(
         (inner.project.tracks[0]
             .pattern_clip(0)
@@ -3592,7 +3624,7 @@ fn pattern_clip_slip_refuses_a_whole_content_clip() {
     let error = set_pattern_clip_offset_inner(&mut inner, 0, 0, 1.0).unwrap_err();
     assert_eq!(error, SLIP_NOTHING_TO_SLIP_PATTERN);
     assert_eq!(inner.project, before);
-    assert_eq!(inner.undo.undo.len(), 0);
+    assert_eq!(inner.undo.undo_entries().len(), 0);
 }
 
 #[test]
@@ -3623,8 +3655,8 @@ fn audio_clip_loop_sets_once_and_clears() {
         "{}",
         inner.dsl_source
     );
-    assert_eq!(inner.undo.undo.len(), 1);
-    assert_eq!(inner.undo.undo[0].label, "clip loop");
+    assert_eq!(inner.undo.undo_entries().len(), 1);
+    assert_eq!(inner.undo.undo_entries()[0].tag, "clip loop");
 
     inner.undo.undo(&mut inner.project).unwrap();
     assert_eq!(inner.project, before);
@@ -3643,7 +3675,11 @@ fn audio_clip_loop_is_one_undo_entry_per_gesture() {
     set_audio_clip_loop_inner(&mut inner, 0, Some(1.0)).unwrap();
     set_audio_clip_loop_inner(&mut inner, 0, Some(1.5)).unwrap();
     inner.undo.end_gesture();
-    assert_eq!(inner.undo.undo.len(), 1, "a drag is one history entry");
+    assert_eq!(
+        inner.undo.undo_entries().len(),
+        1,
+        "a drag is one history entry"
+    );
     assert!((inner.project.audio_clip(0).unwrap().loop_seconds - 1.5).abs() < 1e-9);
 }
 
@@ -3658,7 +3694,7 @@ fn audio_clip_loop_refuses_media_shorter_than_100ms() {
     let error = set_audio_clip_loop_inner(&mut inner, 0, Some(0.04)).unwrap_err();
     assert_eq!(error, LOOP_TOO_SHORT_MEDIA);
     assert_eq!(inner.project, before);
-    assert_eq!(inner.undo.undo.len(), 0);
+    assert_eq!(inner.undo.undo_entries().len(), 0);
 }
 
 #[test]
@@ -3701,7 +3737,7 @@ fn pattern_clip_loop_sets_once_and_clears() {
         "{}",
         inner.dsl_source
     );
-    assert_eq!(inner.undo.undo[0].label, "clip loop");
+    assert_eq!(inner.undo.undo_entries()[0].tag, "clip loop");
 
     set_pattern_clip_loop_inner(&mut inner, 0, 0, None).unwrap();
     assert_eq!(
@@ -3854,8 +3890,8 @@ fn split_pattern_clip_keeps_the_slip_and_loop_in_both_halves() {
     );
 
     // One history entry restores the clip exactly.
-    assert_eq!(inner.undo.undo.len(), 1);
-    assert_eq!(inner.undo.undo[0].label, "clip split");
+    assert_eq!(inner.undo.undo_entries().len(), 1);
+    assert_eq!(inner.undo.undo_entries()[0].tag, "clip split");
     inner.undo.undo(&mut inner.project).unwrap();
     assert_eq!(inner.project, before);
 }
@@ -3886,7 +3922,7 @@ fn split_pattern_clip_refuses_a_right_half_past_the_content() {
 
     assert_eq!(error, SPLIT_PAST_CONTENT);
     assert_eq!(inner.project, before);
-    assert_eq!(inner.undo.undo.len(), 0);
+    assert_eq!(inner.undo.undo_entries().len(), 0);
 }
 
 #[test]
@@ -3901,7 +3937,7 @@ fn split_pattern_clip_refuses_a_seam_the_right_half_cannot_repeat() {
 
     assert_eq!(error, SPLIT_LOOP_SEAM);
     assert_eq!(inner.project, before);
-    assert_eq!(inner.undo.undo.len(), 0);
+    assert_eq!(inner.undo.undo_entries().len(), 0);
 }
 
 #[test]
@@ -3915,7 +3951,7 @@ fn split_pattern_clip_refuses_to_shift_a_repeating_source_window() {
 
     assert_eq!(error, SPLIT_LOOP_SEAM);
     assert_eq!(inner.project, before);
-    assert_eq!(inner.undo.undo.len(), 0);
+    assert_eq!(inner.undo.undo_entries().len(), 0);
 }
 
 #[test]
@@ -3929,7 +3965,7 @@ fn split_pattern_clip_refuses_a_loop_window_past_the_content() {
 
     assert_eq!(error, SPLIT_LOOP_CONTENT);
     assert_eq!(inner.project, before);
-    assert_eq!(inner.undo.undo.len(), 0);
+    assert_eq!(inner.undo.undo_entries().len(), 0);
 }
 
 #[test]
@@ -3965,8 +4001,8 @@ fn add_clip_carries_a_playback_window() {
         "{}",
         inner.dsl_source
     );
-    assert_eq!(inner.undo.undo.len(), 1);
-    assert_eq!(inner.undo.undo[0].label, "add clip");
+    assert_eq!(inner.undo.undo_entries().len(), 1);
+    assert_eq!(inner.undo.undo_entries()[0].tag, "add clip");
 }
 
 #[test]
@@ -4006,7 +4042,7 @@ fn add_clip_refuses_a_loop_as_long_as_the_clip() {
 
     assert!(error.contains("Invalid clip playback window"), "{error}");
     assert_eq!(inner.project, before);
-    assert_eq!(inner.undo.undo.len(), 0);
+    assert_eq!(inner.undo.undo_entries().len(), 0);
 }
 
 // ── Clip placement and the performance timeline ──────────────────────────────
@@ -4089,7 +4125,7 @@ fn adding_a_pattern_clip_to_a_performance_track_is_refused() {
     assert_eq!(inner.project, before);
     assert_eq!(inner.dirty, dirty);
     assert_eq!(inner.revision, revision);
-    assert_eq!(inner.undo.undo.len(), 0);
+    assert_eq!(inner.undo.undo_entries().len(), 0);
 }
 
 #[test]
@@ -4114,7 +4150,7 @@ fn pasting_a_slipped_clip_onto_a_performance_track_is_refused() {
         "{error}"
     );
     assert_eq!(inner.project, before);
-    assert_eq!(inner.undo.undo.len(), 0);
+    assert_eq!(inner.undo.undo_entries().len(), 0);
 }
 
 #[test]
@@ -4131,7 +4167,7 @@ fn moving_a_pattern_clip_onto_a_performance_track_is_refused() {
     )
     .unwrap();
     let before = inner.project.clone();
-    let undo = inner.undo.undo.len();
+    let undo = inner.undo.undo_entries().len();
 
     let error =
         move_clip_to_track_inner(&mut inner, 1, 0, 0, ast::BarBeat::new(3, 1, 0)).unwrap_err();
@@ -4141,7 +4177,7 @@ fn moving_a_pattern_clip_onto_a_performance_track_is_refused() {
         "{error}"
     );
     assert_eq!(inner.project, before);
-    assert_eq!(inner.undo.undo.len(), undo);
+    assert_eq!(inner.undo.undo_entries().len(), undo);
 }
 
 #[test]
@@ -4157,14 +4193,14 @@ fn moving_a_pattern_clip_between_normal_tracks_is_one_entry() {
         None,
     )
     .unwrap();
-    let undo = inner.undo.undo.len();
+    let undo = inner.undo.undo_entries().len();
 
     move_clip_to_track_inner(&mut inner, 1, 0, 2, ast::BarBeat::new(3, 1, 0)).unwrap();
 
     assert_eq!(inner.project.tracks[1].pattern_clip_count(), 0);
     assert_eq!(inner.project.tracks[2].pattern_clip_count(), 1);
-    assert_eq!(inner.undo.undo.len(), undo + 1);
-    assert_eq!(inner.undo.undo[undo].label, "clip move");
+    assert_eq!(inner.undo.undo_entries().len(), undo + 1);
+    assert_eq!(inner.undo.undo_entries()[undo].tag, "clip move");
 }
 
 #[test]
@@ -4183,7 +4219,7 @@ fn moving_a_clip_off_a_performance_track_is_refused_while_it_keeps_notes() {
         "{error}"
     );
     assert_eq!(inner.project, before);
-    assert_eq!(inner.undo.undo.len(), 0);
+    assert_eq!(inner.undo.undo_entries().len(), 0);
 }
 
 #[test]
@@ -4197,7 +4233,7 @@ fn moving_the_last_clip_off_a_performance_track_repairs_the_document() {
     assert_eq!(inner.project.tracks[0].pattern_clip_count(), 0);
     assert_eq!(inner.project.tracks[1].pattern_clip_count(), 1);
     assert!(oc_dsl::validate(&inner.project).is_ok());
-    assert_eq!(inner.undo.undo.len(), 1);
+    assert_eq!(inner.undo.undo_entries().len(), 1);
 }
 
 #[test]
@@ -4227,12 +4263,12 @@ fn moving_a_phrase_onto_a_performance_track_is_refused() {
         "{error}"
     );
     assert_eq!(inner.project, before);
-    assert_eq!(inner.undo.undo.len(), 0);
+    assert_eq!(inner.undo.undo_entries().len(), 0);
 
     // The same move inside a normal track is still published as one entry.
     move_phrase_inner(&mut inner, 1, 0, 1, ast::BarBeat::new(3, 1, 0)).unwrap();
     assert_eq!(inner.project.tracks[1].phrases.len(), 1);
-    assert_eq!(inner.undo.undo.len(), 1);
+    assert_eq!(inner.undo.undo_entries().len(), 1);
 }
 
 #[test]
@@ -4263,7 +4299,7 @@ fn the_agent_edit_path_refuses_a_clip_on_a_performance_track() {
         "{error}"
     );
     assert_eq!(inner.project.tracks[0].pattern_clip_count(), 0);
-    assert_eq!(inner.undo.undo.len(), 0);
+    assert_eq!(inner.undo.undo_entries().len(), 0);
 }
 
 #[test]
@@ -4324,11 +4360,14 @@ fn adding_a_plugin_track_is_one_undo_entry_and_one_rebuild() {
     );
     // One document revision, so one graph rebuild and one undo step.
     assert!(inner.revision > before, "the edit publishes a revision");
-    let entries = inner.undo.history();
+    let entries = inner.undo.history(&inner.project.properties);
     assert_eq!(
         entries.len(),
         1,
         "the preset and the track are one history entry"
     );
-    assert_eq!(entries[0].name, "add instrument track");
+    assert!(entries[0].changes.changes.iter().any(|change| matches!(
+        change,
+        oc_dsl::change::Change::TrackAdded { track } if track == "Hosted Instrument"
+    )));
 }

@@ -7,7 +7,7 @@ fn loaded() -> AppState {
     state
 }
 fn observed(inner: &AppStateInner) -> serde_json::Value {
-    serde_json::json!({"project":inner.project,"dsl":inner.dsl_source,"revision":inner.revision,"epoch":inner.content_epoch,"dirty":inner.dirty,"undo":inner.undo.undo.len(),"redo":inner.undo.redo.len(),"sessions":inner.plugin_automation_gestures.len()})
+    serde_json::json!({"project":inner.project,"dsl":inner.dsl_source,"revision":inner.revision,"epoch":inner.content_epoch,"dirty":inner.dirty,"undo":inner.undo.undo_entries().len(),"redo":inner.undo.redo_entries().len(),"sessions":inner.plugin_automation_gestures.len()})
 }
 #[test]
 fn owned_hosted_point_and_end_cannot_cross_document_or_steal_new_same_key_session() {
@@ -81,7 +81,7 @@ fn owned_hosted_point_and_end_cannot_cross_document_or_steal_new_same_key_sessio
             .unwrap()
             .closed
     );
-    assert_eq!(inner.undo.undo.len(), 1);
+    assert_eq!(inner.undo.undo_entries().len(), 1);
 }
 #[test]
 fn owned_hosted_invalid_clock_or_native_refusal_has_no_project_or_history_side_effects() {
@@ -124,7 +124,7 @@ fn owned_hosted_invalid_clock_or_native_refusal_has_no_project_or_history_side_e
             .unwrap()
             .closed
     );
-    assert!(inner.undo.undo.is_empty());
+    assert!(inner.undo.undo_entries().is_empty());
 }
 #[test]
 fn owned_hosted_track_rebinding_expires_membership_before_any_native_write() {
@@ -202,7 +202,7 @@ fn owned_hosted_recording_survives_structural_invalidation_with_native_writes_ex
         )
         .unwrap();
         let recorded = inner.project.clone();
-        assert_eq!(inner.undo.undo.len(), 1);
+        assert_eq!(inner.undo.undo_entries().len(), 1);
         let mut candidate = recorded.clone();
         if structural == "rename" {
             candidate.tracks[0].name = "Renamed".into();
@@ -219,7 +219,7 @@ fn owned_hosted_recording_survives_structural_invalidation_with_native_writes_ex
         );
         assert_eq!(observed(&inner), before);
         assert_eq!(writes.get(), 1);
-        assert_eq!(inner.undo.undo.len(), 2);
+        assert_eq!(inner.undo.undo_entries().len(), 2);
         inner.undo_step().unwrap();
         assert_eq!(inner.project, recorded);
         inner.undo_step().unwrap();
@@ -278,7 +278,7 @@ fn owned_hosted_concurrent_sessions_and_ordinary_sibling_have_one_original_basel
             .closed
     );
     assert!(inner.undo.end_owned_gesture(&ordinary));
-    assert_eq!(inner.undo.undo.len(), 1);
+    assert_eq!(inner.undo.undo_entries().len(), 1);
     inner.undo_step().unwrap();
     assert_eq!(inner.project, original);
     redo_recorded_history(&mut inner);
@@ -316,7 +316,7 @@ fn owned_hosted_callback_cannot_publish_over_a_newer_document() {
         inner.project.tracks, old.tracks,
         "unpublished lane must not overwrite callback state"
     );
-    assert!(inner.undo.undo.is_empty());
+    assert!(inner.undo.undo_entries().is_empty());
 }
 
 #[test]
@@ -407,12 +407,12 @@ fn mixed_legacy_hosted_then_owned_recording_survives_structural_and_late_close()
     inner.project.name = Some("ordinary sibling".into());
     resync_with_undo(&mut inner, old, UndoEdit::new("name", UndoScope::Project)).unwrap();
     let recorded = inner.project.clone();
-    assert_eq!(inner.undo.undo.len(), 1);
+    assert_eq!(inner.undo.undo_entries().len(), 1);
     let mut candidate = recorded.clone();
     candidate.tracks[0].name = "Renamed".into();
     crate::commands::update_dsl_inner(oc_dsl::serialize(&candidate), &mut inner).unwrap();
     let changed = inner.project.clone();
-    assert_eq!(inner.undo.undo.len(), 2);
+    assert_eq!(inner.undo.undo_entries().len(), 2);
     inner.undo.begin_gesture(UndoScope::Project);
     let ordinary = inner.undo.begin_owned_gesture(UndoScope::Preset).unwrap();
     let before = observed(&inner);
@@ -519,5 +519,5 @@ fn legacy_hosted_begin_failed_point_and_close_preserve_outer_depth_and_native_st
     inner.undo.end_gesture();
     assert!(!inner.undo.is_in_gesture());
     assert_eq!(inner.project, original);
-    assert!(inner.undo.undo.is_empty());
+    assert!(inner.undo.undo_entries().is_empty());
 }

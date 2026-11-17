@@ -88,7 +88,7 @@ fn audio_clip_placement_refuses_invalid_edits_without_history() {
     ] {
         assert!(set_audio_clip_placement_inner(&mut inner, 0, start, nudge).is_err());
         assert_eq!(inner.project, original);
-        assert!(inner.undo.undo.is_empty());
+        assert!(inner.undo.undo_entries().is_empty());
     }
 }
 
@@ -234,5 +234,5 @@ fn audio_clip_placement_split_refuses_a_half_that_quantizes_to_zero_frames() {
     let error = split_audio_clip_inner(&mut inner, 0, BarBeat::new(1, 2, 0)).unwrap_err();
     assert!(error.contains("one rendered sample"), "{error}");
     assert_eq!(inner.project, original);
-    assert!(inner.undo.undo.is_empty());
+    assert!(inner.undo.undo_entries().is_empty());
 }

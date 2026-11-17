@@ -41,20 +41,28 @@ agent_api::dispatch  ◄──  POST /call, POST /mcp tools/call, panel calls
 
 ## The catalog
 
-<!-- tool-registry: mcp=126 panel=98 -->
+<!-- tool-registry: mcp=127 panel=99 -->
 
-The catalog holds one entry per MCP tool. The built-in panel adds one
-panel-local tool: its handler lives in the frontend, not in `dispatch`, because
-it proposes a replacement for the user to accept, or applies it in the turn when
-the session has nobody to ask (see [Agent feedback loop](agent-loop.md)).
+The catalog holds one entry per MCP tool. The built-in panel adds two
+panel-local tools: their handlers live in the loop, not in `dispatch`.
+`edit_subtree` proposes a replacement for the user to accept, or applies it in
+the turn when the session has nobody to ask; `plan_update` records the
+conversation's goal and plan. `ask_user` asks the person one question when the
+decision is theirs, and answers immediately that no user is available in a
+headless turn (see [Agent feedback loop](agent-loop.md)).
 
 Tool areas: project and arrangement, tracks, presets, effects and devices,
 buses, transport, render, analysis, MIDI, plugins, content, undo and
 transactions, skills, and system capability.
 
+`project_search` is the read-only name lookup on both surfaces. Before a caller
+guesses a track, preset, pattern, bus, section, marker, effect or phrase name,
+it searches with the words it knows and receives bounded hits carrying an
+addressable `path`; sections and markers report `sections` in `path`.
+
 ## What the panel may call
 
-`ToolId` metadata decides that, independently of the transport. The panel advertises only enabled tools and adds `edit_subtree`. A refusal names
+`ToolId` metadata decides that, independently of the transport. The panel advertises only enabled tools and adds `edit_subtree`, `plan_update` and `ask_user`. A refusal names
 the reason the tool is excluded.
 
 The panel excludes what would escape it: reading or writing an arbitrary file

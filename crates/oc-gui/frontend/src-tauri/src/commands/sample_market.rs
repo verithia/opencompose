@@ -631,7 +631,7 @@ mod tests {
             "{error}"
         );
         assert!(inner.project.audio_clips().is_empty());
-        assert!(inner.undo.undo.is_empty());
+        assert!(inner.undo.undo_entries().is_empty());
 
         // The same project with a newer revision refuses as well.
         inner.file_path = Some(dir.join("song.ocp"));
@@ -759,7 +759,7 @@ mod tests {
         assert_eq!(clip.time_range.start, BarBeat::new(1, 1, 0));
         assert_eq!(clip.time_range.end, BarBeat::new(1, 2, 0));
         assert!(clip.time_range.end != clip.time_range.start);
-        assert_eq!(inner.undo.undo.len(), 1);
+        assert_eq!(inner.undo.undo_entries().len(), 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

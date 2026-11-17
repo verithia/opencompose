@@ -324,6 +324,59 @@ fn a_mutating_tool_publishes_the_file_and_a_batch_waits_for_its_commit() {
     assert_eq!(fixture.bytes(), unmuted.as_bytes());
 }
 
+/// An open project with its history attached and persistence enabled.
+fn history_state(label: &str) -> (TempDir, AppState, PathBuf) {
+    let dir = TempDir::new(label);
+    std::fs::create_dir_all(dir.path()).unwrap();
+    let path = dir.path().join("song.ocp");
+    std::fs::write(&path, SONG).unwrap();
+    let state = AppState::new();
+    crate::commands::open_project(&mut state.lock_inner(), SONG, Some(path.clone())).unwrap();
+    (dir, state, path)
+}
+
+#[test]
+fn an_agent_mutation_syncs_the_journal_without_the_autosave_tick() {
+    use crate::edit_history::journal::Journal;
+
+    let (_dir, state, path) = history_state("agent-history-dispatch");
+    set_mute(&state, true);
+    assert_eq!(Journal::open(&path).unwrap().len(), 0);
+    // The same post-tool step dispatch runs for a mutating call.
+    let mut result = json!({"applied": true});
+    after_tool(&state, "tracks_mix", &mut result);
+    assert_eq!(
+        Journal::open(&path).unwrap().len(),
+        1,
+        "the tool's entry waited for the autosave tick"
+    );
+}
+
+#[test]
+fn exit_flushes_pending_history_entries() {
+    use crate::edit_history::journal::Journal;
+
+    let (_dir, state, path) = history_state("agent-history-exit");
+    {
+        let mut inner = state.lock_inner();
+        let old = inner.project.clone();
+        inner.project.properties.tempo = 131.0;
+        resync_with_undo(
+            &mut inner,
+            old,
+            UndoEdit::new("tempo", UndoScope::Transport),
+        )
+        .unwrap();
+    }
+    assert_eq!(Journal::open(&path).unwrap().len(), 0);
+    crate::project_persist::flush_exit(&state);
+    assert_eq!(
+        Journal::open(&path).unwrap().len(),
+        1,
+        "the exit write left the last entry in memory"
+    );
+}
+
 #[test]
 fn a_batch_a_dead_turn_left_open_is_committed_and_the_file_saves() {
     let fixture = Fixture::new("agent-batch-recover");
@@ -374,14 +427,48 @@ fn a_stranded_batch_that_cannot_be_saved_still_lets_the_next_turn_begin() {
     std::fs::remove_file(&fixture.path).unwrap();
     std::fs::create_dir(&fixture.path).unwrap();
 
-    let next = crate::state::turn_batch_owner("turn-2", "s1");
-    let stranded =
-        crate::ai::agent_loop::host::begin_loop_batch(&fixture.state, "next".into(), next.clone())
-            .expect("the next turn's batch opens");
+    let sessions_root = fixture.dir.path().join("sessions");
+    let _sessions = crate::ai::sessions::test_root(sessions_root);
+    let store = crate::ai::sessions::Store::config();
+    let session = store
+        .create(
+            Some(fixture.dir.path()),
+            Some(&fixture.path),
+            Some("stranded"),
+            None,
+        )
+        .unwrap();
+    let next = crate::state::turn_batch_owner("turn-2", &session.id);
+    let stranded = crate::ai::agent_loop::host::begin_loop_batch(
+        &fixture.state,
+        "next".into(),
+        next.clone(),
+        &session.id,
+    )
+    .expect("the next turn's batch opens");
     assert!(matches!(stranded, Some(Err(_))), "{stranded:?}");
     assert_eq!(fixture.state.batch_owner().as_deref(), Some(next.as_str()));
     let inner = fixture.state.lock_inner();
     assert!(inner.project.tracks[0].mix.mute, "the stranded edit stays");
+}
+
+#[test]
+fn a_batch_refuses_a_conversation_whose_binding_cannot_be_read() {
+    let fixture = Fixture::new("agent-batch-no-binding");
+    let sessions_root = fixture.dir.path().join("sessions");
+    let _sessions = crate::ai::sessions::test_root(sessions_root);
+    let before = fixture.state.lock_inner().revision;
+    let error = crate::ai::agent_loop::host::begin_loop_batch(
+        &fixture.state,
+        "next".into(),
+        "panel:missing".into(),
+        "missing-session",
+    )
+    .unwrap_err();
+    assert!(error.contains("binding could not be read"), "{error}");
+    let inner = fixture.state.lock_inner();
+    assert!(inner.transaction.is_none(), "the refusal opened no batch");
+    assert_eq!(inner.revision, before);
 }
 
 #[test]

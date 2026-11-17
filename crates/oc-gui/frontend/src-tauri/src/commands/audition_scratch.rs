@@ -193,7 +193,7 @@ fn waiting_for_archive(path: &Path, now: SystemTime) -> Result<bool, String> {
     }
 }
 
-fn scratch_dir() -> Result<PathBuf, String> {
+pub(crate) fn scratch_dir() -> Result<PathBuf, String> {
     #[cfg(test)]
     return Ok(crate::private_fs::config_dir().join("audition-scratch"));
 
@@ -223,11 +223,20 @@ fn directory_lock(dir: &Path, reading: bool) -> Result<File, String> {
     const ATTEMPTS: u32 = 20;
     let path = dir.join(".pool.lock");
     if reading {
-        return crate::private_fs::lock(&path, true, false).map_err(scratch_error);
+        return crate::private_fs::lock(
+            &path,
+            crate::private_fs::LockMode::Shared,
+            crate::private_fs::LockWait::Wait,
+        )
+        .map_err(scratch_error);
     }
     let mut attempt = 0;
     loop {
-        match crate::private_fs::lock(&path, false, true) {
+        match crate::private_fs::lock(
+            &path,
+            crate::private_fs::LockMode::Exclusive,
+            crate::private_fs::LockWait::NoWait,
+        ) {
             Ok(file) => return Ok(file),
             Err(error) if error.kind() == io::ErrorKind::WouldBlock && attempt + 1 < ATTEMPTS => {
                 attempt += 1;
@@ -249,7 +258,11 @@ fn directory_lock(dir: &Path, reading: bool) -> Result<File, String> {
 fn writer_lock(dir: &Path, wait: Duration) -> Result<File, String> {
     let deadline = std::time::Instant::now() + wait;
     loop {
-        match crate::private_fs::lock(&dir.join(".pool.lock"), false, true) {
+        match crate::private_fs::lock(
+            &dir.join(".pool.lock"),
+            crate::private_fs::LockMode::Exclusive,
+            crate::private_fs::LockWait::NoWait,
+        ) {
             Ok(lock) => return Ok(lock),
             Err(error)
                 if error.kind() == io::ErrorKind::WouldBlock

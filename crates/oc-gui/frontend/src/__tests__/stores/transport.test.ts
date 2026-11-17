@@ -218,7 +218,7 @@ describe("transport polling", () => {
     await store.openFile("/missing.ocp");
     failPreview(new Error("Obsolete preview error"));
     await pending;
-    expect(store.error()).toBe("Error: File unavailable");
+    expect(store.error()).toBe("File unavailable");
     expect(store.auditionActive()).toBe(false);
     expect(store.transport().playing).toBe(false);
     expect(store.loading()).toBe(false);
@@ -229,12 +229,12 @@ describe("transport polling", () => {
     let finish!: (value: any) => void;
     invokeMock.mockImplementation(async cmd => {
       if (cmd === "get_transport_state") return await new Promise(resolve => { finish = resolve; });
-      if (cmd === "new_project") return makeSnapshot({ name: "Fresh" });
+      if (cmd === "new_project_at") return makeSnapshot({ name: "Fresh" });
       return TRANSPORT_STOPPED();
     });
     await store.previewPreset("Old");
     await vi.advanceTimersByTimeAsync(50);
-    await store.newProject();
+    await store.newProjectAt("/songs/Fresh.ocp");
     finish({ ...TRANSPORT_STOPPED(), audition: { preset: "Old", status: "error", error: "Old error" } });
     await Promise.resolve();
     expect(store.project.name).toBe("Fresh");
@@ -1188,7 +1188,7 @@ describe("streamed A/B readout", () => {
     invokeMock.mockImplementation(async cmd => {
       if (cmd === "compare_factory_patches") return pair();
       if (cmd === "get_ab_audition_state") return await new Promise(resolve => { finish = resolve; });
-      if (cmd === "new_project") return makeSnapshot();
+      if (cmd === "new_project_at") return makeSnapshot();
       if (cmd === "get_transport_state") return { ...TRANSPORT_STOPPED(), audition_active: true,
         audition: { preset: "B", status: "ready", paused: false } };
       return TRANSPORT_STOPPED();
@@ -1196,7 +1196,7 @@ describe("streamed A/B readout", () => {
     await store.compareFactoryPatches(candidate("A"), candidate("B"));
     await vi.advanceTimersByTimeAsync(200);
     if (action === "stop") await store.stop();
-    else if (action === "project") await store.newProject();
+    else if (action === "project") await store.newProjectAt("/songs/Fresh.ocp");
     else await store.previewPreset("Other");
     finish(pair(false));
     await Promise.resolve(); await Promise.resolve();

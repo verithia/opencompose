@@ -22,7 +22,7 @@ fn assert_entries_unchanged(actual: &[UndoEntry], expected: &[UndoEntry]) {
     for (actual, expected) in actual.iter().zip(expected) {
         assert_eq!(actual.forward, expected.forward);
         assert_eq!(actual.inverse, expected.inverse);
-        assert_eq!(actual.label, expected.label);
+        assert_eq!(actual.tag, expected.tag);
         assert_eq!(actual.scopes, expected.scopes);
         assert_eq!(actual.timestamp, expected.timestamp);
     }

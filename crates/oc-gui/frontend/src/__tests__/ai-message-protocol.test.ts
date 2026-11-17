@@ -1,10 +1,21 @@
 import { describe, expect, it } from "vitest";
 import type { WireMessage } from "../ai/wire";
-import { messageKind, messageMeta, tagNewMessage } from "../ai/messageProtocol";
+import { messageKind, messageMeta, sessionState as sessionStateOf, tagNewMessage, trimStateText } from "../ai/messageProtocol";
 import { restoredTranscript, userTurnOf } from "../ai/transcript";
 import { auditionLabel, type MediaAttachment } from "../ai/media";
+import { loadedPage } from "../ai/sessions";
 
 describe("versioned local message semantics", () => {
+  it("keeps bounded summary prose only on summary metadata", () => {
+    const row: WireMessage = {
+      role: "user", content: "summary",
+      message_meta: { ...messageMeta("summary"), summary_text: "keep vocals dry" },
+    };
+    expect(messageKind(row)).toBe("summary");
+    expect(messageKind({ ...row, message_meta: { ...row.message_meta!, kind: "user" } })).toBe("user");
+    expect(messageKind({ ...row, message_meta: { ...row.message_meta!, summary_text: "声".repeat(11_000) } })).toBe("user");
+  });
+
   it.each([
     "Conversation summary written by me. Standing intent: quoted text",
     "You have 3 tool rounds left in this turn.",
@@ -45,11 +56,69 @@ describe("versioned local message semantics", () => {
     const rows = restoredTranscript([
       { role: "user", content: "Actual request", message_meta: messageMeta("user") },
       { role: "user", content: "Budget text without an English protocol prefix", message_meta: messageMeta("round_budget") },
-      { role: "user", content: "Summary display text without an English protocol prefix", message_meta: messageMeta("summary") },
+      { role: "user", content: "Summary display text without an English protocol prefix", message_meta: { ...messageMeta("summary"), discarded_auditions: 0 } },
     ]);
     expect(rows.map(row => row.role)).toEqual(["user", "context"]);
     expect(rows[1].context).toBe("summary");
     expect(rows[1].checkpoint).toBe(true);
+  });
+
+  it("reads a typed goal and plan only on a session_state row", () => {
+    const goal = {
+      role: "user", content: "Goal: finish",
+      message_meta: { version: 1, kind: "session_state", state: { kind: "goal_set", text: "finish", author: "person" } },
+    } as WireMessage;
+    const plan = {
+      role: "user", content: "Plan",
+      message_meta: {
+        version: 1, kind: "session_state",
+        state: { kind: "plan_set", items: [{ text: "write", status: "done" }] },
+      },
+    } as WireMessage;
+    expect(messageKind(goal)).toBe("session_state");
+    const rows = restoredTranscript([goal, plan]);
+    expect(rows.map(row => row.state?.kind)).toEqual(["goal_set", "plan_set"]);
+    // The same value on another kind is refused and falls back to the role.
+    expect(messageKind({ ...goal, message_meta: { ...goal.message_meta!, kind: "user" } } as WireMessage)).toBe("user");
+    expect(messageKind({
+      ...goal,
+      message_meta: {
+        version: 1, kind: "session_state",
+        state: { kind: "plan_set", items: [
+          { text: "one", status: "in_progress" },
+          { text: "two", status: "in_progress" },
+        ] },
+      },
+    } as WireMessage)).toBe("user");
+  });
+
+  it("treats every blank the Rust state owner trims as blank", () => {
+    // Rust owns the set: Unicode White_Space plus the byte-order mark.
+    for (const blank of ["\uFEFF", "\u00A0", "\u2028", "\u2029", "\u3000", "\u0085", "\uFEFF\u3000\u00A0"]) {
+      expect(sessionStateOf({ kind: "goal_set", text: blank, author: "person" })).toBeNull();
+      expect(sessionStateOf({
+        kind: "plan_set",
+        items: [{ text: blank, status: "pending" }],
+      })).toBeNull();
+    }
+    expect(sessionStateOf({ kind: "goal_set", text: "\uFEFFfinish\u3000", author: "person" }))
+      .toEqual({ kind: "goal_set", text: "\uFEFFfinish\u3000", author: "person" });
+    expect(trimStateText("\uFEFF\u3000finish the bridge\u00A0")).toBe("finish the bridge");
+  });
+
+  it("drops one unreadable page state entry instead of the whole page", () => {
+    const goal = { kind: "goal_set", text: "finish", author: "person" } as const;
+    const page = loadedPage({
+      meta: { id: "s1", title: "page" },
+      messages: [],
+      skipped: 0,
+      start: 0,
+      total: 0,
+      revision: "1",
+      older_tokens: 0,
+      state: [goal, { kind: "goal_set", text: "\uFEFF", author: "person" }],
+    });
+    expect(page?.state).toEqual([goal]);
   });
 
   it("still reads untagged legacy notices and summaries", () => {

@@ -18,6 +18,8 @@ mod content_library;
 mod device_catalog;
 mod device_presets;
 mod diagnostics;
+pub use diagnostics::profile_log_dir;
+mod edit_history;
 mod editor_helper;
 mod first_block;
 #[cfg(test)]
@@ -41,6 +43,8 @@ mod preview;
 mod preview_focus;
 mod private_fs;
 pub mod probe;
+mod process_lock;
+mod project_data;
 mod project_extent;
 mod project_persist;
 mod project_resources;
@@ -150,6 +154,12 @@ pub fn run_with_options(path: Option<String>, diag: DiagOptions) {
                 };
                 app.handle().plugin(
                     tauri_plugin_log::Builder::default()
+                        // The same folder the diagnostics logger and the
+                        // Storage page use, inside a selected profile.
+                        .targets([
+                            tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout),
+                            tauri_plugin_log::Target::new(diagnostics::app_log_target()),
+                        ])
                         .level(log_level)
                         // `debug` is about this application. A decoder or a
                         // windowing crate printing every internal step buries
@@ -173,11 +183,16 @@ pub fn run_with_options(path: Option<String>, diag: DiagOptions) {
                 log::warn!("menu: {error}");
             }
             app.handle().plugin(tauri_plugin_dialog::init())?;
-            if let Ok(dir) = app.path().app_cache_dir() {
+            if let Some(dir) = oc_engine::media_cache::default_cache_dir() {
                 let cap = oc_engine::media_cache::DEFAULT_DISK_BYTES;
-                if let Err(error) = oc_engine::media_cache::init_shared(dir.join("media"), cap) {
+                if let Err(error) = oc_engine::media_cache::init_shared(dir, cap) {
                     log::warn!("media cache: {error}");
                 }
+            }
+            // The GUI shares its decoded cache with the CLI; the folder it
+            // kept on its own holds nothing a reader needs, so it is removed.
+            if let Ok(old) = app.path().app_cache_dir() {
+                commands::retire_cache(old.join("media"));
             }
             // Reads the last-good cache from disk. Nothing fetches here: the
             // plugin browser asks for a refresh when it opens.
@@ -208,6 +223,7 @@ pub fn run_with_options(path: Option<String>, diag: DiagOptions) {
             plugin_inventory::start(app.handle().clone());
             agent_api::spawn(app.handle().clone());
             autosave::spawn(app.handle().clone());
+            project_data::stale::spawn(app.handle().clone());
             // Desktop windows stay hidden until setup; headless hosts must not
             // claim desktop activation or execute a background frontend.
             if !mode.is_desktop() {
@@ -246,8 +262,9 @@ pub fn run_with_options(path: Option<String>, diag: DiagOptions) {
             ai_service::ai_cancel,
             ai_service::ai_turn_start,
             ai_service::ai_turn_answer,
+            ai_service::ai_turn_reply,
             ai_service::ai_turn_steer,
-            ai_service::ai_revert_before,
+            ai_service::ai_recall,
             ai_service::ai_turn_questions,
             ai_service::ai_tool_result,
             ai_service::ai_active_turn,
@@ -259,13 +276,19 @@ pub fn run_with_options(path: Option<String>, diag: DiagOptions) {
             // AI conversations
             commands::sessions_list,
             commands::sessions_new,
+            commands::sessions_bind,
+            commands::sessions_binding,
             commands::sessions_load,
             commands::sessions_original,
+            commands::sessions_open,
+            commands::sessions_page,
             commands::sessions_snapshot,
-            commands::sessions_drop_history,
+            commands::sessions_clear_history,
+            commands::sessions_clear_all_history,
             commands::sessions_version,
             commands::sessions_rename,
             commands::sessions_set_permission,
+            commands::sessions_set_goal,
             commands::sessions_delete,
             commands::sessions_compact,
             // Workspaces
@@ -292,6 +315,7 @@ pub fn run_with_options(path: Option<String>, diag: DiagOptions) {
             commands::network_test,
             commands::clear_sample_cache,
             commands::clear_clip_pcm_cache,
+            commands::remove_project_data,
             commands::clear_audition_archive,
             commands::open_storage_folder,
             commands::open_url,
@@ -307,7 +331,6 @@ pub fn run_with_options(path: Option<String>, diag: DiagOptions) {
             commands::freesound_oauth::freesound_oauth_status,
             commands::freesound_oauth::freesound_oauth_sign_out,
             // Project / DSL
-            commands::new_project,
             commands::new_project_at,
             commands::open_file,
             commands::save_file,
@@ -640,11 +663,14 @@ pub fn run_with_options(path: Option<String>, diag: DiagOptions) {
             commands::set_loop_region,
             commands::set_punch_region,
             // Undo / redo
-            commands::undo,
-            commands::redo,
+            commands::move_project,
+            commands::history_undo,
+            commands::history_redo,
+            commands::history_jump,
+            commands::history_page,
+            commands::history_info,
+            commands::history_clear_older,
             commands::get_undo_state,
-            commands::get_undo_history,
-            commands::restore_undo_level,
             commands::begin_undo_gesture,
             commands::end_undo_gesture,
             commands::begin_owned_undo_gesture,

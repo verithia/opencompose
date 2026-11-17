@@ -20,7 +20,9 @@ import { recordStore } from "../stores/record";
 import { automationWriteArmed, toggleAutomationWriteArm } from "../stores/automationWrite";
 import { commandBindingLabel } from "../stores/keymap";
 import { EXPORT_DIAGNOSTICS_EVENT } from "../stores/appEvents";
-import { newProjectDialog, openAlignedStemsDialog, openFileDialog, saveAsFileDialog, saveFileDialog } from "../stores/fileDialogs";
+import {
+  moveProjectDialog, newProjectDialog, openAlignedStemsDialog, openFileDialog, saveAsFileDialog, saveFileDialog,
+} from "../stores/fileDialogs";
 import { diagnosticsStore } from "../stores/diagnosticsUi";
 import { useTooltip } from "./Tooltip";
 import { WindowControls } from "./WindowControls";
@@ -232,6 +234,14 @@ export function Toolbar() {
               <button class="toolbar-menu-item" role="menuitem" onClick={() => { setFileMenuOpen(false); void saveAsFileDialog(); }}>
                 {i18n.t("toolbar.saveAs")}
                 <kbd>{commandBindingLabel("file.saveAs")}</kbd>
+              </button>
+              <button
+                class="toolbar-menu-item"
+                role="menuitem"
+                disabled={!store.filePath()}
+                onClick={() => { setFileMenuOpen(false); void moveProjectDialog(); }}
+              >
+                {i18n.t("command.file.moveProject")}
               </button>
               <div class="preferences-divider" />
               <button

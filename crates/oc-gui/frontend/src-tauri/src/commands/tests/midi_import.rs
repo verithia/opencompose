@@ -132,8 +132,12 @@ fn an_append_lands_after_the_track_content_and_undoes_as_one_entry() {
         "the new note starts at bar 5"
     );
 
-    assert_eq!(inner.undo.undo.len(), 1, "an import is one undo entry");
-    assert_eq!(inner.undo.undo[0].label, "MIDI import");
+    assert_eq!(
+        inner.undo.undo_entries().len(),
+        1,
+        "an import is one undo entry"
+    );
+    assert_eq!(inner.undo.undo_entries()[0].tag, "MIDI import");
     inner
         .undo
         .undo(&mut inner.project)
@@ -163,7 +167,11 @@ fn a_new_track_import_keeps_its_placement_and_one_undo_entry() {
     );
 
     commit_import_inner(&mut inner, result, revision).expect("the import commits");
-    assert_eq!(inner.undo.undo.len(), 1, "an import is one undo entry");
+    assert_eq!(
+        inner.undo.undo_entries().len(),
+        1,
+        "an import is one undo entry"
+    );
     inner.undo.undo(&mut inner.project).expect("undo applies");
     assert_eq!(inner.project, before);
 }
@@ -188,5 +196,5 @@ fn an_edit_during_the_parse_refuses_the_import_and_survives() {
     assert!(error.contains("project moved"), "{error}");
     assert!(error.contains(&format!("revision {revision}")), "{error}");
     assert_eq!(inner.project.tracks[0].name, "Renamed", "the edit survives");
-    assert!(inner.undo.undo.is_empty(), "nothing was applied");
+    assert!(inner.undo.undo_entries().is_empty(), "nothing was applied");
 }

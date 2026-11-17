@@ -113,13 +113,13 @@ function backend(handlers: Record<string, Handler>, project: ProjectSnapshot) {
       return {
         can_undo: false,
         can_redo: false,
-        undo_label: null,
-        redo_label: null,
-        undo_labels: [],
-        redo_labels: [],
+
+
+
+
       };
     }
-    if (command === "get_undo_history") return [];
+    if (command === "history_page") return [];
     if (command === "get_transport_state" || command === "transport_stop") {
       return { playing: false, position_beats: 0, position_seconds: 0, duration_seconds: project.duration_seconds };
     }
@@ -773,7 +773,7 @@ describe("audio export dialog", () => {
 
     expect(view.container.querySelector(".export-audio-finished-path")?.textContent).toBe(MIX_PATH);
     const text = view.container.textContent ?? "";
-    expect(text).toContain("3.1 MB");
+    expect(text).toContain("3.0 MiB");
     expect(text).toContain("0.25 dBFS");
     const clipped = view.container.querySelector(".export-audio-clipped")!;
     expect(clipped.getAttribute("data-clipped")).toBe("true");

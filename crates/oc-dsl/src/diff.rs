@@ -192,7 +192,7 @@ pub enum PatchOp {
 }
 
 /// One audio clip in a patch, with its position in the `@audio_clip` sequence.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OrderedAudioClip {
     /// Global audio order the clip keeps.
     pub order: usize,
@@ -927,6 +927,9 @@ fn generate_label(changes: &[PatchOp]) -> String {
 /// - Network transmission to AI model
 /// - Clipboard operations
 pub mod compressed;
+pub(crate) mod subtree;
+
+pub(crate) use subtree::{Mutation, OrderChange, OrderedList, Side, SubtreeChange, mutations};
 
 // ============================================================================
 // Tests

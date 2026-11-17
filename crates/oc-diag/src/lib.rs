@@ -66,6 +66,41 @@ pub fn log_dir() -> PathBuf {
     std::env::temp_dir().join("OpenCompose")
 }
 
+/// Log files one program keeps in its directory; a new run removes the oldest
+/// beyond this, so diagnostics never grow without bound.
+pub const MAX_LOGS_PER_PROGRAM: usize = 20;
+
+/// Keep the newest `keep` logs `program` wrote in `dir`, oldest written first
+/// to go. Answers how many were removed.
+pub fn prune_logs(dir: &Path, program: &str, keep: usize) -> usize {
+    let prefix = format!("{program}-");
+    let mut logs: Vec<(SystemTime, PathBuf)> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.extension().and_then(|ext| ext.to_str()) == Some("log")
+                && path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with(&prefix))
+        })
+        .map(|path| {
+            let modified = std::fs::metadata(&path)
+                .and_then(|meta| meta.modified())
+                .unwrap_or(UNIX_EPOCH);
+            (modified, path)
+        })
+        .collect();
+    logs.sort();
+    let excess = logs.len().saturating_sub(keep);
+    logs.into_iter()
+        .take(excess)
+        .filter(|(_, path)| std::fs::remove_file(path).is_ok())
+        .count()
+}
+
 /// Where the current session writes, once [`init`] has run.
 pub fn log_path() -> Option<PathBuf> {
     FILE_PATH.get().cloned()
@@ -131,6 +166,7 @@ pub fn init_with_options(options: InitOptions<'_>) -> Option<PathBuf> {
         return None;
     }
     let dir = options.directory_or_else(log_dir);
+    prune_logs(&dir, program, MAX_LOGS_PER_PROGRAM - 1);
     let file = std::fs::create_dir_all(&dir).ok().and_then(|()| {
         let stamp = timestamp();
         let path = dir.join(format!("{program}-{stamp}-{}.log", std::process::id()));
@@ -564,6 +600,34 @@ mod tests {
                 .all(|line| !line.contains("test.counter.silent")),
             "{lines:?}"
         );
+    }
+
+    #[test]
+    fn only_the_newest_logs_of_one_program_stay() {
+        let dir = std::env::temp_dir().join(format!("oc-diag-prune-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let now = SystemTime::now();
+        for age in 0..5u64 {
+            let path = dir.join(format!("ocp-gui-{age}.log"));
+            std::fs::write(&path, "x").unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_modified(now - Duration::from_secs(age * 60))
+                .unwrap();
+        }
+        std::fs::write(dir.join("ocp-cli-9.log"), "x").unwrap();
+        assert_eq!(prune_logs(&dir, "ocp-gui", 2), 3);
+        let mut left: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        left.sort();
+        assert_eq!(left, ["ocp-cli-9.log", "ocp-gui-0.log", "ocp-gui-1.log"]);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

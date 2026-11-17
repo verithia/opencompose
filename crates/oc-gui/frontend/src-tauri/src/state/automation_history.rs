@@ -2,7 +2,7 @@
 use super::{AppStateInner, UndoEdit, UndoGestureToken, undo_gestures};
 use oc_dsl::ast::Project;
 
-use super::{GestureState, MAX_UNDO, UndoEntry, UndoStack, diff};
+use super::{GestureState, UndoEntry, UndoStack, diff, fresh_entry_id};
 use std::time::SystemTime;
 
 pub(super) struct StagedUndoPush {
@@ -44,8 +44,13 @@ impl UndoStack {
         if let Some(scopes) = gesture_scopes {
             edit.scopes.insert_all(scopes);
         }
+        let author = edit
+            .author
+            .clone()
+            .unwrap_or_else(crate::edit_history::acting);
         let merge = !self.undo.is_empty()
             && self.merge_base.is_some()
+            && self.undo.last().is_some_and(|entry| entry.author == author)
             && if gesture_scopes.is_some() {
                 gesture_started
             } else {
@@ -77,9 +82,12 @@ impl UndoStack {
         {
             let inverse = diff::invert_patch(&old, new, &patch);
             StagedAction::Append(UndoEntry {
+                id: fresh_entry_id(),
+                author,
+                cause: edit.cause,
                 forward: self.encode(&patch)?,
                 inverse: self.encode(&inverse)?,
-                label: edit.name,
+                tag: edit.tag,
                 scopes: edit.scopes,
                 timestamp,
             })
@@ -103,6 +111,7 @@ impl UndoStack {
             StagedAction::Remove => {
                 self.undo.pop();
                 self.merge_base = None;
+                self.dirty = true;
             }
             StagedAction::Merge {
                 forward,
@@ -116,17 +125,19 @@ impl UndoStack {
                 last.forward = forward;
                 last.inverse = inverse;
                 last.scopes.insert_all(scopes);
+                // The journal holds the entry as it was before the merge.
+                last.id = fresh_entry_id();
+                self.dirty = true;
             }
             StagedAction::Append(entry) => {
                 self.undo.push(entry);
-                if self.undo.len() > MAX_UNDO {
-                    self.undo.remove(0);
-                }
-                self.redo.clear();
+                self.cap_unjournaled();
+                self.drop_redo();
                 self.merge_base = Some(staged.before);
                 if let Some(gesture) = &mut self.gesture {
                     gesture.push_started = true;
                 }
+                self.dirty = true;
             }
         }
         self.history_epoch = Some(staged.next_epoch);
@@ -392,7 +403,7 @@ mod tests {
             let mut stack = UndoStack::new();
             let mut project = super::super::default_project();
             let original = project.clone();
-            let mark = stack.mark();
+            let mark = stack.rollback_mark();
             project.properties.tempo += 1.0;
             stack
                 .push(

@@ -91,6 +91,28 @@ describe("panel system prompt", () => {
     expect(buildSystemPrompt(ctx, capabilities, tools())).not.toContain("## Destructive calls");
   });
 
+  it("teaches asking, searching and host notices only where they apply", () => {
+    const prompt = buildSystemPrompt(ctx, capabilities, panelTools());
+    expect(prompt).toContain("## Asking the user");
+    expect(prompt).toContain("ask_user");
+    expect(prompt).toContain("answered: false");
+    expect(prompt).toContain("## Searching names");
+    expect(prompt).toContain("project_search");
+    expect(prompt).toContain("sections");
+    expect(prompt).toContain("## Host notices");
+    expect(prompt).toContain("project_bound");
+    expect(prompt).toContain("outside_changes");
+    expect(prompt).toContain("tool_surface");
+    expect(prompt).toContain("round_budget");
+
+    // A surface without those tools does not advertise them.
+    const bare = buildSystemPrompt(ctx, capabilities, tools());
+    expect(bare).not.toContain("## Asking the user");
+    expect(bare).not.toContain("## Searching names");
+    // Host notice semantics still matter without either tool.
+    expect(bare).toContain("## Host notices");
+  });
+
   it("switches the tool-call format with native tool support", () => {
     expect(buildSystemPrompt(ctx, capabilities, tools())).toContain("native function tools");
     const text = buildSystemPrompt(ctx, {...capabilities, nativeToolCalling:false}, tools());
@@ -183,6 +205,9 @@ describe("panel system prompt", () => {
     def("plugins_select_program", "plugin", {preset:{type:"string"},index:{type:"integer"}}, ["preset"]),
     def("content_libraries", "plugin"),
     def("content_library_register", "plugin", {path:{type:"string"}}, ["path"]),
+    def("project_search", "project", {query:{type:"string"},kinds:{type:"array"},limit:{type:"integer"}}, ["query"]),
+    def("ask_user", "project", {question:{type:"string"},options:{type:"array"},free_text:{type:"boolean"}}, ["question"]),
+    def("plan_update", "sessions", {goal:{type:["string","null"]},items:{type:"array"}}),
   ];
 
   it("teaches the capabilities the DSL supports beyond the basic reference", () => {
@@ -266,7 +291,10 @@ describe("panel system prompt", () => {
     const prompt = buildSystemPrompt(ctx, {...capabilities, audioIn: true}, panelTools(), skillIndex);
     const lines = prompt.split("\n").length;
     const tokens = Math.ceil(prompt.length / 4);
-    // 2026-10-29: 250 lines / 2935 chars-4 tokens after the reference became
+    // 2026-11-16: 284 lines / 3592 chars-4 tokens after the search, asking
+    // and host-notice sections joined the base prompt (291 / 3673 with a
+    // destructive tool present). Earlier: 250 lines / 2935 chars-4 tokens
+    // after the reference became
     // parsed data (219 / 2210 before) and six producer tools joined the panel
     // surface. Tool docs are generated from the registry, so their signatures
     // are the cost of advertising them; the ceiling moved with the surface
@@ -279,20 +307,23 @@ describe("panel system prompt", () => {
     // former cost a measured session five rounds, so they are taught here
     // too. The hairpin section is one line plus the notes it spans. The
     // approval paragraph plus the tool doc that advertises a removal costs a
-    // section, so the ceiling is measured with a destructive tool present
-    // (280 lines / 3400 tokens); a surface without one stays below it.
-    expect(lines, `${lines} lines`).toBeLessThanOrEqual(280);
-    expect(tokens, `${tokens} chars/4`).toBeLessThanOrEqual(3400);
+    // section, so the ceiling is measured with a destructive tool present. The
+    // surface carries the panel-local tools too, so their gated sections
+    // (asking the user, planning) count against the budget.
+    expect(lines, `${lines} lines`).toBeLessThanOrEqual(300);
+    expect(tokens, `${tokens} chars/4`).toBeLessThanOrEqual(3828);
     // Worst case: a surface that also offers a destructive tool pays for the
     // approval section, so the budget is measured with it present.
     const deleting = [...panelTools(), {...def("tracks_remove", "tracks", {index:{type:"integer"}}, ["index"]), approval:"confirm" as const}];
     const withApproval = buildSystemPrompt(ctx, {...capabilities, audioIn: true}, deleting, skillIndex);
-    expect(withApproval.split("\n").length, `${withApproval.split("\n").length} lines with approval`).toBeLessThanOrEqual(280);
-    expect(Math.ceil(withApproval.length / 4), `${Math.ceil(withApproval.length / 4)} chars/4 with approval`).toBeLessThanOrEqual(3400);
+    expect(withApproval).toContain("## Planning");
+    expect(withApproval).toContain("## Asking the user");
+    expect(withApproval.split("\n").length, `${withApproval.split("\n").length} lines with approval`).toBeLessThanOrEqual(300);
+    expect(Math.ceil(withApproval.length / 4), `${Math.ceil(withApproval.length / 4)} chars/4 with approval`).toBeLessThanOrEqual(3828);
     // The project note is counted against the same budget. A note at the
     // store's cap costs its own share, PROJECT_NOTE_TOKEN_BUDGET, plus the
-    // heading and the one sentence that introduces it: measured 279 lines /
-    // 3383 tokens without a note, 304 lines / 4422 tokens with a full 20-line
+    // heading and the one sentence that introduces it: measured 300 lines /
+    // 3828 tokens without a note, 325 lines / 4867 tokens with a full 20-line
     // note. The ceilings below are the base budget plus that share.
     const note = maxNote(20);
     expect(note.length).toBeLessThanOrEqual(PROJECT_NOTE_MAX_CHARS);
@@ -302,8 +333,8 @@ describe("panel system prompt", () => {
     );
     const noteLines = withNote.split("\n").length;
     const noteTokensUsed = Math.ceil(withNote.length / 4);
-    expect(noteLines, `${noteLines} lines with a full note`).toBeLessThanOrEqual(280 + 20 + 8);
+    expect(noteLines, `${noteLines} lines with a full note`).toBeLessThanOrEqual(300 + 20 + 8);
     expect(noteTokensUsed, `${noteTokensUsed} chars/4 with a full note`)
-      .toBeLessThanOrEqual(3400 + PROJECT_NOTE_TOKEN_BUDGET + 60);
+      .toBeLessThanOrEqual(3828 + PROJECT_NOTE_TOKEN_BUDGET + 60);
   });
 });

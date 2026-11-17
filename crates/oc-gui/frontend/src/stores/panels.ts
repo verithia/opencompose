@@ -30,7 +30,7 @@ import { log } from "./log";
 // ---------------------------------------------------------------------------
 
 /** Bottom panel view modes */
-export type BottomMode = "clips" | "pianoroll" | "presets" | "mixer" | "drumpads" | "samples" | "detail";
+export type BottomMode = "clips" | "pianoroll" | "presets" | "mixer" | "drumpads" | "samples" | "history" | "detail";
 
 /** Region that starts playback when no preview owns audio; set by pointer or keyboard focus. */
 export type EditingRegion = "timeline" | "bottom";
@@ -48,7 +48,7 @@ export type SidebarPanelId = "dsl" | "plugins" | "store" | "ai";
 /** All identifiers (union for floating support) */
 export type PanelId = BottomMode | SidebarPanelId;
 
-export const BOTTOM_MODES: BottomMode[] = ["clips", "pianoroll", "presets", "mixer", "drumpads", "samples", "detail"];
+export const BOTTOM_MODES: BottomMode[] = ["clips", "pianoroll", "presets", "mixer", "drumpads", "samples", "history", "detail"];
 export const SIDEBAR_PANEL_IDS: SidebarPanelId[] = ["dsl", "plugins", "store", "ai"];
 
 export const ALL_PANEL_IDS: PanelId[] = [...BOTTOM_MODES, ...SIDEBAR_PANEL_IDS];
@@ -60,6 +60,7 @@ export const PANEL_LABELS: Record<PanelId, string> = {
   mixer: "Mixer",
   drumpads: "Drum Kit",
   samples: "Samples",
+  history: "History",
   detail: "Detail",
   dsl: "DSL",
   plugins: "Plugins",

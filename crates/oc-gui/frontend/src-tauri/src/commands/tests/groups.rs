@@ -73,7 +73,11 @@ fn grouping_two_clips_writes_one_group_and_survives_save_load() {
 
     assert_eq!(id, "g1");
     assert_eq!(inner.project.groups[0].members, vec!["c1", "c2"]);
-    assert_eq!(inner.undo.undo.len(), 1, "grouping is one undo entry");
+    assert_eq!(
+        inner.undo.undo_entries().len(),
+        1,
+        "grouping is one undo entry"
+    );
     assert!(
         inner.dsl_source.contains("@group g1 {"),
         "{}",
@@ -112,7 +116,11 @@ fn ungrouping_restores_the_plain_text_and_is_one_undo_entry() {
     push_undo(&mut inner, old, "ungroup clips");
 
     assert_eq!(removed, vec!["g1".to_string()]);
-    assert_eq!(inner.undo.undo.len(), 2, "ungroup is one undo entry");
+    assert_eq!(
+        inner.undo.undo_entries().len(),
+        2,
+        "ungroup is one undo entry"
+    );
     assert!(inner.project.groups.is_empty());
     assert_eq!(
         inner.dsl_source, plain,
@@ -222,7 +230,7 @@ fn a_move_that_would_push_a_member_before_bar_1_is_refused_with_a_reason() {
     apply_group(&mut inner.project, &[clip(0, 0), clip(0, 1)]).expect("two clips group");
     push_undo(&mut inner, old, "group clips");
     let before = oc_dsl::serialize(&inner.project);
-    let entries = inner.undo.undo.len();
+    let entries = inner.undo.undo_entries().len();
 
     // Dragging the bar-5 clip back to bar 4 would put the bar-1 member at bar 0.
     let error = apply_move_clip_group(&mut inner.project, 0, 1, ast::BarBeat::new(4, 1, 0))
@@ -237,7 +245,11 @@ fn a_move_that_would_push_a_member_before_bar_1_is_refused_with_a_reason() {
         before,
         "a refused move leaves the project alone"
     );
-    assert_eq!(inner.undo.undo.len(), entries, "no undo entry is written");
+    assert_eq!(
+        inner.undo.undo_entries().len(),
+        entries,
+        "no undo entry is written"
+    );
 }
 
 #[test]

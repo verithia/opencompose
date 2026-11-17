@@ -10,29 +10,67 @@
   color: var(--text-primary, #eee);
 }
 
-.undo-history-panel {
-  position: absolute;
-  right: 12px;
-  bottom: 34px;
-  z-index: 40;
-  width: 340px;
-  max-height: 320px;
+.history-panel {
   display: flex;
   flex-direction: column;
-  background: var(--bg-secondary, #1a1a1a);
-  border: 1px solid var(--border, #333);
-  border-radius: 8px;
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+  height: 100%;
   color: var(--text-primary, #eee);
   font-size: var(--font-size-sm, 12px);
 }
 
-.undo-history-header {
+.history-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 14px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border, #333);
+}
+
+.history-summary {
+  display: flex;
+  gap: 8px;
+}
+
+.history-size,
+.history-report {
+  color: var(--text-muted, #888);
+}
+
+.history-notice {
+  color: var(--warning, #e0b050);
+}
+
+.history-clear {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 8px 10px;
-  border-bottom: 1px solid var(--border, #333);
+  gap: 6px;
+  margin-left: auto;
+}
+
+.history-clear input {
+  width: 72px;
+  margin-left: 6px;
+}
+
+.history-load-older {
+  width: 100%;
+  padding: 5px 6px;
+  background: none;
+  border: 1px dashed var(--border, #333);
+  border-radius: 5px;
+  color: var(--text-secondary, #bbb);
+  font: inherit;
+  cursor: pointer;
+}
+
+.undo-history-entry.current {
+  border-color: var(--border, #333);
+  background: var(--bg-primary, #111);
+}
+
+.history-author {
+  color: var(--text-muted, #888);
 }
 
 .undo-history-close {

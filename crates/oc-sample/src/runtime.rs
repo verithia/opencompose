@@ -17,6 +17,23 @@ pub trait ProviderRuntime: Sync {
 pub struct LocalRuntime {
     directory: Option<PathBuf>,
 }
+/// The provider directory the process configuration names; see
+/// [`LocalRuntime::from_process_configuration`]. A profile that is not an
+/// absolute path is ignored, as the configuration folder ignores it.
+fn provider_directory(
+    explicit: Option<&std::ffi::OsStr>,
+    profile: Option<&std::ffi::OsStr>,
+    home: Option<&std::ffi::OsStr>,
+) -> Option<PathBuf> {
+    if let Some(explicit) = explicit {
+        return Some(PathBuf::from(explicit));
+    }
+    if let Some(profile) = profile.map(PathBuf::from).filter(|path| path.is_absolute()) {
+        return Some(profile.join("sample-providers"));
+    }
+    home.map(|home| PathBuf::from(home).join(".opencompose/sample-providers"))
+}
+
 impl LocalRuntime {
     /// Use an explicit plugin directory instead of the process configuration.
     pub fn from_directory(directory: impl Into<PathBuf>) -> Self {
@@ -24,16 +41,18 @@ impl LocalRuntime {
             directory: Some(directory.into()),
         }
     }
-    /// Use `OPENCOMPOSE_SAMPLE_PLUGIN_DIR` or the user's provider directory.
+    /// Use `OPENCOMPOSE_SAMPLE_PLUGIN_DIR`, else `sample-providers` in the
+    /// app's configuration folder: the `OPENCOMPOSE_CONFIG_DIR` profile when
+    /// one is selected, `~/.opencompose` otherwise.
     pub fn from_process_configuration() -> Self {
-        let directory = std::env::var_os("OPENCOMPOSE_SAMPLE_PLUGIN_DIR")
-            .map(PathBuf::from)
-            .or_else(|| {
-                std::env::var_os("HOME")
-                    .or_else(|| std::env::var_os("USERPROFILE"))
-                    .map(|home| PathBuf::from(home).join(".opencompose/sample-providers"))
-            });
-        Self { directory }
+        let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
+        Self {
+            directory: provider_directory(
+                std::env::var_os("OPENCOMPOSE_SAMPLE_PLUGIN_DIR").as_deref(),
+                std::env::var_os("OPENCOMPOSE_CONFIG_DIR").as_deref(),
+                home.as_deref(),
+            ),
+        }
     }
     pub(crate) fn directory(&self) -> Option<&Path> {
         self.directory.as_deref()
@@ -282,5 +301,37 @@ mod tests {
                 Some("no_download")
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod directory_tests {
+    use super::provider_directory;
+    use std::ffi::OsStr;
+    use std::path::PathBuf;
+
+    #[test]
+    fn the_provider_directory_follows_the_selected_profile() {
+        let home = Some(OsStr::new("/home/me"));
+        assert_eq!(
+            provider_directory(None, None, home),
+            Some(PathBuf::from("/home/me/.opencompose/sample-providers"))
+        );
+        assert_eq!(
+            provider_directory(None, Some(OsStr::new("/profiles/a")), home),
+            Some(PathBuf::from("/profiles/a/sample-providers"))
+        );
+        assert_eq!(
+            provider_directory(None, Some(OsStr::new("relative")), home),
+            Some(PathBuf::from("/home/me/.opencompose/sample-providers"))
+        );
+        assert_eq!(
+            provider_directory(
+                Some(OsStr::new("/x")),
+                Some(OsStr::new("/profiles/a")),
+                home
+            ),
+            Some(PathBuf::from("/x"))
+        );
     }
 }

@@ -106,8 +106,12 @@ fn moves_one_effect_and_undo_restores_the_order() {
         vec![EffectType::Reverb, EffectType::Limiter, EffectType::Gain],
         "move down moves the effect after its neighbours"
     );
-    assert_eq!(inner.undo.undo.len(), 1, "one move, one undo entry");
-    assert_eq!(inner.undo.undo[0].label, "move effect");
+    assert_eq!(
+        inner.undo.undo_entries().len(),
+        1,
+        "one move, one undo entry"
+    );
+    assert_eq!(inner.undo.undo_entries()[0].tag, "move effect");
 
     move_effect_inner(&mut inner, "track:0", 2, 1).unwrap();
     assert_eq!(
@@ -147,7 +151,7 @@ fn moves_effects_on_bus_master_and_preset_chains() {
         vec![EffectType::Reverb, EffectType::Gain, EffectType::Limiter]
     );
 
-    assert_eq!(inner.undo.undo.len(), 3, "one entry per chain");
+    assert_eq!(inner.undo.undo_entries().len(), 3, "one entry per chain");
 }
 
 #[test]
@@ -164,7 +168,10 @@ fn refuses_moves_past_the_bounds_with_a_sentence() {
         error,
         "Effect 3 is out of range for track:0: the chain has 3 effect(s)"
     );
-    assert!(inner.undo.undo.is_empty(), "a refused move adds no history");
+    assert!(
+        inner.undo.undo_entries().is_empty(),
+        "a refused move adds no history"
+    );
     assert_eq!(
         track_types(&inner.project),
         vec![EffectType::Gain, EffectType::Reverb, EffectType::Limiter]
@@ -176,7 +183,10 @@ fn moving_an_effect_to_its_own_index_is_a_no_op() {
     let mut inner = state_with_chain();
 
     move_effect_inner(&mut inner, "track:0", 1, 1).unwrap();
-    assert!(inner.undo.undo.is_empty(), "a no-op adds no undo entry");
+    assert!(
+        inner.undo.undo_entries().is_empty(),
+        "a no-op adds no undo entry"
+    );
     assert_eq!(
         track_types(&inner.project),
         vec![EffectType::Gain, EffectType::Reverb, EffectType::Limiter]
@@ -197,7 +207,7 @@ fn refuses_scopes_without_a_reorderable_chain() {
     assert_eq!(error, "Preset 'missing' not found");
     let error = move_effect_inner(&mut inner, "bus:missing", 0, 1).unwrap_err();
     assert_eq!(error, "Bus 'missing' not found");
-    assert!(inner.undo.undo.is_empty());
+    assert!(inner.undo.undo_entries().is_empty());
 }
 
 /// An FX-chain edit reaches the live graph as a chain patch. Instruments are

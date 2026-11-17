@@ -8,8 +8,8 @@ panel additionally applies its exclusion policy; the range render, audition,
 analysis, compare, transaction and plugin program/state tools are enabled in
 the panel.
 
-The MCP catalog has 126 tools. The panel enables 98 of them and adds its local
-`edit_subtree` tool, for 99 panel tools.
+The MCP catalog has 127 tools. The panel enables 99 of them and adds its local
+`edit_subtree`, `plan_update` and `ask_user` tools, for 102 panel tools.
 
 Use `effects_set_bypass` for a reversible comparison of an existing insert.
 Read its original bypass state and chain index with `project_extract`. Pass
@@ -48,8 +48,12 @@ to its attached audio references and saved renders. A `/ai/complete` or `/call`
 request's project transaction stays the client's own: an AI panel working in
 the same conversation cannot join, commit or recover it, and each committed
 edit is published to the window like any other external edit. The file must be
-open in that host and the session must belong to its workspace. Requests save
-incoming tool results, audition media and the provider reply through the same
+open in that host and the session must belong to its workspace. A conversation
+is bound to one project file; the `project_path` on a request must name that
+file as well as the open one. A conversation bound to another file refuses the
+turn with 409 `kind` `session_binding`, and a headless caller has no way to
+rebind it: start a new conversation for another project. Requests save incoming
+tool results, audition media and the provider reply through the same
 conversation store as the AI panel. Keep saving the same project path; copies
 for checkpoints do not change the session's working file. Omitting both fields
 keeps the request ephemeral.
@@ -57,9 +61,62 @@ Malformed messages are refused before the conversation is changed. If a
 provider reply arrives but cannot be saved, the response still contains that
 reply and a `session_warning`; do not repeat a paid request merely to recover
 from a transcript write failure.
-A binding that names a conversation or project this host does not have open
-answers 409 with `kind` `session_binding`, before any provider call. A local
-conversation-store failure answers 500 with `kind` `session_save`.
+A binding that names a conversation or project this host does not have open,
+or a conversation bound to another project file, answers 409 with `kind`
+`session_binding`, before any provider call. The refusal carries a typed
+`detail` with `kind` `binding_mismatch` and both canonical paths. A `/call`
+envelope with the same wrong binding answers that same 409 typed envelope
+instead of dispatching the tool. A local conversation-store failure answers 500
+with `kind` `session_save`.
+
+A conversation's project binding is durable conversation state, not a field
+each request may choose. An unbound conversation binds to the open project on
+its first turn. A rebind in the panel (opening another file, or sending from a
+conversation bound to another file), and a project move, record a pending
+binding; the next admitted turn writes one typed `project_bound` host
+notice before the person's message, telling the model which file edits apply
+to. A fold or a compaction keeps the newest binding notice, so the model never
+interprets later paths against a file the conversation left. A conversation that
+is running a turn keeps the binding it started with: a rebind is refused until
+the turn ends, and the loop checks that the open project is still the bound file
+while holding the same project lock it opens the turn's batch under. A file
+opened in that gap therefore receives no batch, and no edits authored as that
+conversation.
+
+After its first turn, a conversation also reads what changed in its bound
+project since its previous turn started. Preparation saves the conversation's
+mark on every turn path (the panel, `ai_chat` and `/ai/complete`), in the same
+store write as the notices, so consecutive headless turns do not repeat an old
+notice. The next admitted turn compares the project's edit-history cursor with
+the saved mark and writes one typed `outside_changes` host notice before the
+person's message. The notice names the entries other authors made, newest first
+and at most eight, how many more exist, how many steps undo moved back, how many
+of the conversation's own edits a person undid or replaced, and whether the
+history was rewritten so earlier entries are gone, or only pruned by history
+cleanup. It is model context, so a fold may drop it and the transcript does not
+show it. The notice is skipped on the first turn and when a
+`project_bound` notice already explains a file boundary.
+
+Before each turn, the backend compares the tools the turn offers and the
+permission mode it runs under with the surface the conversation last saw. The
+first turn records that surface silently. A later turn whose surface differs
+writes one typed `tool_surface` host notice before the person's message. The
+notice names the tools added and removed, in sorted order, and the permission
+mode it moved from and to when that changed. It tells the model not to call a
+removed tool again. A fold or a compaction keeps the newest tool-surface notice,
+so the model never calls a tool the turn does not offer.
+
+The conversation's goal and plan are typed `session_state` rows rather than
+prompt text. `plan_update` is a panel-local tool in the `dsl-edit` set: it takes
+an optional `goal` (a string, or `null` to clear it) and optional `items`, each
+with `text` and a `status` of `pending`, `in_progress` or `done`. The loop
+validates the bounds, writes one row for each changed part as a round delivery,
+and answers `{"status": "ok"}`. The newest goal row and the newest plan row are
+the current state, so a rewind drops their effect and a fork copies it. Every
+request carries one short derived row after its system rows naming the current
+goal and plan; the loop rebuilds it after a `plan_update` call and never saves
+it. A fold keeps the newest goal and plan rows, and a compaction or a size trim
+re-inserts them after its summary.
 
 `POST /ai/turn` runs one whole agent turn on the same backend loop the panel
 uses. Its body carries `provider` (required, non-empty, at most 100
@@ -635,7 +692,8 @@ to the reference rate, compare the aligned overlap) and records a warning.
 `transaction_begin` snapshots the project, DSL text, dirty flag, file path and
 undo mark, and returns the base revision. `transaction_commit` keeps the batch,
 publishes exactly one revision and squashes the batch into one undo entry
-labelled `Transaction: <label>`. `transaction_rollback` restores the snapshot,
+that records the typed changes between the batch base and its final state.
+`transaction_rollback` restores the snapshot,
 drops the batch's undo/redo entries and moves the revision forward so stale
 `expected_revision` guards fail.
 
@@ -654,13 +712,20 @@ drops the batch's undo/redo entries and moves the revision forward so stale
 * **No partial persistence.** `project_save` and `redo` refuse while a batch is
   open, so a crash cannot leave a half-applied edit on disk or replay a redo
   under the batch. `project_open` / `project_new` cancel the batch because they
-  replace the whole session.
+  replace the whole session. `project_new` creates the file at the absolute
+  `.ocp` path it is given, optionally from `starter`, and refuses an existing
+  file.
 * **`undo` works inside the batch.** It rewinds the newest edit: the batch's own
   last step, or the edit before the batch when the batch has not edited yet. The
   batch keeps recording, its commit still publishes one entry, and a rollback
   puts back the history it found.
 * **Undo depth is one per transaction.** After commit, one `undo` restores the
   pre-batch project and one `redo` re-applies the whole batch.
+* **The turn reports its batch once.** The model's `transaction_commit` inside a
+  panel turn is answered without dispatch, so that saved row carries no facts.
+  When the turn ends, the loop describes the batch from its base to its final
+  document and returns those typed changes in the turn outcome. The panel shows
+  them once as "This turn changed: ..." instead of rewriting the saved row.
 * **Renders see the working state.** Every tool reads the project the batch has
   edited so far, and `render_range` renders it: a model can audition its own
   in-turn edit. The pre-batch render is kept while the batch is open, so
@@ -696,8 +761,9 @@ caller alike. `ai_turn_start` starts a turn and answers with the outcome
 `{text, failed, stop?, error?}`. The panel hears `ai_turn` events
 `{request_id, session_id, type}` with types `message` (a message the turn just
 saved, in saved form), `running` (a call is about to run), `ask` (a call waits
-for a person), `expired` (a question's wait ran out), `preview` (an autoreview
-replacement about to apply), `wire_folded` (the request was folded to fit;
+for a person), `ask_user` (the model asks a question), `expired` (a question's
+wait ran out), `preview` (an autoreview replacement about to apply),
+`wire_folded` (the request was folded to fit;
 the numbers before and after, which the view words) and `media`, plus
 `ai_turn_project` for the document a panel turn changed.
 `ai_turn_answer` answers a question by call id with `{approved, target?,
@@ -707,7 +773,15 @@ turn running and its question open. A question nobody answers within 30
 minutes is refused: the call reads `"expired": true`, nothing changes, and the
 turn goes on without it. A question whose wait is dropped unanswered is refused
 too. Neither is the nobody-attends answer, so neither lets an `edit_subtree`
-apply. `ai_cancel` stops a turn; the slot a revert or a recovery holds is the
+apply. `ask_user` carries no project change: it asks the person one question,
+with at most six short options or free text, when the decision is theirs. A
+headless turn has nobody to ask and answers `{"answered": false, "reason":
+"no_user"}` immediately; an expired question answers `"expired"`. An answer is
+checked against the question before it is delivered: a choice must name an
+offered option, free text is refused when the question offers none and is
+bounded to the length the question carries, and a refused answer leaves the
+question open with a typed error while the panel keeps the card and its text. `ai_cancel`
+stops a turn; the slot a recall or a recovery holds is the
 host's own, so `ai_cancel` cannot release it and `ai_active_turn` does not
 report it. `ai_tool_result` returns the full text behind a truncated result
 while the process keeps it, scoped to the conversation; the newest 64 results
@@ -728,7 +802,7 @@ runs.
 A turn is one undo step. No stop discards it: cancel, provider failure, timeout
 and the round cap all keep the batch and report how many edits stayed. The
 stopped row offers Continue (and Retry when the last request failed), and the
-transcript points at the user message's context menu for a deliberate revert.
+transcript points at the user message's context menu for a deliberate recall.
 
 * **Opening the batch.** Every mutating call carries a `mutation` flag from the
   registry, and `edit_subtree` is a write path too. The loop opens the batch
@@ -760,7 +834,7 @@ transcript points at the user message's context menu for a deliberate revert.
   are committed in memory and in undo, and only the file is behind) or
   `commit` (the batch did not commit), with the host's reason in
   `commit_error`.
-  The notice points at the user message's context menu for a deliberate revert.
+  The notice points at the user message's context menu for a deliberate recall.
 * **The round cap is the same rule.** The cap is a budget stop, not a failure:
   when the loop reaches its last round it commits the open batch like an answer
   and says how many edits were kept, so an over-budget turn keeps the work that
@@ -871,7 +945,7 @@ message reads `outcome unknown`. The round open at the end is left to the loop.
 The transcript line is built from the loop's counts: the calls the model had
 requested, the calls that returned, and the applied edits that were kept. A
 cancel before any edit ran says the project is unchanged. The line points at the
-user message's context menu for a deliberate revert; the project keeps the edits
+user message's context menu for a deliberate recall; the project keeps the edits
 until that action runs.
 
 The line is transcript-only: the saved conversation keeps the turn's user
@@ -894,22 +968,34 @@ the panel's provider layer decides that and the error carries `retryable`.
   the saved conversation and its system prompt, so the model reads every stored
   call and result and nothing is retyped. A kept edit is already part of that
   conversation, and a resumed request replays no call.
+* **A typed budget row bounds the turn.** When four or fewer rounds remain, or
+  the measured context share first reaches 60 % and then 75 % within a turn,
+  the loop writes one `round_budget` row whose `notice` carries
+  `{rounds_left?, context_share?}`; each threshold is reported once. Its English
+  text is derived from that payload, so the transcript hides it and an older
+  saved English row still loads.
 * **The wire stays inside the request budget.** Before every provider request
   the loop counts its messages and prompt-text bytes against the bounds `ai_chat`
   enforces: 100 messages and 2 MiB, with a margin so one round of results cannot
   reach them. It also measures the wire in tokens against the model's window,
   with the estimator the store's compaction uses plus the tool list, and takes
   the larger of that estimate and what the provider reported for the previous
-  round. When any bound is near (75 % of the window for tokens), the oldest part
-  of the wire is folded into one summary row, aiming for half the window: the
+  round. When the tokens reach the same threshold the store uses for
+  admission, the loop first asks the host to compact the saved conversation:
+  the store plans under its lock, the model writes the summary with no lock
+  held, and the commit appends one compaction record when the view still
+  matches. The loop rebuilds its wire from the leading system rows, the new
+  saved view and everything already saved for the open round, so the open round
+  is never lost. If that compaction fails, the oldest part of the wire is
+  folded into one summary row as a last resort, aiming for half the window: the
   turn's ask, the steering delivered after it, the latest compaction summary
   and the newest six call/result pairs stay whole. A cut lands only where the
   pairing rules allow a new message, never on a tool or text-protocol result
   or a delivery, so a call is never separated from its result. A wire that
   still exceeds the whole window is not sent; the turn fails with
   `context_overflow`. The fold is reported as its own transcript line, the
-  summary row is marked `summary`, and a Retry refolds the replayed
-  conversation rather than sending the oversized one.
+  summary row is marked `summary` without a checkpoint caption, and a Retry
+  refolds the replayed conversation rather than sending the oversized one.
 * **No second question.** The store already holds the turn's user message; a
   request whose tail the conversation has appends nothing (`absorb` in
   `ai/sessions.rs`), so `sessions_load` keeps one user row for the turn.
@@ -919,7 +1005,7 @@ the panel's provider layer decides that and the error carries `retryable`.
   asks for again runs inside that batch, never outside it.
 * **A kept turn says so.** A failed or cancelled turn that applied edits commits
   them before its row appears, and the row states how many edits were kept and
-  points at the message menu for a deliberate revert. A kept failure or timeout
+  points at the message menu for a deliberate recall. A kept failure or timeout
   still offers Retry: it sends the saved conversation again, with the applied
   results already in it.
 * **A stop can land mid-round.** The model may have asked for more calls than
@@ -942,39 +1028,61 @@ the panel's provider layer decides that and the error carries `retryable`.
 * **A failure does not eat the composer.** A request refused before the turn
   starts saved nothing, so its message and attachment chips go back to the
   composer, or a queued row goes back to the head of the queue. A turn that
-  started has saved the message: Retry and Continue resend it, and **Revert to
-  before this message** puts it back in the composer.
+  started has saved the message: Retry and Continue resend it, and **Recall
+  message** puts it back in the composer.
 
-### Reverting a turn
+### Recalling a message
 
-Revert is offered only from a right-click on a person's own message: **Revert to
-before this message**. It is one backend operation, `ai_revert_before`
-`{session_id, index}`. It restores the project snapshot the message was sent
-against as one undo entry labelled `Revert conversation`, only when the document
-differs, and cuts the conversation just before that message. If the cut fails,
-the project, its text, the dirty flag and both history stacks are put back
-exactly, so no redo entry is lost and no undo entry is evicted, and the window
-is sent the document under its new revision. The cut checks that the saved
-message is still the one that was chosen, not only its snapshot: two messages
-sent against one document share a snapshot, and a compaction from another
-window in between refuses the revert instead of cutting elsewhere.
-It also forgets that conversation's stored full results. The answer is
-`{kept, snapshot, unsaved?}`: the revert stands in the document either way, and
-`unsaved` says why the project file was not written.
+Recall is offered only from a right-click on a person's own message, as
+**Recall message** and **Recall message and undo edits**. Both are the one
+backend operation `ai_recall` `{session_id, index, undo_edits, confirmed,
+token?}`. It cuts the conversation just before that message and returns the message's
+content and media for the composer. The cut checks that the saved message is
+still the one that was chosen, so a compaction from another window refuses it
+with `conversation_changed` instead of cutting elsewhere. It also forgets that
+conversation's stored full results.
 
-A message records the project file its snapshot came from. A conversation
-follows its workspace, so a revert to a message sent against another file of
-that workspace is refused rather than written into the open one.
+Each admitted person message records `history_at` beside its snapshot: the
+canonical project file, the applied history level and the id of the entry at
+that level. **Recall message** leaves the project and its history untouched.
+**Recall message and undo edits** requires that position. When the cursor is
+ahead of the recorded level it moves the history cursor back to that level, as
+one history jump: no new entry is written, and a redo brings the edits back.
+Then it cuts the conversation. When the cursor is already at or behind the
+recorded level there is nothing to undo, so the action behaves like a plain
+recall. If the cut fails after the cursor moved, the cursor, the document, its
+text, the dirty flag and both history stacks are put back exactly, and the
+window is sent the document under its new revision.
 
-The operation is refused while any turn runs with `A turn is still running;
-stop it before reverting.` and while a batch is open with `A batch of edits is
-still open; finish it before reverting.` No other row offers revert; there is no
-per-call revert and no roll-back item for a turn. While a turn runs, its
-conversation also cannot be compacted, have its history dropped or be deleted:
-those would move the round the turn is writing. The check runs under the store
-lock every write of the turn takes, and a turn is registered as running before
-its first write, so a turn that starts during the command waits for the command
-and then reads what it left.
+Undoing edits by anyone other than this conversation's own agent asks first.
+That call answers `needs_confirmation` with the grouped authors and counts plus
+a token naming the applied level and newest entry it described, and changes
+nothing. A call with `confirmed: true` echoes that token and proceeds only while
+the history still matches it; otherwise it is refused with `edits_changed`, so
+edits made while the dialog was open are never undone unlisted. The answer is a tagged
+result: `{status: "recalled", kept, message: {content, media?}, snapshot?,
+unsaved?}`, `{status: "needs_confirmation", others: [{author, count}]}` or
+`{status: "refused", reason}`. The reasons are `turn_running`, `batch_open`,
+`other_project`, `no_recorded_position`, `position_cleared`,
+`not_a_person_message`, `conversation_changed`, `edits_changed` and
+`preview_open`; the panel localizes them. Undo edits are refused while an edit
+preview holds the document, before a confirmation can offer them.
+`snapshot` is present only when the cursor moved, and `unsaved` says why the
+project file was not written.
+
+A message saved before positions were recorded has no `history_at`, so it can
+be recalled but not with undo edits (`no_recorded_position`). A position names
+one project file, so undo edits from a message sent against another file of the
+workspace are refused (`other_project`) rather than applied to the open one.
+Both actions are refused while any turn runs (`turn_running`) or a batch is
+open (`batch_open`).
+
+No other row offers recall; there is no per-call recall and no roll-back item
+for a turn. While a turn runs, its conversation also cannot be compacted, have
+its history dropped or be deleted: those would move the round the turn is
+writing. The check runs under the store lock every write of the turn takes, and
+a turn is registered as running before its first write, so a turn that starts
+during the command waits for the command and then reads what it left.
 
 ## 5. `render_offline` — full-song export
 
@@ -1101,7 +1209,7 @@ unchanged; six of the seven are panel-enabled.
 | `tracks_duplicate` | yes (Project + Preset) | enabled | `project-edit` | new index, name, preset, revision |
 | `presets_rename` | yes (Preset) | enabled | `project-edit` | new name, the tracks and patterns that moved |
 | `presets_duplicate` | yes (Preset) | enabled | `project-edit` | new name, whether references moved |
-| `undo_history` | no | enabled | `project-edit` | the stack entries plus applied/redo counts |
+| `undo_history` | no | enabled | `project-edit` | each entry's typed `changes`, `cause`, author, scopes and timestamp, plus applied/redo counts |
 | `render_stems` | no (writes files) | excluded | — | the manifest path and every file with its levels |
 
 * **Tempo and meter maps.** Both carry the map, not one point, and hand back
@@ -1127,8 +1235,10 @@ unchanged; six of the seven are panel-enabled.
   Duplicate does: the references move to the copy, so the original stays free
   to edit or delete.
 * **History read.** `undo_history` is read-only and never moves the cursor; it
-  exists so a model can describe what happened. `undo`/`redo` are the only
-  cursor movers, and neither is hidden behind the history tool.
+  exists so a model can describe what happened. Each entry carries the typed
+  facts its patches describe and a `cause` (`edit`), never caller-written
+  English. `undo`/`redo` are the only cursor movers, and
+  neither is hidden behind the history tool.
 * **Stems.** `render_stems` is the toolbar's Export stems: mix + every track
   and bus + `stems.json` into an existing directory. The reply includes the set's
   format, sample rate and channel count, plus each file's frame count, peak,

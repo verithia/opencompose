@@ -1,5 +1,7 @@
 //! Typed project edits delegate to the shared command and undo owners.
 
+use std::path::{Path, PathBuf};
+
 use schemars::r#gen::SchemaGenerator;
 use schemars::schema::Schema;
 use serde_json::{Value, json};
@@ -16,9 +18,16 @@ use crate::tool_registry::arguments::{
 empty_arguments! {
     UndoArgs => Undo,
     RedoArgs => Redo,
-    ProjectNewArgs => ProjectNew,
 }
 typed_arguments! {
+    /// Create a new empty project at an absolute .ocp path.
+    pub struct ProjectNewArgs => ProjectNew {
+        /// Absolute path to the new .ocp file
+        #[schemars(schema_with = "project_path_schema")]
+        pub path: String,
+        /// Optional starter content; "starter" is the only template
+        pub template: Option<String>,
+    }
     /// Set the project tempo in BPM (20-999).
     pub struct SetTempoArgs => ProjectSetTempo {
         /// Tempo in BPM
@@ -55,6 +64,46 @@ typed_arguments! {
         /// Optional optimistic-concurrency guard; defaults to current DSL
         pub expected_dsl: Option<String>,
     }
+}
+
+/// Longest project path the tool accepts, matching the session binding bound.
+pub const MAX_PROJECT_PATH_CHARS: usize = 4096;
+
+/// The new project's path is absolute, ends in `.ocp` and is bounded.
+fn project_path_schema(_: &mut SchemaGenerator) -> Schema {
+    serde_json::from_value(json!({
+        "type": "string",
+        "description": "Absolute path to the new .ocp file",
+        "maxLength": MAX_PROJECT_PATH_CHARS,
+    }))
+    .expect("the project path schema is valid")
+}
+
+/// Check the path a new project will occupy before the main thread sees it.
+///
+/// The tool creates a file, so an existing path is refused instead of
+/// overwritten; the GUI's save picker owns its own confirmation.
+pub(crate) fn validate_new_project_path(path: &str) -> Result<PathBuf, String> {
+    if path.is_empty() || path.chars().count() > MAX_PROJECT_PATH_CHARS {
+        return Err(format!(
+            "project_new needs a path of at most {MAX_PROJECT_PATH_CHARS} characters"
+        ));
+    }
+    let path = Path::new(path);
+    if !path.is_absolute() {
+        return Err("project_new needs an absolute .ocp path".into());
+    }
+    if !path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("ocp"))
+    {
+        return Err("project_new needs a path ending in .ocp".into());
+    }
+    if path.exists() {
+        return Err(format!("{} already exists", path.display()));
+    }
+    Ok(path.to_path_buf())
 }
 
 /// The handoff path list keeps its item description and bounds inline.
@@ -153,7 +202,11 @@ mod tests {
         )
         .unwrap();
         assert!(
-            app.state::<AppState>().lock_inner().undo.undo.is_empty(),
+            app.state::<AppState>()
+                .lock_inner()
+                .undo
+                .undo_entries()
+                .is_empty(),
             "an unchanged tempo must not create history"
         );
         let changed = run(
@@ -164,14 +217,28 @@ mod tests {
         .unwrap();
         assert_eq!(changed["project"]["properties"]["tempo"], 150.0);
         assert!(changed["revision"].as_u64().unwrap() > before["revision"].as_u64().unwrap());
-        assert_eq!(app.state::<AppState>().lock_inner().undo.undo.len(), 1);
+        assert_eq!(
+            app.state::<AppState>()
+                .lock_inner()
+                .undo
+                .undo_entries()
+                .len(),
+            1
+        );
         let undone = run(&app, ToolId::Undo, Value::Null).unwrap();
         assert_eq!(undone["project"], before["project"]);
         let redone = run(&app, ToolId::Redo, json!({"ignored":true})).unwrap();
         assert_eq!(redone["project"], changed["project"]);
         let named = run(&app, ToolId::ProjectSetName, json!({"name":"Typed edit"})).unwrap();
         assert_eq!(named["project"]["name"], "Typed edit");
-        assert_eq!(app.state::<AppState>().lock_inner().undo.undo.len(), 2);
+        assert_eq!(
+            app.state::<AppState>()
+                .lock_inner()
+                .undo
+                .undo_entries()
+                .len(),
+            2
+        );
         let stable = snapshot(&app);
         assert!(run(&app, ToolId::ProjectSetTempo, json!({"tempo":19})).is_err());
         assert_eq!(snapshot(&app), stable);
@@ -199,7 +266,13 @@ mod tests {
             .is_err()
         );
         assert_eq!(snapshot(&app), before);
-        assert!(app.state::<AppState>().lock_inner().undo.undo.is_empty());
+        assert!(
+            app.state::<AppState>()
+                .lock_inner()
+                .undo
+                .undo_entries()
+                .is_empty()
+        );
         let applied = run(
             &app,
             ToolId::ProjectEdit,
@@ -208,7 +281,14 @@ mod tests {
         .unwrap();
         assert_eq!(applied["snapshot"]["project"]["properties"]["tempo"], 132.0);
         assert!(!applied["diff"]["hunks"].as_array().unwrap().is_empty());
-        assert_eq!(app.state::<AppState>().lock_inner().undo.undo.len(), 1);
+        assert_eq!(
+            app.state::<AppState>()
+                .lock_inner()
+                .undo
+                .undo_entries()
+                .len(),
+            1
+        );
         let undone = run(&app, ToolId::Undo, json!({})).unwrap();
         assert_eq!(undone["project"], before["project"]);
     }
@@ -233,7 +313,14 @@ mod tests {
         assert_eq!(snapshot(&app), after_undo);
         app.state::<AppState>().rollback_transaction().unwrap();
         assert_eq!(snapshot(&app)["project"], before["project"]);
-        assert_eq!(app.state::<AppState>().lock_inner().undo.undo.len(), 1);
+        assert_eq!(
+            app.state::<AppState>()
+                .lock_inner()
+                .undo
+                .undo_entries()
+                .len(),
+            1
+        );
     }
 
     #[test]
@@ -256,6 +343,34 @@ mod tests {
     }
 
     #[test]
+    fn a_validated_new_project_path_creates_the_file_and_its_history_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("Fresh.ocp");
+        let path = validate_new_project_path(target.to_str().unwrap()).unwrap();
+        let state = AppState::new();
+        let snapshot = commands::create_project_in(&mut state.lock_inner(), Some(path)).unwrap();
+        assert_eq!(snapshot.project.name.as_deref(), Some("Fresh"));
+        assert_eq!(
+            snapshot.file_path.as_deref(),
+            Some(target.to_str().unwrap())
+        );
+        assert!(target.is_file(), "the tool did not write the project");
+        let marker = crate::edit_history::journal::read_marker(
+            &crate::edit_history::journal::dir_for(&target),
+        )
+        .expect("the new project has a history marker");
+        assert_eq!(
+            marker.sha256,
+            crate::project_data::content_sha256(&target),
+            "the marker names the file the write produced"
+        );
+        assert_eq!(marker.path, crate::project_data::canonical_path(&target));
+        // The validated path refuses a file it would replace.
+        let error = validate_new_project_path(target.to_str().unwrap()).unwrap_err();
+        assert!(error.contains("already exists"), "{error}");
+    }
+
+    #[test]
     fn typed_project_file_schemas_preserve_each_provider_contract() {
         let expected: Vec<Value> =
             serde_json::from_str(include_str!("../tool_registry/schema-contract.json")).unwrap();
@@ -272,7 +387,23 @@ mod tests {
 
     #[test]
     fn typed_project_file_requests_decode_without_opening_a_file() {
-        assert!(ProjectNewArgs::decode(&json!({"ignored": true})).is_ok());
+        let new = ProjectNewArgs::decode(&json!({
+            "path": "/songs/Fresh.ocp",
+            "template": "starter",
+            "expected_revision": 3,
+        }))
+        .unwrap();
+        assert_eq!(new.path, "/songs/Fresh.ocp");
+        assert_eq!(new.template.as_deref(), Some("starter"));
+        // The path is required, and a relative one is refused after decoding.
+        let missing = ProjectNewArgs::decode(&json!({})).unwrap_err();
+        assert_eq!(
+            missing.code,
+            crate::tool_registry::arguments::ArgumentErrorCode::Missing
+        );
+        assert_eq!(missing.field.as_deref(), Some("path"));
+        assert!(validate_new_project_path("song.ocp").is_err());
+        assert!(validate_new_project_path("/songs/Fresh.wav").is_err());
         let open = ProjectOpenArgs::decode(&json!({
             "path": "song.ocp",
             "expected_revision": 3,

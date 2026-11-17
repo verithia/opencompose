@@ -61,7 +61,7 @@ beforeEach(async () => {
     }
     if (cmd === "get_project" || cmd === "set_preset_params") return snapshot();
     if (cmd === "set_loop_region" || cmd === "preview_drum_pad" || cmd === "release_web_audio") return undefined;
-    if (cmd === "get_undo_state") return { can_undo: false, can_redo: false, undo_label: null, redo_label: null, undo_labels: [], redo_labels: [] };
+    if (cmd === "get_undo_state") return { can_undo: false, can_redo: false,    };
     throw new Error(`Unexpected drum-panel fixture command: ${cmd}`);
   });
   await store.initProject();

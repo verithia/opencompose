@@ -5,21 +5,26 @@ pub mod anthropic;
 pub mod auth;
 pub mod catalog;
 pub mod chat_completions;
+pub mod compaction_prompt;
 pub mod credential_lifecycle;
 pub mod credential_store;
 pub mod effort;
 pub mod gemini;
 pub mod gemini_generate;
+pub mod host_notice;
 pub mod limits;
 pub mod media;
 pub mod models;
 /// OAuth provider flows.
 pub mod oauth;
+pub mod plan_update;
 pub mod prices;
 pub mod project_instructions;
+pub mod recall;
 pub mod responses;
 pub mod route;
 pub mod secret;
+pub mod session_state;
 pub mod session_usage;
 pub mod sessions;
 pub mod skill_hints;
@@ -857,6 +862,10 @@ pub(crate) fn is_local_message_field(key: &str) -> bool {
             | "source_render_unavailable"
             | "dsl_sha"
             | "dsl_project"
+            | "history_at"
+            | "result_sha"
+            | "full_result"
+            | "changes"
     )
 }
 
@@ -1153,6 +1162,33 @@ pub(crate) mod test_support {
             request
         });
         (base, server)
+    }
+
+    /// Accepts a complete request but withholds its response, so cancellation
+    /// can be checked against a real connection without a slow fixture sleep.
+    pub fn held_response() -> (String, tokio::sync::oneshot::Receiver<()>, JoinHandle<bool>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}/", listener.local_addr().unwrap());
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let server = std::thread::spawn(move || {
+            let mut socket = accept_within(&listener);
+            read_request(&mut socket);
+            socket
+                .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                .unwrap();
+            let _ = started.send(());
+            match socket.read(&mut [0u8; 1]) {
+                Ok(0) => true,
+                Err(error) => matches!(
+                    error.kind(),
+                    std::io::ErrorKind::ConnectionReset
+                        | std::io::ErrorKind::ConnectionAborted
+                        | std::io::ErrorKind::UnexpectedEof
+                ),
+                _ => false,
+            }
+        });
+        (base, ready, server)
     }
 
     /// Serves one response per connection, in order, and returns the raw request

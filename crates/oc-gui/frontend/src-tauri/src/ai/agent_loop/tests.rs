@@ -19,6 +19,8 @@ struct World {
     events: Vec<TurnEvent>,
     decisions: VecDeque<Option<Decision>>,
     asked: Vec<ApprovalRequest>,
+    user_replies: VecDeque<Option<Reply>>,
+    user_questions: Vec<UserQuestion>,
     /// Cancel when this tool is dispatched, after it ran.
     cancel_on: Option<String>,
     /// Fail the store write after this many records.
@@ -28,6 +30,8 @@ struct World {
     invalid_from: Option<u64>,
     /// Mutations succeed without changing the document.
     noop: bool,
+    /// The call whose result carries typed edit facts.
+    typed_changes_on: Option<String>,
     /// The model writes its calls in text.
     text_protocol: bool,
     undos: usize,
@@ -36,8 +40,15 @@ struct World {
     steer_on_send: Option<usize>,
     /// Make the batch close fail at this step.
     commit_failure: Option<CommitFailure>,
+    /// The facts the open batch would describe at close.
+    turn_changes: Option<oc_dsl::change::ChangeSet>,
     /// Someone else edits the project while this tool runs.
     edit_elsewhere_on: Option<String>,
+    /// The model's input window in tokens; 0 when unknown.
+    context_length: u64,
+    hold_compaction: bool,
+    /// Why a modifying call cannot run on the open project.
+    binding_refusal: Option<String>,
 }
 
 struct Fake {
@@ -46,6 +57,7 @@ struct Fake {
     session: String,
     cancel: Cancel,
     steering: steering::Steering,
+    compaction_started: tokio::sync::Notify,
     _root: tempfile::TempDir,
 }
 
@@ -80,6 +92,7 @@ impl Fake {
             session,
             cancel: Cancel::default(),
             steering: steering::Steering::default(),
+            compaction_started: tokio::sync::Notify::new(),
             _root: root,
         }
     }
@@ -94,6 +107,10 @@ impl Fake {
         self.store
             .append_turn(&self.session, std::slice::from_ref(&user), None)
             .unwrap();
+        let (text_protocol, context_length) = {
+            let world = self.world();
+            (world.text_protocol, world.context_length)
+        };
         TurnSpec {
             wire: vec![json!({"role":"system","content":"sys"}), user],
             permission,
@@ -101,8 +118,9 @@ impl Fake {
             audio: None,
             scope: self.session.clone(),
             toolsets: None,
-            text_protocol: self.world().text_protocol,
-            context_length: 0,
+            text_protocol,
+            context_length,
+            max_output: 0,
         }
     }
 
@@ -135,6 +153,9 @@ impl Host for Fake {
         Some(&self.steering)
     }
     async fn begin_batch(&self, label: &str) -> Result<(), String> {
+        if let Some(refusal) = self.world().binding_refusal.clone() {
+            return Err(refusal);
+        }
         self.call(
             "transaction_begin",
             &json!({ "label": label }),
@@ -143,6 +164,10 @@ impl Host for Fake {
         .await
         .map(|_| ())
         .map_err(|refusal| refusal.to_string())
+    }
+
+    async fn batch_changes(&self) -> Option<oc_dsl::change::ChangeSet> {
+        self.world().turn_changes.clone()
     }
 
     async fn commit_batch(&self) -> Result<(), CommitError> {
@@ -177,7 +202,7 @@ impl Host for Fake {
             .unwrap_or_else(|| Ok(json!({"role":"assistant","content":"done"})))
     }
 
-    async fn call(&self, tool: &str, args: &Value, _cancel: &Cancel) -> Result<Value, Value> {
+    async fn call(&self, tool: &str, args: &Value, _cancel: &Cancel) -> Result<Dispatched, Value> {
         let mut world = self.world();
         world.calls.push(tool.to_owned());
         if world.steer_on_tool.as_deref() == Some(tool) {
@@ -193,7 +218,7 @@ impl Host for Fake {
             world.revision += 1;
             world.dsl = format!("@project r{}", world.revision);
         }
-        match tool {
+        let result = match tool {
             "transaction_begin" => {
                 world.batch = Some(args["label"].as_str().unwrap_or_default().to_owned());
                 Ok(json!({"active": true}))
@@ -215,7 +240,10 @@ impl Host for Fake {
                     return Err(json!({"error":"outside the turn's batch"}));
                 }
                 if world.noop {
-                    return Ok(json!({"ok": true}));
+                    return Ok(Dispatched {
+                        value: json!({"ok": true}),
+                        changes: None,
+                    });
                 }
                 world.revision += 1;
                 world.dsl = format!("@project r{}", world.revision);
@@ -226,7 +254,20 @@ impl Host for Fake {
             "big_read" => Ok(json!({"rows": "x".repeat(20_000)})),
             "refused" => Err(json!({"error": "refused: nope"})),
             _ => Ok(json!({"ok": true})),
-        }
+        };
+        let result = result?;
+        let changes =
+            (world.typed_changes_on.as_deref() == Some(tool)).then(|| oc_dsl::change::ChangeSet {
+                changes: vec![oc_dsl::change::Change::Tempo {
+                    from: 120.0,
+                    to: 132.0,
+                }],
+                more: 0,
+            });
+        Ok(Dispatched {
+            value: result,
+            changes,
+        })
     }
 
     async fn ask(&self, request: ApprovalRequest) -> Option<Decision> {
@@ -235,8 +276,33 @@ impl Host for Fake {
         world.decisions.pop_front().flatten()
     }
 
+    async fn ask_user(&self, request: UserQuestion) -> Option<Reply> {
+        let mut world = self.world();
+        world.user_questions.push(request);
+        world.user_replies.pop_front().flatten()
+    }
+
     fn allowed(&self) -> Vec<String> {
         Vec::new()
+    }
+
+    async fn compact(&self, cancel: &Cancel) -> Result<Vec<Value>, CompactionFailure> {
+        let hold = self.world().hold_compaction;
+        if hold {
+            self.compaction_started.notify_one();
+            cancel.cancelled().await;
+            return Err(CompactionFailure::Cancelled);
+        }
+        let dsl = self.world().dsl.clone();
+        let facts = crate::ai::sessions::ProjectFacts {
+            path: None,
+            dsl_digest: crate::ai::sessions::dsl_digest(&dsl),
+            track_count: 1,
+        };
+        self.store
+            .compact(&self.session, None, &facts)
+            .map(|compaction| compaction.messages)
+            .map_err(|_| CompactionFailure::Conflict)
     }
 
     async fn record(&self, messages: &[Value]) -> Result<Vec<Value>, String> {
@@ -250,6 +316,10 @@ impl Host for Fake {
             }
         }
         self.store.append_turn(&self.session, messages, None)
+    }
+
+    async fn stored_result(&self, _call: &str, sha: &str) -> Option<String> {
+        self.store.stored_result(&self.session, sha).ok().flatten()
     }
 
     async fn started(&self, call_id: &str) -> Result<(), String> {
@@ -282,7 +352,7 @@ impl Host for Fake {
         }
     }
 
-    async fn apply_edit(&self, _path: &str, dsl: &str, expected: &str) -> Result<Document, String> {
+    async fn apply_edit(&self, _path: &str, dsl: &str, expected: &str) -> Result<Edited, String> {
         let mut world = self.world();
         if world.dsl != expected {
             return Err("changed".into());
@@ -292,10 +362,18 @@ impl Host for Fake {
         }
         world.revision += 1;
         world.dsl = dsl.to_owned();
-        Ok(Document {
-            dsl: world.dsl.clone(),
-            revision: world.revision,
-            track_count: 1,
+        // A fixture document that parses is described like the app's.
+        let changes = match (oc_dsl::parse(expected), oc_dsl::parse(dsl)) {
+            (Ok(before), Ok(after)) => crate::agent_api::describe_edit(&before, &after),
+            _ => None,
+        };
+        Ok(Edited {
+            document: Document {
+                dsl: world.dsl.clone(),
+                revision: world.revision,
+                track_count: 1,
+            },
+            changes,
         })
     }
 
@@ -369,6 +447,142 @@ fn an_answered_turn_saves_every_round_and_commits_once() {
 }
 
 #[test]
+fn a_file_switch_mid_turn_refuses_every_mutation_before_a_batch_opens() {
+    let fake = Fake::new(vec![
+        round(&[("a", "tracks_add")]),
+        json!({"role":"assistant","content":"nothing applied"}),
+    ]);
+    fake.world().binding_refusal = Some("The conversation is bound to another file".into());
+    let outcome = block_on(fake.run(SessionPermission::Write));
+    let world = fake.world();
+    assert!(!world.calls.iter().any(|call| call == "tracks_add"));
+    assert!(
+        !world.calls.iter().any(|call| call == "transaction_begin"),
+        "no batch opens on the file the conversation left"
+    );
+    assert_eq!(world.revision, 0, "the document is untouched");
+    assert_eq!(
+        world.sent.len(),
+        2,
+        "the model gets the refusal and answers"
+    );
+    assert_eq!(outcome.text, "nothing applied");
+    assert!(!outcome.failed);
+}
+
+#[test]
+fn the_turn_outcome_carries_the_committed_batches_changes_once() {
+    use oc_dsl::change::{Change, ChangeSet};
+    let fake = Fake::new(vec![
+        round(&[("a", "tracks_add"), ("b", "transaction_commit")]),
+        json!({"role":"assistant","content":"All set."}),
+    ]);
+    fake.world().turn_changes = Some(ChangeSet {
+        changes: vec![Change::Tempo {
+            from: 120.0,
+            to: 132.0,
+        }],
+        more: 0,
+    });
+    // The loop answers the model's commit itself; were it dispatched, the fake
+    // would also attach the batch facts to that row.
+    fake.world().typed_changes_on = Some("transaction_commit".into());
+    let outcome = block_on(fake.run(SessionPermission::Write));
+    assert!(!outcome.failed);
+    assert_eq!(
+        outcome.changes,
+        Some(ChangeSet {
+            changes: vec![Change::Tempo {
+                from: 120.0,
+                to: 132.0,
+            }],
+            more: 0,
+        })
+    );
+    // The deferred commit row itself carries no facts; the turn reports them once.
+    assert!(fake.results()[1].1.get("changes").is_none());
+
+    // A read-only turn has no facts to report.
+    let plain = Fake::new(vec![json!({"role":"assistant","content":"Nothing to do."})]);
+    assert_eq!(block_on(plain.run(SessionPermission::Write)).changes, None);
+}
+
+#[test]
+fn plan_update_records_typed_rows_and_refreshes_the_derived_context_row() {
+    let call = json!({
+        "role": "assistant",
+        "content": null,
+        "tool_calls": [{
+            "id": "p1",
+            "type": "function",
+            "function": {
+                "name": "plan_update",
+                "arguments": json!({
+                    "goal": "finish the bridge",
+                    "items": [
+                        {"text": "write", "status": "done"},
+                        {"text": "mix", "status": "in_progress"}
+                    ]
+                }).to_string()
+            }
+        }]
+    });
+    let fake = Fake::new(vec![call, json!({"role":"assistant","content":"Planned."})]);
+    let outcome = block_on(fake.run(SessionPermission::Write));
+    assert_eq!((outcome.text.as_str(), outcome.failed), ("Planned.", false));
+    let saved = fake.saved();
+    assert_eq!(check_pairing(&saved), Ok(()));
+    let state_kinds: Vec<&str> = saved
+        .iter()
+        .filter_map(|row| row["message_meta"]["state"]["kind"].as_str())
+        .collect();
+    assert_eq!(state_kinds, ["goal_set", "plan_set"]);
+    let (goal, plan) = crate::ai::session_state::current_state(&saved);
+    assert_eq!(goal.unwrap().text, "finish the bridge");
+    assert_eq!(plan.unwrap().len(), 2);
+    assert!(
+        saved
+            .iter()
+            .all(|row| row["context"] != crate::ai::session_state::CONTEXT_STATE),
+        "the derived row is never saved"
+    );
+    // The next request carries the refreshed row after its system prompt.
+    let world = fake.world();
+    let second = &world.sent[1];
+    let context = second
+        .iter()
+        .position(|row| row["context"] == crate::ai::session_state::CONTEXT_STATE)
+        .expect("the next round carries the state");
+    assert_eq!(second[context]["role"], "user");
+    assert_eq!(
+        second[context]["content"],
+        "Goal: finish the bridge\nPlan:\n1. [done] write\n2. [in progress] mix"
+    );
+    assert!(context < crate::ai::agent_loop::wire::turn_ask(second).unwrap());
+}
+
+#[test]
+fn a_failed_batch_commit_reports_no_changes() {
+    use oc_dsl::change::{Change, ChangeSet};
+    let fake = Fake::new(vec![round(&[("a", "tracks_add")])]);
+    fake.world().turn_changes = Some(ChangeSet {
+        changes: vec![Change::Tempo {
+            from: 120.0,
+            to: 132.0,
+        }],
+        more: 0,
+    });
+    fake.world().commit_failure = Some(CommitFailure::Commit);
+    let outcome = block_on(fake.run(SessionPermission::Write));
+    assert!(outcome.failed);
+    assert_eq!(
+        outcome.stop.as_ref().and_then(|stop| stop.commit_failure),
+        Some(CommitFailure::Commit)
+    );
+    assert!(outcome.changes.is_none());
+}
+
+#[test]
 fn cancel_mid_round_keeps_completed_results_and_marks_the_rest_not_run() {
     let fake = Fake::new(vec![round(&[
         ("a", "tracks_add"),
@@ -403,6 +617,100 @@ fn cancel_mid_round_keeps_completed_results_and_marks_the_rest_not_run() {
     assert_eq!(check_pairing(&fake.saved()), Ok(()));
 }
 
+fn ask_user_round(id: &str, args: Value) -> Value {
+    json!({"role":"assistant","content":null,"tool_calls":[{
+        "id":id,"type":"function",
+        "function":{"name":"ask_user","arguments":args.to_string()}
+    }]})
+}
+
+#[test]
+fn ask_user_answers_with_a_chosen_option() {
+    let fake = Fake::new(vec![
+        ask_user_round(
+            "q",
+            json!({"question":"Which feel?","options":["Warm","Bright"]}),
+        ),
+        json!({"role":"assistant","content":"ok"}),
+    ]);
+    fake.world().user_replies.push_back(Some(Reply {
+        option: Some(1),
+        ..Reply::default()
+    }));
+    let outcome = block_on(fake.run(SessionPermission::Write));
+    assert!(!outcome.failed, "{outcome:?}");
+    let world = fake.world();
+    assert_eq!(world.user_questions.len(), 1);
+    assert_eq!(world.user_questions[0].question, "Which feel?");
+    assert!(world.user_questions[0].free_text);
+    drop(world);
+    let result = &fake.results()[0].1;
+    assert_eq!(result["answered"], true);
+    assert_eq!(result["option"], "Bright");
+    assert!(result.get("text").is_none());
+    assert_eq!(fake.world().calls.len(), 0, "ask_user is not dispatched");
+}
+
+#[test]
+fn ask_user_answers_with_free_text() {
+    let fake = Fake::new(vec![
+        ask_user_round("q", json!({"question":"What mood?","free_text":true})),
+        json!({"role":"assistant","content":"ok"}),
+    ]);
+    fake.world().user_replies.push_back(Some(Reply {
+        text: Some("Late-night jazz".into()),
+        ..Reply::default()
+    }));
+    block_on(fake.run(SessionPermission::Write));
+    let result = &fake.results()[0].1;
+    assert_eq!(result["answered"], true);
+    assert_eq!(result["text"], "Late-night jazz");
+    assert!(result.get("option").is_none());
+}
+
+#[test]
+fn an_expired_question_answers_with_the_typed_reason() {
+    let fake = Fake::new(vec![
+        ask_user_round("q", json!({"question":"Continue?"})),
+        json!({"role":"assistant","content":"ok"}),
+    ]);
+    fake.world().user_replies.push_back(Some(Reply::expired()));
+    block_on(fake.run(SessionPermission::Write));
+    let result = &fake.results()[0].1;
+    assert_eq!(result["answered"], false);
+    assert_eq!(result["reason"], "expired");
+}
+
+#[test]
+fn nobody_to_ask_answers_a_question_immediately() {
+    let fake = Fake::new(vec![
+        ask_user_round("q", json!({"question":"Continue?"})),
+        json!({"role":"assistant","content":"ok"}),
+    ]);
+    block_on(fake.run(SessionPermission::Write));
+    let result = &fake.results()[0].1;
+    assert_eq!(result["answered"], false);
+    assert_eq!(result["reason"], "no_user");
+    assert_eq!(fake.world().user_questions.len(), 1);
+}
+
+#[test]
+fn ask_user_refuses_a_question_over_its_bounds() {
+    let long = "x".repeat(crate::agent_tools::question::MAX_QUESTION_CHARS + 1);
+    let fake = Fake::new(vec![
+        ask_user_round("q", json!({"question":long})),
+        json!({"role":"assistant","content":"ok"}),
+    ]);
+    block_on(fake.run(SessionPermission::Write));
+    let result = &fake.results()[0].1;
+    assert!(
+        result["error"]
+            .as_str()
+            .is_some_and(|text| text.contains("500"))
+    );
+    assert!(fake.world().user_questions.is_empty());
+}
+
 #[test]
 fn the_round_cap_commits_and_closes_with_real_results() {
     let replies = (0..MAX_TOOL_ROUNDS)
@@ -420,12 +728,83 @@ fn the_round_cap_commits_and_closes_with_real_results() {
     let results = fake.results();
     assert_eq!(results.len(), MAX_TOOL_ROUNDS);
     assert!(results.iter().all(|(_, body)| body["ok"] == true));
-    let notices = fake
+    let notices: Vec<_> = fake
+        .saved()
+        .into_iter()
+        .filter(|message| message["message_meta"]["kind"] == "round_budget")
+        .collect();
+    assert_eq!(notices.len(), ROUNDS_LEFT_NOTICE);
+    for notice in notices {
+        assert_eq!(notice["message_meta"]["notice"]["kind"], "budget");
+        assert!(notice["message_meta"]["notice"]["rounds_left"].is_u64());
+        assert!(notice["content"].as_str().unwrap().contains("tool round"));
+    }
+}
+
+#[test]
+fn context_share_reports_each_threshold_once_and_only_above_it() {
+    let fixed = crate::ai::agent_loop::wire::offered_tool_tokens(None, true);
+    let mut second = round(&[]);
+    second["tool_calls"] = json!(
+        (0..3)
+            .map(|index| json!({
+                "id": format!("b{index}"),
+                "type": "function",
+                "function": {"name": "big_read", "arguments": "{}"},
+            }))
+            .collect::<Vec<_>>()
+    );
+    let fake = Fake::new(vec![
+        round(&[("a", "project_get")]),
+        second,
+        json!({"role":"assistant","content":"ok"}),
+    ]);
+    // 62% at the first round leaves room below the fold limit; the 20k results
+    // push the same turn past 75% without changing the measured shape.
+    {
+        let mut world = fake.world();
+        world.context_length = (fixed as f64 / 0.62) as u64;
+    }
+    block_on(fake.run(SessionPermission::Write));
+    let shares: Vec<u8> = fake
         .saved()
         .iter()
         .filter(|message| message["message_meta"]["kind"] == "round_budget")
-        .count();
-    assert_eq!(notices, ROUNDS_LEFT_NOTICE);
+        .filter_map(|message| message["message_meta"]["notice"]["context_share"].as_u64())
+        .map(|share| share as u8)
+        .collect();
+    assert!(!shares.is_empty(), "the measured share is reported");
+    assert!(shares[0] >= 60 && shares[0] < 75, "{shares:?}");
+    assert!(shares.iter().any(|share| *share >= 75), "{shares:?}");
+    assert_eq!(
+        shares
+            .iter()
+            .filter(|share| **share >= 60 && **share < 75)
+            .count(),
+        1,
+        "the 60% threshold is reported once: {shares:?}"
+    );
+}
+
+#[test]
+fn a_context_share_below_the_threshold_stays_silent() {
+    let fixed = crate::ai::agent_loop::wire::offered_tool_tokens(None, true);
+    let fake = Fake::new(vec![
+        round(&[("a", "project_get")]),
+        json!({"role":"assistant","content":"ok"}),
+    ]);
+    {
+        let mut world = fake.world();
+        world.context_length = fixed * 2;
+    }
+    block_on(fake.run(SessionPermission::Write));
+    assert!(
+        !fake.saved().iter().any(|message| {
+            message["message_meta"]["kind"] == "round_budget"
+                && message["message_meta"]["notice"]["context_share"].is_u64()
+        }),
+        "under 60% no context row is written"
+    );
 }
 
 #[test]
@@ -649,6 +1028,49 @@ fn a_large_result_is_paged_only_inside_its_conversation() {
 }
 
 #[test]
+fn a_large_result_is_read_from_the_saved_conversation_once_the_cache_lost_it() {
+    let fake = Fake::new(vec![
+        round(&[("big", "big_read")]),
+        json!({"role":"assistant","content":"done"}),
+    ]);
+    block_on(fake.run(SessionPermission::Write));
+    let saved = fake.saved();
+    let row = saved.iter().find(|m| m["tool_call_id"] == "big").unwrap();
+    assert!(row["result_sha"].is_string());
+    assert!(row.get("full_result").is_none());
+    // A restart, or eviction by other conversations, empties the cache.
+    results::with_results(|store| store.forget(&fake.session));
+    let page = json!({"role":"assistant","content":null,"tool_calls":[
+        {"id":"p","type":"function","function":{"name":"read_toolcall","arguments":"{\"id\":\"big\",\"offset\":10,\"limit\":5}"}}
+    ]});
+    fake.world().replies = vec![Ok(page), Ok(json!({"role":"assistant","content":"done"}))].into();
+    let mut wire = vec![json!({"role":"system","content":"sys"})];
+    wire.extend(saved);
+    wire.push(
+        json!({"role":"user","content":"continue","message_meta":{"version":1,"kind":"user"}}),
+    );
+    let spec = TurnSpec {
+        wire,
+        permission: SessionPermission::Write,
+        label: "AI edit".into(),
+        audio: None,
+        scope: fake.session.clone(),
+        toolsets: None,
+        text_protocol: true,
+        context_length: 0,
+        max_output: 0,
+    };
+    block_on(run_turn(&fake, spec, fake.cancel.clone()));
+    let results = fake.results();
+    let read = results
+        .iter()
+        .find(|(id, _)| id == "p")
+        .map(|(_, body)| body)
+        .unwrap();
+    assert_eq!(read["text"], "xxxxx", "{results:?}");
+}
+
+#[test]
 fn a_text_protocol_call_runs_and_its_result_is_a_user_message() {
     let fake = Fake::new(vec![
         json!({"role":"assistant","content":"Checking.\n```json\n{\"tool\":\"project_get\",\"args\":{}}\n```"}),
@@ -708,10 +1130,24 @@ fn a_reply_after_cancel_is_saved_and_none_of_its_calls_run() {
         async fn begin_batch(&self, label: &str) -> Result<(), String> {
             self.0.begin_batch(label).await
         }
+        async fn batch_changes(&self) -> Option<oc_dsl::change::ChangeSet> {
+            self.0.batch_changes().await
+        }
+        async fn ask_user(&self, request: UserQuestion) -> Option<Reply> {
+            self.0.ask_user(request).await
+        }
+        async fn compact(&self, cancel: &Cancel) -> Result<Vec<Value>, CompactionFailure> {
+            self.0.compact(cancel).await
+        }
         async fn commit_batch(&self) -> Result<(), CommitError> {
             self.0.commit_batch().await
         }
-        async fn call(&self, tool: &str, args: &Value, cancel: &Cancel) -> Result<Value, Value> {
+        async fn call(
+            &self,
+            tool: &str,
+            args: &Value,
+            cancel: &Cancel,
+        ) -> Result<Dispatched, Value> {
             self.0.call(tool, args, cancel).await
         }
         async fn ask(&self, request: ApprovalRequest) -> Option<Decision> {
@@ -722,6 +1158,9 @@ fn a_reply_after_cancel_is_saved_and_none_of_its_calls_run() {
         }
         async fn record(&self, messages: &[Value]) -> Result<Vec<Value>, String> {
             self.0.record(messages).await
+        }
+        async fn stored_result(&self, call: &str, sha: &str) -> Option<String> {
+            self.0.stored_result(call, sha).await
         }
         async fn started(&self, call: &str) -> Result<(), String> {
             self.0.started(call).await
@@ -743,7 +1182,7 @@ fn a_reply_after_cancel_is_saved_and_none_of_its_calls_run() {
             path: &str,
             dsl: &str,
             expected: &str,
-        ) -> Result<Document, String> {
+        ) -> Result<Edited, String> {
             self.0.apply_edit(path, dsl, expected).await
         }
         async fn subtree(&self, path: &str) -> String {
@@ -984,4 +1423,150 @@ fn a_reported_input_past_the_window_stops_the_turn_before_the_next_send() {
     assert_eq!(outcome.error.unwrap().kind, "context_overflow");
     assert_eq!(fake.world().sent.len(), 1, "the oversized wire is not sent");
     assert_eq!(check_pairing(&fake.saved()), Ok(()));
+}
+
+#[test]
+fn an_edit_subtree_row_saves_the_typed_changes_of_its_edit() {
+    let new = "@project \"S\"\n  tempo: 132\n";
+    let args = json!({"path": "project", "new_dsl": new}).to_string();
+    let edit = json!({"role":"assistant","content":null,"tool_calls":[
+        {"id":"e","type":"function","function":{"name":"edit_subtree","arguments": args}}
+    ]});
+    let fake = Fake::new(vec![edit]);
+    fake.world().dsl = "@project \"S\"\n  tempo: 100\n".into();
+    block_on(fake.run(SessionPermission::Write));
+    assert_eq!(fake.world().dsl, new);
+    let saved = fake.saved();
+    let row = saved
+        .iter()
+        .find(|message| message["tool_call_id"] == "e")
+        .unwrap();
+    assert_eq!(
+        row["changes"]["changes"],
+        json!([{"kind": "tempo", "from": 100.0, "to": 132.0}])
+    );
+    assert!(!row["content"].as_str().unwrap().contains("changes"));
+}
+
+#[test]
+fn a_mutating_tool_row_saves_typed_changes_and_a_read_only_row_does_not() {
+    let fake = Fake::new(vec![round(&[
+        ("a", "project_set_tempo"),
+        ("b", "tracks_list"),
+    ])]);
+    fake.world().typed_changes_on = Some("project_set_tempo".into());
+    block_on(fake.run(SessionPermission::Write));
+    let saved = fake.saved();
+    let changed = saved
+        .iter()
+        .find(|message| message["tool_call_id"] == "a")
+        .unwrap();
+    assert_eq!(
+        changed["changes"]["changes"],
+        json!([{"kind": "tempo", "from": 120.0, "to": 132.0}])
+    );
+    assert!(!changed["content"].as_str().unwrap().contains("changes"));
+    let read = saved
+        .iter()
+        .find(|message| message["tool_call_id"] == "b")
+        .unwrap();
+    assert!(read.get("changes").is_none(), "{read}");
+}
+
+#[test]
+fn a_mid_turn_compaction_keeps_the_open_round_and_pairing() {
+    let fake = Fake::new(vec![
+        round(&[("a", "project_get")]),
+        json!({"role":"assistant","content":"done"}),
+    ]);
+    let mut older = Vec::new();
+    for step in 0..24 {
+        let id = format!("old{step}");
+        older.push(round(&[(&id, "project_get")]));
+        older.push(json!({
+            "role":"tool",
+            "tool_call_id": id,
+            "content": json!({"ok": true, "data": "x".repeat(600)}).to_string(),
+        }));
+    }
+    fake.store.append_turn(&fake.session, &older, None).unwrap();
+    let mut wire = vec![json!({"role":"system","content":"sys"})];
+    wire.extend(fake.saved());
+    let person =
+        json!({"role":"user","content":"make it","message_meta":{"version":1,"kind":"user"}});
+    wire.push(person.clone());
+    fake.store
+        .append_turn(&fake.session, std::slice::from_ref(&person), None)
+        .unwrap();
+    let spec = TurnSpec {
+        wire,
+        permission: SessionPermission::Write,
+        label: "AI edit".into(),
+        audio: None,
+        scope: fake.session.clone(),
+        // An empty set keeps the fixed tool-list cost small, so the
+        // conversation itself drives the trigger.
+        toolsets: Some(Vec::new()),
+        text_protocol: true,
+        context_length: 4_000,
+        max_output: 0,
+    };
+    let outcome = block_on(run_turn(&fake, spec, fake.cancel.clone()));
+    assert!(!outcome.failed, "{outcome:?}");
+    let sent = fake.world().sent.clone();
+    let compacted = sent
+        .iter()
+        .find(|wire| wire.len() > 1 && wire[1]["context"] == "summary")
+        .expect("a later round was sent after a compaction");
+    assert_eq!(
+        compacted[1]["message_meta"]["kind"], "summary",
+        "the first saved row is the compaction summary"
+    );
+    assert!(
+        compacted[1]["message_meta"]
+            .get("discarded_auditions")
+            .is_some(),
+        "the store's summary metadata is kept"
+    );
+    // The open round is recorded after the compaction and survives verbatim.
+    let second = &sent[1];
+    assert!(
+        second.iter().any(|row| row["tool_call_id"] == "a"),
+        "the open round's result stays in the next request: {second:?}"
+    );
+    let saved = fake.saved();
+    assert_eq!(check_pairing(&saved), Ok(()));
+    assert!(saved.iter().any(|row| row["tool_call_id"] == "a"));
+}
+
+#[test]
+fn cancellation_during_compaction_stops_before_another_provider_round() {
+    let fake = Fake::new(vec![
+        json!({"role":"assistant","content":"must not be sent"}),
+    ]);
+    fake.world().hold_compaction = true;
+    let mut spec = fake.spec(SessionPermission::Write);
+    spec.toolsets = Some(Vec::new());
+    spec.context_length = 4_000;
+    let padding = json!({"role":"assistant","content":"old ".repeat(5_000)});
+    fake.store
+        .append_turn(&fake.session, std::slice::from_ref(&padding), None)
+        .unwrap();
+    spec.wire.push(padding);
+    let before = fake.saved();
+    let outcome = block_on(async {
+        let stop = async {
+            fake.compaction_started.notified().await;
+            fake.cancel.cancel();
+        };
+        let (outcome, ()) = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            tokio::join!(run_turn(&fake, spec, fake.cancel.clone()), stop)
+        })
+        .await
+        .expect("Stop must not wait for a summary response");
+        outcome
+    });
+    assert!(outcome.stop.is_some_and(|stop| stop.cancelled));
+    assert!(fake.world().sent.is_empty());
+    assert_eq!(fake.saved(), before);
 }

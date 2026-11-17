@@ -7,18 +7,26 @@
 //! it runs. Its project edits go into one batch owned by the conversation,
 //! which the loop commits on every ending.
 
+pub mod batch;
+pub mod questions;
+
+pub(crate) use batch::{begin_loop_batch, commit_batch_and_save, commit_stranded};
+
+pub use questions::{AnswerError, ReplyError, answer, pending_questions, reply};
+
 use super::{
-    ApprovalRequest, AudioShape, Cancel, Decision, Document, Host, TurnEvent, TurnOutcome, TurnSpec,
+    ApprovalRequest, AudioShape, Cancel, Decision, Dispatched, Document, Edited, Host, Reply,
+    TurnEvent, TurnOutcome, TurnSpec, UserQuestion,
 };
 use crate::ai::sessions::{SessionPermission, Store};
 use crate::ai::timing::TurnStatsHandle;
 use crate::ai_service::{AiError, Requests, TurnChannels, TurnRequest};
 use crate::commands::AiProviderEntry;
 use crate::state::AppState;
+use questions::{PENDING, Waiting, wait_for};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::oneshot;
@@ -27,31 +35,14 @@ use tokio::sync::oneshot;
 pub const TURN_EVENT: &str = "ai_turn";
 /// The document a turn changed, for the panel running it.
 pub const PROJECT_EVENT: &str = "ai_turn_project";
-/// Pending questions one turn may hold; a running turn asks one at a time.
-const MAX_PENDING: usize = 4;
-/// How long a question waits for a person. A closed panel leaves the card
-/// for a reopened one; past this the call is refused, so a turn nobody
-/// returns to does not hold its slot forever.
-const QUESTION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
 /// Longest turn id a client may choose; see [`round_request_id`].
 const MAX_REQUEST_ID: usize = 96;
 
-/// A question's key: the turn's request id and the call.
-type QuestionKey = (String, String);
-/// A question waiting for a person, kept so a window that reloaded can ask
-/// it again.
-struct Question {
-    answer: oneshot::Sender<Decision>,
-    request: ApprovalRequest,
-}
-/// Questions waiting for a person.
-static PENDING: LazyLock<Mutex<HashMap<QuestionKey, Question>>> = LazyLock::new(Mutex::default);
 /// Running turn controls, keyed by request id.
 static RUNNING: LazyLock<Mutex<HashMap<String, RunningTurn>>> = LazyLock::new(Mutex::default);
 
 #[derive(Clone)]
 struct RunningTurn {
-    session_id: String,
     cancel: Cancel,
     steering: super::steering::Steering,
 }
@@ -67,7 +58,7 @@ impl Drop for RegisteredTurn {
     fn drop(&mut self) {
         lock(&RUNNING).remove(&self.request_id);
         self.control.steering.close();
-        lock(&PENDING).retain(|(turn, _), _| turn != &self.request_id);
+        questions::lock(&PENDING).retain(|(turn, _), _| turn != &self.request_id);
     }
 }
 
@@ -115,13 +106,23 @@ fn check_person_media(media: &Value) -> Result<(), AiError> {
 /// Resolves after durable delivery at a complete round boundary. It never
 /// cancels a provider request, tool call or transaction.
 pub async fn steer(
+    requests: &Requests,
     request_id: &str,
     session_id: &str,
     message: SteerMessage,
 ) -> Result<(), AiError> {
+    if !requests
+        .session_is(request_id, session_id)
+        .map_err(|error| AiError::new("request", error))?
+    {
+        return Err(AiError::new(
+            "steer_closed",
+            "No matching turn is accepting messages",
+        ));
+    }
     let turn = lock(&RUNNING)
         .get(request_id)
-        .filter(|turn| turn.session_id == session_id && !turn.cancel.is_cancelled())
+        .filter(|turn| !turn.cancel.is_cancelled())
         .cloned()
         .ok_or_else(|| AiError::new("steer_closed", "No matching turn is accepting messages"))?;
     let refuse = |text: &str| AiError::new("request", text);
@@ -172,15 +173,9 @@ pub async fn steer(
 
 /// Stops a running turn for a caller that names its conversation too, so a
 /// client cannot stop another conversation's turn by guessing its id.
-pub fn cancel_in(request_id: &str, session_id: &str) -> bool {
-    let turn = lock(&RUNNING)
-        .get(request_id)
-        .filter(|turn| turn.session_id == session_id)
-        .cloned();
-    turn.is_some_and(|turn| {
-        turn.cancel.cancel();
-        true
-    })
+pub fn cancel_in(requests: &Requests, request_id: &str, session_id: &str) -> bool {
+    requests.session_is(request_id, session_id).unwrap_or(false)
+        && requests.cancel(request_id).unwrap_or(false)
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -321,6 +316,7 @@ impl Host for AppHost {
                 use_tools: true,
                 toolsets: self.toolsets.as_deref(),
                 pager: true,
+                output_limit: None,
             },
             self.channels.clone(),
             &stats,
@@ -344,8 +340,9 @@ impl Host for AppHost {
     async fn begin_batch(&self, label: &str) -> Result<(), String> {
         let owner = self.owner.clone();
         let label = label.to_owned();
+        let session = self.session_id.clone();
         let stranded = self
-            .blocking(move |app| begin_loop_batch(&app.state::<AppState>(), label, owner))
+            .blocking(move |app| begin_loop_batch(&app.state::<AppState>(), label, owner, &session))
             .await??;
         if let Some(stranded) = stranded {
             if let Err(reason) = stranded {
@@ -369,7 +366,19 @@ impl Host for AppHost {
         result
     }
 
-    async fn call(&self, tool: &str, args: &Value, cancel: &Cancel) -> Result<Value, Value> {
+    async fn batch_changes(&self) -> Option<oc_dsl::change::ChangeSet> {
+        self.blocking(move |app| {
+            let state = app.state::<AppState>();
+            let inner = state.lock_inner();
+            let base = inner.transaction_base_project()?;
+            crate::agent_api::describe_edit(base, &inner.project)
+        })
+        .await
+        .ok()
+        .flatten()
+    }
+
+    async fn call(&self, tool: &str, args: &Value, cancel: &Cancel) -> Result<Dispatched, Value> {
         let refusal = crate::ai::skill_hints::refusal;
         let checked = crate::tool_registry::panel_tool_in(tool, self.toolsets.as_deref())
             .and_then(|def| crate::tool_registry::validate_args(&def, args));
@@ -377,29 +386,26 @@ impl Host for AppHost {
             return Err(refusal(&message));
         }
         let (tool, args, owner) = (tool.to_owned(), args.clone(), self.owner.clone());
-        let stop = Arc::new(AtomicBool::new(false));
-        let watcher = {
-            let (cancel, stop) = (cancel.clone(), Arc::clone(&stop));
-            tauri::async_runtime::spawn(async move {
-                cancel.cancelled().await;
-                stop.store(true, Ordering::Release);
-            })
-        };
+        let stop = cancel.flag();
         let result = self
             .blocking(move |app| {
                 if tool == "separate_stems" {
-                    return crate::agent_api::separate_stems_cancellable(&args, Some(&stop));
+                    return crate::agent_api::separate_stems_cancellable(&args, Some(&stop)).map(
+                        |value| Dispatched {
+                            value,
+                            changes: None,
+                        },
+                    );
                 }
                 crate::agent_api::dispatch_panel(&app, &tool, &args, &owner)
             })
             .await;
-        watcher.abort();
         let result = result
             .map_err(|error| refusal(&error))?
             .map_err(|error| refusal(&error));
         if result
             .as_ref()
-            .is_ok_and(|value| value["revision"].is_u64())
+            .is_ok_and(|dispatched| dispatched.value["revision"].is_u64())
         {
             self.publish();
         }
@@ -410,54 +416,131 @@ impl Host for AppHost {
         if !self.attended {
             return None;
         }
-        let (sender, receiver) = oneshot::channel();
         let key = (self.request_id.clone(), request.call_id.clone());
-        {
-            let mut pending = lock(&PENDING);
-            if pending
-                .keys()
-                .filter(|(turn, _)| turn == &self.request_id)
-                .count()
-                >= MAX_PENDING
-            {
-                // A person is there but cannot be asked: that is a refusal,
-                // never the "nobody attends" answer that lets a call apply.
-                return Some(Decision::default());
-            }
-            pending.insert(
-                key.clone(),
-                Question {
-                    answer: sender,
-                    request: request.clone(),
-                },
-            );
-        }
-        // The question leaves the list however the wait ends, including when
-        // a cancel drops this future, so a reloaded window never repaints a
-        // card nobody waits on.
-        let _asked = AskedQuestion(key.clone());
         let tool = request.tool.clone();
-        self.emit(TurnEvent::Ask { request });
-        let decision = Some(await_answer(receiver, QUESTION_TIMEOUT).await);
-        if decision.as_ref().is_some_and(|decision| decision.expired) {
-            self.emit(TurnEvent::Expired {
-                call_id: key.1.clone(),
-            });
+        let (sender, receiver) = oneshot::channel();
+        // A person is there but cannot be asked: that is a refusal, never the
+        // "nobody attends" answer that lets a call apply.
+        let Some(decision) = wait_for(
+            key.clone(),
+            Waiting::Approval {
+                answer: sender,
+                request: request.clone(),
+            },
+            receiver,
+            Decision::expired(),
+            Decision::default(),
+            || self.emit(TurnEvent::Ask { request }),
+        )
+        .await
+        else {
+            return Some(Decision::default());
+        };
+        if decision.expired {
+            self.emit(TurnEvent::Expired { call_id: key.1 });
         }
-        if decision
-            .as_ref()
-            .is_some_and(|decision| decision.approved && decision.always)
-        {
+        if decision.approved && decision.always {
             let mut allowed = lock(&self.allowed);
             if !allowed.contains(&tool) {
                 allowed.push(tool);
             }
         }
-        decision
+        Some(decision)
+    }
+
+    async fn ask_user(&self, request: UserQuestion) -> Option<Reply> {
+        if !self.attended {
+            return None;
+        }
+        let key = (self.request_id.clone(), request.call_id.clone());
+        let (sender, receiver) = oneshot::channel();
+        let Some(reply) = wait_for(
+            key.clone(),
+            Waiting::UserQuestion {
+                answer: sender,
+                request: request.clone(),
+            },
+            receiver,
+            Reply::expired(),
+            Reply::expired(),
+            || self.emit(TurnEvent::AskUser { request }),
+        )
+        .await
+        else {
+            return Some(Reply::busy());
+        };
+        if reply.expired {
+            self.emit(TurnEvent::Expired { call_id: key.1 });
+        }
+        Some(reply)
     }
 
     fn allowed(&self) -> Vec<String> {
         lock(&self.allowed).clone()
+    }
+
+    async fn compact(
+        &self,
+        cancel: &Cancel,
+    ) -> Result<Vec<Value>, crate::ai::sessions::CompactionFailure> {
+        use crate::ai::sessions::CompactionFailure;
+        let facts = {
+            let state = self.state();
+            let inner = state.lock_inner();
+            crate::commands::facts(&inner)
+        };
+        let context = crate::ai::limits::context_length(&self.provider);
+        let target = (context as f64 * crate::ai::sessions::AUTO_COMPACT_TARGET_FRACTION) as u64;
+        let id = self.session_id.clone();
+        let planned = {
+            let (id, facts) = (id.clone(), facts.clone());
+            self.blocking(move |_| Store::config().plan_compaction_now(&id, target, &facts))
+                .await
+                .map_err(|_| CompactionFailure::ProviderError)?
+        };
+        let plan = match planned {
+            Ok(plan) => plan,
+            Err(_) => return Err(CompactionFailure::Conflict),
+        };
+        let summary = crate::ai_service::compaction_summary(
+            &self.app,
+            self.provider.clone(),
+            &id,
+            plan.input.clone(),
+            Some(cancel),
+        )
+        .await;
+        let (summary, provider_failure) = match summary {
+            Ok(summary) => (Some(summary), None),
+            Err(CompactionFailure::Cancelled) => return Err(CompactionFailure::Cancelled),
+            Err(failure) => (None, Some(failure)),
+        };
+        if cancel.is_cancelled() {
+            return Err(CompactionFailure::Cancelled);
+        }
+        let resolution = self
+            .blocking(move |_| Store::config().finish_compaction(plan, summary.as_deref()))
+            .await
+            .map_err(|_| CompactionFailure::Store)?;
+        let failure = provider_failure.or(resolution.failure);
+        let outcome = resolution
+            .compaction
+            .ok_or(failure.unwrap_or(CompactionFailure::Store))?;
+        match failure.and_then(CompactionFailure::notice_reason) {
+            Some(reason) => {
+                let _ = self.app.emit(
+                    crate::commands::AUTO_SESSION_EVENT,
+                    crate::commands::compaction_failed_event(&id, reason),
+                );
+            }
+            None => {
+                let _ = self.app.emit(
+                    crate::commands::AUTO_SESSION_EVENT,
+                    crate::commands::compaction_recorded_event(&id, &outcome),
+                );
+            }
+        }
+        Ok(outcome.messages)
     }
 
     async fn record(&self, messages: &[Value]) -> Result<Vec<Value>, String> {
@@ -470,16 +553,29 @@ impl Host for AppHost {
             .await?
     }
 
+    async fn stored_result(&self, _call: &str, sha: &str) -> Option<String> {
+        let (id, sha) = (self.session_id.clone(), sha.to_owned());
+        self.blocking(move |_| Store::config().stored_result(&id, &sha))
+            .await
+            .ok()?
+            .ok()
+            .flatten()
+    }
+
     async fn record_steering(&self, messages: &[Value]) -> Result<Vec<Value>, String> {
         let (id, incarnation, messages) = (
             self.session_id.clone(),
             self.incarnation.clone(),
             messages.to_vec(),
         );
-        let (dsl, project) = {
+        let (dsl, project, history) = {
             let state = self.state();
             let inner = state.lock_inner();
-            (inner.dsl_source.clone(), inner.file_path.clone())
+            (
+                inner.dsl_source.clone(),
+                inner.file_path.clone(),
+                crate::ai::sessions::HistoryAt::of(&inner),
+            )
         };
         self.blocking(move |_| {
             super::steering::record(
@@ -489,6 +585,7 @@ impl Host for AppHost {
                 incarnation.as_deref(),
                 &dsl,
                 project.as_deref(),
+                history.as_ref(),
             )
         })
         .await?
@@ -538,20 +635,30 @@ impl Host for AppHost {
         }
     }
 
-    async fn apply_edit(&self, path: &str, dsl: &str, expected: &str) -> Result<Document, String> {
+    async fn apply_edit(&self, path: &str, dsl: &str, expected: &str) -> Result<Edited, String> {
         let (path, dsl, expected) = (path.to_owned(), dsl.to_owned(), expected.to_owned());
-        let snapshot = self
+        let owner = self.owner.clone();
+        let (snapshot, changes) = self
             .blocking(move |app| {
+                let _acting =
+                    crate::edit_history::act_as(crate::edit_history::Author::from_caller(&owner));
                 let state = app.state::<AppState>();
                 let mut inner = state.lock_inner();
-                crate::commands::apply_edit_to_project(&mut inner, dsl, path, expected)
+                let before = inner.project.clone();
+                let snapshot =
+                    crate::commands::apply_edit_to_project(&mut inner, dsl, path, expected)?;
+                let changes = crate::agent_api::describe_edit(&before, &inner.project);
+                Ok::<_, String>((snapshot, changes))
             })
             .await??;
         self.publish();
-        Ok(Document {
-            dsl: snapshot.dsl_source,
-            revision: snapshot.revision,
-            track_count: snapshot.track_count,
+        Ok(Edited {
+            document: Document {
+                dsl: snapshot.dsl_source,
+                revision: snapshot.revision,
+                track_count: snapshot.track_count,
+            },
+            changes,
         })
     }
 
@@ -586,29 +693,6 @@ impl Host for AppHost {
             .await?;
         self.publish();
         result
-    }
-}
-
-/// Removes its question from [`PENDING`] when the wait ends or is dropped.
-struct AskedQuestion(QuestionKey);
-
-impl Drop for AskedQuestion {
-    fn drop(&mut self) {
-        lock(&PENDING).remove(&self.0);
-    }
-}
-
-/// A person's answer, or a refusal: when nobody answers in time, and when
-/// the question was dropped unanswered. A person was asked, so this is never
-/// the "nobody attends" answer that lets a replacement apply.
-async fn await_answer(
-    receiver: oneshot::Receiver<Decision>,
-    wait: std::time::Duration,
-) -> Decision {
-    match tokio::time::timeout(wait, receiver).await {
-        Ok(Ok(decision)) => decision,
-        Ok(Err(_)) => Decision::default(),
-        Err(_) => Decision::expired(),
     }
 }
 
@@ -648,47 +732,6 @@ fn check_turn_messages(messages: &[Value]) -> Result<(), AiError> {
 
 /// The system messages one turn may send.
 const MAX_SYSTEM_MESSAGES: usize = 8;
-
-/// A turn reports success only after its committed edits reach the working file.
-/// Commits a batch a gone turn left open, so the edits that landed stay, and
-/// then writes the project file. `None` means no loop-owned batch is open; a
-/// `/call` client's open batch is its live transaction and is left alone. The
-/// inner `Err` is why the file was not written; the commit stands either way.
-pub(crate) fn commit_stranded(state: &AppState) -> Result<Option<Result<(), String>>, String> {
-    let Some(owner) = state
-        .batch_owner()
-        .filter(|open| stranded_loop_batch(Some(open)))
-    else {
-        return Ok(None);
-    };
-    crate::agent_api::transaction_commit(state, &owner)?;
-    Ok(Some(crate::project_persist::flush_state(state).map(|_| ())))
-}
-
-/// Opens a turn's batch, committing a stranded one first. A stranded batch
-/// whose file write fails still closed, so the new batch opens: the turn's own
-/// commit writes the whole project again and reports a file it cannot write.
-/// Returns what happened to a stranded batch, if there was one.
-pub(crate) fn begin_loop_batch(
-    state: &AppState,
-    label: String,
-    owner: String,
-) -> Result<Option<Result<(), String>>, String> {
-    let stranded = commit_stranded(state)?;
-    state.begin_transaction(label, owner)?;
-    Ok(stranded)
-}
-
-fn commit_batch_and_save(state: &AppState, owner: &str) -> Result<(), super::CommitError> {
-    crate::agent_api::transaction_commit(state, owner).map_err(super::CommitError::commit)?;
-    crate::project_persist::flush_state(state)
-        .map(|_| ())
-        .map_err(|reason| {
-            super::CommitError::save(format!(
-                "The edits are committed in memory but the project file was not written: {reason}"
-            ))
-        })
-}
 
 /// The audio a provider's selected model takes in, or `None`.
 fn audio_shape(entry: &AiProviderEntry) -> Option<AudioShape> {
@@ -750,26 +793,7 @@ pub async fn run(
     crate::ai_service::validate_chat_messages(&messages)?;
     let provider = crate::ai_service::provider(&start.provider_id).map_err(AiError::config)?;
     let requests = app.state::<Requests>();
-    // The cancel handle is published before the slot is claimed, so a cancel
-    // that arrives at any point reaches the turn instead of freeing its slot.
-    let cancel = Cancel::default();
-    let control = RunningTurn {
-        session_id: start.session_id.clone(),
-        cancel: cancel.clone(),
-        steering: super::steering::Steering::default(),
-    };
-    {
-        let mut running = lock(&RUNNING);
-        if running.contains_key(&start.request_id) {
-            return Err(AiError::new("busy", "Another AI request is active"));
-        }
-        running.insert(start.request_id.clone(), control.clone());
-    }
-    let _registration = RegisteredTurn {
-        request_id: start.request_id.clone(),
-        control: control.clone(),
-    };
-    let claim = match requests.claim(&start.request_id) {
+    let claim = match requests.claim_for(&start.request_id, Some(&start.session_id)) {
         Ok(Some(claim)) => claim,
         refused => {
             return Err(match refused {
@@ -778,18 +802,16 @@ pub async fn run(
             });
         }
     };
-    requests.set_session_owned(&start.request_id, &claim.identity, &start.session_id);
     let release = scopeguard(&requests, &start.request_id, &claim.identity);
-    // `ai_cancel` sends on the slot's cancel channel; it cancels the turn.
-    {
-        let cancel = cancel.clone();
-        let receiver = claim.cancel_rx;
-        tauri::async_runtime::spawn(async move {
-            if receiver.await.is_ok() {
-                cancel.cancel();
-            }
-        });
-    }
+    let control = RunningTurn {
+        cancel: claim.cancel.clone(),
+        steering: super::steering::Steering::default(),
+    };
+    lock(&RUNNING).insert(start.request_id.clone(), control.clone());
+    let _registration = RegisteredTurn {
+        request_id: start.request_id.clone(),
+        control: control.clone(),
+    };
     let outcome = run_claimed(
         app,
         &start,
@@ -804,7 +826,7 @@ pub async fn run(
     outcome
 }
 
-struct Release<'a> {
+pub(crate) struct Release<'a> {
     requests: &'a Requests,
     id: String,
     owner: Arc<()>,
@@ -816,7 +838,7 @@ impl Drop for Release<'_> {
     }
 }
 
-fn scopeguard<'a>(requests: &'a Requests, id: &str, owner: &Arc<()>) -> Release<'a> {
+pub(crate) fn scopeguard<'a>(requests: &'a Requests, id: &str, owner: &Arc<()>) -> Release<'a> {
     Release {
         requests,
         id: id.to_owned(),
@@ -849,39 +871,33 @@ async fn run_claimed(
         .ok_or_else(|| AiError::new("accounting_request", "The turn has no accounting owner"))?;
     let messages = Value::Array(start.messages.clone());
     let tool_tokens = super::wire::offered_tool_tokens(start.toolsets.as_deref(), true);
+    let permission = Store::config()
+        .find(&start.session_id)
+        .map(|(_, meta)| meta.permission)
+        .unwrap_or_default();
+    let permission = turn_permission(attended, permission);
+    let surface = crate::ai::host_notice::ToolSurface {
+        names: super::wire::offered_tool_names(start.toolsets.as_deref()),
+        permission,
+    };
     // Preparation closes any round a dead turn left open, saves the new user
     // message with its snapshot, and compacts when the window needs it.
-    let prepared = {
-        let (app, provider, id, incarnation, project) = (
-            app.clone(),
-            provider.clone(),
-            start.session_id.clone(),
-            incarnation.clone(),
-            start.project.clone(),
-        );
-        tauri::async_runtime::spawn_blocking(move || {
-            crate::commands::prepare_turn_for(
-                &app,
-                &provider,
-                &messages,
-                crate::commands::SavedTurnBinding {
-                    id: &id,
-                    incarnation: &incarnation,
-                    project: project.as_deref(),
-                    tool_tokens,
-                },
-            )
-            .map_err(AiError::from)
-        })
-        .await
-        .map_err(|error| {
-            AiError::new(
-                "session_save",
-                format!("Session persistence task failed: {error}"),
-            )
-        })
-        .and_then(|result| result)
-    };
+    let prepared = crate::commands::prepare_turn_for(
+        app,
+        provider,
+        &messages,
+        crate::commands::SavedTurnBinding {
+            id: &start.session_id,
+            request_id: Some(&start.request_id),
+            incarnation: &incarnation,
+            project: start.project.as_deref(),
+            tool_tokens,
+            surface: Some(surface),
+            cancel: Some(&control.cancel),
+        },
+    )
+    .await
+    .map_err(AiError::from);
     let prepared = match prepared {
         Ok(prepared) => prepared,
         Err(error) => {
@@ -889,16 +905,6 @@ async fn run_claimed(
             return Err(error);
         }
     };
-    if let Some(compaction) = prepared.compacted.as_ref() {
-        let _ = app.emit(
-            crate::commands::AUTO_SESSION_EVENT,
-            crate::commands::compaction_event(&prepared, compaction, provider),
-        );
-    }
-    let permission = Store::config()
-        .find(&start.session_id)
-        .map(|(_, meta)| meta.permission)
-        .unwrap_or_default();
     let host = AppHost {
         steering: control.steering,
         app: app.clone(),
@@ -915,7 +921,7 @@ async fn run_claimed(
     };
     let spec = TurnSpec {
         wire: prepared.messages.as_array().cloned().unwrap_or_default(),
-        permission: turn_permission(attended, permission),
+        permission,
         label: start
             .label
             .clone()
@@ -928,6 +934,7 @@ async fn run_claimed(
             .text_protocol
             .unwrap_or(!provider.capabilities.native_tool_calling),
         context_length: crate::ai::limits::context_length(provider),
+        max_output: crate::ai::limits::max_output(provider),
     };
     let outcome = super::run_turn(&host, spec, control.cancel).await;
     // A round cancelled mid-request, or a first round never sent, still
@@ -967,186 +974,11 @@ async fn finish_accounting(app: &AppHandle, stats: &TurnStatsHandle, request_id:
     }
 }
 
-/// Whether the open batch was left by a backend turn that is gone. It is
-/// asked by a turn that holds the request slot, and a turn holds the slot for
-/// as long as its batch is open, so every loop-owned batch it sees is
-/// stranded, whatever conversation it belongs to. A `/call` client's batch is
-/// still in use.
-fn stranded_loop_batch(open: Option<&str>) -> bool {
-    open.is_some_and(crate::state::loop_batch_owner)
-}
-
-/// Answers a question a running turn asked. A stale answer changes nothing.
-pub fn answer(request_id: &str, call_id: &str, decision: Decision) -> Result<(), String> {
-    let question = lock(&PENDING)
-        .remove(&(request_id.to_owned(), call_id.to_owned()))
-        .ok_or("Nothing is waiting for an answer to this question")?;
-    question
-        .answer
-        .send(decision)
-        .map_err(|_| "The turn stopped before the answer arrived".to_string())
-}
-
-/// Whether a backend turn is running in this conversation. A compaction,
-/// history drop or delete under it would move the round it is writing.
-pub fn session_running(session_id: &str) -> bool {
-    lock(&RUNNING)
-        .values()
-        .any(|turn| turn.session_id == session_id)
-}
-
-/// Stops a running turn. Completed calls keep their results.
-pub fn cancel(request_id: &str) -> bool {
-    match lock(&RUNNING).get(request_id) {
-        Some(turn) => {
-            turn.cancel.cancel();
-            true
-        }
-        None => false,
-    }
-}
-
-/// Restores the project to the snapshot a person's message was sent against
-/// and cuts the conversation just before that message, as one step: the
-/// project change is one undo entry, and a cut that fails puts the document
-/// back. Refused while any turn runs.
-pub fn revert_before(app: &AppHandle, session_id: &str, index: usize) -> Result<Value, String> {
-    let state = app.state::<AppState>();
-    let revision = state.lock_inner().revision;
-    let reverted = revert_in(
-        &app.state::<Requests>(),
-        &state,
-        &Store::config(),
-        session_id,
-        index,
-    );
-    // A failed cut puts the document back under a new revision; the window
-    // hears it, so its next edit is not refused as stale.
-    if reverted.is_err()
-        && let Some(snapshot) = moved_since(&state, revision)
-    {
-        let _ = app.emit(PROJECT_EVENT, snapshot);
-    }
-    reverted
-}
-
-/// The document, when its revision moved past `revision`.
-fn moved_since(
-    state: &AppState,
-    revision: u64,
-) -> Option<crate::commands::shared::ProjectSnapshot> {
-    let inner = state.lock_inner();
-    (inner.revision != revision).then(|| crate::commands::shared::snapshot(&inner))
-}
-
-/// [`revert_before`] over its parts.
-fn revert_in(
-    requests: &Requests,
-    state: &AppState,
-    store: &Store,
-    session_id: &str,
-    index: usize,
-) -> Result<Value, String> {
-    revert_with(requests, state, store, session_id, index, |store, point| {
-        store.cut_before_user(session_id, point)
-    })
-}
-
-/// The revert with its cut supplied, so a test can make the cut fail.
-///
-/// The document lock is held from the restore through the cut, so no other
-/// edit lands between them and an undo after a failed cut removes exactly
-/// the restore. Nothing is written to disk until the cut has succeeded.
-fn revert_with(
-    requests: &Requests,
-    state: &AppState,
-    store: &Store,
-    session_id: &str,
-    index: usize,
-    cut: impl FnOnce(&Store, &crate::ai::sessions::turns::RevertPoint) -> Result<usize, String>,
-) -> Result<Value, String> {
-    // Holding the slot for the whole revert keeps a turn from starting in it.
-    let slot = format!("revert-{session_id}");
-    let Some(claim) = requests.claim_internal(&slot)? else {
-        return Err("A turn is still running; stop it before reverting.".into());
-    };
-    let _release = scopeguard(requests, &slot, &claim.identity);
-    let point = store.revert_point(session_id, index)?;
-    let dsl = store.dsl_version(session_id, &point.dsl_sha)?;
-    let mut inner = state.lock_inner();
-    if inner.transaction.is_some() {
-        return Err("A batch of edits is still open; finish it before reverting.".into());
-    }
-    // A conversation follows its workspace, not one file: a snapshot taken
-    // against another file never overwrites the one that is open.
-    let open = inner
-        .file_path
-        .as_deref()
-        .map(crate::ai::sessions::canonical_path);
-    if let Some(sent) = &point.project
-        && open.as_deref() != Some(sent.as_path())
-    {
-        return Err(
-            "This message was sent against another project file; open that file to revert to it."
-                .into(),
-        );
-    }
-    let restored = inner.dsl_source != dsl;
-    // Everything the restore touches, so a failed cut puts it back exactly:
-    // both history stacks, the project, its text and the dirty flag.
-    let before = restored.then(|| {
-        (
-            inner.project.clone(),
-            inner.dsl_source.clone(),
-            inner.dirty,
-            inner.undo.take_copy(),
-        )
-    });
-    if restored {
-        crate::commands::restore_dsl_with_undo(&mut inner, dsl, "Revert conversation")?;
-    }
-    // The session store never takes the document lock, so holding it here
-    // cannot deadlock. The cut checks that the message still names the same
-    // snapshot, so a compaction in between cannot move it.
-    if let Err(error) = cut(store, &point) {
-        if let Some((project, source, dirty, history)) = before {
-            inner.project = project;
-            inner.undo.put_back(history);
-            inner.resync_after_history();
-            inner.dsl_source = source;
-            inner.dirty = dirty;
-        }
-        return Err(error);
-    }
-    let unsaved = if restored {
-        crate::commands::publish_restored(&mut inner).err()
-    } else {
-        None
-    };
-    let snapshot = crate::commands::shared::snapshot(&inner);
-    drop(inner);
-    super::results::with_results(|results| results.forget(session_id));
-    let mut answer = json!({ "kept": index, "snapshot": snapshot });
-    if let Some(reason) = unsaved {
-        answer["unsaved"] = json!(reason);
-    }
-    Ok(answer)
-}
-
-/// The questions a running turn is waiting on, for a window that reloaded
-/// while the card was open.
-pub fn questions(request_id: &str) -> Vec<ApprovalRequest> {
-    lock(&PENDING)
-        .iter()
-        .filter(|((turn, _), _)| turn == request_id)
-        .map(|(_, question)| question.request.clone())
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
+    use super::questions::{AskedQuestion, MAX_PENDING, QuestionKey};
     use super::*;
-    use crate::ai::sessions;
+    use crate::ai::agent_loop::PendingQuestion;
     use serde_json::Map;
 
     #[test]
@@ -1186,271 +1018,6 @@ mod tests {
         );
     }
 
-    const BEFORE: &str = "@project \"Revert\"\n  tempo: 120\n";
-    const AFTER: &str = "@project \"Revert\"\n  tempo: 150\n";
-
-    fn user(text: &str, sha: &str) -> Value {
-        json!({
-            "role": "user", "content": text, "dsl_sha": sha,
-            "message_meta": sessions::message_meta(sessions::MessageKind::User),
-        })
-    }
-
-    /// A conversation of two user messages, the first sent against `BEFORE`,
-    /// and a project that has moved on to `AFTER`.
-    fn fixture() -> (tempfile::TempDir, Store, String, AppState) {
-        let root = tempfile::tempdir().unwrap();
-        let store = Store::new(root.path().join("sessions"));
-        let id = store.create(None, None, Some("Revert"), None).unwrap().id;
-        let before = store
-            .snapshot_dsl(&id, &oc_dsl::serialize(&oc_dsl::parse(BEFORE).unwrap()))
-            .unwrap();
-        let after = store.snapshot_dsl(&id, AFTER).unwrap();
-        store
-            .append_turn(
-                &id,
-                &[
-                    user("first", &before),
-                    json!({"role": "assistant", "content": "done"}),
-                ],
-                None,
-            )
-            .unwrap();
-        store
-            .append_turn(&id, &[user("second", &after)], None)
-            .unwrap();
-        let state = AppState::new();
-        {
-            let mut inner = state.lock_inner();
-            inner.project = oc_dsl::parse(AFTER).unwrap();
-            inner.dsl_source = oc_dsl::serialize(&inner.project);
-        }
-        (root, store, id, state)
-    }
-
-    #[test]
-    fn revert_restores_cuts_and_undoes_as_one_step() {
-        let (_root, store, id, state) = fixture();
-        let requests = Requests::default();
-        let answer = revert_in(&requests, &state, &store, &id, 0).unwrap();
-        assert_eq!(answer["kept"], 0);
-        assert_eq!(state.lock_inner().project.properties.tempo, 120.0);
-        assert!(
-            store.view(&id).unwrap().is_empty(),
-            "the conversation is cut before the message"
-        );
-        assert!(requests.active().unwrap().is_none(), "the slot is released");
-        state.lock_inner().undo_step().unwrap();
-        assert_eq!(
-            state.lock_inner().project.properties.tempo,
-            150.0,
-            "one undo takes it back"
-        );
-    }
-
-    #[test]
-    fn revert_is_refused_while_a_turn_runs_and_changes_nothing() {
-        let (_root, store, id, state) = fixture();
-        let requests = Requests::default();
-        let _turn = requests
-            .claim("turn-1")
-            .unwrap()
-            .expect("the turn holds the slot");
-        let error = revert_in(&requests, &state, &store, &id, 0).unwrap_err();
-        assert!(error.contains("still running"), "{error}");
-        assert_eq!(state.lock_inner().project.properties.tempo, 150.0);
-        assert_eq!(store.view(&id).unwrap().len(), 3);
-    }
-
-    #[test]
-    fn revert_is_refused_on_anything_but_a_user_message() {
-        let (_root, store, id, state) = fixture();
-        let requests = Requests::default();
-        assert!(
-            revert_in(&requests, &state, &store, &id, 1).is_err(),
-            "an assistant row"
-        );
-        assert!(
-            revert_in(&requests, &state, &store, &id, 9).is_err(),
-            "past the end"
-        );
-        assert_eq!(state.lock_inner().project.properties.tempo, 150.0);
-        assert_eq!(store.view(&id).unwrap().len(), 3);
-        assert!(requests.active().unwrap().is_none());
-    }
-
-    #[test]
-    fn an_attended_turn_keeps_its_mode_and_an_unattended_one_writes() {
-        for mode in [
-            SessionPermission::RequireApproval,
-            SessionPermission::Autoreview,
-            SessionPermission::Write,
-        ] {
-            assert_eq!(turn_permission(true, mode), mode);
-            assert_eq!(turn_permission(false, mode), SessionPermission::Write);
-            // A confirm call still needs a person in the mode a headless turn
-            // runs under, and the headless host has nobody to answer.
-            assert_eq!(
-                super::super::gate::gate("tracks_remove", turn_permission(false, mode), &[]).need,
-                super::super::gate::Need::Approval
-            );
-        }
-    }
-
-    #[test]
-    fn a_loop_owned_batch_counts_as_stranded_and_a_client_batch_never_does() {
-        let panel = crate::state::panel_batch_owner(Some("s1"));
-        let other = crate::state::panel_batch_owner(Some("s2"));
-        let turn = crate::state::turn_batch_owner("turn-1", "s1");
-        let http = crate::state::http_session_owner("s1");
-        // The asking turn holds the slot, so a loop batch has no live turn.
-        assert!(stranded_loop_batch(Some(&panel)));
-        assert!(stranded_loop_batch(Some(&other)));
-        assert!(stranded_loop_batch(Some(&turn)));
-        assert!(
-            !stranded_loop_batch(Some(&http)),
-            "a headless client's open transaction is its own"
-        );
-        assert!(!stranded_loop_batch(Some(crate::state::HTTP_BATCH_OWNER)));
-        assert!(!stranded_loop_batch(None));
-    }
-
-    #[test]
-    fn a_failed_cut_leaves_the_document_and_its_history_as_they_were() {
-        let (_root, store, id, state) = fixture();
-        let (source, revision_labels, redo) = {
-            let inner = state.lock_inner();
-            (
-                inner.dsl_source.clone(),
-                inner.undo.undo_labels(),
-                inner.undo.redo_labels(),
-            )
-        };
-        let requests = Requests::default();
-        let revision = state.lock_inner().revision;
-        let error = revert_with(&requests, &state, &store, &id, 0, |_, _| {
-            Err("the session store is read-only".into())
-        })
-        .unwrap_err();
-        assert!(error.contains("read-only"), "{error}");
-        // The text is back under a new revision, which the window is told.
-        let moved = moved_since(&state, revision).expect("the revision moved");
-        assert_eq!(moved.dsl_source, source);
-        let inner = state.lock_inner();
-        assert_eq!(inner.dsl_source, source, "the exact text is back");
-        assert_eq!(inner.project.properties.tempo, 150.0);
-        assert_eq!(
-            inner.undo.undo_labels(),
-            revision_labels,
-            "no undo entry stays"
-        );
-        assert_eq!(inner.undo.redo_labels(), redo, "and no redo entry appears");
-        drop(inner);
-        assert_eq!(
-            store.view(&id).unwrap().len(),
-            3,
-            "the conversation is whole"
-        );
-        assert!(requests.active().unwrap().is_none(), "the slot is released");
-    }
-
-    #[test]
-    fn a_failed_cut_keeps_a_full_history_and_its_redo_entries_exactly() {
-        let (_root, store, id, state) = fixture();
-        {
-            let mut inner = state.lock_inner();
-            // A full undo stack and two redo entries: the restore's push would
-            // evict the oldest entry and clear the redo stack.
-            for tempo in 0..crate::state::MAX_UNDO + 2 {
-                let source = AFTER.replace("150", &(151 + tempo).to_string());
-                crate::commands::update_dsl_inner(source, &mut inner).unwrap();
-            }
-            inner.undo_step().unwrap();
-            inner.undo_step().unwrap();
-        }
-        let (source, undo, redo, tempo) = {
-            let inner = state.lock_inner();
-            (
-                inner.dsl_source.clone(),
-                inner.undo.undo_labels(),
-                inner.undo.redo_labels(),
-                inner.project.properties.tempo,
-            )
-        };
-        assert_eq!(redo.len(), 2);
-        let requests = Requests::default();
-        revert_with(&requests, &state, &store, &id, 0, |_, _| {
-            Err("the session store is read-only".into())
-        })
-        .unwrap_err();
-        let mut inner = state.lock_inner();
-        assert_eq!(inner.dsl_source, source);
-        assert_eq!(inner.project.properties.tempo, tempo);
-        assert_eq!(inner.undo.undo_labels(), undo, "no entry was evicted");
-        assert_eq!(inner.undo.redo_labels(), redo, "redo is kept");
-        // The kept redo still works.
-        let mut project = inner.project.clone();
-        inner.undo.redo(&mut project).unwrap();
-        assert_ne!(project.properties.tempo, tempo);
-    }
-
-    #[test]
-    fn a_revert_refuses_a_snapshot_of_another_file_and_reports_an_unwritten_file() {
-        let (root, store, _, state) = fixture();
-        let a = root.path().join("a.ocp");
-        let b = root.path().join("b.ocp");
-        std::fs::write(&a, AFTER).unwrap();
-        std::fs::write(&b, AFTER).unwrap();
-        let id = store.create(None, None, Some("Files"), None).unwrap().id;
-        let first =
-            json!({"role":"user","content":"first","message_meta":{"version":1,"kind":"user"}});
-        store
-            .append_turn_with_snapshot(&id, &[first], None, BEFORE, Some(&a))
-            .unwrap();
-        let requests = Requests::default();
-        state.lock_inner().file_path = Some(b.clone());
-        let error = revert_in(&requests, &state, &store, &id, 0).unwrap_err();
-        assert!(error.contains("another project file"), "{error}");
-        assert_eq!(state.lock_inner().project.properties.tempo, 150.0);
-        assert_eq!(store.view(&id).unwrap().len(), 1);
-
-        // The file it was sent against: the revert lands even when the file
-        // cannot be written, and says so.
-        let blocked = root.path().join("blocked");
-        std::fs::write(&blocked, "not a directory").unwrap();
-        state.lock_inner().file_path = Some(a.clone());
-        let id_blocked = {
-            let id = store.create(None, None, Some("Blocked"), None).unwrap().id;
-            let first =
-                json!({"role":"user","content":"first","message_meta":{"version":1,"kind":"user"}});
-            store
-                .append_turn_with_snapshot(&id, &[first], None, BEFORE, None)
-                .unwrap();
-            id
-        };
-        state.lock_inner().file_path = Some(blocked.join("song.ocp"));
-        let answer = revert_in(&requests, &state, &store, &id_blocked, 0).unwrap();
-        assert!(
-            answer["unsaved"]
-                .as_str()
-                .is_some_and(|reason| reason.contains("not written")),
-            "{answer}"
-        );
-        assert_eq!(state.lock_inner().project.properties.tempo, 120.0);
-    }
-
-    #[test]
-    fn revert_with_an_open_batch_changes_nothing() {
-        let (_root, store, id, state) = fixture();
-        state
-            .begin_transaction("turn".into(), "panel:x".into())
-            .unwrap();
-        let requests = Requests::default();
-        assert!(revert_in(&requests, &state, &store, &id, 0).is_err());
-        assert_eq!(store.view(&id).unwrap().len(), 3);
-        assert_eq!(state.lock_inner().project.properties.tempo, 150.0);
-    }
-
     #[test]
     fn a_stale_answer_changes_nothing_and_cancel_reaches_a_running_turn() {
         let decision = Decision {
@@ -1469,17 +1036,19 @@ mod tests {
         };
         lock(&PENDING).insert(
             ("t-ans".into(), "c1".into()),
-            Question {
+            Waiting::Approval {
                 answer: sender,
                 request: request.clone(),
             },
         );
         assert_eq!(
-            questions("t-ans"),
-            vec![request],
+            pending_questions("t-ans"),
+            vec![PendingQuestion::Approval {
+                request: request.clone(),
+            }],
             "a reloaded window sees the open card"
         );
-        assert!(questions("t-other").is_empty());
+        assert!(pending_questions("t-other").is_empty());
         answer("t-ans", "c1", decision.clone()).unwrap();
         assert_eq!(receiver.blocking_recv().unwrap(), decision);
         assert!(
@@ -1487,19 +1056,11 @@ mod tests {
             "an answer is taken once"
         );
 
-        assert!(!cancel("t-none"));
-        let running = Cancel::default();
-        lock(&RUNNING).insert(
-            "t-run".into(),
-            RunningTurn {
-                session_id: "s".into(),
-                cancel: running.clone(),
-                steering: super::super::steering::Steering::default(),
-            },
-        );
-        assert!(cancel("t-run"));
-        assert!(running.is_cancelled());
-        lock(&RUNNING).remove("t-run");
+        let requests = Requests::default();
+        assert!(!requests.cancel("t-none").unwrap());
+        let claim = requests.claim_for("t-run", Some("s")).unwrap().unwrap();
+        assert!(requests.cancel("t-run").unwrap());
+        assert!(claim.cancel.is_cancelled());
     }
 
     #[test]
@@ -1513,10 +1074,14 @@ mod tests {
     #[tokio::test]
     async fn steering_is_scoped_bounded_and_rejects_cancelled_turns() {
         let control = RunningTurn {
-            session_id: "steer-session".into(),
             cancel: Cancel::default(),
             steering: super::super::steering::Steering::default(),
         };
+        let requests = Requests::default();
+        let _claim = requests
+            .claim_for("scoped-steering-test", Some("steer-session"))
+            .unwrap()
+            .unwrap();
         lock(&RUNNING).insert("scoped-steering-test".into(), control.clone());
         let message = || SteerMessage {
             content: "continue".into(),
@@ -1524,15 +1089,20 @@ mod tests {
             id: None,
         };
         assert_eq!(
-            steer("scoped-steering-test", "foreign", message())
+            steer(&requests, "scoped-steering-test", "foreign", message())
                 .await
                 .unwrap_err()
                 .kind,
             "steer_closed"
         );
-        assert!(steer("missing", "steer-session", message()).await.is_err());
+        assert!(
+            steer(&requests, "missing", "steer-session", message())
+                .await
+                .is_err()
+        );
         assert!(
             steer(
+                &requests,
                 "scoped-steering-test",
                 "steer-session",
                 SteerMessage {
@@ -1556,16 +1126,20 @@ mod tests {
         );
         control.cancel.cancel();
         assert!(
-            steer("scoped-steering-test", "steer-session", message())
-                .await
-                .is_err()
+            steer(
+                &requests,
+                "scoped-steering-test",
+                "steer-session",
+                message()
+            )
+            .await
+            .is_err()
         );
         lock(&RUNNING).remove("scoped-steering-test");
     }
     #[tokio::test]
     async fn a_dropped_registration_refuses_pending_steering_and_releases_its_identity() {
         let control = RunningTurn {
-            session_id: "unprepared".into(),
             cancel: Cancel::default(),
             steering: super::super::steering::Steering::default(),
         };
@@ -1588,13 +1162,29 @@ mod tests {
     #[tokio::test]
     async fn an_unanswered_question_expires_as_a_refusal_and_an_answer_wins_before_it() {
         let wait = std::time::Duration::from_millis(20);
+        let request = ApprovalRequest {
+            call_id: "q".into(),
+            tool: "tracks_remove".into(),
+            args: Map::new(),
+            path: None,
+            before: None,
+            after: None,
+        };
         let (_sender, receiver) = oneshot::channel::<Decision>();
-        let expired = await_answer(receiver, wait).await;
+        let expired = match tokio::time::timeout(wait, receiver).await {
+            Ok(Ok(decision)) => decision,
+            Ok(Err(_)) => Decision::default(),
+            Err(_) => Decision::expired(),
+        };
         assert!(expired.expired && !expired.approved);
         // A question dropped unanswered is refused, never taken as approval.
         let (sender, receiver) = oneshot::channel::<Decision>();
         drop(sender);
-        let dropped = await_answer(receiver, wait).await;
+        let dropped = match tokio::time::timeout(wait, receiver).await {
+            Ok(Ok(decision)) => decision,
+            Ok(Err(_)) => Decision::default(),
+            Err(_) => Decision::expired(),
+        };
         assert!(!dropped.approved && !dropped.expired);
 
         let (sender, receiver) = oneshot::channel();
@@ -1602,38 +1192,96 @@ mod tests {
             approved: true,
             ..Decision::default()
         };
-        sender.send(approved.clone()).unwrap();
-        assert_eq!(await_answer(receiver, wait).await, approved);
+        let key = ("answered".to_owned(), "q".into());
+        let awaiting = wait_for(
+            key.clone(),
+            Waiting::Approval {
+                answer: sender,
+                request,
+            },
+            receiver,
+            Decision::expired(),
+            Decision::default(),
+            || {},
+        );
+        let answerer = async {
+            while !lock(&PENDING).contains_key(&key) {
+                tokio::task::yield_now().await;
+            }
+            answer(&key.0, &key.1, approved.clone()).unwrap();
+        };
+        let (waited, ()) = tokio::join!(awaiting, answerer);
+        assert_eq!(waited.unwrap(), approved);
         // A view cannot claim the expiry: the field is the host's.
         let parsed: Decision =
             serde_json::from_value(json!({"approved": false, "expired": true})).unwrap();
         assert!(!parsed.expired);
     }
 
+    #[tokio::test]
+    async fn a_full_question_queue_refuses_instead_of_waiting() {
+        let turn = "full-question-turn";
+        for index in 0..MAX_PENDING {
+            let (sender, _receiver) = oneshot::channel();
+            lock(&PENDING).insert(
+                (turn.into(), format!("c{index}")),
+                Waiting::Approval {
+                    answer: sender,
+                    request: ApprovalRequest {
+                        call_id: format!("c{index}"),
+                        tool: "tracks_remove".into(),
+                        args: Map::new(),
+                        path: None,
+                        before: None,
+                        after: None,
+                    },
+                },
+            );
+        }
+        let (sender, receiver) = oneshot::channel();
+        let refused = wait_for(
+            (turn.into(), "extra".into()),
+            Waiting::Approval {
+                answer: sender,
+                request: ApprovalRequest {
+                    call_id: "extra".into(),
+                    tool: "tracks_remove".into(),
+                    args: Map::new(),
+                    path: None,
+                    before: None,
+                    after: None,
+                },
+            },
+            receiver,
+            Decision::expired(),
+            Decision::default(),
+            || {},
+        )
+        .await;
+        assert!(refused.is_none(), "a full queue refuses the question");
+        lock(&PENDING).retain(|(key, _), _| key != turn);
+    }
+
     #[test]
     fn a_running_turn_keeps_its_conversation_from_being_compacted_dropped_or_deleted() {
         let id = "running-conversation-guard";
-        lock(&RUNNING).insert(
-            "running-guard-turn".into(),
-            RunningTurn {
-                session_id: id.into(),
-                cancel: Cancel::default(),
-                steering: super::super::steering::Steering::default(),
-            },
+        let requests = Requests::default();
+        let claim = requests
+            .claim_for("running-guard-turn", Some(id))
+            .unwrap()
+            .unwrap();
+        assert!(requests.session_busy(id).unwrap());
+        assert!(
+            crate::commands::refuse_while_running(&requests, id)
+                .unwrap_err()
+                .message
+                .contains("A turn is running")
         );
-        assert!(session_running(id));
-        let state = AppState::new();
-        for error in [
-            crate::commands::sessions_delete(id.into()).unwrap_err(),
-            crate::commands::sessions_drop_history(id.into(), 0).unwrap_err(),
-            crate::commands::compact_for(&state, id, None)
-                .map(|_| ())
-                .unwrap_err(),
-        ] {
-            assert!(error.contains("A turn is running"), "{error}");
-        }
-        lock(&RUNNING).remove("running-guard-turn");
-        assert!(!session_running(id));
+        requests
+            .release_owned("running-guard-turn", &claim.identity)
+            .unwrap();
+        assert!(!requests.session_busy(id).unwrap());
+        assert!(crate::commands::refuse_while_running(&requests, id).is_ok());
     }
 
     #[test]
@@ -1674,9 +1322,13 @@ mod tests {
 
     #[tokio::test]
     async fn a_steer_is_checked_named_and_answered_with_a_typed_kind() {
+        let requests = Requests::default();
+        let _claim = requests
+            .claim_for("steer-typed-turn", Some("steer-typed"))
+            .unwrap()
+            .unwrap();
         let control = RunningTurn {
-            session_id: "steer-typed".into(),
-            cancel: Cancel::default(),
+            cancel: _claim.cancel.clone(),
             steering: super::super::steering::Steering::default(),
         };
         let id = "steer-typed-turn";
@@ -1699,18 +1351,25 @@ mod tests {
             ),
             (Vec::new(), Some("has:colon")),
         ] {
-            let error = steer(id, "steer-typed", steer_with(media, steer_id))
+            let error = steer(&requests, id, "steer-typed", steer_with(media, steer_id))
                 .await
                 .unwrap_err();
             assert_eq!(error.kind, "request");
         }
         // The loop's save failure reaches the caller as a store failure, and
         // the message carries the caller's id.
-        let delivery = tokio::spawn(steer(
-            id,
-            "steer-typed",
-            steer_with(Vec::new(), Some("row-7")),
-        ));
+        let delivery = {
+            let requests = requests.clone();
+            tokio::spawn(async move {
+                steer(
+                    &requests,
+                    id,
+                    "steer-typed",
+                    steer_with(Vec::new(), Some("row-7")),
+                )
+                .await
+            })
+        };
         let pending = loop {
             let pending = control
                 .steering
@@ -1731,11 +1390,139 @@ mod tests {
         assert_eq!(delivery.await.unwrap().unwrap_err().kind, "session_save");
 
         // Cancel names the conversation too.
-        assert!(!cancel_in(id, "another-conversation"));
+        assert!(!cancel_in(&requests, id, "another-conversation"));
         assert!(!control.cancel.is_cancelled());
-        assert!(cancel_in(id, "steer-typed"));
+        assert!(cancel_in(&requests, id, "steer-typed"));
         assert!(control.cancel.is_cancelled());
         lock(&RUNNING).remove(id);
+    }
+
+    #[test]
+    fn a_user_question_and_an_approval_answer_their_own_kind() {
+        let key: QuestionKey = ("ask-turn".into(), "q1".into());
+        let (sender, receiver) = oneshot::channel();
+        lock(&PENDING).insert(
+            key,
+            Waiting::UserQuestion {
+                answer: sender,
+                request: UserQuestion {
+                    call_id: "q1".into(),
+                    question: "Which mood?".into(),
+                    options: vec!["Warm".into(), "Bright".into()],
+                    free_text: true,
+                    max_chars: crate::ai::agent_loop::MAX_ANSWER_CHARS,
+                },
+            },
+        );
+        let pending = pending_questions("ask-turn");
+        assert_eq!(pending.len(), 1);
+        assert!(matches!(
+            &pending[0],
+            PendingQuestion::UserQuestion { request } if request.question == "Which mood?"
+        ));
+        assert_eq!(
+            pending_questions("ask-turn").len(),
+            1,
+            "the question still waits for its own answer"
+        );
+        assert!(
+            answer("ask-turn", "q1", Decision::default()).is_err(),
+            "an approval answer does not reach a question"
+        );
+        let reply_value = Reply {
+            option: Some(1),
+            ..Reply::default()
+        };
+        reply("ask-turn", "q1", reply_value.clone()).unwrap();
+        assert_eq!(receiver.blocking_recv().unwrap(), reply_value);
+        assert_eq!(
+            reply("ask-turn", "q1", Reply::default()),
+            Err(ReplyError::NotWaiting)
+        );
+    }
+
+    #[test]
+    fn a_question_answer_outside_its_bounds_is_refused_and_stays_pending() {
+        let key: QuestionKey = ("ask-bounds".into(), "q1".into());
+        let (sender, _receiver) = oneshot::channel();
+        lock(&PENDING).insert(
+            key.clone(),
+            Waiting::UserQuestion {
+                answer: sender,
+                request: UserQuestion {
+                    call_id: "q1".into(),
+                    question: "Which mood?".into(),
+                    options: vec!["Warm".into(), "Bright".into()],
+                    free_text: false,
+                    max_chars: crate::ai::agent_loop::MAX_ANSWER_CHARS,
+                },
+            },
+        );
+        assert_eq!(
+            reply(
+                "ask-bounds",
+                "q1",
+                Reply {
+                    option: Some(2),
+                    text: None,
+                    ..Reply::default()
+                }
+            ),
+            Err(ReplyError::OptionOutOfRange)
+        );
+        assert_eq!(
+            reply(
+                "ask-bounds",
+                "q1",
+                Reply {
+                    option: None,
+                    text: Some("warm".into()),
+                    ..Reply::default()
+                }
+            ),
+            Err(ReplyError::TextNotAccepted)
+        );
+        assert_eq!(
+            pending_questions("ask-bounds").len(),
+            1,
+            "a refused answer leaves the question open"
+        );
+
+        // A question that accepts text still bounds it.
+        lock(&PENDING).remove(&key);
+        let (sender, receiver) = oneshot::channel();
+        lock(&PENDING).insert(
+            key.clone(),
+            Waiting::UserQuestion {
+                answer: sender,
+                request: UserQuestion {
+                    call_id: "q1".into(),
+                    question: "Which mood?".into(),
+                    options: Vec::new(),
+                    free_text: true,
+                    max_chars: crate::ai::agent_loop::MAX_ANSWER_CHARS,
+                },
+            },
+        );
+        assert_eq!(
+            reply(
+                "ask-bounds",
+                "q1",
+                Reply {
+                    option: None,
+                    text: Some("x".repeat(super::super::MAX_ANSWER_CHARS + 1)),
+                    ..Reply::default()
+                },
+            ),
+            Err(ReplyError::TextTooLong)
+        );
+        let accepted = Reply {
+            option: None,
+            text: Some("warm".into()),
+            ..Reply::default()
+        };
+        reply("ask-bounds", "q1", accepted.clone()).unwrap();
+        assert_eq!(receiver.blocking_recv().unwrap(), accepted);
     }
 
     #[test]
@@ -1744,7 +1531,7 @@ mod tests {
         let (sender, _receiver) = oneshot::channel();
         lock(&PENDING).insert(
             key.clone(),
-            Question {
+            Waiting::Approval {
                 answer: sender,
                 request: ApprovalRequest {
                     call_id: "c1".into(),
@@ -1757,8 +1544,8 @@ mod tests {
             },
         );
         let guard = AskedQuestion(key.clone());
-        assert_eq!(questions("asked-guard-turn").len(), 1);
+        assert_eq!(pending_questions("asked-guard-turn").len(), 1);
         drop(guard);
-        assert!(questions("asked-guard-turn").is_empty());
+        assert!(pending_questions("asked-guard-turn").is_empty());
     }
 }

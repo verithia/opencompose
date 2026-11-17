@@ -12,11 +12,26 @@ conversation inside a model's context window.
   <workspace key>/workspace.json            the directory this key was derived from
   <workspace key>/<session id>/meta.json
   <workspace key>/<session id>/messages.jsonl
-  detached/<session id>/…                   a conversation with no workspace
+  <workspace key>/<session id>/view.json               where the current view starts
+  <workspace key>/<session id>/results/<sha256>.txt    full tool results
+  <workspace key>/<session id>/versions/<sha256>.ocp   project versions
+  detached/<session id>/...                 a conversation with no workspace
+  locks/session-<id>.lock                   the process that has one open
 ```
 
+A conversation is open in one process at a time. The panel holds the lock of
+the conversation it shows, and a headless turn, `/ai/complete`, `/call` or
+`ai_chat` holds it for the request's duration; the same process re-acquires its
+own lock. Another process opening the same conversation is refused with the
+typed code `session_in_use`: the panel keeps its current conversation and shows
+a localized message, and an HTTP request answers 409. Deleting or clearing a
+conversation also takes its lock, so neither removes a conversation another
+process has open. The lock file sits outside the workspace and session
+directories and is never listed as a conversation.
+
 Directories are `0700` and files are `0600`, written through the same private
-filesystem layer as the provider configuration (`private_fs`).
+filesystem layer as the provider configuration (`private_fs`). Reads take no
+lock: listing, previewing and exporting a conversation only read it.
 
 ### Audition audio
 
@@ -48,7 +63,7 @@ delivery still carries its clip. A clip whose render is gone is stored once.
 An encode the encoder cannot express falls back to WAV. The archive is capped at
 **256 MiB across both directories**: `audition-media/` (the bounded clip a
 request replays) and `audition-renders/` (the full-rate render kept for
-listening). `drop_history` and `sessions_delete` collect the files no remaining
+listening). `sessions_clear_history` and `sessions_delete` collect the files no remaining
 message names, in both directories.
 
 A full archive does not refuse a turn. Before a new clip or render is written,
@@ -66,12 +81,65 @@ Storage` reports both directories with their sizes and the shared budget, and
 confirmation. Conversations keep the audio blocks they name; those files are
 reported missing until a range is asked for again.
 
+### Edit facts on a tool row
+
+The panel saves a `changes` field on a tool row that changed the project: the
+typed facts (`oc_dsl::change::ChangeSet`) between the document before the call
+and the document after it, bounded in count and text length. The field is
+panel-only; an external `/call` or MCP result never carries it. It is omitted
+for a read-only call, when the result reports no revision to compare, or when
+the document moved after the call. A batch commit describes its base-to-final
+run on the turn outcome instead. The field is local-only: the provider replays
+the tool result `content`, never the facts. A restored transcript keeps the
+field, so a reloaded row still describes its edit.
+
+### Full tool results
+
+A tool result that is too large for its message row is written to
+`<session dir>/results/<sha256>.txt`, and the row keeps `result_sha` in place of
+the text. The file is written under the store lock before the transcript line,
+so a row never names a result that is not on disk. A result over 2,000,000
+characters is not written: the row keeps its bounded preview instead.
+
+The row that names the hash is the file's owner record. The sweep removes a
+result file once no saved line of its session names it, so a reload, a
+compaction and a restart keep every result a message still refers to, and
+nothing else. A fork copies the files its inherited rows name, so deleting the
+parent does not remove the fork's results. A read validates the hash before it
+becomes a path and bounds the bytes it loads, so a damaged file cannot grow
+memory, and it checks that the text hashes to its name: a file whose bytes
+changed reads as missing, never as the result the row recorded. Saving the
+same result again, or a fork copying it, replaces such a file.
+
+A transcript row opens its full result by the `result_sha` it saved, so the
+original view still reads the copy of a turn a later compaction or recall
+removed from the current view. The model's paged read instead answers from the
+current view by call id, because that is the row the model just saw.
+
 A conversation belongs to a **workspace**, which is the directory holding the
-project files — not to one `.ocp`. Projects in one directory share one set of
-conversations; opening a file in another directory shows another set. A
-conversation's `meta.json` records the project file it last worked on, and that
-record follows the file the panel has open: switching to another `.ocp` in the
-same workspace continues the same conversation instead of starting a new one.
+project files. Projects in one directory share one set of conversations;
+opening a file in another directory shows another set. Within that workspace a
+conversation is bound to one **project file**, recorded as `project_path` in
+`meta.json`. Every turn runs against the bound file, and the backend refuses a
+turn while another `.ocp` is open. The panel keeps the two in step: opening
+another file rebinds the open conversation to it, and a conversation opened from
+the list rebinds to the open file when the person sends. Either rebind is saved
+as a typed notice the model reads with the next message. A conversation that is
+running a turn keeps the binding it started with: the backend refuses a rebind
+until the turn ends, the loop checks the binding and opens the turn's batch
+under one project lock, and the panel waits for the turn before following a file
+opened meanwhile. An unbound conversation binds to the open project on its first
+turn without a notice. A fork made while another file is open starts on that
+file and owes the model a chosen-binding notice naming the parent's file; when
+the parent still owes an unsent binding, the fork names the parent's original
+path instead.
+
+**Move project** rebinds every conversation that names the old file and records
+a moved notice for the model to read on the next turn. A move keeps the first
+unsent pending binding, as an explicit rebind does, so the notice names the path
+the model last saw. **Save As** leaves conversations on the original file: the
+copy is a new file with no conversations of its own. A headless caller never
+rebinds a conversation; it starts a new one for another project.
 
 The **workspace key** is the first eight bytes of the SHA-256 of the canonical
 directory path, as hex. It is stable, opaque, and does not leak the path.
@@ -118,9 +186,22 @@ not.
 
 Before a saved provider request is sent, the native session layer attaches a
 content-addressed project version (`dsl_sha`) to each newly admitted human
-message. This applies to the panel and explicitly bound headless requests.
-The project path, source and summary facts are captured together; a headless
-request for a different open project is refused.
+message. Beside it, `history_at` records the edit-history position the message
+was sent from: `{project, level, at}`, where `project` is the canonical project
+path, `level` is the number of applied entries and `at` is the id of the entry
+at that level (absent at the start of the history). Entry ids carry the wall
+clock and stay within JavaScript's exact integer range, so a saved position
+never rounds. A history replaced while the app was closed keeps no stored
+maximum, so the ids assume the clock has not moved backwards across that
+replacement. A recall that undoes edits uses this position to move the history
+cursor back. The project path, source
+and summary facts are captured together. A headless request for a different
+open project is refused, and so is any turn on a conversation bound to another
+file than the one that is open.
+
+An original root position is also checked against that message's saved project
+version. If history cleanup rebases level zero to a different document, recall
+refuses with `position_cleared` and keeps the project and conversation intact.
 
 Replayed human turns retain their original version. Tool results, assistant
 replies and typed host deliveries do not acquire a human-turn snapshot. The
@@ -207,9 +288,48 @@ turn:
 | `compaction` | replaces the whole conversation with a summary |
 | `trim` | replaces the whole conversation with the newest messages that fit the size cap |
 
-Only `compaction` and `trim` rewrite the file, and each states what it dropped
-(`dropped.from`, `dropped.to`, `tokens_before`, `tokens_after`). A line that
-cannot be read is skipped and counted; it never hides the rest of the file.
+A `compaction` or `trim` record replaces the conversation, and each states what
+it dropped (`dropped.from`, `dropped.to`, `tokens_before`, `tokens_after`). Both
+are appended like a turn; the file is rewritten only when the size cap trims it
+or the history before a compaction is dropped. A line that cannot be read is
+skipped and counted; it never hides the rest of the file.
+
+### The current view and `view.json`
+
+The conversation a turn continues, the **view**, is the newest `compaction` or
+`trim` record plus the `turn` records after it. `view.json` names the byte
+offset, length and timestamp of that record, so a read seeks to it and parses
+only what follows; the turns a compaction replaced stay on disk for the
+original view without being read again on every turn.
+
+The index is a hint, never the truth. A read checks that the line it names
+still starts a line, has that length, and is a replacing record with that
+timestamp; otherwise it scans the whole file and writes a fresh index. An index
+one replacement behind builds the same view from an older starting point, so a
+crash between an append and the index write costs one longer read. A rewrite
+removes the index before it replaces the file.
+
+### Opening a long conversation
+
+The panel opens a conversation at its newest **64 turns** (`sessions_open`).
+A turn starts at a message the person sent, so a page never separates a tool
+call from its result. A page also stops adding older turns once it passes
+4 MiB, and always carries at least one whole turn.
+
+Scrolling to the top shows **Show earlier turns**; it asks for the page before
+the first row (`sessions_page {id, before, turns, revision}`) and prepends it
+while the reader keeps their place. Each row keeps its position in the whole
+view, so rewinding or forking from a row of any page cuts at the right message.
+`revision` names the record the view starts from: appends keep it, while a
+compaction, a trim or a rewind changes it, and a page asked for under an older
+revision is answered `stale`, upon which the panel reopens the conversation.
+Once every turn of the view is loaded and a compaction replaced earlier ones,
+the same control opens the original view.
+
+The composer's context estimate counts the turns not loaded yet:
+`sessions_open` and `sessions_page` return `older_tokens`, the panel's own
+estimate of the messages above the page. The agent tool `sessions_load` and the
+JSON export still read the whole view.
 
 A `user` message may carry a `media` array: one descriptor per attached file.
 The descriptor is what the panel picked, never the bytes:
@@ -268,9 +388,30 @@ Limits, all enforced in the store:
 {"id":"18f0c3a72b100004","title":"punchy kick","created":"…","updated":"…",
  "model":"gemini-4-argon","provider":"google","workspace_key":"3f2a…",
  "workspace":"/Users/…/songs","project_path":"/Users/…/songs/song.ocp",
+ "pending_binding":{"from":"/Users/…/songs/old.ocp","cause":"moved"},
+ "pending_state":{"kind":"goal_set","text":"finish the bridge","author":"person"},
+ "history_mark":{"project":"/Users/…/songs/song.ocp","at":42,"max_id":42},
+ "tool_surface":{"names":["tracks_list","tracks_mix"],"permission":"write"},
  "turns":7,"tokens":9321,"compacted_at":"2026-10-29T07:41:02.019Z"}
 ```
 
+`project_path` is the project file this conversation is bound to, stored in
+canonical form. `pending_binding` is present only between an explicit rebind or
+a move and the next admitted turn: that turn writes one typed `project_bound`
+host notice before the person's message and clears the field. `history_mark` is
+the edit-history cursor the conversation ended its previous turn at: the
+canonical `project` it belongs to, the id of the newest applied entry `at`
+(absent before the first edit), and the largest id the history held. A rebind or
+a move clears it, because the `project_bound` notice covers that boundary.
+`pending_state` is present only between a goal change made while the
+conversation had an open tool round and the next admitted turn: that turn writes
+the typed row before the person's message and clears the field.
+`tool_surface` holds the tool names and permission mode the conversation's
+latest prepared turn offered. The first turn records it silently. A later turn
+whose tools or permission differ writes one typed `tool_surface` host notice
+before its message and replaces the field. A path without the loop leaves the
+field unchanged. A saved surface over its name or length bound is dropped on
+load, and the next turn records the current one.
 `tokens` is this project's estimate of the saved conversation, not a provider's
 reported usage; `compacted_at` records the last compaction; `parent` names the
 session a fork copied.
@@ -282,7 +423,20 @@ There is no save action. Every model turn writes to the store:
 1. The request is appended: a turn that ends in the user's message contributes
    that message, a tool round contributes the results it added. A request that
    the conversation already contains appends nothing, so a retried request does
-   not duplicate history.
+   not duplicate history. A pending binding contributes one typed
+   `project_bound` notice immediately before that turn's message. When the
+   conversation carries a `history_mark` and its bound project changed since
+   then, one typed `outside_changes` notice follows it with the entries other
+   authors made, the steps undo moved back, the conversation's own edits a
+   person undid or replaced, and whether the history was rewritten or only
+   pruned by cleanup. Preparation then saves the mark at the turn's start for
+   every caller, in the same write, so a later turn does not repeat the same
+   notice. A turn whose tools or permission differ from the saved
+   `tool_surface` contributes one typed `tool_surface` notice after those and
+   records the new surface. A person's edit during an open agent batch keeps
+   its own author, scope and timestamp when the batch commits: the turn's own
+   edits become one entry for each run between them. The next turn therefore
+   reports the person's edit among the outside changes.
 2. The assistant message the provider returned is appended, so an answer is
    saved even if the panel closes before the next turn.
 3. When the estimate says the conversation no longer fits, it is compacted
@@ -294,6 +448,39 @@ which the panel rebuilds every turn. The panel therefore sends the system prompt
 and the pending user message only: every earlier turn, tool calls and tool
 results included, is replayed from the store instead of being rebuilt from the
 prose rows the transcript shows.
+
+### Goal and plan rows
+
+The goal and the plan are typed conversation state, saved like any other row:
+
+- `goal_set` carries the goal text (at most 600 characters) and its author,
+  `person` or `agent`. Text that is blank under the shared whitespace set,
+  Unicode White_Space plus the byte-order mark, is refused.
+- `goal_cleared` records that the goal was cleared.
+- `plan_set` carries at most 32 items of at most 200 characters each, each
+  `pending`, `in_progress` or `done`, with at most one item in progress.
+
+The newest goal row and the newest plan row define the current state. There is
+no separate metadata field: a rewind that cuts before a row removes its effect,
+and a fork that copies the conversation copies the state it had at the cut. A
+`goal_cleared` row and an empty `plan_set` clear that part. The row's `content`
+is the English text the model reads, derived only from the typed value.
+
+The person writes a goal with the composer's `/goal <text>` command, which
+appends one `goal_set` row, and clears it with the chip, which appends a
+`goal_cleared` row. The agent writes both through the panel-local `plan_update`
+tool. While a turn has a tool round open, a goal change waits in `meta.json` as
+`pending_state`; the next admitted turn writes it before the new message,
+because a state row cannot follow calls that have no result yet. The newest
+transcript page reports `pending_state` as part of its state, so a reload or a
+recall repaint shows the goal or plan the next turn will write.
+
+On every request the backend adds one short derived row after the system rows,
+naming the current goal and plan. It is not saved, and the loop rebuilds it after
+a `plan_update` call, so every round carries the same state. Admission counts
+the row before it decides whether the request fits. A fold keeps the
+newest goal and plan rows, and a compaction or a size trim re-inserts them after
+its summary, so the model never follows a plan the conversation has replaced.
 
 Inline audio clips are not saved. A turn that carries one goes out as the stored
 conversation plus the client's own messages, so the model still hears the clip,
@@ -326,6 +513,11 @@ action, and a list of this workspace's conversations newest first with the
 workspace directory on one truncated line. The list shows the recorded
 `meta.updated` time of each conversation; the transcript never invents a time for
 a row, because the saved wire has none.
+
+The newest transcript page also carries the current goal and plan from the
+whole saved view, including explicit clears and a change still waiting in
+`pending_state`. Loading older transcript pages
+does not replace that current state with an older goal or plan.
 
 Each row offers, for that conversation:
 
@@ -534,9 +726,9 @@ copied to the clipboard or downloaded under the conversation's title:
 `<title>.md` and `<title>.json`.
 
 Export stays available while a turn runs. The Markdown document is the
-transcript on screen at that moment, including the rows of the running turn;
-the JSON document is the stored wire, which holds the turns that were already
-saved.
+transcript on screen at that moment, including the rows of the running turn,
+with the saved turns above the loaded page in front of it; the JSON document is
+the stored wire, which holds the turns that were already saved.
 
 ### Markdown
 
@@ -631,15 +823,57 @@ that already carry one row per audition still open; their rows render as
 captions, and the next successful compaction bounds them.
 ```
 
-The summary is built from the messages themselves, deterministically: no model
-call, so compaction works with the panel closed and costs nothing. It names the
-project's DSL **digest** rather than carrying the DSL, which would defeat the
-purpose.
+A compaction asks the same provider and model for the summary. The request
+carries no tools and is accounted as its own `Purpose::Compaction` request in
+the conversation, so its tokens appear in the session's usage. The summary
+prompt lives in the backend and asks, in order, for the person's goals and
+constraints, the decisions and rejected options, the current state by project
+path, the open problems and errors, and what remains. The input is the dropped
+part of the saved view rendered as plain text, with each turn and tool result
+bounded; it is never the whole history on disk. The input includes the previous
+summary and prioritizes the newest dropped turns when it reaches its byte
+limit. Summary generation has an output allowance of at most 4,096 tokens.
+The model's answer becomes the
+first row of the new view, followed by the mechanical digest of the newest six
+tool pairs and the artifact inventory, so the compacted conversation never
+depends on the model having copied exact paths or results. The row keeps the
+conversation's `standing_intent`, discarded audition count and rollback or
+proposal notices, and the newest pinned host notices stay beside it. The
+project's DSL is named by **digest** rather than carried, which would defeat the
+purpose. The store accepts model prose only when the complete replacement is
+bounded, reduces the conversation and either meets the planned target or is
+smaller than the mechanical fallback; otherwise it keeps the fallback. Saved
+summary prose is separate from generated headers and inventories so repeated
+summaries do not nest those sections. The mechanical fallback records its own
+prose, the previous prose plus this compaction's decisions, in the same field,
+and a bound over that prose drops its oldest part so the newest decisions
+survive.
+
+When the provider errors, the reply is empty, the model prose does not improve
+the fallback, or the conversation changes before the answer lands, the store
+writes its deterministic summary instead and the turn goes on. The caller
+reports the typed reason as
+`{session_id, notice: "compaction_failed", reason}`, where `reason` is
+`provider_error`, `empty`, `conflict` or `rejected`.
+
+Stop interrupts a summary request during preparation or between tool rounds,
+finalizes its accounting, and leaves the existing conversation view intact.
+Cancellation does not publish a mechanical replacement or a late model summary,
+so it emits no `compaction_failed` notice.
+
+Compaction is two-phase because the model call is slow. The store plans under
+its mutation lock: it chooses the split, renders the request input and builds
+the mechanical fallback, writing nothing. The summary call then runs with no
+store lock held. The commit takes the lock again and appends one compaction
+record only when the conversation still matches the planned view; otherwise it
+retries once from the current view with the mechanical summary. Until that
+record lands, the conversation on disk is unchanged.
 
 Compaction leaves nothing to replay: the output is one `user` message plus any
 trailing prose messages. Those carry their `role`, `content` and message kind;
 a person's message also keeps its attachments as canonical descriptors, the
-snapshot a revert restores (`dsl_sha`, `dsl_project`) and its steering id. The
+snapshot and history position a recall uses (`dsl_sha`, `dsl_project`,
+`history_at`) and its steering id. The
 pending message, the one the model is about to answer, is always carried this
 way, even when it directly follows a tool round. There is no assistant message
 with `tool_calls` or a text-protocol call, no `provider_state`, and no signature
@@ -688,10 +922,9 @@ The estimate has three parts:
 The panel also counts the **system prompt and the tool schemas**, which ride on
 every request and are the largest part of a small conversation. The backend
 counts them too when a turn is prepared: the system prompt and the serialized
-tool list of the conversation's toolsets are the overhead the 75 % threshold
-adds to the conversation, and attachments are estimated by kind (1,600 tokens
-per image, 32 tokens per second of audio; a disk-only reference costs nothing).
-The 15 % floor still describes the conversation alone.
+tool list of the conversation's toolsets are the overhead the threshold adds to
+the conversation, and attachments are estimated by kind (1,600 tokens per image,
+32 tokens per second of audio; a disk-only reference costs nothing).
 
 The figure under the composer is labelled an estimate, and the pre-send guard
 warns rather than refuses: only the provider can reject a request for size.
@@ -700,20 +933,27 @@ schemas, conversation, project text, draft and attachments, so a large request
 names what is using the window. The card's **Compact at** field sets the
 fraction at which **Compact now** appears (50-95 %, stored as a panel
 preference) and runs the same `sessions_compact` command as the session menu.
-The backend's automatic compaction still uses its own 75 % threshold; the
-manual field only decides when the card offers the action.
+The backend's automatic compaction uses the trigger below; the manual field
+only decides when the card offers the action.
 
 ### Automatic compaction
 
-A turn is compacted before it is sent when **both** hold:
+One function owns the trigger, and admission and the agent loop both call it:
 
-- the estimate of the system prompt plus the saved conversation exceeds **75 %**
-  of the model's context window, and
-- the conversation alone is above **15 %** of that window, so a large system
-  prompt cannot trigger a compaction on every turn.
+```
+threshold = max(0.6 * window, window - max_output - reserve)
+reserve   = max(1000, tokens(compaction prompt))
+```
 
-It also compacts when the conversation passes **80 messages**, because the wire
-admits 100. The target is **50 %** of the context window.
+A turn is compacted before it is sent when the estimate of the system prompt,
+the conversation and its attachments exceeds that threshold. Holding back the
+model's output limit and the compaction prompt leaves room for the summary
+request and the answer the turn will write. The conversation also compacts when
+it passes **80 messages**, because the wire admits 100. The target is **50 %**
+of the context window.
+
+A window the entry stores as 0 or 1 is unknown, not tiny: no token threshold
+applies and only the 80-message rule does.
 
 The window is the one a request uses, in this order: the per-model override the
 panel stores, the bundled catalog entry, the known-window list, and only then the
@@ -722,9 +962,6 @@ saved id first and the id without one leading `<vendor>/` segment or a trailing
 `:suffix` second, so a saved `google/gemini-4-argon:free` reads the catalog's
 `gemini-4-argon` window rather than the entry's guess. The panel shows that
 number next to the provider default when the two differ.
-
-A window the entry stores as 0 or 1 is unknown, not tiny: the size thresholds
-are skipped and only the 80-message rule applies.
 
 Whether a turn can be sent is decided before anything is saved. The request is
 measured as it would go out, compacted if it would be: when the system prompt,
@@ -735,28 +972,51 @@ the row bound is refused the same way, as `session_save`. A request over 96
 rows is folded like a running turn's wire (see the agent loop's request
 budget), keeping the latest compaction summary and the turn's ask.
 
-An automatic compaction that fails does not fail the turn: the conversation is
-sent as saved, the failure is logged, and `ai_session` carries
-`{session_id, notice: "compaction_failed", message}`.
+An automatic compaction whose summary call fails still compacts: the mechanical
+summary replaces the model text, and `ai_session` carries the typed reason
+described above.
 
 The panel is told: an auto-compaction emits `ai_session` with `compacted: true`,
-the dropped range, the token counts before and after, the retained pair count and
-the messages that were sent. The panel writes one line into the transcript.
+the dropped range, the token counts before and after and the retained pair
+count. The panel writes one line into the transcript: **Conversation compacted:
+N messages summarized**, with the earlier history behind the usual
+**Show earlier history** chip.
+
+A running turn compacts its saved conversation at a round boundary when the wire
+it is about to send reaches the same threshold. It asks the host to compact, and
+the host plans, calls the model with no store lock and commits one record; the
+loop then rebuilds its wire from the leading system rows, the new saved view and
+everything already saved for the open round. The open round is never dropped.
+Folding the wire into one summary remains the last-resort fallback when
+compaction cannot reduce the request, and a fold row is not shown as a
+compaction checkpoint.
 
 ## Commands and agent tools
 
 | command | argument | result |
 | --- | --- | --- |
-| `sessions_list` | `workspace?`, `all?` | newest first: id, title, turns, tokens, model, provider, workspace, project file, updated |
+| `sessions_list` | `workspace?`, `all?` | newest first: id, title, turns, tokens, model, provider, workspace, bound project file, updated |
 | `sessions_new` | `project?`, `title?`, `parent?` | the new session; `parent` forks that conversation |
+| `sessions_bind` | `id` | binds the conversation to the open project; the next turn records the notice |
+| `sessions_binding` | `id` | `bound`, `open` and `matches`, compared canonically |
 | `sessions_load` | `id` | metadata plus the wire messages to replay |
 | `sessions_rename` | `id`, `title` | the updated metadata |
 | `sessions_delete` | `id` | removes the directory |
 | `sessions_compact` | `id`, `target_tokens?` | the summary, the dropped range and the token counts; a refusal is `{kind, message}` with `busy` or `conflict` |
+| `sessions_clear_history` | `id` | drops records older than the second-newest compaction and unused assets, returning `{sessions, dropped_records, removed_assets, freed_bytes}` |
+| `sessions_clear_all_history` | none | the same sweep for every conversation that no turn is writing |
 
 A requested compaction whose conversation already ends in a compaction is a
 `conflict`: when two windows ask at once, both run under the store lock one
 after the other, and the second finds the state the first produced.
+
+The panel's `/clear` command, and **Clear old conversation history** in
+Preferences > Storage, drop every record older than a conversation's
+second-newest compaction and collect the assets only those records named. A
+conversation with fewer than three compactions keeps everything. The panel asks
+before it clears anything, then reports the records dropped, the assets removed
+and the space freed. The Storage action sweeps every conversation that no turn
+is writing; the `/clear` command acts on the open conversation.
 
 `sessions_list` covers the open workspace; `all` covers every workspace, and each
 entry names its workspace so a client can group the answer. A `project` argument
@@ -771,6 +1031,9 @@ conversation. No command here writes to the project.
 
 - The exact text of the older turns. Decisions, failures, the standing intent,
   the last answer and the earlier user questions are condensed, not quoted.
+  The newest typed project-binding and tool-surface notices survive beside the
+  summary, because every later path in the conversation is relative to that
+  binding and the model must not call a tool the turn does not offer.
 - Tool arguments beyond the retained pairs, and every tool result beyond a
   short summary of it.
 - `provider_state`, thought signatures and reasoning items. A conversation that

@@ -26,7 +26,7 @@ fn state() -> (AppState, TempDir) {
 }
 
 fn undo_len(state: &AppState) -> usize {
-    state.lock_inner().undo.undo.len()
+    state.lock_inner().undo.undo_entries().len()
 }
 
 #[test]

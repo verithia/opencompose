@@ -13,9 +13,12 @@
 //!   "track:0.phrase:intro"       → phrase by name
 //!   "track:0.mix"                → track mix state
 //!   "track:0.effects"            → track effect chain
+//!   "track:0.effect:1"           → one effect in that chain
 //!   "bus:hall_reverb"            → bus by name
 //!   "master"                     → master section
 //!   "preset:warm_pad"            → preset by name
+//!   "section:verse"              → section by name
+//!   "marker:drop"                → marker by name
 //! ```
 
 use crate::ast::*;
@@ -41,10 +44,13 @@ pub enum PathSegment {
     Mix,
     Effects,
     Automation,
+    Effect(usize),
     Bus(String),
     Master,
     Preset(String),
     Sections,
+    Section(ItemRef),
+    Marker(ItemRef),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -102,6 +108,15 @@ impl AstPath {
                 PathSegment::Automation
             } else if part == "sections" {
                 PathSegment::Sections
+            } else if let Some(rest) = part.strip_prefix("effect:") {
+                PathSegment::Effect(
+                    rest.parse::<usize>()
+                        .map_err(|_| format!("Unknown path segment: {}", part))?,
+                )
+            } else if let Some(rest) = part.strip_prefix("section:") {
+                PathSegment::Section(item_ref(rest))
+            } else if let Some(rest) = part.strip_prefix("marker:") {
+                PathSegment::Marker(item_ref(rest))
             } else if let Some(rest) = part.strip_prefix("track:") {
                 if let Ok(idx) = rest.parse::<usize>() {
                     PathSegment::Track(TrackRef::Index(idx))
@@ -133,6 +148,13 @@ impl AstPath {
             return Err("Empty path".into());
         }
         Ok(Self { segments })
+    }
+}
+
+fn item_ref(text: &str) -> ItemRef {
+    match text.parse::<usize>() {
+        Ok(index) => ItemRef::Index(index),
+        Err(_) => ItemRef::Name(text.to_string()),
     }
 }
 
@@ -196,6 +218,13 @@ fn extract_node(
         PathSegment::Pattern(item_ref) => {
             let idx = resolve_project_pattern_idx(project, item_ref)?;
             let pattern = &project.patterns[idx];
+            if !segments[1..].is_empty() {
+                return extract_effect_child(
+                    &pattern.effects,
+                    &segments[1..],
+                    clips_of_pattern(project, &pattern.name),
+                );
+            }
             let mut out = String::new();
             serializer::serialize_pattern_def_to(pattern, &mut out);
             Ok((out, clips_of_pattern(project, &pattern.name)))
@@ -206,18 +235,27 @@ fn extract_node(
                 .iter()
                 .find(|b| &b.name == name)
                 .ok_or_else(|| format!("Bus '{}' not found", name))?;
+            if !segments[1..].is_empty() {
+                return extract_effect_child(&bus.effects, &segments[1..], vec![]);
+            }
             let mut out = String::new();
             serializer::serialize_bus_to(bus, &mut out);
             Ok((out, vec![]))
         }
         PathSegment::Master => {
-            if let Some(master) = &project.master {
-                let mut out = String::new();
-                serializer::serialize_master_to(master, &mut out);
-                Ok((out, vec![]))
-            } else {
-                Ok(("// No master section\n".into(), vec![]))
+            let Some(master) = &project.master else {
+                return if segments.len() == 1 {
+                    Ok(("// No master section\n".into(), vec![]))
+                } else {
+                    Err("Master section not found".into())
+                };
+            };
+            if !segments[1..].is_empty() {
+                return extract_effect_child(&master.effects, &segments[1..], vec![]);
             }
+            let mut out = String::new();
+            serializer::serialize_master_to(master, &mut out);
+            Ok((out, vec![]))
         }
         PathSegment::Preset(name) => {
             let preset = project
@@ -225,6 +263,9 @@ fn extract_node(
                 .iter()
                 .find(|p| &p.name == name)
                 .ok_or_else(|| format!("Preset '{}' not found", name))?;
+            if !segments[1..].is_empty() {
+                return extract_effect_child(&preset.effects, &segments[1..], vec![]);
+            }
             let mut out = String::new();
             serializer::serialize_preset_to(preset, &mut out);
             Ok((out, vec![]))
@@ -237,6 +278,18 @@ fn extract_node(
                 out.push_str(&s);
                 out.push('\n');
             }
+            Ok((out, vec![]))
+        }
+        PathSegment::Section(item_ref) => {
+            let index = resolve_section_idx(project, item_ref)?;
+            let mut out = String::new();
+            serializer::serialize_section(&project.sections[index], &mut out);
+            Ok((out, vec![]))
+        }
+        PathSegment::Marker(item_ref) => {
+            let index = resolve_marker_idx(project, item_ref)?;
+            let mut out = String::new();
+            serializer::serialize_marker_to(&project.markers[index], &mut out);
             Ok((out, vec![]))
         }
         _ => Err("Invalid top-level path segment".to_string()),
@@ -311,6 +364,7 @@ fn extract_track_child(
             }
             Ok((out, vec![track_idx]))
         }
+        PathSegment::Effect(_) => extract_effect_child(&track.effects, segments, vec![track_idx]),
         PathSegment::Automation => {
             let mut out = String::new();
             for lane in track.automation() {
@@ -612,6 +666,56 @@ fn replace_track_child(
 // ============================================================================
 // Resolve helpers
 // ============================================================================
+
+fn extract_effect_child(
+    effects: &[Effect],
+    segments: &[PathSegment],
+    affected_tracks: Vec<usize>,
+) -> Result<(String, Vec<usize>), String> {
+    let [PathSegment::Effect(index)] = segments else {
+        return Err("Invalid effect owner path".into());
+    };
+    let effect = effects
+        .get(*index)
+        .ok_or_else(|| format!("Effect index {} out of range", index))?;
+    let mut out = String::new();
+    serializer::serialize_effects_to(std::slice::from_ref(effect), &mut out);
+    Ok((out, affected_tracks))
+}
+
+fn resolve_section_idx(project: &Project, item_ref: &ItemRef) -> Result<usize, String> {
+    match item_ref {
+        ItemRef::Index(index) => {
+            if *index < project.sections.len() {
+                Ok(*index)
+            } else {
+                Err(format!("Section index {} out of range", index))
+            }
+        }
+        ItemRef::Name(name) => project
+            .sections
+            .iter()
+            .position(|section| section.name == *name)
+            .ok_or_else(|| format!("Section '{}' not found", name)),
+    }
+}
+
+fn resolve_marker_idx(project: &Project, item_ref: &ItemRef) -> Result<usize, String> {
+    match item_ref {
+        ItemRef::Index(index) => {
+            if *index < project.markers.len() {
+                Ok(*index)
+            } else {
+                Err(format!("Marker index {} out of range", index))
+            }
+        }
+        ItemRef::Name(name) => project
+            .markers
+            .iter()
+            .position(|marker| marker.name == *name)
+            .ok_or_else(|| format!("Marker '{}' not found", name)),
+    }
+}
 
 fn resolve_track<'a>(
     project: &'a Project,

@@ -13,6 +13,21 @@ describe("AI command errors", () => {
   });
 });
 
+describe("resource locks", () => {
+  it.each(["en", "zh-Hans", "zh-Hant", "ja", "es"] as const)(
+    "localizes a conversation another process opened in %s", locale => {
+      i18n.setLocale(locale);
+      const text = errorMessage({ kind: "session_in_use", message: "RAW OS DIAGNOSTIC" });
+      expect(text).toBe(i18n.t("ai.sessions.inUse"));
+      expect(text).not.toContain("RAW OS DIAGNOSTIC");
+    });
+  it("keeps an unrelated error's message", () => {
+    i18n.setLocale("en");
+    expect(errorMessage({ kind: "config", message: "Save provider settings first" }))
+      .toBe("Save provider settings first");
+  });
+});
+
 const accountingCodes = [
   "accounting_storage", "accounting_session_missing", "accounting_entropy", "accounting_overflow",
   "accounting_capacity", "accounting_currency_capacity", "accounting_attempt_capacity", "accounting_format", "accounting_request", "accounting_busy",

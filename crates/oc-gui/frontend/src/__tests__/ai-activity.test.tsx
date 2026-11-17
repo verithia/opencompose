@@ -22,6 +22,26 @@ describe("concise AI activity", () => {
     expect(i18n.t("ai.header.providerSettings")).not.toBe("Provider settings");
     expect(i18n.t("ai.role.system")).not.toBe("System");
   });
+  it("names a mutating tool row from its typed changes", () => {
+    const changes = { changes: [{ kind: "track_added" as const, track: "keys" }], more: 0 };
+    i18n.setLocale("en");
+    expect(activitySummary({
+      name: "tracks_add", args: '{"name":"ignored"}', changes,
+    })).toBe("Add track “keys”");
+    i18n.setLocale("zh-Hans");
+    expect(activitySummary({
+      name: "tracks_add", args: '{"name":"ignored"}', changes,
+    })).toBe("添加轨道“keys”");
+    i18n.setLocale("en");
+  });
+
+  it("keeps the argument summary when the change set has no facts", () => {
+    i18n.setLocale("en");
+    expect(activitySummary({
+      name: "tracks_add", args: '{"name":"Keys"}', changes: { changes: [], more: 0 },
+    })).toBe("Add track “Keys”");
+  });
+
   it("names reads and catalog searches without argument/result JSON", () => {
     i18n.setLocale("en");
     expect(activitySummary({name:"read_skill",args:'{"id":"playable-instruments"}',result:'{"body":"long"}'})).toBe("playable instruments");

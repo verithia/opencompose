@@ -273,6 +273,12 @@ function installBackend() {
         if (!meta) throw "no session";
         return { meta: { ...meta }, messages: backend.conversations[meta.id] ?? [], skipped: 0 };
       }
+      case "sessions_open": {
+        const meta = backend.sessions.find((entry) => entry.id === typed.id);
+        if (!meta) throw "no session";
+        const messages = backend.conversations[meta.id] ?? [];
+        return { meta: { ...meta }, messages, skipped: 0, start: 0, total: messages.length, revision: "0", older_tokens: 0, state: [] };
+      }
       default: return makeSnapshot();
     }
   });

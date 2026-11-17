@@ -27,6 +27,12 @@ The GUI starts the server when it launches:
 | `POST /ai/steer` | Deliver a person's message into a running turn. |
 | `POST /ai/cancel` | Stop a running turn: `{request_id, session_id}`. |
 
+Opening a project another process holds answers 409 with `kind`
+`project_in_use`, and the caller's own document is not replaced. A saved
+conversation another process has open answers 409 with `kind` `session_in_use`;
+the same rule covers `/ai/complete`, a `/call` envelope that names a session,
+and `POST /ai/turn`.
+
 A client starts a full turn with `POST /ai/turn`: it carries `provider`,
 `messages` (system messages and at most one message of the person),
 `session_id` and the absolute `project_path`, with optional `toolsets`, `label`
@@ -107,8 +113,9 @@ Edits are guarded so a multi-step change is atomic to the user.
   mutation marks the transaction and the revision stays at the base;
   `expected_revision` accepts that base for every call in the batch.
 - `transaction_commit` publishes exactly one revision and squashes the batch into
-  one undo entry labelled `Transaction: <label>`. One undo restores the
-  pre-batch project and one redo re-applies the whole batch.
+  one undo entry that records the typed changes between the batch base and its
+  final state. One undo restores the pre-batch project and one redo re-applies
+  the whole batch.
 - `transaction_rollback` restores the snapshot byte-for-byte, drops the batch's
   undo and redo entries, and moves the revision forward so stale
   `expected_revision` guards fail.
@@ -121,16 +128,21 @@ Edits are guarded so a multi-step change is atomic to the user.
   edits that landed. A turn batch a gone turn left open (`panel:` or `turn:`)
   commits rather than rolling back: the next turn commits it, and so does
   `ai_batch_recover`.
-- Revert is `ai_revert_before {session_id, index}`, offered only from a person's
-  own message. It restores the project snapshot that message was sent against as
-  one undo entry (`Revert conversation`, only when the document differs) and
-  cuts the conversation before the message; if the cut fails the document and
-  its history are put back exactly. It is refused while a turn runs or a batch
-  is open, and for a message sent against another project file.
+- Recall is `ai_recall {session_id, index, undo_edits, confirmed, token?}`, offered
+  only from a person's own message. It cuts the conversation before the message
+  and returns its text and attachments. With `undo_edits` it also moves the
+  project history cursor back to the position the message recorded, as one
+  history jump that a redo reverses; edits by anyone but this conversation's
+  agent need a confirming second call that echoes the token the first answer
+  named. If the cut fails the cursor, document
+  and its history are put back exactly. It is refused while a turn runs or a
+  batch is open, and undo edits are refused for a message sent against another
+  project file or one with no recorded position.
 - While a batch is open, save, undo and redo are refused, so a crash cannot leave
   a half-applied edit on disk or rewind history under the batch.
   `project_open` and `project_new` cancel the batch because they replace the
-  whole session.
+  whole session. `project_new` takes an absolute `.ocp` path and an optional
+  `starter` template, writes the file, and refuses a path that already exists.
 - `transaction_begin` counts as a mutation for `expected_revision`.
 
 Pass the revision you last saw as `expected_revision` on mutation tools; a
@@ -143,7 +155,8 @@ The **AI** sidebar tab is a chat client with the same tools, minus the ones that
 would escape the panel.
 
 - It advertises every catalog tool the panel policy enables, plus the
-  panel-local `edit_subtree`. The enabled set follows the catalog.
+  panel-local `edit_subtree`, `plan_update` and `ask_user`. The enabled set
+  follows the catalog.
 - Excluded from the panel: plugin scan/load/install/sidecar-state and native
   plugin windows, content-library writes, `render_offline` and `render_stems`,
   host audio device configuration, device-level mute, tools that list filesystem
@@ -157,8 +170,24 @@ would escape the panel.
   the turn's batch. A headless turn with nobody to ask applies a validated
   replacement itself in the same turn (see
   [Agent feedback loop](../agent-loop.md)).
+- Type `/goal <text>` to set the goal for the conversation, or use the chip's
+  clear button to remove it. The goal and the plan are saved with the
+  conversation: the model reads them every round, the composer shows the goal
+  and a plan strip, and the agent updates them through `plan_update`. Rewinding
+  before a goal or plan change restores the earlier one, and a fork keeps the
+  state it copied.
+- `ask_user` asks you one question when a decision is yours, with at most six
+  short options or free text. An answer must name an offered option, and free
+  text is accepted only when the question offers it and stays within 4,000
+  characters. A headless turn has nobody to answer and carries on with
+  `answered: false`.
+- Before guessing a name, the assistant searches the project with
+  `project_search` (tracks, presets, patterns, buses, sections, markers,
+  effects and phrases) and gets back addressable paths.
 - A turn is limited to sixty-four model rounds and thirty-two tool calls per
-  round; a turn that reaches the round cap commits the edits it applied.
+  round; a turn that reaches the round cap commits the edits it applied. A
+  budget row reports the last four rounds and the context share as it reaches
+  60 % and 75 %.
 - Provider settings require HTTPS, except on loopback. Keys are stored in the OS
   credential store, not in the project or in YAML; non-secret settings live in
   `~/.opencompose/ai-providers.yaml`.

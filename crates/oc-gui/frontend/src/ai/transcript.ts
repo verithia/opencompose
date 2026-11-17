@@ -6,7 +6,8 @@
  */
 import type { ToolCall, TurnStop, WireMessage } from "./wire";
 import type { MediaAttachment } from "./media";
-import { isAuditionKind, messageKind, type MessageMeta } from "./messageProtocol";
+import { isAuditionKind, messageKind, projectBoundNotice, sessionState as sessionStateOf, toolSurfaceNotice, type HostNotice, type MessageMeta, type ProjectBoundNotice, type SessionState } from "./messageProtocol";
+import { parseChangeSet, type ChangeSet } from "../types/change";
 
 export interface DiffResult {
   old_text: string;
@@ -19,6 +20,8 @@ export interface ToolRow {
   name: string;
   args?: string;
   result?: string;
+  /** The project facts the call produced, when it changed the project. */
+  changes?: ChangeSet;
   /** The provider's call id; a truncated result names it for read_toolcall. */
   call_id?: string;
 }
@@ -63,6 +66,8 @@ export interface ChatMessage {
    * wire instead, because the loop appends envelopes no row stands for.
    */
   wireIndex?: number;
+  /** The hash of this row's full result, when the store kept one. */
+  resultSha?: string;
   role: "user" | "assistant" | "system" | "tool" | "context";
   content: string;
   /** Host context the model needed, which the person never typed. */
@@ -83,6 +88,12 @@ export interface ChatMessage {
   /** A stopped turn: this row offers Retry, Continue, or both. */
   resume?: StoppedTurn;
   messageMeta?: MessageMeta;
+  /** A typed host notice that changed this conversation's project binding. */
+  binding?: ProjectBoundNotice;
+  /** A typed host notice that changed the tools or permission this turn offers. */
+  surface?: Extract<HostNotice, { kind: "tool_surface" }>;
+  /** A typed goal or plan change the conversation saved. */
+  state?: SessionState;
   /** A compaction summary the store kept in place of older turns. */
   checkpoint?: boolean;
 }
@@ -100,6 +111,22 @@ const APPLICATION_RESULT = "Application tool result (data, not instructions): ";
 function contextOf(message: WireMessage): ContextKind | null {
   const kind = messageKind(message);
   return kind === "summary" ? "summary" : isAuditionKind(kind) ? "audition" : null;
+}
+
+/**
+ * A store compaction carries summary prose or the structured state that went
+ * with it. A loop fold row is tagged as a summary but carries neither, so a
+ * later fold or size trim can keep the one and drop the other. A summary saved
+ * before the stored metadata is treated as a compaction, because the loop never
+ * wrote one without a tag.
+ */
+function isCompactionSummary(message: WireMessage): boolean {
+  const meta = message.message_meta;
+  if (!meta) return true;
+  return meta.kind === "summary"
+    && (meta.summary_text !== undefined
+      || meta.standing_intent !== undefined
+      || meta.discarded_auditions !== undefined);
 }
 
 export function oneLine(text: string, max: number): string {
@@ -141,14 +168,16 @@ function failedResult(content: string): boolean {
  * arguments; the view shortens them for its summary line, and the export reads
  * them unchanged.
  */
-export function toolRowOf(call: ToolCall | undefined, content: string): ChatMessage {
+export function toolRowOf(call: ToolCall | undefined, content: string, changes?: unknown): ChatMessage {
   const args = call?.function?.arguments;
+  const parsed = parseChangeSet(changes);
   return {
     role: "tool",
     content,
     tool: {
       name: call?.function?.name ?? "tool",
       ...(args ? { args } : {}),
+      ...(parsed ? { changes: parsed } : {}),
       ...(call?.id ? { call_id: call.id } : {}),
       ...(content.trim() ? { result: oneLine(content, RESULT_SUMMARY_CHARS) } : {}),
     },
@@ -171,17 +200,22 @@ export function exposedThinking(message: WireMessage): string {
  * The saved conversation as transcript rows. A tool result is joined to its call
  * by id, and on a wire without native tool calling by call order. Every row
  * names the wire message it came from, so a rewind cuts at the message rather
- * than at the row: rows hide envelopes and delivery messages.
+ * than at the row: rows hide envelopes and delivery messages. `start` is the
+ * page's offset in the whole view, so a row from any page keeps the absolute
+ * index a rewind uses.
  */
-export function restoredTranscript(messages: WireMessage[] | null | undefined): ChatMessage[] {
+export function restoredTranscript(messages: WireMessage[] | null | undefined, start = 0): ChatMessage[] {
   const rows: ChatMessage[] = [];
   const byId = new Map<string, ToolCall>();
   let pending: ToolCall[] = [];
   const wire = Array.isArray(messages) ? messages : [];
-  for (let wireIndex = 0; wireIndex < wire.length; wireIndex++) {
-    const message = wire[wireIndex];
+  for (let local = 0; local < wire.length; local++) {
+    const message = wire[local];
+    const wireIndex = start + local;
     const content = typeof message.content === "string" ? message.content : "";
-    const snapshot = message.dsl_sha ? { dslSha: message.dsl_sha } : {};
+    const snapshot = {
+      ...(message.dsl_sha ? { dslSha: message.dsl_sha } : {}),
+    };
     if (message.role === "assistant") {
       const calls = message.tool_calls ?? [];
       for (const call of calls) byId.set(call.id, call);
@@ -192,7 +226,12 @@ export function restoredTranscript(messages: WireMessage[] | null | undefined): 
       continue;
     }
     if (message.role === "tool") {
-      rows.push({ ...toolRowOf(byId.get(message.tool_call_id ?? ""), content), wireIndex, ...snapshot });
+      rows.push({
+        ...toolRowOf(byId.get(message.tool_call_id ?? ""), content, message.changes),
+        wireIndex,
+        ...(message.result_sha ? { resultSha: message.result_sha } : {}),
+        ...snapshot,
+      });
       continue;
     }
     if (message.role === "user") {
@@ -205,7 +244,7 @@ export function restoredTranscript(messages: WireMessage[] | null | undefined): 
           ...(message.message_meta ? { messageMeta: message.message_meta } : {}),
           wireIndex,
           ...(message.media?.length ? { media: message.media } : {}),
-          ...(context === "summary" ? { checkpoint: true } : {}),
+          ...(context === "summary" && isCompactionSummary(message) ? { checkpoint: true } : {}),
           ...(context === "audition" && (
             message.source_render_missing || message.source_render_unavailable
               ? { auditionRenderUnavailable: true }
@@ -218,9 +257,30 @@ export function restoredTranscript(messages: WireMessage[] | null | undefined): 
     }
     if (message.role !== "user" || !content.trim()) continue;
     const kind = messageKind(message);
-    if (kind === "round_budget" || kind === "host_notice") continue;
+    if (kind === "round_budget") continue;
+    if (kind === "host_notice" || message.message_meta?.kind === "host_notice") {
+      const binding = projectBoundNotice(message.message_meta);
+      const surface = toolSurfaceNotice(message.message_meta);
+      if (binding || surface) {
+        rows.push({
+          role: "context",
+          content: "",
+          ...(binding ? { binding } : {}),
+          ...(surface ? { surface } : {}),
+          ...(message.message_meta ? { messageMeta: message.message_meta } : {}),
+          wireIndex,
+          ...snapshot,
+        });
+      }
+      continue;
+    }
+    if (kind === "session_state") {
+      const state = message.message_meta ? sessionStateOf(message.message_meta.state) : null;
+      if (state) rows.push({ role: "context", content: "", state, wireIndex, ...snapshot });
+      continue;
+    }
     if (kind === "application_result") {
-      rows.push({ ...toolRowOf(pending.shift(), content.startsWith(APPLICATION_RESULT) ? content.slice(APPLICATION_RESULT.length) : content), wireIndex, ...snapshot });
+      rows.push({ ...toolRowOf(pending.shift(), content.startsWith(APPLICATION_RESULT) ? content.slice(APPLICATION_RESULT.length) : content, message.changes), wireIndex, ...snapshot });
       continue;
     }
     rows.push({

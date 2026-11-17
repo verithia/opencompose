@@ -84,6 +84,16 @@ function installBackend(overrides: Partial<Backend> = {}): Backend {
       case "sessions_list": return [META];
       case "sessions_new": return { ...META, id: String(typed.title ?? META.id) };
       case "sessions_load": return backend.loaded;
+      case "sessions_open": {
+        const loaded = backend.loaded as { messages?: unknown[] } & Record<string, unknown>;
+        return {
+          ...loaded,
+          start: 0,
+          total: Array.isArray(loaded.messages) ? loaded.messages.length : 0,
+          revision: "0",
+          older_tokens: 0, state: [],
+        };
+      }
       case "ai_turn_start": {
         return runFakeTurn(typed as unknown as TurnStartArgs, {
           chat: async (round) => {

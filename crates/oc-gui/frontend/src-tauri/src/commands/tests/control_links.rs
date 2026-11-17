@@ -46,7 +46,7 @@ fn learn_writes_exactly_one_record_per_target() {
     assert_eq!(links[0].targets[0].formula, LinkFormula::Linear);
     assert_eq!(links[0].targets[0].smoothing_ms, 0);
     assert_eq!(
-        inner.undo.undo.len(),
+        inner.undo.undo_entries().len(),
         1,
         "re-learning a bound target is a no-op"
     );
@@ -63,7 +63,7 @@ fn learn_writes_exactly_one_record_per_target() {
 fn learned_links_serialize_and_undo_as_one_entry() {
     let mut inner = state_with_track();
     add_control_link_target_inner(&mut inner, cc(74), target("Lead", "filter.cutoff")).unwrap();
-    assert_eq!(inner.undo.undo.len(), 1);
+    assert_eq!(inner.undo.undo_entries().len(), 1);
     assert!(inner.dsl_source.contains("@control_link cc74"));
     assert!(
         inner

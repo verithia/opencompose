@@ -67,7 +67,7 @@ beforeEach(() => {
   panelStore.updateSplitRatio(0.55);
   invokeMock.mockImplementation(async (cmd: string) => {
     if (cmd === "scan_plugins") return [];
-    if (cmd === "get_undo_history") return [];
+    if (cmd === "history_page") return [];
     if (cmd === "get_transport_state") {
       return { playing: false, position_beats: 0, position_seconds: 0, duration_seconds: 0 };
     }

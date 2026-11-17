@@ -1,7 +1,7 @@
 /**
  * Storage page: SoundFont count and folder, plugin counts by format, the sample
- * cache with its clear action, the audition archive with its purge, and the
- * preferences file path.
+ * cache with its clear action, the audition archive with its purge, the data
+ * kept per project, the other app folders, and the preferences file path.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render } from "@solidjs/testing-library";
@@ -69,10 +69,12 @@ function report(overrides: Partial<StorageReport> = {}): StorageReport {
 
 let cleared = false;
 let clearedAuditions = false;
+let clearedHistory = false;
 
 function mockStorage(initial: StorageReport = report()) {
   cleared = false;
   clearedAuditions = false;
+  clearedHistory = false;
   invokeMock.mockImplementation(async (cmd: string) => {
     if (cmd === "storage_report") return initial;
     if (cmd === "clear_sample_cache") {
@@ -96,6 +98,10 @@ function mockStorage(initial: StorageReport = report()) {
           },
         },
       };
+    }
+    if (cmd === "sessions_clear_all_history") {
+      clearedHistory = true;
+      return { sessions: 2, dropped_records: 5, removed_assets: 1, freed_bytes: 2048 };
     }
     if (cmd === "open_storage_folder") return undefined;
     return undefined;
@@ -241,6 +247,30 @@ describe("the Storage page", () => {
     ).toBe(false);
   });
 
+  it("clears old conversation history after confirming", async () => {
+    askDialogMock.mockResolvedValue(true);
+    const { container } = await renderPage();
+
+    fireEvent.click(container.querySelector(".preferences-clear-history")!);
+    await vi.waitFor(() => expect(askDialogMock).toHaveBeenCalled());
+    expect(askDialogMock.mock.calls[0][0]).toBe(
+      i18n.t("preferences.storage.clearHistoryConfirm"),
+    );
+    await vi.waitFor(() =>
+      expect(container.querySelector(".preferences-history-cleared")).toBeTruthy(),
+    );
+    expect(clearedHistory).toBe(true);
+  });
+
+  it("leaves conversation history alone when the operator cancels", async () => {
+    askDialogMock.mockResolvedValue(false);
+    const { container } = await renderPage();
+
+    fireEvent.click(container.querySelector(".preferences-clear-history")!);
+    await vi.waitFor(() => expect(askDialogMock).toHaveBeenCalled());
+    expect(clearedHistory).toBe(false);
+  });
+
   it("states that the sample cache needs a saved project", async () => {
     storageStore.reset();
     invokeMock.mockReset();
@@ -291,6 +321,101 @@ describe("the Storage page", () => {
     expect(container.querySelector(".preferences-auditions-cleared")?.textContent).toBe(
       i18n.t("preferences.storage.auditionsCleared"),
     );
+  });
+
+  it("lists project data by project, gone data first, and removes only gone items after a confirmation", async () => {
+    const projectData: NonNullable<StorageReport["project_data"]> = {
+      stale_after_days: 30,
+      total_bytes: 7 * 1024 * 1024,
+      items: [
+        { kind: "note", key: "aaaaaaaaaaaaaaaa", path: "/songs/live.ocp", bytes: 1024 * 1024, count: 1, gone: false, due: false },
+        { kind: "history", key: "aaaaaaaaaaaaaaaa", path: "/songs/live.ocp", bytes: 2 * 1024 * 1024, count: 4, gone: false, due: false },
+        { kind: "history", key: "bbbbbbbbbbbbbbbb", path: "/songs/old.ocp", bytes: 3 * 1024 * 1024, count: 9, gone: true, due: true },
+        { kind: "recovery", key: "bbbbbbbbbbbbbbbb", path: "/songs/old.ocp", bytes: 1024 * 1024, count: 2, gone: true, due: false },
+      ],
+    };
+    const removed: unknown[] = [];
+    invokeMock.mockImplementation(async (command: string, args?: unknown) => {
+      if (command === "storage_report") return report({ project_data: projectData });
+      if (command === "remove_project_data") {
+        removed.push(args);
+        return { ...projectData, items: projectData.items.filter((item) => item.kind !== "history" || !item.gone) };
+      }
+      return undefined;
+    });
+    const { container } = await renderPage();
+    const block = container.querySelector(".preferences-project-data")!;
+    expect(block.textContent).toContain(i18n.t("preferences.storage.projectDataHint", { days: 30 }));
+    const groups = [...block.querySelectorAll(".preferences-data-group")];
+    expect(groups.map((group) => group.querySelector(".preferences-path")?.textContent))
+      .toEqual(["/songs/old.ocp", "/songs/live.ocp"]);
+    expect([...groups[1].querySelectorAll(".preferences-data-row")].map((row) => row.getAttribute("data-kind")))
+      .toEqual(["history", "note"]);
+    // The open or present project offers no removal.
+    expect(groups[1].querySelector(".preferences-remove-data")).toBeNull();
+    expect(groups[0].textContent).toContain(i18n.t("preferences.storage.dataDue"));
+    expect(groups[0].textContent).toContain(i18n.t("preferences.storage.dataGone"));
+
+    const remove = groups[0].querySelector('[data-kind="history"] .preferences-remove-data')!;
+    askDialogMock.mockResolvedValueOnce(false);
+    fireEvent.click(remove);
+    await vi.waitFor(() => expect(askDialogMock).toHaveBeenCalledTimes(1));
+    expect(removed).toEqual([]);
+    askDialogMock.mockResolvedValueOnce(true);
+    fireEvent.click(remove);
+    await vi.waitFor(() => expect(removed).toEqual([{ kind: "history", key: "bbbbbbbbbbbbbbbb" }]));
+    await vi.waitFor(() =>
+      expect(container.querySelector('.preferences-data-group [data-kind="history"] .preferences-remove-data')).toBeNull(),
+    );
+  });
+
+  it("lists the other app folders with their usage and rescans them", async () => {
+    const folders: NonNullable<StorageReport["app_folders"]> = [
+      { id: "runtimes", path: "/config/runtimes", files: 3, bytes: 2 * 1024 * 1024 },
+      { id: "logs", path: "/config/logs", files: 0, bytes: 0 },
+    ];
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "storage_report") return report({ app_folders: folders });
+      if (command === "storage_scan") return [{ ...folders[0], files: 1, bytes: 1024 * 1024 }];
+      return undefined;
+    });
+    const { container } = await renderPage();
+    const block = container.querySelector(".preferences-app-folders")!;
+    const runtimes = block.querySelector('[data-folder="runtimes"]')!;
+    expect(runtimes.textContent).toContain(i18n.t("preferences.storage.folder.runtimes"));
+    expect(runtimes.textContent).toContain(i18n.t("preferences.storage.folderUsage", { files: 3, size: "2.0 MiB" }));
+    expect(block.querySelector<HTMLButtonElement>('[data-folder="logs"] .preferences-open-folder')?.disabled).toBe(true);
+    fireEvent.click(runtimes.querySelector(".preferences-open-folder")!);
+    await vi.waitFor(() => expectInvoked("open_storage_folder", { path: "/config/runtimes" }));
+    fireEvent.click(block.querySelector(".preferences-scan")!);
+    await vi.waitFor(() => {
+      expectInvoked("storage_scan", { section: "app_folders" });
+      expect(container.querySelector('[data-folder="logs"]')).toBeNull();
+    });
+  });
+
+  it("counts the vocal cache in the clip cache size", async () => {
+    const mib = 1024 * 1024;
+    const empty = { dir: null, cached_bytes: 0, open_cached_bytes: 0, live_temporary_bytes: 0, budget_bytes: 0 };
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "storage_report") {
+        return report({
+          clip_pcm: {
+            decoded: empty,
+            processed: empty,
+            vocal: { dir: "/cache/vocal", files: 2, bytes: 4 * mib, budget_bytes: 1024 * mib },
+          },
+        });
+      }
+      return undefined;
+    });
+    const { container } = await renderPage();
+    const block = container.querySelector(".preferences-clip-cache")!;
+    expect(block.querySelector(".preferences-size")?.textContent).toBe("4.0 MB");
+    expect(block.querySelector(".preferences-vocal-cache")?.textContent).toContain(
+      i18n.t("preferences.storage.vocalCacheUsage", { files: 2, size: "4.0 MB", budget: "1024.0 MB" }),
+    );
+    expect(block.querySelector<HTMLButtonElement>(".preferences-clear-clip-cache")?.disabled).toBe(false);
   });
 
   it("shows the preferences file path", async () => {

@@ -142,8 +142,12 @@ fn a_take_replaces_the_recorded_span_in_one_undo_entry() {
     stop(&state);
 
     let inner = state.lock_inner();
-    assert_eq!(inner.undo.undo.len(), 1, "a take is one undo entry");
-    assert_eq!(inner.undo.undo[0].label, "record midi take");
+    assert_eq!(
+        inner.undo.undo_entries().len(),
+        1,
+        "a take is one undo entry"
+    );
+    assert_eq!(inner.undo.undo_entries()[0].tag, "record midi take");
     let events = &inner.project.patterns[0].events;
     assert_eq!(events.len(), 1, "the note inside the span is replaced");
     assert_eq!(events[0].start_beat, 0.0);
@@ -173,7 +177,7 @@ fn stopping_before_roll_drops_midi_even_after_the_nominal_count_in_duration() {
     let inner = state.lock_inner();
     assert_eq!(inner.project.patterns[0].events.len(), 1);
     assert_eq!(inner.project.patterns[0].events[0].pitch.to_midi(), 67);
-    assert!(inner.undo.undo.is_empty());
+    assert!(inner.undo.undo_entries().is_empty());
 }
 
 #[test]
@@ -308,7 +312,7 @@ fn overdub_keeps_the_notes_already_in_the_pattern() {
     stop(&state);
 
     let inner = state.lock_inner();
-    assert_eq!(inner.undo.undo.len(), 1);
+    assert_eq!(inner.undo.undo_entries().len(), 1);
     let events = &inner.project.patterns[0].events;
     assert_eq!(events.len(), 2, "the earlier note stays");
     assert_eq!(events[0].start_beat, 0.0);
@@ -327,7 +331,10 @@ fn a_take_without_notes_reports_and_adds_no_undo_entry() {
         inner.audio.midi_recorder.report.as_deref(),
         Some("Nothing was recorded: no notes arrived.")
     );
-    assert!(inner.undo.undo.is_empty(), "an empty take is not an edit");
+    assert!(
+        inner.undo.undo_entries().is_empty(),
+        "an empty take is not an edit"
+    );
     assert_eq!(inner.project, before);
 }
 
@@ -356,7 +363,7 @@ fn a_take_without_a_midi_input_is_refused() {
             "MIDI recording could not start: no MIDI input is selected. The project is unchanged."
         )
     );
-    assert!(inner.undo.undo.is_empty());
+    assert!(inner.undo.undo_entries().is_empty());
 }
 
 #[test]
@@ -438,7 +445,11 @@ fn an_input_that_dies_keeps_the_notes_it_had() {
     }
     let inner = state.lock_inner();
     assert!(!inner.audio.midi_recorder.recording(), "the take is over");
-    assert_eq!(inner.undo.undo.len(), 1, "the notes that arrived are kept");
+    assert_eq!(
+        inner.undo.undo_entries().len(),
+        1,
+        "the notes that arrived are kept"
+    );
     assert_eq!(inner.project.patterns[0].events.len(), 2);
     assert_eq!(
         inner.audio.midi_recorder.report.as_deref(),
@@ -475,7 +486,7 @@ fn an_empty_take_reports_device_input_overflow() {
             crate::midi_record::stop_inner(&mut inner).unwrap();
         }
         assert!(!inner.audio.midi_recorder.recording());
-        assert!(inner.undo.undo.is_empty());
+        assert!(inner.undo.undo_entries().is_empty());
         assert_eq!(
             inner.audio.midi_recorder.report.as_deref(),
             Some("MIDI input buffer overflow on 'Keys'. Kept 0 notes up to the last event.")
@@ -520,7 +531,7 @@ fn a_take_over_no_clip_creates_a_pattern_and_places_its_clip() {
         clip.time_range.end != clip.time_range.start,
         "the clip covers the take"
     );
-    assert_eq!(inner.undo.undo.len(), 1);
+    assert_eq!(inner.undo.undo_entries().len(), 1);
 }
 
 #[test]

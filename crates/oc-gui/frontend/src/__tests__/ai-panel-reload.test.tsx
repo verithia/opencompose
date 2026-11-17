@@ -23,7 +23,7 @@ import type { ActiveTurn, SessionMeta } from "../ai/sessions";
 import type { ProjectSnapshot } from "../types/project";
 import type { WireMessage } from "../ai/wire";
 import type { MediaAttachment } from "../ai/media";
-import { answerFakeTurn, cancelFakeTurn, emitTurnEvent, emitTurnProject, resetFakeTurns, runFakeTurn, type TurnStartArgs } from "./helpers/fakeTurn";
+import { answerFakeTurn, cancelFakeTurn, emitTurnEvent, emitTurnProject, replyFakeTurn, resetFakeTurns, runFakeTurn, type TurnStartArgs } from "./helpers/fakeTurn";
 
 const CAPABILITIES = { text: true, audio_in: false, audio_out: false, native_tool_calling: true, streaming: true };
 
@@ -105,19 +105,22 @@ const backend = {
   /** Arguments of each `ai_cancel`, in order. */
   cancels: [] as { requestId: string }[],
   sessions: [] as SessionMeta[],
-  /** What `sessions_load` returns; the panel repaints this after a reload. */
+  /** What `sessions_open` returns; the panel repaints this after a reload. */
   loaded: [] as WireMessage[],
-  /** Answers of `sessions_load`, oldest first; the last one repeats. */
+  /** Answers of `sessions_open`, oldest first; the last one repeats. */
   loads: [] as WireMessage[][],
-  /** The conversation each `sessions_load` asked for, in order. */
+  /** The conversation each `sessions_open` asked for, in order. */
   loadedIds: [] as string[],
   /** What `ai_batch_recover` answers: the committed document, or null. */
   recovered: null as { snapshot: ProjectSnapshot; unsaved?: string } | null,
   project: makeSnapshot() as ProjectSnapshot,
   /** The questions the inherited turn waits on. */
-  questions: [] as { call_id: string; tool: string; args: Record<string, unknown> }[],
+  questions: [] as ({ kind?: "approval"; call_id: string; tool: string; args: Record<string, unknown> }
+    | { kind: "user_question"; call_id: string; question: string; options?: string[]; free_text: boolean; max_chars: number })[],
   /** Every `ai_turn_answer`, in order. */
   answers: [] as Record<string, unknown>[],
+  /** Every `ai_turn_reply`, in order. */
+  replies: [] as Record<string, unknown>[],
   /** Held `ai_turn_questions` reply, when a test races it. */
   questionsReply: null as Promise<unknown> | null,
   /** True when `ai_cancel` leaves the inherited turn running for a while. */
@@ -129,7 +132,7 @@ const backend = {
   steerMessages: [] as Record<string, unknown>[],
   /** Held `ai_active_turn` replies: one test holds the next answers until it releases them. */
   activeReply: null as Promise<ActiveTurn | null> | null,
-  /** Held `sessions_load` replies: the next load waits on this once. */
+  /** Held `sessions_open` replies: the next load waits on this once. */
   loadReply: null as Promise<void> | null,
   /** Every `sessions_new`, in order. */
   newCalls: [] as Record<string, unknown>[],
@@ -186,6 +189,11 @@ function installBackend() {
         return answerFakeTurn(String(typed.requestId), String(typed.callId), typed.decision as never);
       }
       case "ai_turn_questions": return backend.questionsReply ?? backend.questions;
+      case "ai_turn_reply": {
+        backend.replies.push(typed);
+        if (backend.active && typed.requestId === backend.active.request_id) return undefined;
+        return replyFakeTurn(String(typed.requestId), String(typed.callId), typed.reply as never);
+      }
       case "ai_turn_steer": {
         expect(typed.requestId).toBe(backend.active?.request_id);
         expect(typed.sessionId).toBe(backend.active?.session_id);
@@ -213,7 +221,8 @@ function installBackend() {
       case "sessions_delete": backend.deletes.push(String(typed.id)); return undefined;
       case "sessions_compact": backend.compacts.push(String(typed.id)); return null;
       case "sessions_original": backend.originals.push(String(typed.id)); return { messages: [], compactions: 1 };
-      case "sessions_load": {
+      case "sessions_load":
+      case "sessions_open": {
         const hold = backend.loadReply;
         if (hold) {
           backend.loadReply = null;
@@ -222,7 +231,7 @@ function installBackend() {
         const id = String(typed.id ?? "s1");
         backend.loadedIds.push(id);
         const next = backend.loads.length > 0 ? backend.loads.shift()! : backend.loaded;
-        return { meta: session({ id }), messages: next, skipped: 0 };
+        return { meta: session({ id }), messages: next, skipped: 0, start: 0, total: next.length, revision: "0", older_tokens: 0, state: [] };
       }
       default: return makeSnapshot();
     }
@@ -321,6 +330,7 @@ beforeEach(() => {
   backend.activeOnce = false;
   backend.questions = [];
   backend.answers = [];
+  backend.replies = [];
   backend.chatCalls = [];
   backend.calls = [];
   backend.cancels = [];
@@ -552,6 +562,33 @@ describe("a reloaded window", () => {
     expect(document.querySelector(".ai-approval-card")).toBeNull();
   });
 
+  it("shows an inherited question and sends its reply", async () => {
+    reloadWith({ open: "s1", turn: { session: "s1", started: Date.now() } });
+    backend.active = { request_id: "r1", session_id: "s1" };
+    backend.loaded = [{ role: "user", content: "what should we do" }];
+    backend.questions = [{
+      kind: "user_question",
+      call_id: "q7",
+      question: "Which direction?",
+      options: ["Darker", "Brighter"],
+      free_text: true,
+      max_chars: 4_000,
+    }];
+    await mount();
+
+    await waitFor(() => expect(document.querySelector(".ai-question-card")).toBeTruthy());
+    expect(document.querySelector(".ai-question-card")!.textContent).toContain("Which direction?");
+    fireEvent.input(document.querySelector(".ai-question-input")!, { target: { value: "Darker, but sparse" } });
+    fireEvent.click(document.querySelector(".ai-question-submit")!);
+    await waitFor(() => expect(backend.replies).toHaveLength(1));
+    expect(backend.replies[0]).toMatchObject({
+      requestId: "r1",
+      callId: "q7",
+      reply: { text: "Darker, but sparse" },
+    });
+    expect(document.querySelector(".ai-question-card")).toBeNull();
+  });
+
   it("drops the card of a question whose wait ran out, and only that one", async () => {
     reloadWith({ open: "s1", turn: { session: "s1", started: Date.now() } });
     backend.active = { request_id: "r1", session_id: "s1" };
@@ -727,6 +764,46 @@ describe("a reloaded window", () => {
     expect(aiSession.open()).toBeNull();
     expect(rows()).toHaveLength(0);
     expect(document.body.textContent).not.toContain(i18n.t("ai.reload.settled"));
+  });
+
+  it("clears an inherited question when the panel moves to another workspace", async () => {
+    reloadWith({ open: "s1", turn: { session: "s1", started: Date.now() } });
+    backend.active = { request_id: "r1", session_id: "s1" };
+    backend.loaded = [{ role: "user", content: "what should we do" }];
+    backend.questions = [{
+      kind: "user_question",
+      call_id: "q7",
+      question: "Which direction?",
+      options: ["Darker", "Brighter"],
+      free_text: true,
+      max_chars: 4_000,
+    }];
+    await mount();
+    await waitFor(() => expect(document.querySelector(".ai-question-card")).toBeTruthy());
+
+    await workspaceStore.open("/Users/me/other");
+    await waitFor(() => expect(aiSession.open()).toBeNull());
+    expect(document.querySelector(".ai-question-card")).toBeNull();
+  });
+
+  it("clears an inherited question when its turn ends", async () => {
+    reloadWith({ open: "s1", turn: { session: "s1", started: Date.now() } });
+    backend.active = { request_id: "r1", session_id: "s1" };
+    backend.loaded = [{ role: "user", content: "what should we do" }];
+    backend.questions = [{
+      kind: "user_question",
+      call_id: "q7",
+      question: "Which direction?",
+      options: ["Darker", "Brighter"],
+      free_text: true,
+      max_chars: 4_000,
+    }];
+    await mount();
+    await waitFor(() => expect(document.querySelector(".ai-question-card")).toBeTruthy());
+
+    backend.active = null;
+    await pollRounds();
+    expect(document.querySelector(".ai-question-card")).toBeNull();
   });
 
   it("does not paint a stopped inherited turn into the workspace the panel moved to", async () => {
@@ -941,9 +1018,9 @@ describe("a reloaded window", () => {
     // The turn ends, and the repaint that reports it is held.
     const gate = deferred<void>();
     backend.loadReply = gate.promise;
-    const loads = backend.calls.filter((command) => command === "sessions_load").length;
+    const loads = backend.calls.filter((command) => command === "sessions_open").length;
     backend.active = null;
-    await waitFor(() => expect(backend.calls.filter((command) => command === "sessions_load").length).toBeGreaterThan(loads), { timeout: 2000 });
+    await waitFor(() => expect(backend.calls.filter((command) => command === "sessions_open").length).toBeGreaterThan(loads), { timeout: 2000 });
 
     // The panel leaves and comes back: the same conversation is open again, in
     // another visit of the workspace.

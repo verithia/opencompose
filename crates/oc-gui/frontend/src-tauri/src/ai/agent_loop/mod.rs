@@ -23,14 +23,16 @@ pub mod results;
 pub mod steering;
 pub mod wire;
 
+use crate::ai::sessions::tool_results::{FULL_RESULT, RESULT_SHA};
 use crate::ai::sessions::turns::APPLICATION_RESULT_PREFIX;
-use crate::ai::sessions::{MessageKind, SessionPermission, message_meta};
+use crate::ai::sessions::{CompactionFailure, MessageKind, SessionPermission, message_meta};
 use crate::ai_service::AiError;
 use gate::{Need, call_path};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::future::Future;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::watch;
 use wire::{Call, MAX_TOOL_ROUNDS, ROUNDS_LEFT_NOTICE};
 
@@ -42,29 +44,70 @@ const TRANSACTION_TOOLS: [&str; 3] = [
 ];
 /// The panel-local pager over truncated results.
 pub const READ_TOOLCALL: &str = "read_toolcall";
+/// The panel-local goal and plan writer.
+pub const PLAN_UPDATE: &str = "plan_update";
+/// The panel-local question to the person.
+pub const ASK_USER: &str = "ask_user";
+/// The panel-local subtree edit; it runs through the host, not the registry.
+pub const EDIT_SUBTREE: &str = "edit_subtree";
+
+/// The tools the loop answers itself, without the registry dispatcher.
+#[derive(Clone, Copy)]
+enum LocalTool {
+    AskUser,
+    ReadToolcall,
+    PlanUpdate,
+    EditSubtree,
+}
+
+impl LocalTool {
+    fn parse(name: &str) -> Option<Self> {
+        match name {
+            ASK_USER => Some(Self::AskUser),
+            READ_TOOLCALL => Some(Self::ReadToolcall),
+            PLAN_UPDATE => Some(Self::PlanUpdate),
+            EDIT_SUBTREE => Some(Self::EditSubtree),
+            _ => None,
+        }
+    }
+}
 
 /// How a running turn is stopped. Cloned into every place that waits.
 #[derive(Clone)]
-pub struct Cancel(Arc<watch::Sender<bool>>);
+pub struct Cancel(Arc<CancelState>);
+
+struct CancelState {
+    flag: Arc<AtomicBool>,
+    notify: watch::Sender<bool>,
+}
 
 impl Default for Cancel {
     fn default() -> Self {
-        Self(Arc::new(watch::channel(false).0))
+        Self(Arc::new(CancelState {
+            flag: Arc::new(AtomicBool::new(false)),
+            notify: watch::channel(false).0,
+        }))
     }
 }
 
 impl Cancel {
     pub fn cancel(&self) {
-        self.0.send_replace(true);
+        self.0.flag.store(true, Ordering::Release);
+        self.0.notify.send_replace(true);
     }
 
     pub fn is_cancelled(&self) -> bool {
-        *self.0.borrow()
+        self.0.flag.load(Ordering::Acquire)
+    }
+
+    /// The flag a blocking helper polls, so it needs no forwarding task.
+    pub fn flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.0.flag)
     }
 
     /// Resolves once the turn is cancelled.
     pub async fn cancelled(&self) {
-        let mut receiver = self.0.subscribe();
+        let mut receiver = self.0.notify.subscribe();
         let _ = receiver.wait_for(|cancelled| *cancelled).await;
     }
 }
@@ -75,6 +118,20 @@ pub struct Document {
     pub dsl: String,
     pub revision: u64,
     pub track_count: usize,
+}
+
+/// An applied edit: the document it left and the typed facts of what it
+/// changed, which the call's row shows.
+pub struct Edited {
+    pub document: Document,
+    pub changes: Option<oc_dsl::change::ChangeSet>,
+}
+
+/// One dispatched tool call: the payload the model reads, and the typed edit
+/// facts that belong to its saved row rather than to that payload.
+pub struct Dispatched {
+    pub value: Value,
+    pub changes: Option<oc_dsl::change::ChangeSet>,
 }
 
 /// The audio a model can take in; `None` in [`TurnSpec`] means it cannot.
@@ -98,6 +155,70 @@ pub struct ApprovalRequest {
     /// The subtree's DSL a replacement would write.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub after: Option<String>,
+}
+
+/// A question the model asks a person, carrying no project change.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct UserQuestion {
+    pub call_id: String,
+    pub question: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub options: Vec<String>,
+    pub free_text: bool,
+    /// Longest free-text answer this question accepts, so the card and the
+    /// host validate against one bound.
+    pub max_chars: usize,
+}
+
+/// Longest free-text answer a question accepts, in characters.
+pub const MAX_ANSWER_CHARS: usize = 4_000;
+
+/// A person's answer to [`UserQuestion`]. `option` indexes `options`; `text` is
+/// the free-text answer when one was typed.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub struct Reply {
+    #[serde(default)]
+    pub option: Option<usize>,
+    #[serde(default)]
+    pub text: Option<String>,
+    /// Nobody answered in time. Only the host sets it; a view cannot.
+    #[serde(skip)]
+    pub expired: bool,
+    /// The turn already holds all the questions a person may be shown.
+    #[serde(skip)]
+    pub busy: bool,
+}
+
+impl Reply {
+    /// The answer a question gets when its wait runs out.
+    pub fn expired() -> Self {
+        Self {
+            expired: true,
+            ..Self::default()
+        }
+    }
+
+    /// The refusal a question gets when the turn already holds its limit.
+    pub fn busy() -> Self {
+        Self {
+            busy: true,
+            ..Self::default()
+        }
+    }
+}
+
+/// A question a running turn waits on, as a window that reloaded reads it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PendingQuestion {
+    Approval {
+        #[serde(flatten)]
+        request: ApprovalRequest,
+    },
+    UserQuestion {
+        #[serde(flatten)]
+        request: UserQuestion,
+    },
 }
 
 /// A person's answer. `target` is the object the card named, so a refusal
@@ -136,6 +257,8 @@ pub enum TurnEvent {
     Running { call_id: String, tool: String },
     /// A call waits for a person; answered with `ai_turn_answer`.
     Ask { request: ApprovalRequest },
+    /// The model asks the person a question; answered with `ai_turn_reply`.
+    AskUser { request: UserQuestion },
     /// A question's wait ran out; the call was refused and its card is gone.
     Expired { call_id: String },
     /// A replacement the loop is about to apply under `autoreview`.
@@ -237,6 +360,10 @@ pub struct TurnOutcome {
     /// The provider or store failure that ended the turn.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<AiError>,
+    /// The typed facts the turn's committed batch produced, described once
+    /// from its base to its final document.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub changes: Option<oc_dsl::change::ChangeSet>,
 }
 
 /// What one turn is allowed to do.
@@ -260,6 +387,9 @@ pub struct TurnSpec {
     /// The model's input window in tokens; 0 when unknown. The loop folds
     /// the wire to stay inside it and refuses a send that cannot fit.
     pub context_length: u64,
+    /// Output tokens the model may write, held back from the compaction
+    /// trigger so a summary-sized answer still fits after the request.
+    pub max_output: u64,
 }
 
 /// Everything outside the loop. Every method that touches the project or
@@ -279,21 +409,35 @@ pub trait Host: Sync {
     fn begin_batch(&self, label: &str) -> impl Future<Output = Result<(), String>> + Send;
     /// Commits the turn's batch as one undo entry and writes the project file.
     fn commit_batch(&self) -> impl Future<Output = Result<(), CommitError>> + Send;
+    /// The typed facts of the open batch, read before its commit.
+    fn batch_changes(&self) -> impl Future<Output = Option<oc_dsl::change::ChangeSet>> + Send;
     /// Dispatches one registry tool. A refusal is the payload the model reads.
     fn call(
         &self,
         tool: &str,
         args: &Value,
         cancel: &Cancel,
-    ) -> impl Future<Output = Result<Value, Value>> + Send;
+    ) -> impl Future<Output = Result<Dispatched, Value>> + Send;
     /// Asks the person; `None` when nobody is there to ask.
     fn ask(&self, request: ApprovalRequest) -> impl Future<Output = Option<Decision>> + Send;
+    /// Asks the person a question; `None` when nobody is there to ask.
+    fn ask_user(&self, request: UserQuestion) -> impl Future<Output = Option<Reply>> + Send;
     /// Tools this conversation answered "always allow" for, read per call.
     fn allowed(&self) -> Vec<String>;
     /// Appends messages to the saved conversation, refusing a broken pairing,
     /// and returns their saved form: that is what the next request sends.
     fn record(&self, messages: &[Value])
     -> impl Future<Output = Result<Vec<Value>, String>> + Send;
+    /// Compacts the saved conversation mid-turn and returns the new saved
+    /// view. The host plans, calls the model with no store lock, and commits
+    /// one record; a failure leaves the saved conversation unchanged.
+    fn compact(
+        &self,
+        cancel: &Cancel,
+    ) -> impl Future<Output = Result<Vec<Value>, CompactionFailure>> + Send;
+    /// The full result a saved row recorded under `sha`, read from the saved
+    /// conversation when the in-memory cache does not hold it.
+    fn stored_result(&self, call: &str, sha: &str) -> impl Future<Output = Option<String>> + Send;
     /// Saves admitted human steering messages with their rewind snapshot.
     fn record_steering(
         &self,
@@ -320,7 +464,7 @@ pub trait Host: Sync {
         path: &str,
         dsl: &str,
         expected: &str,
-    ) -> impl Future<Output = Result<Document, String>> + Send;
+    ) -> impl Future<Output = Result<Edited, String>> + Send;
     /// A subtree's DSL, or an empty string when it is not there yet.
     fn subtree(&self, path: &str) -> impl Future<Output = String> + Send;
     /// The errors the document `after` has that `before` did not. `Err` means
@@ -348,10 +492,14 @@ enum Ending {
 /// The result of one call before it is shaped for the wire.
 struct Ran {
     result: Value,
+    changes: Option<oc_dsl::change::ChangeSet>,
     failed: bool,
     declined: bool,
     mutates: bool,
     deferred: bool,
+    /// Delivery rows the call produced after its result, such as the state
+    /// rows a plan_update records for the round.
+    rows: Vec<Value>,
 }
 
 struct Turn<'a, H: Host> {
@@ -373,7 +521,17 @@ struct Turn<'a, H: Host> {
     /// where the turn's ask sits in the wire.
     budget: Option<wire::TokenBudget>,
     ask: Option<usize>,
+    /// Leading system rows, which every resend keeps in front of the saved view.
+    system_len: usize,
+    /// Successful mid-turn compactions, bounded so a request that cannot
+    /// shrink does not call the model again every round.
+    mid_compactions: usize,
+    /// The context-share thresholds this turn already reported.
+    context_warned: [bool; 2],
 }
+
+/// How many times one turn may compact its saved conversation.
+const MAX_MID_TURN_COMPACTIONS: usize = 2;
 
 /// Runs one turn to its end. Never returns with the batch open unless its
 /// commit failed, and never leaves a call of the last round unanswered.
@@ -397,6 +555,10 @@ pub async fn run_turn<H: Host>(host: &H, spec: TurnSpec, cancel: Cancel) -> Turn
         }
     }
     let expected = host.refresh().await.dsl;
+    let system_len = wire
+        .iter()
+        .take_while(|message| message["role"] == "system")
+        .count();
     let mut turn = Turn {
         host,
         spec,
@@ -413,12 +575,22 @@ pub async fn run_turn<H: Host>(host: &H, spec: TurnSpec, cancel: Cancel) -> Turn
         nonce: turn_nonce(),
         budget: None,
         ask: None,
+        system_len,
+        mid_compactions: 0,
+        context_warned: [false; 2],
     };
     turn.budget = wire::TokenBudget::new(
         turn.spec.context_length,
         wire::offered_tool_tokens(turn.spec.toolsets.as_deref(), true),
-    );
+    )
+    .map(|budget| {
+        budget.for_compaction(
+            turn.spec.max_output,
+            crate::ai::compaction_prompt::prompt_tokens(),
+        )
+    });
     turn.ask = wire::turn_ask(&turn.wire);
+    turn.refresh_state_context();
     let ending = match turn.rounds().await {
         Ok(ending) | Err(ending) => ending,
     };
@@ -433,6 +605,7 @@ impl<H: Host> Turn<'_, H> {
         for round in 0..MAX_TOOL_ROUNDS {
             self.stop_if_cancelled()?;
             self.deliver_steering(steering::Boundary::Continue).await?;
+            self.compact_saved().await?;
             self.fit_wire()?;
             let reply = tokio::select! {
                 biased;
@@ -536,14 +709,37 @@ impl<H: Host> Turn<'_, H> {
                 }
             }
             let remaining = MAX_TOOL_ROUNDS - round - 1;
-            if remaining > 0 && remaining <= ROUNDS_LEFT_NOTICE {
-                deliveries.push(wire::rounds_left_notice(remaining));
-            }
+            deliveries.extend(self.budget_notices(remaining));
             if !deliveries.is_empty() {
                 self.push(deliveries).await?;
+                self.refresh_state_context();
             }
         }
         Ok(Ending::Cap)
+    }
+
+    /// Keeps the one derived goal-and-plan row in front of the conversation.
+    /// It is rebuilt from the saved state rows after a round writes them, and
+    /// it is never saved.
+    fn refresh_state_context(&mut self) {
+        let (goal, plan) = crate::ai::session_state::current_state(&self.wire);
+        let row = crate::ai::session_state::context_row(goal.as_ref(), plan.as_deref());
+        let context = crate::ai::session_state::CONTEXT_STATE;
+        let existing = self
+            .wire
+            .iter()
+            .position(|message| message["context"] == context);
+        match (existing, row) {
+            (Some(index), Some(row)) => self.wire[index] = row,
+            (Some(index), None) => {
+                self.wire.remove(index);
+            }
+            (None, Some(row)) => {
+                crate::ai::session_state::insert_after_system(&mut self.wire, row);
+            }
+            (None, None) => {}
+        }
+        self.ask = wire::turn_ask(&self.wire);
     }
 
     async fn deliver_steering(&mut self, boundary: steering::Boundary) -> Result<bool, Ending> {
@@ -601,6 +797,35 @@ impl<H: Host> Turn<'_, H> {
             });
             self.wire.push(message);
         }
+    }
+
+    /// Asks the host to compact the saved conversation when the wire reaches
+    /// the compaction threshold, then rebuilds the wire from the saved view.
+    /// The open round stays verbatim because rounds are saved as they happen.
+    async fn compact_saved(&mut self) -> Result<(), Ending> {
+        let Some(budget) = self.budget else {
+            return Ok(());
+        };
+        if self.mid_compactions >= MAX_MID_TURN_COMPACTIONS {
+            return Ok(());
+        }
+        if budget.measure(&self.wire) <= budget.limit() {
+            return Ok(());
+        }
+        let saved = match self.host.compact(&self.cancel).await {
+            Ok(saved) if !saved.is_empty() => saved,
+            Err(CompactionFailure::Cancelled) => return Err(Ending::Cancelled),
+            // A failed compaction leaves the saved conversation unchanged; the
+            // fold below still keeps the request inside the provider bounds.
+            Ok(_) | Err(_) => return Ok(()),
+        };
+        self.stop_if_cancelled()?;
+        let mut wire = self.wire[..self.system_len].to_vec();
+        wire.extend(saved);
+        self.wire = wire;
+        self.ask = wire::turn_ask(&self.wire);
+        self.mid_compactions += 1;
+        Ok(())
     }
 
     /// Keeps the request under the provider bounds by folding the oldest
@@ -682,10 +907,12 @@ impl<H: Host> Turn<'_, H> {
         let transaction = TRANSACTION_TOOLS.contains(&name);
         let mut ran = Ran {
             result: Value::Null,
+            changes: None,
             failed: false,
             declined: false,
             mutates: gate.modifies,
             deferred: false,
+            rows: Vec::new(),
         };
         let args = match call.args() {
             Ok(args) => args,
@@ -695,18 +922,29 @@ impl<H: Host> Turn<'_, H> {
                 return Ok(ran);
             }
         };
-        if name == READ_TOOLCALL {
-            let page = results::with_results(|store| {
-                store.page(
-                    &self.spec.scope,
-                    args.get("id").and_then(Value::as_str).unwrap_or_default(),
-                    args.get("offset").and_then(Value::as_f64),
-                    args.get("limit").and_then(Value::as_f64),
-                )
-            });
-            ran.failed = page.is_err();
-            ran.result = page.unwrap_or_else(|refusal| refusal);
-            return Ok(ran);
+        if let Some(local) = LocalTool::parse(name) {
+            if let Some(selection) = self.spec.toolsets.as_deref()
+                && !crate::ai::toolsets::offers(name, selection)
+            {
+                ran.result =
+                    crate::ai::skill_hints::refusal(&crate::ai::toolsets::refusal(name, selection));
+                ran.failed = true;
+                return Ok(ran);
+            }
+            return match local {
+                LocalTool::AskUser => self.ask_user_call(call, &args, ran).await,
+                LocalTool::ReadToolcall => Ok(self.read_toolcall(&args, ran).await),
+                LocalTool::PlanUpdate => Ok(self.plan_update(&args, ran)),
+                LocalTool::EditSubtree => self.edit_subtree(call, &args, gate.need).await.map(
+                    |(result, changes, failed, declined)| Ran {
+                        result,
+                        changes,
+                        failed,
+                        declined,
+                        ..ran
+                    },
+                ),
+            };
         }
         if gate.need == Need::Approval && name != "edit_subtree" {
             let request = ApprovalRequest {
@@ -753,24 +991,6 @@ impl<H: Host> Turn<'_, H> {
             };
             return Ok(ran);
         }
-        if name == "edit_subtree" {
-            if let Some(selection) = self.spec.toolsets.as_deref()
-                && !crate::ai::toolsets::offers(name, selection)
-            {
-                ran.result =
-                    crate::ai::skill_hints::refusal(&crate::ai::toolsets::refusal(name, selection));
-                ran.failed = true;
-                return Ok(ran);
-            }
-            return self.edit_subtree(call, &args, gate.need).await.map(
-                |(result, failed, declined)| Ran {
-                    result,
-                    failed,
-                    declined,
-                    ..ran
-                },
-            );
-        }
         if gate.modifies
             && !transaction
             && let Err(refusal) = self.open_batch().await
@@ -799,12 +1019,13 @@ impl<H: Host> Turn<'_, H> {
             .call(name, &Value::Object(shaped), &self.cancel)
             .await
         {
-            Ok(mut result) => {
+            Ok(Dispatched { mut value, changes }) => {
                 let paired = name == "audio_compare" && args.get("listen") == Some(&json!(true));
                 if paired && self.spec.audio.is_none() {
-                    result["listening"] = json!({ "status": "unsupported" });
+                    value["listening"] = json!({ "status": "unsupported" });
                 }
-                ran.result = result;
+                ran.result = value;
+                ran.changes = changes;
             }
             Err(refusal) => {
                 ran.result = refusal;
@@ -820,12 +1041,138 @@ impl<H: Host> Turn<'_, H> {
         Ok(ran)
     }
 
+    async fn ask_user_call(
+        &mut self,
+        call: &Call,
+        args: &Map<String, Value>,
+        mut ran: Ran,
+    ) -> Result<Ran, Ending> {
+        use crate::tool_registry::arguments::ToolArguments;
+        let request =
+            crate::agent_tools::question::AskUserArgs::decode(&Value::Object(args.clone()))
+                .map_err(|error| error.to_string());
+        let prompt = match request.and_then(|request| request.into_prompt()) {
+            Ok(prompt) => prompt,
+            Err(error) => {
+                ran.result = json!({ "error": error });
+                ran.failed = true;
+                return Ok(ran);
+            }
+        };
+        self.mark_started(call).await?;
+        let options = prompt.options;
+        let question = UserQuestion {
+            call_id: call.id.clone(),
+            question: prompt.question,
+            options: options.clone(),
+            free_text: prompt.free_text,
+            max_chars: MAX_ANSWER_CHARS,
+        };
+        match self.ask_user(question).await? {
+            None => ran.result = crate::agent_tools::question::unanswered("no_user"),
+            Some(reply) if reply.expired => {
+                ran.result = crate::agent_tools::question::unanswered("expired");
+            }
+            Some(reply) if reply.busy => {
+                ran.result = crate::agent_tools::question::unanswered("busy");
+            }
+            Some(reply) => {
+                let mut result = json!({ "answered": true });
+                if let Some(option) = reply.option.and_then(|index| options.get(index)) {
+                    result["option"] = json!(option);
+                }
+                if let Some(text) = reply.text.filter(|text| !text.trim().is_empty()) {
+                    result["text"] = json!(text);
+                }
+                ran.result = result;
+            }
+        }
+        Ok(ran)
+    }
+
+    async fn read_toolcall(&self, args: &Map<String, Value>, mut ran: Ran) -> Ran {
+        let id = args.get("id").and_then(Value::as_str).unwrap_or_default();
+        let scope = &self.spec.scope;
+        let cached = results::with_results(|store| store.full(scope, id).is_some());
+        if !cached
+            && let Some(sha) = self.saved_result_sha(id)
+            && let Some(text) = self.host.stored_result(id, sha).await
+        {
+            results::with_results(|store| store.remember(scope, id, text));
+        }
+        let page = results::with_results(|store| {
+            store.page(
+                scope,
+                id,
+                args.get("offset").and_then(Value::as_f64),
+                args.get("limit").and_then(Value::as_f64),
+            )
+        });
+        ran.failed = page.is_err();
+        ran.result = page.unwrap_or_else(|refusal| refusal);
+        ran
+    }
+
+    fn plan_update(&self, args: &Map<String, Value>, mut ran: Ran) -> Ran {
+        use crate::tool_registry::arguments::ToolArguments;
+        match crate::ai::plan_update::PlanUpdateArgs::decode(&Value::Object(args.clone()))
+            .map_err(|error| error.to_string())
+            .and_then(|args| args.into_states())
+        {
+            Ok(states) => {
+                ran.rows = states
+                    .iter()
+                    .map(crate::ai::session_state::state_row)
+                    .collect();
+                ran.result = json!({ "status": "ok" });
+            }
+            Err(error) => {
+                ran.result = json!({ "error": error });
+                ran.failed = true;
+            }
+        }
+        ran
+    }
+
     async fn ask(&self, request: ApprovalRequest) -> Result<Option<Decision>, Ending> {
         tokio::select! {
             biased;
             () = self.cancel.cancelled() => Err(Ending::Cancelled),
             decision = self.host.ask(request) => Ok(decision),
         }
+    }
+
+    async fn ask_user(&self, request: UserQuestion) -> Result<Option<Reply>, Ending> {
+        tokio::select! {
+            biased;
+            () = self.cancel.cancelled() => Err(Ending::Cancelled),
+            reply = self.host.ask_user(request) => Ok(reply),
+        }
+    }
+
+    /// The budget rows this round owes the model: one when the rounds run
+    /// low, and one when the measured context share first reaches 60% or 75%.
+    /// The two facts share a row when they happen in the same round.
+    fn budget_notices(&mut self, remaining: usize) -> Vec<Value> {
+        let rounds = (remaining > 0 && remaining <= ROUNDS_LEFT_NOTICE).then_some(remaining as u32);
+        let share = self.budget.map(|budget| {
+            let measured = budget.measure(&self.wire);
+            let percent = (measured as f64 / budget.window as f64 * 100.0).ceil();
+            percent.clamp(0.0, 100.0) as u8
+        });
+        let mut crossed = None;
+        if let Some(share) = share {
+            for (index, threshold) in [60u8, 75].into_iter().enumerate() {
+                if !self.context_warned[index] && share >= threshold {
+                    self.context_warned[index] = true;
+                    crossed = Some(share);
+                }
+            }
+        }
+        if rounds.is_none() && crossed.is_none() {
+            return Vec::new();
+        }
+        vec![wire::budget_notice(rounds, crossed)]
     }
 
     async fn mark_started(&self, call: &Call) -> Result<(), Ending> {
@@ -843,22 +1190,33 @@ impl<H: Host> Turn<'_, H> {
         call: &Call,
         args: &Map<String, Value>,
         need: Need,
-    ) -> Result<(Value, bool, bool), Ending> {
+    ) -> Result<(Value, Option<oc_dsl::change::ChangeSet>, bool, bool), Ending> {
         let (Some(path), Some(dsl)) = (
             args.get("path").and_then(Value::as_str),
             args.get("new_dsl").and_then(Value::as_str),
         ) else {
-            return Ok((json!({ "error": "Invalid tool arguments" }), true, false));
+            return Ok((
+                json!({ "error": "Invalid tool arguments" }),
+                None,
+                true,
+                false,
+            ));
         };
         if self.host.refresh().await.dsl != self.expected {
             return Ok((
                 json!({ "error": "Project changed during request; retry on the current project." }),
+                None,
                 true,
                 false,
             ));
         }
         if let Err(errors) = self.host.validate_edit(path, dsl).await {
-            return Ok((json!({ "valid": false, "errors": errors }), false, true));
+            return Ok((
+                json!({ "valid": false, "errors": errors }),
+                None,
+                false,
+                true,
+            ));
         }
         let before = self.host.subtree(path).await;
         match need {
@@ -875,10 +1233,15 @@ impl<H: Host> Turn<'_, H> {
                     && !decision.approved
                 {
                     if decision.expired {
-                        return Ok((gate::expired(&call.name, args), false, true));
+                        return Ok((gate::expired(&call.name, args), None, false, true));
                     }
                     let target = decision.target.as_deref().unwrap_or(path);
-                    return Ok((gate::declined(&call.name, args, Some(target)), false, true));
+                    return Ok((
+                        gate::declined(&call.name, args, Some(target)),
+                        None,
+                        false,
+                        true,
+                    ));
                 }
             }
             Need::Review => self.host.emit(TurnEvent::Preview {
@@ -892,22 +1255,19 @@ impl<H: Host> Turn<'_, H> {
         }
         self.stop_if_cancelled()?;
         if let Err(refusal) = self.open_batch().await {
-            return Ok((refusal, true, false));
+            return Ok((refusal, None, true, false));
         }
         self.mark_started(call).await?;
         match self.host.apply_edit(path, dsl, &self.expected).await {
-            Ok(document) => {
+            Ok(Edited { document, changes }) => {
                 self.expected = document.dsl.clone();
-                Ok((
-                    json!({
-                        "status": "applied", "applied": true, "path": path,
-                        "revision": document.revision, "track_count": document.track_count,
-                    }),
-                    false,
-                    false,
-                ))
+                let result = json!({
+                    "status": "applied", "applied": true, "path": path,
+                    "revision": document.revision, "track_count": document.track_count,
+                });
+                Ok((result, changes, false, false))
             }
-            Err(error) => Ok((json!({ "error": error }), true, false)),
+            Err(error) => Ok((json!({ "error": error }), None, true, false)),
         }
     }
 
@@ -947,6 +1307,19 @@ impl<H: Host> Turn<'_, H> {
         }))
     }
 
+    /// The hash a saved result row recorded for `id`, if the row is still in
+    /// the wire the turn holds.
+    fn saved_result_sha(&self, id: &str) -> Option<&str> {
+        self.wire.iter().rev().find_map(|row| {
+            let answered = row["tool_call_id"]
+                .as_str()
+                .or_else(|| row["message_meta"]["text_call"]["id"].as_str());
+            (answered == Some(id))
+                .then(|| row[RESULT_SHA].as_str())
+                .flatten()
+        })
+    }
+
     async fn finish_call(
         &mut self,
         call: &Call,
@@ -957,10 +1330,12 @@ impl<H: Host> Turn<'_, H> {
         let name = call.name.as_str();
         let Ran {
             result,
+            changes,
             failed,
             declined,
             mutates,
             deferred,
+            rows,
         } = ran;
         let transaction = TRANSACTION_TOOLS.contains(&name);
         if result["revision"].is_u64() {
@@ -984,6 +1359,7 @@ impl<H: Host> Turn<'_, H> {
         } else {
             wire::without_inline_audio(&result)
         };
+        let mut full = None;
         let content = if name == READ_TOOLCALL {
             shaped.to_string()
         } else {
@@ -994,13 +1370,23 @@ impl<H: Host> Turn<'_, H> {
             };
             let (content, keep) = wire::bounded(&shaped, failed, &call.id);
             if keep {
+                let text = shaped.to_string();
                 let scope = self.spec.scope.clone();
-                results::with_results(|store| store.remember(&scope, &call.id, shaped.to_string()));
+                results::with_results(|store| store.remember(&scope, &call.id, text.clone()));
+                full = Some(text);
             }
             content
         };
-        self.push(vec![result_message(call, native, &content)])
-            .await?;
+        let mut message = result_message(call, native, &content);
+        if let Some(changes) = changes {
+            message["changes"] = json!(changes);
+        }
+        if let Some(text) = full {
+            // The append saves this text beside the conversation and keeps
+            // only its hash on the row, so a restart still reads it.
+            message[FULL_RESULT] = json!(text);
+        }
+        self.push(vec![message]).await?;
         if rolled_back {
             deliveries.push(host_notice(
                 "Host transaction rollback: every project edit this turn made before the rollback was reverted. Earlier successful results in this turn describe intermediate states, not the current project.",
@@ -1019,6 +1405,7 @@ impl<H: Host> Turn<'_, H> {
         if name == "audio_compare" && self.spec.audio.is_some() {
             deliveries.extend(wire::delivered_comparison(&result));
         }
+        deliveries.extend(rows);
         Ok(())
     }
 
@@ -1044,6 +1431,11 @@ impl<H: Host> Turn<'_, H> {
             }
             Err(error) => save_error = Some(error),
         }
+        let changes = if self.batch {
+            self.host.batch_changes().await
+        } else {
+            None
+        };
         let commit_result = if self.batch {
             let result = self.host.commit_batch().await;
             // A save failure still committed: the batch is closed either way
@@ -1082,12 +1474,14 @@ impl<H: Host> Turn<'_, H> {
                 failed: true,
                 stop: Some(stop),
                 error: None,
+                ..TurnOutcome::default()
             },
             Ending::Empty => TurnOutcome {
                 text: "Provider returned no text.".into(),
                 failed: true,
                 stop: (self.edits > 0 || commit_error.is_some()).then_some(stop),
                 error: None,
+                ..TurnOutcome::default()
             },
             Ending::Cancelled => {
                 stop.cancelled = true;
@@ -1096,6 +1490,7 @@ impl<H: Host> Turn<'_, H> {
                     failed: true,
                     stop: Some(stop),
                     error: None,
+                    ..TurnOutcome::default()
                 }
             }
             Ending::Cap => TurnOutcome {
@@ -1107,6 +1502,7 @@ impl<H: Host> Turn<'_, H> {
                 failed: true,
                 stop: Some(stop),
                 error: None,
+                ..TurnOutcome::default()
             },
             Ending::Repeated(text) => {
                 stop.failure_kept = stop.committed;
@@ -1115,6 +1511,7 @@ impl<H: Host> Turn<'_, H> {
                     failed: true,
                     stop: Some(stop),
                     error: None,
+                    ..TurnOutcome::default()
                 }
             }
             Ending::Failed(error) => {
@@ -1130,9 +1527,13 @@ impl<H: Host> Turn<'_, H> {
                     failed: true,
                     stop: edited.then_some(stop),
                     error: Some(error),
+                    ..TurnOutcome::default()
                 }
             }
         };
+        if committed_in_memory {
+            outcome.changes = changes;
+        }
         if let Some(error) = save_error {
             outcome.failed = true;
             outcome.text = format!(

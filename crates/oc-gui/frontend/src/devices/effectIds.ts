@@ -6,7 +6,7 @@
  * family is added here once.
  */
 import type { EffectType } from "../types/project";
-import type { BuiltinEffectType } from "../components/effectIcons";
+import type { BuiltinEffectType } from "./effectNames";
 
 // Compile error when a new EffectType member has no device id below.
 export const DEVICE_IDS = {

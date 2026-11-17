@@ -8,8 +8,8 @@ import { store } from "../stores/project";
 
 const baseInvoke = invokeMock.getMockImplementation()!;
 
-function mount(tool: string, value: unknown, sessionId?: string) {
-  return render(() => <AiToolResult tool={tool} content={JSON.stringify(value)} sessionId={sessionId} />);
+function mount(tool: string, value: unknown, sessionId?: string, resultSha?: string) {
+  return render(() => <AiToolResult tool={tool} content={JSON.stringify(value)} sessionId={sessionId} resultSha={resultSha} />);
 }
 
 function testWav() {
@@ -259,13 +259,14 @@ describe("rich tool results", () => {
       if (command === "ai_tool_result") return JSON.stringify(full);
       return baseInvoke(command, args);
     });
+    const sha = "c".repeat(64);
     const view = mount("tracks_add", {
       result_truncated: true, tool_call_id: "call-snapshot", original_characters: 12000,
       preview: '{"project":{"tracks":[{"name":"pad"', tool_failed: false,
-    }, "s1");
+    }, "s1", sha);
     await waitFor(() => expect(view.getByText("pad")).toBeTruthy());
     expect(view.container.querySelector(".ai-tool-table tbody tr")).toBeTruthy();
-    expect(invokeMock).toHaveBeenCalledWith("ai_tool_result", { sessionId: "s1", callId: "call-snapshot" });
+    expect(invokeMock).toHaveBeenCalledWith("ai_tool_result", { sessionId: "s1", callId: "call-snapshot", resultSha: sha });
   });
 
   it("keeps a bounded result's preview when the full copy is gone", () => {
@@ -290,12 +291,14 @@ describe("rich tool results", () => {
       if (command === "ai_tool_result") return JSON.stringify([{ id: 0, name: "Gain", current: -6, display: "-6 dB" }]);
       return baseInvoke(command, args);
     });
+    const sha = "d".repeat(64);
     const view = mount("plugins_params", {
       result_truncated: true, tool_call_id: "call-params", original_characters: 12000,
       preview: '[{"id":0,"name":"Gain"', tool_failed: false,
-    }, "s1");
+    }, "s1", sha);
     await waitFor(() => expect(view.getByText("Gain")).toBeTruthy());
     expect(view.container.querySelectorAll(".ai-tool-table tbody tr")).toHaveLength(1);
+    expect(invokeMock).toHaveBeenCalledWith("ai_tool_result", { sessionId: "s1", callId: "call-params", resultSha: sha });
   });
 
   it("renders a top-level array as a table", () => {

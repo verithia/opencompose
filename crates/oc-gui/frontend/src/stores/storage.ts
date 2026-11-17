@@ -5,7 +5,8 @@
 import { createSignal } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
 import * as api from "./api";
-import type { StorageReport } from "./api";
+import type { ClearReport } from "../ai/sessions";
+import type { DataKind, StorageReport } from "./api";
 
 const [report, setReport] = createSignal<StorageReport | null>(null);
 const [loading, setLoading] = createSignal(false);
@@ -91,6 +92,40 @@ async function clearAuditions(): Promise<boolean> {
   }
 }
 
+/** Drop old conversation history in every session and adopt the new size. */
+async function clearOldSessionHistory(): Promise<ClearReport | null> {
+  setClearing(true);
+  try {
+    const cleared = await api.aiApi.clearAllSessionHistory();
+    const next = await api.storageReport();
+    if (isReport(next)) setReport(next);
+    setError(null);
+    setStatus(cleared && cleared.sessions > 0 ? "history-cleared" : "history-empty");
+    return cleared;
+  } catch (failure) {
+    setError(String(failure));
+    return null;
+  } finally {
+    setClearing(false);
+  }
+}
+
+/** Remove one gone project's data and adopt the new list. */
+async function removeProjectData(kind: DataKind, key: string): Promise<boolean> {
+  setClearing(true);
+  try {
+    const project_data = await api.removeProjectData(kind, key);
+    setReport((previous) => (previous ? { ...previous, project_data } : previous));
+    setError(null);
+    return true;
+  } catch (failure) {
+    setError(String(failure));
+    return false;
+  } finally {
+    setClearing(false);
+  }
+}
+
 async function openFolder(path: string): Promise<void> {
   try {
     await api.openStorageFolder(path);
@@ -139,7 +174,14 @@ async function saveSessionAudio(next: SessionAudioSettings): Promise<void> {
   if (saved && typeof saved.format === "string") setSessionAudio(saved);
 }
 
-export type StorageSection = "sessions" | "soundfonts" | "plugins" | "samples" | "clip_pcm";
+export type StorageSection =
+  | "sessions"
+  | "soundfonts"
+  | "plugins"
+  | "samples"
+  | "clip_pcm"
+  | "project_data"
+  | "app_folders";
 
 /** Re-scan one block without walking the other sections. */
 async function scan(section: StorageSection): Promise<void> {
@@ -170,6 +212,8 @@ export const storageStore = {
   clearSamples,
   clearClipPcmCache,
   clearAuditions,
+  clearOldSessionHistory,
+  removeProjectData,
   openFolder,
   reset,
 };

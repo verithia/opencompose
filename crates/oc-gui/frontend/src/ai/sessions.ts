@@ -8,6 +8,7 @@ import type { TurnStats } from "../stores/aiStats";
 import type { WireMessage } from "./wire";
 import type { PermissionMode } from "./permission";
 import { i18n } from "../stores/i18n";
+import { sessionState as sessionStateOf, type BindCause, type SessionState } from "./messageProtocol";
 
 /** What a compaction dropped and kept, from `ai_session` or `sessions_compact`. */
 export interface CompactionReport {
@@ -56,8 +57,10 @@ export interface SessionMeta {
   provider: string;
   /** Directory the conversation belongs to; `detached` when there is none. */
   workspace_key: string;
-  /** The project file it last worked on, which is not its scope. */
+  /** The project file this conversation is bound to. */
   project_path?: string | null;
+  /** A binding the next turn tells the model about. */
+  pending_binding?: { from?: string | null; cause: BindCause } | null;
   workspace?: string | null;
   /** What this conversation may do to the DSL without asking; absent on an
    * older payload, which reads as the default. */
@@ -100,6 +103,34 @@ export interface LoadedSession {
   usage_error?: AccountingError;
 }
 
+/** `sessions_open`: the newest page of a saved conversation and its span. */
+export interface LoadedPage extends LoadedSession {
+  /** Latest state from the entire view, including explicit clears. */
+  state: SessionState[];
+  /** Index in the whole view where `messages` begins. */
+  start: number;
+  /** Length of the whole view. */
+  total: number;
+  /** The view's shape, which a later page must still match. */
+  revision: string;
+  /** The panel estimate of the messages before `start`. */
+  older_tokens: number;
+}
+
+/** One older page of the whole view. */
+export interface SessionPage {
+  messages: WireMessage[];
+  start: number;
+  total: number;
+  revision: string;
+  older_tokens: number;
+}
+
+/** `sessions_page`: the page, or a refusal when the view changed shape. */
+export type SessionPageRead =
+  | ({ status: "page" } & SessionPage)
+  | { status: "stale" };
+
 /** `sessions_compact`: the conversation after folding. */
 export interface CompactionResult extends CompactionReport {
   id: string;
@@ -107,10 +138,54 @@ export interface CompactionResult extends CompactionReport {
   messages: WireMessage[];
 }
 
+/** Why a model-written summary was replaced by the mechanical one. */
+export type CompactionFailure = "provider_error" | "empty" | "conflict" | "store" | "rejected";
+
+/** Payload of the backend's `ai_session` event after a failed summary call. */
+export interface SessionCompactionFailure {
+  session_id: string;
+  notice: "compaction_failed";
+  reason: CompactionFailure;
+}
+
+/** What clearing old conversation history dropped and freed. */
+export interface ClearReport {
+  sessions: number;
+  dropped_records: number;
+  removed_assets: number;
+  freed_bytes: number;
+}
+
 export function sessionCompaction(event: unknown): SessionCompaction | null {
   const value = event as Partial<SessionCompaction> | null;
   if (!value || value.compacted !== true || typeof value.tokens_after !== "number") return null;
   return value as SessionCompaction;
+}
+
+/** The failure notice a compaction's `ai_session` event carries, if any. */
+export function sessionCompactionFailure(event: unknown): SessionCompactionFailure | null {
+  const value = event as Partial<SessionCompactionFailure> | null;
+  if (!value || value.notice !== "compaction_failed" || typeof value.session_id !== "string") return null;
+  if (value.reason !== "provider_error" && value.reason !== "empty"
+    && value.reason !== "conflict" && value.reason !== "store"
+    && value.reason !== "rejected") return null;
+  return value as SessionCompactionFailure;
+}
+
+const COMPACTION_FAILURE_KEYS = {
+  provider_error: "ai.sessions.compactionFailedProvider",
+  empty: "ai.sessions.compactionFailedEmpty",
+  conflict: "ai.sessions.compactionFailedConflict",
+  store: "ai.sessions.compactionFailedStore",
+} as const;
+
+/** The transcript line for a compaction whose summary call failed. */
+export function compactionFailureNotice(failure: SessionCompactionFailure): string {
+  // A rejected summary did reach the provider: only its text was not used.
+  if (failure.reason === "rejected") return i18n.t("ai.sessions.compactionFailedRejectedNotice");
+  return i18n.t("ai.sessions.compactionFailed", {
+    reason: i18n.t(COMPACTION_FAILURE_KEYS[failure.reason]),
+  });
 }
 
 /** The eviction report a turn's `ai_session` event carries, if it has one. */
@@ -186,6 +261,40 @@ export function loadedSession(payload: unknown): LoadedSession | null {
   return value as LoadedSession;
 }
 
+function pageSpan(value: Partial<SessionPage>): value is SessionPage {
+  return typeof value.start === "number"
+    && typeof value.total === "number"
+    && typeof value.revision === "string"
+    && typeof value.older_tokens === "number";
+}
+
+/** The newest page of a conversation, or `null` when the payload is not one. */
+export function loadedPage(payload: unknown): LoadedPage | null {
+  const session = loadedSession(payload);
+  if (!session) return null;
+  const value = payload as Partial<LoadedPage>;
+  // The backend always serializes the whole view's goal and plan state; a
+  // payload without it is not a page this build can trust.
+  const savedState = value.state;
+  if (!Array.isArray(savedState) || savedState.length > 2) return null;
+  if (!pageSpan(value)) return null;
+  // A state entry this build cannot read is dropped; it never hides the page
+  // or the conversation the panel asked to open.
+  const state = savedState.map(sessionStateOf).filter((item): item is SessionState => item !== null);
+  return { ...value, state } as LoadedPage;
+}
+
+/** An older page, or `null` when the payload names neither status. */
+export function sessionPageRead(payload: unknown): SessionPageRead | null {
+  const value = payload as Partial<{ status: string }> | null;
+  if (!value || typeof value !== "object") return null;
+  if (value.status === "stale") return { status: "stale" };
+  if (value.status !== "page") return null;
+  const page = payload as Partial<SessionPage> & { status?: string };
+  if (!Array.isArray(page.messages) || !pageSpan(page)) return null;
+  return { status: "page", ...page } as SessionPageRead;
+}
+
 /**
  * The directory the list is scoped to: the store's own record when it has one,
  * the open project's directory otherwise. Two `.ocp` files in one directory
@@ -218,5 +327,5 @@ export function directoryName(path: string | null | undefined): string | null {
 export function updatedLabel(updated: string): string {
   const at = new Date(updated);
   if (Number.isNaN(at.getTime())) return "";
-  return at.toLocaleString([], { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+  return at.toLocaleString(i18n.locale(), { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
 }

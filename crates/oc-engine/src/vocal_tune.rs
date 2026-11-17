@@ -1939,7 +1939,9 @@ pub(crate) fn render_window_with_key(
         && let Some(parent) = path.parent()
     {
         let _ = fs::create_dir_all(parent);
-        let _ = write_baked_wav(path, &outcome.samples, sample_rate);
+        if write_baked_wav(path, &outcome.samples, sample_rate).is_ok() {
+            crate::vocal_cache::after_write(path);
+        }
     }
     Ok(Some((key, outcome.samples)))
 }

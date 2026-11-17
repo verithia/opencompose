@@ -15,6 +15,9 @@ import {
   preferencesStore,
 } from "../../stores/preferencesBundle";
 import { useTooltip } from "../Tooltip";
+import { historyStorage } from "../../stores/historyStorage";
+import { bytesText } from "../../utils/bytesText";
+import { AppFoldersBlock, ProjectDataBlock } from "./ProjectDataBlocks";
 
 /** The directory part of a path, for the "open folder" action. */
 function parentOf(path: string): string {
@@ -95,6 +98,7 @@ export function StoragePage(props: { onClose: () => void }) {
   onMount(() => {
     void storageStore.load();
     void storageStore.loadSessionAudio();
+    void historyStorage.refresh();
   });
 
   const report = () => storageStore.report();
@@ -120,6 +124,15 @@ export function StoragePage(props: { onClose: () => void }) {
     } catch {
       // The next scan shows whatever is actually left on disk.
     }
+  };
+
+  /** Clears old conversation history in every session, after confirming. */
+  const clearHistory = async () => {
+    const confirmed = await ask(
+      i18n.t("preferences.storage.clearHistoryConfirm"),
+      { title: i18n.t("preferences.storage.clearHistory"), kind: "warning" },
+    );
+    if (confirmed) await storageStore.clearOldSessionHistory();
   };
 
   /** Clears both audition directories, after the operator confirms. */
@@ -236,6 +249,39 @@ export function StoragePage(props: { onClose: () => void }) {
                 </div>
               </div>
 
+              {/* Edit history: the open project's size and the notice bound. */}
+              <div class="preferences-block preferences-history">
+                <div class="preferences-block-head">
+                  <span class="preferences-fact-label">{i18n.t("preferences.storage.history")}</span>
+                  <span class="preferences-block-meta">
+                    <span class="preferences-size">
+                      {historyStorage.info()?.journaled ? bytesText(historyStorage.info()!.bytes) : ""}
+                    </span>
+                  </span>
+                </div>
+                <p class="preferences-hint">{i18n.t("preferences.storage.historyHint")}</p>
+                <label class="preferences-field">
+                  <span class="preferences-field-label">{i18n.t("preferences.storage.historyNotice")}</span>
+                  <input
+                    type="number"
+                    min="1"
+                    step="1"
+                    class="preferences-history-notice"
+                    value={Math.round(historyStorage.noticeBytes() / 1024 ** 2)}
+                    onChange={(event) => {
+                      const megabytes = Number(event.currentTarget.value);
+                      if (Number.isFinite(megabytes) && megabytes >= 1) {
+                        historyStorage.setNoticeBytes(Math.round(megabytes) * 1024 ** 2);
+                      }
+                    }}
+                  />
+                </label>
+              </div>
+
+              <Show when={loaded().project_data}>
+                {(data) => <ProjectDataBlock data={data()} />}
+              </Show>
+
               {/* Conversations: one group per workspace, one row per session. */}
               <div class="preferences-block">
                 <BlockHeader
@@ -299,6 +345,14 @@ export function StoragePage(props: { onClose: () => void }) {
                     class="toolbar-btn text-btn preferences-open-folder"
                     onClick={() => void storageStore.openFolder(loaded().sessions.root)}
                   >{i18n.t("preferences.storage.openFolder")}</button>
+                </div>
+                <div class="preferences-path-row">
+                  <button
+                    type="button"
+                    class="toolbar-btn text-btn preferences-clear-history"
+                    disabled={storageStore.clearing()}
+                    onClick={() => void clearHistory()}
+                  >{i18n.t("preferences.storage.clearHistory")}</button>
                 </div>
 
                 {/* The audition archive: delivery clips, and the renders the
@@ -444,7 +498,8 @@ export function StoragePage(props: { onClose: () => void }) {
                       label={i18n.t("preferences.storage.clipCache")}
                       size={megabytes(
                         pcm().decoded.cached_bytes + clipTemporaryBytes(pcm().decoded)
-                        + pcm().processed.cached_bytes + clipTemporaryBytes(pcm().processed),
+                        + pcm().processed.cached_bytes + clipTemporaryBytes(pcm().processed)
+                        + (pcm().vocal?.bytes ?? 0),
                       )}
                       section="clip_pcm"
                     />
@@ -456,12 +511,29 @@ export function StoragePage(props: { onClose: () => void }) {
                       label={i18n.t("preferences.storage.clipCacheProcessed")}
                       usage={pcm().processed}
                     />
+                    <Show when={pcm().vocal}>
+                      {(vocal) => (
+                        <div class="preferences-field preferences-vocal-cache">
+                          <span class="preferences-fact-label">
+                            {i18n.t("preferences.storage.clipCacheVocal")}
+                          </span>
+                          <p class="preferences-hint">
+                            {i18n.t("preferences.storage.vocalCacheUsage", {
+                              files: vocal().files,
+                              size: megabytes(vocal().bytes),
+                              budget: megabytes(vocal().budget_bytes),
+                            })}
+                          </p>
+                        </div>
+                      )}
+                    </Show>
                     <div class="preferences-path-row">
                       <button
                         type="button"
                         class="toolbar-btn text-btn preferences-clear-clip-cache"
                         disabled={storageStore.clearing()
-                          || pcm().decoded.cached_bytes + pcm().processed.cached_bytes === 0}
+                          || pcm().decoded.cached_bytes + pcm().processed.cached_bytes
+                            + (pcm().vocal?.bytes ?? 0) === 0}
                         onClick={() => void clearClipCache()}
                       >{i18n.t("preferences.storage.clipCacheClear")}</button>
                     </div>
@@ -517,6 +589,10 @@ export function StoragePage(props: { onClose: () => void }) {
                 </Show>
               </div>
 
+              <Show when={loaded().app_folders}>
+                {(folders) => <AppFoldersBlock folders={folders()} />}
+              </Show>
+
               <div class="preferences-block">
                 <div class="preferences-field">
                   <span class="preferences-field-label">{i18n.t("preferences.storage.settingsFile")}</span>
@@ -555,6 +631,18 @@ export function StoragePage(props: { onClose: () => void }) {
       <Show when={storageStore.status() === "auditions-cleared"}>
               <p class="preferences-hint preferences-auditions-cleared" role="status">
                 {i18n.t("preferences.storage.auditionsCleared")}
+              </p>
+            </Show>
+
+      <Show when={storageStore.status() === "history-cleared"}>
+              <p class="preferences-hint preferences-history-cleared" role="status">
+                {i18n.t("preferences.storage.historyCleared")}
+              </p>
+            </Show>
+
+      <Show when={storageStore.status() === "history-empty"}>
+              <p class="preferences-hint preferences-history-cleared" role="status">
+                {i18n.t("preferences.storage.historyEmpty")}
               </p>
             </Show>
           </>

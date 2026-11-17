@@ -2,6 +2,8 @@
 //! reply, shaping a tool result for the model, the audio a result delivers, and
 //! folding an over-budget wire. Nothing here touches the project or the store.
 
+use crate::ai::host_notice::HostNotice;
+use crate::ai::sessions::message_protocol::{self, MessageMeta};
 use crate::ai::sessions::{MessageKind, message_meta, turns};
 use serde_json::{Map, Value, json};
 
@@ -401,16 +403,16 @@ pub fn delivered_comparison(result: &Value) -> Vec<Value> {
     .collect()
 }
 
-/// The user message that budgets the last rounds out loud.
-pub fn rounds_left_notice(remaining: usize) -> Value {
-    let plural = if remaining == 1 { "" } else { "s" };
-    json!({
-        "role": "user",
-        "message_meta": message_meta(MessageKind::RoundBudget),
-        "content": format!(
-            "You have {remaining} tool round{plural} left in this turn. Write or answer with what you have now; if something is still missing, say what it is."
-        ),
-    })
+/// The user message that reports a turn's remaining budget as typed facts.
+pub fn budget_notice(rounds_left: Option<u32>, context_share: Option<u8>) -> Value {
+    let notice = HostNotice::Budget {
+        rounds_left,
+        context_share,
+    };
+    let meta = MessageMeta::RoundBudget {
+        notice: Some(notice.clone()),
+    };
+    message_protocol::typed_row(meta, notice.model_text())
 }
 
 /// Rows and prompt-text bytes of a wire, counted the way the request validator
@@ -447,6 +449,10 @@ pub struct TokenBudget {
     /// provider whose tokenizer counts more than the estimate is measured by
     /// what it reported.
     pub scale: f64,
+    /// Output tokens the model may write; held back from the trigger.
+    pub max_output: u64,
+    /// Tokens the compaction prompt costs; held back from the trigger.
+    pub prompt_tokens: u64,
 }
 
 /// The highest scale a report may set; anything above is a broken report.
@@ -459,6 +465,8 @@ impl TokenBudget {
             window,
             fixed,
             scale: 1.0,
+            max_output: 0,
+            prompt_tokens: 0,
         })
     }
 
@@ -485,10 +493,18 @@ impl TokenBudget {
         }
     }
 
-    /// The share of the window above which a wire is folded, the same share
-    /// that triggers the store's compaction.
+    /// The size above which a wire compacts, from the same function the store
+    /// uses so admission and the loop never disagree.
     pub fn limit(&self) -> u64 {
-        (self.window as f64 * crate::ai::sessions::AUTO_COMPACT_FRACTION) as u64
+        crate::ai::sessions::compaction_threshold(self.window, self.max_output, self.prompt_tokens)
+    }
+
+    /// Holds back the output the model may write and the compaction prompt, so
+    /// the trigger leaves room for both.
+    pub fn for_compaction(mut self, max_output: u64, prompt_tokens: u64) -> Self {
+        self.max_output = max_output;
+        self.prompt_tokens = prompt_tokens;
+        self
     }
 
     /// The share a fold aims for, so the next rounds do not fold again at once.
@@ -532,11 +548,7 @@ impl FoldLimits {
 /// Tokens the tool list of one request costs: the registry tools the
 /// selection offers, plus the result pager when the request carries it.
 pub fn offered_tool_tokens(toolsets: Option<&[String]>, pager: bool) -> u64 {
-    let mut specs = crate::ai::tool_specs_for(toolsets);
-    if pager {
-        specs.push(read_toolcall_spec());
-    }
-    specs
+    offered_tool_specs(toolsets, pager)
         .iter()
         .map(|spec| {
             crate::ai::sessions::value_tokens(&json!({
@@ -546,6 +558,28 @@ pub fn offered_tool_tokens(toolsets: Option<&[String]>, pager: bool) -> u64 {
             }))
         })
         .sum()
+}
+
+/// The tools one request offers, from the same selection the provider request
+/// uses: the registry's panel tools, plus the result pager when it applies.
+pub fn offered_tool_specs(toolsets: Option<&[String]>, pager: bool) -> Vec<crate::ai::ToolSpec> {
+    let mut specs = crate::ai::tool_specs_for(toolsets);
+    if pager {
+        specs.push(read_toolcall_spec());
+    }
+    specs
+}
+
+/// The sorted, deduplicated names a loop turn offers under a toolset
+/// selection. The transcript compares these names between turns.
+pub fn offered_tool_names(toolsets: Option<&[String]>) -> Vec<String> {
+    let mut names: Vec<String> = offered_tool_specs(toolsets, true)
+        .into_iter()
+        .map(|spec| spec.name)
+        .collect();
+    names.sort();
+    names.dedup();
+    names
 }
 
 /// The turn's ask: the newest message a person wrote that is not steering.
@@ -592,8 +626,24 @@ pub fn fold_wire(
         .iter()
         .rposition(crate::ai::sessions::is_compaction_summary)
         .map(|offset| head + offset);
+    let notices: std::collections::HashSet<usize> =
+        crate::ai::sessions::pinned_notice_indices(&messages[head..ask.unwrap_or(messages.len())])
+            .into_iter()
+            .map(|offset| head + offset)
+            .collect();
+    // The derived goal-and-plan row is not saved, so it names itself with a
+    // context marker; the newest goal and plan rows are pinned through the
+    // store's indexes. Both must survive a fold.
+    let state_context: std::collections::HashSet<usize> = messages
+        .iter()
+        .enumerate()
+        .filter(|(_, message)| message["context"] == crate::ai::session_state::CONTEXT_STATE)
+        .map(|(index, _)| index)
+        .collect();
     let pinned = |index: usize| {
         Some(index) == summary
+            || notices.contains(&index)
+            || state_context.contains(&index)
             || ask.is_some_and(|ask| {
                 index >= ask && message_kind(&messages[index]) == Some(MessageKind::User)
             })
@@ -907,9 +957,203 @@ mod tests {
     }
 
     #[test]
+    fn a_fold_keeps_the_newest_project_binding_notice() {
+        use crate::ai::host_notice::{BindCause, HostNotice, notice_row};
+        let mut wire = vec![
+            json!({"role":"system","content":"s"}),
+            user("the first ask"),
+            notice_row(&HostNotice::ProjectBound {
+                from: None,
+                to: "/songs/first.ocp".into(),
+                cause: BindCause::Chosen,
+            }),
+            notice_row(&HostNotice::ProjectBound {
+                from: Some("/songs/first.ocp".into()),
+                to: "/songs/second.ocp".into(),
+                cause: BindCause::Chosen,
+            }),
+        ];
+        for round in 0..120 {
+            native_round(&mut wire, &format!("c{round}"), 200);
+        }
+        wire.push(user("the current ask"));
+        let ask = turn_ask(&wire);
+        fold_wire(&mut wire, &FoldLimits::round(None), ask).unwrap();
+        let bound: Vec<&str> = wire
+            .iter()
+            .filter_map(|row| row["message_meta"]["notice"]["kind"].as_str())
+            .collect();
+        assert_eq!(bound, ["project_bound"]);
+        let kept = wire
+            .iter()
+            .find(|row| row["message_meta"]["notice"]["to"] == "/songs/second.ocp")
+            .expect("the newest binding is kept");
+        assert_eq!(kept["message_meta"]["notice"]["to"], "/songs/second.ocp");
+        assert!(
+            !wire
+                .iter()
+                .any(|row| row["message_meta"]["notice"]["to"] == "/songs/first.ocp"),
+            "the older binding is folded away"
+        );
+        assert_eq!(turns::check_pairing(&wire[1..]), Ok(()));
+    }
+
+    #[test]
+    fn a_fold_keeps_the_newest_goal_and_plan_and_the_derived_context_row() {
+        use crate::ai::session_state::{
+            Goal, PlanItem, PlanStatus, SessionState, StateAuthor, context_row, state_row,
+        };
+        let goal = |text: &str| {
+            state_row(&SessionState::GoalSet {
+                text: text.into(),
+                author: StateAuthor::Person,
+            })
+        };
+        let plan = |text: &str| {
+            state_row(&SessionState::PlanSet {
+                items: vec![PlanItem {
+                    text: text.into(),
+                    status: PlanStatus::InProgress,
+                }],
+            })
+        };
+        let context = |goal: &str, plan: &str| {
+            context_row(
+                Some(&Goal {
+                    text: goal.into(),
+                    author: StateAuthor::Person,
+                }),
+                Some(&[PlanItem {
+                    text: plan.into(),
+                    status: PlanStatus::InProgress,
+                }]),
+            )
+            .unwrap()
+        };
+        let mut wire = vec![
+            json!({"role":"system","content":"s"}),
+            context("new goal", "new plan"),
+            user("the first ask"),
+            goal("old goal"),
+            plan("old plan"),
+            goal("new goal"),
+            plan("new plan"),
+        ];
+        for round in 0..120 {
+            native_round(&mut wire, &format!("c{round}"), 200);
+        }
+        wire.push(user("the current ask"));
+        let ask = turn_ask(&wire);
+        fold_wire(&mut wire, &FoldLimits::round(None), ask).unwrap();
+        let kinds: Vec<&str> = wire
+            .iter()
+            .filter_map(|row| row["message_meta"]["state"]["kind"].as_str())
+            .collect();
+        assert_eq!(kinds, ["goal_set", "plan_set"]);
+        let (goal, plan) = crate::ai::session_state::current_state(&wire);
+        assert_eq!(goal.unwrap().text, "new goal");
+        assert_eq!(plan.unwrap()[0].text, "new plan");
+        let context_row = wire
+            .iter()
+            .find(|row| row["context"] == crate::ai::session_state::CONTEXT_STATE)
+            .expect("the derived row survives the fold");
+        assert_eq!(
+            context_row["content"],
+            "Goal: new goal\nPlan:\n1. [in progress] new plan"
+        );
+        assert!(context_row.get("message_meta").is_none());
+        assert_eq!(turns::check_pairing(&wire[1..]), Ok(()));
+    }
+
+    #[test]
+    fn a_fold_keeps_the_newest_tool_surface_notice() {
+        use crate::ai::host_notice::{HostNotice, notice_row};
+        let mut wire = vec![
+            json!({"role":"system","content":"s"}),
+            user("the first ask"),
+            notice_row(&HostNotice::ToolSurface {
+                added: vec!["tracks_add".into()],
+                removed: Vec::new(),
+                permission: None,
+            }),
+            notice_row(&HostNotice::ToolSurface {
+                added: vec!["tracks_remove".into()],
+                removed: vec!["tracks_add".into()],
+                permission: None,
+            }),
+        ];
+        for round in 0..120 {
+            native_round(&mut wire, &format!("c{round}"), 200);
+        }
+        wire.push(user("the current ask"));
+        let ask = turn_ask(&wire);
+        fold_wire(&mut wire, &FoldLimits::round(None), ask).unwrap();
+        let kinds: Vec<&str> = wire
+            .iter()
+            .filter_map(|row| row["message_meta"]["notice"]["kind"].as_str())
+            .collect();
+        assert_eq!(kinds, ["tool_surface"]);
+        let kept = wire
+            .iter()
+            .find(|row| row["message_meta"]["notice"]["kind"] == "tool_surface")
+            .expect("the newest surface is kept");
+        assert_eq!(
+            kept["message_meta"]["notice"]["removed"],
+            json!(["tracks_add"])
+        );
+        assert_eq!(turns::check_pairing(&wire[1..]), Ok(()));
+    }
+
+    #[test]
     fn an_unknown_window_has_no_token_budget() {
         assert!(TokenBudget::new(0, 10).is_none());
         assert!(TokenBudget::new(1, 10).is_none());
         assert!(offered_tool_tokens(None, true) > offered_tool_tokens(None, false));
+    }
+
+    #[test]
+    fn offered_tool_names_match_the_loop_request_for_each_selection() {
+        let provider = crate::commands::AiProviderEntry {
+            id: "wire-names".into(),
+            name: "Wire names".into(),
+            kind: crate::commands::ProviderKind::OpenAiChatCompletions,
+            wire: Some(crate::commands::Wire::OpenAiChatCompletions),
+            auth: Default::default(),
+            auth_provider: None,
+            oauth_allowed_hosts: Vec::new(),
+            endpoint: "https://models.example/v1/chat/completions".into(),
+            model: "third-party-model".into(),
+            models: Vec::new(),
+            context_length: 32_000,
+            max_tokens: 262_144,
+            temperature: 0.3,
+            thinking_level: "medium".into(),
+            capabilities: crate::commands::AiCapabilities {
+                text: true,
+                streaming: true,
+                ..Default::default()
+            },
+        };
+        for selection in [
+            None,
+            Some(vec!["ears".to_owned()]),
+            Some(vec!["dsl-edit".to_owned(), "transport".to_owned()]),
+        ] {
+            let toolsets = selection.as_deref();
+            // The loop sends the wire's request with the result pager attached;
+            // build both from the same production call path.
+            let (mut request, _) = crate::ai::request_from_wire(
+                &provider,
+                json!([{"role":"user","content":"hi"}]),
+                true,
+                toolsets,
+            )
+            .unwrap();
+            request.tools.push(read_toolcall_spec());
+            let mut built: Vec<String> = request.tools.into_iter().map(|tool| tool.name).collect();
+            built.sort();
+            built.dedup();
+            assert_eq!(offered_tool_names(toolsets), built, "{selection:?}");
+        }
     }
 }

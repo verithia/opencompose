@@ -34,12 +34,12 @@ beforeEach(async () => {
     if (cmd === "take_startup_project") return null;
     if (cmd === "scan_plugins") return [];
     if (cmd === "get_transport_state") return TRANSPORT_STOPPED();
-    if (cmd === "get_undo_state") return { can_undo: true, can_redo: false, undo_label: "Test", redo_label: null, undo_labels: ["Test"], redo_labels: [] };
+    if (cmd === "get_undo_state") return { can_undo: true, can_redo: false,    };
     if (cmd === "transport_play") return TRANSPORT_PLAYING();
     if (cmd === "transport_stop") return TRANSPORT_STOPPED();
     if (cmd === "transport_pause") return TRANSPORT_STOPPED();
-    if (cmd === "undo") return makeSnapshot();
-    if (cmd === "redo") return makeSnapshot();
+    if (cmd === "history_undo") return { status: "applied", snapshot: makeSnapshot() };
+    if (cmd === "history_redo") return { status: "applied", snapshot: makeSnapshot() };
     return makeSnapshot();
   });
   await store.initProject();
@@ -505,7 +505,7 @@ describe("App keyboard shortcuts", () => {
     fireEvent.keyDown(container, { key: "z", ctrlKey: true });
 
     await vi.waitFor(() => {
-      expectInvoked("undo");
+      expectInvoked("history_undo");
     }, { timeout: 500 }).catch(() => {
       // Undo shortcut may depend on focus not being in a text input
     });
@@ -516,7 +516,7 @@ describe("App keyboard shortcuts", () => {
     fireEvent.keyDown(container, { key: "z", ctrlKey: true, shiftKey: true });
 
     await vi.waitFor(() => {
-      expectInvoked("redo");
+      expectInvoked("history_redo");
     }, { timeout: 500 }).catch(() => {
       // Redo shortcut may depend on app state
     });
@@ -527,8 +527,44 @@ describe("App keyboard shortcuts", () => {
     fireEvent.keyDown(container, { key: "z", metaKey: true });
 
     await vi.waitFor(() => {
-      expectInvoked("undo");
+      expectInvoked("history_undo");
     }, { timeout: 500 }).catch(() => {});
+  });
+
+  it("names what an undo took back in the status bar", async () => {
+    const base = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation(async (cmd: string, args?: unknown) => cmd === "history_undo"
+      ? {
+        status: "applied", snapshot: makeSnapshot(),
+        brief: {
+          changes: { changes: [{ kind: "tempo", from: 120, to: 128 }], more: 0 },
+          cause: "edit",
+          author: { kind: "person" },
+        },
+      }
+      : base(cmd, args));
+    const { container } = render(() => <App />);
+    await vi.waitFor(() => expectInvoked("history_info"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    fireEvent.keyDown(container, { key: "z", ctrlKey: true });
+    await vi.waitFor(() => expect(container.querySelector('[data-history-notice="undid"]')?.textContent)
+      .toBe("Undid: Change tempo from 120 to 128 BPM (You)"));
+  });
+
+  it("says in the status bar that the agent is editing when undo is refused", async () => {
+    const base = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation(async (cmd: string, args?: unknown) => cmd === "history_undo"
+      ? { status: "refused", reason: "agent_editing" }
+      : base(cmd, args));
+    const { container } = render(() => <App />);
+    // The startup load moves the document's revision; a reply from before it
+    // belongs to an older document, so press once the app has settled.
+    await vi.waitFor(() => expectInvoked("history_info"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    fireEvent.keyDown(container, { key: "z", ctrlKey: true });
+    await vi.waitFor(() => expect(container.querySelector('[data-history-notice="agent_editing"]')?.textContent)
+      .toBe("Agent is editing the project, cannot undo."));
+    expect(store.error()).toBeNull();
   });
 
   it("Cmd/Ctrl+Shift+D exports diagnostics through the toolbar handler", async () => {

@@ -5,7 +5,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Show } from "solid-js";
 import { cleanup, fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
-import { invokeMock, makeSnapshot, openStepGroups } from "./setup";
+import { askDialogMock, invokeMock, makeSnapshot, openStepGroups } from "./setup";
 import { store } from "../stores/project";
 import { AiPanel } from "../components/AiPanel";
 import { WorkspaceChooserDialog } from "../components/WorkspaceChooser";
@@ -133,12 +133,19 @@ const backend = {
   workspacePath: null as string | null,
   recents: [] as { name: string; path: string; opened: string }[],
   compacted: [] as Record<string, unknown>[],
-  /** Whether the next `sessions_load` reports a compaction. */
+  cleared: [] as Record<string, unknown>[],
+  /** Whether the next `sessions_open` reports a compaction. */
   loadedCompacted: false,
   newCalls: [] as Record<string, unknown>[],
-  /** The reverts the panel asked for, and the document they restore. */
-  reverts: [] as { sessionId: string; index: number }[],
-  revertSnapshot: makeSnapshot(),
+  /** The recalls the panel asked for, and the document they restore. */
+  recalls: [] as { sessionId: string; index: number; undoEdits: boolean; confirmed: boolean; token?: unknown }[],
+  recallSnapshot: makeSnapshot(),
+  /** Whether the next recall with undo asks before undoing others' edits. */
+  needsConfirmation: false,
+  /** The token a confirmation was shown for. */
+  confirmationToken: { applied: 4, newest: 99 },
+  /** Saved rows whose message recorded no history position, as `session:index`. */
+  missingPositions: new Set<string>(),
   /** The request and conversation of the most recent turn start. */
   lastTurn: null as { requestId: string; sessionId: string } | null,
   /** The turn the backend reports running, if any. */
@@ -205,14 +212,20 @@ function installBackend() {
           : backend.sessions.filter((entry) => entry.workspace === place);
         return listed.map((entry) => ({ ...entry }));
       }
-      case "sessions_load": {
+      case "sessions_load":
+      case "sessions_open": {
         const meta = backend.sessions.find((entry) => entry.id === typed.id);
         if (!meta) throw "no session";
+        const messages = backend.conversations[meta.id] ?? [];
         return {
           meta: { ...meta },
-          messages: backend.conversations[meta.id] ?? [],
+          messages,
           skipped: 0,
           compacted: backend.compactedSessions.includes(meta.id) || backend.loadedCompacted,
+          start: 0,
+          total: messages.length,
+          revision: "0",
+          older_tokens: 0, state: [],
         };
       }
       case "sessions_original": {
@@ -247,13 +260,45 @@ function installBackend() {
       case "sessions_delete":
         backend.sessions = backend.sessions.filter((entry) => entry.id !== typed.id);
         return undefined;
-      case "ai_revert_before": {
+      case "ai_recall": {
+        const sessionId = String(typed.sessionId);
         const index = Number(typed.index);
-        backend.reverts.push({ sessionId: String(typed.sessionId), index });
-        backend.conversations[String(typed.sessionId)] = (backend.conversations[String(typed.sessionId)] ?? []).slice(0, index);
-        return { kept: index, snapshot: backend.revertSnapshot };
+        const undoEdits = typed.undoEdits === true;
+        const confirmed = typed.confirmed === true;
+        backend.recalls.push({
+          sessionId, index, undoEdits, confirmed,
+          ...(typed.token === undefined ? {} : { token: typed.token }),
+        });
+        const conversation = backend.conversations[sessionId] ?? [];
+        const cut = conversation[index];
+        if (undoEdits && backend.missingPositions.has(`${sessionId}:${index}`)) {
+          return { status: "refused", reason: "no_recorded_position" };
+        }
+        if (undoEdits && !confirmed && backend.needsConfirmation) {
+          return {
+            status: "needs_confirmation",
+            others: [{ author: { kind: "person" }, count: 3 }],
+            token: backend.confirmationToken,
+          };
+        }
+        if (undoEdits && confirmed && typed.token === undefined) {
+          return { status: "refused", reason: "edits_changed" };
+        }
+        backend.conversations[sessionId] = conversation.slice(0, index);
+        return {
+          status: "recalled",
+          kept: index,
+          message: {
+            content: typeof cut?.content === "string" ? cut.content : "",
+            ...(cut?.media?.length ? { media: cut.media } : {}),
+          },
+          ...(undoEdits ? { snapshot: backend.recallSnapshot } : {}),
+        };
       }
       case "ai_active_turn": return backend.active;
+      case "sessions_clear_history":
+        backend.cleared.push(typed);
+        return { sessions: 1, dropped_records: 12, removed_assets: 1, freed_bytes: 4096 };
       case "sessions_compact":
         backend.compacted.push(typed);
         return {
@@ -331,10 +376,14 @@ beforeEach(() => {
     { name: "other", path: "/Users/me/other", opened: "2026-10-28T09:00:00.000Z" },
   ];
   backend.compacted = [];
+  backend.cleared = [];
   backend.loadedCompacted = false;
   backend.newCalls = [];
-  backend.reverts = [];
-  backend.revertSnapshot = makeSnapshot();
+  backend.recalls = [];
+  backend.recallSnapshot = makeSnapshot();
+  backend.needsConfirmation = false;
+  backend.confirmationToken = { applied: 4, newest: 99 };
+  backend.missingPositions = new Set();
   backend.lastTurn = null;
   backend.active = null;
   backend.compactedSessions = [];
@@ -360,12 +409,14 @@ afterEach(() => {
 
 describe("AI panel session announcements", () => {
   it("shows a compaction the backend performed on its own", async () => {
+    aiSession.setOpen("s1");
     const view = await mountPanel();
+    await waitFor(() => expect(openTitle()).toBe("intro idea"));
     await waitFor(() => expect(handlers.ai_session?.length).toBe(1));
-    expect(view.container.textContent ?? "").not.toContain("Context compacted");
+    expect(view.container.textContent ?? "").not.toContain("Conversation compacted");
 
     emitSession({
-      session_id: "0a1b2c3d4e5f0001",
+      session_id: "s1",
       compacted: true,
       provider: "google",
       model: "gemini-4-argon",
@@ -377,17 +428,19 @@ describe("AI panel session announcements", () => {
       messages: [{ role: "user", content: "summary" }],
     });
 
-    await waitFor(() => expect(view.container.textContent ?? "").toContain("Context compacted: 24 messages"));
+    await waitFor(() => expect(view.container.textContent ?? "").toContain("Conversation compacted: 24 messages"));
     expect(view.container.textContent).toContain("12400 → 1800 tokens");
     expect(view.container.textContent).toContain("6 recent tool calls kept as text");
   });
 
   it("says which archive files an audition turn evicted", async () => {
+    aiSession.setOpen("s1");
     const view = await mountPanel();
+    await waitFor(() => expect(openTitle()).toBe("intro idea"));
     await waitFor(() => expect(handlers.ai_session?.length).toBe(1));
 
     emitSession({
-      session_id: "0a1b2c3d4e5f0001",
+      session_id: "s1",
       evicted: [
         { dir: "audition-media", file: "ab12.wav", bytes: 2_000_000 },
         { dir: "audition-renders", file: "cd34.wav", bytes: 6_000_000 },
@@ -401,13 +454,38 @@ describe("AI panel session announcements", () => {
     expect(view.container.textContent).toContain("audition-renders/cd34.wav");
   });
 
+  it("keeps another conversation's notices out of the transcript", async () => {
+    aiSession.setOpen("s1");
+    const view = await mountPanel();
+    await waitFor(() => expect(openTitle()).toBe("intro idea"));
+    emitSession({
+      session_id: "s2",
+      compacted: true,
+      provider: "google",
+      model: "gemini-4-argon",
+      dropped_from: 0,
+      dropped_to: 24,
+      tokens_before: 12400,
+      tokens_after: 1800,
+      retained_pairs: 6,
+      messages: [{ role: "user", content: "summary" }],
+    });
+    emitSession({
+      session_id: "s2",
+      evicted: [{ dir: "audition-media", file: "ab12.wav", bytes: 2_000_000 }],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(view.container.textContent ?? "").not.toContain("Conversation compacted");
+    expect(view.container.textContent ?? "").not.toContain("removed 1 file(s)");
+  });
+
   it("ignores an event that is not a compaction", async () => {
     const view = await mountPanel();
     await waitFor(() => expect(handlers.ai_session?.length).toBe(1));
     emitSession({ session_id: "x", compacted: false, tokens_before: 1, tokens_after: 1 });
     emitSession(null);
     await new Promise(resolve => setTimeout(resolve, 10));
-    expect(view.container.textContent ?? "").not.toContain("Context compacted");
+    expect(view.container.textContent ?? "").not.toContain("Conversation compacted");
   });
 });
 
@@ -551,14 +629,14 @@ describe("conversation switcher", () => {
     hydrateSessionUsage("s1", usageSnapshot("s1", 1, 120));
     const delayed = held();
     const original = invokeMock.getMockImplementation()!;
-    invokeMock.mockImplementation((command: string, args?: unknown) => command === "sessions_load" && (args as { id?: string })?.id === "s2"
+    invokeMock.mockImplementation((command: string, args?: unknown) => command === "sessions_open" && (args as { id?: string })?.id === "s2"
       ? delayed.promise : original(command, args));
     await openSwitcher(); fireEvent.click(screen.getByText("two"));
-    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("sessions_load", { id: "s2" }));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("sessions_open", { id: "s2" }));
     emitUsage(usageSnapshot("s2", 2, 2400));
     expect(openTitle()).toBe("one");
     expect(aiStats.session().input).toBe(120);
-    delayed.resolve({ meta: session({ id: "s2", title: "two" }), messages: [], skipped: 0, usage: usageSnapshot("s2", 1, 1000) });
+    delayed.resolve({ meta: session({ id: "s2", title: "two" }), messages: [], skipped: 0, usage: usageSnapshot("s2", 1, 1000), start: 0, total: 0, revision: "0", older_tokens: 0, state: [] });
     await waitFor(() => expect(openTitle()).toBe("two"));
     expect(aiStats.snapshot()?.revision).toBe(2);
     expect(aiStats.session().input).toBe(2400);
@@ -572,16 +650,16 @@ describe("conversation switcher", () => {
     const original = invokeMock.getMockImplementation()!;
     let loads = 0;
     invokeMock.mockImplementation((command: string, args?: unknown) => {
-      if (command === "sessions_load" && (args as { id?: string })?.id === "s2") {
+      if (command === "sessions_open" && (args as { id?: string })?.id === "s2") {
         loads += 1;
-        return loads === 1 ? delayed.promise : Promise.resolve({ meta: session({ id: "s2", title: "two" }), messages: [], skipped: 0, usage: usageSnapshot("s2", 2, 2400) });
+        return loads === 1 ? delayed.promise : Promise.resolve({ meta: session({ id: "s2", title: "two" }), messages: [], skipped: 0, usage: usageSnapshot("s2", 2, 2400), start: 0, total: 0, revision: "0", older_tokens: 0, state: [] });
       }
       return original(command, args);
     });
     await openSwitcher(); fireEvent.click(screen.getByText("two"));
     await waitFor(() => expect(loads).toBe(1));
     emitUsage(usageSnapshot("s2", 2, 2400));
-    delayed.resolve({ meta: session({ id: "s2", title: "two" }), messages: [], skipped: 0 });
+    delayed.resolve({ meta: session({ id: "s2", title: "two" }), messages: [], skipped: 0, start: 0, total: 0, revision: "0", older_tokens: 0, state: [] });
     await waitFor(() => expect(openTitle()).toBe("two"));
     expect(loads).toBe(2); expect(aiStats.session().input).toBe(2400);
   });
@@ -593,10 +671,10 @@ describe("conversation switcher", () => {
     let reject!: (reason: Error) => void;
     const delayed = new Promise<unknown>((_resolve, fail) => { reject = fail; });
     const original = invokeMock.getMockImplementation()!;
-    invokeMock.mockImplementation((command: string, args?: unknown) => command === "sessions_load" && (args as { id?: string })?.id === "s2"
+    invokeMock.mockImplementation((command: string, args?: unknown) => command === "sessions_open" && (args as { id?: string })?.id === "s2"
       ? delayed : original(command, args));
     await openSwitcher(); fireEvent.click(screen.getByText("two"));
-    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("sessions_load", { id: "s2" }));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("sessions_open", { id: "s2" }));
     emitUsage(usageSnapshot("s2", 2, 2400));
     reject(new Error("cannot read conversation"));
     await waitFor(() => expect(document.body.textContent).toContain("cannot read conversation"));
@@ -611,7 +689,7 @@ describe("conversation switcher", () => {
     await openSwitcher();
     const original = invokeMock.getMockImplementation()!;
     let finish!: (value: unknown) => void;
-    invokeMock.mockImplementation((command: string, args?: unknown) => command === "sessions_load"
+    invokeMock.mockImplementation((command: string, args?: unknown) => command === "sessions_open"
       ? new Promise(resolve => { finish = resolve; }) : original(command, args));
     fireEvent.click(document.querySelector(".ai-session-row-title") as HTMLElement);
     await waitFor(() => expect(finish).toBeTypeOf("function"));
@@ -619,7 +697,7 @@ describe("conversation switcher", () => {
     backend.projectPath = "/Users/me/other/next.ocp";
     backend.sessions = [];
     await store.initProject();
-    finish({ meta: session({ id: "s1", title: "old songs" }), messages: [{ role: "assistant", content: "DELAYED OLD TRANSCRIPT" }], skipped: 0, usage: usageSnapshot("s1", 1, 120) });
+    finish({ meta: session({ id: "s1", title: "old songs" }), messages: [{ role: "assistant", content: "DELAYED OLD TRANSCRIPT" }], skipped: 0, usage: usageSnapshot("s1", 1, 120), start: 0, total: 1, revision: "0", older_tokens: 0, state: [] });
     await new Promise(resolve => setTimeout(resolve, 20));
     expect(view.container.textContent).not.toContain("DELAYED OLD TRANSCRIPT");
     expect(aiSession.open()).toBeNull();
@@ -818,7 +896,7 @@ describe("conversation switcher", () => {
     await mountPanel();
     await openSwitcher();
     fireEvent.click(document.querySelector(".ai-session-row-title")!);
-    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("sessions_load", { id: "s1" }));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("sessions_open", { id: "s1" }));
     const pending = held();
     backend.chat = () => pending.promise;
     fireEvent.input(input(), { target: { value: "Listen to the mix" } });
@@ -856,7 +934,7 @@ describe("conversation switcher", () => {
     fireEvent.scroll(transcript);
     emitSession({ session_id: "s1", compacted: true, dropped_from: 0, dropped_to: 2,
       tokens_before: 1000, tokens_after: 500, retained_pairs: 1, messages: [] });
-    await waitFor(() => expect(transcript.textContent).toContain("Context compacted"));
+    await waitFor(() => expect(transcript.textContent).toContain("Conversation compacted"));
     expect(transcript.scrollTop).toBe(80);
   });
 
@@ -989,7 +1067,7 @@ describe("conversation switcher", () => {
     fireEvent.click(document.querySelector(".ai-session-row-title") as HTMLElement);
 
     await waitFor(() => expect(openTitle()).toBe("punchier kick"));
-    expect(invokeMock.mock.calls.some(([command, args]) => command === "sessions_load" && (args as Record<string, unknown>).id === "s2")).toBe(true);
+    expect(invokeMock.mock.calls.some(([command, args]) => command === "sessions_open" && (args as Record<string, unknown>).id === "s2")).toBe(true);
 
     // User row, both assistant messages and the tool call the turn made.
     expect(messagesOf("user").map((row) => row.textContent)).toEqual([expect.stringContaining("make the kick punchier")]);
@@ -1205,10 +1283,10 @@ describe("conversation switcher", () => {
 
     await waitFor(() => expect(backend.compacted).toHaveLength(1));
     expect(backend.compacted[0]).toEqual({ id: "s2" });
-    await waitFor(() => expect(document.querySelector(".ai-messages")?.textContent).toContain("Context compacted"));
+    await waitFor(() => expect(document.querySelector(".ai-messages")?.textContent).toContain("Conversation compacted"));
     const text = document.querySelector(".ai-messages")?.textContent ?? "";
-    expect(text.match(/Context compacted/g)?.length).toBe(1);
-    expect(text).toContain("Context compacted: 24 messages became a summary (12400 → 1800 tokens); 6 recent tool calls kept as text.");
+    expect(text.match(/Conversation compacted/g)?.length).toBe(1);
+    expect(text).toContain("Conversation compacted: 24 messages summarized (12400 → 1800 tokens); 6 recent tool calls kept as text.");
   });
 });
 
@@ -1263,7 +1341,7 @@ describe("the draft and the open conversation outlive the panel", () => {
     await mountPanel();
     await waitFor(() => expect(openTitle()).toBe("punchier kick"));
     await waitFor(() => expect(toolRows()).toHaveLength(1));
-    expect(invokeMock.mock.calls.filter(([command]) => command === "sessions_load")).toHaveLength(2);
+    expect(invokeMock.mock.calls.filter(([command]) => command === "sessions_open")).toHaveLength(2);
   });
 });
 
@@ -1285,7 +1363,7 @@ describe("session compaction payload", () => {
       messages: [],
     };
     expect(compactionNotice(compaction)).toBe(
-      "Context compacted: 1 messages became a summary (900 → 120 tokens); 1 recent tool call kept as text.",
+      "Conversation compacted: 1 messages summarized (900 → 120 tokens); 1 recent tool call kept as text.",
     );
   });
 
@@ -1447,12 +1525,12 @@ describe("restored transcript", () => {
     expect(savedWireIndex({ role: "user", content: "second", dslSha: sha }, saved)).toBe(3);
     expect(savedWireIndex({ role: "assistant", content: "done" }, saved)).toBe(4);
     // A row that stands for no saved message has nothing to cut to.
-    expect(savedWireIndex({ role: "system", content: "Context compacted" }, saved)).toBeNull();
+    expect(savedWireIndex({ role: "system", content: "Conversation compacted" }, saved)).toBeNull();
     expect(savedWireIndex(tool, [])).toBeNull();
   });
 });
 
-describe("reverting before a message", () => {
+describe("recalling a message", () => {
   const hiddenCall: WireMessage = {
     role: "assistant", content: null,
     tool_calls: [{ id: "call-1", type: "function", function: { name: "tracks_list", arguments: "{}" } }],
@@ -1464,8 +1542,13 @@ describe("reverting before a message", () => {
     { role: "user", content: "second take", dsl_sha: "b".repeat(64) },
     { role: "assistant", content: "Done." },
   ];
+  const labeledItem = (label: string) => screen
+    .getAllByRole("menuitem")
+    .find((item) => item.querySelector(".context-menu-label")?.textContent === label)!;
+  const plainItem = () => labeledItem("Recall message");
+  const undoItem = () => labeledItem("Recall message and undo edits");
 
-  it("offers the revert only on a person's row", async () => {
+  it("offers both recall actions only on a person's row", async () => {
     backend.conversations = { s1: conversation };
     await mountPanel();
     await openSwitcher();
@@ -1475,26 +1558,30 @@ describe("reverting before a message", () => {
     // The answer and the tool row are not points a person asked from.
     for (const index of [1, 3]) {
       fireEvent.contextMenu(messageRows()[index]);
-      expect(screen.queryByRole("menuitem", { name: /Revert to before this message/ })).toBeNull();
+      expect(screen.queryByRole("menuitem", { name: /^Recall message$/ })).toBeNull();
       fireEvent.keyDown(document, { key: "Escape" });
     }
 
     fireEvent.contextMenu(messageRows()[2]);
-    expect(screen.getByRole("menuitem", { name: /Revert to before this message/ })).toBeTruthy();
+    expect(plainItem()).toBeTruthy();
+    expect(undoItem()).toBeTruthy();
     fireEvent.keyDown(document, { key: "Escape" });
   });
 
-  it("can rewind the first prompt and restores it to the composer", async () => {
+  it("recalls the first prompt and restores it to the composer", async () => {
     backend.conversations = { s1: conversation };
     await mountPanel();
     await openSwitcher();
     fireEvent.click(document.querySelector(".ai-session-row-title")!);
     await waitFor(() => expect(messageRows()).toHaveLength(4));
     fireEvent.contextMenu(messageRows()[0]);
-    const rewind = screen.getByRole("menuitem", { name: /Revert to before this message/ });
-    expect(rewind.getAttribute("aria-disabled")).not.toBe("true");
-    fireEvent.click(rewind);
-    await waitFor(() => expect(backend.reverts).toEqual([{ sessionId: "s1", index: 0 }]));
+    expect(plainItem().getAttribute("aria-disabled")).not.toBe("true");
+    fireEvent.click(plainItem());
+    await waitFor(() =>
+      expect(backend.recalls).toEqual([
+        { sessionId: "s1", index: 0, undoEdits: false, confirmed: false },
+      ]),
+    );
     await waitFor(() => expect(input().value).toBe("first take"));
     expect(messageRows()).toHaveLength(0);
   });
@@ -1508,13 +1595,18 @@ describe("reverting before a message", () => {
 
     // Row 2 is the second ask; its message is wire 3 because of the envelope.
     fireEvent.contextMenu(messageRows()[2]);
-    fireEvent.click(screen.getByRole("menuitem", { name: /Revert to before this message/ }));
-    // One command does both halves: it keeps the wire prefix and returns the
-    // document that goes with it.
-    const reverts = () => invokeMock.mock.calls.filter(([command]) => command === "ai_revert_before");
-    await waitFor(() => expect(reverts()).toHaveLength(1));
-    expect(reverts()[0][1]).toEqual({ sessionId: "s1", index: 3 });
-    expect(backend.reverts).toEqual([{ sessionId: "s1", index: 3 }]);
+    fireEvent.click(plainItem());
+    const recalls = () => invokeMock.mock.calls.filter(([command]) => command === "ai_recall");
+    await waitFor(() => expect(recalls()).toHaveLength(1));
+    expect(recalls()[0][1]).toEqual({
+      sessionId: "s1",
+      index: 3,
+      undoEdits: false,
+      confirmed: false,
+    });
+    expect(backend.recalls).toEqual([
+      { sessionId: "s1", index: 3, undoEdits: false, confirmed: false },
+    ]);
     await waitFor(() => expect(input().value).toBe("second take"));
   });
 
@@ -1544,16 +1636,181 @@ describe("reverting before a message", () => {
     ];
     const liveUser = messageRows().find((row) => row.textContent?.includes("list the mix"))!;
     fireEvent.contextMenu(liveUser);
-    fireEvent.click(screen.getByRole("menuitem", { name: /Revert to before this message/ }));
-    await waitFor(() => expect(backend.reverts).toEqual([{ sessionId: "s1", index: 2 }]));
+    fireEvent.click(plainItem());
+    await waitFor(() =>
+      expect(backend.recalls).toEqual([
+        { sessionId: "s1", index: 2, undoEdits: false, confirmed: false },
+      ]),
+    );
   });
 
-  it("applies a revert the file did not take and says the file is behind", async () => {
+  it("recalls a live-sent message with undo edits from its saved position", async () => {
+    backend.conversations = { s1: [
+      { role: "user", content: "first take" },
+      { role: "assistant", content: "Done." },
+    ] };
+    const restored = '@project "Recalled"\n  tempo: 90\n';
+    backend.recallSnapshot = { ...makeSnapshot(), dsl_source: restored };
+    await mountPanel();
+    await openSwitcher();
+    fireEvent.click(document.querySelector(".ai-session-row-title")!);
+    await waitFor(() => expect(aiSession.open()).toBe("s1"));
+
+    backend.chat = async () => ({ role: "assistant", content: "Done: the mix is quiet." });
+    fireEvent.input(input(), { target: { value: "list the mix" } });
+    fireEvent.click(sendButton());
+    await waitFor(() => expect(backend.lastTurn?.sessionId).toBe("s1"));
+    await waitFor(() => expect(document.querySelector(".ai-pending")).toBeNull());
+
+    // The saved message records the history position the backend saved; the
+    // live row carries no wire index, so the panel matches it against the store.
+    backend.conversations.s1 = [
+      { role: "user", content: "first take" },
+      { role: "assistant", content: "Done." },
+      { role: "user", content: "list the mix" },
+      { role: "assistant", content: "Done: the mix is quiet." },
+    ];
+    const liveUser = messageRows().find((row) => row.textContent?.includes("list the mix"))!;
+    fireEvent.contextMenu(liveUser);
+    // The backend owns the position, so the live row offers the undo action.
+    expect(undoItem().getAttribute("aria-disabled")).not.toBe("true");
+    fireEvent.click(undoItem());
+    await waitFor(() => expect(backend.recalls).toEqual([
+      { sessionId: "s1", index: 2, undoEdits: true, confirmed: false },
+    ]));
+    await waitFor(() => expect(store.dslSource()).toBe(restored));
+    expect(input().value).toBe("list the mix");
+  });
+
+  it("recalls and undoes edits in one command, applying the moved document", async () => {
     backend.conversations = { s1: conversation };
+    const restored = '@project "Recalled"\n  tempo: 90\n';
+    backend.recallSnapshot = { ...makeSnapshot(), dsl_source: restored };
+    await mountPanel();
+    await openSwitcher();
+    fireEvent.click(document.querySelector(".ai-session-row-title")!);
+    await waitFor(() => expect(messageRows()).toHaveLength(4));
+
+    fireEvent.contextMenu(messageRows()[2]);
+    expect(undoItem().getAttribute("aria-disabled")).not.toBe("true");
+    fireEvent.click(undoItem());
+    await waitFor(() =>
+      expect(backend.recalls).toEqual([
+        { sessionId: "s1", index: 3, undoEdits: true, confirmed: false },
+      ]),
+    );
+    await waitFor(() => expect(store.dslSource()).toBe(restored));
+    await waitFor(() => expect(input().value).toBe("second take"));
+    expect(messageRows()).toHaveLength(2);
+  });
+
+  it("asks before undoing edits by another author, and a declined ask changes nothing", async () => {
+    backend.conversations = { s1: conversation };
+    backend.needsConfirmation = true;
+    askDialogMock.mockResolvedValueOnce(false);
+    await mountPanel();
+    await openSwitcher();
+    fireEvent.click(document.querySelector(".ai-session-row-title")!);
+    await waitFor(() => expect(messageRows()).toHaveLength(4));
+    const before = store.dslSource();
+
+    fireEvent.contextMenu(messageRows()[2]);
+    fireEvent.click(undoItem());
+    await waitFor(() => expect(askDialogMock).toHaveBeenCalledTimes(1));
+    expect(askDialogMock.mock.calls[0][0]).toBe(
+      i18n.t("ai.recall.confirm", {
+        edits: i18n.t("ai.recall.otherEdits", {
+          count: "3",
+          author: i18n.t("history.author.person"),
+        }),
+      }),
+    );
+    await waitFor(() => expect(backend.recalls).toHaveLength(1));
+    expect(backend.recalls[0]).toEqual({
+      sessionId: "s1",
+      index: 3,
+      undoEdits: true,
+      confirmed: false,
+    });
+    expect(store.dslSource()).toBe(before);
+    expect(input().value).toBe("");
+    expect(messageRows()).toHaveLength(4);
+  });
+
+  it("proceeds with confirmed undo after the person accepts", async () => {
+    backend.conversations = { s1: conversation };
+    backend.needsConfirmation = true;
+    askDialogMock.mockResolvedValueOnce(true);
+    await mountPanel();
+    await openSwitcher();
+    fireEvent.click(document.querySelector(".ai-session-row-title")!);
+    await waitFor(() => expect(messageRows()).toHaveLength(4));
+
+    fireEvent.contextMenu(messageRows()[2]);
+    fireEvent.click(undoItem());
+    await waitFor(() => expect(askDialogMock).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(backend.recalls).toHaveLength(2));
+    expect(backend.recalls[1]).toEqual({
+      sessionId: "s1",
+      index: 3,
+      undoEdits: true,
+      confirmed: true,
+      token: { applied: 4, newest: 99 },
+    });
+    await waitFor(() => expect(input().value).toBe("second take"));
+    expect(messageRows()).toHaveLength(2);
+  });
+
+  it("asks the backend for undo edits and shows its typed refusal when no position was recorded", async () => {
+    backend.conversations = { s1: [
+      { role: "user", content: "first take" },
+      { role: "assistant", content: "Done." },
+      { role: "user", content: "second take" },
+      { role: "assistant", content: "Done again." },
+    ] };
+    backend.missingPositions.add("s1:2");
+    await mountPanel();
+    await openSwitcher();
+    fireEvent.click(document.querySelector(".ai-session-row-title")!);
+    await waitFor(() => expect(messageRows()).toHaveLength(4));
+
+    fireEvent.contextMenu(messageRows()[2]);
+    const item = undoItem();
+    // The backend owns the recorded position; the menu never guesses one.
+    expect(item.getAttribute("aria-disabled")).not.toBe("true");
+    expect(item.querySelector(".context-menu-hint")?.textContent).toBe(i18n.t("ai.recall.andUndoEditsHint"));
+    fireEvent.click(item);
+    await waitFor(() => expect(backend.recalls).toEqual([{
+      sessionId: "s1",
+      index: 2,
+      undoEdits: true,
+      confirmed: false,
+    }]));
+    await waitFor(() => expect(aiWorkspace.notice()).toEqual({
+      text: i18n.t("ai.recall.refused.noRecordedPosition"),
+      tone: "error",
+    }));
+    expect(input().value).toBe("");
+    expect(messageRows()).toHaveLength(4);
+  });
+
+  it("refuses a confirmation whose edits moved after the dialog opened", async () => {
+    backend.conversations = { s1: conversation };
+    backend.needsConfirmation = true;
+    askDialogMock.mockResolvedValueOnce(true);
     const base = invokeMock.getMockImplementation()!;
     invokeMock.mockImplementation(async (command: string, args?: unknown) => {
-      const answer = await base(command, args);
-      return command === "ai_revert_before" ? { ...(answer as object), unsaved: "disk full" } : answer;
+      if (command === "ai_recall" && (args as Record<string, unknown>).confirmed === true) {
+        backend.recalls.push({
+          sessionId: "s1",
+          index: 3,
+          undoEdits: true,
+          confirmed: true,
+          token: (args as Record<string, unknown>).token,
+        });
+        return { status: "refused", reason: "edits_changed" };
+      }
+      return base(command, args);
     });
     await mountPanel();
     await openSwitcher();
@@ -1561,26 +1818,49 @@ describe("reverting before a message", () => {
     await waitFor(() => expect(messageRows()).toHaveLength(4));
 
     fireEvent.contextMenu(messageRows()[2]);
-    fireEvent.click(screen.getByRole("menuitem", { name: /Revert to before this message/ }));
-    await waitFor(() => expect(backend.reverts).toHaveLength(1));
-    // The panel settles on the reverted conversation, and the warning stays.
+    fireEvent.click(undoItem());
+    await waitFor(() => expect(backend.recalls).toHaveLength(2));
+    expect(backend.recalls[1].token).toEqual({ applied: 4, newest: 99 });
+    await waitFor(() => expect(aiWorkspace.notice()).toEqual({
+      text: i18n.t("ai.recall.refused.editsChanged"),
+      tone: "error",
+    }));
+    expect(messageRows()).toHaveLength(4);
+  });
+
+  it("applies a recall the file did not take and says the file is behind", async () => {
+    backend.conversations = { s1: conversation };
+    const base = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation(async (command: string, args?: unknown) => {
+      const answer = await base(command, args);
+      return command === "ai_recall" ? { ...(answer as object), unsaved: "disk full" } : answer;
+    });
+    await mountPanel();
+    await openSwitcher();
+    fireEvent.click(document.querySelector(".ai-session-row-title")!);
+    await waitFor(() => expect(messageRows()).toHaveLength(4));
+
+    fireEvent.contextMenu(messageRows()[2]);
+    fireEvent.click(undoItem());
+    await waitFor(() => expect(backend.recalls).toHaveLength(1));
+    // The panel settles on the recalled conversation, and the warning stays.
     await waitFor(() => expect(messageRows()).toHaveLength(2));
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(aiWorkspace.notice()).toEqual({
       // The backend sends only the reason; the sentence around it is the panel's.
-      text: "Reverted, but the project file was not written: disk full. Save the project to keep the reverted version.",
+      text: "Recalled, but the project file was not written: disk full. Save the project to keep the recalled version.",
       tone: "error",
     });
   });
 
-  it("leaves the document alone when the revert is refused", async () => {
+  it("leaves the document alone when the recall is refused", async () => {
     backend.conversations = { s1: conversation };
     const base = invokeMock.getMockImplementation()!;
     let attempts = 0;
     invokeMock.mockImplementation(async (command: string, args?: unknown) => {
-      if (command === "ai_revert_before") {
+      if (command === "ai_recall") {
         attempts += 1;
-        throw new Error("the session store refused the revert");
+        throw new Error("the session store refused the recall");
       }
       return base(command, args);
     });
@@ -1591,22 +1871,47 @@ describe("reverting before a message", () => {
     const before = store.dslSource();
 
     fireEvent.contextMenu(messageRows()[2]);
-    fireEvent.click(screen.getByRole("menuitem", { name: /Revert to before this message/ }));
+    fireEvent.click(plainItem());
     await waitFor(() => expect(attempts).toBe(1));
 
     // Nothing is applied when the command refuses: the document and the
     // conversation still describe one moment.
     expect(store.dslSource()).toBe(before);
-    expect(backend.reverts).toHaveLength(0);
+    expect(backend.recalls).toHaveLength(0);
   });
 
-  it("holds the conversation while a revert is in flight, and applies its document after the panel moved", async () => {
+  it("localizes a typed refusal from the backend", async () => {
+    backend.conversations = { s1: conversation };
+    const base = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation(async (command: string, args?: unknown) => {
+      if (command === "ai_recall") {
+        return { status: "refused", reason: "other_project" };
+      }
+      return base(command, args);
+    });
+    await mountPanel();
+    await openSwitcher();
+    fireEvent.click(document.querySelector(".ai-session-row-title")!);
+    await waitFor(() => expect(messageRows()).toHaveLength(4));
+
+    fireEvent.contextMenu(messageRows()[2]);
+    fireEvent.click(plainItem());
+    await waitFor(() =>
+      expect(aiWorkspace.notice()).toEqual({
+        text: i18n.t("ai.recall.refused.otherProject"),
+        tone: "error",
+      }),
+    );
+    expect(messageRows()).toHaveLength(4);
+  });
+
+  it("holds the conversation while a recall is in flight, and applies its document after the panel moved", async () => {
     backend.conversations = { s1: conversation };
     const base = invokeMock.getMockImplementation()!;
     let release!: () => void;
     const replied = new Promise<void>((resolve) => { release = resolve; });
     invokeMock.mockImplementation(async (command: string, args?: unknown) => {
-      if (command === "ai_revert_before") {
+      if (command === "ai_recall") {
         await replied;
       }
       return base(command, args);
@@ -1617,9 +1922,9 @@ describe("reverting before a message", () => {
     await waitFor(() => expect(messageRows()).toHaveLength(4));
 
     fireEvent.contextMenu(messageRows()[2]);
-    fireEvent.click(screen.getByRole("menuitem", { name: /Revert to before this message/ }));
-    await waitFor(() => expect(invokeMock.mock.calls.some(([command]) => command === "ai_revert_before")).toBe(true));
-    // The revert rewrites this conversation: no other one opens meanwhile, and
+    fireEvent.click(undoItem());
+    await waitFor(() => expect(invokeMock.mock.calls.some(([command]) => command === "ai_recall")).toBe(true));
+    // The recall rewrites this conversation: no other one opens meanwhile, and
     // "New conversation" says why. The list itself still opens.
     expect(switcher().disabled).toBe(false);
     const fresh = document.querySelector(".ai-session-new") as HTMLButtonElement;
@@ -1631,12 +1936,12 @@ describe("reverting before a message", () => {
     expect(messageRows()).toHaveLength(4);
 
     // The panel moves to another workspace before the reply lands. The backend
-    // already restored the document, so it is published; the conversation it
+    // already moved the document, so it is published; the conversation it
     // belonged to is off screen, so nothing is repainted into this one.
     await workspaceStore.open("/Users/me/other");
     await waitFor(() => expect(aiSession.open()).toBeNull());
-    const restored = '@project "Reverted"\n  tempo: 90\n';
-    backend.revertSnapshot = { ...makeSnapshot(), dsl_source: restored };
+    const restored = '@project "Recalled"\n  tempo: 90\n';
+    backend.recallSnapshot = { ...makeSnapshot(), dsl_source: restored };
     release();
     await waitFor(() => expect(store.dslSource()).toBe(restored));
     expect(aiSession.open()).toBeNull();
@@ -1644,7 +1949,7 @@ describe("reverting before a message", () => {
     expect(messageRows()).toHaveLength(0);
   });
 
-  it("withholds the revert in the history a compaction replaced", async () => {
+  it("withholds the recall in the history a compaction replaced", async () => {
     backend.conversations = { s1: conversation };
     backend.compactedSessions = ["s1"];
     backend.original = { s1: conversation };
@@ -1656,14 +1961,14 @@ describe("reverting before a message", () => {
     fireEvent.click(document.querySelector(".ai-transcript-earlier")!);
     await waitFor(() => expect(document.querySelector(".ai-original-banner")).toBeTruthy());
     fireEvent.contextMenu(messageRows()[2]);
-    const item = screen.getByRole("menuitem", { name: /Revert to before this message/ });
+    const item = plainItem();
     expect(item.getAttribute("aria-disabled")).toBe("true");
     expect(item.querySelector(".context-menu-hint")?.textContent).toBe(i18n.t("ai.revert.originalView"));
     fireEvent.click(item);
-    expect(backend.reverts).toHaveLength(0);
+    expect(backend.recalls).toHaveLength(0);
   });
 
-  it("withholds the revert while a turn is still writing the history", async () => {
+  it("withholds the recall while a turn is still writing the history", async () => {
     backend.conversations = { s1: conversation };
     // The conversation the inherited turn writes is the one on screen: while
     // the turn runs, the panel does not switch to another one.
@@ -1675,14 +1980,14 @@ describe("reverting before a message", () => {
     await waitFor(() => expect(document.querySelector(".ai-turn-orphan")).toBeTruthy());
 
     fireEvent.contextMenu(messageRows()[2]);
-    const item = screen.getByRole("menuitem", { name: /Revert to before this message/ });
+    const item = plainItem();
     expect(item.getAttribute("aria-disabled")).toBe("true");
     expect(item.querySelector(".context-menu-hint")?.textContent).toBe(i18n.t("ai.revert.turnRunning"));
     fireEvent.click(item);
-    expect(backend.reverts).toHaveLength(0);
+    expect(backend.recalls).toHaveLength(0);
   });
 
-  it("withholds the revert while the panel is sending a message", async () => {
+  it("withholds the recall while the panel is sending a message", async () => {
     backend.conversations = { s1: conversation };
     await mountPanel();
     await openSwitcher();
@@ -1696,7 +2001,7 @@ describe("reverting before a message", () => {
     await waitFor(() => expect(document.querySelector(".ai-send-btn.cancel")).toBeTruthy());
 
     fireEvent.contextMenu(messageRows()[2]);
-    const item = screen.getByRole("menuitem", { name: /Revert to before this message/ });
+    const item = plainItem();
     expect(item.getAttribute("aria-disabled")).toBe("true");
     expect(item.querySelector(".context-menu-hint")?.textContent).toBe(i18n.t("ai.revert.turnRunning"));
     pending.resolve({ role: "assistant", content: "Done." });
@@ -1769,7 +2074,7 @@ describe("the history a compaction replaced", () => {
     await waitFor(() => expect(banner()).toBeTruthy());
 
     // Back starts a repaint the test holds; the original is asked for again.
-    const gate = holdNext("sessions_load");
+    const gate = holdNext("sessions_open");
     fireEvent.click(document.querySelector(".ai-original-back")!);
     await waitFor(() => expect(earlier()).toBeTruthy());
     fireEvent.click(earlier());
@@ -1856,3 +2161,97 @@ describe("a stopped turn", () => {
   });
 });
 
+
+describe("compaction failures and clearing history", () => {
+  beforeEach(() => {
+    askDialogMock.mockReset();
+  });
+
+  it("writes a localized row when the summary call failed", async () => {
+    backend.sessions = [session({ id: "s1", title: "intro idea" })];
+    backend.conversations = { s1: [{ role: "user", content: "an intro" }] };
+    aiSession.setOpen("s1");
+    await mountPanel();
+    await waitFor(() => expect(openTitle()).toBe("intro idea"));
+    emitSession({ session_id: "s1", notice: "compaction_failed", reason: "provider_error" });
+    await waitFor(() => {
+      expect(document.querySelector(".ai-messages")?.textContent)
+        .toContain("the provider did not answer");
+    });
+  });
+
+  it("names a rejected summary in the transcript", async () => {
+    backend.sessions = [session({ id: "s1", title: "intro idea" })];
+    backend.conversations = { s1: [{ role: "user", content: "an intro" }] };
+    aiSession.setOpen("s1");
+    await mountPanel();
+    await waitFor(() => expect(openTitle()).toBe("intro idea"));
+    emitSession({ session_id: "s1", notice: "compaction_failed", reason: "rejected" });
+    await waitFor(() => {
+      expect(document.querySelector(".ai-messages")?.textContent)
+        .toContain("not smaller than the mechanical one");
+    });
+  });
+
+  it("ignores another conversation's failure notice", async () => {
+    backend.sessions = [session({ id: "s1", title: "intro idea" }), session({ id: "s2", title: "another idea" })];
+    backend.conversations = { s1: [{ role: "user", content: "an intro" }] };
+    aiSession.setOpen("s1");
+    await mountPanel();
+    await waitFor(() => expect(openTitle()).toBe("intro idea"));
+    emitSession({ session_id: "s2", notice: "compaction_failed", reason: "provider_error" });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(document.querySelector(".ai-messages")?.textContent)
+      .not.toContain("the provider did not answer");
+  });
+
+  it("asks before clearing old history and reports what it freed", async () => {
+    backend.sessions = [session({ id: "s1", title: "intro idea" })];
+    backend.conversations = { s1: [{ role: "user", content: "an intro" }] };
+    askDialogMock.mockResolvedValue(true);
+    aiSession.setOpen("s1");
+    await mountPanel();
+    await waitFor(() => expect(openTitle()).toBe("intro idea"));
+    const field = input();
+    fireEvent.input(field, { target: { value: "/clear" } });
+    await waitFor(() => expect(document.querySelector(".ai-command-row")).toBeTruthy());
+    fireEvent.click(document.querySelector(".ai-command-row")!);
+    await waitFor(() => expect(askDialogMock).toHaveBeenCalled());
+    await waitFor(() => expect(backend.cleared).toEqual([{ id: "s1" }]));
+  });
+
+  it("clears nothing when the confirmation is declined", async () => {
+    backend.sessions = [session({ id: "s1", title: "intro idea" })];
+    backend.conversations = { s1: [{ role: "user", content: "an intro" }] };
+    askDialogMock.mockResolvedValue(false);
+    aiSession.setOpen("s1");
+    await mountPanel();
+    await waitFor(() => expect(openTitle()).toBe("intro idea"));
+    const field = input();
+    fireEvent.input(field, { target: { value: "/clear" } });
+    await waitFor(() => expect(document.querySelector(".ai-command-row")).toBeTruthy());
+    fireEvent.click(document.querySelector(".ai-command-row")!);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(backend.cleared).toEqual([]);
+  });
+
+  it("marks a store compaction as a checkpoint but not a loop fold row", () => {
+    const rows = restoredTranscript([
+      {
+        role: "user",
+        context: "summary",
+        content: "Conversation summary written 2026-11-03. Standing intent: mix.",
+        message_meta: { version: 1, kind: "summary", discarded_auditions: 0 },
+      },
+      {
+        role: "user",
+        context: "summary",
+        content: "Wire compaction: older messages were folded into this line.",
+        message_meta: { version: 1, kind: "summary" },
+      },
+    ]);
+    expect(rows[0].checkpoint).toBe(true);
+    expect(rows[1].context).toBe("summary");
+    expect(rows[1].checkpoint).toBeUndefined();
+  });
+});

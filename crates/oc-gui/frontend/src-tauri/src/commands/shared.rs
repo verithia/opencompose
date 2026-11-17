@@ -92,6 +92,7 @@ enum AudioSync {
 
 enum PresetValidation {
     Changed,
+    #[cfg(test)]
     Historical,
 }
 
@@ -110,6 +111,8 @@ impl From<AudioSync> for ResyncOptions {
 }
 
 /// A stored snapshot keeps its exact legacy parameters while new edits validate.
+/// Tests use it to restore a saved document the way an older recall did.
+#[cfg(test)]
 pub(crate) fn resync_restored_with_undo(
     inner: &mut crate::state::AppStateInner,
     old_project: ast::Project,

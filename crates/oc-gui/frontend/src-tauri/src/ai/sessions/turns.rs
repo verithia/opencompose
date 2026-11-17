@@ -17,7 +17,7 @@
 //! both protocols keep the same guarantee.
 
 use super::message_protocol::{self, MessageKind, MessageMeta};
-use super::{Store, VERSION, append_records, now, read_view, saved_message, write_meta};
+use super::{Store, VERSION, now, read_view, saved_message, write_meta};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashSet;
@@ -252,6 +252,7 @@ pub fn is_round_delivery(message: &Value) -> bool {
                     | MessageKind::ComparisonReference
                     | MessageKind::ComparisonCandidate
                     | MessageKind::HostNotice
+                    | MessageKind::SessionState
                     | MessageKind::RoundBudget
                     | MessageKind::ProposalOutcome
             )
@@ -306,8 +307,9 @@ pub fn close_open_typed(view: &[Value], started: &HashSet<String>) -> Vec<Closed
                 "role": "user",
                 "content": format!("{APPLICATION_RESULT_PREFIX}{content}"),
             });
-            let mut meta = MessageMeta::new(MessageKind::ApplicationResult);
-            meta.text_call = Some(message_protocol::TextCall { id, tool });
+            let meta = MessageMeta::ApplicationResult {
+                text_call: Some(message_protocol::TextCall { id, tool }),
+            };
             message_protocol::tag(&mut message, meta);
             Closed { message, state }
         })
@@ -366,17 +368,53 @@ fn write_started(dir: &Path, started: &HashSet<String>) -> Result<(), String> {
     crate::private_fs::write_atomic(&path, &bytes).map_err(|error| format!("sessions: {error}"))
 }
 
-/// Where a revert cuts: the index of a user message and the snapshot that was
-/// taken just before it was sent.
+/// Where a recall cuts: the index of a person's message and the history
+/// position it recorded.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-pub struct RevertPoint {
+pub struct RecallPoint {
     pub keep: usize,
-    pub dsl_sha: String,
     /// The saved message itself: a cut checks it is still the message at
     /// `keep`, so a compaction in between refuses the cut instead of moving it.
     pub message: Value,
-    /// The project file the message was sent against, when it was recorded.
-    pub project: Option<std::path::PathBuf>,
+    /// The edit-history position the message was sent from, when it has one.
+    pub history_at: Option<super::HistoryAt>,
+}
+
+/// Why a row is not a recall point.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RecallPointError {
+    /// No message at the index, or it is not a person's message.
+    NotAPersonMessage,
+    Store(String),
+}
+
+impl From<String> for RecallPointError {
+    fn from(message: String) -> Self {
+        Self::Store(message)
+    }
+}
+
+/// Why the cut did not happen.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CutFailure {
+    /// The conversation moved since the point was chosen.
+    ConversationChanged,
+    /// The recorded root no longer matches the oldest retained document.
+    PositionCleared,
+    Store(String),
+}
+
+impl From<String> for CutFailure {
+    fn from(message: String) -> Self {
+        Self::Store(message)
+    }
+}
+
+/// The project a person's turn was sent against, written beside its snapshot.
+pub struct SnapshotAt<'a> {
+    pub dsl: &'a str,
+    pub project: Option<&'a Path>,
+    pub history: Option<&'a super::HistoryAt>,
 }
 
 impl Store {
@@ -399,10 +437,9 @@ impl Store {
         id: &str,
         messages: &[Value],
         incarnation: Option<&str>,
-        dsl: &str,
-        project: Option<&Path>,
+        snapshot: SnapshotAt<'_>,
     ) -> Result<Vec<Value>, String> {
-        self.append_turn_at(id, messages, incarnation, Some((dsl, project)))
+        self.append_turn_at(id, messages, incarnation, Some(snapshot))
     }
 
     fn append_turn_at(
@@ -410,7 +447,7 @@ impl Store {
         id: &str,
         messages: &[Value],
         incarnation: Option<&str>,
-        snapshot: Option<(&str, Option<&Path>)>,
+        snapshot: Option<SnapshotAt<'_>>,
     ) -> Result<Vec<Value>, String> {
         let _lock = self.mutation_lock()?;
         let (dir, mut meta) = self.find(id)?;
@@ -426,12 +463,19 @@ impl Store {
         let mut archived = messages.to_vec();
         let settings = crate::gui_settings::load().session_audio;
         super::persist_auditions(&self.root, &mut archived, &settings)?;
+        super::tool_results::archive(&dir, &mut archived)?;
         let mut added: Vec<Value> = archived.iter().filter_map(saved_message).collect();
         if added.is_empty() {
             return Ok(added);
         }
-        if let Some((dsl, project)) = snapshot {
-            super::versions::attach(&dir, &mut added, Some(dsl), project)?;
+        if let Some(snapshot) = snapshot {
+            super::versions::attach(
+                &dir,
+                &mut added,
+                Some(snapshot.dsl),
+                snapshot.project,
+                snapshot.history,
+            )?;
         }
         let start = view.len();
         view.extend(added.iter().cloned());
@@ -451,15 +495,14 @@ impl Store {
         }
         let record = super::turn_record(&now(), added);
         let saved = record.messages.clone();
-        append_records(&dir, &[record])?;
+        let appended = self.append(&dir, &[record])?;
         // The round is saved, so the append succeeded whatever happens to the
         // markers. A marker that outlives its call only makes that call read
         // as "outcome unknown" if it is ever left open, the cautious side.
         if (rewrite && before > 0) || started.len() != before {
             spend_started(&dir, &started);
         }
-        let (view, _) = read_view(&dir)?;
-        meta.tokens = super::estimate_tokens(&view);
+        meta.tokens = appended.kept_tokens(&view);
         meta.updated = now();
         write_meta(&dir, &meta)?;
         Ok(saved)
@@ -508,9 +551,9 @@ impl Store {
         let closed = close_open_typed(&view, &started);
         if !closed.is_empty() {
             let messages = closed.iter().map(|closed| closed.message.clone()).collect();
-            append_records(dir, &[super::turn_record(&now(), messages)])?;
+            let appended = self.append(dir, &[super::turn_record(&now(), messages)])?;
             let (view, _) = read_view(dir)?;
-            meta.tokens = super::estimate_tokens(&view);
+            meta.tokens = appended.kept_tokens(&view);
             meta.updated = now();
             write_meta(dir, meta)?;
         }
@@ -518,26 +561,27 @@ impl Store {
         Ok(closed)
     }
 
-    /// The user message a revert targets, checked against the saved
-    /// conversation: it must be a person's message that carries a snapshot.
-    pub fn revert_point(&self, id: &str, index: usize) -> Result<RevertPoint, String> {
+    /// The person's message a recall targets, checked against the saved
+    /// conversation.
+    pub fn recall_point(&self, id: &str, index: usize) -> Result<RecallPoint, RecallPointError> {
         let (dir, _) = self.find(id)?;
         let (view, _) = read_view(&dir)?;
-        revert_point_in(&view, index)
+        recall_point_in(&view, index)
     }
 
-    /// Cuts the conversation just before the user message `expected` names.
-    /// The cut lands on a user message, so it never separates a call from its
-    /// result, and the compaction history behind the view is kept. Two messages
-    /// sent against one document share a snapshot, so the whole message is
-    /// compared, not only its snapshot.
-    pub fn cut_before_user(&self, id: &str, expected: &RevertPoint) -> Result<usize, String> {
+    /// Cuts the conversation just before the person's message `expected`
+    /// names. The cut lands on a user message, so it never separates a call
+    /// from its result, and the compaction history behind the view is kept.
+    /// Two messages sent against one document share a snapshot, so the whole
+    /// message is compared, not only its snapshot.
+    pub fn cut_before_user(&self, id: &str, expected: &RecallPoint) -> Result<usize, CutFailure> {
         let index = expected.keep;
         let _lock = self.mutation_lock()?;
         let (dir, mut meta) = self.find(id)?;
         let (view, _) = read_view(&dir)?;
-        if revert_point_in(&view, index)?.message != expected.message {
-            return Err("The conversation changed since this revert was chosen; try again.".into());
+        let point = recall_point_in(&view, index).map_err(|_| CutFailure::ConversationChanged)?;
+        if point.message != expected.message {
+            return Err(CutFailure::ConversationChanged);
         }
         let kept: Vec<Value> = view[..index].to_vec();
         // A trim record replaces the view and keeps the turns before it on
@@ -555,34 +599,35 @@ impl Store {
             truncated: None,
             messages: kept.clone(),
         };
-        append_records(&dir, &[record])?;
-        write_started(&dir, &HashSet::new())?;
-        meta.tokens = super::estimate_tokens(&kept);
+        let appended = self.append(&dir, &[record])?;
+        // The saved record is the commit point: the cut happened even when the
+        // marker or the metadata cannot follow it, and both are derived state
+        // a reload rebuilds from the record.
+        spend_started(&dir, &HashSet::new());
+        meta.tokens = appended.kept_tokens(&kept);
         meta.updated = now();
-        write_meta(&dir, &meta)?;
+        if let Err(error) = write_meta(&dir, &meta) {
+            log::warn!(
+                "[ai] session metadata not written in {}: {error}",
+                dir.display()
+            );
+        }
         Ok(kept.len())
     }
 }
 
-fn revert_point_in(view: &[Value], index: usize) -> Result<RevertPoint, String> {
-    let message = view
-        .get(index)
-        .ok_or_else(|| format!("No message {index} in this conversation"))?;
+fn recall_point_in(view: &[Value], index: usize) -> Result<RecallPoint, RecallPointError> {
+    let message = view.get(index).ok_or(RecallPointError::NotAPersonMessage)?;
     if message["role"] != "user" || message_protocol::kind(message) != Some(MessageKind::User) {
-        return Err("Only a message you sent can be reverted to".into());
+        return Err(RecallPointError::NotAPersonMessage);
     }
-    let dsl_sha = message["dsl_sha"]
-        .as_str()
-        .ok_or("This message has no project snapshot to restore")?
-        .to_owned();
-    let project = message["dsl_project"]
-        .as_str()
-        .map(std::path::PathBuf::from);
-    Ok(RevertPoint {
+    let history_at = message
+        .get("history_at")
+        .and_then(super::HistoryAt::from_saved);
+    Ok(RecallPoint {
         keep: index,
-        dsl_sha,
-        project,
         message: message.clone(),
+        history_at,
     })
 }
 
@@ -614,6 +659,56 @@ mod tests {
     }
 
     #[test]
+    fn an_append_keeps_tokens_equal_to_the_reloaded_view() {
+        let (_root, store, id) = fixture();
+        store
+            .append_turn(&id, &[user("go"), round(&["a"])], None)
+            .unwrap();
+        let view = store.view(&id).unwrap();
+        let (_, meta) = store.find(&id).unwrap();
+        assert_eq!(meta.tokens, super::super::estimate_tokens(&view));
+
+        store.append_turn(&id, &[result("a")], None).unwrap();
+        let view = store.view(&id).unwrap();
+        let (_, meta) = store.find(&id).unwrap();
+        assert_eq!(meta.tokens, super::super::estimate_tokens(&view));
+    }
+
+    #[test]
+    fn an_append_the_cap_trimmed_counts_the_view_it_kept() {
+        let (_root, store, id) = fixture();
+        let store = store.with_session_cap(100_000);
+        let filler = "x".repeat(60_000);
+        store
+            .append_turn(
+                &id,
+                &[
+                    user(&format!("old {filler}")),
+                    user(&format!("new {filler}")),
+                ],
+                None,
+            )
+            .unwrap();
+        let view = store.view(&id).unwrap();
+        let (_, meta) = store.find(&id).unwrap();
+        assert!(
+            view[0]["content"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("dropped"),
+            "the cap replaced the view and states what it dropped"
+        );
+        assert!(
+            view.iter().all(|row| !row["content"]
+                .as_str()
+                .unwrap_or_default()
+                .starts_with("old ")),
+            "the older row is gone"
+        );
+        assert_eq!(meta.tokens, super::super::estimate_tokens(&view));
+    }
+
+    #[test]
     fn preparation_after_a_crash_tells_a_lost_result_from_a_call_never_run() {
         let (_root, store, id) = fixture();
         store
@@ -629,11 +724,16 @@ mod tests {
                 None,
                 super::super::PrepareContext {
                     snapshot: None,
+                    history: None,
                     overhead: 0,
                     context_length: 0,
+                    max_output: 0,
+                    prompt_tokens: 0,
                     facts: &facts,
                     provider: "p",
                     model: "m",
+                    outside: None,
+                    surface: None,
                 },
             )
             .unwrap();
@@ -809,11 +909,16 @@ mod tests {
         let facts = super::super::ProjectFacts::default();
         let context = || super::super::PrepareContext {
             snapshot: None,
+            history: None,
             overhead: 0,
             context_length: 0,
+            max_output: 0,
+            prompt_tokens: 0,
             facts: &facts,
             provider: "p",
             model: "m",
+            outside: None,
+            surface: None,
         };
         // A client's orphan result would refuse every later append.
         let error = store
@@ -945,7 +1050,7 @@ mod tests {
         // Saved that way, the conversation still accepts the next round.
         let (_root, store, id) = fixture();
         let (dir, _) = store.find(&id).unwrap();
-        super::super::append_records(
+        let _ = super::super::append_records(
             &dir,
             &[super::super::turn_record(
                 &now(),
@@ -1096,8 +1201,10 @@ mod tests {
         let (_root, store, id) = fixture();
         let mut first = user("first");
         first["dsl_sha"] = json!("a".repeat(64));
+        first["history_at"] = json!({"project": "/songs/song.ocp", "level": 0});
         let mut second = user("second");
         second["dsl_sha"] = json!("b".repeat(64));
+        second["history_at"] = json!({"project": "/songs/song.ocp", "level": 2, "at": 7});
         store
             .append_turn(
                 &id,
@@ -1113,15 +1220,23 @@ mod tests {
             )
             .unwrap();
         assert!(
-            store.revert_point(&id, 2).is_err(),
-            "a tool result is not a revert point"
+            store.recall_point(&id, 2).is_err(),
+            "a tool result is not a recall point"
         );
         assert!(
-            store.revert_point(&id, 1).is_err(),
+            store.recall_point(&id, 1).is_err(),
             "an assistant round is not one either"
         );
-        let point = store.revert_point(&id, 4).unwrap();
-        assert_eq!(point.dsl_sha, "b".repeat(64));
+        let point = store.recall_point(&id, 4).unwrap();
+        assert_eq!(
+            point.history_at,
+            Some(super::super::HistoryAt {
+                project: "/songs/song.ocp".into(),
+                level: 2,
+                at: Some(7),
+                max_id: 0,
+            })
+        );
         // A cut chosen against another message (the conversation moved under
         // the revert) changes nothing, even when that message names the same
         // snapshot.

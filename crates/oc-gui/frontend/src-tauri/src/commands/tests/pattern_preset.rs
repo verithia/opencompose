@@ -79,7 +79,11 @@ fn one_pattern_preset_edit_is_one_undo_entry() {
     set_pattern_preset_blocking(&state, "riff".into(), Some("dark".into())).unwrap();
 
     let mut inner = state.lock_inner();
-    assert_eq!(inner.undo.undo.len(), 1, "one edit is one undo entry");
+    assert_eq!(
+        inner.undo.undo_entries().len(),
+        1,
+        "one edit is one undo entry"
+    );
     let mut project = inner.project.clone();
     inner.undo.undo(&mut project).expect("one undo entry");
     assert_eq!(

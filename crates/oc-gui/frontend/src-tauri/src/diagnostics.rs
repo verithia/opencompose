@@ -4,13 +4,51 @@
 use oc_diag::time::format_unix_seconds as timestamp;
 use std::collections::BTreeMap;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
-use tauri::Manager;
 
 use crate::state::AppState;
+
+/// The stem of the log file the ordinary logger writes. It does not start with
+/// the diagnostics program name, so pruning diagnostics logs never removes it.
+pub const APP_LOG_NAME: &str = "opencompose-app";
+
+/// The log folder of a selected profile.
+pub fn profile_log_dir() -> Option<PathBuf> {
+    selected_profile().map(|root| log_dir_in(Some(&root)))
+}
+
+/// Where this app writes its logs: `<profile>/logs` when a profile is selected,
+/// otherwise the platform log directory. The diagnostics logger, the ordinary
+/// logger and the Storage page resolve the folder here, so all three name the
+/// same place.
+pub fn log_dir() -> PathBuf {
+    log_dir_in(selected_profile().as_deref())
+}
+
+fn selected_profile() -> Option<PathBuf> {
+    oc_audio::private_fs::explicit_config_dir()
+}
+
+/// The log folder for a profile root, or the platform one without a profile.
+pub(crate) fn log_dir_in(profile: Option<&Path>) -> PathBuf {
+    profile.map_or_else(oc_diag::log_dir, |root| root.join("logs"))
+}
+
+/// The file target of the ordinary logger, the one a start without diagnostics
+/// flags installs.
+pub(crate) fn app_log_target() -> tauri_plugin_log::TargetKind {
+    app_log_target_in(selected_profile().as_deref())
+}
+
+fn app_log_target_in(profile: Option<&Path>) -> tauri_plugin_log::TargetKind {
+    tauri_plugin_log::TargetKind::Folder {
+        path: log_dir_in(profile),
+        file_name: Some(APP_LOG_NAME.into()),
+    }
+}
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 /// One captured log line.
@@ -176,22 +214,28 @@ fn environment(app: &tauri::AppHandle, project_path: Option<String>) -> Environm
         }
         .to_string(),
         project_path,
-        app_log_path: app_log_path(app),
+        app_log_path: app_log_path(&log_dir()),
     }
 }
 
-/// The plugin-log file for this build, preferring the live file over rotations.
-fn app_log_path(app: &tauri::AppHandle) -> Option<String> {
-    let dir = app.path().app_log_dir().ok()?;
-    let live = dir.join(format!("{}.log", app.package_info().name));
+/// The ordinary logger's file, preferring the live file over rotations.
+fn app_log_path(dir: &Path) -> Option<String> {
+    let live = dir.join(format!("{APP_LOG_NAME}.log"));
     if live.is_file() {
         return Some(live.display().to_string());
     }
-    let mut rotated: Vec<PathBuf> = std::fs::read_dir(&dir)
+    let mut rotated: Vec<PathBuf> = std::fs::read_dir(dir)
         .ok()?
         .filter_map(Result::ok)
         .map(|entry| entry.path())
-        .filter(|path| path.is_file() && path.extension().is_some_and(|ext| ext == "log"))
+        .filter(|path| {
+            path.is_file()
+                && path.extension().is_some_and(|ext| ext == "log")
+                && path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with(APP_LOG_NAME))
+        })
         .collect();
     rotated.sort_by_key(|path| {
         std::fs::metadata(path)
@@ -432,6 +476,42 @@ pub fn export_diagnostics(
 mod tests {
     use super::*;
     use std::io::Read;
+
+    #[test]
+    fn a_selected_profile_keeps_its_logs_and_no_profile_uses_the_platform_folder() {
+        let profile = Path::new("profile-root");
+        assert_eq!(log_dir_in(Some(profile)), profile.join("logs"));
+        assert_eq!(log_dir_in(None), oc_diag::log_dir());
+    }
+
+    #[test]
+    fn the_ordinary_logger_writes_in_the_profile_folder() {
+        let profile = Path::new("profile-root");
+        let tauri_plugin_log::TargetKind::Folder { path, file_name } =
+            app_log_target_in(Some(profile))
+        else {
+            panic!("the ordinary logger writes a file in the app's log folder");
+        };
+        assert_eq!(path, profile.join("logs"));
+        assert_eq!(file_name.as_deref(), Some(APP_LOG_NAME));
+        let tauri_plugin_log::TargetKind::Folder { path, .. } = app_log_target() else {
+            panic!("the ordinary logger writes a file in the app's log folder");
+        };
+        assert_eq!(path, log_dir());
+        // Pruning diagnostics logs never reaches the ordinary log.
+        assert!(!APP_LOG_NAME.starts_with("opencompose-gui-"));
+    }
+
+    #[test]
+    fn the_report_names_the_ordinary_log_in_that_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(app_log_path(dir.path()), None);
+        std::fs::write(dir.path().join("opencompose-gui-1-2.log"), "diag").unwrap();
+        assert_eq!(app_log_path(dir.path()), None);
+        let live = dir.path().join(format!("{APP_LOG_NAME}.log"));
+        std::fs::write(&live, "app").unwrap();
+        assert_eq!(app_log_path(dir.path()), Some(live.display().to_string()));
+    }
 
     fn environment() -> Environment {
         Environment {

@@ -1797,6 +1797,17 @@ pub enum EffectType {
     Plugin(String),
 }
 
+impl EffectType {
+    /// Canonical token: a built-in lane name, or `plugin:<id>` for an external
+    /// plugin.
+    pub fn token(&self) -> String {
+        match self {
+            Self::Plugin(id) => format!("plugin:{id}"),
+            builtin => builtin.lane_name().to_string(),
+        }
+    }
+}
+
 // ============================================================================
 // Phrase (pitched instruments)
 // ============================================================================
@@ -2060,23 +2071,12 @@ impl Pitch {
 
     /// The canonical spelling (`C4`, `F#3`, `Bb5`).
     pub fn to_text(&self) -> String {
-        let note = match self.note {
-            NoteName::C => "C",
-            NoteName::D => "D",
-            NoteName::E => "E",
-            NoteName::F => "F",
-            NoteName::G => "G",
-            NoteName::A => "A",
-            NoteName::B => "B",
-        };
-        let accidental = match self.accidental {
-            Accidental::Natural => "",
-            Accidental::Sharp => "#",
-            Accidental::DoubleSharp => "##",
-            Accidental::Flat => "b",
-            Accidental::DoubleFlat => "bb",
-        };
-        format!("{note}{accidental}{}", self.octave)
+        format!(
+            "{}{}{}",
+            self.note.as_str(),
+            self.accidental.as_str(),
+            self.octave
+        )
     }
 }
 
@@ -2093,6 +2093,21 @@ pub enum NoteName {
     B,
 }
 
+impl NoteName {
+    /// The DSL letter for this note.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::C => "C",
+            Self::D => "D",
+            Self::E => "E",
+            Self::F => "F",
+            Self::G => "G",
+            Self::A => "A",
+            Self::B => "B",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 #[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 /// Accidental applied to a note letter.
@@ -2102,6 +2117,19 @@ pub enum Accidental {
     DoubleSharp,
     Flat,
     DoubleFlat,
+}
+
+impl Accidental {
+    /// The DSL suffix for this accidental; natural spells nothing.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Natural => "",
+            Self::Sharp => "#",
+            Self::DoubleSharp => "##",
+            Self::Flat => "b",
+            Self::DoubleFlat => "bb",
+        }
+    }
 }
 
 // ============================================================================
@@ -3082,6 +3110,31 @@ pub struct Marker {
     pub position: BarBeat,
 }
 
+/// The owner of a nested effect chain or automation lane.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Owner {
+    Track { name: String },
+    Bus { name: String },
+    Master,
+    Preset { name: String },
+    Pattern { name: String },
+}
+
+impl Owner {
+    /// The declared name of a named owner; the master has none.
+    pub fn name(&self) -> Option<&str> {
+        match self {
+            Self::Track { name }
+            | Self::Bus { name }
+            | Self::Preset { name }
+            | Self::Pattern { name } => Some(name),
+            Self::Master => None,
+        }
+    }
+}
+
 // ============================================================================
 // Common Types
 // ============================================================================
@@ -3100,15 +3153,43 @@ pub struct TimeSignature {
 pub struct KeySignature {
     pub root: NoteName,
     pub accidental: Accidental,
+    #[serde(with = "key_signature_mode")]
+    #[cfg_attr(feature = "json-schema", schemars(with = "KeyMode"))]
     pub mode: KeyMode,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
 /// Major or minor key.
 pub enum KeyMode {
     Major,
     Minor,
+}
+
+/// Persisted project JSON spells key modes capitalized, while typed edit facts
+/// use the DSL's lowercase keywords.
+mod key_signature_mode {
+    use super::KeyMode;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(mode: &KeyMode, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(match mode {
+            KeyMode::Major => "Major",
+            KeyMode::Minor => "Minor",
+        })
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<KeyMode, D::Error> {
+        match String::deserialize(deserializer)?.as_str() {
+            "Major" | "major" => Ok(KeyMode::Major),
+            "Minor" | "minor" => Ok(KeyMode::Minor),
+            other => Err(serde::de::Error::unknown_variant(
+                other,
+                &["Major", "Minor"],
+            )),
+        }
+    }
 }
 
 /// A generic parameter value (used throughout the DSL)

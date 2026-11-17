@@ -21,7 +21,7 @@ beforeEach(async () => {
       }
       case "plugin_catalog": return { platform: "macos-aarch64", entries: [], installed: [] };
       case "plugin_index_status": return null;
-      case "get_undo_state": return { can_undo: false, can_redo: false, undo_label: null, redo_label: null, undo_labels: [], redo_labels: [] };
+      case "get_undo_state": return { can_undo: false, can_redo: false,    };
       case "audition_factory_patch": {
         currentAudition = makeAuditionTransport((args as { label: string }).label, true);
         return undefined;

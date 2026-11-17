@@ -66,11 +66,16 @@ fn accounting_queued_preparation_cannot_mutate_a_replaced_session_incarnation() 
                     Some(Path::new("old-project.ocp")),
                     PrepareContext {
                         snapshot: None,
+                        history: None,
                         overhead: 0,
                         context_length: 1,
+                        max_output: 0,
+                        prompt_tokens: 0,
                         facts: &ProjectFacts::default(),
                         provider: "old-provider",
                         model: "old-model",
+                        outside: None,
+                        surface: None,
                     },
                     Some(&admitted),
                 )
@@ -113,11 +118,16 @@ fn accounting_queued_preparation_cannot_mutate_a_replaced_session_incarnation() 
             None,
             PrepareContext {
                 snapshot: None,
+                history: None,
                 overhead: 0,
                 context_length: 100_000,
+                max_output: 0,
+                prompt_tokens: 0,
                 facts: &ProjectFacts::default(),
                 provider: "current-provider",
                 model: "current-model",
+                outside: None,
+                surface: None,
             },
             Some(&replacement),
         )
@@ -273,7 +283,7 @@ fn accounting_cut_and_fork_do_not_rewrite_incurred_spend() {
             "model",
         )
         .unwrap();
-    let point = store.revert_point(&id, 0).unwrap();
+    let point = store.recall_point(&id, 0).unwrap();
     store.cut_before_user(&id, &point).unwrap();
     assert!(store.view(&id).unwrap().is_empty(), "the cut ran");
     assert_eq!(snapshot(&store, &id), before);

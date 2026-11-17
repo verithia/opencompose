@@ -215,8 +215,8 @@ fn a_new_track_bounce_publishes_one_clip_and_one_undo_entry() {
         frames * 2
     );
 
-    assert_eq!(inner.undo.undo.len(), 1, "one undo entry");
-    assert_eq!(inner.undo.undo[0].label, "bounce track");
+    assert_eq!(inner.undo.undo_entries().len(), 1, "one undo entry");
+    assert_eq!(inner.undo.undo_entries()[0].tag, "bounce track");
     assert!(result.report.contains("the source track is muted"));
     assert!(
         result.report.contains("limiter"),
@@ -248,7 +248,7 @@ fn a_second_bounce_picks_the_next_media_number() {
         second.target_track, first.target_track,
         "track names stay unique"
     );
-    assert_eq!(state.lock_inner().undo.undo.len(), 2);
+    assert_eq!(state.lock_inner().undo.undo_entries().len(), 2);
 }
 
 #[test]
@@ -283,8 +283,8 @@ fn an_in_place_bounce_bypasses_the_chain_and_replaces_the_blocks() {
     assert_eq!(clip.time_range.start, BarBeat::new(1, 1, 0));
     assert_eq!(clip.time_range.end, BarBeat::new(5, 2, 1));
     assert_eq!(clip.file, result.media);
-    assert_eq!(inner.undo.undo.len(), 1);
-    assert_eq!(inner.undo.undo[0].label, "bounce track");
+    assert_eq!(inner.undo.undo_entries().len(), 1);
+    assert_eq!(inner.undo.undo_entries()[0].tag, "bounce track");
     drop(inner);
     assert!(Path::new(&result.path).is_file());
 }
@@ -301,7 +301,7 @@ fn an_in_place_bounce_refuses_when_bypassing_would_change_other_content() {
     assert!(error.contains("bypassing"), "{error}");
     let inner = state.lock_inner();
     assert!(inner.project.audio_clips().is_empty());
-    assert!(inner.undo.undo.is_empty());
+    assert!(inner.undo.undo_entries().is_empty());
     drop(inner);
     assert!(media_files(dir.path()).is_empty(), "no media was written");
 }
@@ -356,7 +356,7 @@ fn a_bounce_drops_its_media_when_the_project_changes_during_the_render() {
     let inner = state.lock_inner();
     assert_eq!(inner.project.tracks.len(), 1);
     assert!(inner.project.audio_clips().is_empty());
-    assert!(inner.undo.undo.is_empty());
+    assert!(inner.undo.undo_entries().is_empty());
 }
 
 #[test]
@@ -411,8 +411,8 @@ fn a_consolidate_replaces_the_selected_clips_with_one_and_keeps_the_chain() {
         !track.effects[0].bypass,
         "consolidate keeps the track's inserts"
     );
-    assert_eq!(inner.undo.undo.len(), 1, "one undo entry");
-    assert_eq!(inner.undo.undo[0].label, "consolidate clips");
+    assert_eq!(inner.undo.undo_entries().len(), 1, "one undo entry");
+    assert_eq!(inner.undo.undo_entries()[0].tag, "consolidate clips");
     assert_eq!(frames as f64, 4.0 * f64::from(result.sample_rate));
 }
 
@@ -437,7 +437,7 @@ fn a_consolidate_refuses_an_empty_or_cross_track_selection() {
     );
     assert!(error.contains("consolidate works on one track"), "{error}");
     assert!(state.lock_inner().project.audio_clip_count() == 3);
-    assert!(state.lock_inner().undo.undo.is_empty());
+    assert!(state.lock_inner().undo.undo_entries().is_empty());
 }
 
 #[test]
@@ -518,7 +518,7 @@ fn a_consolidate_drops_its_media_when_the_project_changes_during_the_render() {
     );
     let inner = state.lock_inner();
     assert_eq!(inner.project.audio_clip_count(), 3);
-    assert!(inner.undo.undo.is_empty());
+    assert!(inner.undo.undo_entries().is_empty());
 }
 
 /// RMS of the interleaved stereo samples between two seconds.
@@ -594,7 +594,7 @@ fn a_bounce_carries_the_release_and_the_insert_delay() {
     let clip = inner.project.audio_clip(0).unwrap();
     assert_eq!(clip.time_range.end, BarBeat::new(1, 2, 1));
     assert_eq!(clip.file, result.media);
-    assert_eq!(inner.undo.undo.len(), 1, "one undo entry");
+    assert_eq!(inner.undo.undo_entries().len(), 1, "one undo entry");
     assert!(
         result.report.contains("runs 0.25s past 1:2"),
         "{}",
@@ -937,7 +937,7 @@ fn precise_consolidation_preserves_shifted_outer_samples_and_insert_processing()
             after[(end as usize - 1) * 2].abs() > 0.01,
             "the tail after the nominal boundary is retained"
         );
-        assert_eq!(inner.undo.undo.len(), 1);
+        assert_eq!(inner.undo.undo_entries().len(), 1);
     }
 }
 
@@ -1014,7 +1014,7 @@ fn an_in_place_bounce_without_inserts_keeps_a_partially_overlapping_audio_clip_o
         inner.project, original,
         "the entire source clip remains intact"
     );
-    assert!(inner.undo.undo.is_empty());
+    assert!(inner.undo.undo_entries().is_empty());
     assert!(media_files(dir.path()).is_empty());
 }
 
@@ -1056,7 +1056,7 @@ fn an_in_place_bounce_without_inserts_keeps_a_partially_overlapping_pattern_clip
         inner.project, original,
         "the pattern and its outside placement remain intact"
     );
-    assert!(inner.undo.undo.is_empty());
+    assert!(inner.undo.undo_entries().is_empty());
     assert!(media_files(dir.path()).is_empty());
 }
 
@@ -1122,7 +1122,7 @@ fn an_in_place_bounce_preserves_performed_notes_and_controllers_on_refusal() {
     assert!(error.contains("Bounce onto a new track"), "{error}");
     let inner = state.lock_inner();
     assert_eq!(inner.project, original);
-    assert!(inner.undo.undo.is_empty());
+    assert!(inner.undo.undo_entries().is_empty());
     assert!(media_files(dir.path()).is_empty());
 }
 

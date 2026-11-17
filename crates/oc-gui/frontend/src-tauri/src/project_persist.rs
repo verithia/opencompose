@@ -49,6 +49,13 @@ struct Publication {
     path: PathBuf,
 }
 
+/// What a publication left on disk, for the caller that records the marker.
+struct PublishResult {
+    bytes: Option<usize>,
+    path: PathBuf,
+    sha256: Option<String>,
+}
+
 /// Publish the open document to its project file after an agent mutation.
 ///
 /// Returns the byte count written. A clean document, a discarded one, an open
@@ -58,7 +65,11 @@ struct Publication {
 /// error, so the caller can tell the file is stale.
 pub fn flush(inner: &mut AppStateInner) -> Result<Option<usize>, String> {
     let publication = snapshot_for_publish(inner)?;
-    publish_captured(publication)
+    let published = publish_captured(publication)?;
+    if let Some(published) = &published {
+        inner.record_written(&published.path, published.sha256.clone());
+    }
+    Ok(published.and_then(|published| published.bytes))
 }
 
 /// Publish a dirty project before the process leaves. The window-close path and
@@ -72,7 +83,13 @@ pub fn flush_state(state: &AppState) -> Result<Option<usize>, String> {
         let inner = state.lock_inner();
         snapshot_for_publish(&inner)
     }?;
-    publish_captured(publication)
+    let published = publish_captured(publication)?;
+    if let Some(published) = &published {
+        // The marker is written under the document lock the history owns.
+        let mut inner = state.lock_inner();
+        inner.record_written(&published.path, published.sha256.clone());
+    }
+    Ok(published.and_then(|published| published.bytes))
 }
 
 /// Decide whether the document may be published and capture what the write
@@ -93,7 +110,7 @@ fn snapshot_for_publish(inner: &AppStateInner) -> Result<Option<Publication>, St
 }
 
 /// Publish a captured document. Runs without the document lock.
-fn publish_captured(publication: Option<Publication>) -> Result<Option<usize>, String> {
+fn publish_captured(publication: Option<Publication>) -> Result<Option<PublishResult>, String> {
     let Some(Publication {
         project,
         source,
@@ -102,14 +119,23 @@ fn publish_captured(publication: Option<Publication>) -> Result<Option<usize>, S
     else {
         return Ok(None);
     };
+    let sha256 = crate::project_data::content_sha256_bytes(source.as_bytes());
     let _publishing = PUBLISH_LOCK
         .lock()
         .unwrap_or_else(|error| error.into_inner());
     match publish(&project, &source, &path) {
-        Ok(Published::Current) => Ok(None),
+        Ok(Published::Current) => Ok(Some(PublishResult {
+            bytes: None,
+            path,
+            sha256,
+        })),
         Ok(Published::Bytes(bytes)) => {
             report_write(&path, bytes);
-            Ok(Some(bytes))
+            Ok(Some(PublishResult {
+                bytes: Some(bytes),
+                path,
+                sha256,
+            }))
         }
         Err(reason) => {
             report_refusal(Some(&path), &reason);
@@ -152,6 +178,9 @@ pub fn flush_on_exit(app: &tauri::AppHandle) {
 /// the turn's work, so a failure is an error rather than a warning and gets one
 /// more attempt, because a transient lock or a slow disk can clear.
 pub(crate) fn flush_exit(state: &AppState) {
+    // The journal is durable beside the file, so the last second's edits keep
+    // their undo entries even when the process leaves before the autosave tick.
+    state.lock_inner().sync_history();
     if let Err(reason) = flush_state(state) {
         log::error!("project write failed on exit: {reason}");
         record(format!("error: project write failed on exit: {reason}"));
@@ -171,15 +200,18 @@ pub(crate) fn flush_exit(state: &AppState) {
 /// transaction reaches the file. A write this call could not make is added to
 /// the tool result, so the model knows the file was not written.
 pub fn after_tool(state: &AppState, tool: &str, result: &mut serde_json::Value) {
+    let history = crate::tool_registry::is_mutation_tool(tool) || tool == "transaction_commit";
     let publishes = match tool {
         "undo" | "redo" | "transaction_begin" | "transaction_rollback" => false,
         _ => crate::tool_registry::is_mutation_tool(tool) || tool == "transaction_commit",
     };
-    if !publishes {
-        return;
-    }
-    if let Err(reason) = flush_state(state) {
+    if publishes && let Err(reason) = flush_state(state) {
         mark_stale(result, &reason);
+    }
+    // A tool's entries join the journal before the next autosave tick; an open
+    // batch keeps its provisional entries out of the journal until it commits.
+    if history {
+        state.lock_inner().sync_history();
     }
 }
 

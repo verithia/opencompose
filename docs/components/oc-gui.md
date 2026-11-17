@@ -9,6 +9,7 @@ frontend, a streaming playback path, the editor state and the agent server.
 |---|---|---|
 | Transport and audio | `audio`, `render_thread`, `meters`, `live_synth` | Streams the mix through `cpal` with a lock-free ring buffer, keeps the playhead, meters and MIDI preview alive, and re-renders on a seek generation. |
 | Editing | `state`, `commands`, `project_extent`, `project_resources` | The project, the undo stack, the patch system and the per-command handlers the frontend calls over IPC. |
+| Project data | `project_data`, `project_data::relocate`, `project_data::stale`, `autosave`, `edit_history` | The shared path key, Move Project and Save As relocation, recovery copies and the startup sweep of data whose project or folder is gone. See [On-disk storage](../storage-layout.md). |
 | Rendering for the UI | `render_grid`, `audition`, `ab_audition`, `audition_figure` | Range and grid renders, audition windows, and the figures the panels draw. |
 | Agent surface | `agent_api`, `tool_registry`, `ai`, `ai_service` | The loopback HTTP server, the shared tool catalog and the AI panel's provider client. See [Agent surface](../agent-surface.md). |
 | Plugins | `plugin_store`, `plugin_keepalive`, `plugin_index`, `editor_helper`, `content_library` | Installed plugins, the editor bridge, the remote index and the content library. |
@@ -24,7 +25,9 @@ holds no audio code; every audio decision is a command into this backend.
 |---|---|
 | `PlaybackState` | `Playing`, `Paused`, `Stopped`; the transport's single source of truth. |
 | `StreamingPlayback` | The render thread: block production, ring buffer and seek generation. |
-| `UndoStack` | Project history, with patch coalescing. |
+| `UndoStack` | Project history, with patch coalescing: a window of entries around the cursor. |
+| `edit_history::journal::Journal` | The whole history under the app data folder (`<config>/history/<path key>/`); the stack syncs its window to it at settle points and pages entries from it. |
+| `edit_history::Author` | Who made an entry: the person, a conversation's agent, an external client, or a change outside the app. |
 | `ToolDef`, `Panel` | One agent tool and its panel policy; the registry both surfaces read. |
 | `SilenceReport`, `RenderGrid` (see `render_grid`) | What the grid draws for a range. |
 

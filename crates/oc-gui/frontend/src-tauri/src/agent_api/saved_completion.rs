@@ -34,16 +34,27 @@ impl Binding {
         &self.project
     }
 
-    pub(super) fn caller(&self, app: &AppHandle) -> Result<String, String> {
-        self.validate_project(app.state::<AppState>().lock_inner().file_path.as_deref())?;
+    pub(super) fn caller(&self, app: &AppHandle) -> Result<String, AiError> {
+        self.validate_project(app.state::<AppState>().lock_inner().file_path.as_deref())
+            .map_err(|error| AiError::new("session_binding", error))?;
         self.validate_session(&sessions::Store::config())?;
         Ok(crate::state::http_session_owner(&self.id))
     }
 
-    fn validate_session(&self, store: &sessions::Store) -> Result<(), String> {
-        let (_, meta) = store.find(&self.id)?;
+    fn validate_session(&self, store: &sessions::Store) -> Result<(), AiError> {
+        let (_, meta) = store
+            .find(&self.id)
+            .map_err(|error| AiError::new("session_binding", error))?;
         if meta.workspace_key != store.workspace_key(self.project.parent()) {
-            return Err("The saved turn belongs to another workspace".into());
+            return Err(AiError::new(
+                "session_binding",
+                "The saved turn belongs to another workspace",
+            ));
+        }
+        // The project path on the request must name the file the conversation
+        // is bound to, not merely a file in the same workspace.
+        if let Some(mismatch) = sessions::binding_status(&meta, Some(&self.project)).mismatch() {
+            return Err(AiError::from(mismatch));
         }
         Ok(())
     }
@@ -71,14 +82,9 @@ impl SavedTurn {
         request_id: &str,
         tools: bool,
     ) -> Result<Self, AiError> {
-        binding
-            .validate_project(app.state::<AppState>().lock_inner().file_path.as_deref())
-            .map_err(|error| AiError::new("session_binding", error))?;
         // The same ownership check as a bound tool call, so a wrong binding is
         // the caller's to fix and a later preparation failure is the store's.
-        binding
-            .validate_session(&sessions::Store::config())
-            .map_err(|error| AiError::new("session_binding", error))?;
+        binding.validate_session(&sessions::Store::config())?;
         let lease = session_usage::SessionLease::admit(
             sessions::Store::config(),
             &binding.id,
@@ -94,6 +100,7 @@ impl SavedTurn {
             messages,
             commands::SavedTurnBinding {
                 id: &binding.id,
+                request_id: Some(request_id),
                 incarnation: &incarnation,
                 project: Some(&binding.project),
                 // The panel surface `/ai/complete` offers when it sends tools,
@@ -103,8 +110,11 @@ impl SavedTurn {
                 } else {
                     0
                 },
+                surface: None,
+                cancel: None,
             },
         )
+        .await
         .map_err(AiError::from);
         let prepared = match prepared {
             Ok(prepared) => prepared,
@@ -215,6 +225,35 @@ mod tests {
         assert!(binding.validate_session(&store).is_err());
         binding.id = "missing".into();
         assert!(binding.validate_session(&store).is_err());
+    }
+    #[test]
+    fn a_request_for_another_file_in_the_workspace_refuses_the_binding() {
+        let root = tempfile::tempdir().unwrap();
+        let store = sessions::Store::new(root.path().join("sessions"));
+        let first = root.path().join("first.ocp");
+        let second = root.path().join("second.ocp");
+        std::fs::write(&first, "first").unwrap();
+        std::fs::write(&second, "second").unwrap();
+        let meta = store
+            .create(Some(root.path()), Some(&first), Some("Fixture"), None)
+            .unwrap();
+        let binding = Binding {
+            id: meta.id,
+            project: second.clone(),
+        };
+        let error = binding.validate_session(&store).unwrap_err();
+        assert_eq!(error.kind, "session_binding");
+        assert_eq!(
+            error.detail,
+            Some(crate::ai_service::AiErrorDetail::BindingMismatch {
+                bound: sessions::canonical_path(&first)
+                    .to_string_lossy()
+                    .into_owned(),
+                open: sessions::canonical_path(&second)
+                    .to_string_lossy()
+                    .into_owned(),
+            })
+        );
     }
     #[test]
     fn a_headless_reply_save_failure_keeps_the_provider_answer() {

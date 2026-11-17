@@ -871,8 +871,8 @@ mod tests {
         let mut saved = entry("gateway", "deepseek/deepseek-flash");
         saved.context_length = 65_536;
         let window = context_length(&saved);
-        let threshold = (window as f64 * crate::ai::sessions::AUTO_COMPACT_FRACTION) as u64;
-        assert_eq!(threshold, 750_000, "75% of the catalog's 1M window");
+        let threshold = crate::ai::sessions::compaction_threshold(window, 8_192, 0);
+        assert_eq!(threshold, 990_808, "the window less the output reserve");
     }
 
     fn entry(provider_id: &str, model: &str) -> AiProviderEntry {

@@ -1,5 +1,6 @@
 import { For, Show, createMemo } from "solid-js";
-import { auditionLabel, formatBytes, formatDuration } from "../ai/media";
+import { auditionLabel, formatDuration } from "../ai/media";
+import { bytesText } from "../utils/bytesText";
 import type { ChatMessage } from "../ai/transcript";
 import { openSavedAuditionRender, previewSavedAudition } from "../stores/api";
 import { i18n } from "../stores/i18n";
@@ -29,7 +30,7 @@ export function AiAudition(props: { message: ChatMessage }) {
           <div class="ai-audition-file">
             <span class="ai-audition-metadata" title={attachment.path}>
               {attachment.missing ? i18n.t("ai.media.missingState")
-                : `${attachment.mime} · ${formatDuration(attachment.duration_secs) ?? i18n.t("ai.media.unknownDuration")} · ${formatBytes(attachment.bytes)}`}
+                : `${attachment.mime} · ${formatDuration(attachment.duration_secs) ?? i18n.t("ai.media.unknownDuration")} · ${bytesText(attachment.bytes)}`}
             </span>
             <Show when={!attachment.missing}>
               <InlineAudioPreview label={i18n.t("ai.media.loadAudition")} resetKey={attachment.path}

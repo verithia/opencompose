@@ -118,19 +118,19 @@ function installBackend() {
         project.tracks[0].automation = project.tracks[0].automation.filter((entry) => entry.param !== lane);
         return makeSnapshot(structuredClone(project));
       }
-      case "undo": {
+      case "history_undo": {
         const restored = history.pop();
         if (restored) project = restored;
-        return makeSnapshot(structuredClone(project));
+        return { status: "applied", snapshot: makeSnapshot(structuredClone(project)) };
       }
       case "get_undo_state":
         return {
           can_undo: history.length > 0,
           can_redo: false,
-          undo_label: null,
-          redo_label: null,
-          undo_labels: [],
-          redo_labels: [],
+
+
+
+
         };
       default:
         return makeSnapshot(structuredClone(project));

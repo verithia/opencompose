@@ -1,4 +1,5 @@
 import { composerSizer } from "../ai/composerSize";
+import { rememberSessionTitles } from "../stores/sessionTitles";
 import { AiComposer } from "./AiComposer";
 import { ProposalReviewBar } from "./ProposalReviewBar";
 import { followTranscript } from "../ai/transcriptScroll";
@@ -15,8 +16,10 @@ import { aiApi } from "../stores/api";
 import { store } from "../stores/project";
 import { previewStore } from "../stores/preview";
 import { log } from "../stores/log";
-import type { ApprovalRequest, TurnStop, WireMessage } from "../ai/wire";
-import type { TurnEnvelope, TurnOutcome } from "../ai/api";
+import type { ApprovalRequest, TurnStop, UserQuestion, WireMessage } from "../ai/wire";
+import { replyErrorOf, type RecallOther, type RecallRefusal, type ReplyError, type TurnEnvelope, type TurnOutcome } from "../ai/api";
+import { changeSetText } from "../stores/changeText";
+import { hasChangeFacts, parseChangeSet } from "../types/change";
 import { approvalEffect, approvalTarget } from "../ai/approval";
 import { allowTool, allowedTools } from "../ai/approvalMemory";
 import {
@@ -31,22 +34,31 @@ import { readProjectInstructions } from "../ai/projectInstructions";
 import { aiConfig, DEFAULT_THINKING_LEVEL, getActiveProvider, hasProvider, loadConfig, hasAnyKeyDraft, hasUnsavedConfig, wireOf } from "../ai/config";
 import { modelFor } from "../ai/catalog";
 import { activeModelGroup, activeModelKnown, applyModelChoice, listModelChoices, modelIdentity, modelKey, modelLevels } from "../ai/modelPicker";
-import { MEDIA_EXTENSIONS, attachMedia, audioAccepted, acceptedModalities, formatBytes, formatDuration, legacyAuditionText, imageAccepted, type MediaAttachment, type MediaNotice } from "../ai/media";
+import { MEDIA_EXTENSIONS, attachMedia, audioAccepted, acceptedModalities, formatDuration, legacyAuditionText, imageAccepted, type MediaAttachment, type MediaNotice } from "../ai/media";
 import { copyToClipboard, downloadText, exportFileName, exportJson, exportMarkdown } from "../ai/export";
-import { errorKind, errorMessage } from "../ai/errors";
+import { errorBindingMismatch, errorKind, errorMessage } from "../ai/errors";
+import { followsOpenProject, projectName } from "../ai/binding";
+import { createBindingFollower } from "../ai/bindingFollower";
+import { createCardStore } from "../ai/card";
+import { createGoalStore } from "../ai/goalState";
+import { createTranscriptPager } from "../ai/transcriptPager";
 import {
   activeTurn,
   archiveNotice,
+  compactionFailureNotice,
   compactionNotice,
   directoryName,
+  loadedPage,
   loadedSession,
   sessionArchiveEviction,
   sessionCompaction,
+  sessionCompactionFailure,
   sessionList,
   workspaceScope,
   type ActiveTurn,
   type SessionMeta,
 } from "../ai/sessions";
+import { trimStateText, type SessionState } from "../ai/messageProtocol";
 import {
   canContinue,
   canRetry,
@@ -55,10 +67,7 @@ import {
   savedWireIndex,
   stopStalled,
   userTurnOf,
-  hiddenTranscriptCount,
   stepTranscript,
-  visibleTranscript,
-  TRANSCRIPT_RENDER_LIMIT,
   type ChatMessage,
   type DiffResult,
   type TranscriptMessage,
@@ -67,6 +76,9 @@ import {
 } from "../ai/transcript";
 import { filterReferences, projectReferences, referenceQuery, withoutReferenceQuery, type ProjectReference } from "../ai/references";
 import { i18n, type I18nKey } from "../stores/i18n";
+import { confirm } from "../stores/fileDialogs";
+import { bytesText } from "../utils/bytesText";
+import { authorName } from "../stores/historyText";
 import { aiLimits, effectiveLimits, type ModelLimitsView } from "../stores/aiLimits";
 import { aiSession, type QueuedMessage } from "../stores/aiSession";
 import { workspaceStore } from "../stores/workspace";
@@ -108,6 +120,55 @@ const EXPORT_FORMATS: { format: ExportFormat; label: I18nKey }[] = [
   { format: "json", label: "ai.export.json" },
 ];
 
+/** The line the question card shows for each typed answer refusal. */
+const REPLY_REFUSAL_KEYS: Record<ReplyError, I18nKey> = {
+  not_waiting: "ai.question.refused.notWaiting",
+  turn_stopped: "ai.question.refused.turnStopped",
+  option_out_of_range: "ai.question.refused.optionOutOfRange",
+  text_not_accepted: "ai.question.refused.textNotAccepted",
+  text_too_long: "ai.question.refused.textTooLong",
+};
+
+/** The message a recall shows for each typed refusal. */
+const RECALL_REFUSAL_KEYS: Record<RecallRefusal, I18nKey> = {
+  turn_running: "ai.recall.turnRunning",
+  batch_open: "ai.recall.refused.batchOpen",
+  other_project: "ai.recall.refused.otherProject",
+  no_recorded_position: "ai.recall.refused.noRecordedPosition",
+  position_cleared: "ai.recall.refused.positionCleared",
+  not_a_person_message: "ai.recall.refused.notAPersonMessage",
+  conversation_changed: "ai.recall.refused.conversationChanged",
+  edits_changed: "ai.recall.refused.editsChanged",
+  preview_open: "ai.recall.refused.previewOpen",
+};
+
+/** The localized line and full tool list a tool-surface notice shows. */
+function toolSurfaceRow(surface: NonNullable<ChatMessage["surface"]>): { text: string; names: string } {
+  const parts: string[] = [];
+  if (surface.added.length) parts.push(i18n.t("ai.toolSurface.added", { count: surface.added.length }));
+  if (surface.removed.length) parts.push(i18n.t("ai.toolSurface.removed", { count: surface.removed.length }));
+  const text: string[] = [];
+  if (parts.length) text.push(i18n.t("ai.toolSurface.changed", { detail: parts.join(", ") }));
+  if (surface.permission) {
+    text.push(i18n.t("ai.toolSurface.permission", {
+      mode: i18n.t(`ai.permission.${surface.permission.to}` as I18nKey),
+    }));
+  }
+  const names = [
+    ...surface.added.map(name => `+ ${name}`),
+    ...surface.removed.map(name => `- ${name}`),
+    ...(surface.permission ? [`${surface.permission.from} -> ${surface.permission.to}`] : []),
+  ].join("\n");
+  return { text: text.join("; "), names };
+}
+
+/** The localized line a saved goal or plan change shows. */
+function sessionStateRow(state: SessionState): string {
+  if (state.kind === "goal_set") return i18n.t("ai.state.goalSet", { goal: state.text });
+  if (state.kind === "goal_cleared") return i18n.t("ai.state.goalCleared");
+  return i18n.t("ai.state.planUpdated", { count: state.items.length });
+}
+
 /** How often a window that inherited a running turn asks whether it finished. */
 const TURN_POLL_MS = 400;
 /** How long a stopped inherited turn may take to close before the panel repaints anyway. */
@@ -115,6 +176,8 @@ const TURN_SETTLE_MS = 10_000;
 
 export function AiPanel(props: { onClose?: () => void }) {
   const [messages, setMessages] = createSignal<ChatMessage[]>([]);
+  const goal = createGoalStore();
+  const sessionStateView = goal.state;
   let transcriptElement: HTMLDivElement | undefined;
   let transcriptFollow: ReturnType<typeof followTranscript> | undefined;
   onMount(() => {
@@ -133,10 +196,10 @@ export function AiPanel(props: { onClose?: () => void }) {
   const setInput = aiSession.setDraft;
   const targetPath = aiWorkspace.targetPath;
   const [loading, setLoading] = createSignal(false);
-  /** The call a turn is paused on, and the turn that asked; `target` is
-   * resolved once, so the card and the decline the model reads name the same
-   * object. */
-  const [approval, setApproval] = createSignal<(ApprovalRequest & { target: string | null; requestId: string }) | null>(null);
+  /** The one card above the composer: an approval or a question. */
+  const card = createCardStore();
+  const approval = card.approval;
+  const userQuestion = card.question;
   /** When the turn in flight started, so the pending row can count seconds. */
   const [turnStartedAt, setTurnStartedAt] = createSignal<number | null>(null);
   /** When Stop was pressed; the pending row says so until the turn settles. */
@@ -195,16 +258,36 @@ export function AiPanel(props: { onClose?: () => void }) {
   const [allowed, setAllowed] = createSignal<readonly string[]>([]);
   const [renaming, setRenaming] = createSignal<{ id: string; title: string } | null>(null);
   /** The row menu opened from a right click on a conversation. */
-  /** A long conversation renders its newest slice; the wire still carries all. */
-  const [renderLimit, setRenderLimit] = createSignal(TRANSCRIPT_RENDER_LIMIT);
   /** The open conversation was compacted, so its older turns are behind a chip. */
   const [compactedSession, setCompactedSession] = createSignal(false);
   /** Whether this conversation already carries a chosen title. */
   const [sessionNamed, setSessionNamed] = createSignal(false);
   /** True while the transcript is scrolled to its top. */
   const [atTranscriptTop, setAtTranscriptTop] = createSignal(false);
-  const hiddenMessages = createMemo(() => hiddenTranscriptCount(messages().length, renderLimit()));
-  const visibleMessages = createMemo(() => visibleTranscript(messages(), renderLimit()));
+  const pager = createTranscriptPager({
+    messages,
+    setMessages,
+    openId: () => openId(),
+    epoch: () => scopeEpoch,
+    paintRequest: () => paintRequest,
+    locked: () => conversationLocked(),
+    originalView: () => originalView(),
+    transcript: () => transcriptElement,
+    repaint: (id) => paintSession(id),
+    readPage: aiApi.sessionPage,
+    onBegin: () => setSessionError(null),
+    onError: (message) => setSessionError(message),
+    disposed: () => disposed,
+  });
+  /** Empties the screen and forgets the page it showed, for a switch or a new
+   * conversation: no older page of the previous one remains to load. */
+  const clearTranscript = () => {
+    setMessages([]);
+    goal.reset();
+    pager.reset();
+  };
+  const hiddenMessages = pager.hiddenMessages;
+  const visibleMessages = pager.visibleMessages;
   const liveReasoningMessage: ChatMessage = {
     role: "assistant",
     content: "",
@@ -284,13 +367,15 @@ export function AiPanel(props: { onClose?: () => void }) {
     loading() || reattached() !== null || stoppingInherited() !== null || sessionBusy();
   /** The id of the turn this panel runs; `ai_cancel` and the events name it. */
   let requestId: string | null = null;
+  /** Clears the one question card, whether it asks for approval or an answer. */
+  const clearQuestion = () => card.clear();
   const cancel = async () => {
     stoppedTokens.add(turnToken);
     // The pending row says the stop is on its way instead of leaving the turn
     // looking healthy; a second press re-sends the cancel.
     setStopRequestedAt((previous) => previous ?? Date.now());
     // The backend drops the question when its turn stops.
-    setApproval(null);
+    clearQuestion();
     // This window owned the turn, so the marker it kept is spent: a window that
     // comes back must not ask about a turn this one stopped.
     if (requestId) {
@@ -300,14 +385,16 @@ export function AiPanel(props: { onClose?: () => void }) {
   };
   /** Shows a question a turn asked; the card answers it by call id. */
   const showQuestion = (turn: string, request: ApprovalRequest) => {
-    setApproval({
-      ...request,
-      requestId: turn,
-      // The path the call names is the target when the registry has no better
-      // name for it, so a subtree replacement says which subtree it touches.
-      target: approvalTarget(request.tool, request.args, store.project) ?? request.path ?? null,
-    });
+    // The path the call names is the target when the registry has no better
+    // name for it, so a subtree replacement says which subtree it touches.
+    card.showApproval(turn, request, approvalTarget(request.tool, request.args, store.project) ?? request.path ?? null);
   };
+  /** Shows a question the model asked; the card replies by call id. */
+  const showUserQuestion = (turn: string, request: UserQuestion) => {
+    card.showQuestion(turn, request);
+  };
+  /** The localized sentence for a typed answer refusal. */
+  const replyRefusalText = (reason: ReplyError): string => i18n.t(REPLY_REFUSAL_KEYS[reason]);
   /** The call's arguments as the card shows them: bounded, one line. */
   const argumentLine = (args: Record<string, unknown>): string => {
     const text = JSON.stringify(args) ?? "{}";
@@ -324,10 +411,46 @@ export function AiPanel(props: { onClose?: () => void }) {
     setAllowed(next);
     return next;
   };
+  /** Sends the question card's answer; the card closes only once it landed. */
+  const answerQuestion = async (option?: number): Promise<void> => {
+    const request = userQuestion();
+    if (!request || request.answering) return;
+    const epoch = scopeEpoch;
+    const text = trimStateText(request.replyText);
+    // The card object is replaced when its answering flag or error changes, so
+    // compare the call it belongs to instead of object identity.
+    const stillOpen = () => {
+      const current = userQuestion();
+      return current?.requestId === request.requestId && current.call_id === request.call_id;
+    };
+    card.setAnswering(true);
+    try {
+      await aiApi.replyTurn(request.requestId, request.call_id, {
+        ...(option !== undefined ? { option } : {}),
+        ...(text ? { text } : {}),
+      });
+      if (disposed || epoch !== scopeEpoch || !stillOpen()) return;
+      card.clear();
+    } catch (error) {
+      if (disposed || epoch !== scopeEpoch || !stillOpen()) return;
+      const refusal = replyErrorOf(error);
+      const message = refusal === null
+        ? i18n.t("ai.question.answerFailed", { error: errorMessage(error) })
+        : replyRefusalText(refusal);
+      if (refusal === "not_waiting" || refusal === "turn_stopped") {
+        card.clear();
+        notify(message, "error");
+      } else {
+        card.setError(message);
+      }
+    } finally {
+      card.setAnswering(false);
+    }
+  };
   /** Sends the card's answer; the backend's turn goes on with it. */
   const answerApproval = (approved: boolean, always = false) => {
     const request = approval();
-    setApproval(null);
+    card.clear();
     if (!request) return;
     if (approved && always) rememberAllowed(request.tool);
     void aiApi.answerTurn(request.requestId, request.call_id, {
@@ -370,7 +493,7 @@ export function AiPanel(props: { onClose?: () => void }) {
    * once per change instead of once per keystroke. */
   const estimateBase = createMemo(() =>
     `${messages().map(message => message.content).join("\n")}\n${store.dslSource()}`);
-  const estimateBaseTokens = createMemo(() => textTokens(estimateBase()));
+  const estimateBaseTokens = createMemo(() => textTokens(estimateBase()) + pager.olderTokens());
   /** The estimate for a draft: the floor the composer shows, and the send guard. */
   const estimateFor = (draft: string) => estimateFromBase(estimateBaseTokens(), draft);
   /** The same estimate split into the parts a compaction would remove or keep. */
@@ -380,7 +503,7 @@ export function AiPanel(props: { onClose?: () => void }) {
     return {
       system: Math.round((contextMeter.systemChars() / 4) * ratio),
       tools: Math.round((contextMeter.toolChars() / 4) * ratio),
-      history: Math.round(textTokens(history) * ratio),
+      history: Math.round((textTokens(history) + pager.olderTokens()) * ratio),
       project: Math.round(textTokens(store.dslSource()) * ratio),
       draft: Math.round(textTokens(input()) * ratio),
       attachments: attachments().filter(item => !item.missing).length,
@@ -526,6 +649,17 @@ export function AiPanel(props: { onClose?: () => void }) {
   let scopeEpoch = 0;
   let listRequest = 0;
   let paintRequest = 0;
+  const bindingFollower = createBindingFollower({
+    status: aiApi.sessionBinding,
+    bind: aiApi.bindSession,
+    openId,
+    epoch: () => scopeEpoch,
+    disposed: () => disposed,
+    onWarn: (message) => log.warn("ai", message),
+  });
+  /** The open conversation's binding as last read, so a send that needs no
+   * rebind starts without waiting on the backend. */
+  const binding = bindingFollower.binding;
   const refreshSessions = async (): Promise<boolean> => {
     const epoch = scopeEpoch;
     const request = ++listRequest;
@@ -533,6 +667,7 @@ export function AiPanel(props: { onClose?: () => void }) {
       const next = sessionList(await aiApi.listSessions());
       if (disposed || epoch !== scopeEpoch || request !== listRequest) return false;
       setSessions(next);
+      rememberSessionTitles(next);
       return true;
     } catch (e) {
       if (!disposed && epoch === scopeEpoch && request === listRequest) setSessionError(errorMessage(e));
@@ -567,6 +702,7 @@ export function AiPanel(props: { onClose?: () => void }) {
     if (pendingUsageRead) cancelUsageHydration(pendingUsageRead);
     pendingUsageRead = null;
     paintRequest += 1;
+    bindingFollower.reset();
     setSessions([]);
     if (loading()) {
       void cancel();
@@ -577,7 +713,7 @@ export function AiPanel(props: { onClose?: () => void }) {
     // the panel here. The backend keeps running it.
     stopFollowing();
     setStoppingInherited(null);
-    setApproval(null);
+    clearQuestion();
     setReloadNotice(null);
     finishedTurn = null;
     // Keep the conversation the user just left under its own project path
@@ -590,7 +726,7 @@ export function AiPanel(props: { onClose?: () => void }) {
     aiWorkspace.adoptPermission(DEFAULT_PERMISSION);
     aiWorkspace.setTargetPath("project");
     setAllowed([]);
-    setMessages([]);
+    clearTranscript();
     const epoch = scopeEpoch;
     void refreshSessions().then((ok) => {
       if (ok) void restoreScope(sessionScope(), epoch);
@@ -600,6 +736,11 @@ export function AiPanel(props: { onClose?: () => void }) {
   // such as `track:kick` names a track in the file that was open before it.
   createEffect(on(() => store.filePath(), () => {
     aiWorkspace.setTargetPath("project");
+    // A file opened while a turn runs belongs to that turn's next boundary: the
+    // backend keeps the conversation on the file it started with, and the panel
+    // follows once the turn settles.
+    if (loading() || reattached() !== null || stoppingInherited() !== null) return;
+    void followOpenProject(openId());
   }, { defer: true }));
   /**
    * A target restored from `localStorage` was saved against whichever document
@@ -613,21 +754,39 @@ export function AiPanel(props: { onClose?: () => void }) {
     aiWorkspace.setTargetPath("project");
     log.warn("ai", `edit target ${target} is not in ${store.filePath() ?? "this project"}; using the whole project`);
   };
+  /** Rebinds a conversation to the project that is open. Opening another file
+   * moves the open conversation with it, and a conversation opened from the
+   * list follows at its next send; the backend compares the paths and tells the
+   * model with the next message. A failure is reported and leaves the binding,
+   * so the backend still refuses a turn on the wrong file. */
+  const followOpenProject = bindingFollower.follow;
+
+  /** Reads where a conversation just painted is bound, without rebinding it:
+   * viewing a conversation leaves it on its file until the person sends. */
+  const readBinding = bindingFollower.read;
+
+  /** A turn let go of the conversation: a file opened meanwhile is next. */
+  const turnReleased = () => void followOpenProject(openId());
+
   /** Paints a saved conversation. The draft is the caller's business: a switch
    * clears it, a remount keeps it. */
-  const paintSession = async (id: string): Promise<boolean> => {
+  async function paintSession(id: string): Promise<boolean> {
     const epoch = scopeEpoch;
+    bindingFollower.reset();
     const request = ++paintRequest;
     const usageRead = beginUsageHydration(id);
     pendingUsageRead = usageRead;
     try {
-      let loaded = loadedSession(await aiApi.loadSession(id));
+      let loaded = loadedPage(await aiApi.openSession(id));
       if (!loaded || disposed || epoch !== scopeEpoch || request !== paintRequest) return false;
       if (usageHydrationNeedsReconcile(usageRead, loaded.usage)) {
-        loaded = loadedSession(await aiApi.loadSession(id));
+        loaded = loadedPage(await aiApi.openSession(id));
         if (!loaded || disposed || epoch !== scopeEpoch || request !== paintRequest) return false;
       }
-      setMessages(restoredTranscript(loaded.messages));
+      const restored = restoredTranscript(loaded.messages, loaded.start);
+      setMessages(restored);
+      goal.load(loaded.state);
+      pager.applyPage(loaded);
       setCompactedSession(loaded.compacted === true);
       setSessionNamed(loaded.meta.named === true);
       // The conversation's stored mode; one saved before the field existed reads
@@ -642,6 +801,19 @@ export function AiPanel(props: { onClose?: () => void }) {
       });
       aiSession.setOpenScoped(sessionScope(), loaded.meta.id);
       setOpenId(loaded.meta.id);
+      // A goal saved by the panel before goals were session state is written
+      // once as a typed row, then dropped from the window's own store. A paint
+      // with nothing staged stays synchronous past its rows.
+      const hasSavedGoal = loaded.state.some(state => state.kind !== "plan_set");
+      if (aiSession.goal()
+        && !await flushStagedGoal(
+          loaded.meta.id,
+          () => !disposed && epoch === scopeEpoch && request === paintRequest,
+          hasSavedGoal,
+        )) {
+        return false;
+      }
+      void readBinding(loaded.meta.id);
       selectStatsSession(loaded.meta.id);
       hydrateSessionUsage(loaded.meta.id, loaded.usage, loaded.usage_error, usageRead);
       return true;
@@ -649,7 +821,7 @@ export function AiPanel(props: { onClose?: () => void }) {
       cancelUsageHydration(usageRead);
       if (pendingUsageRead === usageRead) pendingUsageRead = null;
     }
-  };
+  }
   /**
    * Picks the conversation this scope should open: the one still in the store
    * when it belongs here, else the last one cached for this workspace + file.
@@ -687,12 +859,12 @@ export function AiPanel(props: { onClose?: () => void }) {
   }
 
   /**
-   * The `/` palette: local conversation commands. `/compact` runs at once;
-   * `/drop_history <n>` needs its count, so choosing it fills the composer.
+   * The `/` palette: local conversation commands. `/compact` and `/clear` ask
+   * before they reshape history; `/goal` stages text in the composer.
    */
   const COMMANDS = [
     { name: "compact", summary: "ai.command.compact" },
-    { name: "drop_history", summary: "ai.command.dropHistory" },
+    { name: "clear", summary: "ai.command.clear" },
     { name: "goal", summary: "ai.command.goal" },
   ] as const;
 
@@ -736,20 +908,85 @@ export function AiPanel(props: { onClose?: () => void }) {
     setReferenceIndex(0);
   };
 
+  /** Shows a state change at once; the saved row paints it again on reload. */
+  const applySessionState = (state: SessionState): void => {
+    goal.apply(state);
+    setMessages(previous => [...previous, { role: "context", content: "", state, timestamp: Date.now() }]);
+  };
+
+  /**
+   * Writes a goal staged before its conversation existed, once that
+   * conversation exists. A paint and a send use the same path, so the row is
+   * appended once and a stale caller stops before touching the store.
+   */
+  async function flushStagedGoal(
+    id: string,
+    isCurrent: () => boolean,
+    hasSavedGoal: boolean,
+    staged = aiSession.goal(),
+  ): Promise<boolean> {
+    const stored = staged;
+    if (!stored) return true;
+    if (hasSavedGoal) {
+      // The saved conversation already carries a goal; the staged copy is older.
+      aiSession.setGoal("");
+      return true;
+    }
+    const state: SessionState = { kind: "goal_set", text: stored, author: "person" };
+    try {
+      await aiApi.setSessionGoal(id, stored);
+      if (!isCurrent()) return false;
+      aiSession.setGoal("");
+      applySessionState(state);
+      return true;
+    } catch {
+      // A failed write keeps the local value for the next paint or send.
+      return true;
+    }
+  }
+
+  /** Saves a person's goal change, or stages it until a conversation exists. */
+  const saveGoal = async (text: string | null): Promise<boolean> => {
+    const id = openId();
+    const state: SessionState = text === null
+      ? { kind: "goal_cleared", author: "person" }
+      : { kind: "goal_set", text, author: "person" };
+    if (!id) {
+      // A conversation starts with its first message; the staged goal is
+      // written once that conversation exists, before its first turn.
+      aiSession.setGoal(text ?? "");
+      applySessionState(state);
+      return true;
+    }
+    try {
+      await aiApi.setSessionGoal(id, text);
+      aiSession.setGoal("");
+      applySessionState(state);
+      return true;
+    } catch (error) {
+      notify(i18n.t("ai.goal.failed", { error: errorMessage(error) }), "error");
+      return false;
+    }
+  };
+
+  const clearGoal = async (): Promise<void> => {
+    await saveGoal(null);
+  };
+
   const runCommand = async (name: string): Promise<void> => {
     const draft = input().trim();
-    const argument = draft.slice(1).trimStart().split(/\s+/)[1];
     if (name === "goal") {
-      // The staged plan for this conversation: one step per round instead of a
-      // whole track in one call.
-      const text = draft.slice(1).replace(/^\s*goal\s*/, "").trim();
+      // The goal is one typed session row, so a rewind returns to the earlier
+      // goal and a fork carries the one it copied.
+      const text = trimStateText(draft.slice(1).replace(/^\s*goal\s*/, ""));
       if (!text) {
         setInput("/goal ");
         return;
       }
       setInput("");
-      aiSession.setGoal(text);
-      notify(i18n.t("ai.command.goalSet", { goal: text }), "success");
+      if (await saveGoal(text)) {
+        notify(i18n.t("ai.command.goalSet", { goal: text }), "success");
+      }
       return;
     }
     if (name === "compact") {
@@ -759,28 +996,28 @@ export function AiPanel(props: { onClose?: () => void }) {
       await compactSession(id);
       return;
     }
-    if (name === "drop_history") {
-      const keep = Number(argument);
-      if (!Number.isInteger(keep) || keep < 1) {
-        setInput("/drop_history ");
-        return;
-      }
+    if (name === "clear") {
       const id = openId();
       if (!id) return;
       setInput("");
+      const confirmed = await confirm(
+        i18n.t("ai.command.clearConfirm"),
+        { title: i18n.t("ai.command.clear"), kind: "warning" },
+      );
+      if (!confirmed) return;
       try {
-        const result = await aiApi.dropSessionHistory(id, keep);
+        const result = await aiApi.clearSessionHistory(id);
         notify(
-          i18n.t("ai.command.dropped", {
+          i18n.t("ai.command.cleared", {
             records: result.dropped_records,
-            assets: result.removed_assets,
+            size: bytesText(result.freed_bytes),
           }),
           "success",
         );
         setOriginalView(false);
         await paintSession(id);
       } catch (error) {
-        notify(String(error), "error");
+        notify(errorMessage(error), "error");
       }
     }
   };
@@ -807,29 +1044,46 @@ export function AiPanel(props: { onClose?: () => void }) {
     }
   };
 
+  /** The sentence a confirmation shows, built from the grouped authors. */
+  const recallOtherText = (other: RecallOther): string =>
+    other.count === 1
+      ? i18n.t("ai.recall.otherEdit", { author: authorName(other.author) })
+      : i18n.t("ai.recall.otherEdits", {
+        count: String(other.count),
+        author: authorName(other.author),
+      });
+
+  const recallConfirmText = (others: RecallOther[]): string =>
+    i18n.t("ai.recall.confirm", {
+      edits: others.map(recallOtherText).join(", "),
+    });
+
+  const recallRefusalText = (reason: RecallRefusal): string => i18n.t(RECALL_REFUSAL_KEYS[reason]);
+
   /**
-   * Revert to before a person's message: the message and everything after it
-   * leave the conversation, and the project returns to the snapshot it was
-   * sent against. The backend does both as one step and one undo entry.
+   * Recall a person's message: the message and everything after it leave the
+   * conversation. With `undoEdits` the project's history cursor also moves
+   * back to the position the message recorded, as one history jump that a
+   * redo reverses.
    *
    * The cut takes a wire index, not a row index: a restored row carries the
    * message it came from, and a row the live turn painted is matched against
    * the saved wire, because rows hide envelopes and delivery messages.
    */
-  const revertToBefore = async (msg: ChatMessage): Promise<void> => {
+  const recallMessage = async (msg: ChatMessage, undoEdits: boolean): Promise<void> => {
     const id = openId();
     if (!id || msg.role !== "user") return;
     const epoch = scopeEpoch;
     // A running turn keeps writing into the history this would rewrite.
     if (loading() || reattached() || stoppingInherited()) {
-      notify(i18n.t("ai.revert.turnRunning"), "error");
+      notify(i18n.t("ai.recall.turnRunning"), "error");
       return;
     }
     // The original view shows the history a compaction replaced, whose indices
-    // do not address the saved wire a revert cuts.
+    // do not address the saved wire a recall cuts.
     if (originalView() || sessionBusy()) return;
     // The conversation stays on screen until the reply lands: switching away
-    // would leave the restored project without the history that goes with it.
+    // would leave a moved history without the transcript that goes with it.
     setSessionBusy(true);
     try {
       let keep = msg.wireIndex;
@@ -838,26 +1092,40 @@ export function AiPanel(props: { onClose?: () => void }) {
         keep = (loaded && savedWireIndex(msg, loaded.messages)) ?? undefined;
       }
       if (keep === undefined) {
-        notify(i18n.t("ai.revert.unsaved"), "error");
+        notify(i18n.t("ai.recall.unsaved"), "error");
         return;
       }
-      const reverted = await aiApi.revertBefore(id, keep);
-      // The backend already restored this document, so it is published for the
+      let outcome = await aiApi.recall(id, keep, undoEdits, false);
+      if (outcome.status === "needs_confirmation") {
+        const confirmed = await confirm(recallConfirmText(outcome.others), {
+          title: i18n.t("ai.recall.andUndoEdits"),
+        });
+        if (!confirmed) return;
+        outcome = await aiApi.recall(id, keep, true, true, outcome.token);
+      }
+      if (outcome.status === "refused") {
+        notify(recallRefusalText(outcome.reason), "error");
+        return;
+      }
+      if (outcome.status !== "recalled") return;
+      // The backend already moved this document, so it is published for the
       // project it names even when the panel moved on or closed; only the
       // repaint of a conversation that is off screen is skipped.
-      if (reverted.snapshot.file_path === store.filePath()) store.applyAiSnapshot(reverted.snapshot);
-      // The revert stands either way; a file that did not take it is the one
+      if (outcome.snapshot?.file_path === store.filePath()) store.applyAiSnapshot(outcome.snapshot);
+      // The recall stands either way; a file that did not take it is the one
       // thing the person must hear, so it is never replaced by a success.
-      const unsaved = reverted.unsaved;
-      if (unsaved) notify(i18n.t("ai.revert.fileUnsaved", { error: unsaved }), "error");
+      const unsaved = outcome.unsaved;
+      if (unsaved) notify(i18n.t("ai.recall.fileUnsaved", { error: unsaved }), "error");
       if (disposed || epoch !== scopeEpoch || openId() !== id) return;
       setOriginalView(false);
       if (!(await paintSession(id)) || disposed || epoch !== scopeEpoch || openId() !== id) return;
-      setInput(msg.content);
-      setAttachments(msg.media ?? []);
-      if (!unsaved) notify(i18n.t("ai.revert.beforeDone"), "success");
+      setInput(outcome.message.content);
+      setAttachments(outcome.message.media ?? []);
+      if (!unsaved) {
+        notify(i18n.t(undoEdits ? "ai.recall.doneUndo" : "ai.recall.done"), "success");
+      }
     } catch (error) {
-      notify(i18n.t("ai.revert.beforeFailed", { error: errorMessage(error) }), "error");
+      notify(i18n.t("ai.recall.failed", { error: errorMessage(error) }), "error");
     } finally {
       setSessionBusy(false);
     }
@@ -875,6 +1143,8 @@ export function AiPanel(props: { onClose?: () => void }) {
       const loaded = await aiApi.originalSession(id);
       if (disposed || epoch !== scopeEpoch || request !== paintRequest) return;
       setMessages(restoredTranscript(loaded.messages));
+      // The original view carries the whole history, so no older page remains.
+      pager.resetForOriginal();
       setOriginalView(true);
       queueMicrotask(() => transcriptFollow?.resume());
     } catch {
@@ -900,7 +1170,8 @@ export function AiPanel(props: { onClose?: () => void }) {
   const stopFollowing = () => {
     if (turnPoll !== null) { clearInterval(turnPoll); turnPoll = null; }
     const inherited = reattached();
-    if (inherited && approval()?.requestId === inherited.requestId) setApproval(null);
+    const open = approval() ?? userQuestion();
+    if (inherited && open?.requestId === inherited.requestId) clearQuestion();
     setReattached(null);
   };
   /** Follows a backend turn this view did not start, until it ends. */
@@ -987,7 +1258,8 @@ export function AiPanel(props: { onClose?: () => void }) {
       if (disposed || epoch !== scopeEpoch || reattached() !== turn) return;
       const gone = expired.get(active.request_id);
       const open = waiting.find(question => !gone?.has(question.call_id));
-      if (open) showQuestion(active.request_id, open);
+      if (open?.kind === "user_question") showUserQuestion(active.request_id, open);
+      else if (open) showQuestion(active.request_id, open);
     } finally {
       if (attachExpired === expired) attachExpired = null;
     }
@@ -1019,6 +1291,7 @@ export function AiPanel(props: { onClose?: () => void }) {
       timestamp: Date.now(),
     }]);
     settleLostSteer(painted);
+    turnReleased();
     void flushQueued();
   };
   /**
@@ -1067,6 +1340,7 @@ export function AiPanel(props: { onClose?: () => void }) {
         timestamp: Date.now(),
       }]);
       settleLostSteer(painted);
+      turnReleased();
       // A settled turn sends the message waiting for it, as any stop does.
       void flushQueued();
     } finally {
@@ -1117,10 +1391,11 @@ export function AiPanel(props: { onClose?: () => void }) {
       void cancel();
       abandonTurn();
     }
-    setMessages([]);
+    clearTranscript();
     setSessionError(null);
     aiSession.setOpenScoped(sessionScope(), null);
     setOpenId(null);
+    bindingFollower.reset();
     // A conversation with no stored setting reads as the default.
     aiWorkspace.adoptPermission(DEFAULT_PERMISSION);
     setAllowed([]);
@@ -1228,7 +1503,7 @@ export function AiPanel(props: { onClose?: () => void }) {
     try {
       await aiApi.deleteSession(id);
       if (openId() === id) {
-        setMessages([]);
+        clearTranscript();
         aiSession.setOpenScoped(sessionScope(), null);
         aiSession.clearQueue();
         setOpenId(null);
@@ -1257,17 +1532,29 @@ export function AiPanel(props: { onClose?: () => void }) {
     finally { setSessionBusy(false); }
   };
   /**
-   * The document to copy or download. Markdown is the transcript on screen,
-   * JSON is the stored wire; both carry the metadata `sessions_load` returns.
+   * The document to copy or download. Markdown is the transcript on screen
+   * with the saved turns above the loaded page in front of it, so a running
+   * turn's rows and unloaded turns both appear; the original view already
+   * shows its whole history. JSON is the stored wire. Both carry the metadata
+   * `sessions_load` returns.
    */
   const buildExport = async (format: ExportFormat): Promise<{ name: string; text: string } | null> => {
     const id = openId();
     if (!id) return null;
     const loaded = loadedSession(await aiApi.loadSession(id));
     if (!loaded) return null;
-    return format === "markdown"
-      ? { name: exportFileName(loaded.meta, "md"), text: exportMarkdown(loaded.meta, messages()) }
-      : { name: exportFileName(loaded.meta, "json"), text: exportJson(loaded.meta, loaded.messages) };
+    if (format === "json") {
+      return { name: exportFileName(loaded.meta, "json"), text: exportJson(loaded.meta, loaded.messages) };
+    }
+    // The whole saved view is only addressable while it still has the shape the
+    // page on screen came from. After a rewrite, export exactly the rows the
+    // reader sees instead of slicing the fresh view at an index that moved.
+    const fresh = originalView() ? null : loadedPage(await aiApi.openSession(id));
+    const sameView = !!fresh && fresh.revision === pager.pageRevision() && fresh.start === pager.pageStart();
+    const rows = originalView() || !sameView
+      ? messages()
+      : [...restoredTranscript(loaded.messages.slice(0, pager.pageStart())), ...messages()];
+    return { name: exportFileName(loaded.meta, "md"), text: exportMarkdown(loaded.meta, rows) };
   };
   const runExport = async (format: ExportFormat, noteKey: I18nKey, deliver: (name: string, text: string) => Promise<void>) => {
     setExportBusy(true);
@@ -1330,15 +1617,29 @@ export function AiPanel(props: { onClose?: () => void }) {
         setMessages(previous => [...previous, ...rows]);
         return;
       }
+      const evicted = sessionArchiveEviction(payload);
+      const failure = evicted ? null : sessionCompactionFailure(payload);
+      const compaction = evicted || failure ? null : sessionCompaction(payload);
+      const notice = evicted ?? failure ?? compaction;
+      if (!notice) return;
+      // Every notice names the conversation it belongs to; another one's is
+      // logged but never painted into this transcript.
+      if (notice.session_id !== openId()) {
+        log.warn("ai", `session ${notice.session_id} sent a notice for another conversation`);
+        return;
+      }
       // A full audition archive made room for this turn's listening clips: the
       // transcript names what went, so the operator's copy is not a silent loss.
-      const evicted = sessionArchiveEviction(payload);
       if (evicted) {
         log.info("ai", `session ${evicted.session_id} evicted ${evicted.evicted.length} archive file(s)`);
         setMessages(previous => [...previous, { role: "system", content: archiveNotice(evicted), timestamp: Date.now() }]);
         return;
       }
-      const compaction = sessionCompaction(payload);
+      if (failure) {
+        log.warn("ai", `session ${failure.session_id} compaction summary failed: ${failure.reason}`);
+        setMessages(previous => [...previous, { role: "system", content: compactionFailureNotice(failure), timestamp: Date.now() }]);
+        return;
+      }
       if (!compaction) return;
       log.info("ai", `session ${compaction.session_id} compacted ${compaction.dropped_from}..${compaction.dropped_to}`);
       setMessages(previous => [...previous, { role: "system", content: compactionNotice(compaction), timestamp: Date.now() }]);
@@ -1415,8 +1716,7 @@ export function AiPanel(props: { onClose?: () => void }) {
         calls.add(event.call_id);
         attachExpired.set(event.request_id, calls);
       }
-      const open = approval();
-      if (open && open.requestId === event.request_id && open.call_id === event.call_id) setApproval(null);
+      card.clearIf(event.request_id, event.call_id);
       return;
     }
     const inherited = reattached();
@@ -1444,6 +1744,9 @@ export function AiPanel(props: { onClose?: () => void }) {
         if (event.request.after !== undefined) {
           void paintPreview(event.request.path, event.request.before ?? "", event.request.after);
         }
+        break;
+      case "ask_user":
+        showUserQuestion(event.request_id, event.request);
         break;
       case "preview":
         void paintPreview(event.path, event.before, event.after);
@@ -1489,6 +1792,7 @@ export function AiPanel(props: { onClose?: () => void }) {
     const at = anchor ? current.indexOf(anchor) : -1;
     if (anchor && at < 0) return;
     late.last = rows[rows.length - 1];
+    rows.forEach(row => { if (row.state) goal.apply(row.state); });
     setMessages([...current.slice(0, at + 1), ...rows, ...current.slice(at + 1)]);
   };
   /** One message the running turn saved, painted as its rows. */
@@ -1507,6 +1811,7 @@ export function AiPanel(props: { onClose?: () => void }) {
     if (message.role === "tool") setCurrentTool(null);
     if (!rows.length) return;
     turn.last = rows[rows.length - 1];
+    rows.forEach(row => { if (row.state) goal.apply(row.state); });
     setMessages(prev => [...prev, ...rows]);
   };
 
@@ -1580,11 +1885,28 @@ export function AiPanel(props: { onClose?: () => void }) {
   const settleOutcome = (outcome: TurnOutcome, sent: WireMessage[], textProtocol: boolean) => {
     const error = outcome.error;
     if (error && errorKind(error) === "auth_expired") setAuthError(errorMessage(error));
-    if (!outcome.failed) return;
+    // The turn's batch commits as one edit, so its facts are reported once here
+    // instead of on the deferred transaction_commit row.
+    const changes = parseChangeSet(outcome.changes);
+    const changed = changes && hasChangeFacts(changes)
+      ? i18n.t("ai.turn.changed", {
+        changes: changeSetText(changes, { properties: store.project.properties }),
+      })
+      : null;
+    if (!outcome.failed) {
+      if (changed) {
+        setMessages(prev => [...prev, {
+          role: "system",
+          content: changed,
+          timestamp: Date.now(),
+        }]);
+      }
+      return;
+    }
     const reason = error ? i18n.t("ai.turn.error", { error: errorMessage(error) }) : null;
     const content = outcome.stop
-      ? [reason, stopNotice(outcome.stop)].filter(Boolean).join("\n")
-      : reason ?? outcome.text;
+      ? [reason, stopNotice(outcome.stop), changed].filter(Boolean).join("\n")
+      : [reason ?? outcome.text, changed].filter(Boolean).join("\n");
     setMessages(prev => [...prev, {
       role: "system",
       content,
@@ -1679,6 +2001,9 @@ export function AiPanel(props: { onClose?: () => void }) {
     const reference = turn.reference ?? null;
     const question = turn.user ?? (resumed ? userTurnOf(resumed.messages) : null);
     if (!question) return false;
+    // Installing the conversation's own store slot clears the staged goal when
+    // the first turn creates that conversation, so take it before the switch.
+    const stagedGoal = aiSession.goal();
     // True once the request reaches the backend, or once a turn that failed to
     // start gave its queued row back: a caller that took a message off the
     // queue puts it back only when neither happened.
@@ -1731,6 +2056,12 @@ export function AiPanel(props: { onClose?: () => void }) {
       }
     }
     const sessionId = openId();
+    // A goal staged before the first message becomes a typed row before the
+    // turn that may act on it is prepared.
+    if (sessionId) {
+      await flushStagedGoal(sessionId, () => liveTurn(token), false, stagedGoal);
+      if (!liveTurn(token)) return posted;
+    }
     // A window that reloads while this turn runs keeps this marker; the next
     // mount asks the backend whether it still holds the turn.
     if (sessionId) aiSession.setTurn({ session: sessionId, started: startedAt });
@@ -1771,13 +2102,9 @@ export function AiPanel(props: { onClose?: () => void }) {
           busCount: store.project.buses.length,
           projectNote: note.text,
         }, { ...provider.capabilities, audioIn: supportsAudio }, tools, Array.isArray(skillIndex) ? skillIndex : undefined);
-        // A goal turns the turn into one step of a plan: the loop creates the
-        // track first and adds its patterns after, instead of one whole block.
-        const goal = aiSession.goal();
-        const guided = goal
-          ? `${systemPrompt}\n\nCurrent goal: ${goal}\nWork one step at a time: create or verify the object first, then add its content in a later call. Do not send a whole track DSL in one call when the goal is still being built.`
-          : systemPrompt;
-        sent = buildMessages(guided, question);
+        // The saved goal and plan ride in the backend's derived context row,
+        // so the prompt does not repeat them and a rewind changes both.
+        sent = buildMessages(systemPrompt, question);
         // Every request carries this text, so the context figure counts it.
         setRequestOverhead(systemPrompt, tools);
       }
@@ -1808,6 +2135,22 @@ export function AiPanel(props: { onClose?: () => void }) {
       settleOutcome(outcome, sent, textProtocol);
     } catch (e) {
       if (cancelledFor(token)) return posted;
+      // A file opened while the send was on its way is not a turn failure:
+      // nothing was saved, the conversation follows the open file, and the
+      // message returns so the next send carries the binding notice.
+      if (errorBindingMismatch(e)) {
+        await followOpenProject(sessionId);
+        if (turn.queued) {
+          const row = turn.queued;
+          aiSession.setQueued((previous) => [row, ...previous.filter((entry) => entry.id !== row.id)]);
+        } else {
+          restoreComposer(question);
+        }
+        handedBack = true;
+        posted = false;
+        log.warn("ai", "conversation followed the open project; the message returns");
+        return posted;
+      }
       // A failure before the turn started saved nothing, so the message goes
       // back where it came from instead of offering a Retry: a queued row to
       // the head of the queue, whatever the composer holds, and a typed
@@ -1835,13 +2178,16 @@ export function AiPanel(props: { onClose?: () => void }) {
         setPartial("");
         setReasoning("");
         setPreparingTool(null);
-        setApproval(null);
+        clearQuestion();
         setLoading(false);
         setTurnStartedAt(null);
         setStopRequestedAt(null);
         setCurrentTool(null);
         // The turn settled here, so no window may report it as still running.
         aiSession.setTurn(null);
+        // A file opened while the turn ran is the one the conversation follows
+        // now; the backend kept it bound to the file the turn started on.
+        turnReleased();
         // The turn moved this conversation's title, turn count and time.
         void refreshSessions();
         // A message composed while the turn ran goes out now, exactly once. A
@@ -2044,6 +2390,9 @@ export function AiPanel(props: { onClose?: () => void }) {
   const handleSend = async () => {
     const msg = input().trim();
     if (!msg || !getActiveProvider().model.trim()) return;
+    // A conversation opened from the list may work on another file; it
+    // follows the open one before the turn, so the model reads the notice.
+    if (followsOpenProject(binding())) await followOpenProject(openId());
     // The scope belongs to this one request, so the send takes it and the
     // composer forgets it. A refused send keeps both the text and the scope.
     const reference = activeScope();
@@ -2290,10 +2639,10 @@ export function AiPanel(props: { onClose?: () => void }) {
                         : i18n.t("ai.fork.hint"),
                     onSelect: () => void forkFromTurn(msg),
                   }] : []),
-                  // Only a person's message is a point to revert to: the backend
-                  // restores the project it was sent against and cuts there.
+                  // Only a person's message is a point to recall to: the
+                  // backend cuts there and can move the history cursor back.
                   ...(msg.role === "user" ? [{
-                    label: i18n.t("ai.revert.before"),
+                    label: i18n.t("ai.recall.message"),
                     // A running turn keeps writing into the history this
                     // rewrites, so the item is withheld until it settles.
                     disabled: busy || originalView(),
@@ -2301,8 +2650,19 @@ export function AiPanel(props: { onClose?: () => void }) {
                       ? i18n.t("ai.revert.turnRunning")
                       : originalView()
                         ? i18n.t("ai.revert.originalView")
-                        : i18n.t("ai.revert.actionHint"),
-                    onSelect: () => void revertToBefore(msg),
+                        : i18n.t("ai.recall.messageHint"),
+                    onSelect: () => void recallMessage(msg, false),
+                  }, {
+                    label: i18n.t("ai.recall.andUndoEdits"),
+                    // The backend owns the recorded position; a row without
+                    // one is refused there with a typed reason.
+                    disabled: busy || originalView(),
+                    hint: busy
+                      ? i18n.t("ai.revert.turnRunning")
+                      : originalView()
+                        ? i18n.t("ai.revert.originalView")
+                        : i18n.t("ai.recall.andUndoEditsHint"),
+                    onSelect: () => void recallMessage(msg, true),
                   }] : []),
                 ];
                 if (items.length) openContextMenu({ x: event.clientX, y: event.clientY, items });
@@ -2316,18 +2676,34 @@ export function AiPanel(props: { onClose?: () => void }) {
                 <AiThinking loading={!!msg.liveReasoning && loading()} partial="" approval={false} lastTool={null} identity="" reasoning={msg.reasoning} />
               </Show>
               <Show when={msg.role === "tool"} fallback={
-                <Show when={msg.context === "audition"} fallback={
-                  <Show when={msg.checkpoint} fallback={<div class="ai-message-content"><Show when={msg.role === "assistant"} fallback={legacyAuditionText(msg.content, i18n.t("ai.media.legacyAudition"))}><AiMarkdown content={msg.content} /></Show></div>}>
-                    <LazyDetails
-                      class="ai-checkpoint"
-                      open={false}
-                      summary={i18n.t("ai.sessions.summary")}
-                    >
-                      <div class="ai-message-content"><Show when={msg.role === "assistant"} fallback={legacyAuditionText(msg.content, i18n.t("ai.media.legacyAudition"))}><AiMarkdown content={msg.content} /></Show></div>
-                    </LazyDetails>
+                <Show when={msg.binding || msg.surface || msg.state} fallback={
+                  <Show when={msg.context === "audition"} fallback={
+                    <Show when={msg.checkpoint} fallback={<div class="ai-message-content"><Show when={msg.role === "assistant"} fallback={legacyAuditionText(msg.content, i18n.t("ai.media.legacyAudition"))}><AiMarkdown content={msg.content} /></Show></div>}>
+                      <LazyDetails
+                        class="ai-checkpoint"
+                        open={false}
+                        summary={i18n.t("ai.sessions.summary")}
+                      >
+                        <div class="ai-message-content"><Show when={msg.role === "assistant"} fallback={legacyAuditionText(msg.content, i18n.t("ai.media.legacyAudition"))}><AiMarkdown content={msg.content} /></Show></div>
+                      </LazyDetails>
+                    </Show>
+                  }>
+                    <AiAudition message={msg} />
                   </Show>
                 }>
-                  <AiAudition message={msg} />
+                  <Show when={msg.state} fallback={
+                    <Show when={msg.surface} fallback={
+                      <div class="ai-binding-row" role="status" title={msg.binding!.to}>
+                        {i18n.t(msg.binding!.cause === "moved" ? "ai.binding.moved" : "ai.binding.bound", { name: projectName(msg.binding!.to) })}
+                      </div>
+                    }>
+                      <div class="ai-binding-row" role="status" title={toolSurfaceRow(msg.surface!).names}>
+                        {toolSurfaceRow(msg.surface!).text}
+                      </div>
+                    </Show>
+                  }>
+                    <div class="ai-state-row" role="status">{sessionStateRow(msg.state!)}</div>
+                  </Show>
                 </Show>
               }>
                 {/* A restored tool row: the call's name, what it was asked and what came back. */}
@@ -2345,7 +2721,7 @@ export function AiPanel(props: { onClose?: () => void }) {
                     classList={{ error: msg.error }}
                     summary={<>
                       <span class="ai-tool-icon"><ToolIcon name={msg.tool!.name} /></span>
-                      <span class="ai-tool-name">{activitySummary(msg.tool!, msg.content)}</span>
+                      <span class="ai-tool-name">{activitySummary(msg.tool!, msg.content, { properties: store.project.properties })}</span>
                       <Show when={msg.error}><span class="ai-tool-error-label"> · {i18n.t("ai.activity.failed")}</span></Show>
                     </>}
                   >
@@ -2357,7 +2733,7 @@ export function AiPanel(props: { onClose?: () => void }) {
                         </Show>
                       </div>
                       <Show when={msg.tool!.args}><div>{i18n.t("ai.activity.arguments")}</div><AiToolArguments content={msg.tool!.args!} /></Show>
-                      <div>{i18n.t("ai.activity.result")}</div><AiToolResult tool={msg.tool!.name} content={msg.content} args={msg.tool!.args} sessionId={openId() ?? undefined} />
+                      <div>{i18n.t("ai.activity.result")}</div><AiToolResult tool={msg.tool!.name} content={msg.content} args={msg.tool!.args} sessionId={openId() ?? undefined} resultSha={msg.resultSha} />
                     </div>
                   </LazyDetails>
                 </Show>
@@ -2372,7 +2748,7 @@ export function AiPanel(props: { onClose?: () => void }) {
                           <span class="ai-media-tag" title={attachment.path} classList={{ missing: !!attachment.missing }}>
                             {attachment.name} · {attachment.missing
                               ? i18n.t("ai.media.missingState")
-                              : <>{attachment.local_reference ? i18n.t("ai.media.localReference") : attachment.mime} · {formatDuration(attachment.duration_secs) ?? i18n.t("ai.media.unknownDuration")} · {formatBytes(attachment.bytes)}</>}
+                              : <>{attachment.local_reference ? i18n.t("ai.media.localReference") : attachment.mime} · {formatDuration(attachment.duration_secs) ?? i18n.t("ai.media.unknownDuration")} · {bytesText(attachment.bytes)}</>}
                           </span>
                     )}
                   </For>
@@ -2654,7 +3030,7 @@ export function AiPanel(props: { onClose?: () => void }) {
             >{i18n.t("ai.sessions.originalBack")}</button>
           </div>
         </Show>
-        <Show when={hiddenMessages() > 0 || (compactedSession() && !originalView())}>
+        <Show when={hiddenMessages() > 0 || pager.pageStart() > 0 || (compactedSession() && !originalView())}>
           <button
             type="button"
             class="ai-transcript-earlier"
@@ -2663,14 +3039,18 @@ export function AiPanel(props: { onClose?: () => void }) {
             tabIndex={atTranscriptTop() ? 0 : -1}
             onClick={() => {
               if (hiddenMessages() > 0) {
-                setRenderLimit((limit) => limit + TRANSCRIPT_RENDER_LIMIT);
+                pager.showMoreRows();
+              } else if (pager.pageStart() > 0) {
+                if (openId()) void pager.loadOlderPage(openId()!);
               } else if (openId()) {
                 void paintOriginal(openId()!);
               }
             }}
           >{hiddenMessages() > 0
             ? i18n.t("ai.transcript.earlier", { count: hiddenMessages() })
-            : i18n.t("ai.transcript.earlierHistory")}</button>
+            : pager.pageStart() > 0
+              ? i18n.t("ai.transcript.earlierTurns")
+              : i18n.t("ai.transcript.earlierHistory")}</button>
         </Show>
         <Index each={transcriptEntries()}>
           {(entry) => (
@@ -2743,6 +3123,50 @@ export function AiPanel(props: { onClose?: () => void }) {
         </div>
       </Show>
 
+      {/* A question from the model uses the same slot as an approval card. */}
+      <Show when={userQuestion()}>
+        <div class="ai-approval-card ai-question-card" role="alert" aria-label={i18n.t("ai.question.title")}>
+          <div class="ai-approval-title">{i18n.t("ai.question.title")}</div>
+          <div class="ai-question-text selectable">{userQuestion()!.question}</div>
+          <Show when={userQuestion()!.error}>
+            <div class="ai-question-error" role="alert">{userQuestion()!.error}</div>
+          </Show>
+          <Show when={(userQuestion()!.options?.length ?? 0) > 0}>
+            <div class="ai-approval-actions">
+              <For each={userQuestion()!.options!}>
+                {(option, index) => (
+                  <button class="ai-question-option" disabled={userQuestion()!.answering} onClick={() => void answerQuestion(index())}>{option}</button>
+                )}
+              </For>
+            </div>
+          </Show>
+          <Show when={userQuestion()!.free_text}>
+            <div class="ai-question-free">
+              <input
+                class="ai-question-input"
+                type="text"
+                aria-label={i18n.t("ai.question.placeholder")}
+                placeholder={i18n.t("ai.question.placeholder")}
+                value={userQuestion()!.replyText}
+                maxlength={userQuestion()!.max_chars}
+                onInput={(event) => card.setReplyText(event.currentTarget.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    void answerQuestion();
+                  }
+                }}
+              />
+              <button
+                class="ai-question-submit"
+                disabled={userQuestion()!.answering || !trimStateText(userQuestion()!.replyText)}
+                onClick={() => void answerQuestion()}
+              >{i18n.t("ai.question.submit")}</button>
+            </div>
+          </Show>
+        </div>
+      </Show>
+
       <ProposalReviewBar
         applying={applying()}
         previewPath={previewPath()}
@@ -2770,7 +3194,7 @@ export function AiPanel(props: { onClose?: () => void }) {
                 <span class="ai-attachment-meta">
                   {attachment.missing
                     ? i18n.t("ai.media.missingState")
-                    : <>{usesLocalReference(attachment) ? i18n.t("ai.media.localReference") : attachment.mime} · {formatDuration(attachment.duration_secs) ?? i18n.t("ai.media.unknownDuration")} · {formatBytes(attachment.bytes)}</>}
+                    : <>{usesLocalReference(attachment) ? i18n.t("ai.media.localReference") : attachment.mime} · {formatDuration(attachment.duration_secs) ?? i18n.t("ai.media.unknownDuration")} · {bytesText(attachment.bytes)}</>}
                 </span>
                 <button
                   class="ai-attachment-remove"
@@ -2898,8 +3322,9 @@ export function AiPanel(props: { onClose?: () => void }) {
 
       <AiComposer
         blockedNotice={blockedNotice()}
-        goal={aiSession.goal()}
-        onClearGoal={() => aiSession.setGoal("")}
+        goal={sessionStateView().goal ?? ""}
+        plan={sessionStateView().plan ?? []}
+        onClearGoal={() => void clearGoal()}
         commands={commandMatches()}
         commandIndex={commandIndex()}
         onCommandHover={setCommandIndex}

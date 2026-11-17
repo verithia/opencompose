@@ -69,7 +69,7 @@ beforeEach(async () => {
   invokeMock.mockImplementation(async (cmd: string) => {
     if (cmd === "scan_plugins") return [];
     if (cmd === "get_transport_state") return TRANSPORT_STOPPED();
-    if (cmd === "get_undo_history") return [];
+    if (cmd === "history_page") return [];
     return sourceSnapshot();
   });
   await store.initProject();
@@ -81,7 +81,7 @@ describe("the pattern's preset dropdown", () => {
     invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === "scan_plugins") return [];
       if (cmd === "get_transport_state") return TRANSPORT_STOPPED();
-      if (cmd === "get_undo_history") return [];
+      if (cmd === "history_page") return [];
       if (cmd === "set_pattern_preset") return writtenSnapshot("Lead");
       return sourceSnapshot();
     });
@@ -109,7 +109,7 @@ describe("the pattern's preset dropdown", () => {
     invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === "scan_plugins") return [];
       if (cmd === "get_transport_state") return TRANSPORT_STOPPED();
-      if (cmd === "get_undo_history") return [];
+      if (cmd === "history_page") return [];
       if (cmd === "set_pattern_preset") return writtenSnapshot("oc_default_lead");
       return sourceSnapshot("Lead");
     });
@@ -136,7 +136,7 @@ describe("the pattern's preset dropdown", () => {
     invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === "scan_plugins") return [];
       if (cmd === "get_transport_state") return TRANSPORT_STOPPED();
-      if (cmd === "get_undo_history") return [];
+      if (cmd === "history_page") return [];
       if (cmd === "set_pattern_preset") {
         return new Promise<ProjectSnapshot>((resolve) => {
           release = resolve;
@@ -162,7 +162,7 @@ describe("the pattern's preset dropdown", () => {
     invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === "scan_plugins") return [];
       if (cmd === "get_transport_state") return TRANSPORT_STOPPED();
-      if (cmd === "get_undo_history") return [];
+      if (cmd === "history_page") return [];
       if (cmd === "set_pattern_preset") throw new Error("pattern preset boom");
       return sourceSnapshot();
     });

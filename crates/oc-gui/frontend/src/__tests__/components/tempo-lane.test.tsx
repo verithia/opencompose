@@ -59,8 +59,8 @@ beforeEach(async () => {
     }
     if (cmd === "get_undo_state") {
       return {
-        can_undo: false, can_redo: false, undo_label: null, redo_label: null,
-        undo_labels: [], redo_labels: [],
+        can_undo: false, can_redo: false,
+
       };
     }
     return withMaps();
@@ -125,11 +125,11 @@ describe("tempo and meter lane", () => {
       }
       if (cmd === "get_undo_state") {
         return {
-          can_undo: false, can_redo: false, undo_label: null, redo_label: null,
-          undo_labels: [], redo_labels: [],
+          can_undo: false, can_redo: false,
+
         };
       }
-      if (cmd === "get_undo_history") return [];
+      if (cmd === "history_page") return [];
       if (cmd === "set_tempo_map") return saved;
       return withMaps();
     });

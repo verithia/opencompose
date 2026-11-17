@@ -301,7 +301,10 @@ pub fn get_or_analyze_dir(
     }
     let analysis = dsp::analyze(samples, sample_rate, &key.detector)?;
     let path = match write_file(&path, key, samples.len(), &analysis) {
-        Ok(()) => Some(path),
+        Ok(()) => {
+            crate::vocal_cache::trim(dir, crate::vocal_cache::DEFAULT_BUDGET_BYTES, Some(&path));
+            Some(path)
+        }
         Err(_) => None,
     };
     Ok(CachedVocalAnalysis {

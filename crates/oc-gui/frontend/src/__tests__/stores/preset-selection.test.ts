@@ -13,8 +13,8 @@ function defaultReply(command: string) {
   switch (command) {
     case "get_project": return snapshot(10);
     case "set_loop_region": return { enabled: false, start_beats: null, end_beats: null };
-    case "get_undo_state": return { can_undo: false, can_redo: false, undo_label: null, redo_label: null };
-    case "get_undo_history": return [];
+    case "get_undo_state": return { can_undo: false, can_redo: false,  };
+    case "history_page": return [];
     default: throw new Error(`Unexpected preset-selection command: ${command}`);
   }
 }

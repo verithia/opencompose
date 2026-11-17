@@ -1,15 +1,17 @@
 import { Channel } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { ProjectSnapshot } from "../types/project";
+import type { ChangeSet } from "../types/change";
+import type { HistoryAuthor } from "../types/undo";
 import type { ModelLimits } from "../stores/aiLimits";
 import type { AuthKind, Wire } from "./config";
-import type { ApprovalRequest, ToolDef, TurnStop, WireMessage } from "./wire";
+import type { ApprovalRequest, PendingQuestion, ToolDef, TurnStop, UserQuestion, WireMessage } from "./wire";
 import type { PermissionMode } from "./permission";
-import type { CompactionResult, SessionMeta } from "./sessions";
+import type { ClearReport, CompactionResult, SessionMeta } from "./sessions";
 import type { SkillRef } from "./system-prompt";
 import { toolsetArg } from "./toolsets";
 import type { DiffResult } from "./transcript";
-import type { MediaNotice } from "./media";
+import type { MediaAttachment, MediaNotice } from "./media";
 import { invoke } from "./transport";
 
 export function cancel(requestId: string) {
@@ -21,6 +23,7 @@ export type TurnEvent =
   | { type: "message"; message: WireMessage }
   | { type: "running"; call_id: string; tool: string }
   | { type: "ask"; request: ApprovalRequest }
+  | { type: "ask_user"; request: UserQuestion }
   | { type: "expired"; call_id: string }
   | { type: "preview"; call_id: string; tool: string; path?: string; before: string; after: string }
   | { type: "wire_folded"; before_rows: number; before_bytes: number; after_rows: number; after_bytes: number; folded: number; kept: number }
@@ -34,11 +37,45 @@ export interface TurnOutcome {
   text: string;
   failed: boolean;
   stop?: TurnStop;
-  error?: { kind: string; message: string; reauth?: boolean; retryable?: boolean };
+  /** The typed facts the committed batch produced, reported once per turn. */
+  changes?: ChangeSet;
+  error?: {
+    kind: string;
+    message: string;
+    reauth?: boolean;
+    retryable?: boolean;
+    /** A typed cause, such as the two paths of a `session_binding` refusal. */
+    detail?: { kind: string; bound?: string; open?: string };
+  };
 }
 
 /** A person's answer to a question a running turn asked. */
 export interface TurnDecision { approved: boolean; target?: string; always?: boolean }
+
+/** A person's answer to `ask_user`: a chosen option, free text, or both. */
+export interface TurnReply { option?: number; text?: string }
+
+/** Why the host refused a question answer. */
+export type ReplyError =
+  | "not_waiting"
+  | "option_out_of_range"
+  | "text_not_accepted"
+  | "text_too_long"
+  | "turn_stopped";
+
+const REPLY_ERRORS: Readonly<Record<ReplyError, true>> = {
+  not_waiting: true,
+  option_out_of_range: true,
+  text_not_accepted: true,
+  text_too_long: true,
+  turn_stopped: true,
+};
+
+/** The typed refusal behind a rejected `ai_turn_reply`, or null when it was not one. */
+export function replyErrorOf(error: unknown): ReplyError | null {
+  return typeof error === "string" && Object.hasOwn(REPLY_ERRORS, error)
+    ? error as ReplyError : null;
+}
 
 /**
  * Runs one agent turn in the backend. `messages` is the system prompt and the
@@ -89,9 +126,14 @@ export function answerTurn(requestId: string, callId: string, decision: TurnDeci
   return invoke<void>("ai_turn_answer", { requestId, callId, decision });
 }
 
+/** Answers a question the model asked, without an approval decision. */
+export function replyTurn(requestId: string, callId: string, reply: TurnReply) {
+  return invoke<void>("ai_turn_reply", { requestId, callId, reply });
+}
+
 /** The questions a running turn waits on, for a window that reloaded. */
 export function turnQuestions(requestId: string) {
-  return invoke<ApprovalRequest[]>("ai_turn_questions", { requestId });
+  return invoke<PendingQuestion[]>("ai_turn_questions", { requestId });
 }
 
 export function listenTurn(handler: (event: TurnEnvelope) => void) {
@@ -103,17 +145,60 @@ export function listenTurnProject(handler: (snapshot: ProjectSnapshot) => void) 
   return listen<ProjectSnapshot>("ai_turn_project", (event) => handler(event.payload));
 }
 
+/** Why a recall did not run; the panel localizes each reason. */
+export type RecallRefusal =
+  | "turn_running"
+  | "batch_open"
+  | "other_project"
+  | "no_recorded_position"
+  | "position_cleared"
+  | "not_a_person_message"
+  | "conversation_changed"
+  | "edits_changed"
+  | "preview_open";
+
+/** One author whose edits a recall would undo, and how many. */
+export interface RecallOther {
+  author: HistoryAuthor;
+  count: number;
+}
+
+/** The history position a confirmation was shown for. */
+export interface RecallToken {
+  applied: number;
+  newest?: number | null;
+}
+
+/** The message a recall cut, for the composer to take back. */
+export interface RecallMessage {
+  content: string;
+  media?: MediaAttachment[];
+}
+
+/** The answer to a recall. */
+export type RecallOutcome =
+  | {
+    status: "recalled";
+    kept: number;
+    message: RecallMessage;
+    snapshot?: ProjectSnapshot;
+    unsaved?: string;
+  }
+  | { status: "needs_confirmation"; others: RecallOther[]; token: RecallToken }
+  | { status: "refused"; reason: RecallRefusal };
+
 /**
- * Restores the project to the snapshot a person's message was sent against
- * and cuts the conversation before it, as one undo step.
+ * Cuts the conversation before a person's message. With `undoEdits` it also
+ * moves the project's history cursor back to the position that message
+ * recorded; a redo brings the edits back.
  */
-export function revertBefore(sessionId: string, index: number) {
-  return invoke<{ kept: number; snapshot: ProjectSnapshot; unsaved?: string }>("ai_revert_before", { sessionId, index });
+export function recall(sessionId: string, index: number, undoEdits: boolean, confirmed: boolean, token?: RecallToken) {
+  return invoke<RecallOutcome>("ai_recall", { sessionId, index, undoEdits, confirmed, token });
 }
 
 /** The full result behind a truncated preview, while the backend keeps it. */
-export function toolResult(sessionId: string, callId: string) {
-  return invoke<string | null>("ai_tool_result", { sessionId, callId });
+export function toolResult(sessionId: string, callId?: string, resultSha?: string) {
+  return invoke<string | null>("ai_tool_result", { sessionId, callId, resultSha });
 }
 
 /**
@@ -213,6 +298,31 @@ export function loadSession(id: string) {
   return invoke<unknown>("sessions_load", { id });
 }
 
+/** The newest page of a saved conversation, with where it sits in the whole. */
+export function openSession(id: string, turns?: number) {
+  return invoke<unknown>("sessions_open", { id, ...(turns === undefined ? {} : { turns }) });
+}
+
+/** The page of turns before `before`, or a refusal when the view changed. */
+export function sessionPage(id: string, before: number, revision: string, turns?: number) {
+  return invoke<unknown>("sessions_page", {
+    id,
+    before,
+    ...(turns === undefined ? {} : { turns }),
+    revision,
+  });
+}
+
+/** Binds a conversation to the project that is open now. */
+export function bindSession(id: string) {
+  return invoke<SessionMeta>("sessions_bind", { id });
+}
+
+/** Whether a conversation works on the open project. */
+export function sessionBinding(id: string) {
+  return invoke<unknown>("sessions_binding", { id });
+}
+
 export function newSession(title?: string, parent?: string, through?: number) {
   return invoke<SessionMeta>("sessions_new", {
     ...(title ? { title } : {}),
@@ -237,12 +347,21 @@ export function setSessionPermission(id: string, permission: PermissionMode) {
   return invoke<void>("sessions_set_permission", { id, permission });
 }
 
+/** Sets the conversation's goal, or clears it with `null`. */
+export function setSessionGoal(id: string, text: string | null) {
+  return invoke<SessionMeta>("sessions_set_goal", { id, text });
+}
+
 export function compactSession(id: string) {
   return invoke<CompactionResult>("sessions_compact", { id });
 }
 
-export function dropSessionHistory(id: string, keep: number) {
-  return invoke<{ dropped_records: number; removed_assets: number }>("sessions_drop_history", { id, keep });
+export function clearSessionHistory(id: string) {
+  return invoke<ClearReport>("sessions_clear_history", { id });
+}
+
+export function clearAllSessionHistory() {
+  return invoke<ClearReport>("sessions_clear_all_history");
 }
 
 export function originalSession(id: string) {

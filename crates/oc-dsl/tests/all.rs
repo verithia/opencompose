@@ -6,5 +6,8 @@ mod parse;
 #[path = "semantics.rs"]
 mod semantics;
 
+#[path = "search.rs"]
+mod search;
+
 #[path = "source_map.rs"]
 mod source_map;

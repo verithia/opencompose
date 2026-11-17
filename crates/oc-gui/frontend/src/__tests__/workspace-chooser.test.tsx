@@ -139,7 +139,7 @@ beforeEach(async () => {
   workspaceStore.reset();
   installBackend();
   // No project open: the fixture starts on the start surface.
-  await store.newProject();
+  await store.initProject();
 });
 
 afterEach(cleanup);
@@ -151,9 +151,11 @@ describe("the start surface", () => {
 
     expect(recentNames()).toEqual(["songs", "sketches"]);
     expect(recentPaths()).toEqual(["/Users/me/songs", "/Users/me/sketches"]);
-    // The three actions the surface offers are there, in one row.
+    // With no project open, the surface offers to create one as well.
     const actions = [...view.container.querySelectorAll(".workspace-action")].map((node) => node.textContent);
-    expect(actions).toEqual(["Open folder…", "Open project file…", "Continue without a workspace"]);
+    expect(actions).toEqual([
+      "Open folder…", "Open project file…", "New project", "Create starter sketch", "Continue without a workspace",
+    ]);
   });
 
   it("opens a recent folder, lists its project files and opens the one picked", async () => {
@@ -420,7 +422,8 @@ describe("the start surface", () => {
     fireEvent.click(view.container.querySelector(".workspace-action-detached")!);
     await waitFor(() => expect(backend.detached).toBe(true));
     expect(invokeMock.mock.calls.some(([command]) => command === "workspace_detached")).toBe(true);
-    expect(workspaceStore.startSurface()).toBe(false);
+    // Without a folder there is still no document: every project has a file.
+    expect(workspaceStore.startSurface()).toBe(true);
     expect(workspaceStore.scopePath()).toBeNull();
   });
 });
@@ -487,6 +490,10 @@ describe("the app's start surface", () => {
     await waitFor(() => expect(chooser()).toBeTruthy());
     fireEvent.click(view.container.querySelector(".workspace-action-detached")!);
     await waitFor(() => expect(backend.detached).toBe(true));
+    // Detached, the chooser stays until a project is open.
+    expect(view.container.querySelector(".workspace-chooser")).toBeTruthy();
+    openDialogMock.mockResolvedValueOnce("/Users/me/loose/song.ocp");
+    fireEvent.click(view.container.querySelector(".workspace-action-open-project")!);
     await waitFor(() => expect(view.container.querySelector(".workspace-chooser")).toBeFalsy());
 
     fireEvent.click(view.container.querySelector('[aria-label="More file actions"]')!);

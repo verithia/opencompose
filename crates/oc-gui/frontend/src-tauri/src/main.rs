@@ -70,7 +70,7 @@ fn main() {
         oc_host::exit_process(code);
     }
     let diag = oc_gui_lib::parse_diag_options(&args[1..]).0;
-    let log_directory = oc_audio::private_fs::explicit_config_dir().map(|root| root.join("logs"));
+    let log_directory = oc_gui_lib::profile_log_dir();
     if diag.any()
         && let Some(path) = oc_diag::init_with_options(oc_diag::InitOptions {
             program: "opencompose-gui",

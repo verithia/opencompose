@@ -13,7 +13,7 @@ fn loaded() -> AppState {
 fn observed(inner: &AppStateInner) -> serde_json::Value {
     serde_json::json!({"project":inner.project,"dsl":inner.dsl_source,"revision":inner.revision,
         "epoch":inner.content_epoch,"render":inner.render_generation,"dirty":inner.dirty,
-        "undo":inner.undo.undo.len(),"redo":inner.undo.redo.len(),"sessions":inner.effect_write_gestures.len()})
+        "undo":inner.undo.undo_entries().len(),"redo":inner.undo.redo_entries().len(),"sessions":inner.effect_write_gestures.len()})
 }
 fn begin(inner: &mut AppStateInner) -> UndoGestureToken {
     begin_owned_effect_param_write_inner(inner, "track:0", 0, "factor").unwrap()
@@ -67,7 +67,7 @@ fn owned_effect_replaced_document_refuses_mutation_point_and_stale_close() {
     assert_eq!(observed(&inner), before);
     point(&mut inner, &current, ast::BarBeat::new(1, 1, 0)).unwrap();
     assert!(end(&mut inner, &current).unwrap().closed);
-    assert_eq!(inner.undo.undo.len(), 1);
+    assert_eq!(inner.undo.undo_entries().len(), 1);
     assert!(!end(&mut inner, &current).unwrap().closed);
 }
 #[test]
@@ -125,7 +125,7 @@ fn owned_effect_failed_clock_batch_and_absent_master_leave_document_unchanged() 
     assert_eq!(observed(&inner), before);
     assert!(inner.undo.is_owned_gesture_active(&owner));
     assert!(end(&mut inner, &owner).unwrap().closed);
-    assert_eq!(inner.undo.undo.len(), 0);
+    assert_eq!(inner.undo.undo_entries().len(), 0);
 }
 #[test]
 fn owned_effect_history_restore_expires_owner_and_valid_batch_preserves_it() {
@@ -168,7 +168,7 @@ fn owned_effect_structural_dsl_publication_succeeds_while_expiring_old_membershi
     assert!(!inner.undo.is_owned_gesture_active(&owner));
     assert!(!inner.undo.end_owned_gesture(&owner));
     assert_eq!(inner.project, published.project);
-    assert_eq!(inner.undo.undo.len(), 1);
+    assert_eq!(inner.undo.undo_entries().len(), 1);
 }
 
 #[test]
@@ -182,7 +182,7 @@ fn owned_effect_points_survive_structural_invalidation_and_stale_close_through_h
         point(&mut inner, &token, ast::BarBeat::new(1, 2, 0)).unwrap();
         let recorded = inner.project.clone();
         assert_eq!(
-            inner.undo.undo.len(),
+            inner.undo.undo_entries().len(),
             1,
             "points checkpoint as one owned entry"
         );
@@ -192,7 +192,7 @@ fn owned_effect_points_survive_structural_invalidation_and_stale_close_through_h
             _ => add_effect_inner(&mut inner, "track:0", "gain").unwrap(),
         }
         let changed = inner.project.clone();
-        assert_eq!(inner.undo.undo.len(), 2, "{structural}");
+        assert_eq!(inner.undo.undo_entries().len(), 2, "{structural}");
         let before = observed(&inner);
         assert!(!end(&mut inner, &token).unwrap().closed);
         assert_eq!(
@@ -243,7 +243,7 @@ fn owned_effect_concurrent_recordings_and_ordinary_sibling_share_exact_original_
     );
     assert!(inner.undo.is_owned_gesture_active(&ordinary));
     assert!(inner.undo.end_owned_gesture(&ordinary));
-    assert_eq!(inner.undo.undo.len(), 1);
+    assert_eq!(inner.undo.undo_entries().len(), 1);
     inner.undo_step().unwrap();
     assert_eq!(inner.project, original);
     redo_recorded_history(&mut inner);
@@ -298,10 +298,10 @@ fn mixed_legacy_effect_then_owned_recording_survives_structural_and_late_close()
     inner.project.name = Some("ordinary sibling".into());
     resync_with_undo(&mut inner, old, UndoEdit::new("name", UndoScope::Project)).unwrap();
     let recorded = inner.project.clone();
-    assert_eq!(inner.undo.undo.len(), 1);
+    assert_eq!(inner.undo.undo_entries().len(), 1);
     move_effect_inner(&mut inner, "track:0", 0, 1).unwrap();
     let changed = inner.project.clone();
-    assert_eq!(inner.undo.undo.len(), 2);
+    assert_eq!(inner.undo.undo_entries().len(), 2);
     inner.undo.begin_gesture(UndoScope::Project);
     let ordinary = inner.undo.begin_owned_gesture(UndoScope::Preset).unwrap();
     let before = observed(&inner);
@@ -369,7 +369,7 @@ fn legacy_effect_begin_failed_point_and_close_preserve_outer_legacy_depth() {
     inner.undo.end_gesture();
     assert!(!inner.undo.is_in_gesture());
     assert_eq!(inner.project, original);
-    assert!(inner.undo.undo.is_empty());
+    assert!(inner.undo.undo_entries().is_empty());
 }
 
 #[test]
@@ -411,7 +411,7 @@ fn mixed_effect_recording_inside_explicit_outer_scope_keeps_its_merge_and_depth(
     inner.undo.end_gesture();
     assert!(!inner.undo.is_in_gesture());
     assert_eq!(
-        inner.undo.undo.len(),
+        inner.undo.undo_entries().len(),
         1,
         "explicit outer scope still intentionally merges structural edit"
     );

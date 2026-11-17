@@ -3,6 +3,7 @@
  * descriptions and the facts a turn reports when it stops. The agent loop
  * itself runs in the backend.
  */
+import type { ChangeSet } from "../types/change";
 import type { MediaAttachment, MediaNotice } from "./media";
 import type { MessageMeta } from "./messageProtocol";
 
@@ -19,6 +20,8 @@ export interface WireThinking { text: string; signature?: string; redacted?: str
 export interface WireMessage {
   role: string;
   content: string | null;
+  /** The project facts a mutating tool produced, beside its result. */
+  changes?: ChangeSet;
   /** Host-owned semantics; stripped by provider adapters. */
   message_meta?: MessageMeta;
   media?: MediaAttachment[];
@@ -33,6 +36,8 @@ export interface WireMessage {
   context?: "audition" | "summary";
   tool_calls?: ToolCall[];
   tool_call_id?: string;
+  /** The hash of this row's full result in the session's results folder. */
+  result_sha?: string;
   provider_state?: unknown;
   thinking?: WireThinking[];
   /** Plain reasoning fields saved by older Chat Completions adapters. */
@@ -115,4 +120,22 @@ export interface ApprovalRequest {
   /** The subtree's DSL a replacement would write; only a replacement knows it. */
   after?: string;
 }
+
+/**
+ * A question the model asks the person. `options` offers short choices; with
+ * `free_text` the person may type an answer instead.
+ */
+export interface UserQuestion {
+  call_id: string;
+  question: string;
+  options?: string[];
+  free_text: boolean;
+  /** Longest answer the host accepts, so the field uses the same bound. */
+  max_chars: number;
+}
+
+/** One pending question as a reloaded window reads it. */
+export type PendingQuestion =
+  | { kind?: "approval" } & ApprovalRequest
+  | { kind: "user_question" } & UserQuestion;
 

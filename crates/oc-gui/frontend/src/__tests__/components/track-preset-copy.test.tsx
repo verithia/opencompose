@@ -73,7 +73,7 @@ beforeEach(async () => {
   invokeMock.mockImplementation(async (cmd: string) => {
     if (cmd === "scan_plugins") return [];
     if (cmd === "get_transport_state") return TRANSPORT_STOPPED();
-    if (cmd === "get_undo_history") return [];
+    if (cmd === "history_page") return [];
     if (cmd === "duplicate_track") return duplicatedSnapshot();
     if (cmd === "save_track_preset_as_new") return forkedSnapshot();
     return sourceSnapshot();

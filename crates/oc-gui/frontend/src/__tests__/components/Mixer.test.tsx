@@ -19,7 +19,7 @@ beforeEach(async () => {
   invokeMock.mockImplementation(async (cmd: string) => {
     if (cmd === "scan_plugins") return [];
     if (cmd === "get_transport_state") return { playing: false, position_beats: 0, position_seconds: 0, duration_seconds: 0 };
-    if (cmd === "get_undo_state") return { can_undo: false, can_redo: false, undo_label: null, redo_label: null, undo_labels: [], redo_labels: [] };
+    if (cmd === "get_undo_state") return { can_undo: false, can_redo: false,    };
     return makeSnapshot({
       tracks: [
         makeTrack("Piano", 0),
@@ -241,7 +241,7 @@ describe("Mixer (split view)", () => {
     invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === "scan_plugins") return [];
       if (cmd === "get_transport_state") return { playing: false, position_beats: 0, position_seconds: 0, duration_seconds: 0 };
-      if (cmd === "get_undo_state") return { can_undo: false, can_redo: false, undo_label: null, redo_label: null, undo_labels: [], redo_labels: [] };
+      if (cmd === "get_undo_state") return { can_undo: false, can_redo: false,    };
       return makeSnapshot({ tracks: [], buses: [] });
     });
     await store.initProject();
@@ -272,7 +272,7 @@ describe("Mixer (split view)", () => {
     invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === "scan_plugins") return [];
       if (cmd === "get_transport_state") return { playing: false, position_beats: 0, position_seconds: 0, duration_seconds: 0 };
-      if (cmd === "get_undo_state") return { can_undo: false, can_redo: false, undo_label: null, redo_label: null, undo_labels: [], redo_labels: [] };
+      if (cmd === "get_undo_state") return { can_undo: false, can_redo: false,    };
       return makeSnapshot({
         tracks: [makeTrack("Piano", 0)],
         buses: cmd === "add_bus" ? buses : buses.slice(0, 1),
@@ -326,7 +326,7 @@ describe("Mixer (split view)", () => {
     invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === "scan_plugins") return [];
       if (cmd === "get_transport_state") return TRANSPORT_STOPPED();
-      if (cmd === "get_undo_state") return { can_undo: false, can_redo: false, undo_label: null, redo_label: null, undo_labels: [], redo_labels: [] };
+      if (cmd === "get_undo_state") return { can_undo: false, can_redo: false,    };
       if (cmd === "remove_send") {
         return makeSnapshot({
           tracks: [
@@ -374,7 +374,7 @@ describe("Mixer (split view)", () => {
     invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === "scan_plugins") return [];
       if (cmd === "get_transport_state") return TRANSPORT_STOPPED();
-      if (cmd === "get_undo_state") return { can_undo: false, can_redo: false, undo_label: null, redo_label: null, undo_labels: [], redo_labels: [] };
+      if (cmd === "get_undo_state") return { can_undo: false, can_redo: false,    };
       if (cmd === "remove_bus") {
         return makeSnapshot({
           tracks: [makeTrack("Piano", 0)],

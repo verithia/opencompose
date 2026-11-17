@@ -59,7 +59,8 @@ describe("recovery menu", () => {
     render(() => <Toolbar />);
     fireEvent.click(document.body.querySelector('[aria-label="More file actions"]')!);
 
-    const item = document.body.querySelector(".toolbar-menu-item:disabled");
+    const item = [...document.body.querySelectorAll(".toolbar-menu-item:disabled")]
+      .find((node) => node.textContent?.includes("Recover autosave"));
     expect(item).toHaveTextContent("Recover autosave…");
     expect(item).toHaveAttribute("title", "No autosave newer than the saved project.");
   });
@@ -69,7 +70,8 @@ describe("recovery menu", () => {
     render(() => <Toolbar />);
     fireEvent.click(document.body.querySelector('[aria-label="More file actions"]')!);
 
-    const item = document.body.querySelector(".toolbar-menu-item:disabled");
+    const item = [...document.body.querySelectorAll(".toolbar-menu-item:disabled")]
+      .find((node) => node.textContent?.includes("Recover autosave"));
     expect(item).toHaveTextContent("Recover autosave…");
     expect(item).toHaveAttribute("title", "No autosave newer than the saved project.");
   });

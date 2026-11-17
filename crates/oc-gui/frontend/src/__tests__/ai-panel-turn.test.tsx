@@ -19,7 +19,8 @@ import { aiConfig, getActiveProvider, hasUnsavedConfig } from "../ai/config";
 import { elapsedLabel, stopStalled, STOP_STALLED_SECONDS } from "../ai/transcript";
 import type { SessionMeta } from "../ai/sessions";
 import type { WireMessage } from "../ai/wire";
-import { answerFakeTurn, cancelFakeTurn, emitTurnEvent, emitTurnProject, fakeTurnRunning, resetFakeTurns, runFakeTurn, type TurnStartArgs } from "./helpers/fakeTurn";
+import type { TurnOutcome } from "../ai/api";
+import { answerFakeTurn, cancelFakeTurn, emitTurnEvent, emitTurnProject, fakeTurnRunning, replyFakeTurn, resetFakeTurns, runFakeTurn, type TurnStartArgs } from "./helpers/fakeTurn";
 
 const CAPABILITIES = { text: true, audio_in: false, audio_out: false, native_tool_calling: true, streaming: true };
 
@@ -84,6 +85,12 @@ const backend = {
   sessions: [] as SessionMeta[],
   /** Saved messages whose event the fake sends after the turn's reply. */
   late: undefined as ((message: WireMessage) => boolean) | undefined,
+  /** Calls the fake turns into questions. */
+  askUser: (_call: { tool: string; args: Record<string, unknown> }) => false,
+  /** Every `ai_turn_reply`, in order. */
+  replies: [] as { requestId: string; callId: string; reply: Record<string, unknown> }[],
+  /** The typed facts the turn's committed batch reports once. */
+  changes: undefined as TurnOutcome["changes"],
 };
 
 function installBackend() {
@@ -105,9 +112,15 @@ function installBackend() {
         },
         tool: (call) => backend.tool(call),
         ask: (call) => call.tool === "edit_subtree" || call.tool === "tracks_remove",
+        askUser: (call) => backend.askUser(call),
         late: (message) => backend.late?.(message) ?? false,
+        changes: backend.changes,
       });
       case "ai_turn_answer": return answerFakeTurn(String(typed.requestId), String(typed.callId), typed.decision as never);
+      case "ai_turn_reply": {
+        backend.replies.push({ requestId: String(typed.requestId), callId: String(typed.callId), reply: typed.reply as Record<string, unknown> });
+        return replyFakeTurn(String(typed.requestId), String(typed.callId), typed.reply as never);
+      }
       case "ai_turn_questions": return [];
       case "ai_batch_recover": return null;
       case "ai_cancel": {
@@ -125,7 +138,8 @@ function installBackend() {
         backend.sessions = [meta, ...backend.sessions];
         return meta;
       }
-      case "sessions_load": return { meta: session(), messages: [], skipped: 0 };
+      case "sessions_load":
+      case "sessions_open": return { meta: session(), messages: [], skipped: 0, start: 0, total: 0, revision: "0", older_tokens: 0, state: [] };
       case "workspace_open": return { path: String(typed.path ?? ""), name: "other", detached: false, projects: [] };
       case "workspaces_list": return [];
       default: return backend.snapshot;
@@ -181,9 +195,12 @@ beforeEach(() => {
   backend.tool = async () => ({ tracks: [] });
   backend.cancel = null;
   backend.cancelIds = [];
+  backend.replies = [];
+  backend.askUser = () => false;
   backend.snapshot = makeSnapshot();
   backend.sessions = [];
   backend.late = undefined;
+  backend.changes = undefined;
   i18n.setLocale("en");
   aiLimits.setActiveContext(null);
   resetStats();
@@ -561,6 +578,93 @@ describe("the turn in flight", () => {
     expect(document.body.textContent).not.toContain("Finished while the panel was closed.");
   });
 
+  it("shows a question card with options and sends the chosen answer", async () => {
+    let round = 0;
+    backend.chat = async () => {
+      round += 1;
+      return round === 1
+        ? { role: "assistant", content: null, tool_calls: [{
+            id: "q1", type: "function",
+            function: { name: "ask_user", arguments: JSON.stringify({ question: "Which mood?", options: ["Warm", "Bright"] }) },
+          }] }
+        : { role: "assistant", content: "Bright wins." };
+    };
+    backend.askUser = (call) => call.tool === "ask_user";
+    await mount();
+    await typeAndSend("pick a mood");
+
+    await waitFor(() => expect(document.querySelector(".ai-question-card")).toBeTruthy());
+    expect(document.querySelector(".ai-question-card")!.textContent).toContain("Which mood?");
+    const options = [...document.querySelectorAll(".ai-question-option")] as HTMLButtonElement[];
+    expect(options.map((option) => option.textContent)).toEqual(["Warm", "Bright"]);
+    fireEvent.click(options[1]);
+    await waitFor(() => expect(backend.replies).toHaveLength(1));
+    expect(backend.replies[0].reply).toEqual({ option: 1 });
+    await waitFor(() => expect(document.querySelector(".ai-question-card")).toBeNull());
+    await waitFor(() => expect(answers().at(-1)?.textContent).toContain("Bright wins."));
+  });
+
+  it("sends a typed answer when the question allows free text", async () => {
+    let round = 0;
+    backend.chat = async () => {
+      round += 1;
+      return round === 1
+        ? { role: "assistant", content: null, tool_calls: [{
+            id: "q2", type: "function",
+            function: { name: "ask_user", arguments: JSON.stringify({ question: "What mood?", options: ["Warm"], free_text: true }) },
+          }] }
+        : { role: "assistant", content: "Noted." };
+    };
+    backend.askUser = (call) => call.tool === "ask_user";
+    await mount();
+    await typeAndSend("describe the mood");
+
+    const field = await waitFor(() => {
+      const element = document.querySelector(".ai-question-input") as HTMLInputElement | null;
+      expect(element).toBeTruthy();
+      return element!;
+    });
+    expect(field.getAttribute("maxlength")).toBe("4000");
+    fireEvent.input(field, { target: { value: "Late-night jazz" } });
+    fireEvent.click(document.querySelector(".ai-question-submit") as HTMLButtonElement);
+    await waitFor(() => expect(backend.replies).toHaveLength(1));
+    expect(backend.replies[0].reply).toEqual({ text: "Late-night jazz" });
+    await waitFor(() => expect(answers().at(-1)?.textContent).toContain("Noted."));
+  });
+
+  it("keeps the question card and its text when the host refuses the answer", async () => {
+    let round = 0;
+    backend.chat = async () => {
+      round += 1;
+      return round === 1
+        ? { role: "assistant", content: null, tool_calls: [{
+            id: "q3", type: "function",
+            function: { name: "ask_user", arguments: JSON.stringify({ question: "What mood?", free_text: true }) },
+          }] }
+        : { role: "assistant", content: "Noted." };
+    };
+    backend.askUser = (call) => call.tool === "ask_user";
+    const base = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation(async (command: string, args?: unknown) => {
+      if (command === "ai_turn_reply") throw "text_too_long";
+      return base(command, args);
+    });
+    await mount();
+    await typeAndSend("describe the mood");
+
+    const field = await waitFor(() => {
+      const element = document.querySelector(".ai-question-input") as HTMLInputElement | null;
+      expect(element).toBeTruthy();
+      return element!;
+    });
+    fireEvent.input(field, { target: { value: "Too long to accept" } });
+    fireEvent.click(document.querySelector(".ai-question-submit") as HTMLButtonElement);
+    await waitFor(() => expect(document.querySelector(".ai-question-error")?.textContent)
+      .toBe(i18n.t("ai.question.refused.textTooLong")));
+    expect(document.querySelector(".ai-question-card")).toBeTruthy();
+    expect((document.querySelector(".ai-question-input") as HTMLInputElement).value).toBe("Too long to accept");
+  });
+
   it("keeps a pasted multi-line draft and does not send on Shift+Enter", async () => {
     await mount();
     fireEvent.input(input(), { target: { value: "line one\nline two" } });
@@ -881,5 +985,21 @@ describe("an unsaved provider draft", () => {
     expect(backend.chatCalls).toHaveLength(0);
     expect(input().value).toBe("do not lose this");
     expect(document.querySelector(".ai-save-notice")?.textContent).toContain("Settings could not be saved");
+  });
+});
+
+describe("a turn's committed batch", () => {
+  it("shows its typed changes once when the turn ends", async () => {
+    backend.changes = {
+      changes: [{ kind: "tempo", from: 120, to: 132 }],
+      more: 0,
+    };
+    await mount();
+    await typeAndSend("speed this up");
+
+    await waitFor(() => expect(systemRows().some(row => row.textContent?.includes("This turn changed:"))).toBe(true));
+    const changed = systemRows().filter(row => row.textContent?.includes("This turn changed:"));
+    expect(changed).toHaveLength(1);
+    expect(changed[0].textContent).toContain("This turn changed: Change tempo from 120 to 132 BPM");
   });
 });
