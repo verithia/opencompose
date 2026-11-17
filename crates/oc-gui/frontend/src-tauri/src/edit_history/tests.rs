@@ -182,6 +182,46 @@ fn a_state_whose_cursor_is_gone_drops_the_document() {
 }
 
 #[test]
+fn an_interrupted_clear_restores_its_history_and_sweeps_staging() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = project_file(dir.path());
+    let mut journal = Journal::open(&path).unwrap();
+    journal.append(&[entry(1)]).unwrap();
+    journal.write_state(1, "head one").unwrap();
+    drop(journal);
+    let history = journal::dir_for(&path);
+    let retired = PathBuf::from(format!("{}.old", history.display()));
+    let staging = PathBuf::from(format!("{}.new", history.display()));
+    std::fs::rename(&history, &retired).unwrap();
+    std::fs::create_dir(&staging).unwrap();
+    std::fs::write(staging.join("entries.jsonl"), "stale").unwrap();
+
+    let journal = Journal::open(&path).unwrap();
+    assert_eq!(journal.len(), 1, "the retired history came back");
+    assert_eq!(journal.head(), Some("head one"));
+    assert!(!retired.exists(), "the retired directory was swept");
+    assert!(!staging.exists(), "the staging directory was swept");
+}
+
+#[test]
+fn an_incomplete_copy_staging_is_not_promoted() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = project_file(dir.path());
+    let mut journal = Journal::open(&path).unwrap();
+    journal.append(&[entry(1)]).unwrap();
+    journal.write_state(1, "head one").unwrap();
+    drop(journal);
+    let history = journal::dir_for(&path);
+    let staging = PathBuf::from(format!("{}.new", history.display()));
+    std::fs::rename(&history, &staging).unwrap();
+    // Only a complete `.old` may be promoted; a crashed copy is removed.
+    let journal = Journal::open(&path).unwrap();
+    assert_eq!(journal.len(), 0);
+    assert_eq!(journal.head(), None);
+    assert!(!staging.exists(), "the incomplete staging was swept");
+}
+
+#[test]
 fn clear_older_keeps_the_newest_entries_and_never_an_undone_one() {
     let dir = tempfile::tempdir().unwrap();
     let path = project_file(dir.path());

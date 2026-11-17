@@ -237,6 +237,7 @@ impl Journal {
     /// is clamped, so a crash mid-write loses at most the unfinished write.
     pub fn open(project: &Path) -> io::Result<Self> {
         let dir = dir_for(project);
+        recover_and_sweep(&dir)?;
         crate::private_fs::ensure_dir(&dir)?;
         if read_marker(&dir).is_none() {
             write_marker(&dir, &Marker::new(project, None))?;
@@ -546,6 +547,27 @@ fn open_append_private(path: &Path) -> io::Result<File> {
     options.open(path)
 }
 
+/// Finish a [`Journal::clear_older`] that a crash interrupted. A directory
+/// that vanished between its rename to `.old` and the staging rename back is
+/// restored from `.old`, the only sibling known to be complete. Every staging
+/// sibling is removed instead of promoted, because a crashed copy leaves an
+/// incomplete one behind.
+fn recover_and_sweep(dir: &Path) -> io::Result<()> {
+    let retired = sibling(dir, "old");
+    if !dir.exists() && retired.exists() {
+        std::fs::rename(&retired, dir)?;
+    }
+    for tag in ["new", "old", "copy"] {
+        let leftover = sibling(dir, tag);
+        match std::fs::remove_dir_all(&leftover) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => log::warn!("[history] cannot sweep {}: {error}", leftover.display()),
+        }
+    }
+    Ok(())
+}
+
 fn sibling(dir: &Path, tag: &str) -> PathBuf {
     let mut name = dir.as_os_str().to_owned();
     name.push(format!(".{tag}"));
@@ -574,7 +596,7 @@ pub fn dir_bytes(dir: &Path) -> u64 {
 /// destination and renamed into place, replacing any history already there.
 /// The copy keeps the source's marker until its owner rewrites it.
 pub fn copy_dir(from: &Path, to: &Path) -> io::Result<()> {
-    let staging = sibling(to, "new");
+    let staging = sibling(to, "copy");
     let _ = std::fs::remove_dir_all(&staging);
     crate::private_fs::ensure_dir(&staging)?;
     let copied = (|| {
