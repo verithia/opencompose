@@ -307,8 +307,9 @@ pub fn close_open_typed(view: &[Value], started: &HashSet<String>) -> Vec<Closed
                 "role": "user",
                 "content": format!("{APPLICATION_RESULT_PREFIX}{content}"),
             });
-            let mut meta = MessageMeta::new(MessageKind::ApplicationResult);
-            meta.text_call = Some(message_protocol::TextCall { id, tool });
+            let meta = MessageMeta::ApplicationResult {
+                text_call: Some(message_protocol::TextCall { id, tool }),
+            };
             message_protocol::tag(&mut message, meta);
             Closed { message, state }
         })

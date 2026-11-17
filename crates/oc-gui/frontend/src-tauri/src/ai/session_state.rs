@@ -2,7 +2,6 @@
 //! from these values, and the panel paints the rows. The newest row of each
 //! kind is the current state, so a rewind cuts it and a fork copies it.
 
-use crate::ai::sessions::MessageKind;
 use crate::ai::sessions::message_protocol::{self, MessageMeta};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -131,8 +130,9 @@ impl SessionState {
 /// The saved row a state change becomes: a user row whose metadata carries the
 /// typed value and whose content is the text the model reads.
 pub fn state_row(state: &SessionState) -> Value {
-    let mut meta = MessageMeta::new(MessageKind::SessionState);
-    meta.state = Some(state.clone());
+    let meta = MessageMeta::SessionState {
+        state: Some(state.clone()),
+    };
     message_protocol::typed_row(meta, state.model_text())
 }
 

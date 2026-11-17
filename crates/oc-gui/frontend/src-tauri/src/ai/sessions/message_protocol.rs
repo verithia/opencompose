@@ -24,38 +24,86 @@ pub enum MessageKind {
     SessionState,
 }
 
+/// The flat, versioned object a saved message carries under `message_meta`.
+/// Every field is optional on the wire; [`MessageMeta`] decides which ones a
+/// kind may carry.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub(crate) struct MessageMeta {
-    pub version: u8,
-    pub kind: MessageKind,
+struct WireMeta {
+    version: u8,
+    kind: MessageKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    standing_intent: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    summary_text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    discarded_auditions: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    rollback_notice: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    proposal_notice: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    audio_range: Option<AudioRange>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    text_call: Option<TextCall>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    steer_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    notice: Option<HostNotice>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    state: Option<SessionState>,
+}
+
+/// The structured state a compaction summary hands to the next compaction.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct SummaryMeta {
     pub standing_intent: Option<String>,
     /// Summary prose kept separately from generated headers and inventories.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary_text: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub discarded_auditions: Option<usize>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rollback_notice: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proposal_notice: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub audio_range: Option<AudioRange>,
-    /// A text-protocol call: on the assistant round that asked for it and on
-    /// the application result that answers it. Native calls carry their id in
-    /// `tool_calls` and `tool_call_id` instead.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub text_call: Option<TextCall>,
-    /// The caller's id for a person's message delivered into a running turn.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub steer_id: Option<String>,
-    /// The typed value behind a host notice. Only a `host_notice` row carries
-    /// one; an untyped notice stays as its content alone.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub notice: Option<HostNotice>,
-    /// The typed goal or plan change. Only a `session_state` row carries one.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub state: Option<SessionState>,
+}
+
+/// What a saved message is, with the typed values only its kind may carry.
+/// Reading refuses a wire field on a kind that cannot hold it, so no caller
+/// checks combinations.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum MessageMeta {
+    /// `steer_id` is the caller's id for a message delivered into a running turn.
+    User {
+        steer_id: Option<String>,
+    },
+    /// A text-protocol call rides on the round that asks for it and on the
+    /// result that answers it; native calls carry their ids in the envelope.
+    Assistant {
+        text_call: Option<TextCall>,
+    },
+    Tool,
+    ApplicationResult {
+        text_call: Option<TextCall>,
+    },
+    RoundBudget {
+        notice: Option<HostNotice>,
+    },
+    Audition {
+        range: Option<AudioRange>,
+    },
+    ComparisonReference {
+        range: Option<AudioRange>,
+    },
+    ComparisonCandidate {
+        range: Option<AudioRange>,
+    },
+    Summary(SummaryMeta),
+    TransactionRollback,
+    ProposalOutcome,
+    /// An untyped notice stays as its content alone.
+    HostNotice {
+        notice: Option<HostNotice>,
+    },
+    SessionState {
+        state: Option<SessionState>,
+    },
 }
 
 /// The id and tool of a text-protocol call, so the store can pair its result
@@ -68,6 +116,10 @@ pub struct TextCall {
 
 /// Longest text-call id or tool name a saved message may carry.
 const MAX_TEXT_CALL_FIELD: usize = 128;
+/// Longest host notice a summary carries, in characters.
+const MAX_SUMMARY_NOTICE_CHARS: usize = 4096;
+/// Longest steering id, in bytes.
+const MAX_STEER_ID: usize = 64;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct AudioRange {
@@ -77,12 +129,239 @@ pub(crate) struct AudioRange {
     pub source: bool,
 }
 
+impl AudioRange {
+    fn valid(&self) -> bool {
+        self.start_seconds.is_finite()
+            && self.end_seconds.is_finite()
+            && self.start_seconds >= 0.0
+            && self.end_seconds > self.start_seconds
+    }
+}
+
+impl TextCall {
+    fn valid(&self) -> bool {
+        !self.id.is_empty()
+            && self.id.len() <= MAX_TEXT_CALL_FIELD
+            && self.tool.len() <= MAX_TEXT_CALL_FIELD
+    }
+}
+
+impl SummaryMeta {
+    fn valid(&self) -> bool {
+        [
+            &self.standing_intent,
+            &self.rollback_notice,
+            &self.proposal_notice,
+        ]
+        .into_iter()
+        .flatten()
+        .all(|text| text.chars().count() <= MAX_SUMMARY_NOTICE_CHARS)
+            && self
+                .summary_text
+                .as_ref()
+                .is_none_or(|text| text.len() <= super::summary::MAX_SUMMARY_BYTES)
+    }
+}
+
 impl MessageMeta {
-    /// Create message metadata for a kind.
+    /// The metadata of a `kind` that carries no typed value.
     pub fn new(kind: MessageKind) -> Self {
-        Self {
-            version: 1,
+        match kind {
+            MessageKind::User => Self::User { steer_id: None },
+            MessageKind::Assistant => Self::Assistant { text_call: None },
+            MessageKind::Tool => Self::Tool,
+            MessageKind::ApplicationResult => Self::ApplicationResult { text_call: None },
+            MessageKind::RoundBudget => Self::RoundBudget { notice: None },
+            MessageKind::Audition => Self::Audition { range: None },
+            MessageKind::ComparisonReference => Self::ComparisonReference { range: None },
+            MessageKind::ComparisonCandidate => Self::ComparisonCandidate { range: None },
+            MessageKind::Summary => Self::Summary(SummaryMeta::default()),
+            MessageKind::TransactionRollback => Self::TransactionRollback,
+            MessageKind::ProposalOutcome => Self::ProposalOutcome,
+            MessageKind::HostNotice => Self::HostNotice { notice: None },
+            MessageKind::SessionState => Self::SessionState { state: None },
+        }
+    }
+
+    pub fn kind(&self) -> MessageKind {
+        match self {
+            Self::User { .. } => MessageKind::User,
+            Self::Assistant { .. } => MessageKind::Assistant,
+            Self::Tool => MessageKind::Tool,
+            Self::ApplicationResult { .. } => MessageKind::ApplicationResult,
+            Self::RoundBudget { .. } => MessageKind::RoundBudget,
+            Self::Audition { .. } => MessageKind::Audition,
+            Self::ComparisonReference { .. } => MessageKind::ComparisonReference,
+            Self::ComparisonCandidate { .. } => MessageKind::ComparisonCandidate,
+            Self::Summary(_) => MessageKind::Summary,
+            Self::TransactionRollback => MessageKind::TransactionRollback,
+            Self::ProposalOutcome => MessageKind::ProposalOutcome,
+            Self::HostNotice { .. } => MessageKind::HostNotice,
+            Self::SessionState { .. } => MessageKind::SessionState,
+        }
+    }
+
+    pub fn summary(&self) -> Option<&SummaryMeta> {
+        match self {
+            Self::Summary(summary) => Some(summary),
+            _ => None,
+        }
+    }
+
+    pub fn text_call(&self) -> Option<&TextCall> {
+        match self {
+            Self::Assistant { text_call } | Self::ApplicationResult { text_call } => {
+                text_call.as_ref()
+            }
+            _ => None,
+        }
+    }
+
+    pub fn steer_id(&self) -> Option<&str> {
+        match self {
+            Self::User { steer_id } => steer_id.as_deref(),
+            _ => None,
+        }
+    }
+
+    pub fn notice(&self) -> Option<&HostNotice> {
+        match self {
+            Self::RoundBudget { notice } | Self::HostNotice { notice } => notice.as_ref(),
+            _ => None,
+        }
+    }
+
+    pub fn state(&self) -> Option<&SessionState> {
+        match self {
+            Self::SessionState { state } => state.as_ref(),
+            _ => None,
+        }
+    }
+
+    /// Whether every typed value is within its bounds.
+    fn valid(&self) -> bool {
+        match self {
+            Self::User { steer_id } => steer_id
+                .as_ref()
+                .is_none_or(|id| !id.is_empty() && id.len() <= MAX_STEER_ID),
+            Self::Assistant { text_call } | Self::ApplicationResult { text_call } => {
+                text_call.as_ref().is_none_or(TextCall::valid)
+            }
+            Self::RoundBudget { notice } | Self::HostNotice { notice } => {
+                notice.as_ref().is_none_or(HostNotice::valid)
+            }
+            Self::Audition { range }
+            | Self::ComparisonReference { range }
+            | Self::ComparisonCandidate { range } => range.as_ref().is_none_or(AudioRange::valid),
+            Self::Summary(summary) => summary.valid(),
+            Self::SessionState { state } => state.as_ref().is_none_or(SessionState::valid),
+            Self::Tool | Self::TransactionRollback | Self::ProposalOutcome => true,
+        }
+    }
+}
+
+/// Why a wire object is not a readable [`MessageMeta`].
+#[derive(Debug)]
+enum WireRefusal {
+    Version,
+    ForeignField,
+    OutOfBounds,
+}
+
+impl std::fmt::Display for WireRefusal {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Version => "unknown message metadata version",
+            Self::ForeignField => "a field this message kind does not carry",
+            Self::OutOfBounds => "a message metadata value out of bounds",
+        })
+    }
+}
+
+impl TryFrom<WireMeta> for MessageMeta {
+    type Error = WireRefusal;
+
+    fn try_from(wire: WireMeta) -> Result<Self, WireRefusal> {
+        let WireMeta {
+            version,
             kind,
+            mut standing_intent,
+            mut summary_text,
+            mut discarded_auditions,
+            mut rollback_notice,
+            mut proposal_notice,
+            mut audio_range,
+            mut text_call,
+            mut steer_id,
+            mut notice,
+            mut state,
+        } = wire;
+        if version != 1 {
+            return Err(WireRefusal::Version);
+        }
+        // Each kind takes its own fields; anything left over is refused.
+        let meta = match kind {
+            MessageKind::User => Self::User {
+                steer_id: steer_id.take(),
+            },
+            MessageKind::Assistant => Self::Assistant {
+                text_call: text_call.take(),
+            },
+            MessageKind::ApplicationResult => Self::ApplicationResult {
+                text_call: text_call.take(),
+            },
+            MessageKind::RoundBudget => Self::RoundBudget {
+                notice: notice.take(),
+            },
+            MessageKind::HostNotice => Self::HostNotice {
+                notice: notice.take(),
+            },
+            MessageKind::Audition => Self::Audition {
+                range: audio_range.take(),
+            },
+            MessageKind::ComparisonReference => Self::ComparisonReference {
+                range: audio_range.take(),
+            },
+            MessageKind::ComparisonCandidate => Self::ComparisonCandidate {
+                range: audio_range.take(),
+            },
+            MessageKind::Summary => Self::Summary(SummaryMeta {
+                standing_intent: standing_intent.take(),
+                summary_text: summary_text.take(),
+                discarded_auditions: discarded_auditions.take(),
+                rollback_notice: rollback_notice.take(),
+                proposal_notice: proposal_notice.take(),
+            }),
+            MessageKind::SessionState => Self::SessionState {
+                state: state.take(),
+            },
+            kind => Self::new(kind),
+        };
+        let foreign = standing_intent.is_some()
+            || summary_text.is_some()
+            || discarded_auditions.is_some()
+            || rollback_notice.is_some()
+            || proposal_notice.is_some()
+            || audio_range.is_some()
+            || text_call.is_some()
+            || steer_id.is_some()
+            || notice.is_some()
+            || state.is_some();
+        if foreign {
+            return Err(WireRefusal::ForeignField);
+        }
+        if !meta.valid() {
+            return Err(WireRefusal::OutOfBounds);
+        }
+        Ok(meta)
+    }
+}
+
+impl From<&MessageMeta> for WireMeta {
+    fn from(meta: &MessageMeta) -> Self {
+        let mut wire = WireMeta {
+            version: 1,
+            kind: meta.kind(),
             standing_intent: None,
             summary_text: None,
             discarded_auditions: None,
@@ -93,83 +372,50 @@ impl MessageMeta {
             steer_id: None,
             notice: None,
             state: None,
+        };
+        match meta.clone() {
+            MessageMeta::User { steer_id } => wire.steer_id = steer_id,
+            MessageMeta::Assistant { text_call } | MessageMeta::ApplicationResult { text_call } => {
+                wire.text_call = text_call;
+            }
+            MessageMeta::RoundBudget { notice } | MessageMeta::HostNotice { notice } => {
+                wire.notice = notice;
+            }
+            MessageMeta::Audition { range }
+            | MessageMeta::ComparisonReference { range }
+            | MessageMeta::ComparisonCandidate { range } => wire.audio_range = range,
+            MessageMeta::Summary(summary) => {
+                wire.standing_intent = summary.standing_intent;
+                wire.summary_text = summary.summary_text;
+                wire.discarded_auditions = summary.discarded_auditions;
+                wire.rollback_notice = summary.rollback_notice;
+                wire.proposal_notice = summary.proposal_notice;
+            }
+            MessageMeta::SessionState { state } => wire.state = state,
+            MessageMeta::Tool | MessageMeta::TransactionRollback | MessageMeta::ProposalOutcome => {
+            }
         }
+        wire
+    }
+}
+
+impl Serialize for MessageMeta {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        WireMeta::from(self).serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for MessageMeta {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        MessageMeta::try_from(WireMeta::deserialize(deserializer)?)
+            .map_err(serde::de::Error::custom)
     }
 }
 
 pub(super) fn read(message: &Value) -> Option<MessageMeta> {
-    let meta: MessageMeta = serde_json::from_value(message.get("message_meta")?.clone()).ok()?;
-    if meta.version != 1
-        || [
-            &meta.standing_intent,
-            &meta.rollback_notice,
-            &meta.proposal_notice,
-        ]
-        .into_iter()
-        .flatten()
-        .any(|text| text.chars().count() > 4096)
-        || meta.audio_range.as_ref().is_some_and(|range| {
-            !range.start_seconds.is_finite()
-                || !range.end_seconds.is_finite()
-                || range.start_seconds < 0.0
-                || range.end_seconds <= range.start_seconds
-        })
-    {
-        return None;
-    }
-    if meta.kind != MessageKind::Summary
-        && (meta.standing_intent.is_some()
-            || meta.summary_text.is_some()
-            || meta.discarded_auditions.is_some()
-            || meta.rollback_notice.is_some()
-            || meta.proposal_notice.is_some())
-    {
-        return None;
-    }
-    if meta
-        .summary_text
-        .as_ref()
-        .is_some_and(|text| text.len() > super::summary::MAX_SUMMARY_BYTES)
-    {
-        return None;
-    }
-    if meta.audio_range.is_some() && !is_audition(meta.kind) {
-        return None;
-    }
-    if meta
-        .steer_id
-        .as_ref()
-        .is_some_and(|id| meta.kind != MessageKind::User || id.is_empty() || id.len() > 64)
-    {
-        return None;
-    }
-    if meta.notice.as_ref().is_some_and(|notice| {
-        !matches!(
-            meta.kind,
-            MessageKind::HostNotice | MessageKind::RoundBudget
-        ) || !notice.valid()
-    }) {
-        return None;
-    }
-    if meta
-        .state
-        .as_ref()
-        .is_some_and(|state| meta.kind != MessageKind::SessionState || !state.valid())
-    {
-        return None;
-    }
-    if let Some(call) = &meta.text_call
-        && (!matches!(
-            meta.kind,
-            MessageKind::Assistant | MessageKind::ApplicationResult
-        ) || call.id.is_empty()
-            || call.id.len() > MAX_TEXT_CALL_FIELD
-            || call.tool.len() > MAX_TEXT_CALL_FIELD)
-    {
-        return None;
-    }
+    let meta = MessageMeta::deserialize(message.get("message_meta")?).ok()?;
     let role = message["role"].as_str()?;
-    let compatible = match meta.kind {
+    let compatible = match meta.kind() {
         MessageKind::Assistant => role == "assistant",
         MessageKind::Tool => role == "tool",
         MessageKind::ProposalOutcome => role == "user" || role == "tool",
@@ -245,53 +491,62 @@ pub(super) fn legacy(message: &Value) -> Option<MessageMeta> {
     if message.get("message_meta").is_some() {
         return read(message).or_else(|| role_kind(message).map(MessageMeta::new));
     }
-    let mut meta = for_new(message)?;
+    let meta = for_new(message)?;
     if message["role"] != "user" && message["role"] != "tool" {
         return Some(meta);
     }
     let text = message["content"].as_str().unwrap_or_default();
     if message["context"] == "summary" || text.starts_with("Conversation summary written ") {
-        meta.kind = MessageKind::Summary;
-        for line in text.lines() {
-            if let Some(intent) = line.strip_prefix("Standing intent: ") {
-                meta.standing_intent = Some(intent.chars().take(600).collect());
-            } else if let Some(rest) = line.strip_prefix("Discarded audition deliveries: ") {
-                meta.discarded_auditions =
-                    rest.split_whitespace().next().and_then(|n| n.parse().ok());
-            } else if line.starts_with("Host transaction rollback: ") {
-                meta.rollback_notice = Some(line.chars().take(4096).collect());
-            } else if line.starts_with("Host proposal outcome: ") {
-                meta.proposal_notice = Some(line.chars().take(4096).collect());
-            }
-        }
-    } else if text.starts_with("Host transaction rollback: ") {
-        meta.kind = MessageKind::TransactionRollback;
+        return Some(MessageMeta::Summary(legacy_summary(text)));
+    }
+    let kind = if text.starts_with("Host transaction rollback: ") {
+        MessageKind::TransactionRollback
     } else if text.starts_with("Host proposal outcome: ") {
-        meta.kind = MessageKind::ProposalOutcome;
-    } else if message["role"] == "user" {
-        if text.starts_with("You have ")
-            && text.contains(" tool round")
-            && text.contains(" left in this turn.")
-        {
-            meta.kind = MessageKind::RoundBudget;
-        } else if text.starts_with(super::turns::APPLICATION_RESULT_PREFIX) {
-            meta.kind = MessageKind::ApplicationResult;
-        } else if message["context"] == "audition"
-            || message.get("input_audio").is_some()
-            || (message.get("media").is_some()
-                && text.starts_with("You asked to hear ")
-                && text.contains("this is that render."))
-        {
-            meta.kind = if text.starts_with("A/B reference excerpt.") {
-                MessageKind::ComparisonReference
-            } else if text.starts_with("A/B candidate excerpt.") {
-                MessageKind::ComparisonCandidate
-            } else {
-                MessageKind::Audition
-            };
+        MessageKind::ProposalOutcome
+    } else if message["role"] != "user" {
+        return Some(meta);
+    } else if text.starts_with("You have ")
+        && text.contains(" tool round")
+        && text.contains(" left in this turn.")
+    {
+        MessageKind::RoundBudget
+    } else if text.starts_with(super::turns::APPLICATION_RESULT_PREFIX) {
+        MessageKind::ApplicationResult
+    } else if message["context"] == "audition"
+        || message.get("input_audio").is_some()
+        || (message.get("media").is_some()
+            && text.starts_with("You asked to hear ")
+            && text.contains("this is that render."))
+    {
+        if text.starts_with("A/B reference excerpt.") {
+            MessageKind::ComparisonReference
+        } else if text.starts_with("A/B candidate excerpt.") {
+            MessageKind::ComparisonCandidate
+        } else {
+            MessageKind::Audition
+        }
+    } else {
+        return Some(meta);
+    };
+    Some(MessageMeta::new(kind))
+}
+
+/// The structured state an untagged summary spells out in its labeled lines.
+fn legacy_summary(text: &str) -> SummaryMeta {
+    let mut summary = SummaryMeta::default();
+    for line in text.lines() {
+        if let Some(intent) = line.strip_prefix("Standing intent: ") {
+            summary.standing_intent = Some(intent.chars().take(600).collect());
+        } else if let Some(rest) = line.strip_prefix("Discarded audition deliveries: ") {
+            summary.discarded_auditions =
+                rest.split_whitespace().next().and_then(|n| n.parse().ok());
+        } else if line.starts_with("Host transaction rollback: ") {
+            summary.rollback_notice = Some(line.chars().take(MAX_SUMMARY_NOTICE_CHARS).collect());
+        } else if line.starts_with("Host proposal outcome: ") {
+            summary.proposal_notice = Some(line.chars().take(MAX_SUMMARY_NOTICE_CHARS).collect());
         }
     }
-    Some(meta)
+    summary
 }
 
 pub(super) fn migrate(messages: &mut [Value]) {
@@ -306,21 +561,21 @@ pub(super) fn migrate(messages: &mut [Value]) {
 
 /// The text-protocol call a saved message asks for or answers.
 pub(super) fn text_call(message: &Value) -> Option<TextCall> {
-    read(message)?.text_call
+    read(message)?.text_call().cloned()
 }
 
 pub(super) fn kind(message: &Value) -> Option<MessageKind> {
-    legacy(message).map(|meta| meta.kind)
+    legacy(message).map(|meta| meta.kind())
 }
 
 /// The typed notice a saved row carries, if any.
 pub(super) fn notice(message: &Value) -> Option<HostNotice> {
-    read(message)?.notice
+    read(message)?.notice().cloned()
 }
 
 /// The typed goal or plan change a saved row carries, if any.
 pub(super) fn state(message: &Value) -> Option<SessionState> {
-    read(message)?.state
+    read(message)?.state().cloned()
 }
 
 #[cfg(test)]
@@ -351,14 +606,37 @@ mod tests {
         let media = row["media"].clone();
         migrate(std::slice::from_mut(&mut row));
         let meta = read(&row).unwrap();
-        assert_eq!(meta.kind, MessageKind::Summary);
-        assert_eq!(meta.standing_intent.as_deref(), Some("Finish the song"));
-        assert_eq!(meta.discarded_auditions, Some(23));
+        let summary = meta
+            .summary()
+            .expect("a legacy summary migrates to a summary");
+        assert_eq!(summary.standing_intent.as_deref(), Some("Finish the song"));
+        assert_eq!(summary.discarded_auditions, Some(23));
         assert_eq!(row["content"], payload);
         assert_eq!(row["media"], media);
         let before = row.clone();
         migrate(std::slice::from_mut(&mut row));
         assert_eq!(row, before);
+    }
+
+    #[test]
+    fn each_kind_takes_only_its_own_fields_and_round_trips() {
+        let range = json!({"start_seconds": 1.0, "end_seconds": 2.0, "source": false});
+        let call = json!({"id": "c1", "tool": "tracks_add"});
+        for (role, kind, field, value) in [
+            ("user", "user", "steer_id", json!("s1")),
+            ("assistant", "assistant", "text_call", call.clone()),
+            ("user", "application_result", "text_call", call.clone()),
+            ("user", "audition", "audio_range", range.clone()),
+            ("user", "summary", "discarded_auditions", json!(3)),
+        ] {
+            let mut row = json!({"role": role, "content": "x",
+                "message_meta": {"version": 1, "kind": kind, field: value}});
+            let meta = read(&row).unwrap_or_else(|| panic!("{kind} carries {field}"));
+            assert_eq!(json!(meta), row["message_meta"], "{kind} round-trips");
+            row["message_meta"]["kind"] = json!("tool");
+            row["role"] = json!("tool");
+            assert!(read(&row).is_none(), "a tool row refuses {field}");
+        }
     }
 
     #[test]
@@ -412,7 +690,12 @@ mod tests {
             "version":1,"kind":"summary","summary_text":"keep vocals dry"
         }});
         assert_eq!(
-            read(&row).unwrap().summary_text.as_deref(),
+            read(&row)
+                .unwrap()
+                .summary()
+                .unwrap()
+                .summary_text
+                .as_deref(),
             Some("keep vocals dry")
         );
         row["message_meta"]["kind"] = json!("user");
@@ -429,9 +712,9 @@ mod tests {
         assert_eq!(kind(&legacy), Some(MessageKind::RoundBudget));
         let typed = crate::ai::agent_loop::wire::budget_notice(Some(2), Some(62));
         let meta = read(&typed).expect("a typed budget row is valid");
-        assert_eq!(meta.kind, MessageKind::RoundBudget);
+        assert_eq!(meta.kind(), MessageKind::RoundBudget);
         assert!(matches!(
-            meta.notice,
+            meta.notice(),
             Some(crate::ai::host_notice::HostNotice::Budget {
                 rounds_left: Some(2),
                 context_share: Some(62)
@@ -492,9 +775,7 @@ mod tests {
             "message_meta":{"version":1,"kind":"session_state","state":{
                 "kind":"goal_set","text":"finish","author":"person"}}});
         assert_eq!(
-            read(&row)
-                .and_then(|meta| meta.state)
-                .map(|state| state.model_text()),
+            read(&row).and_then(|meta| meta.state().map(|state| state.model_text())),
             Some("Goal: finish".into())
         );
         row["message_meta"]["kind"] = json!("user");

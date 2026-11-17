@@ -195,8 +195,8 @@ pub(super) fn same_turn(left: &Value, right: &Value) -> bool {
             .collect()
     };
     left["role"] == right["role"]
-        && message_protocol::for_new(left).map(|meta| meta.kind)
-            == message_protocol::for_new(right).map(|meta| meta.kind)
+        && message_protocol::for_new(left).map(|meta| meta.kind())
+            == message_protocol::for_new(right).map(|meta| meta.kind())
         && left["content"].as_str().unwrap_or_default()
             == right["content"].as_str().unwrap_or_default()
         && left["tool_call_id"] == right["tool_call_id"]
@@ -241,7 +241,10 @@ pub(super) fn plain_message(message: &Value) -> Option<Value> {
     let mut plain = json!({ "role": role, "content": content });
     let mut meta = MessageMeta::new(kind);
     if kind == MessageKind::User {
-        meta.steer_id = message_protocol::read(message).and_then(|meta| meta.steer_id);
+        meta = MessageMeta::User {
+            steer_id: message_protocol::read(message)
+                .and_then(|meta| meta.steer_id().map(str::to_owned)),
+        };
         if has_media {
             plain["media"] = media;
         }

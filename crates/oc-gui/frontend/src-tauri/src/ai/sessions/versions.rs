@@ -138,7 +138,7 @@ pub(super) fn attach(
         .filter(|path| path.chars().count() <= super::MAX_PROJECT_PATH);
     let mut hash = None;
     for message in messages {
-        if message_protocol::for_new(message).map(|meta| meta.kind) != Some(MessageKind::User) {
+        if message_protocol::for_new(message).map(|meta| meta.kind()) != Some(MessageKind::User) {
             continue;
         }
         let hash = match &hash {

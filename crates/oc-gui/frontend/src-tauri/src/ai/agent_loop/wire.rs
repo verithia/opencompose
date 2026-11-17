@@ -409,8 +409,9 @@ pub fn budget_notice(rounds_left: Option<u32>, context_share: Option<u8>) -> Val
         rounds_left,
         context_share,
     };
-    let mut meta = MessageMeta::new(MessageKind::RoundBudget);
-    meta.notice = Some(notice.clone());
+    let meta = MessageMeta::RoundBudget {
+        notice: Some(notice.clone()),
+    };
     message_protocol::typed_row(meta, notice.model_text())
 }
 

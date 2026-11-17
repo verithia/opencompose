@@ -90,7 +90,7 @@ use journal::{
 };
 pub use journal::{read_meta_for_storage, read_original};
 pub use message_protocol::MessageKind;
-use message_protocol::MessageMeta;
+use message_protocol::{MessageMeta, SummaryMeta};
 use row::{
     CONTEXT_AUDITION, CONTEXT_SUMMARY, MAX_PROJECT_PATH, canonical_media, canonicalize_media,
     mark_missing_media, plain_message, same_turn, saved_message, strips_replay_state,
@@ -385,10 +385,8 @@ pub struct CompactionPlan {
     pub(crate) compacted_at: String,
     /// The dropped turns as plain text, bounded for one request.
     pub(crate) input: String,
-    /// The deterministic summary's header, before the model's answer.
-    pub(crate) prefix: String,
-    /// The retained tool digest and artifact inventory after the answer.
-    pub(crate) digest: String,
+    /// The header and digest a model answer is placed between.
+    pub(crate) summary: summary::SummaryParts,
     /// The mechanical summary the store writes when no model answer is used.
     pub(crate) fallback: Vec<Value>,
     /// What the project looked like when the plan was built, so a retry can
@@ -1825,8 +1823,9 @@ pub fn message_kind(message: &Value) -> Option<MessageKind> {
 /// keep the one and drop the other.
 pub fn is_compaction_summary(message: &Value) -> bool {
     message_protocol::legacy(message).is_some_and(|meta| {
-        meta.kind == MessageKind::Summary
-            && (meta.standing_intent.is_some() || meta.discarded_auditions.is_some())
+        meta.summary().is_some_and(|summary| {
+            summary.standing_intent.is_some() || summary.discarded_auditions.is_some()
+        })
     })
 }
 

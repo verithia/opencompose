@@ -3861,10 +3861,12 @@ fn new_notice_shaped_user_prose_stays_user_after_reopen() {
 fn structured_summary_state_survives_nonstandard_prose_and_repeated_compaction() {
     let (store, project) = fixture("typed-summary-state");
     let mut row = json!({"role":"user", "context":"summary", "content":"Host summary body without English protocol headings"});
-    let mut meta = MessageMeta::new(MessageKind::Summary);
-    meta.standing_intent = Some("Finish the editable arrangement".into());
-    meta.discarded_auditions = Some(23);
-    meta.rollback_notice = Some("Host rollback outcome without a legacy prefix".into());
+    let meta = MessageMeta::Summary(SummaryMeta {
+        standing_intent: Some("Finish the editable arrangement".into()),
+        discarded_auditions: Some(23),
+        rollback_notice: Some("Host rollback outcome without a legacy prefix".into()),
+        ..SummaryMeta::default()
+    });
     message_protocol::tag(&mut row, meta);
     let view = vec![row, user("Continue")];
     let next_meta = summary_metadata(&view, view.len(), &[]);
@@ -3876,7 +3878,7 @@ fn structured_summary_state_survives_nonstandard_prose_and_repeated_compaction()
     let body = summary_text(&view, view.len(), &[], &facts(&project), 1000, "now");
     assert!(body.contains("Host rollback outcome without a legacy prefix"));
     let mut next = json!({"role":"user","context":"summary","content":"Another display body"});
-    message_protocol::tag(&mut next, next_meta.clone());
+    message_protocol::tag(&mut next, MessageMeta::Summary(next_meta.clone()));
     assert_eq!(summary_metadata(&[next], 1, &[]), next_meta);
     std::fs::remove_dir_all(store.root().parent().unwrap()).unwrap();
 }

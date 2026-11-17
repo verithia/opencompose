@@ -15,7 +15,11 @@ const OMITTED: &str = "Earlier dropped turns are omitted to keep this input boun
 pub(super) fn previous_summary(view: &[Value]) -> Option<String> {
     let row = view.iter().rev().find(|row| is_compaction_summary(row))?;
     let meta = message_protocol::read(row);
-    let text = match meta.as_ref().and_then(|meta| meta.summary_text.as_deref()) {
+    let carried = meta
+        .as_ref()
+        .and_then(MessageMeta::summary)
+        .and_then(|summary| summary.summary_text.as_deref());
+    let text = match carried {
         Some(prose) => prose,
         None => legacy_summary_prose(row["content"].as_str()?),
     };
@@ -196,10 +200,8 @@ pub(super) fn planned_messages(plan: &CompactionPlan, summary: Option<&str>) -> 
     let Some(row) = messages.first_mut() else {
         return fallback();
     };
-    row["content"] = json!(format!("{}{summary}\n\n{}", plan.prefix, plan.digest));
-    let mut meta = message_protocol::read(row).expect("a planned summary has typed metadata");
-    meta.summary_text = Some(summary.to_owned());
-    message_protocol::tag(row, meta);
+    row["content"] = json!(plan.summary.content_with(summary));
+    message_protocol::tag(row, plan.summary.meta(summary.to_owned()));
     let after = estimate_tokens(&messages);
     let improves = after < plan.tokens_before
         && (plan.target_tokens == 0 || after <= plan.target_tokens || after < fallback_tokens);
@@ -227,6 +229,17 @@ pub(super) fn plan_compaction(
     facts: &ProjectFacts,
     id: &str,
 ) -> Result<Compaction, String> {
+    plan_with_parts(view, target, facts, id).map(|(compaction, _)| compaction)
+}
+
+/// The mechanical compaction and the summary pieces its first row is built
+/// from, so a model answer can reuse the same header and digest.
+fn plan_with_parts(
+    view: &[Value],
+    target: u64,
+    facts: &ProjectFacts,
+    id: &str,
+) -> Result<(Compaction, SummaryParts), String> {
     if view.len() < 3 {
         return Err("This session has nothing older to compact.".into());
     }
@@ -247,16 +260,17 @@ pub(super) fn plan_compaction(
         if split == 0 {
             return Err("This session has nothing older to compact.".into());
         }
-        let summary = summary_body(view, split, retained, facts, before, at.as_str());
+        let parts = SummaryParts::new(view, split, retained, facts, before, at.as_str());
         let mut messages = Vec::with_capacity(1 + retained.len() + view.len() - split);
-        let mut summary_row =
-            json!({ "role": "user", "content": summary.full, "context": CONTEXT_SUMMARY });
-        let mut metadata = summary_metadata(view, split, retained);
+        let mut summary_row = json!({
+            "role": "user",
+            "content": parts.mechanical_content(),
+            "context": CONTEXT_SUMMARY,
+        });
         // The prose survives without the generated header, digest or inventory,
         // so a later mechanical summary carries decisions rather than nesting
         // the whole row.
-        metadata.summary_text = Some(summary.carried);
-        message_protocol::tag(&mut summary_row, metadata);
+        message_protocol::tag(&mut summary_row, parts.meta(parts.prose.carried.clone()));
         messages.push(summary_row);
         // The bound project stays beside the summary: every later path in the
         // conversation is relative to it.
@@ -311,7 +325,7 @@ pub(super) fn plan_compaction(
         }
         let after = estimate_tokens(&messages);
         if after < before && (target == 0 || after <= target) {
-            return Ok(Compaction {
+            let compaction = Compaction {
                 id: id.to_owned(),
                 compacted_at: at,
                 messages,
@@ -320,7 +334,8 @@ pub(super) fn plan_compaction(
                 tokens_before: before,
                 tokens_after: after,
                 retained_pairs: keep,
-            });
+            };
+            return Ok((compaction, parts));
         }
         if keep > 0 {
             keep -= 1;
@@ -331,7 +346,7 @@ pub(super) fn plan_compaction(
         }
         // Reduced as far as the retained pairs allow but still above the target:
         // a smaller summary is not available without losing the standing intent.
-        return Ok(Compaction {
+        let compaction = Compaction {
             id: id.to_owned(),
             compacted_at: at,
             messages,
@@ -340,7 +355,8 @@ pub(super) fn plan_compaction(
             tokens_before: before,
             tokens_after: after,
             retained_pairs: 0,
-        });
+        };
+        return Ok((compaction, parts));
     }
 }
 
@@ -350,14 +366,7 @@ pub(super) fn plan_compaction_request(
     facts: &ProjectFacts,
     id: &str,
 ) -> Result<CompactionPlan, String> {
-    let outcome = plan_compaction(view, target, facts, id)?;
-    let blocks = tool_blocks(view);
-    let keep = outcome.retained_pairs.min(blocks.len());
-    let retained: &[(usize, usize)] = if keep == 0 {
-        &[]
-    } else {
-        &blocks[blocks.len() - keep..]
-    };
+    let (outcome, summary) = plan_with_parts(view, target, facts, id)?;
     let split = outcome.dropped_to;
     Ok(CompactionPlan {
         id: id.to_owned(),
@@ -369,8 +378,7 @@ pub(super) fn plan_compaction_request(
         target_tokens: target,
         compacted_at: outcome.compacted_at.clone(),
         input: compaction_input(view, split),
-        prefix: summary_intro(view, split, retained, facts, &outcome.compacted_at),
-        digest: summary_digest(view, split, retained, outcome.tokens_before),
+        summary,
         fallback: outcome.messages,
         facts: facts.clone(),
     })
@@ -473,12 +481,10 @@ pub(super) fn retained_media_row(view: &[Value], start: usize, end: usize) -> Op
         "context": CONTEXT_AUDITION,
         "media": entries,
     });
-    let mut meta = latest
+    let meta = latest
         .and_then(message_protocol::legacy)
+        .filter(|meta| message_protocol::is_audition(meta.kind()))
         .unwrap_or_else(|| MessageMeta::new(MessageKind::Audition));
-    if !message_protocol::is_audition(meta.kind) {
-        meta = MessageMeta::new(MessageKind::Audition);
-    }
     message_protocol::tag(&mut row, meta);
     if let Some(path) = latest.and_then(audition_render_reference) {
         row["source_render"] = json!(path);
@@ -514,8 +520,7 @@ fn dropped_audition_count(view: &[Value], retained: &[(usize, usize)]) -> usize 
     let previous = view
         .iter()
         .filter_map(message_protocol::legacy)
-        .filter(|meta| meta.kind == MessageKind::Summary)
-        .find_map(|meta| meta.discarded_auditions)
+        .find_map(|meta| meta.summary()?.discarded_auditions)
         .unwrap_or(0);
     rows + previous
 }
@@ -524,14 +529,12 @@ pub(super) fn summary_metadata(
     view: &[Value],
     split: usize,
     retained: &[(usize, usize)],
-) -> MessageMeta {
+) -> SummaryMeta {
     let old = &view[..split];
-    let mut metadata = MessageMeta::new(MessageKind::Summary);
-    metadata.standing_intent = old
+    let standing_intent = old
         .iter()
         .filter_map(message_protocol::legacy)
-        .filter(|meta| meta.kind == MessageKind::Summary)
-        .find_map(|meta| meta.standing_intent)
+        .find_map(|meta| meta.summary()?.standing_intent.clone())
         .or_else(|| {
             old.iter().find_map(|message| {
                 if message_protocol::kind(message) != Some(MessageKind::User) {
@@ -543,49 +546,82 @@ pub(super) fn summary_metadata(
                 ))
             })
         });
-    metadata.discarded_auditions = Some(dropped_audition_count(view, retained));
+    let mut metadata = SummaryMeta {
+        standing_intent,
+        discarded_auditions: Some(dropped_audition_count(view, retained)),
+        ..SummaryMeta::default()
+    };
+    // The newest outcome wins: a host row itself, or one an earlier summary carried.
+    let outcome = |message: &Value, meta: &MessageMeta, kind: MessageKind| {
+        if meta.kind() == kind {
+            message["content"].as_str().map(|text| clip(text, 4096))
+        } else {
+            let summary = meta.summary()?;
+            match kind {
+                MessageKind::TransactionRollback => summary.rollback_notice.clone(),
+                _ => summary.proposal_notice.clone(),
+            }
+        }
+    };
     for message in old.iter().rev() {
         let Some(meta) = message_protocol::legacy(message) else {
             continue;
         };
         if metadata.rollback_notice.is_none() {
-            metadata.rollback_notice = if meta.kind == MessageKind::TransactionRollback {
-                message["content"].as_str().map(|text| clip(text, 4096))
-            } else {
-                meta.rollback_notice
-            };
+            metadata.rollback_notice = outcome(message, &meta, MessageKind::TransactionRollback);
         }
         if metadata.proposal_notice.is_none() {
-            metadata.proposal_notice = if meta.kind == MessageKind::ProposalOutcome {
-                message["content"].as_str().map(|text| clip(text, 4096))
-            } else {
-                meta.proposal_notice
-            };
+            metadata.proposal_notice = outcome(message, &meta, MessageKind::ProposalOutcome);
         }
     }
     metadata
 }
 
-struct SummaryBody {
-    full: String,
-    carried: String,
+/// The generated pieces of one summary row, computed once per split: the
+/// header, the carried prose, the tool digest and the typed state. The
+/// mechanical row and a model-written row share the same header and digest.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct SummaryParts {
+    intro: String,
+    prose: SummaryProse,
+    digest: String,
+    state: SummaryMeta,
 }
 
-fn summary_body(
-    view: &[Value],
-    split: usize,
-    retained: &[(usize, usize)],
-    facts: &ProjectFacts,
-    tokens_before: u64,
-    at: &str,
-) -> SummaryBody {
-    let prose = summary_prose(view, split);
-    let mut full = summary_intro(view, split, retained, facts, at);
-    full.push_str(&prose.content);
-    full.push_str(&summary_digest(view, split, retained, tokens_before));
-    SummaryBody {
-        full,
-        carried: prose.carried,
+impl SummaryParts {
+    pub(super) fn new(
+        view: &[Value],
+        split: usize,
+        retained: &[(usize, usize)],
+        facts: &ProjectFacts,
+        tokens_before: u64,
+        at: &str,
+    ) -> Self {
+        let state = summary_metadata(view, split, retained);
+        Self {
+            intro: summary_intro(&state, facts, at),
+            prose: summary_prose(view, split),
+            digest: summary_digest(view, split, retained, tokens_before),
+            state,
+        }
+    }
+
+    /// The mechanical summary: the generated prose between header and digest.
+    pub(super) fn mechanical_content(&self) -> String {
+        format!("{}{}{}", self.intro, self.prose.content, self.digest)
+    }
+
+    /// A model-written summary between the same header and digest.
+    fn content_with(&self, summary: &str) -> String {
+        format!("{}{summary}\n\n{}", self.intro, self.digest)
+    }
+
+    /// The row's metadata, carrying `prose` into the next compaction.
+    fn meta(&self, prose: String) -> MessageMeta {
+        MessageMeta::Summary(SummaryMeta {
+            summary_text: Some(prose),
+            ..self.state.clone()
+        })
     }
 }
 
@@ -598,9 +634,10 @@ pub(super) fn summary_text(
     tokens_before: u64,
     at: &str,
 ) -> String {
-    summary_body(view, split, retained, facts, tokens_before, at).full
+    SummaryParts::new(view, split, retained, facts, tokens_before, at).mechanical_content()
 }
 
+#[derive(Debug, Clone, PartialEq)]
 struct SummaryProse {
     content: String,
     carried: String,
@@ -626,13 +663,7 @@ fn summary_prose(view: &[Value], split: usize) -> SummaryProse {
     SummaryProse { content, carried }
 }
 
-fn summary_intro(
-    view: &[Value],
-    split: usize,
-    retained: &[(usize, usize)],
-    facts: &ProjectFacts,
-    at: &str,
-) -> String {
+fn summary_intro(state: &SummaryMeta, facts: &ProjectFacts, at: &str) -> String {
     let mut text = String::new();
     text.push_str(&format!(
         "Conversation summary written {at}. Everything older than the most recent tool calls \
@@ -651,17 +682,13 @@ fn summary_intro(
             facts.dsl_digest, facts.track_count
         ));
     }
-    let metadata = summary_metadata(view, split, retained);
-    let intent = metadata
-        .standing_intent
-        .as_deref()
-        .unwrap_or("not recorded");
+    let intent = state.standing_intent.as_deref().unwrap_or("not recorded");
     text.push_str(&format!("Standing intent: {intent}\n"));
-    for outcome in [metadata.rollback_notice, metadata.proposal_notice]
+    for outcome in [&state.rollback_notice, &state.proposal_notice]
         .into_iter()
         .flatten()
     {
-        text.push_str(&outcome);
+        text.push_str(outcome);
         text.push('\n');
     }
     text
@@ -967,8 +994,10 @@ mod tests {
     fn bounded_input_keeps_the_prior_summary_and_the_newest_correction() {
         let mut summary =
             json!({"role":"user","context":CONTEXT_SUMMARY,"content":"keep vocals dry"});
-        let mut meta = MessageMeta::new(MessageKind::Summary);
-        meta.discarded_auditions = Some(0);
+        let meta = MessageMeta::Summary(SummaryMeta {
+            discarded_auditions: Some(0),
+            ..SummaryMeta::default()
+        });
         message_protocol::tag(&mut summary, meta);
         let mut view = vec![summary];
         view.push(json!({"role":"user","content":"reject the metallic bass patch"}));
