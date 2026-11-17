@@ -5,6 +5,7 @@
 
 use super::tool_results;
 use super::{HistoryAt, MessageKind, MessageMeta, clip, message_protocol};
+use serde::Serialize;
 use serde_json::{Value, json};
 use std::path::Path;
 
@@ -21,19 +22,64 @@ pub const MAX_MESSAGE_CHARS: usize = 400_000;
 
 /// The saved form of a wire message: role, text and tool envelope, with an
 /// inline audio clip replaced by a note (its bytes are not saved) and oversized
-/// text clipped.
+/// text clipped. Every key a saved row may hold is a field here, so a key the
+/// store does not name never reaches disk.
+#[derive(Serialize)]
+struct SavedRow<'a> {
+    role: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message_meta: Option<Value>,
+    content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    context: Option<&'a Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    media: Option<Value>,
+    /// The archive is a path rather than a media descriptor, so regular
+    /// provider replay never reads the whole render into the request.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_render: Option<&'a str>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    source_render_unavailable: bool,
+    /// The snapshot a message was sent against. Restoring the document from
+    /// the row needs this after a reload, and the sweep treats it as a
+    /// reference to the version file, so dropping it deletes that file.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dsl_sha: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dsl_project: Option<&'a str>,
+    /// A person's edit-history position, kept beside its snapshot.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    history_at: Option<HistoryAt>,
+    /// The file holding the full result behind a truncated preview; the
+    /// sweep reads the hash as that file's owner. Named by
+    /// [`tool_results::RESULT_SHA`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    result_sha: Option<&'a str>,
+    /// Typed edit facts describe the tool row in the panel. They stay local:
+    /// the provider sees only the tool result content.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    changes: Option<&'a Value>,
+    // The signed reasoning of an assistant turn is provider state: a restored
+    // conversation that dropped it would replay an unsigned tool round.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_calls: Option<&'a Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_call_id: Option<&'a Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provider_state: Option<&'a Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking: Option<&'a Value>,
+}
+
 pub(super) fn saved_message(message: &Value) -> Option<Value> {
     let role = message["role"].as_str()?;
     if role != "user" && role != "assistant" && role != "tool" {
         return None;
     }
-    let mut saved = serde_json::Map::new();
-    saved.insert("role".into(), json!(role));
-    if let Some(meta) = message.get("message_meta") {
-        saved.insert("message_meta".into(), meta.clone());
-    } else if let Some(meta) = message_protocol::for_new(message) {
-        saved.insert("message_meta".into(), json!(meta));
-    }
+    let message_meta = match message.get("message_meta") {
+        Some(meta) => Some(meta.clone()),
+        None => message_protocol::for_new(message).map(|meta| json!(meta)),
+    };
     let mut content = message["content"].as_str().unwrap_or_default().to_owned();
     if content.chars().count() > MAX_MESSAGE_CHARS {
         content = clip(&content, MAX_MESSAGE_CHARS);
@@ -41,76 +87,44 @@ pub(super) fn saved_message(message: &Value) -> Option<Value> {
     if message.get("input_audio").is_some() {
         content.push_str("\n[audio clip not saved]");
     }
-    if let Some(media) = message.get("media").filter(|media| media.is_array()) {
-        let media = canonical_media(media);
-        if media.as_array().is_some_and(|entries| !entries.is_empty()) {
-            saved.insert("media".into(), media);
-        }
-    }
-    // The archive is a path rather than a media descriptor, so regular
-    // provider replay never reads the whole render into the request.
-    if let Some(render) = message
-        .get("source_render")
-        .and_then(Value::as_str)
-        .filter(|path| !path.is_empty() && path.chars().count() <= 4096)
-    {
-        saved.insert("source_render".into(), json!(render));
-    }
-    if message["source_render_unavailable"].as_bool() == Some(true) {
-        saved.insert("source_render_unavailable".into(), json!(true));
-    }
-    saved.insert("content".into(), json!(content));
-    if let Some(context) = message
-        .get("context")
-        .filter(|value| is_context_marker(value))
-    {
-        saved.insert("context".into(), context.clone());
-    }
-    // The snapshot a message was sent against. Restoring the document from the
-    // row needs this after a reload, and the sweep treats it as a reference to
-    // the version file, so dropping it here deletes that file.
-    if let Some(sha) = message["dsl_sha"]
-        .as_str()
-        .filter(|sha| sha.len() == 64 && sha.chars().all(|c| c.is_ascii_hexdigit()))
-    {
-        saved.insert("dsl_sha".into(), json!(sha));
-    }
-    if let Some(project) = message["dsl_project"]
-        .as_str()
-        .filter(|path| !path.is_empty() && path.chars().count() <= MAX_PROJECT_PATH)
-    {
-        saved.insert("dsl_project".into(), json!(project));
-    }
-    // A person's edit-history position, kept beside the snapshot it belongs to.
-    // Only a person's message records one; any other row or shape is dropped.
-    if role == "user"
-        && message_protocol::kind(message) == Some(MessageKind::User)
-        && let Some(history) = message.get("history_at").and_then(HistoryAt::from_saved)
-        && let Ok(value) = serde_json::to_value(&history)
-    {
-        saved.insert("history_at".into(), value);
-    }
-    // The file holding the full result behind a truncated preview. The sweep
-    // reads the hash as that file's owner, so dropping it here deletes it.
-    if let Some(sha) = message[tool_results::RESULT_SHA]
-        .as_str()
-        .filter(|sha| tool_results::is_hash(sha))
-    {
-        saved.insert(tool_results::RESULT_SHA.into(), json!(sha));
-    }
-    // Typed edit facts describe the tool row in the panel. They stay local:
-    // the provider sees only the tool result content.
-    if let Some(changes) = message.get("changes") {
-        saved.insert("changes".into(), changes.clone());
-    }
-    // The signed reasoning of an assistant turn is provider state: a restored
-    // conversation that dropped it would replay an unsigned tool round.
-    for key in ["tool_calls", "tool_call_id", "provider_state", "thinking"] {
-        if let Some(value) = message.get(key) {
-            saved.insert(key.into(), value.clone());
-        }
-    }
-    Some(Value::Object(saved))
+    let row = SavedRow {
+        role,
+        message_meta,
+        content,
+        context: message
+            .get("context")
+            .filter(|value| is_context_marker(value)),
+        media: message
+            .get("media")
+            .filter(|media| media.is_array())
+            .map(canonical_media)
+            .filter(|media| media.as_array().is_some_and(|entries| !entries.is_empty())),
+        source_render: message
+            .get("source_render")
+            .and_then(Value::as_str)
+            .filter(|path| !path.is_empty() && path.chars().count() <= MAX_PROJECT_PATH),
+        source_render_unavailable: message["source_render_unavailable"].as_bool() == Some(true),
+        dsl_sha: message["dsl_sha"]
+            .as_str()
+            .filter(|sha| sha.len() == 64 && sha.chars().all(|c| c.is_ascii_hexdigit())),
+        dsl_project: message["dsl_project"]
+            .as_str()
+            .filter(|path| !path.is_empty() && path.chars().count() <= MAX_PROJECT_PATH),
+        // Only a person's message records a history position; any other row
+        // or shape is dropped.
+        history_at: (role == "user" && message_protocol::kind(message) == Some(MessageKind::User))
+            .then(|| message.get("history_at").and_then(HistoryAt::from_saved))
+            .flatten(),
+        result_sha: message[tool_results::RESULT_SHA]
+            .as_str()
+            .filter(|sha| tool_results::is_hash(sha)),
+        changes: message.get("changes"),
+        tool_calls: message.get("tool_calls"),
+        tool_call_id: message.get("tool_call_id"),
+        provider_state: message.get("provider_state"),
+        thinking: message.get("thinking"),
+    };
+    serde_json::to_value(row).ok()
 }
 
 /// The stored form of one message's attachments: canonical descriptors,
