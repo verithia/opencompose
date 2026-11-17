@@ -60,6 +60,10 @@ pub(crate) mod versions;
 mod view;
 mod audition_archive;
 mod journal;
+#[cfg(test)]
+mod test_support;
+#[cfg(test)]
+pub(crate) use test_support::{TestRootGuard, test_root};
 mod row;
 mod tokens;
 use audition_archive::{
@@ -626,20 +630,7 @@ impl Store {
         }
     }
 
-    #[cfg(test)]
-    pub(super) fn with_lookup(root: impl Into<PathBuf>, lookup: Arc<dyn lookup::Io>) -> Self {
-        Self {
-            root: root.into(),
-            lookup,
-            session_cap: MAX_SESSION_BYTES,
-        }
-    }
 
-    #[cfg(test)]
-    pub(super) fn with_session_cap(mut self, cap: u64) -> Self {
-        self.session_cap = cap;
-        self
-    }
 
     /// The operator's store: `~/.opencompose/ai/sessions`.
     pub fn config() -> Self {
@@ -733,24 +724,6 @@ impl Store {
     /// Re-associates a moved workspace: the directory follows the new path and
     /// the record keeps both. The record itself is written by every save, so this
     /// is the move, not the bookkeeping.
-    #[cfg(test)]
-    pub fn reassociate(&self, from: &Path, to: &Path) -> Result<String, String> {
-        let _lock = self.mutation_lock()?;
-        let from_key = hashed_key(from);
-        let source = self.root.join(&from_key);
-        if !source.is_dir() {
-            return Err(format!("no saved conversations for {}", from.display()));
-        }
-        let to_key = hashed_key(to);
-        let target = self.root.join(&to_key);
-        if target.exists() {
-            return Err(format!("conversations already exist for {}", to.display()));
-        }
-        private_fs::ensure_dir(&self.root).map_err(|error| format!("sessions: {error}"))?;
-        std::fs::rename(&source, &target).map_err(|error| format!("sessions: {error}"))?;
-        self.ensure_workspace(&to_key, Some(to), &now())?;
-        Ok(to_key)
-    }
 
     // Asset publication and the transcript that names the assets form one
     // operation from the collector's perspective.
@@ -1040,30 +1013,6 @@ impl Store {
 
     /// Record where the bound project's history stands. Production saves the
     /// mark in preparation; tests use this to stage a previous turn.
-    #[cfg(test)]
-    pub fn record_history_mark(
-        &self,
-        id: &str,
-        project: &Path,
-        mark: HistoryMark,
-    ) -> Result<(), String> {
-        let _lock = self.mutation_lock()?;
-        let (dir, mut meta) = self.find(id)?;
-        let project = project.to_string_lossy().to_string();
-        if !meta
-            .project_path
-            .as_deref()
-            .is_some_and(|bound| same_project(bound, &project))
-        {
-            return Ok(());
-        }
-        let saved = SavedHistoryMark::for_project(&project, mark.at, mark.max_id);
-        if meta.history_mark.as_ref() == Some(&saved) {
-            return Ok(());
-        }
-        meta.history_mark = Some(saved);
-        write_meta(&dir, &meta)
-    }
 
     /// Deletes the least recently updated session of a workspace while it holds
     /// more than [`MAX_SESSIONS_PER_WORKSPACE`]. `keep` is never dropped.
@@ -1255,11 +1204,6 @@ impl Store {
         Ok(meta)
     }
 
-    #[cfg(test)]
-    pub fn delete(&self, id: &str) -> Result<(), String> {
-        self.delete_guarded(id, &|| Ok(()))
-            .map_err(|error| error.message)
-    }
 
     /// [`Self::delete`] after `guard` admits it under the store lock.
     pub fn delete_guarded(&self, id: &str, guard: Guard<'_>) -> Result<(), SessionError> {
@@ -1452,55 +1396,12 @@ impl Store {
     /// Drop every record before the `keep`-th compaction, then remove assets no
     /// remaining message refers to. `keep = 1` keeps only the first compaction
     /// and what followed it.
-    #[cfg(test)]
-    pub fn drop_history(&self, id: &str, keep: u64) -> Result<Value, String> {
-        self.drop_history_guarded(id, keep, &|| Ok(()))
-            .map_err(|error| error.message)
-    }
 
     /// [`Self::drop_history`] after `guard` admits it under the store lock.
-    #[cfg(test)]
-    pub fn drop_history_guarded(
-        &self,
-        id: &str,
-        keep: u64,
-        guard: Guard<'_>,
-    ) -> Result<Value, SessionError> {
-        let _lock = self.mutation_lock()?;
-        guard()?;
-        if keep == 0 {
-            return Err("drop_history needs a count of at least 1".to_owned().into());
-        }
-        let (dir, mut meta) = self.find(id)?;
-        let records = read_records(&dir)?;
-        let count = compaction_indices(&records).len();
-        let keep = keep as usize;
-        let Some((from, kept)) = keep_from_compaction(&records, keep) else {
-            return Err(format!(
-                "drop_history {keep}: this session has {count} compaction(s)"
-            )
-            .into());
-        };
-        let dropped = records.len() - from;
-        write_records(&dir, &kept)?;
-        meta.updated = now();
-        write_meta(&dir, &meta)?;
-        let removed = self.collect_unreferenced_locked();
-        Ok(json!({
-            "dropped_records": dropped,
-            "kept_records": kept.len(),
-            "removed_assets": removed,
-        }))
-    }
 
     /// Delete content-addressed assets no session message names any more:
     /// audition clips and renders shared at the store root, and each session's
     /// own DSL versions.
-    #[cfg(test)]
-    pub fn collect_unreferenced(&self) -> Result<u64, String> {
-        let _lock = self.mutation_lock()?;
-        Ok(self.collect_unreferenced_locked())
-    }
 
     fn collect_unreferenced_locked(&self) -> u64 {
         let (referenced, version_dirs) = session_references(&self.root);
@@ -1588,48 +1489,9 @@ impl Store {
     /// Absorbs one request, compacts before it when the estimate says it must,
     /// and returns what should be sent. `overhead` is the estimated size of the
     /// system prompt the client rebuilds every turn.
-    #[cfg(test)]
-    pub fn prepare(
-        &self,
-        id: &str,
-        incoming: &[Value],
-        project: Option<&Path>,
-        context: PrepareContext<'_>,
-    ) -> Result<Prepared, String> {
-        self.prepare_owned(id, incoming, project, context, None)
-    }
 
     /// Admits transcript preparation against the same saved-session incarnation
     /// as the request's accounting owner, before any transcript or archive write.
-    #[cfg(test)]
-    pub fn prepare_owned(
-        &self,
-        id: &str,
-        incoming: &[Value],
-        project: Option<&Path>,
-        context: PrepareContext<'_>,
-        incarnation: Option<&str>,
-    ) -> Result<Prepared, String> {
-        let mut prepared =
-            match self.prepare_admitted(id, incoming, project, context, incarnation, |_| {
-                Ok::<(), String>(())
-            }) {
-                Ok(prepared) => prepared,
-                Err(PrepareFailure::Binding(mismatch)) => return Err(mismatch.message()),
-                Err(PrepareFailure::Admitted(message)) => return Err(message),
-                Err(PrepareFailure::Store(message)) => return Err(message),
-            };
-        // The mechanical path commits the plan it just built. A real turn keeps
-        // the plan, asks the model outside the lock and commits the answer.
-        if let Some(plan) = prepared.pending_compaction.take() {
-            let resolution = self.finish_compaction(plan, None);
-            if let Some(compaction) = resolution.compaction.as_ref() {
-                prepared.apply(compaction);
-            }
-            prepared.compaction_error = resolution.failure;
-        }
-        Ok(prepared)
-    }
 
     /// [`Self::prepare_owned`] with an admission check: `admit` sees the
     /// conversation the request would send (after the compaction it would
@@ -1881,17 +1743,6 @@ impl Store {
 
     /// Appends the assistant message a turn produced, so an answer survives the
     /// panel closing before the next turn.
-    #[cfg(test)]
-    pub fn record_reply(
-        &self,
-        id: &str,
-        reply: &Value,
-        facts: &ProjectFacts,
-        provider: &str,
-        model: &str,
-    ) -> Result<SessionMeta, String> {
-        self.record_reply_owned(id, reply, facts, (provider, model), None)
-    }
 
     pub fn record_reply_owned(
         &self,
@@ -1930,16 +1781,6 @@ impl Store {
     /// Folds the older turns into one plain-text message that also carries the
     /// most recent tool pairs as text. No assistant tool call, provider state or
     /// signature survives.
-    #[cfg(test)]
-    pub fn compact(
-        &self,
-        id: &str,
-        target_tokens: Option<u64>,
-        facts: &ProjectFacts,
-    ) -> Result<Compaction, String> {
-        let _lock = self.mutation_lock()?;
-        self.compact_locked(id, target_tokens, facts)
-    }
 
     /// A compaction a person asked for. `guard` runs under the store lock.
     ///
@@ -3372,23 +3213,9 @@ fn clip(text: &str, limit: usize) -> String {
     clipped
 }
 
-// ---- test support -------------------------------------------------------
 
-#[cfg(test)]
-pub(crate) struct TestRootGuard {
-    _lock: std::sync::MutexGuard<'static, ()>,
-}
 
-#[cfg(test)]
-pub(crate) fn test_root(root: PathBuf) -> TestRootGuard {
-    let lock = TEST_ROOT_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if let Ok(mut slot) = TEST_ROOT.lock() {
-        *slot = Some(root);
-    }
-    TestRootGuard { _lock: lock }
-}
+
 
 #[cfg(test)]
 impl Drop for TestRootGuard {
