@@ -139,6 +139,7 @@ fn recall_to_the_newest_message_works_after_auto_compaction_with_a_snapshot() {
             .into_owned(),
         level: 1,
         at: Some(42),
+        max_id: 42,
     };
     let prepared = store
         .prepare(

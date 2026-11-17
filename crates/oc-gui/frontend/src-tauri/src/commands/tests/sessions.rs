@@ -671,3 +671,129 @@ fn a_pending_binding_suppresses_the_outside_changes_notice() {
     drop(lease);
     let _ = first;
 }
+
+#[test]
+fn every_prepared_turn_moves_the_mark_so_the_outside_notice_is_not_repeated() {
+    use crate::ai::agent_loop::wire;
+    use crate::ai::host_notice::HostNotice;
+    use crate::ai::session_usage::{Purpose, SessionLease};
+    use crate::commands::{SavedTurnBinding, prepare_turn_for, update_dsl_inner};
+    use serde_json::json;
+    use tauri::Manager;
+    use tauri::test::{mock_builder, mock_context, noop_assets};
+
+    let fixture = fixture("outside-repeat");
+    let state = state_with_project(&fixture.dir, PROJECT);
+    let open = fixture.dir.join("song.ocp");
+    let session = new_for(&state, None, Some("outside"), None).unwrap();
+    let provider = outside_provider();
+    let app = mock_builder()
+        .manage(state)
+        .build(mock_context(noop_assets()))
+        .unwrap();
+    let prepare = |request: &str| {
+        let messages = json!([
+            {"role":"system","content":"prompt"},
+            {"role":"user","content":request,"message_meta":{"version":1,"kind":"user"}},
+        ]);
+        let lease = SessionLease::admit(
+            sessions::Store::config(),
+            &session.id,
+            request,
+            Purpose::Chat,
+        )
+        .unwrap();
+        let incarnation = lease.update().incarnation;
+        let prepared = tauri::async_runtime::block_on(prepare_turn_for(
+            &app.handle().clone(),
+            &provider,
+            &messages,
+            SavedTurnBinding {
+                id: &session.id,
+                incarnation: &incarnation,
+                project: Some(&open),
+                tool_tokens: wire::offered_tool_tokens(None, false),
+                surface: None,
+                cancel: None,
+            },
+        ))
+        .unwrap();
+        drop(lease);
+        prepared
+    };
+    let outside = |prepared: &crate::commands::PreparedTurn| {
+        prepared
+            .messages
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|row| row["message_meta"]["notice"].as_object())
+            .filter(|notice| notice["kind"] == "outside_changes")
+            .map(|notice| {
+                serde_json::from_value::<HostNotice>(serde_json::Value::Object(notice.clone()))
+                    .unwrap()
+            })
+            .collect::<Vec<_>>()
+    };
+
+    let first = prepare("first");
+    assert!(outside(&first).is_empty(), "the first turn has no mark yet");
+    let mark_after_first = sessions::Store::config()
+        .find(&session.id)
+        .unwrap()
+        .1
+        .history_mark
+        .expect("preparation saved the first mark");
+
+    // A person edit before any batch opens is attributed to the person.
+    {
+        let app_state = app.state::<AppState>();
+        let mut inner = app_state.lock_inner();
+        update_dsl_inner(PROJECT.replace("tempo: 128", "tempo: 120"), &mut inner).unwrap();
+    }
+    // The turn's own edit lands inside its batch and stays the agent's.
+    let owner = crate::state::panel_batch_owner(Some(&session.id));
+    app.state::<AppState>()
+        .begin_transaction("turn".into(), owner.clone())
+        .unwrap();
+    {
+        let app_state = app.state::<AppState>();
+        let mut inner = app_state.lock_inner();
+        let _acting = crate::edit_history::act_as(crate::edit_history::Author::Agent {
+            session: Some(session.id.clone()),
+        });
+        update_dsl_inner(PROJECT.replace("tempo: 128", "tempo: 130"), &mut inner).unwrap();
+    }
+    app.state::<AppState>().commit_transaction().unwrap();
+
+    let second = prepare("second");
+    let notices = outside(&second);
+    assert_eq!(notices.len(), 1, "the person's edit is news");
+    let notice = notices[0].clone();
+    let HostNotice::OutsideChanges {
+        entries,
+        rewritten,
+        pruned,
+        ..
+    } = notice
+    else {
+        panic!("expected outside changes");
+    };
+    assert_eq!(entries.len(), 1, "the agent's own edit is not listed");
+    assert_eq!(entries[0].author, crate::edit_history::Author::Person);
+    assert!(!rewritten && !pruned);
+    let mark_after_second = sessions::Store::config()
+        .find(&session.id)
+        .unwrap()
+        .1
+        .history_mark
+        .expect("preparation moved the mark");
+    assert_ne!(mark_after_first, mark_after_second);
+
+    let third = prepare("third");
+    assert_eq!(
+        outside(&third).len(),
+        1,
+        "the mark now stands after the person's edit, so no new notice is saved"
+    );
+}

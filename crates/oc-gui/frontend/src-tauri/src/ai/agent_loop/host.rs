@@ -1104,9 +1104,6 @@ async fn run_claimed(
         max_output: crate::ai::limits::max_output(provider),
     };
     let outcome = super::run_turn(&host, spec, control.cancel).await;
-    // The next turn compares the project's history against this mark, whether
-    // this turn succeeded, failed or was cancelled.
-    record_history_mark(app, &start.session_id).await;
     // A round cancelled mid-request, or a first round never sent, still
     // closes its accounting.
     let unfinished = lock(&host.round_stats).take();

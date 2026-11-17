@@ -60,6 +60,7 @@ pub(crate) mod versions;
 mod view;
 use super::host_notice::{BindCause, HostNotice, PendingBinding, ToolSurface};
 use super::session_state::{self, SessionState, StateAuthor};
+#[cfg(test)]
 use crate::edit_history::HistoryMark;
 use crate::private_fs;
 pub use message_protocol::MessageKind;
@@ -210,7 +211,8 @@ pub struct SessionMeta {
     pub parent: Option<String>,
 }
 
-/// The edit-history cursor a conversation ended its previous turn at.
+/// The edit-history cursor preparation saves for the next turn: where the
+/// bound project's history stood when this turn started.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SavedHistoryMark {
     /// The canonical project path the mark belongs to.
@@ -218,6 +220,24 @@ pub struct SavedHistoryMark {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub at: Option<u64>,
     pub max_id: u64,
+}
+
+impl SavedHistoryMark {
+    /// A mark for `project`, in the canonical form both writers compare.
+    fn for_project(project: &str, at: Option<u64>, max_id: u64) -> Self {
+        Self {
+            project: canonical_path(Path::new(project))
+                .to_string_lossy()
+                .into_owned(),
+            at,
+            max_id,
+        }
+    }
+}
+
+/// Whether two project paths name the same file in canonical form.
+fn same_project(one: &str, other: &str) -> bool {
+    canonical_path(Path::new(one)) == canonical_path(Path::new(other))
 }
 
 /// A conversation copied into a new session.
@@ -984,8 +1004,9 @@ impl Store {
         Ok(binding_status(&meta, open))
     }
 
-    /// Record where the bound project's history stands after a turn. A turn
-    /// that ended on another open file leaves the mark untouched.
+    /// Record where the bound project's history stands. Production saves the
+    /// mark in preparation; tests use this to stage a previous turn.
+    #[cfg(test)]
     pub fn record_history_mark(
         &self,
         id: &str,
@@ -994,20 +1015,15 @@ impl Store {
     ) -> Result<(), String> {
         let _lock = self.mutation_lock()?;
         let (dir, mut meta) = self.find(id)?;
-        let project = canonical_path(project).to_string_lossy().to_string();
-        let bound = meta.project_path.as_deref().map(|path| {
-            canonical_path(Path::new(path))
-                .to_string_lossy()
-                .to_string()
-        });
-        if bound.as_deref() != Some(project.as_str()) {
+        let project = project.to_string_lossy().to_string();
+        if !meta
+            .project_path
+            .as_deref()
+            .is_some_and(|bound| same_project(bound, &project))
+        {
             return Ok(());
         }
-        let saved = SavedHistoryMark {
-            project,
-            at: mark.at,
-            max_id: mark.max_id,
-        };
+        let saved = SavedHistoryMark::for_project(&project, mark.at, mark.max_id);
         if meta.history_mark.as_ref() == Some(&saved) {
             return Ok(());
         }
@@ -1630,6 +1646,21 @@ impl Store {
         meta_changed |= pending_binding.is_some();
         let pending_state = meta.pending_state.take();
         meta_changed |= pending_state.is_some();
+        // Every turn path saves the same mark here, under the store lock and
+        // in the same write as the notices: the next turn compares the project
+        // against where this one started, not where an earlier one ended.
+        if let Some(history) = history
+            && meta
+                .project_path
+                .as_deref()
+                .is_some_and(|bound| same_project(bound, &history.project))
+        {
+            let saved = SavedHistoryMark::for_project(&history.project, history.at, history.max_id);
+            if meta.history_mark.as_ref() != Some(&saved) {
+                meta.history_mark = Some(saved);
+                meta_changed = true;
+            }
+        }
         let (mut pending, _) = read_view(&dir)?;
         let mut filtered: Vec<Value> = incoming
             .iter()

@@ -1235,6 +1235,7 @@ mod tests {
                 project: "/songs/song.ocp".into(),
                 level: 2,
                 at: Some(7),
+                max_id: 0,
             })
         );
         // A cut chosen against another message (the conversation moved under

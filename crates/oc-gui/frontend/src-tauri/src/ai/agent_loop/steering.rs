@@ -151,6 +151,7 @@ mod tests {
             project: "/songs/song.ocp".into(),
             level: 2,
             at: Some(7),
+            max_id: 7,
         };
         let saved = record(&store, &id, &messages, None, dsl, None, Some(&history)).unwrap();
         let point = store.recall_point(&id, 0).unwrap();

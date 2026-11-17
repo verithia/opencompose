@@ -9,6 +9,10 @@ use sha2::{Digest, Sha256};
 use std::io::Read;
 use std::path::Path;
 
+fn is_zero(value: &u64) -> bool {
+    *value == 0
+}
+
 /// The edit-history position a person's message was sent from: the applied
 /// level and the id of the entry at that level, in one project file. A recall
 /// that undoes edits moves the cursor back here. Older rows carry none, which
@@ -22,16 +26,22 @@ pub struct HistoryAt {
     /// The entry the cursor rested on; absent at the start of the history.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub at: Option<u64>,
+    /// The largest id the history held here, so a later turn can tell a
+    /// pruned history from a rewritten one.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub max_id: u64,
 }
 
 impl HistoryAt {
     /// The open document's position, when it has a file to name.
     pub fn of(inner: &AppStateInner) -> Option<Self> {
         let path = inner.file_path.as_deref()?;
+        let mark = inner.undo.mark();
         Some(Self {
             project: super::canonical_path(path).to_string_lossy().into_owned(),
             level: inner.undo.applied_level(),
-            at: inner.undo.mark().at,
+            at: mark.at,
+            max_id: mark.max_id,
         })
     }
 
@@ -47,10 +57,15 @@ impl HistoryAt {
             None | Some(Value::Null) => None,
             Some(value) => Some(value.as_u64()?),
         };
+        let max_id = match object.get("max_id") {
+            None | Some(Value::Null) => 0,
+            Some(value) => value.as_u64()?,
+        };
         Some(Self {
             project: project.to_owned(),
             level,
             at,
+            max_id,
         })
     }
 }
@@ -231,6 +246,7 @@ mod tests {
             project: "/songs/song.ocp".into(),
             level: 4,
             at: Some(9),
+            max_id: 9,
         };
         let context = || PrepareContext {
             snapshot: Some("first document"),
