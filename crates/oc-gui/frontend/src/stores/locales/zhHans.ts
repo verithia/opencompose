@@ -2294,6 +2294,8 @@ export const zhHans = {
   "ai.recall.refused.positionCleared": "这条消息记录的历史位置已不存在，因此无法撤销它的编辑。",
   "ai.recall.refused.notAPersonMessage": "只能召回你发送的消息。",
   "ai.recall.refused.conversationChanged": "选择召回后对话已发生变化；请重试。",
+  "ai.recall.refused.editsChanged": "确认后工程历史已发生变化；请重新检查召回并重试。",
+  "ai.recall.refused.previewOpen": "先完成编辑预览，再召回并撤销编辑。",
   "ai.revert.turnRunning": "这个对话仍有一个轮在运行，先停止它再回退。",
   "ai.revert.originalView": "这是压缩替换掉的历史，回到当前对话再回退。",
   "ai.command.title": "对话命令",

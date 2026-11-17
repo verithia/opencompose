@@ -117,6 +117,8 @@ export const jaCompletionAi = {
   "ai.recall.refused.positionCleared": "このメッセージが記録した履歴位置はもう存在しないため、編集を元に戻せません。",
   "ai.recall.refused.notAPersonMessage": "呼び戻せるのは自分が送信したメッセージだけです。",
   "ai.recall.refused.conversationChanged": "呼び戻しを選んだ後に会話が変わりました。もう一度お試しください。",
+  "ai.recall.refused.editsChanged": "確認した後にプロジェクトの履歴が変わりました。呼び戻しを確認して、もう一度お試しください。",
+  "ai.recall.refused.previewOpen": "取り消し付きで呼び戻す前に、編集プレビューを終了してください。",
   "ai.revert.turnRunning": "この会話は処理中です。停止してから元に戻してください。",
   "ai.revert.originalView": "この履歴は要約で置き換えられています。元に戻すには、現在の会話に戻ってください。",
   "ai.command.title": "会話コマンド",

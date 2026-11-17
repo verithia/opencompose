@@ -1024,6 +1024,8 @@ export function AiPanel(props: { onClose?: () => void }) {
       case "position_cleared": return i18n.t("ai.recall.refused.positionCleared");
       case "not_a_person_message": return i18n.t("ai.recall.refused.notAPersonMessage");
       case "conversation_changed": return i18n.t("ai.recall.refused.conversationChanged");
+      case "edits_changed": return i18n.t("ai.recall.refused.editsChanged");
+      case "preview_open": return i18n.t("ai.recall.refused.previewOpen");
     }
   };
 
@@ -1074,7 +1076,7 @@ export function AiPanel(props: { onClose?: () => void }) {
           title: i18n.t("ai.recall.andUndoEdits"),
         });
         if (!confirmed) return;
-        outcome = await aiApi.recall(id, keep, true, true);
+        outcome = await aiApi.recall(id, keep, true, true, outcome.token);
       }
       if (outcome.status === "refused") {
         notify(recallRefusalText(outcome.reason), "error");

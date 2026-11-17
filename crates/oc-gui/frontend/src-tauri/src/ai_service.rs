@@ -1485,6 +1485,7 @@ pub fn ai_recall(
     index: usize,
     undo_edits: bool,
     confirmed: bool,
+    token: Option<ai::agent_loop::host::RecallToken>,
 ) -> Result<ai::agent_loop::host::RecallOutcome, String> {
     ai::agent_loop::host::recall(
         &app,
@@ -1493,6 +1494,7 @@ pub fn ai_recall(
             index,
             undo_edits,
             confirmed,
+            token,
         },
     )
 }

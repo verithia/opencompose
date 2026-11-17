@@ -2270,6 +2270,8 @@ export const en = {
   "ai.recall.refused.positionCleared": "The history position this message recorded was cleared, so its edits cannot be undone.",
   "ai.recall.refused.notAPersonMessage": "Only a message you sent can be recalled.",
   "ai.recall.refused.conversationChanged": "The conversation changed since this recall was chosen; try again.",
+  "ai.recall.refused.editsChanged": "The project history changed since you confirmed; review the recall and try again.",
+  "ai.recall.refused.previewOpen": "Finish the edit preview before recalling with undo.",
   "ai.revert.turnRunning": "A turn is still running in this conversation; stop it before reverting.",
   "ai.revert.originalView": "This is the history a compaction replaced; return to the current conversation to revert.",
   "ai.command.title": "Conversation commands",

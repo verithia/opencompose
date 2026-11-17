@@ -1262,6 +1262,28 @@ pub struct RecallRequest {
     pub undo_edits: bool,
     /// Whether the caller accepted undoing edits by other authors.
     pub confirmed: bool,
+    /// The history position the confirmation named. A confirmed call whose
+    /// history moved since refuses instead of undoing edits it never listed.
+    pub token: Option<RecallToken>,
+}
+
+/// The history position a recall confirmation was shown for: the applied level
+/// and the newest applied entry. Either moving means the dialog described a
+/// history that no longer exists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecallToken {
+    pub applied: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub newest: Option<u64>,
+}
+
+impl RecallToken {
+    fn of(inner: &crate::state::AppStateInner) -> Self {
+        Self {
+            applied: inner.undo.applied_level(),
+            newest: inner.undo.mark().at,
+        }
+    }
 }
 
 /// One author whose edits a recall would undo, and how many.
@@ -1283,6 +1305,8 @@ pub enum RecallRefusal {
     PositionCleared,
     NotAPersonMessage,
     ConversationChanged,
+    EditsChanged,
+    PreviewOpen,
 }
 
 /// What the cut message gives back to the composer.
@@ -1307,6 +1331,7 @@ pub enum RecallOutcome {
     },
     NeedsConfirmation {
         others: Vec<RecallOther>,
+        token: RecallToken,
     },
     Refused {
         reason: RecallRefusal,
@@ -1436,6 +1461,7 @@ fn recall_with(
             },
         };
         if applied > level {
+            let token = RecallToken::of(&inner);
             if !request.confirmed {
                 let entries =
                     inner
@@ -1457,8 +1483,12 @@ fn recall_with(
                     }
                 }
                 if !others.is_empty() {
-                    return Ok(RecallOutcome::NeedsConfirmation { others });
+                    return Ok(RecallOutcome::NeedsConfirmation { others, token });
                 }
+            } else if request.token != Some(token) {
+                // The person confirmed a history that has since moved. Undoing
+                // it would apply a different set of edits than the dialog named.
+                return Ok(RecallOutcome::refused(RecallRefusal::EditsChanged));
             }
             // Everything the move touches, so a failed cut puts it back
             // exactly: both history stacks, the project, its text and the
@@ -1751,14 +1781,16 @@ mod tests {
             index,
             undo_edits: false,
             confirmed: false,
+            token: None,
         }
     }
 
-    fn with_undo(index: usize) -> RecallRequest {
+    fn with_undo(state: &AppState, index: usize) -> RecallRequest {
         RecallRequest {
             index,
             undo_edits: true,
             confirmed: true,
+            token: Some(RecallToken::of(&state.lock_inner())),
         }
     }
 
@@ -1803,7 +1835,7 @@ mod tests {
         let (_root, store, id, state, _path) = fixture_edited_as(true);
         let requests = Requests::default();
         let (kept, message, snapshot, unsaved) =
-            recalled(recall_in(&requests, &state, &store, &id, with_undo(0)).unwrap());
+            recalled(recall_in(&requests, &state, &store, &id, with_undo(&state, 0)).unwrap());
         assert_eq!(kept, 0);
         assert_eq!(message.content, "first");
         assert!(snapshot.is_some(), "the undone document is published");
@@ -1843,11 +1875,12 @@ mod tests {
                 index: 0,
                 undo_edits: true,
                 confirmed: false,
+                token: None,
             },
         )
         .unwrap();
         match outcome {
-            RecallOutcome::NeedsConfirmation { others } => assert_eq!(
+            RecallOutcome::NeedsConfirmation { others, .. } => assert_eq!(
                 others,
                 vec![RecallOther {
                     author: crate::edit_history::Author::Person,
@@ -1868,10 +1901,59 @@ mod tests {
         assert_eq!(store.view(&id).unwrap().len(), 3);
 
         let (kept, _, snapshot, _) =
-            recalled(recall_in(&requests, &state, &store, &id, with_undo(0)).unwrap());
+            recalled(recall_in(&requests, &state, &store, &id, with_undo(&state, 0)).unwrap());
         assert_eq!(kept, 0);
         assert!(snapshot.is_some());
         assert_eq!(state.lock_inner().project.properties.tempo, 120.0);
+    }
+
+    #[test]
+    fn a_confirmation_refuses_when_edits_land_after_it_was_shown() {
+        let (_root, store, id, state, _path) = fixture();
+        let requests = Requests::default();
+        let token = match recall_in(
+            &requests,
+            &state,
+            &store,
+            &id,
+            RecallRequest {
+                index: 0,
+                undo_edits: true,
+                confirmed: false,
+                token: None,
+            },
+        )
+        .unwrap()
+        {
+            RecallOutcome::NeedsConfirmation { token, .. } => token,
+            other => panic!("expected a confirmation, got {other:?}"),
+        };
+        // Another edit lands while the dialog is open.
+        apply_edit(&state, "@project \"Recall\"\n  tempo: 160\n");
+        let outcome = recall_in(
+            &requests,
+            &state,
+            &store,
+            &id,
+            RecallRequest {
+                index: 0,
+                undo_edits: true,
+                confirmed: true,
+                token: Some(token),
+            },
+        )
+        .unwrap();
+        assert_eq!(refused(outcome), RecallRefusal::EditsChanged);
+        assert_eq!(
+            state.lock_inner().project.properties.tempo,
+            160.0,
+            "the unlisted edit stays"
+        );
+        assert_eq!(
+            store.view(&id).unwrap().len(),
+            3,
+            "the conversation is whole"
+        );
     }
 
     #[test]
@@ -1887,11 +1969,18 @@ mod tests {
             )
         };
         let requests = Requests::default();
-        let error = recall_with(&requests, &state, &store, &id, with_undo(0), |_, _| {
-            Err(crate::ai::sessions::turns::CutFailure::Store(
-                "the session store is read-only".into(),
-            ))
-        })
+        let error = recall_with(
+            &requests,
+            &state,
+            &store,
+            &id,
+            with_undo(&state, 0),
+            |_, _| {
+                Err(crate::ai::sessions::turns::CutFailure::Store(
+                    "the session store is read-only".into(),
+                ))
+            },
+        )
         .unwrap_err();
         assert!(error.contains("read-only"), "{error}");
         // The text is back under a new revision, which the window is told.
@@ -1920,9 +2009,14 @@ mod tests {
         let (_root, store, id, state, _path) = fixture_edited_as(true);
         let source = state.lock_inner().dsl_source.clone();
         let requests = Requests::default();
-        let outcome = recall_with(&requests, &state, &store, &id, with_undo(0), |_, _| {
-            Err(crate::ai::sessions::turns::CutFailure::ConversationChanged)
-        })
+        let outcome = recall_with(
+            &requests,
+            &state,
+            &store,
+            &id,
+            with_undo(&state, 0),
+            |_, _| Err(crate::ai::sessions::turns::CutFailure::ConversationChanged),
+        )
         .unwrap();
         assert_eq!(refused(outcome), RecallRefusal::ConversationChanged);
         assert_eq!(state.lock_inner().dsl_source, source);
@@ -1960,11 +2054,18 @@ mod tests {
         };
         assert_eq!(redo, 2);
         let requests = Requests::default();
-        recall_with(&requests, &state, &store, &id, with_undo(3), |_, _| {
-            Err(crate::ai::sessions::turns::CutFailure::Store(
-                "the session store is read-only".into(),
-            ))
-        })
+        recall_with(
+            &requests,
+            &state,
+            &store,
+            &id,
+            with_undo(&state, 3),
+            |_, _| {
+                Err(crate::ai::sessions::turns::CutFailure::Store(
+                    "the session store is read-only".into(),
+                ))
+            },
+        )
         .unwrap_err();
         let mut inner = state.lock_inner();
         assert_eq!(inner.dsl_source, source);
@@ -2037,7 +2138,7 @@ mod tests {
         state.lock_inner().file_path = Some(other);
         let requests = Requests::default();
         assert_eq!(
-            refused(recall_in(&requests, &state, &store, &id, with_undo(0)).unwrap()),
+            refused(recall_in(&requests, &state, &store, &id, with_undo(&state, 0)).unwrap()),
             RecallRefusal::OtherProject
         );
         assert_eq!(state.lock_inner().project.properties.tempo, 150.0);
@@ -2058,7 +2159,7 @@ mod tests {
         let requests = Requests::default();
         // The fixture's rows are indices 0..2; the appended row is 3.
         assert_eq!(
-            refused(recall_in(&requests, &state, &store, &id, with_undo(3)).unwrap()),
+            refused(recall_in(&requests, &state, &store, &id, with_undo(&state, 3)).unwrap()),
             RecallRefusal::NoRecordedPosition
         );
         assert_eq!(store.view(&id).unwrap().len(), 4);
@@ -2085,7 +2186,7 @@ mod tests {
         store.append_turn(&id, &[row], None).unwrap();
         let requests = Requests::default();
         assert_eq!(
-            refused(recall_in(&requests, &state, &store, &id, with_undo(3)).unwrap()),
+            refused(recall_in(&requests, &state, &store, &id, with_undo(&state, 3)).unwrap()),
             RecallRefusal::PositionCleared
         );
         assert_eq!(store.view(&id).unwrap().len(), 4);
@@ -2111,7 +2212,7 @@ mod tests {
         let rows = store.view(&id).unwrap();
         let requests = Requests::default();
         assert_eq!(
-            refused(recall_in(&requests, &state, &store, &id, with_undo(0)).unwrap()),
+            refused(recall_in(&requests, &state, &store, &id, with_undo(&state, 0)).unwrap()),
             RecallRefusal::PositionCleared,
         );
         let inner = state.lock_inner();
@@ -2144,7 +2245,7 @@ mod tests {
         apply_edit(&state, AFTER);
         let requests = Requests::default();
         let (_, _, snapshot, unsaved) =
-            recalled(recall_in(&requests, &state, &store, &id, with_undo(0)).unwrap());
+            recalled(recall_in(&requests, &state, &store, &id, with_undo(&state, 0)).unwrap());
         assert!(snapshot.is_some());
         assert!(
             unsaved

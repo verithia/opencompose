@@ -1024,8 +1024,8 @@ the panel's provider layer decides that and the error carries `retryable`.
 
 Recall is offered only from a right-click on a person's own message, as
 **Recall message** and **Recall message and undo edits**. Both are the one
-backend operation `ai_recall` `{session_id, index, undo_edits, confirmed}`. It
-cuts the conversation just before that message and returns the message's
+backend operation `ai_recall` `{session_id, index, undo_edits, confirmed,
+token?}`. It cuts the conversation just before that message and returns the message's
 content and media for the composer. The cut checks that the saved message is
 still the one that was chosen, so a compaction from another window refuses it
 with `conversation_changed` instead of cutting elsewhere. It also forgets that
@@ -1044,13 +1044,18 @@ text, the dirty flag and both history stacks are put back exactly, and the
 window is sent the document under its new revision.
 
 Undoing edits by anyone other than this conversation's own agent asks first.
-That call answers `needs_confirmation` with the grouped authors and counts and
-changes nothing; a call with `confirmed: true` proceeds. The answer is a tagged
+That call answers `needs_confirmation` with the grouped authors and counts plus
+a token naming the applied level and newest entry it described, and changes
+nothing. A call with `confirmed: true` echoes that token and proceeds only while
+the history still matches it; otherwise it is refused with `edits_changed`, so
+edits made while the dialog was open are never undone unlisted. The answer is a tagged
 result: `{status: "recalled", kept, message: {content, media?}, snapshot?,
 unsaved?}`, `{status: "needs_confirmation", others: [{author, count}]}` or
 `{status: "refused", reason}`. The reasons are `turn_running`, `batch_open`,
 `other_project`, `no_recorded_position`, `position_cleared`,
-`not_a_person_message` and `conversation_changed`; the panel localizes them.
+`not_a_person_message`, `conversation_changed`, `edits_changed` and
+`preview_open`; the panel localizes them. Undo edits are refused while an edit
+preview holds the document, before a confirmation can offer them.
 `snapshot` is present only when the cursor moved, and `unsaved` says why the
 project file was not written.
 

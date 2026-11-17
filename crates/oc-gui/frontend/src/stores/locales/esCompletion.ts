@@ -108,6 +108,8 @@ export const esCompletion = {
   "ai.recall.refused.positionCleared": "La posición del historial que guardó este mensaje ya no existe, así que sus cambios no se pueden deshacer.",
   "ai.recall.refused.notAPersonMessage": "Solo se puede recuperar un mensaje que hayas enviado.",
   "ai.recall.refused.conversationChanged": "La conversación cambió desde que se eligió esta recuperación; inténtalo de nuevo.",
+  "ai.recall.refused.editsChanged": "El historial del proyecto cambió desde que confirmaste; revisa la recuperación e inténtalo de nuevo.",
+  "ai.recall.refused.previewOpen": "Termina la vista previa de la edición antes de recuperar con deshacer.",
   "ai.revert.originalView": "Estás viendo el historial anterior al resumen. Vuelve a la conversación actual para restaurar un estado.",
   "ai.revert.turnRunning": "Detén el turno activo antes de restaurar la conversación.",
   "ai.saveAction": "Reintentar",

@@ -122,12 +122,13 @@ Edits are guarded so a multi-step change is atomic to the user.
   edits that landed. A turn batch a gone turn left open (`panel:` or `turn:`)
   commits rather than rolling back: the next turn commits it, and so does
   `ai_batch_recover`.
-- Recall is `ai_recall {session_id, index, undo_edits, confirmed}`, offered
+- Recall is `ai_recall {session_id, index, undo_edits, confirmed, token?}`, offered
   only from a person's own message. It cuts the conversation before the message
   and returns its text and attachments. With `undo_edits` it also moves the
   project history cursor back to the position the message recorded, as one
   history jump that a redo reverses; edits by anyone but this conversation's
-  agent need a confirming second call. If the cut fails the cursor, document
+  agent need a confirming second call that echoes the token the first answer
+  named. If the cut fails the cursor, document
   and its history are put back exactly. It is refused while a turn runs or a
   batch is open, and undo edits are refused for a message sent against another
   project file or one with no recorded position.

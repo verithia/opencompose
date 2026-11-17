@@ -138,10 +138,12 @@ const backend = {
   loadedCompacted: false,
   newCalls: [] as Record<string, unknown>[],
   /** The recalls the panel asked for, and the document they restore. */
-  recalls: [] as { sessionId: string; index: number; undoEdits: boolean; confirmed: boolean }[],
+  recalls: [] as { sessionId: string; index: number; undoEdits: boolean; confirmed: boolean; token?: unknown }[],
   recallSnapshot: makeSnapshot(),
   /** Whether the next recall with undo asks before undoing others' edits. */
   needsConfirmation: false,
+  /** The token a confirmation was shown for. */
+  confirmationToken: { applied: 4, newest: 99 },
   /** The request and conversation of the most recent turn start. */
   lastTurn: null as { requestId: string; sessionId: string } | null,
   /** The turn the backend reports running, if any. */
@@ -261,12 +263,25 @@ function installBackend() {
         const index = Number(typed.index);
         const undoEdits = typed.undoEdits === true;
         const confirmed = typed.confirmed === true;
-        backend.recalls.push({ sessionId, index, undoEdits, confirmed });
-        if (undoEdits && !confirmed && backend.needsConfirmation) {
-          return { status: "needs_confirmation", others: [{ author: { kind: "person" }, count: 3 }] };
-        }
+        backend.recalls.push({
+          sessionId, index, undoEdits, confirmed,
+          ...(typed.token === undefined ? {} : { token: typed.token }),
+        });
         const conversation = backend.conversations[sessionId] ?? [];
         const cut = conversation[index];
+        if (undoEdits && !cut?.history_at) {
+          return { status: "refused", reason: "no_recorded_position" };
+        }
+        if (undoEdits && !confirmed && backend.needsConfirmation) {
+          return {
+            status: "needs_confirmation",
+            others: [{ author: { kind: "person" }, count: 3 }],
+            token: backend.confirmationToken,
+          };
+        }
+        if (undoEdits && confirmed && typed.token === undefined) {
+          return { status: "refused", reason: "edits_changed" };
+        }
         backend.conversations[sessionId] = conversation.slice(0, index);
         return {
           status: "recalled",
@@ -365,6 +380,7 @@ beforeEach(() => {
   backend.recalls = [];
   backend.recallSnapshot = makeSnapshot();
   backend.needsConfirmation = false;
+  backend.confirmationToken = { applied: 4, newest: 99 };
   backend.lastTurn = null;
   backend.active = null;
   backend.compactedSessions = [];
@@ -1669,12 +1685,13 @@ describe("recalling a message", () => {
       index: 3,
       undoEdits: true,
       confirmed: true,
+      token: { applied: 4, newest: 99 },
     });
     await waitFor(() => expect(input().value).toBe("second take"));
     expect(messageRows()).toHaveLength(2);
   });
 
-  it("disables undo edits when the row recorded no history position", async () => {
+  it("asks the backend for undo edits and shows its typed refusal when no position was recorded", async () => {
     backend.conversations = { s1: [
       { role: "user", content: "first take" },
       { role: "assistant", content: "Done." },

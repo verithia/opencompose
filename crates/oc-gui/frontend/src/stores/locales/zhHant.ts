@@ -2294,6 +2294,8 @@ export const zhHant = {
   "ai.recall.refused.positionCleared": "這則訊息記錄的歷史位置已不存在，因此無法復原它的編輯。",
   "ai.recall.refused.notAPersonMessage": "只能召回你傳送的訊息。",
   "ai.recall.refused.conversationChanged": "選擇召回後對話已發生變化；請重試。",
+  "ai.recall.refused.editsChanged": "確認後工程歷史已發生變化；請重新檢查召回並重試。",
+  "ai.recall.refused.previewOpen": "先完成編輯預覽，再召回並復原編輯。",
   "ai.revert.turnRunning": "這個工作階段仍有一個回合在執行，先停止它再回退。",
   "ai.revert.originalView": "這是壓縮替換掉的歷史，回到目前對話再回退。",
   "ai.command.title": "對話命令",

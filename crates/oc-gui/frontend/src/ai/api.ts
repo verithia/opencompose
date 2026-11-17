@@ -131,12 +131,20 @@ export type RecallRefusal =
   | "no_recorded_position"
   | "position_cleared"
   | "not_a_person_message"
-  | "conversation_changed";
+  | "conversation_changed"
+  | "edits_changed"
+  | "preview_open";
 
 /** One author whose edits a recall would undo, and how many. */
 export interface RecallOther {
   author: HistoryAuthor;
   count: number;
+}
+
+/** The history position a confirmation was shown for. */
+export interface RecallToken {
+  applied: number;
+  newest?: number | null;
 }
 
 /** The message a recall cut, for the composer to take back. */
@@ -154,7 +162,7 @@ export type RecallOutcome =
     snapshot?: ProjectSnapshot;
     unsaved?: string;
   }
-  | { status: "needs_confirmation"; others: RecallOther[] }
+  | { status: "needs_confirmation"; others: RecallOther[]; token: RecallToken }
   | { status: "refused"; reason: RecallRefusal };
 
 /**
@@ -162,8 +170,8 @@ export type RecallOutcome =
  * moves the project's history cursor back to the position that message
  * recorded; a redo brings the edits back.
  */
-export function recall(sessionId: string, index: number, undoEdits: boolean, confirmed: boolean) {
-  return invoke<RecallOutcome>("ai_recall", { sessionId, index, undoEdits, confirmed });
+export function recall(sessionId: string, index: number, undoEdits: boolean, confirmed: boolean, token?: RecallToken) {
+  return invoke<RecallOutcome>("ai_recall", { sessionId, index, undoEdits, confirmed, token });
 }
 
 /** The full result behind a truncated preview, while the backend keeps it. */
