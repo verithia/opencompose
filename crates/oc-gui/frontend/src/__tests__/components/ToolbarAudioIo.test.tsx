@@ -140,10 +140,10 @@ function mockCommands(options: MockOptions = {}) {
       return {
         can_undo: false,
         can_redo: false,
-        
-        
-        
-        
+
+
+
+
       };
     }
     if (cmd === "get_midi_config") {

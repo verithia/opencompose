@@ -59,8 +59,8 @@ beforeEach(async () => {
     }
     if (cmd === "get_undo_state") {
       return {
-        can_undo: false, can_redo: false,  
-         
+        can_undo: false, can_redo: false,
+
       };
     }
     return baseSnapshot();

@@ -121,7 +121,7 @@ function installBackend() {
     if (command === "get_undo_state") {
       return {
         can_undo: false, can_redo: false,
-           
+
       };
     }
     return makeSnapshot(loaded);

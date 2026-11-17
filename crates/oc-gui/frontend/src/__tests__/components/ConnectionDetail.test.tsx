@@ -19,7 +19,7 @@ import type { Project } from "../../types/project";
 
 const UNDO_NONE = {
   can_undo: false, can_redo: false,
-     
+
 };
 
 function scenario(overrides: Partial<Project> = {}): Project {

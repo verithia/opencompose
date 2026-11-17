@@ -9,7 +9,7 @@ import { BusActions } from "../../components/BusActions";
 
 const UNDO_NONE = {
   can_undo: false, can_redo: false,
-     
+
 };
 
 function snapshot() {

@@ -123,7 +123,7 @@ async function invoke(command: string, args?: unknown) {
   if (command === "get_undo_state") {
     return {
       can_undo: false, can_redo: false,
-         
+
     };
   }
   if (command === "get_project") return currentSnapshot();

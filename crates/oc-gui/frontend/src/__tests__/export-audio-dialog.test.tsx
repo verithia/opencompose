@@ -113,10 +113,10 @@ function backend(handlers: Record<string, Handler>, project: ProjectSnapshot) {
       return {
         can_undo: false,
         can_redo: false,
-        
-        
-        
-        
+
+
+
+
       };
     }
     if (command === "history_page") return [];

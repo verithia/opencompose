@@ -129,10 +129,10 @@ function installBackend(
         return {
           can_undo: history.length > 0,
           can_redo: false,
-          
-          
-          
-          
+
+
+
+
         };
       default:
         return makeSnapshot(structuredClone(project));
