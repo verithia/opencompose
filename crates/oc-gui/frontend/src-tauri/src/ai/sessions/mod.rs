@@ -39,11 +39,13 @@ mod artifacts;
 mod summary;
 pub(crate) use summary::SUMMARY_OUTPUT_TOKENS;
 use summary::{
-    PlanInputs, compaction_input, plan_compaction, plan_compaction_request, planned_messages,
-    should_compact, view_digest,
+    PlanInputs, plan_compaction, plan_compaction_request, planned_messages, should_compact,
+    view_digest,
 };
 #[cfg(test)]
-use summary::{retained_comparison_pair, retained_media_row, summary_metadata, summary_text};
+use summary::{
+    compaction_input, retained_comparison_pair, retained_media_row, summary_metadata, summary_text,
+};
 mod audition_archive;
 mod binding;
 #[cfg(test)]
@@ -82,6 +84,7 @@ pub use audition_archive::{
 use audition_archive::{
     AUDITION_RENDER_STAGE, clip_dir, persist_auditions, render_dir, session_references, sweep,
 };
+#[cfg(test)]
 use audition_archive::{ArchiveSweep, archived_bytes, mp3_bitrate};
 use binding::same_project;
 pub use binding::{BindingMismatch, BindingStatus, SavedHistoryMark, binding_status};
@@ -599,13 +602,6 @@ impl Store {
 
     // ---- workspace keys -------------------------------------------------
 
-    /// The key a workspace's conversations live under, following a recorded
-    /// directory when the hash of this path has no directory yet.
-
-    /// Re-associates a moved workspace: the directory follows the new path and
-    /// the record keeps both. The record itself is written by every save, so this
-    /// is the move, not the bookkeeping.
-
     // Asset publication and the transcript that names the assets form one
     // operation from the collector's perspective.
     fn mutation_lock(&self) -> Result<std::fs::File, String> {
@@ -631,8 +627,6 @@ impl Store {
     }
 
     // ---- sessions -------------------------------------------------------
-
-    /// Sessions newest first, scoped to one workspace or to every workspace.
 
     pub fn find(&self, id: &str) -> Result<(PathBuf, SessionMeta), String> {
         lookup::find(self.lookup.as_ref(), &self.root, id).map_err(|error| error.to_string())
@@ -757,16 +751,6 @@ impl Store {
         Ok(meta)
     }
 
-    /// Binds a conversation to `project`. The next admitted turn tells the
-    /// model through one typed notice; binding to the project it already works
-    /// on changes nothing.
-
-    /// The project a conversation is bound to beside the open project, both
-    /// canonical and already compared.
-
-    /// Record where the bound project's history stands. Production saves the
-    /// mark in preparation; tests use this to stage a previous turn.
-
     /// Deletes the least recently updated session of a workspace while it holds
     /// more than [`MAX_SESSIONS_PER_WORKSPACE`]. `keep` is never dropped.
     fn prune(&self, key: &str, keep: &str) -> Result<(), String> {
@@ -813,11 +797,6 @@ impl Store {
         }
         Ok(())
     }
-
-    /// Point the conversations about the project at `from` to `to`, for Move
-    /// Project and for a file moved outside the app. A conversation scoped to
-    /// the project's own folder moves to the new folder's workspace; one scoped
-    /// to a chosen folder stays where it is. Answers how many were updated.
 
     pub fn rename(&self, id: &str, title: &str) -> Result<SessionMeta, String> {
         self.rename_owned(id, title, None)
@@ -909,12 +888,6 @@ impl Store {
         self.collect_unreferenced_locked();
         Ok(())
     }
-
-    /// Every workspace folder of conversations, for the Storage page and the
-    /// stale sweep. `detached` has no folder and is never stale.
-
-    /// Remove every conversation of one workspace, then the shared audio
-    /// only they named. `guard` refuses while a turn runs in any of them.
 
     fn delete_inner(&self, id: &str) -> Result<(), String> {
         let (dir, _) = self.find(id)?;
@@ -1017,16 +990,6 @@ impl Store {
         }))
     }
 
-    /// Drop every record before the `keep`-th compaction, then remove assets no
-    /// remaining message refers to. `keep = 1` keeps only the first compaction
-    /// and what followed it.
-
-    /// [`Self::drop_history`] after `guard` admits it under the store lock.
-
-    /// Delete content-addressed assets no session message names any more:
-    /// audition clips and renders shared at the store root, and each session's
-    /// own DSL versions.
-
     fn collect_unreferenced_locked(&self) -> u64 {
         let (referenced, version_dirs) = session_references(&self.root);
         let mut removed = 0u64;
@@ -1109,13 +1072,6 @@ impl Store {
         let (dir, _) = self.find(id)?;
         read_view(&dir).map(|(messages, _)| messages)
     }
-
-    /// Absorbs one request, compacts before it when the estimate says it must,
-    /// and returns what should be sent. `overhead` is the estimated size of the
-    /// system prompt the client rebuilds every turn.
-
-    /// Admits transcript preparation against the same saved-session incarnation
-    /// as the request's accounting owner, before any transcript or archive write.
 
     /// [`Self::prepare_owned`] with an admission check: `admit` sees the
     /// conversation the request would send (after the compaction it would
@@ -1365,9 +1321,6 @@ impl Store {
         })
     }
 
-    /// Appends the assistant message a turn produced, so an answer survives the
-    /// panel closing before the next turn.
-
     pub fn record_reply_owned(
         &self,
         id: &str,
@@ -1401,10 +1354,6 @@ impl Store {
         write_meta(&dir, &meta)?;
         Ok(meta)
     }
-
-    /// Folds the older turns into one plain-text message that also carries the
-    /// most recent tool pairs as text. No assistant tool call, provider state or
-    /// signature survives.
 
     /// A compaction a person asked for. `guard` runs under the store lock.
     ///
@@ -1820,11 +1769,6 @@ fn turn_record(at: &str, mut messages: Vec<Value>) -> Record {
     }
 }
 
-/// The tool blocks of a conversation: each assistant message that asks for tools
-/// (natively or through the text protocol) plus the results and host deliveries
-/// that follow it. Pairing decides what belongs to a round, so a person's next
-/// message, attachments included, is never taken for part of the round.
-
 /// Closes a last round whose calls never got a result: a window that reloaded
 /// mid-turn, or a client that died, stops the loop that owed them. `answered`
 /// names the calls the request being prepared brings results for, which are not
@@ -1839,8 +1783,6 @@ fn close_unanswered_round(dir: &Path, view: &mut Vec<Value>, answered: &[&str]) 
     view.extend(closed.iter().cloned());
     closed
 }
-
-/// What deciding a compaction needs, apart from the conversation.
 
 /// The conversation a preparation would send, computed without writing:
 /// the saved view plus what the request adds, compacted as the preparation
@@ -1871,47 +1813,6 @@ fn planned_request(pending: &[Value], incoming: &[Value], plan: &PlanInputs<'_>)
     }
     view
 }
-
-/// A compaction that may ask a model for its summary.
-///
-/// It plans exactly what the mechanical path would write, then keeps the
-/// dropped turns as text for the request and the mechanical messages as the
-/// fallback. Nothing is written until the commit sees the same view.
-
-/// Names one view exactly, so a commit can tell that the conversation it
-/// planned from is still the conversation on disk.
-
-/// The messages after `split` that are safe to keep: prose only, never a
-/// message of a retained tool block, and always the pending user message with
-/// its attachments, so the ask the model is about to answer survives intact.
-
-/// Every attachment a retained round references, deduplicated within the round.
-
-/// One audio row for a retained round: the round's clips, the label it
-/// carried, and the marker that keeps the row out of user prose.
-
-/// The attachments compaction carries: one round's entries, newest last.
-
-/// Auditions this compaction discards: rows outside the retained rounds, plus
-/// the count a previous summary already folded so repeated compaction keeps it.
-
-/// The viewable summary and the prose a later compaction carries, both built
-/// from one reading of the previous summary and this compaction's decisions.
-
-#[cfg(test)]
-
-/// The deterministic header a summary starts with: the project it was written
-/// against and the intent a later compaction must keep.
-
-/// The decisions, failures, proposals and asks the mechanical summary states.
-
-/// The newest tool calls as text, the audio kept, and the artifact inventory.
-
-/// A tool result that proposed something and was not applied. A rejected
-/// proposal is history like any other turn: the summary says so in text and no
-/// tool-call turn is replayed.
-
-/// The subtree a proposal named, from the arguments of the call that made it.
 
 /// Versioned metadata for a host message of `kind`, as saved on the wire.
 pub fn message_meta(kind: MessageKind) -> Value {
@@ -1987,14 +1888,9 @@ fn rfc3339_from(time: SystemTime) -> String {
     oc_diag::time::format_unix_millis(millis)
 }
 
-/// A directory as the store keys it; a path that does not exist yet stays as
-/// given so a project saved later keeps its key.
-
 pub(crate) fn canonical_path(path: &Path) -> PathBuf {
     crate::project_data::canonical_path(path)
 }
-
-/// Compares a conversation's bound project with the open one in canonical form.
 
 /// The typed goal or plan change a saved row carries, if any.
 pub(crate) fn saved_session_state(message: &Value) -> Option<SessionState> {

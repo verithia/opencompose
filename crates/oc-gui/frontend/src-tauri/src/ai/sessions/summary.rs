@@ -212,42 +212,6 @@ pub(super) fn planned_messages(plan: &CompactionPlan, summary: Option<&str>) -> 
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn bounded_input_keeps_the_prior_summary_and_the_newest_correction() {
-        let mut summary =
-            json!({"role":"user","context":CONTEXT_SUMMARY,"content":"keep vocals dry"});
-        let mut meta = MessageMeta::new(MessageKind::Summary);
-        meta.discarded_auditions = Some(0);
-        message_protocol::tag(&mut summary, meta);
-        let mut view = vec![summary];
-        view.push(json!({"role":"user","content":"reject the metallic bass patch"}));
-        for _ in 0..40 {
-            view.push(json!({"role":"assistant","content":"old output ".repeat(1000)}));
-        }
-        let input = compaction_input(&view, view.len());
-        assert!(input.contains("keep vocals dry"));
-        assert!(input.contains("reject the metallic bass patch"));
-        assert!(input.contains(OMITTED.trim()));
-        assert!(input.len() <= MAX_INPUT_BYTES);
-        assert!(
-            input.find("Previous conversation summary").unwrap() < input.find("User:").unwrap()
-        );
-    }
-
-    #[test]
-    fn unicode_and_parallel_call_rows_stay_within_the_byte_budget() {
-        let view = vec![json!({"role":"assistant","content":"声".repeat(80_000),
-            "tool_calls": (0..32).map(|_| json!({"function":{"name":"read","arguments":"声".repeat(10_000)}})).collect::<Vec<_>>()})];
-        let input = compaction_input(&view, 1);
-        assert!(input.len() <= MAX_INPUT_BYTES);
-        assert!(input.is_char_boundary(input.len()));
-    }
-}
-
 pub(super) struct PlanInputs<'a> {
     pub(super) overhead: u64,
     pub(super) context_length: u64,
@@ -993,4 +957,40 @@ fn tool_blocks(view: &[Value]) -> Vec<(usize, usize)> {
         }
     }
     blocks
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bounded_input_keeps_the_prior_summary_and_the_newest_correction() {
+        let mut summary =
+            json!({"role":"user","context":CONTEXT_SUMMARY,"content":"keep vocals dry"});
+        let mut meta = MessageMeta::new(MessageKind::Summary);
+        meta.discarded_auditions = Some(0);
+        message_protocol::tag(&mut summary, meta);
+        let mut view = vec![summary];
+        view.push(json!({"role":"user","content":"reject the metallic bass patch"}));
+        for _ in 0..40 {
+            view.push(json!({"role":"assistant","content":"old output ".repeat(1000)}));
+        }
+        let input = compaction_input(&view, view.len());
+        assert!(input.contains("keep vocals dry"));
+        assert!(input.contains("reject the metallic bass patch"));
+        assert!(input.contains(OMITTED.trim()));
+        assert!(input.len() <= MAX_INPUT_BYTES);
+        assert!(
+            input.find("Previous conversation summary").unwrap() < input.find("User:").unwrap()
+        );
+    }
+
+    #[test]
+    fn unicode_and_parallel_call_rows_stay_within_the_byte_budget() {
+        let view = vec![json!({"role":"assistant","content":"声".repeat(80_000),
+            "tool_calls": (0..32).map(|_| json!({"function":{"name":"read","arguments":"声".repeat(10_000)}})).collect::<Vec<_>>()})];
+        let input = compaction_input(&view, 1);
+        assert!(input.len() <= MAX_INPUT_BYTES);
+        assert!(input.is_char_boundary(input.len()));
+    }
 }
