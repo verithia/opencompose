@@ -5,6 +5,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::ai::sessions;
+use crate::ai_service::Requests;
 use crate::commands::{
     compact_for, current_for, delete_session_for, facts, list_for, new_for, new_fork, open_for,
     open_session_for, sessions_load, sessions_page, sessions_rename, sessions_set_permission,
@@ -137,12 +138,12 @@ fn renaming_and_deleting_act_on_the_saved_conversation() {
         sessions_load(session.id.clone()).unwrap().meta.title,
         "after the fix"
     );
-    delete_session_for(&state, &session.id).unwrap();
+    delete_session_for(&state, &Requests::default(), &session.id).unwrap();
     let error = sessions_load(session.id.clone()).unwrap_err();
     assert!(error.contains("No matching saved session"), "{error}");
     assert!(list_for(&state, None, false).unwrap().is_empty());
     // Deleting twice is a refusal, not a panic.
-    assert!(delete_session_for(&state, &session.id).is_err());
+    assert!(delete_session_for(&state, &Requests::default(), &session.id).is_err());
 }
 
 #[test]
@@ -217,9 +218,9 @@ fn compacting_an_empty_conversation_is_refused_by_name() {
     let fixture = fixture("compact");
     let state = state_with_project(&fixture.dir, PROJECT);
     let session = new_for(&state, None, Some("empty"), None).unwrap();
-    let error = compact_for(&state, &session.id, Some(200)).unwrap_err();
+    let error = compact_for(&state, &Requests::default(), &session.id, Some(200)).unwrap_err();
     assert!(error.contains("nothing older"), "{error}");
-    assert!(compact_for(&state, "not-a-session", None).is_err());
+    assert!(compact_for(&state, &Requests::default(), "not-a-session", None).is_err());
 }
 
 #[test]
@@ -437,6 +438,7 @@ fn a_headless_turn_bound_to_another_open_file_is_refused_as_session_binding() {
         &messages,
         SavedTurnBinding {
             id: &session.id,
+            request_id: None,
             incarnation: &incarnation,
             project: Some(&open),
             tool_tokens: 0,
@@ -600,6 +602,7 @@ fn a_prepared_turn_reports_edits_made_outside_its_conversation() {
         &messages,
         SavedTurnBinding {
             id: &session.id,
+            request_id: None,
             incarnation: &incarnation,
             project: Some(&open),
             tool_tokens: wire::offered_tool_tokens(None, false),
@@ -689,6 +692,7 @@ fn a_pending_binding_suppresses_the_outside_changes_notice() {
         &messages,
         SavedTurnBinding {
             id: &session.id,
+            request_id: None,
             incarnation: &incarnation,
             project: Some(&second),
             tool_tokens: wire::offered_tool_tokens(None, false),
@@ -749,6 +753,7 @@ fn every_prepared_turn_moves_the_mark_so_the_outside_notice_is_not_repeated() {
             &messages,
             SavedTurnBinding {
                 id: &session.id,
+                request_id: None,
                 incarnation: &incarnation,
                 project: Some(&open),
                 tool_tokens: wire::offered_tool_tokens(None, false),
@@ -858,7 +863,7 @@ fn a_conversation_held_elsewhere_is_not_deleted_and_stays_listed() {
     let (_store, foreign) = hold_session_elsewhere(&session.id);
     let before = list_for(&state, None, true).unwrap();
 
-    let error = delete_session_for(&state, &session.id).unwrap_err();
+    let error = delete_session_for(&state, &Requests::default(), &session.id).unwrap_err();
     assert_eq!(error.kind, sessions::SessionErrorKind::InUse);
     assert!(sessions::Store::config().find(&session.id).is_ok());
     let after = list_for(&state, None, true).unwrap();
@@ -869,7 +874,7 @@ fn a_conversation_held_elsewhere_is_not_deleted_and_stays_listed() {
     );
 
     drop(foreign);
-    delete_session_for(&state, &session.id).unwrap();
+    delete_session_for(&state, &Requests::default(), &session.id).unwrap();
     assert!(sessions::Store::config().find(&session.id).is_err());
 }
 

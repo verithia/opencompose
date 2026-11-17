@@ -107,40 +107,9 @@ pub fn local_tools() -> Vec<ToolSpec> {
                 "additionalProperties": false
             }),
         },
-        ToolSpec {
-            id: ToolId::PlanUpdate,
-            description: "Record the goal this conversation works toward and the plan it follows. Omit goal or items to leave that part unchanged; pass goal: null or an empty items list to clear it. At most one item may be in progress.",
-            schema: json!({
-                "type": "object",
-                "properties": {
-                    "goal": {
-                        "type": ["string", "null"],
-                        "maxLength": crate::ai::session_state::MAX_GOAL_CHARS,
-                        "description": "The goal, or null to clear it"
-                    },
-                    "items": {
-                        "type": "array",
-                        "maxItems": crate::ai::session_state::MAX_PLAN_ITEMS,
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "text": {
-                                    "type": "string",
-                                    "maxLength": crate::ai::session_state::MAX_PLAN_ITEM_CHARS
-                                },
-                                "status": {
-                                    "type": "string",
-                                    "enum": ["pending", "in_progress", "done"]
-                                }
-                            },
-                            "required": ["text", "status"],
-                            "additionalProperties": false
-                        }
-                    }
-                },
-                "additionalProperties": false
-            }),
-        },
+        arguments::tool::<crate::ai::plan_update::PlanUpdateArgs>(
+            "Record the goal this conversation works toward and the plan it follows. Omit goal or items to leave that part unchanged; pass goal: null or an empty items list to clear it. At most one item may be in progress.",
+        ),
         arguments::tool::<crate::agent_tools::question::AskUserArgs>(
             "Ask the person one question when the decision is theirs, such as a creative direction you cannot infer. Offer at most six short options, or omit them for a free-text answer. A session with nobody to ask answers immediately that no user is available.",
         ),

@@ -12,24 +12,21 @@ pub mod questions;
 
 pub(crate) use batch::{begin_loop_batch, commit_batch_and_save, commit_stranded};
 
-pub use questions::{ReplyError, answer, pending_questions, reply};
+pub use questions::{AnswerError, ReplyError, answer, pending_questions, reply};
 
 use super::{
-    ApprovalRequest, AudioShape, Cancel, Decision, Document, Edited, Host, Reply, TurnEvent,
-    TurnOutcome, TurnSpec, UserQuestion,
+    ApprovalRequest, AudioShape, Cancel, Decision, Dispatched, Document, Edited, Host, Reply,
+    TurnEvent, TurnOutcome, TurnSpec, UserQuestion,
 };
 use crate::ai::sessions::{SessionPermission, Store};
 use crate::ai::timing::TurnStatsHandle;
 use crate::ai_service::{AiError, Requests, TurnChannels, TurnRequest};
 use crate::commands::AiProviderEntry;
 use crate::state::AppState;
-use questions::{
-    AskedQuestion, MAX_PENDING, PENDING, QUESTION_TIMEOUT, Waiting, await_answer, await_reply,
-};
+use questions::{PENDING, Waiting, wait_for};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::oneshot;
@@ -46,7 +43,6 @@ static RUNNING: LazyLock<Mutex<HashMap<String, RunningTurn>>> = LazyLock::new(Mu
 
 #[derive(Clone)]
 struct RunningTurn {
-    session_id: String,
     cancel: Cancel,
     steering: super::steering::Steering,
 }
@@ -110,13 +106,23 @@ fn check_person_media(media: &Value) -> Result<(), AiError> {
 /// Resolves after durable delivery at a complete round boundary. It never
 /// cancels a provider request, tool call or transaction.
 pub async fn steer(
+    requests: &Requests,
     request_id: &str,
     session_id: &str,
     message: SteerMessage,
 ) -> Result<(), AiError> {
+    if !requests
+        .session_is(request_id, session_id)
+        .map_err(|error| AiError::new("request", error))?
+    {
+        return Err(AiError::new(
+            "steer_closed",
+            "No matching turn is accepting messages",
+        ));
+    }
     let turn = lock(&RUNNING)
         .get(request_id)
-        .filter(|turn| turn.session_id == session_id && !turn.cancel.is_cancelled())
+        .filter(|turn| !turn.cancel.is_cancelled())
         .cloned()
         .ok_or_else(|| AiError::new("steer_closed", "No matching turn is accepting messages"))?;
     let refuse = |text: &str| AiError::new("request", text);
@@ -167,15 +173,9 @@ pub async fn steer(
 
 /// Stops a running turn for a caller that names its conversation too, so a
 /// client cannot stop another conversation's turn by guessing its id.
-pub fn cancel_in(request_id: &str, session_id: &str) -> bool {
-    let turn = lock(&RUNNING)
-        .get(request_id)
-        .filter(|turn| turn.session_id == session_id)
-        .cloned();
-    turn.is_some_and(|turn| {
-        turn.cancel.cancel();
-        true
-    })
+pub fn cancel_in(requests: &Requests, request_id: &str, session_id: &str) -> bool {
+    requests.session_is(request_id, session_id).unwrap_or(false)
+        && requests.cancel(request_id).unwrap_or(false)
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -378,7 +378,7 @@ impl Host for AppHost {
         .flatten()
     }
 
-    async fn call(&self, tool: &str, args: &Value, cancel: &Cancel) -> Result<Value, Value> {
+    async fn call(&self, tool: &str, args: &Value, cancel: &Cancel) -> Result<Dispatched, Value> {
         let refusal = crate::ai::skill_hints::refusal;
         let checked = crate::tool_registry::panel_tool_in(tool, self.toolsets.as_deref())
             .and_then(|def| crate::tool_registry::validate_args(&def, args));
@@ -386,29 +386,26 @@ impl Host for AppHost {
             return Err(refusal(&message));
         }
         let (tool, args, owner) = (tool.to_owned(), args.clone(), self.owner.clone());
-        let stop = Arc::new(AtomicBool::new(false));
-        let watcher = {
-            let (cancel, stop) = (cancel.clone(), Arc::clone(&stop));
-            tauri::async_runtime::spawn(async move {
-                cancel.cancelled().await;
-                stop.store(true, Ordering::Release);
-            })
-        };
+        let stop = cancel.flag();
         let result = self
             .blocking(move |app| {
                 if tool == "separate_stems" {
-                    return crate::agent_api::separate_stems_cancellable(&args, Some(&stop));
+                    return crate::agent_api::separate_stems_cancellable(&args, Some(&stop)).map(
+                        |value| Dispatched {
+                            value,
+                            changes: None,
+                        },
+                    );
                 }
                 crate::agent_api::dispatch_panel(&app, &tool, &args, &owner)
             })
             .await;
-        watcher.abort();
         let result = result
             .map_err(|error| refusal(&error))?
             .map_err(|error| refusal(&error));
         if result
             .as_ref()
-            .is_ok_and(|value| value["revision"].is_u64())
+            .is_ok_and(|dispatched| dispatched.value["revision"].is_u64())
         {
             self.publish();
         }
@@ -419,83 +416,61 @@ impl Host for AppHost {
         if !self.attended {
             return None;
         }
-        let (sender, receiver) = oneshot::channel();
         let key = (self.request_id.clone(), request.call_id.clone());
-        {
-            let mut pending = lock(&PENDING);
-            if pending
-                .keys()
-                .filter(|(turn, _)| turn == &self.request_id)
-                .count()
-                >= MAX_PENDING
-            {
-                // A person is there but cannot be asked: that is a refusal,
-                // never the "nobody attends" answer that lets a call apply.
-                return Some(Decision::default());
-            }
-            pending.insert(
-                key.clone(),
-                Waiting::Approval {
-                    answer: sender,
-                    request: request.clone(),
-                },
-            );
-        }
-        // The question leaves the list however the wait ends, including when
-        // a cancel drops this future, so a reloaded window never repaints a
-        // card nobody waits on.
-        let _asked = AskedQuestion(key.clone());
         let tool = request.tool.clone();
-        self.emit(TurnEvent::Ask { request });
-        let decision = Some(await_answer(receiver, QUESTION_TIMEOUT).await);
-        if decision.as_ref().is_some_and(|decision| decision.expired) {
-            self.emit(TurnEvent::Expired {
-                call_id: key.1.clone(),
-            });
+        let (sender, receiver) = oneshot::channel();
+        // A person is there but cannot be asked: that is a refusal, never the
+        // "nobody attends" answer that lets a call apply.
+        let Some(decision) = wait_for(
+            key.clone(),
+            Waiting::Approval {
+                answer: sender,
+                request: request.clone(),
+            },
+            receiver,
+            Decision::expired(),
+            Decision::default(),
+            || self.emit(TurnEvent::Ask { request }),
+        )
+        .await
+        else {
+            return Some(Decision::default());
+        };
+        if decision.expired {
+            self.emit(TurnEvent::Expired { call_id: key.1 });
         }
-        if decision
-            .as_ref()
-            .is_some_and(|decision| decision.approved && decision.always)
-        {
+        if decision.approved && decision.always {
             let mut allowed = lock(&self.allowed);
             if !allowed.contains(&tool) {
                 allowed.push(tool);
             }
         }
-        decision
+        Some(decision)
     }
 
     async fn ask_user(&self, request: UserQuestion) -> Option<Reply> {
         if !self.attended {
             return None;
         }
-        let (sender, receiver) = oneshot::channel();
         let key = (self.request_id.clone(), request.call_id.clone());
-        {
-            let mut pending = lock(&PENDING);
-            if pending
-                .keys()
-                .filter(|(turn, _)| turn == &self.request_id)
-                .count()
-                >= MAX_PENDING
-            {
-                return Some(Reply::expired());
-            }
-            pending.insert(
-                key.clone(),
-                Waiting::UserQuestion {
-                    answer: sender,
-                    request: request.clone(),
-                },
-            );
-        }
-        let _asked = AskedQuestion(key.clone());
-        self.emit(TurnEvent::AskUser { request });
-        let reply = await_reply(receiver, QUESTION_TIMEOUT).await;
+        let (sender, receiver) = oneshot::channel();
+        let Some(reply) = wait_for(
+            key.clone(),
+            Waiting::UserQuestion {
+                answer: sender,
+                request: request.clone(),
+            },
+            receiver,
+            Reply::expired(),
+            Reply::expired(),
+            || self.emit(TurnEvent::AskUser { request }),
+        )
+        .await
+        else {
+            return Some(Reply::busy());
+        };
         if reply.expired {
-            self.emit(TurnEvent::Expired {
-                call_id: key.1.clone(),
-            });
+            self.emit(TurnEvent::Expired { call_id: key.1 });
         }
         Some(reply)
     }
@@ -543,12 +518,14 @@ impl Host for AppHost {
         if cancel.is_cancelled() {
             return Err(CompactionFailure::Cancelled);
         }
-        let crate::ai::sessions::CompactionResolution {
-            compaction,
-            failure,
-        } = Store::config().finish_compaction(plan, summary.as_deref());
-        let failure = provider_failure.or(failure);
-        let outcome = compaction.ok_or(failure.unwrap_or(CompactionFailure::Store))?;
+        let resolution = self
+            .blocking(move |_| Store::config().finish_compaction(plan, summary.as_deref()))
+            .await
+            .map_err(|_| CompactionFailure::Store)?;
+        let failure = provider_failure.or(resolution.failure);
+        let outcome = resolution
+            .compaction
+            .ok_or(failure.unwrap_or(CompactionFailure::Store))?;
         match failure.and_then(CompactionFailure::notice_reason) {
             Some(reason) => {
                 let _ = self.app.emit(
@@ -576,9 +553,9 @@ impl Host for AppHost {
             .await?
     }
 
-    async fn stored_result(&self, call: &str) -> Option<String> {
-        let (id, call) = (self.session_id.clone(), call.to_owned());
-        self.blocking(move |_| Store::config().tool_result(&id, &call))
+    async fn stored_result(&self, _call: &str, sha: &str) -> Option<String> {
+        let (id, sha) = (self.session_id.clone(), sha.to_owned());
+        self.blocking(move |_| Store::config().stored_result(&id, &sha))
             .await
             .ok()?
             .ok()
@@ -816,25 +793,6 @@ pub async fn run(
     crate::ai_service::validate_chat_messages(&messages)?;
     let provider = crate::ai_service::provider(&start.provider_id).map_err(AiError::config)?;
     let requests = app.state::<Requests>();
-    // The cancel handle is published before the slot is claimed, so a cancel
-    // that arrives at any point reaches the turn instead of freeing its slot.
-    let cancel = Cancel::default();
-    let control = RunningTurn {
-        session_id: start.session_id.clone(),
-        cancel: cancel.clone(),
-        steering: super::steering::Steering::default(),
-    };
-    {
-        let mut running = lock(&RUNNING);
-        if running.contains_key(&start.request_id) {
-            return Err(AiError::new("busy", "Another AI request is active"));
-        }
-        running.insert(start.request_id.clone(), control.clone());
-    }
-    let _registration = RegisteredTurn {
-        request_id: start.request_id.clone(),
-        control: control.clone(),
-    };
     let claim = match requests.claim_for(&start.request_id, Some(&start.session_id)) {
         Ok(Some(claim)) => claim,
         refused => {
@@ -844,18 +802,16 @@ pub async fn run(
             });
         }
     };
-    requests.set_session_owned(&start.request_id, &claim.identity, &start.session_id);
     let release = scopeguard(&requests, &start.request_id, &claim.identity);
-    // `ai_cancel` sends on the slot's cancel channel; it cancels the turn.
-    {
-        let cancel = cancel.clone();
-        let receiver = claim.cancel_rx;
-        tauri::async_runtime::spawn(async move {
-            if receiver.await.is_ok() {
-                cancel.cancel();
-            }
-        });
-    }
+    let control = RunningTurn {
+        cancel: claim.cancel.clone(),
+        steering: super::steering::Steering::default(),
+    };
+    lock(&RUNNING).insert(start.request_id.clone(), control.clone());
+    let _registration = RegisteredTurn {
+        request_id: start.request_id.clone(),
+        control: control.clone(),
+    };
     let outcome = run_claimed(
         app,
         &start,
@@ -932,6 +888,7 @@ async fn run_claimed(
         &messages,
         crate::commands::SavedTurnBinding {
             id: &start.session_id,
+            request_id: Some(&start.request_id),
             incarnation: &incarnation,
             project: start.project.as_deref(),
             tool_tokens,
@@ -948,12 +905,6 @@ async fn run_claimed(
             return Err(error);
         }
     };
-    if let Some(compaction) = prepared.compacted.as_ref() {
-        let _ = app.emit(
-            crate::commands::AUTO_SESSION_EVENT,
-            crate::commands::compaction_event(&prepared, compaction, provider),
-        );
-    }
     let host = AppHost {
         steering: control.steering,
         app: app.clone(),
@@ -1023,28 +974,9 @@ async fn finish_accounting(app: &AppHandle, stats: &TurnStatsHandle, request_id:
     }
 }
 
-/// Whether a backend turn is running in this conversation. A compaction,
-/// history drop or delete under it would move the round it is writing.
-pub fn session_running(session_id: &str) -> bool {
-    lock(&RUNNING)
-        .values()
-        .any(|turn| turn.session_id == session_id)
-}
-
-/// Stops a running turn. Completed calls keep their results.
-pub fn cancel(request_id: &str) -> bool {
-    match lock(&RUNNING).get(request_id) {
-        Some(turn) => {
-            turn.cancel.cancel();
-            true
-        }
-        None => false,
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::questions::{QuestionKey, questions};
+    use super::questions::{AskedQuestion, MAX_PENDING, QuestionKey};
     use super::*;
     use crate::ai::agent_loop::PendingQuestion;
     use serde_json::Map;
@@ -1110,11 +1042,13 @@ mod tests {
             },
         );
         assert_eq!(
-            questions("t-ans"),
-            vec![request],
+            pending_questions("t-ans"),
+            vec![PendingQuestion::Approval {
+                request: request.clone(),
+            }],
             "a reloaded window sees the open card"
         );
-        assert!(questions("t-other").is_empty());
+        assert!(pending_questions("t-other").is_empty());
         answer("t-ans", "c1", decision.clone()).unwrap();
         assert_eq!(receiver.blocking_recv().unwrap(), decision);
         assert!(
@@ -1122,19 +1056,11 @@ mod tests {
             "an answer is taken once"
         );
 
-        assert!(!cancel("t-none"));
-        let running = Cancel::default();
-        lock(&RUNNING).insert(
-            "t-run".into(),
-            RunningTurn {
-                session_id: "s".into(),
-                cancel: running.clone(),
-                steering: super::super::steering::Steering::default(),
-            },
-        );
-        assert!(cancel("t-run"));
-        assert!(running.is_cancelled());
-        lock(&RUNNING).remove("t-run");
+        let requests = Requests::default();
+        assert!(!requests.cancel("t-none").unwrap());
+        let claim = requests.claim_for("t-run", Some("s")).unwrap().unwrap();
+        assert!(requests.cancel("t-run").unwrap());
+        assert!(claim.cancel.is_cancelled());
     }
 
     #[test]
@@ -1148,10 +1074,14 @@ mod tests {
     #[tokio::test]
     async fn steering_is_scoped_bounded_and_rejects_cancelled_turns() {
         let control = RunningTurn {
-            session_id: "steer-session".into(),
             cancel: Cancel::default(),
             steering: super::super::steering::Steering::default(),
         };
+        let requests = Requests::default();
+        let _claim = requests
+            .claim_for("scoped-steering-test", Some("steer-session"))
+            .unwrap()
+            .unwrap();
         lock(&RUNNING).insert("scoped-steering-test".into(), control.clone());
         let message = || SteerMessage {
             content: "continue".into(),
@@ -1159,15 +1089,20 @@ mod tests {
             id: None,
         };
         assert_eq!(
-            steer("scoped-steering-test", "foreign", message())
+            steer(&requests, "scoped-steering-test", "foreign", message())
                 .await
                 .unwrap_err()
                 .kind,
             "steer_closed"
         );
-        assert!(steer("missing", "steer-session", message()).await.is_err());
+        assert!(
+            steer(&requests, "missing", "steer-session", message())
+                .await
+                .is_err()
+        );
         assert!(
             steer(
+                &requests,
                 "scoped-steering-test",
                 "steer-session",
                 SteerMessage {
@@ -1191,16 +1126,20 @@ mod tests {
         );
         control.cancel.cancel();
         assert!(
-            steer("scoped-steering-test", "steer-session", message())
-                .await
-                .is_err()
+            steer(
+                &requests,
+                "scoped-steering-test",
+                "steer-session",
+                message()
+            )
+            .await
+            .is_err()
         );
         lock(&RUNNING).remove("scoped-steering-test");
     }
     #[tokio::test]
     async fn a_dropped_registration_refuses_pending_steering_and_releases_its_identity() {
         let control = RunningTurn {
-            session_id: "unprepared".into(),
             cancel: Cancel::default(),
             steering: super::super::steering::Steering::default(),
         };
@@ -1223,13 +1162,29 @@ mod tests {
     #[tokio::test]
     async fn an_unanswered_question_expires_as_a_refusal_and_an_answer_wins_before_it() {
         let wait = std::time::Duration::from_millis(20);
+        let request = ApprovalRequest {
+            call_id: "q".into(),
+            tool: "tracks_remove".into(),
+            args: Map::new(),
+            path: None,
+            before: None,
+            after: None,
+        };
         let (_sender, receiver) = oneshot::channel::<Decision>();
-        let expired = await_answer(receiver, wait).await;
+        let expired = match tokio::time::timeout(wait, receiver).await {
+            Ok(Ok(decision)) => decision,
+            Ok(Err(_)) => Decision::default(),
+            Err(_) => Decision::expired(),
+        };
         assert!(expired.expired && !expired.approved);
         // A question dropped unanswered is refused, never taken as approval.
         let (sender, receiver) = oneshot::channel::<Decision>();
         drop(sender);
-        let dropped = await_answer(receiver, wait).await;
+        let dropped = match tokio::time::timeout(wait, receiver).await {
+            Ok(Ok(decision)) => decision,
+            Ok(Err(_)) => Decision::default(),
+            Err(_) => Decision::expired(),
+        };
         assert!(!dropped.approved && !dropped.expired);
 
         let (sender, receiver) = oneshot::channel();
@@ -1237,44 +1192,96 @@ mod tests {
             approved: true,
             ..Decision::default()
         };
-        sender.send(approved.clone()).unwrap();
-        assert_eq!(await_answer(receiver, wait).await, approved);
+        let key = ("answered".to_owned(), "q".into());
+        let awaiting = wait_for(
+            key.clone(),
+            Waiting::Approval {
+                answer: sender,
+                request,
+            },
+            receiver,
+            Decision::expired(),
+            Decision::default(),
+            || {},
+        );
+        let answerer = async {
+            while !lock(&PENDING).contains_key(&key) {
+                tokio::task::yield_now().await;
+            }
+            answer(&key.0, &key.1, approved.clone()).unwrap();
+        };
+        let (waited, ()) = tokio::join!(awaiting, answerer);
+        assert_eq!(waited.unwrap(), approved);
         // A view cannot claim the expiry: the field is the host's.
         let parsed: Decision =
             serde_json::from_value(json!({"approved": false, "expired": true})).unwrap();
         assert!(!parsed.expired);
     }
 
+    #[tokio::test]
+    async fn a_full_question_queue_refuses_instead_of_waiting() {
+        let turn = "full-question-turn";
+        for index in 0..MAX_PENDING {
+            let (sender, _receiver) = oneshot::channel();
+            lock(&PENDING).insert(
+                (turn.into(), format!("c{index}")),
+                Waiting::Approval {
+                    answer: sender,
+                    request: ApprovalRequest {
+                        call_id: format!("c{index}"),
+                        tool: "tracks_remove".into(),
+                        args: Map::new(),
+                        path: None,
+                        before: None,
+                        after: None,
+                    },
+                },
+            );
+        }
+        let (sender, receiver) = oneshot::channel();
+        let refused = wait_for(
+            (turn.into(), "extra".into()),
+            Waiting::Approval {
+                answer: sender,
+                request: ApprovalRequest {
+                    call_id: "extra".into(),
+                    tool: "tracks_remove".into(),
+                    args: Map::new(),
+                    path: None,
+                    before: None,
+                    after: None,
+                },
+            },
+            receiver,
+            Decision::expired(),
+            Decision::default(),
+            || {},
+        )
+        .await;
+        assert!(refused.is_none(), "a full queue refuses the question");
+        lock(&PENDING).retain(|(key, _), _| key != turn);
+    }
+
     #[test]
     fn a_running_turn_keeps_its_conversation_from_being_compacted_dropped_or_deleted() {
         let id = "running-conversation-guard";
-        lock(&RUNNING).insert(
-            "running-guard-turn".into(),
-            RunningTurn {
-                session_id: id.into(),
-                cancel: Cancel::default(),
-                steering: super::super::steering::Steering::default(),
-            },
+        let requests = Requests::default();
+        let claim = requests
+            .claim_for("running-guard-turn", Some(id))
+            .unwrap()
+            .unwrap();
+        assert!(requests.session_busy(id).unwrap());
+        assert!(
+            crate::commands::refuse_while_running(&requests, id)
+                .unwrap_err()
+                .message
+                .contains("A turn is running")
         );
-        assert!(session_running(id));
-        let state = AppState::new();
-        for error in [
-            crate::commands::delete_session_for(&state, id)
-                .map(|_| ())
-                .map_err(|error| error.message)
-                .unwrap_err(),
-            crate::commands::sessions_clear_history(id.into())
-                .map(|_| ())
-                .map_err(|error| error.message)
-                .unwrap_err(),
-            crate::commands::compact_for(&state, id, None)
-                .map(|_| ())
-                .unwrap_err(),
-        ] {
-            assert!(error.contains("A turn is running"), "{error}");
-        }
-        lock(&RUNNING).remove("running-guard-turn");
-        assert!(!session_running(id));
+        requests
+            .release_owned("running-guard-turn", &claim.identity)
+            .unwrap();
+        assert!(!requests.session_busy(id).unwrap());
+        assert!(crate::commands::refuse_while_running(&requests, id).is_ok());
     }
 
     #[test]
@@ -1315,9 +1322,13 @@ mod tests {
 
     #[tokio::test]
     async fn a_steer_is_checked_named_and_answered_with_a_typed_kind() {
+        let requests = Requests::default();
+        let _claim = requests
+            .claim_for("steer-typed-turn", Some("steer-typed"))
+            .unwrap()
+            .unwrap();
         let control = RunningTurn {
-            session_id: "steer-typed".into(),
-            cancel: Cancel::default(),
+            cancel: _claim.cancel.clone(),
             steering: super::super::steering::Steering::default(),
         };
         let id = "steer-typed-turn";
@@ -1340,18 +1351,25 @@ mod tests {
             ),
             (Vec::new(), Some("has:colon")),
         ] {
-            let error = steer(id, "steer-typed", steer_with(media, steer_id))
+            let error = steer(&requests, id, "steer-typed", steer_with(media, steer_id))
                 .await
                 .unwrap_err();
             assert_eq!(error.kind, "request");
         }
         // The loop's save failure reaches the caller as a store failure, and
         // the message carries the caller's id.
-        let delivery = tokio::spawn(steer(
-            id,
-            "steer-typed",
-            steer_with(Vec::new(), Some("row-7")),
-        ));
+        let delivery = {
+            let requests = requests.clone();
+            tokio::spawn(async move {
+                steer(
+                    &requests,
+                    id,
+                    "steer-typed",
+                    steer_with(Vec::new(), Some("row-7")),
+                )
+                .await
+            })
+        };
         let pending = loop {
             let pending = control
                 .steering
@@ -1372,9 +1390,9 @@ mod tests {
         assert_eq!(delivery.await.unwrap().unwrap_err().kind, "session_save");
 
         // Cancel names the conversation too.
-        assert!(!cancel_in(id, "another-conversation"));
+        assert!(!cancel_in(&requests, id, "another-conversation"));
         assert!(!control.cancel.is_cancelled());
-        assert!(cancel_in(id, "steer-typed"));
+        assert!(cancel_in(&requests, id, "steer-typed"));
         assert!(control.cancel.is_cancelled());
         lock(&RUNNING).remove(id);
     }
@@ -1402,9 +1420,10 @@ mod tests {
             &pending[0],
             PendingQuestion::UserQuestion { request } if request.question == "Which mood?"
         ));
-        assert!(
-            questions("ask-turn").is_empty(),
-            "an approval view stays empty"
+        assert_eq!(
+            pending_questions("ask-turn").len(),
+            1,
+            "the question still waits for its own answer"
         );
         assert!(
             answer("ask-turn", "q1", Decision::default()).is_err(),
@@ -1525,8 +1544,8 @@ mod tests {
             },
         );
         let guard = AskedQuestion(key.clone());
-        assert_eq!(questions("asked-guard-turn").len(), 1);
+        assert_eq!(pending_questions("asked-guard-turn").len(), 1);
         drop(guard);
-        assert!(questions("asked-guard-turn").is_empty());
+        assert!(pending_questions("asked-guard-turn").is_empty());
     }
 }

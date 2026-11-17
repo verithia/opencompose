@@ -813,7 +813,7 @@ mod tests {
         let (_root, store, id, state, _path) = fixture();
         let requests = Requests::default();
         let _turn = requests
-            .claim("turn-1")
+            .claim_for("turn-1", None)
             .unwrap()
             .expect("the turn holds the slot");
         let outcome = recall_in(&requests, &state, &store, &id, plain(0)).unwrap();

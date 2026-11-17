@@ -627,12 +627,16 @@ pub(crate) fn retire_cache(dir: PathBuf) {
 #[tauri::command]
 pub async fn remove_project_data(
     state: State<'_, AppState>,
+    requests: State<'_, crate::ai_service::Requests>,
     kind: crate::project_data::stale::DataKind,
     key: String,
 ) -> Result<ProjectDataStorage, String> {
     let open = state.lock_inner().file_path.clone();
+    let requests = requests.inner().clone();
     run_blocking(move || {
-        crate::project_data::stale::remove(kind, &key, open.as_deref())?;
+        let busy = |id: &str| requests.session_busy(id).unwrap_or(true);
+        crate::project_data::stale::remove(kind, &key, open.as_deref(), &busy)
+            .map_err(|error| error.to_string())?;
         Ok(project_data_report())
     })
     .await

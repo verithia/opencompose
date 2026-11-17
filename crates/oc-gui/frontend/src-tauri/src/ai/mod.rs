@@ -17,6 +17,7 @@ pub mod media;
 pub mod models;
 /// OAuth provider flows.
 pub mod oauth;
+pub mod plan_update;
 pub mod prices;
 pub mod project_instructions;
 pub mod recall;

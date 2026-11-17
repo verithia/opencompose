@@ -425,7 +425,9 @@ fn route(app: &AppHandle, request: &Request, token: &str) -> (u16, String) {
                 ));
             }
         };
+        let requests = app.state::<crate::ai_service::Requests>();
         return match block_on(crate::ai::agent_loop::host::steer(
+            &requests,
             &steer.request_id,
             &steer.session_id,
             steer.message,
@@ -438,7 +440,7 @@ fn route(app: &AppHandle, request: &Request, token: &str) -> (u16, String) {
         if !authorized(&request.headers, token) {
             return (401, error_body("unauthorized"));
         }
-        return cancel_turn(&request.body);
+        return cancel_turn(app, &request.body);
     }
     if request.method == "POST" && path == "/ai/turn" {
         if !authorized(&request.headers, token) {
@@ -564,7 +566,7 @@ fn handle_ai_complete_for(body: &[u8], app: Option<&AppHandle>) -> (u16, String)
 /// `POST /ai/cancel`: stops the named turn of the named conversation. Its
 /// completed calls keep their results and its batch commits, as for any stop;
 /// the turn's own `/ai/turn` request answers with the stop facts.
-fn cancel_turn(body: &[u8]) -> (u16, String) {
+fn cancel_turn(app: &AppHandle, body: &[u8]) -> (u16, String) {
     #[derive(serde::Deserialize)]
     #[serde(deny_unknown_fields)]
     struct Cancel {
@@ -577,7 +579,8 @@ fn cancel_turn(body: &[u8]) -> (u16, String) {
             return complete_failure(AiError::new("request", error.to_string()));
         }
     };
-    if crate::ai::agent_loop::host::cancel_in(&cancel.request_id, &cancel.session_id) {
+    let requests = app.state::<crate::ai_service::Requests>();
+    if crate::ai::agent_loop::host::cancel_in(&requests, &cancel.request_id, &cancel.session_id) {
         (200, json!({"ok": true, "cancelled": true}).to_string())
     } else {
         complete_failure(AiError::new("not_running", "No matching turn is running"))
@@ -599,15 +602,12 @@ fn handle_ai_turn(app: &AppHandle, body: &[u8]) -> (u16, String) {
     };
     // Another process may have this conversation open in its panel or in a
     // turn; both processes name the same key.
-    let _session_lock = match crate::ai::sessions::Store::config().acquire_lock(&start.session_id) {
+    let _session_lock = match crate::commands::hold_turn(
+        &crate::ai::sessions::Store::config(),
+        &start.session_id,
+    ) {
         Ok(lock) => lock,
-        Err(error) if error.is_in_use() => {
-            return complete_failure(AiError::new(
-                "session_in_use",
-                "Another OpenCompose process has this conversation open.",
-            ));
-        }
-        Err(error) => return complete_failure(AiError::new("session_save", error.to_string())),
+        Err(error) => return complete_failure(AiError::from(error)),
     };
     match block_on(crate::ai::agent_loop::host::run(
         app,
@@ -846,18 +846,8 @@ async fn complete_turn(
     // process or another.
     let _session_lock = match request.saved.as_ref() {
         Some(binding) => Some(
-            crate::ai::sessions::Store::config()
-                .acquire_lock(binding.id())
-                .map_err(|error| {
-                    if error.is_in_use() {
-                        AiError::new(
-                            "session_in_use",
-                            "Another OpenCompose process has this conversation open.",
-                        )
-                    } else {
-                        AiError::new("session_save", error.to_string())
-                    }
-                })?,
+            crate::commands::hold_turn(&crate::ai::sessions::Store::config(), binding.id())
+                .map_err(AiError::from)?,
         ),
         None => None,
     };
@@ -1023,17 +1013,12 @@ fn handle_call(app: &AppHandle, body: &[u8]) -> (u16, String) {
                 Ok(caller) => caller,
                 Err(error) => return complete_failure(error),
             };
-            let lock = match crate::ai::sessions::Store::config().acquire_lock(binding.id()) {
+            let lock = match crate::commands::hold_turn(
+                &crate::ai::sessions::Store::config(),
+                binding.id(),
+            ) {
                 Ok(lock) => lock,
-                Err(error) if error.is_in_use() => {
-                    return complete_failure(AiError::new(
-                        "session_in_use",
-                        "Another OpenCompose process has this conversation open.",
-                    ));
-                }
-                Err(error) => {
-                    return complete_failure(AiError::new("session_save", error.to_string()));
-                }
+                Err(error) => return complete_failure(AiError::from(error)),
             };
             (caller, Some(lock))
         }
@@ -1430,6 +1415,7 @@ pub fn dispatch(
     caller: &str,
 ) -> Result<Value, ToolError> {
     dispatch_with_policy(app, tool, args, caller, InstallPolicy::External, false)
+        .map(|dispatched| dispatched.value)
 }
 
 /// The panel's installation authority is selected by its trusted entry point,
@@ -1439,7 +1425,7 @@ pub(crate) fn dispatch_panel(
     tool: &str,
     args: &Value,
     caller: &str,
-) -> Result<Value, String> {
+) -> Result<crate::ai::agent_loop::Dispatched, String> {
     dispatch_with_policy(app, tool, args, caller, InstallPolicy::Panel, true)
         .map_err(|error| error.message)
 }
@@ -1487,31 +1473,23 @@ fn changes_baseline(state: &AppState, tool: &str, attach_changes: bool) -> Optio
     })
 }
 
-/// Attach the typed facts between `baseline` and the current document to the
-/// tool result. The loop moves them onto the saved message row, where they are
-/// local-only; the model never reads them.
-fn attach_tool_changes(
+/// The typed facts between `baseline` and the current document. The loop puts
+/// them on the saved message row, where they are local-only; the model never
+/// reads them.
+fn tool_changes(
     state: &AppState,
     baseline: Option<&ChangeBaseline>,
     published: Option<PublishedRevision>,
-    result: &mut Value,
-) {
-    let (Some(baseline), Some(published)) = (baseline, published) else {
-        return;
-    };
+) -> Option<oc_dsl::change::ChangeSet> {
+    let (baseline, published) = (baseline?, published?);
     let inner = state.lock_inner();
     // A document that moved after the tool reported it is no longer the tool's
     // result, so its edit would be attributed to the wrong caller. A result
     // without a typed revision fails closed instead of skipping the check.
     if inner.revision != published.0 || published.0 < baseline.revision {
-        return;
+        return None;
     }
-    let changes = describe_edit(&baseline.project, &inner.project);
-    if let Some(changes) = changes.and_then(|changes| serde_json::to_value(changes).ok())
-        && let Some(object) = result.as_object_mut()
-    {
-        object.insert("changes".into(), changes);
-    }
+    describe_edit(&baseline.project, &inner.project)
 }
 
 /// The typed facts of the mutation from `before` to `after`, described from
@@ -1537,7 +1515,7 @@ fn dispatch_with_policy(
     caller: &str,
     install_policy: InstallPolicy,
     attach_changes: bool,
-) -> Result<Value, ToolError> {
+) -> Result<crate::ai::agent_loop::Dispatched, ToolError> {
     let tool = tool.replace('.', "_");
     let state = state(app);
     guard_mutation(&state, &tool, args, caller)?;
@@ -1546,7 +1524,7 @@ fn dispatch_with_policy(
     let mut result = dispatch_tool(app, &tool, args, caller, install_policy)?;
     drop(acting);
     let published = published_revision(&result);
-    attach_tool_changes(&state, baseline.as_ref(), published, &mut result);
+    let changes = tool_changes(&state, baseline.as_ref(), published);
     // A call that published a document leaves the project file stale, and the
     // file is the durable record the next process reads. A write that failed is
     // put into the result, so the model does not report a save that did not happen.
@@ -1560,7 +1538,10 @@ fn dispatch_with_policy(
             object.insert("ui_sync_warning".into(), json!(error.to_string()));
         }
     }
-    Ok(result)
+    Ok(crate::ai::agent_loop::Dispatched {
+        value: result,
+        changes,
+    })
 }
 
 /// External batches publish one committed snapshot; the panel publishes its
@@ -2928,8 +2909,7 @@ fn dispatch_tool(
                 request.parent.as_deref(),
             )
             .map_err(ToolError::from)?;
-            let _lock = crate::ai::sessions::Store::config()
-                .acquire_lock(&meta.id)
+            let _lock = crate::commands::hold_turn(&crate::ai::sessions::Store::config(), &meta.id)
                 .map_err(ToolError::from)?;
             to_value(meta)
         }
@@ -2946,7 +2926,8 @@ fn dispatch_tool(
         ToolId::SessionsDelete => {
             let request = crate::agent_tools::session::SessionsDeleteArgs::decode(args)
                 .map_err(|error| error.to_string())?;
-            crate::commands::delete_session_for(&state(app), &request.id)?;
+            let requests = app.state::<crate::ai_service::Requests>();
+            crate::commands::delete_session_for(&state(app), &requests, &request.id)?;
             Ok(json!({ "deleted": true }))
         }
         ToolId::SessionsCompact => {
@@ -2954,8 +2935,10 @@ fn dispatch_tool(
                 .map_err(|error| error.to_string())?;
             let id = request.id;
             let target_tokens = request.target_tokens;
+            let requests = app.state::<crate::ai_service::Requests>();
             to_value(crate::commands::compact_for(
                 &state(app),
+                &requests,
                 &id,
                 target_tokens,
             )?)
@@ -6271,31 +6254,26 @@ providers:
             project: before.clone(),
             revision: 0,
         };
-        let mut changed = json!({"revision": 1});
+        let changed = json!({"revision": 1});
         let published = published_revision(&changed);
-        attach_tool_changes(&state, Some(&baseline), published, &mut changed);
+        let changes = tool_changes(&state, Some(&baseline), published).unwrap();
         assert_eq!(
-            changed["changes"]["changes"],
+            serde_json::to_value(changes).unwrap()["changes"],
             json!([{"kind": "tempo", "from": 120.0, "to": 132.0}])
         );
 
         // A document that moved after the tool answered is not the tool's
         // edit, so its facts are not attributed to that row.
-        let mut stale = json!({"revision": 0});
+        let stale = json!({"revision": 0});
         let published = published_revision(&stale);
-        attach_tool_changes(&state, Some(&baseline), published, &mut stale);
-        assert!(stale.get("changes").is_none(), "{stale}");
+        assert!(tool_changes(&state, Some(&baseline), published).is_none());
 
         // A result without the typed revision fails closed instead of skipping
         // the comparison.
-        let mut untyped = json!({});
+        let untyped = json!({});
         let published = published_revision(&untyped);
-        attach_tool_changes(&state, Some(&baseline), published, &mut untyped);
-        assert!(untyped.get("changes").is_none(), "{untyped}");
-
-        let mut read = json!({"tracks": []});
-        attach_tool_changes(&state, None, None, &mut read);
-        assert!(read.get("changes").is_none(), "{read}");
+        assert!(tool_changes(&state, Some(&baseline), published).is_none());
+        assert!(tool_changes(&state, None, None).is_none());
         assert!(changes_baseline(&state, "tracks_list", true).is_none());
         assert!(changes_baseline(&state, "project_set_tempo", true).is_some());
         // Only the panel path takes the baseline, so an external adapter's

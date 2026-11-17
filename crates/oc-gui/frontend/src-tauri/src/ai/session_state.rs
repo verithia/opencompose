@@ -4,8 +4,9 @@
 
 use crate::ai::sessions::MessageKind;
 use crate::ai::sessions::message_protocol::{self, MessageMeta};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 
 /// A character a goal or plan text treats as blank. This is the owning set:
 /// Unicode White_Space plus the byte-order mark. The panel copies it exactly,
@@ -43,7 +44,7 @@ pub enum StateAuthor {
 }
 
 /// Where one plan step stands.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum PlanStatus {
     Pending,
@@ -63,8 +64,9 @@ impl PlanStatus {
 }
 
 /// One step of a plan.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct PlanItem {
+    #[schemars(length(min = 1, max = 200))]
     pub text: String,
     pub status: PlanStatus,
 }
@@ -124,53 +126,6 @@ impl SessionState {
             Self::PlanSet { items } => plan_text(items),
         }
     }
-}
-
-/// The typed changes a `plan_update` call asks for. A missing field leaves
-/// that part unchanged; `goal: null` and an empty item list clear it.
-pub fn plan_update_states(args: &Map<String, Value>) -> Result<Vec<SessionState>, String> {
-    let mut states = Vec::new();
-    if let Some(goal) = args.get("goal") {
-        let state = match goal {
-            Value::Null => SessionState::GoalCleared {
-                author: StateAuthor::Agent,
-            },
-            Value::String(text) => SessionState::GoalSet {
-                text: trim_text(text).to_owned(),
-                author: StateAuthor::Agent,
-            },
-            _ => return Err("goal must be a string or null".into()),
-        };
-        if !state.valid() {
-            return Err(format!("a goal is 1 to {} characters", MAX_GOAL_CHARS));
-        }
-        states.push(state);
-    }
-    if let Some(items) = args.get("items") {
-        let items = items
-            .as_array()
-            .ok_or("items must be a list")?
-            .iter()
-            .map(|item| {
-                let mut item: PlanItem = serde_json::from_value(item.clone())
-                    .map_err(|_| "each item needs text and status".to_owned())?;
-                item.text = trim_text(&item.text).to_owned();
-                Ok(item)
-            })
-            .collect::<Result<Vec<_>, String>>()?;
-        let state = SessionState::PlanSet { items };
-        if !state.valid() {
-            return Err(format!(
-                "a plan is at most {} items of 1 to {} characters, with at most one in progress",
-                MAX_PLAN_ITEMS, MAX_PLAN_ITEM_CHARS
-            ));
-        }
-        states.push(state);
-    }
-    if states.is_empty() {
-        return Err("plan_update needs a goal or items".into());
-    }
-    Ok(states)
 }
 
 /// The saved row a state change becomes: a user row whose metadata carries the
@@ -288,6 +243,13 @@ pub fn context_row(goal: Option<&Goal>, plan: Option<&[PlanItem]>) -> Option<Val
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tool_registry::arguments::ToolArguments;
+
+    fn decode_plan_update(value: Value) -> Result<Vec<SessionState>, String> {
+        crate::ai::plan_update::PlanUpdateArgs::decode(&value)
+            .map_err(|error| error.to_string())
+            .and_then(|args| args.into_states())
+    }
 
     fn goal_set(text: &str) -> SessionState {
         SessionState::GoalSet {
@@ -382,29 +344,28 @@ mod tests {
 
     #[test]
     fn plan_update_parses_only_bounded_typed_fields() {
-        let mut args = Map::new();
-        args.insert("goal".into(), json!("finish"));
-        args.insert("items".into(), json!([{"text": "write", "status": "done"}]));
-        let states = plan_update_states(&args).unwrap();
+        let states = decode_plan_update(json!({
+            "goal": "finish",
+            "items": [{"text": "write", "status": "done"}],
+        }))
+        .unwrap();
         assert_eq!(states.len(), 2);
         assert!(states.iter().all(SessionState::valid));
-        let mut clear = Map::new();
-        clear.insert("goal".into(), Value::Null);
-        clear.insert("items".into(), json!([]));
-        assert_eq!(plan_update_states(&clear).unwrap().len(), 2);
-        assert!(plan_update_states(&Map::new()).is_err());
-        let mut bad = Map::new();
-        bad.insert(
-            "items".into(),
-            json!([
+        assert_eq!(
+            decode_plan_update(json!({"goal": null, "items": []}))
+                .unwrap()
+                .len(),
+            2
+        );
+        assert!(decode_plan_update(json!({})).is_err());
+        assert!(
+            decode_plan_update(json!({"items": [
                 {"text":"one","status":"in_progress"},
                 {"text":"two","status":"in_progress"}
-            ]),
+            ]}))
+            .is_err()
         );
-        assert!(plan_update_states(&bad).is_err());
-        let mut unknown = Map::new();
-        unknown.insert("goal".into(), json!({ "text": "x" }));
-        assert!(plan_update_states(&unknown).is_err());
+        assert!(decode_plan_update(json!({"goal": {"text": "x"}})).is_err());
     }
 
     #[test]
@@ -429,13 +390,11 @@ mod tests {
         }
         assert!(!is_blank_text("\u{FEFF}finish\u{3000}"));
 
-        let mut args = Map::new();
-        args.insert("goal".into(), json!("\u{FEFF}finish\u{FEFF}"));
-        args.insert(
-            "items".into(),
-            json!([{"text": "\u{00A0}write\u{3000}", "status": "done"}]),
-        );
-        let states = plan_update_states(&args).unwrap();
+        let states = decode_plan_update(json!({
+            "goal": "\u{FEFF}finish\u{FEFF}",
+            "items": [{"text": "\u{00A0}write\u{3000}", "status": "done"}],
+        }))
+        .unwrap();
         assert_eq!(
             states[0],
             SessionState::GoalSet {

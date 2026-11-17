@@ -18,7 +18,6 @@ use std::{
     sync::{Arc, Mutex},
 };
 use tauri::{Emitter, State};
-use tokio::sync::oneshot;
 use zeroize::Zeroize;
 
 mod compaction;
@@ -30,16 +29,16 @@ pub(crate) use compaction::compaction_summary_with_credential;
 /// before the request is prepared, and the conversation it saves into is filled
 /// in once that is known, so a window that reloaded mid-turn can ask whether the
 /// turn it started still exists.
-#[derive(Default)]
-pub struct Requests(Mutex<HashMap<String, ActiveRequest>>);
+#[derive(Clone, Default)]
+pub struct Requests(Arc<Mutex<HashMap<String, ActiveRequest>>>);
 
 pub(crate) struct RequestClaim {
-    pub(crate) cancel_rx: oneshot::Receiver<()>,
+    pub(crate) cancel: crate::ai::agent_loop::Cancel,
     pub(crate) identity: Arc<()>,
 }
 
 struct ActiveRequest {
-    cancel: oneshot::Sender<()>,
+    cancel: crate::ai::agent_loop::Cancel,
     session_id: Option<String>,
     identity: Arc<()>,
     /// A host operation's slot; see [`Requests::claim_internal`].
@@ -60,7 +59,7 @@ pub(crate) struct HeadlessRequest<'a> {
     requests: &'a Requests,
     id: String,
     owner: Arc<()>,
-    cancel: Option<oneshot::Receiver<()>>,
+    cancel: Option<crate::ai::agent_loop::Cancel>,
 }
 
 impl HeadlessRequest<'_> {
@@ -74,7 +73,7 @@ impl HeadlessRequest<'_> {
             .ok_or_else(|| AiError::config("Request already started"))?;
         tokio::select! {
             biased;
-            _ = cancel => Err(AiError::new("cancelled", "Request cancelled")),
+            () = cancel.cancelled() => Err(AiError::new("cancelled", "Request cancelled")),
             result = operation => result,
         }
     }
@@ -92,10 +91,8 @@ impl Requests {
         id: &str,
         session: Option<&str>,
     ) -> Result<HeadlessRequest<'_>, AiError> {
-        let Some(RequestClaim {
-            cancel_rx,
-            identity,
-        }) = self.claim_for(id, session).map_err(AiError::config)?
+        let Some(RequestClaim { cancel, identity }) =
+            self.claim_for(id, session).map_err(AiError::config)?
         else {
             return Err(AiError::new("busy", "Another AI request is active"));
         };
@@ -103,15 +100,8 @@ impl Requests {
             requests: self,
             id: id.into(),
             owner: identity,
-            cancel: Some(cancel_rx),
+            cancel: Some(cancel),
         })
-    }
-
-    /// Claims the one slot. `Ok(None)` means another request is already running,
-    /// so the caller must refuse with `busy` and claim nothing.
-    #[cfg(test)]
-    pub(crate) fn claim(&self, request_id: &str) -> Result<Option<RequestClaim>, String> {
-        self.claim_for(request_id, None)
     }
 
     /// Claims the slot with the conversation it will save into, so a rebind
@@ -141,27 +131,24 @@ impl Requests {
         if !pending.is_empty() {
             return Ok(None);
         }
-        let (tx, rx) = oneshot::channel();
+        let cancel = crate::ai::agent_loop::Cancel::default();
         let identity = Arc::new(());
         pending.insert(
             request_id.to_owned(),
             ActiveRequest {
-                cancel: tx,
+                cancel: cancel.clone(),
                 session_id: session.map(str::to_owned),
                 identity: identity.clone(),
                 internal,
             },
         );
-        Ok(Some(RequestClaim {
-            cancel_rx: rx,
-            identity,
-        }))
+        Ok(Some(RequestClaim { cancel, identity }))
     }
     pub(crate) fn release_owned(
         &self,
         id: &str,
         owner: &Arc<()>,
-    ) -> Result<Option<oneshot::Sender<()>>, String> {
+    ) -> Result<Option<crate::ai::agent_loop::Cancel>, String> {
         let mut pending = self.0.lock().map_err(|_| "Request lock failed")?;
         if pending
             .get(id)
@@ -172,6 +159,7 @@ impl Requests {
             Ok(None)
         }
     }
+    #[cfg(test)]
     pub(crate) fn set_session_owned(&self, id: &str, owner: &Arc<()>, session: &str) {
         if let Ok(mut pending) = self.0.lock()
             && let Some(request) = pending.get_mut(id)
@@ -181,15 +169,21 @@ impl Requests {
         }
     }
 
-    /// Names the conversation a running request saves into. A request that has
-    /// already ended is not resurrected.
-    #[cfg(test)]
-    fn set_session(&self, request_id: &str, session_id: &str) {
-        if let Ok(mut pending) = self.0.lock()
-            && let Some(request) = pending.get_mut(request_id)
-        {
-            request.session_id = Some(session_id.to_owned());
-        }
+    /// Whether a turn is writing this conversation. It owns the question for
+    /// every surface: the panel turn, the headless turn and a saved completion.
+    pub(crate) fn session_busy(&self, session: &str) -> Result<bool, String> {
+        let pending = self.0.lock().map_err(|_| "Request lock failed")?;
+        Ok(pending
+            .values()
+            .any(|request| request.session_id.as_deref() == Some(session)))
+    }
+
+    /// Whether `request_id` is the turn writing `session`.
+    pub(crate) fn session_is(&self, request_id: &str, session: &str) -> Result<bool, String> {
+        let pending = self.0.lock().map_err(|_| "Request lock failed")?;
+        Ok(pending
+            .get(request_id)
+            .is_some_and(|request| request.session_id.as_deref() == Some(session)))
     }
 
     /// Run `bind` unless a request already holds `session`. The request lock
@@ -222,9 +216,21 @@ impl Requests {
             }))
     }
 
-    /// Ends a request, returning its cancel handle so the caller can send it.
+    /// Stops a running turn. `false` for an unknown or host-owned slot.
+    pub(crate) fn cancel(&self, request_id: &str) -> Result<bool, String> {
+        let pending = self.0.lock().map_err(|_| "Request lock failed")?;
+        match pending.get(request_id) {
+            Some(request) if !request.internal => {
+                request.cancel.cancel();
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+
+    /// Ends a request, returning its cancel handle so the caller can stop it.
     /// A host operation's slot is released only by its owner.
-    fn release(&self, request_id: &str) -> Result<Option<oneshot::Sender<()>>, String> {
+    fn release(&self, request_id: &str) -> Result<Option<crate::ai::agent_loop::Cancel>, String> {
         let mut pending = self.0.lock().map_err(|_| "Request lock failed")?;
         if pending
             .get(request_id)
@@ -239,13 +245,13 @@ impl Requests {
 async fn cancellable_request<T>(
     requests: &Requests,
     id: &str,
-    cancel: oneshot::Receiver<()>,
+    cancel: crate::ai::agent_loop::Cancel,
     owner: Arc<()>,
     request: impl Future<Output = Result<T, AiError>>,
 ) -> Result<T, AiError> {
     let result = tokio::select! {
         biased;
-        _ = cancel => Err(AiError::new("cancelled", "Request cancelled")),
+        () = cancel.cancelled() => Err(AiError::new("cancelled", "Request cancelled")),
         result = request => result,
     };
     if result.is_err() {
@@ -298,6 +304,19 @@ impl AiError {
 
     pub fn config(message: impl Into<String>) -> Self {
         Self::new("config", message)
+    }
+}
+
+impl From<crate::process_lock::LockError> for AiError {
+    fn from(error: crate::process_lock::LockError) -> Self {
+        if error.is_in_use() {
+            Self::new(
+                "session_in_use",
+                "Another OpenCompose process has this conversation open.",
+            )
+        } else {
+            Self::new("session_save", error.to_string())
+        }
     }
 }
 
@@ -1234,7 +1253,7 @@ pub async fn ai_chat(
     let p = provider(&provider_id).map_err(AiError::config)?;
     let stats = ai::timing::TurnStatsHandle::new(&p.id, &p.model, p.wire());
     let Some(RequestClaim {
-        cancel_rx: rx,
+        cancel,
         identity: owner,
     }) = requests
         .claim_for(&request_id, session_id.as_deref())
@@ -1245,17 +1264,11 @@ pub async fn ai_chat(
     // The conversation stays this process's for the turn's duration. The panel
     // already holds it, so a panel turn re-acquires in place.
     let _session_lock = match session_id.as_deref() {
-        Some(id) => match ai::sessions::Store::config().acquire_lock(id) {
+        Some(id) => match crate::commands::hold_turn(&ai::sessions::Store::config(), id) {
             Ok(lock) => Some(lock),
             Err(error) => {
                 let _ = requests.release_owned(&request_id, &owner);
-                if error.is_in_use() {
-                    return Err(AiError::new(
-                        "session_in_use",
-                        "Another OpenCompose process has this conversation open.",
-                    ));
-                }
-                return Err(AiError::new("session_save", error.to_string()));
+                return Err(AiError::from(error));
             }
         },
         None => None,
@@ -1267,10 +1280,7 @@ pub async fn ai_chat(
             &request_id,
             ai::session_usage::Purpose::Chat,
         ) {
-            Ok(lease) => {
-                stats.set_accounting(lease);
-                requests.set_session_owned(&request_id, &owner, id);
-            }
+            Ok(lease) => stats.set_accounting(lease),
             Err(error) => {
                 let _ = requests.release_owned(&request_id, &owner);
                 return Err(AiError::new(error.code.as_str(), error.message));
@@ -1284,15 +1294,6 @@ pub async fn ai_chat(
     } else {
         0
     };
-    let cancel = ai::agent_loop::Cancel::default();
-    let (forward, waiting) = oneshot::channel();
-    let preparation_cancel = cancel.clone();
-    tauri::async_runtime::spawn(async move {
-        if rx.await.is_ok() {
-            preparation_cancel.cancel();
-            let _ = forward.send(());
-        }
-    });
     let preparation = match session_id.as_ref() {
         Some(session_id) => {
             let incarnation = stats
@@ -1306,6 +1307,7 @@ pub async fn ai_chat(
                 &messages,
                 crate::commands::SavedTurnBinding {
                     id: session_id,
+                    request_id: Some(&request_id),
                     incarnation: &incarnation,
                     project: None,
                     tool_tokens,
@@ -1347,39 +1349,6 @@ pub async fn ai_chat(
         &requests,
         &request_id,
     )?;
-    if let Some(turn) = prepared.as_ref()
-        && let Some(compaction) = turn.compacted.as_ref()
-    {
-        let _ = app.emit(
-            crate::commands::AUTO_SESSION_EVENT,
-            crate::commands::compaction_event(turn, compaction, &p),
-        );
-    }
-    // A turn that made room in the audition archive says what it removed: the
-    // clips and renders are files the operator could otherwise miss.
-    if let Some(turn) = prepared.as_ref()
-        && !turn.archive_evicted.is_empty()
-    {
-        let _ = app.emit(
-            crate::commands::AUTO_SESSION_EVENT,
-            crate::commands::archive_event(turn),
-        );
-    }
-    // The turn now names the conversation its reply will be saved into, so a
-    // window that reloads can ask whether this turn is still running.
-    if let Some(turn) = prepared.as_ref() {
-        requests.set_session_owned(&request_id, &owner, &turn.session_id);
-        if !turn.saved_auditions.is_empty() {
-            let _ = app.emit(
-                crate::commands::AUTO_SESSION_EVENT,
-                json!({
-                    "request_id": request_id,
-                    "session_id": turn.session_id,
-                    "saved_auditions": turn.saved_auditions,
-                }),
-            );
-        }
-    }
     let outbound = match &prepared {
         Some(turn) => turn.messages.clone(),
         None => messages,
@@ -1388,7 +1357,7 @@ pub async fn ai_chat(
     let mut result = cancellable_request(
         &requests,
         &request_id,
-        waiting,
+        cancel,
         owner.clone(),
         send(
             p,
@@ -1513,8 +1482,9 @@ pub async fn ai_turn_steer(
     request_id: String,
     session_id: String,
     message: ai::agent_loop::host::SteerMessage,
+    requests: State<'_, Requests>,
 ) -> Result<(), AiError> {
-    ai::agent_loop::host::steer(&request_id, &session_id, message).await
+    ai::agent_loop::host::steer(&requests, &request_id, &session_id, message).await
 }
 
 /// Answers the question a running turn asked about one call.
@@ -1523,7 +1493,7 @@ pub fn ai_turn_answer(
     request_id: String,
     call_id: String,
     decision: ai::agent_loop::Decision,
-) -> Result<(), String> {
+) -> Result<(), ai::agent_loop::host::AnswerError> {
     ai::agent_loop::host::answer(&request_id, &call_id, decision)
 }
 
@@ -1597,12 +1567,7 @@ fn full_tool_result(
 pub fn ai_cancel(request_id: String, requests: State<Requests>) -> Result<(), String> {
     // An agent turn keeps its slot until it has closed its round and committed
     // its batch, so nothing else starts, reverts or recovers under it.
-    if ai::agent_loop::host::cancel(&request_id) {
-        return Ok(());
-    }
-    if let Some(cancel) = requests.release(&request_id)? {
-        let _ = cancel.send(());
-    }
+    requests.cancel(&request_id)?;
     Ok(())
 }
 
@@ -1803,20 +1768,20 @@ mod tests {
     fn accounting_request_owner_rejects_late_cleanup_after_uuid_reuse() {
         let requests = Requests::default();
         let RequestClaim {
-            cancel_rx: mut first,
+            cancel: first,
             identity: old,
-        } = requests.claim("same").unwrap().unwrap();
-        requests.release("same").unwrap().unwrap().send(()).unwrap();
+        } = requests.claim_for("same", None).unwrap().unwrap();
+        requests.release("same").unwrap().unwrap().cancel();
         let RequestClaim {
-            cancel_rx: mut second,
+            cancel: second,
             identity: current,
-        } = requests.claim("same").unwrap().unwrap();
+        } = requests.claim_for("same", None).unwrap().unwrap();
         // A resumes only after cancellation and B's admission completed.
-        assert_eq!(first.try_recv(), Ok(()));
+        assert!(first.is_cancelled());
         assert!(!Arc::ptr_eq(&old, &current));
         requests.set_session_owned("same", &old, "old-session");
         assert!(requests.release_owned("same", &old).unwrap().is_none());
-        assert_eq!(second.try_recv(), Err(oneshot::error::TryRecvError::Empty));
+        assert!(!second.is_cancelled());
         requests.set_session_owned("same", &current, "current-session");
         let active = requests.active().unwrap().unwrap();
         assert_eq!(active.session_id.as_deref(), Some("current-session"));
@@ -1867,7 +1832,7 @@ mod tests {
     #[test]
     fn audition_persistence_failure_releases_request_and_never_falls_back() {
         let requests = Requests::default();
-        let _receiver = requests.claim("listen").unwrap().unwrap();
+        let _receiver = requests.claim_for("listen", None).unwrap().unwrap();
         let result = saved_audio_or_fallback::<()>(
             Err("disk full".into()),
             &[json!({"role":"user", "input_audio":{"data":"fixture"}})],
@@ -1875,7 +1840,7 @@ mod tests {
             "listen",
         );
         assert!(result.is_err());
-        assert!(requests.claim("listen").unwrap().is_some());
+        assert!(requests.claim_for("listen", None).unwrap().is_some());
         assert!(
             saved_audio_or_fallback::<()>(
                 Err("disk full".into()),
@@ -1905,9 +1870,9 @@ mod tests {
         });
         let requests = Requests::default();
         let RequestClaim {
-            cancel_rx: rx,
+            cancel: rx,
             identity: owner,
-        } = requests.claim("first").unwrap().unwrap();
+        } = requests.claim_for("first", None).unwrap().unwrap();
         let error = cancellable_request(
             &requests,
             "first",
@@ -1949,17 +1914,12 @@ mod tests {
         let late = pending.clone();
         let requests = Requests::default();
         let RequestClaim {
-            cancel_rx: rx,
+            cancel: rx,
             identity: owner,
-        } = requests.claim("listen").unwrap().unwrap();
+        } = requests.claim_for("listen", None).unwrap().unwrap();
         let sent = Arc::new(AtomicBool::new(false));
         let sent_request = sent.clone();
-        requests
-            .release("listen")
-            .unwrap()
-            .unwrap()
-            .send(())
-            .unwrap();
+        requests.release("listen").unwrap().unwrap().cancel();
         let error = cancellable_request(&requests, "listen", rx, owner, async move {
             wait_for_key(pending, Duration::from_secs(1)).await?;
             sent_request.store(true, Ordering::SeqCst);
@@ -1968,7 +1928,7 @@ mod tests {
         .await
         .unwrap_err();
         assert_eq!(error.kind, "cancelled");
-        assert!(requests.claim("next").unwrap().is_some());
+        assert!(requests.claim_for("next", None).unwrap().is_some());
         release.send(()).unwrap();
         assert!(
             wait_for_key(late, Duration::from_secs(1))
@@ -3148,33 +3108,26 @@ mod key_read_tests {
         let requests = Requests::default();
         assert_eq!(requests.active().unwrap(), None);
 
-        let RequestClaim {
-            cancel_rx: mut cancelled,
-            ..
-        } = requests.claim("r1").unwrap().expect("the slot is free");
+        let RequestClaim { cancel, .. } = requests
+            .claim_for("r1", Some("s1"))
+            .unwrap()
+            .expect("the slot is free");
         assert_eq!(
             requests.active().unwrap(),
             Some(ActiveTurn {
                 request_id: "r1".into(),
-                session_id: None,
+                session_id: Some("s1".into()),
             })
         );
         // A second request finds the slot taken, which is the panel's one turn.
-        assert!(requests.claim("r2").unwrap().is_none());
+        assert!(requests.claim_for("r2", None).unwrap().is_none());
+        assert!(requests.session_busy("s1").unwrap());
 
-        requests.set_session("r1", "s1");
-        assert_eq!(
-            requests.active().unwrap().unwrap().session_id.as_deref(),
-            Some("s1")
-        );
-
-        let cancel = requests.release("r1").unwrap().expect("the turn runs");
-        cancel.send(()).unwrap();
-        assert_eq!(cancelled.try_recv(), Ok(()));
+        let running = requests.release("r1").unwrap().expect("the turn runs");
+        running.cancel();
+        assert!(cancel.is_cancelled());
         assert_eq!(requests.active().unwrap(), None);
-        // A request that ended before it named a conversation stays gone.
-        requests.set_session("r1", "s2");
-        assert_eq!(requests.active().unwrap(), None);
+        assert!(!requests.session_busy("s1").unwrap());
     }
 
     #[test]
@@ -3407,10 +3360,10 @@ mod headless_request_tests {
             requests.active().unwrap().unwrap().session_id.as_deref(),
             Some("conversation")
         );
-        assert!(requests.claim("panel").unwrap().is_none());
+        assert!(requests.claim_for("panel", None).unwrap().is_none());
         tauri::async_runtime::block_on(guard.run(async { Ok::<_, AiError>(()) })).unwrap();
         assert!(
-            requests.claim("panel").unwrap().is_none(),
+            requests.claim_for("panel", None).unwrap().is_none(),
             "reply persistence still owns the slot"
         );
         drop(guard);
@@ -3423,12 +3376,7 @@ mod headless_request_tests {
         let mut guard = requests
             .claim_headless("same-id", Some("conversation"))
             .unwrap();
-        requests
-            .release("same-id")
-            .unwrap()
-            .unwrap()
-            .send(())
-            .unwrap();
+        requests.release("same-id").unwrap().unwrap().cancel();
         let replacement = requests
             .claim_headless("same-id", Some("next-conversation"))
             .unwrap();

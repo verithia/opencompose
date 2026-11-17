@@ -53,18 +53,8 @@ impl Binding {
         }
         // The project path on the request must name the file the conversation
         // is bound to, not merely a file in the same workspace.
-        let status = sessions::binding_status(&meta, Some(&self.project));
-        if !status.matches {
-            let mismatch = sessions::BindingMismatch {
-                bound: status.bound.unwrap_or_default(),
-                open: status.open.unwrap_or_default(),
-            };
-            let mut error = AiError::new("session_binding", mismatch.message());
-            error.detail = Some(crate::ai_service::AiErrorDetail::BindingMismatch {
-                bound: mismatch.bound,
-                open: mismatch.open,
-            });
-            return Err(error);
+        if let Some(mismatch) = sessions::binding_status(&meta, Some(&self.project)).mismatch() {
+            return Err(AiError::from(mismatch));
         }
         Ok(())
     }
@@ -92,9 +82,6 @@ impl SavedTurn {
         request_id: &str,
         tools: bool,
     ) -> Result<Self, AiError> {
-        binding
-            .validate_project(app.state::<AppState>().lock_inner().file_path.as_deref())
-            .map_err(|error| AiError::new("session_binding", error))?;
         // The same ownership check as a bound tool call, so a wrong binding is
         // the caller's to fix and a later preparation failure is the store's.
         binding.validate_session(&sessions::Store::config())?;
@@ -113,6 +100,7 @@ impl SavedTurn {
             messages,
             commands::SavedTurnBinding {
                 id: &binding.id,
+                request_id: Some(request_id),
                 incarnation: &incarnation,
                 project: Some(&binding.project),
                 // The panel surface `/ai/complete` offers when it sends tools,

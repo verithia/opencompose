@@ -2094,7 +2094,7 @@ mod history_step_tests {
     fn the_persons_undo_waits_while_a_turn_runs_without_a_batch() {
         let state = edited();
         let requests = crate::ai_service::Requests::default();
-        let _claim = requests.claim("turn-1").unwrap().unwrap();
+        let _claim = requests.claim_for("turn-1", None).unwrap().unwrap();
         let step = history_step(&state, &requests, StepKind::Undo).unwrap();
         assert_eq!(refused(step), Some(HistoryRefusal::AgentEditing));
         assert_eq!(state.lock_inner().project.properties.tempo, 133.0);

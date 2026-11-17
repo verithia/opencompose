@@ -107,6 +107,7 @@ pub(super) fn read(dir: &Path, hash: &str) -> Result<Option<String>, String> {
 
 /// The call a saved result row answers: a native tool row by its
 /// `tool_call_id`, a text-protocol result by the call id in its metadata.
+#[cfg(test)]
 fn answered(row: &Value) -> Option<&str> {
     row["tool_call_id"]
         .as_str()
@@ -118,6 +119,7 @@ fn answered(row: &Value) -> Option<&str> {
 /// A matching row without a stored hash answers "not stored" instead of falling
 /// back to an older result, and turns a compaction or recall cut off the view
 /// no longer answer at all.
+#[cfg(test)]
 pub(super) fn newest_for(dir: &Path, call: &str) -> Result<Option<String>, String> {
     let (view, _) = super::read_view(dir)?;
     let mut found = None;

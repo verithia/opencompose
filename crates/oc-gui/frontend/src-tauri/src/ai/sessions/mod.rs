@@ -1049,6 +1049,7 @@ impl Store {
     /// The full result behind the newest saved preview of `call` in this
     /// session's current view, read from disk; `None` when no saved row keeps
     /// one.
+    #[cfg(test)]
     pub fn tool_result(&self, id: &str, call: &str) -> Result<Option<String>, String> {
         if call.is_empty() || call.len() > 256 {
             return Ok(None);

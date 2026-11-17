@@ -199,7 +199,12 @@ pub fn inventory(now: SystemTime) -> Vec<DataItem> {
 
 /// Remove one item. Only a gone item may go this way, and never the open
 /// project's: its data is in use.
-pub fn remove(kind: DataKind, key: &str, open: Option<&Path>) -> Result<u64, DataRemoveError> {
+pub fn remove(
+    kind: DataKind,
+    key: &str,
+    open: Option<&Path>,
+    busy: &dyn Fn(&str) -> bool,
+) -> Result<u64, DataRemoveError> {
     let found = inventory(SystemTime::now())
         .into_iter()
         .find(|item| item.kind == kind && item.key == key)
@@ -212,7 +217,7 @@ pub fn remove(kind: DataKind, key: &str, open: Option<&Path>) -> Result<u64, Dat
     {
         return Err(DataRemoveError::Open);
     }
-    remove_item(&found)?;
+    remove_item(&found, busy)?;
     Ok(found.bytes)
 }
 
@@ -238,7 +243,7 @@ fn project_guard(
     }
 }
 
-fn remove_item(item: &DataItem) -> Result<(), DataRemoveError> {
+fn remove_item(item: &DataItem, busy: &dyn Fn(&str) -> bool) -> Result<(), DataRemoveError> {
     let _lock = project_guard(item)?;
     match item.kind {
         DataKind::History => {
@@ -267,7 +272,7 @@ fn remove_item(item: &DataItem) -> Result<(), DataRemoveError> {
         }
         DataKind::Conversations => sessions::Store::config()
             .remove_workspace_guarded(&item.key, &|id| {
-                if crate::ai::agent_loop::host::session_running(id) {
+                if busy(id) {
                     Err(sessions::SessionError::new(
                         sessions::SessionErrorKind::Busy,
                         "A turn is running in one of these conversations.",
@@ -282,7 +287,7 @@ fn remove_item(item: &DataItem) -> Result<(), DataRemoveError> {
 }
 
 /// Remove every due item except the open project's. Answers what went.
-pub fn sweep(now: SystemTime, open: Option<&Path>) -> Vec<DataItem> {
+pub fn sweep(now: SystemTime, open: Option<&Path>, busy: &dyn Fn(&str) -> bool) -> Vec<DataItem> {
     let open = open.map(super::canonical_path);
     let mut removed = Vec::new();
     for item in inventory(now) {
@@ -294,7 +299,7 @@ pub fn sweep(now: SystemTime, open: Option<&Path>) -> Vec<DataItem> {
         {
             continue;
         }
-        match remove_item(&item) {
+        match remove_item(&item, busy) {
             Ok(()) => removed.push(item),
             Err(error) => log::warn!("[project data] stale {:?} {}: {error}", item.kind, item.key),
         }
@@ -314,7 +319,14 @@ pub fn spawn(app: tauri::AppHandle) {
             let open = app
                 .try_state::<crate::state::AppState>()
                 .and_then(|state| state.lock_inner().file_path.clone());
-            let removed = sweep(SystemTime::now(), open.as_deref());
+            let requests = app.try_state::<crate::ai_service::Requests>();
+            let busy = |id: &str| {
+                requests
+                    .as_ref()
+                    .and_then(|requests| requests.session_busy(id).ok())
+                    .unwrap_or(true)
+            };
+            let removed = sweep(SystemTime::now(), open.as_deref(), &busy);
             if !removed.is_empty() {
                 let bytes: u64 = removed.iter().map(|item| item.bytes).sum();
                 log::info!(
@@ -399,9 +411,9 @@ mod tests {
             gone_items.iter().all(|item| !item.due),
             "the wait has not passed"
         );
-        assert!(sweep(now, None).is_empty());
+        assert!(sweep(now, None, &|_| false).is_empty());
 
-        let removed = sweep(now + STALE_AFTER + DAY, None);
+        let removed = sweep(now + STALE_AFTER + DAY, None, &|_| false);
         assert_eq!(removed.len(), 2, "{removed:?}");
         let left = inventory(now);
         assert!(left.iter().all(|item| !item.gone));
@@ -416,11 +428,11 @@ mod tests {
         let open = roots.folder.join("open.ocp");
         history_for(&open);
         let later = SystemTime::now() + STALE_AFTER + DAY;
-        assert!(sweep(later, Some(&open)).is_empty());
+        assert!(sweep(later, Some(&open), &|_| false).is_empty());
         assert!(journal::dir_for(&unmounted).exists());
         assert!(journal::dir_for(&open).exists());
         assert!(
-            sweep(later, None).len() == 1,
+            sweep(later, None, &|_| false).len() == 1,
             "the open project only waits while open"
         );
     }
@@ -435,9 +447,12 @@ mod tests {
             .create(Some(&roots.folder), Some(&project), Some("Bass"), None)
             .unwrap();
         let later = SystemTime::now() + STALE_AFTER + DAY;
-        assert!(sweep(later, None).is_empty(), "the folder is there");
+        assert!(
+            sweep(later, None, &|_| false).is_empty(),
+            "the folder is there"
+        );
         std::fs::remove_dir_all(&roots.folder).unwrap();
-        let removed = sweep(later, None);
+        let removed = sweep(later, None, &|_| false);
         assert_eq!(removed.len(), 1);
         assert_eq!(removed[0].kind, DataKind::Conversations);
         assert!(store.find(&meta.id).is_err());
@@ -450,13 +465,13 @@ mod tests {
         std::fs::write(&project, "x").unwrap();
         history_for(&project);
         let key = super::super::path_key(&project);
-        assert!(remove(DataKind::History, &key, None).is_err());
+        assert!(remove(DataKind::History, &key, None, &|_| false).is_err());
         std::fs::remove_file(&project).unwrap();
         assert!(
-            remove(DataKind::History, &key, Some(&project)).is_err(),
+            remove(DataKind::History, &key, Some(&project), &|_| false).is_err(),
             "it is open"
         );
-        assert!(remove(DataKind::History, &key, None).is_ok());
+        assert!(remove(DataKind::History, &key, None, &|_| false).is_ok());
         assert!(!journal::dir_for(&project).exists());
     }
 
@@ -477,11 +492,11 @@ mod tests {
         .unwrap();
 
         let later = SystemTime::now() + STALE_AFTER + DAY;
-        assert!(sweep(later, None).is_empty());
+        assert!(sweep(later, None, &|_| false).is_empty());
         assert!(journal::dir_for(&gone).exists());
 
         drop(foreign);
-        assert_eq!(sweep(later, None).len(), 1);
+        assert_eq!(sweep(later, None, &|_| false).len(), 1);
         assert!(!journal::dir_for(&gone).exists());
     }
 }

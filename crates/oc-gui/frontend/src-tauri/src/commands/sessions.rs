@@ -27,24 +27,35 @@ fn store() -> Store {
     Store::config()
 }
 
-fn lock_refusal(error: LockError) -> SessionError {
-    if error.is_in_use() {
-        SessionError::new(
-            SessionErrorKind::InUse,
-            "Another OpenCompose process has this conversation open.",
-        )
-    } else {
-        SessionError::new(
-            SessionErrorKind::SessionStore,
-            format!("Cannot lock the conversation: {error}"),
-        )
+fn store_for(id: &str) -> Result<(std::path::PathBuf, SessionMeta), String> {
+    store().find(id)
+}
+
+impl From<LockError> for SessionError {
+    fn from(error: LockError) -> Self {
+        if error.is_in_use() {
+            Self::new(
+                SessionErrorKind::InUse,
+                "Another OpenCompose process has this conversation open.",
+            )
+        } else {
+            Self::new(
+                SessionErrorKind::SessionStore,
+                format!("Cannot lock the conversation: {error}"),
+            )
+        }
     }
+}
+
+/// Take the process lock a turn holds on a conversation for as long as it runs.
+pub(crate) fn hold_turn(store: &Store, id: &str) -> Result<ProcessLock, LockError> {
+    store.acquire_lock(id)
 }
 
 /// Take the lock a conversation is opened under. The caller keeps the guard for
 /// as long as the conversation is open.
 fn acquire_session_lock(store: &Store, id: &str) -> Result<ProcessLock, SessionError> {
-    store.acquire_lock(id).map_err(lock_refusal)
+    hold_turn(store, id).map_err(SessionError::from)
 }
 
 /// Make `id` the panel's open conversation under a fresh hold. A conversation
@@ -310,17 +321,22 @@ pub fn sessions_page(
 /// collect assets no remaining message refers to. A conversation with fewer
 /// than three compactions keeps everything.
 #[tauri::command]
-pub fn sessions_clear_history(id: String) -> Result<sessions::ClearReport, SessionError> {
+pub fn sessions_clear_history(
+    id: String,
+    requests: State<crate::ai_service::Requests>,
+) -> Result<sessions::ClearReport, SessionError> {
     let store = store();
     let _lock = acquire_session_lock(&store, &id)?;
-    store.clear_old_history_guarded(&id, &|| refuse_while_running(&id))
+    store.clear_old_history_guarded(&id, &|| refuse_while_running(&requests, &id))
 }
 
 /// Drop old history for every conversation, skipping the ones a turn is
 /// writing. Preferences offers this as one action with one confirmation.
 #[tauri::command]
-pub fn sessions_clear_all_history() -> Result<sessions::ClearReport, String> {
-    store().clear_all_old_history(&|id| crate::ai::agent_loop::host::session_running(id))
+pub fn sessions_clear_all_history(
+    requests: State<crate::ai_service::Requests>,
+) -> Result<sessions::ClearReport, String> {
+    store().clear_all_old_history(&|id| requests.session_busy(id).unwrap_or(true))
 }
 
 /// A conversation a turn is writing keeps its shape until the turn ends.
@@ -332,8 +348,11 @@ pub fn sessions_clear_all_history() -> Result<sessions::ClearReport, String> {
 /// the command is refused, or the turn's preparation waits for the lock and
 /// then reads the conversation the command left; no turn writes into a
 /// conversation reshaped between a check and the command's write.
-fn refuse_while_running(id: &str) -> Result<(), SessionError> {
-    if crate::ai::agent_loop::host::session_running(id) {
+pub(crate) fn refuse_while_running(
+    requests: &crate::ai_service::Requests,
+    id: &str,
+) -> Result<(), SessionError> {
+    if requests.session_busy(id).unwrap_or(true) {
         return Err(SessionError::new(
             SessionErrorKind::Busy,
             "A turn is running in this conversation; stop it or wait for it to finish.",
@@ -384,24 +403,36 @@ pub fn sessions_set_permission(
 /// one typed row, so it rewinds with the conversation; a change during an open
 /// round waits for the next admitted turn.
 #[tauri::command]
-pub fn sessions_set_goal(id: String, text: Option<String>) -> Result<SessionMeta, String> {
-    let running = crate::ai::agent_loop::host::session_running(&id);
+pub fn sessions_set_goal(
+    id: String,
+    text: Option<String>,
+    requests: State<crate::ai_service::Requests>,
+) -> Result<SessionMeta, String> {
+    let running = requests.session_busy(&id).unwrap_or(true);
     store().set_goal(&id, text.as_deref(), running)
 }
 
 #[tauri::command]
 /// Delete one saved session. The conversation's lock is required, so another
 /// process cannot delete a conversation the panel has open.
-pub fn sessions_delete(id: String, state: State<AppState>) -> Result<(), SessionError> {
-    delete_session_for(&state, &id)
+pub fn sessions_delete(
+    id: String,
+    state: State<AppState>,
+    requests: State<crate::ai_service::Requests>,
+) -> Result<(), SessionError> {
+    delete_session_for(&state, &requests, &id)
 }
 
 /// Delete a conversation after taking its lock; also releases the panel's hold
 /// when the deleted conversation is the open one.
-pub fn delete_session_for(state: &AppState, id: &str) -> Result<(), SessionError> {
+pub fn delete_session_for(
+    state: &AppState,
+    requests: &crate::ai_service::Requests,
+    id: &str,
+) -> Result<(), SessionError> {
     let store = store();
     let _lock = acquire_session_lock(&store, id)?;
-    store.delete_guarded(id, &|| refuse_while_running(id))?;
+    store.delete_guarded(id, &|| refuse_while_running(requests, id))?;
     release_open_session(state, id);
     Ok(())
 }
@@ -414,21 +445,24 @@ pub fn sessions_compact(
     id: String,
     target_tokens: Option<u64>,
     state: State<AppState>,
+    requests: State<crate::ai_service::Requests>,
 ) -> Result<Compaction, SessionError> {
-    compact_checked(&state, &id, target_tokens)
+    compact_checked(&state, &requests, &id, target_tokens)
 }
 
 /// Compact a session to a target token budget.
 pub fn compact_for(
     state: &AppState,
+    requests: &crate::ai_service::Requests,
     id: &str,
     target_tokens: Option<u64>,
 ) -> Result<Compaction, String> {
-    Ok(compact_checked(state, id, target_tokens)?)
+    Ok(compact_checked(state, requests, id, target_tokens)?)
 }
 
 fn compact_checked(
     state: &AppState,
+    requests: &crate::ai_service::Requests,
     id: &str,
     target_tokens: Option<u64>,
 ) -> Result<Compaction, SessionError> {
@@ -436,7 +470,9 @@ fn compact_checked(
         let inner = state.lock_inner();
         facts(&inner)
     };
-    store().compact_requested(id, target_tokens, &facts, &|| refuse_while_running(id))
+    store().compact_requested(id, target_tokens, &facts, &|| {
+        refuse_while_running(requests, id)
+    })
 }
 
 /// One model turn's saved-view decision.
@@ -453,6 +489,8 @@ pub struct PreparedTurn {
 /// Identity captured by the request owner, not the active panel selection.
 pub struct SavedTurnBinding<'a> {
     pub id: &'a str,
+    /// The client's own id for this turn, carried by the audition event.
+    pub request_id: Option<&'a str>,
     pub incarnation: &'a str,
     pub project: Option<&'a Path>,
     /// Tokens of the tool list the request carries beside its messages
@@ -518,6 +556,10 @@ impl From<String> for PrepareTurnError {
     }
 }
 
+fn background_failure(error: impl std::fmt::Display) -> PrepareTurnError {
+    PrepareTurnError::Store(format!("background task failed: {error}"))
+}
+
 impl From<PrepareTurnError> for AiError {
     fn from(error: PrepareTurnError) -> Self {
         let detail = match &error {
@@ -529,6 +571,27 @@ impl From<PrepareTurnError> for AiError {
         };
         let mut error = AiError::new(error.kind(), error.to_string());
         error.detail = detail;
+        error
+    }
+}
+
+impl BindingStatus {
+    /// The typed mismatch, when the conversation and the open project differ.
+    pub fn mismatch(&self) -> Option<BindingMismatch> {
+        (!self.matches).then(|| BindingMismatch {
+            bound: self.bound.clone().unwrap_or_default(),
+            open: self.open.clone().unwrap_or_default(),
+        })
+    }
+}
+
+impl From<BindingMismatch> for AiError {
+    fn from(mismatch: BindingMismatch) -> Self {
+        let mut error = AiError::new("session_binding", mismatch.message());
+        error.detail = Some(AiErrorDetail::BindingMismatch {
+            bound: mismatch.bound,
+            open: mismatch.open,
+        });
         error
     }
 }
@@ -658,7 +721,10 @@ where
     let state = app.state::<AppState>();
     let session_id = binding.id;
     let store = store();
-    let (_, meta) = store.find(session_id)?;
+    let find_id = session_id.to_owned();
+    let (_, meta) = tauri::async_runtime::spawn_blocking(move || store_for(&find_id))
+        .await
+        .map_err(background_failure)??;
     let (project, place, facts, source, outside, history) = {
         let inner = state.lock_inner();
         if let Some(expected) = binding.project {
@@ -703,32 +769,43 @@ where
     let prompt_tokens = crate::ai::compaction_prompt::prompt_tokens();
     let tokens = wire::TokenBudget::new(context, binding.tool_tokens)
         .map(|budget| budget.for_compaction(max_output, prompt_tokens));
-    let mut prepared = store
-        .prepare_admitted(
-            &session_id,
-            incoming,
-            project.as_deref(),
-            crate::ai::sessions::PrepareContext {
-                snapshot: Some(&source),
-                history: history.as_ref(),
-                overhead,
-                context_length: context,
-                max_output,
-                prompt_tokens,
-                facts: &facts,
-                provider: &provider.id,
-                model: &provider.model,
-                outside,
-                surface: binding.surface,
-            },
-            Some(binding.incarnation),
-            |planned| fitted_request(&system, planned, tokens).map(|_| ()),
-        )
-        .map_err(|failure| match failure {
-            PrepareFailure::Binding(mismatch) => PrepareTurnError::Binding(mismatch),
-            PrepareFailure::Admitted(error) => error,
-            PrepareFailure::Store(message) => PrepareTurnError::Store(message),
-        })?;
+    let (store_id, store_incoming, store_project) =
+        (session_id.clone(), incoming.to_vec(), project.clone());
+    let (store_source, store_history, store_facts) = (source, history.clone(), facts.clone());
+    let (store_provider, store_model) = (provider.id.clone(), provider.model.clone());
+    let (store_outside, store_surface) = (outside, binding.surface.clone());
+    let store_incarnation = binding.incarnation.to_owned();
+    let admit_system = system.clone();
+    let mut prepared = tauri::async_runtime::spawn_blocking(move || {
+        Store::config()
+            .prepare_admitted(
+                &store_id,
+                &store_incoming,
+                store_project.as_deref(),
+                crate::ai::sessions::PrepareContext {
+                    snapshot: Some(&store_source),
+                    history: store_history.as_ref(),
+                    overhead,
+                    context_length: context,
+                    max_output,
+                    prompt_tokens,
+                    facts: &store_facts,
+                    provider: &store_provider,
+                    model: &store_model,
+                    outside: store_outside,
+                    surface: store_surface,
+                },
+                Some(&store_incarnation),
+                |planned| fitted_request(&admit_system, planned, tokens).map(|_| ()),
+            )
+            .map_err(|failure| match failure {
+                PrepareFailure::Binding(mismatch) => PrepareTurnError::Binding(mismatch),
+                PrepareFailure::Admitted(error) => error,
+                PrepareFailure::Store(message) => PrepareTurnError::Store(message),
+            })
+    })
+    .await
+    .map_err(background_failure)??;
     // The summary call is slow, so it runs with the store lock released. The
     // commit appends one compaction record only if the conversation still
     // matches the plan; a failure compacts mechanically instead.
@@ -745,7 +822,11 @@ where
         {
             return Err(PrepareTurnError::Cancelled);
         }
-        let resolution = store.finish_compaction(plan, summary.as_deref());
+        let resolution = tauri::async_runtime::spawn_blocking(move || {
+            Store::config().finish_compaction(plan, summary.as_deref())
+        })
+        .await
+        .map_err(background_failure)?;
         if let Some(compaction) = resolution.compaction.as_ref() {
             prepared.apply(compaction);
         }
@@ -788,13 +869,44 @@ where
         }
     }
     sessions::bound_media_replay(&mut outbound, incoming);
-    Ok(PreparedTurn {
+    let turn = PreparedTurn {
         session_id,
         messages: Value::Array(outbound),
         compacted: prepared.compacted,
         archive_evicted: prepared.evicted_auditions,
         saved_auditions: prepared.saved_auditions,
-    })
+    };
+    emit_preparation_events(app, &turn, provider, binding.request_id);
+    Ok(turn)
+}
+
+/// The one place every surface hears what preparation did to the conversation:
+/// a compaction, evicted archive files and the auditions this turn saved.
+fn emit_preparation_events<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    turn: &PreparedTurn,
+    provider: &AiProviderEntry,
+    request_id: Option<&str>,
+) {
+    if let Some(compaction) = turn.compacted.as_ref() {
+        let _ = app.emit(
+            AUTO_SESSION_EVENT,
+            compaction_event(turn, compaction, provider),
+        );
+    }
+    if !turn.archive_evicted.is_empty() {
+        let _ = app.emit(AUTO_SESSION_EVENT, archive_event(turn));
+    }
+    if !turn.saved_auditions.is_empty() {
+        let mut event = json!({
+            "session_id": turn.session_id,
+            "saved_auditions": turn.saved_auditions,
+        });
+        if let Some(request_id) = request_id {
+            event["request_id"] = json!(request_id);
+        }
+        let _ = app.emit(AUTO_SESSION_EVENT, event);
+    }
 }
 
 /// The outside-changes notice to save before this turn. A pending binding

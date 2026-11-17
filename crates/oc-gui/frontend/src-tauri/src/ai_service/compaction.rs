@@ -206,6 +206,7 @@ mod tests {
                 &incoming,
                 crate::commands::SavedTurnBinding {
                     id: &session.id,
+                    request_id: None,
                     incarnation: &incarnation,
                     project: None,
                     tool_tokens: 0,

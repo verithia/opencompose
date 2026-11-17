@@ -47,47 +47,68 @@ impl Drop for AskedQuestion {
     }
 }
 
-/// A person's answer, or a refusal: when nobody answers in time, and when
-/// the question was dropped unanswered. A person was asked, so this is never
-/// the "nobody attends" answer that lets a replacement apply.
-pub(super) async fn await_answer(
-    receiver: oneshot::Receiver<Decision>,
-    wait: std::time::Duration,
-) -> Decision {
-    match tokio::time::timeout(wait, receiver).await {
-        Ok(Ok(decision)) => decision,
-        Ok(Err(_)) => Decision::default(),
-        Err(_) => Decision::expired(),
+/// Registers one question and waits for its answer. `None` means the turn is
+/// already holding the most questions a person can be shown. A wait that ends
+/// without an answer resolves to the caller's refusal value.
+pub(super) async fn wait_for<T: Send + 'static>(
+    key: QuestionKey,
+    question: Waiting,
+    receiver: oneshot::Receiver<T>,
+    expired: T,
+    dropped: T,
+    asked: impl FnOnce(),
+) -> Option<T> {
+    {
+        let mut pending = lock(&PENDING);
+        if pending.keys().filter(|(turn, _)| turn == &key.0).count() >= MAX_PENDING {
+            return None;
+        }
+        pending.insert(key.clone(), question);
     }
+    let _asked = AskedQuestion(key);
+    asked();
+    Some(
+        match tokio::time::timeout(QUESTION_TIMEOUT, receiver).await {
+            Ok(Ok(value)) => value,
+            Ok(Err(_)) => dropped,
+            Err(_) => expired,
+        },
+    )
 }
 
-/// A person's reply, or the refusal the same wait produces.
-pub(super) async fn await_reply(
-    receiver: oneshot::Receiver<Reply>,
-    wait: std::time::Duration,
-) -> Reply {
-    match tokio::time::timeout(wait, receiver).await {
-        Ok(Ok(reply)) => reply,
-        Ok(Err(_)) | Err(_) => Reply::expired(),
+/// Why an approval answer was refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AnswerError {
+    /// No approval waits under this turn and call id.
+    NotWaiting,
+    /// The waiting turn ended before the answer arrived.
+    TurnStopped,
+}
+
+impl std::fmt::Display for AnswerError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::NotWaiting => "Nothing is waiting for an answer to this question",
+            Self::TurnStopped => "The turn stopped before the answer arrived",
+        })
     }
 }
 
 /// Answers an approval a running turn asked. A stale answer changes nothing.
-pub fn answer(request_id: &str, call_id: &str, decision: Decision) -> Result<(), String> {
+pub fn answer(request_id: &str, call_id: &str, decision: Decision) -> Result<(), AnswerError> {
     let key = (request_id.to_owned(), call_id.to_owned());
     let question = {
         let mut pending = lock(&PENDING);
         if !matches!(pending.get(&key), Some(Waiting::Approval { .. })) {
-            return Err("Nothing is waiting for an answer to this question".into());
+            return Err(AnswerError::NotWaiting);
         }
         pending.remove(&key)
     };
     let Some(Waiting::Approval { answer, .. }) = question else {
-        return Err("Nothing is waiting for an answer to this question".into());
+        return Err(AnswerError::NotWaiting);
     };
-    answer
-        .send(decision)
-        .map_err(|_| "The turn stopped before the answer arrived".to_string())
+    answer.send(decision).map_err(|_| AnswerError::TurnStopped)
 }
 
 /// Why a model question's answer was refused. The answer is not delivered and
@@ -156,20 +177,6 @@ fn validate_reply(reply: &Reply, request: &UserQuestion) -> Result<(), ReplyErro
         }
     }
     Ok(())
-}
-
-/// The approvals a running turn is waiting on, for a window that reloaded
-/// while the card was open.
-#[cfg(test)]
-pub fn questions(request_id: &str) -> Vec<ApprovalRequest> {
-    lock(&PENDING)
-        .iter()
-        .filter(|((turn, _), _)| turn == request_id)
-        .filter_map(|(_, question)| match question {
-            Waiting::Approval { request, .. } => Some(request.clone()),
-            Waiting::UserQuestion { .. } => None,
-        })
-        .collect()
 }
 
 /// Every question a running turn is waiting on, typed for the wire.

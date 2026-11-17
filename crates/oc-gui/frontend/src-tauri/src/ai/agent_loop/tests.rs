@@ -202,7 +202,7 @@ impl Host for Fake {
             .unwrap_or_else(|| Ok(json!({"role":"assistant","content":"done"})))
     }
 
-    async fn call(&self, tool: &str, args: &Value, _cancel: &Cancel) -> Result<Value, Value> {
+    async fn call(&self, tool: &str, args: &Value, _cancel: &Cancel) -> Result<Dispatched, Value> {
         let mut world = self.world();
         world.calls.push(tool.to_owned());
         if world.steer_on_tool.as_deref() == Some(tool) {
@@ -240,7 +240,10 @@ impl Host for Fake {
                     return Err(json!({"error":"outside the turn's batch"}));
                 }
                 if world.noop {
-                    return Ok(json!({"ok": true}));
+                    return Ok(Dispatched {
+                        value: json!({"ok": true}),
+                        changes: None,
+                    });
                 }
                 world.revision += 1;
                 world.dsl = format!("@project r{}", world.revision);
@@ -252,14 +255,19 @@ impl Host for Fake {
             "refused" => Err(json!({"error": "refused: nope"})),
             _ => Ok(json!({"ok": true})),
         };
-        let mut result = result?;
-        if world.typed_changes_on.as_deref() == Some(tool) {
-            result["changes"] = json!({
-                "changes": [{"kind": "tempo", "from": 120.0, "to": 132.0}],
-                "more": 0,
+        let result = result?;
+        let changes =
+            (world.typed_changes_on.as_deref() == Some(tool)).then(|| oc_dsl::change::ChangeSet {
+                changes: vec![oc_dsl::change::Change::Tempo {
+                    from: 120.0,
+                    to: 132.0,
+                }],
+                more: 0,
             });
-        }
-        Ok(result)
+        Ok(Dispatched {
+            value: result,
+            changes,
+        })
     }
 
     async fn ask(&self, request: ApprovalRequest) -> Option<Decision> {
@@ -310,8 +318,8 @@ impl Host for Fake {
         self.store.append_turn(&self.session, messages, None)
     }
 
-    async fn stored_result(&self, call: &str) -> Option<String> {
-        self.store.tool_result(&self.session, call).ok().flatten()
+    async fn stored_result(&self, _call: &str, sha: &str) -> Option<String> {
+        self.store.stored_result(&self.session, sha).ok().flatten()
     }
 
     async fn started(&self, call_id: &str) -> Result<(), String> {
@@ -1021,15 +1029,9 @@ fn a_large_result_is_paged_only_inside_its_conversation() {
 
 #[test]
 fn a_large_result_is_read_from_the_saved_conversation_once_the_cache_lost_it() {
-    let page = json!({"role":"assistant","content":null,"tool_calls":[
-        {"id":"p","type":"function","function":{"name":"read_toolcall","arguments":"{\"id\":\"big\",\"offset\":10,\"limit\":5}"}}
-    ]});
-    let done = json!({"role":"assistant","content":"done"});
     let fake = Fake::new(vec![
         round(&[("big", "big_read")]),
-        done.clone(),
-        page,
-        done,
+        json!({"role":"assistant","content":"done"}),
     ]);
     block_on(fake.run(SessionPermission::Write));
     let saved = fake.saved();
@@ -1038,9 +1040,34 @@ fn a_large_result_is_read_from_the_saved_conversation_once_the_cache_lost_it() {
     assert!(row.get("full_result").is_none());
     // A restart, or eviction by other conversations, empties the cache.
     results::with_results(|store| store.forget(&fake.session));
-    block_on(fake.run(SessionPermission::Write));
+    let page = json!({"role":"assistant","content":null,"tool_calls":[
+        {"id":"p","type":"function","function":{"name":"read_toolcall","arguments":"{\"id\":\"big\",\"offset\":10,\"limit\":5}"}}
+    ]});
+    fake.world().replies = vec![Ok(page), Ok(json!({"role":"assistant","content":"done"}))].into();
+    let mut wire = vec![json!({"role":"system","content":"sys"})];
+    wire.extend(saved);
+    wire.push(
+        json!({"role":"user","content":"continue","message_meta":{"version":1,"kind":"user"}}),
+    );
+    let spec = TurnSpec {
+        wire,
+        permission: SessionPermission::Write,
+        label: "AI edit".into(),
+        audio: None,
+        scope: fake.session.clone(),
+        toolsets: None,
+        text_protocol: true,
+        context_length: 0,
+        max_output: 0,
+    };
+    block_on(run_turn(&fake, spec, fake.cancel.clone()));
     let results = fake.results();
-    assert_eq!(results.last().unwrap().1["text"], "xxxxx", "{results:?}");
+    let read = results
+        .iter()
+        .find(|(id, _)| id == "p")
+        .map(|(_, body)| body)
+        .unwrap();
+    assert_eq!(read["text"], "xxxxx", "{results:?}");
 }
 
 #[test]
@@ -1103,10 +1130,24 @@ fn a_reply_after_cancel_is_saved_and_none_of_its_calls_run() {
         async fn begin_batch(&self, label: &str) -> Result<(), String> {
             self.0.begin_batch(label).await
         }
+        async fn batch_changes(&self) -> Option<oc_dsl::change::ChangeSet> {
+            self.0.batch_changes().await
+        }
+        async fn ask_user(&self, request: UserQuestion) -> Option<Reply> {
+            self.0.ask_user(request).await
+        }
+        async fn compact(&self, cancel: &Cancel) -> Result<Vec<Value>, CompactionFailure> {
+            self.0.compact(cancel).await
+        }
         async fn commit_batch(&self) -> Result<(), CommitError> {
             self.0.commit_batch().await
         }
-        async fn call(&self, tool: &str, args: &Value, cancel: &Cancel) -> Result<Value, Value> {
+        async fn call(
+            &self,
+            tool: &str,
+            args: &Value,
+            cancel: &Cancel,
+        ) -> Result<Dispatched, Value> {
             self.0.call(tool, args, cancel).await
         }
         async fn ask(&self, request: ApprovalRequest) -> Option<Decision> {
@@ -1117,6 +1158,9 @@ fn a_reply_after_cancel_is_saved_and_none_of_its_calls_run() {
         }
         async fn record(&self, messages: &[Value]) -> Result<Vec<Value>, String> {
             self.0.record(messages).await
+        }
+        async fn stored_result(&self, call: &str, sha: &str) -> Option<String> {
+            self.0.stored_result(call, sha).await
         }
         async fn started(&self, call: &str) -> Result<(), String> {
             self.0.started(call).await
@@ -1379,28 +1423,6 @@ fn a_reported_input_past_the_window_stops_the_turn_before_the_next_send() {
     assert_eq!(outcome.error.unwrap().kind, "context_overflow");
     assert_eq!(fake.world().sent.len(), 1, "the oversized wire is not sent");
     assert_eq!(check_pairing(&fake.saved()), Ok(()));
-}
-
-#[test]
-fn typed_changes_leave_the_result_and_stay_on_the_saved_row() {
-    let mut result = json!({
-        "revision": 1,
-        "changes": {
-            "changes": [{"kind": "tempo", "from": 120.0, "to": 132.0}],
-            "more": 0,
-        },
-    });
-    let changes = take_changes(&mut result).expect("the result carries the facts");
-    assert!(result.get("changes").is_none(), "{result}");
-    let call = Call {
-        id: "c1".into(),
-        name: "project_set_tempo".into(),
-        arguments: "{}".into(),
-    };
-    let mut message = result_message(&call, true, &result.to_string());
-    message["changes"] = changes;
-    assert_eq!(message["changes"]["changes"][0]["kind"], "tempo");
-    assert!(!message["content"].as_str().unwrap().contains("changes"));
 }
 
 #[test]

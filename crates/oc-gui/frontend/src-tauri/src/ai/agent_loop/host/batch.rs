@@ -39,11 +39,7 @@ pub(crate) fn begin_loop_batch(
         .find(session)
         .map_err(|error| format!("The conversation's binding could not be read: {error}"))?;
     let status = crate::ai::sessions::binding_status(&meta, open.as_deref());
-    if !status.matches {
-        let mismatch = crate::ai::sessions::BindingMismatch {
-            bound: status.bound.unwrap_or_default(),
-            open: status.open.unwrap_or_default(),
-        };
+    if let Some(mismatch) = status.mismatch() {
         return Err(format!(
             "{} This turn cannot edit the open file; stop it and bind the conversation to that \
              file before trying again.",
