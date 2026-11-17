@@ -78,8 +78,7 @@ use audition_archive::{
 };
 #[cfg(test)]
 use audition_archive::{ArchiveSweep, archived_bytes, mp3_bitrate};
-use binding::same_project;
-pub use binding::{BindingMismatch, BindingStatus, SavedHistoryMark, binding_status};
+pub use binding::{BindingMismatch, BindingStatus, BoundProject, SavedHistoryMark, binding_status};
 #[cfg(test)]
 use journal::append_records;
 #[cfg(test)]
@@ -199,7 +198,7 @@ pub struct SessionMeta {
     /// The project file this conversation is bound to. A turn while another
     /// project is open is refused until the person binds the conversation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub project_path: Option<String>,
+    pub project_path: Option<BoundProject>,
     /// A binding the next admitted turn tells the model about, as one typed
     /// host notice before that turn's message.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -674,15 +673,15 @@ impl Store {
                 .pending_binding
                 .as_ref()
                 .and_then(|pending| pending.from.clone())
-                .or_else(|| parent.project_path.clone())
+                .or_else(|| parent.project_path.as_ref().map(BoundProject::to_string))
         });
-        let project_path = project.map(|path| canonical_path(path).to_string_lossy().to_string());
+        let project_path = project.map(BoundProject::of);
         // A fork of a conversation bound to another file starts on the chosen
         // file like a rebind. It names the path the model last saw, which is an
         // unsent binding when the parent still owes one. A fork with no project
         // has no boundary to explain.
         let pending_binding = match (&project_path, parent_from) {
-            (Some(to), Some(from)) if from != *to => Some(PendingBinding {
+            (Some(to), Some(from)) if from != to.as_str() => Some(PendingBinding {
                 from: Some(from),
                 cause: BindCause::Chosen,
             }),
@@ -1095,19 +1094,14 @@ impl Store {
         super::session_usage::verify_at(&dir, incarnation).map_err(|error| error.message)?;
         // The binding is decided under the store lock, before a transcript,
         // archive or snapshot write, so a refusal leaves every file unchanged.
-        let open = project.map(|path| canonical_path(path).to_string_lossy().to_string());
+        let open = project.map(BoundProject::of);
         let mut meta_changed = false;
         match (&meta.project_path, &open) {
-            (Some(bound), Some(open)) => {
-                let bound = canonical_path(Path::new(bound))
-                    .to_string_lossy()
-                    .to_string();
-                if bound != *open {
-                    return Err(PrepareFailure::Binding(BindingMismatch {
-                        bound,
-                        open: open.clone(),
-                    }));
-                }
+            (Some(bound), Some(open)) if bound != open => {
+                return Err(PrepareFailure::Binding(BindingMismatch {
+                    bound: bound.to_string(),
+                    open: open.to_string(),
+                }));
             }
             (None, Some(open)) => {
                 // The first turn binds the conversation without telling the
@@ -1125,12 +1119,10 @@ impl Store {
         // in the same write as the notices: the next turn compares the project
         // against where this one started, not where an earlier one ended.
         if let Some(history) = history
-            && meta
-                .project_path
-                .as_deref()
-                .is_some_and(|bound| same_project(bound, &history.project))
+            && let project = BoundProject::of(Path::new(&history.project))
+            && meta.project_path.as_ref() == Some(&project)
         {
-            let saved = SavedHistoryMark::for_project(&history.project, history.at, history.max_id);
+            let saved = SavedHistoryMark::for_project(project, history.at, history.max_id);
             if meta.history_mark.as_ref() != Some(&saved) {
                 meta.history_mark = Some(saved);
                 meta_changed = true;
@@ -1192,7 +1184,7 @@ impl Store {
         {
             notices.push(HostNotice::ProjectBound {
                 from: pending_binding.from,
-                to,
+                to: to.into_string(),
                 cause: pending_binding.cause,
             });
         }

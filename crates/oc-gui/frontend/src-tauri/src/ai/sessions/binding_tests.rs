@@ -91,7 +91,11 @@ fn an_unbound_session_binds_silently_at_its_first_turn() {
         )
         .unwrap();
     assert_eq!(
-        prepared.meta.project_path.as_deref(),
+        prepared
+            .meta
+            .project_path
+            .as_ref()
+            .map(crate::ai::sessions::BoundProject::as_str),
         Some(canonical(&project).as_str())
     );
     assert_eq!(prepared.messages.len(), 1);
@@ -102,7 +106,10 @@ fn an_unbound_session_binds_silently_at_its_first_turn() {
     );
     let (_, saved) = store.find(&session.id).unwrap();
     assert_eq!(
-        saved.project_path.as_deref(),
+        saved
+            .project_path
+            .as_ref()
+            .map(crate::ai::sessions::BoundProject::as_str),
         Some(canonical(&project).as_str())
     );
     std::fs::remove_dir_all(store.root().parent().unwrap()).unwrap();
@@ -154,7 +161,10 @@ fn bind_then_a_turn_writes_one_notice_before_the_message_and_clears_pending() {
         .bind(&session.id, Some(&second), BindCause::Chosen)
         .unwrap();
     assert_eq!(
-        bound.project_path.as_deref(),
+        bound
+            .project_path
+            .as_ref()
+            .map(crate::ai::sessions::BoundProject::as_str),
         Some(canonical(&second).as_str())
     );
     let pending = bound.pending_binding.expect("a pending binding");
@@ -246,7 +256,10 @@ fn relocating_a_project_sets_a_moved_binding_the_next_turn_reports() {
     assert_eq!(store.relocate_project(&first, &moved).unwrap(), 1);
     let (_, relocated) = store.find(&session.id).unwrap();
     assert_eq!(
-        relocated.project_path.as_deref(),
+        relocated
+            .project_path
+            .as_ref()
+            .map(crate::ai::sessions::BoundProject::as_str),
         Some(canonical(&moved).as_str())
     );
     let pending = relocated.pending_binding.expect("a pending moved binding");
@@ -419,7 +432,7 @@ fn a_history_mark_is_recorded_for_the_bound_project_and_cleared_on_rebind() {
     assert_eq!(
         saved.history_mark,
         Some(SavedHistoryMark {
-            project: canonical(&first),
+            project: BoundProject::of(&first),
             at: Some(7),
             max_id: 9,
         })
@@ -775,7 +788,10 @@ fn a_move_keeps_the_first_unsent_binding_path() {
         "the notice still names the path the model last saw"
     );
     assert_eq!(
-        saved.project_path.as_deref(),
+        saved
+            .project_path
+            .as_ref()
+            .map(crate::ai::sessions::BoundProject::as_str),
         Some(canonical(&moved).as_str())
     );
     std::fs::remove_dir_all(store.root().parent().unwrap()).unwrap();
@@ -847,4 +863,16 @@ fn a_fork_with_no_project_owes_no_binding_notice() {
     assert_eq!(fork.project_path, None);
     assert_eq!(fork.pending_binding, None);
     std::fs::remove_dir_all(store.root().parent().unwrap()).unwrap();
+}
+
+#[test]
+fn a_saved_project_path_reads_back_in_canonical_form() {
+    let dir = tempfile::tempdir().unwrap();
+    let song = dir.path().join("song.ocp");
+    std::fs::write(&song, "@project\n").unwrap();
+    let spelled = dir.path().join("sub").join("..").join("song.ocp");
+    std::fs::create_dir(dir.path().join("sub")).unwrap();
+    let read: BoundProject = serde_json::from_value(json!(spelled.to_string_lossy())).unwrap();
+    assert_eq!(read, BoundProject::of(&song));
+    assert_eq!(json!(read), json!(BoundProject::of(&song).as_str()));
 }

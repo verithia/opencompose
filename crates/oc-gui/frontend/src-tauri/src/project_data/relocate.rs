@@ -200,10 +200,22 @@ mod tests {
             .to_string_lossy()
             .to_string();
         let (_, moved) = store.find(&conversation.id).unwrap();
-        assert_eq!(moved.project_path.as_deref(), Some(canonical.as_str()));
+        assert_eq!(
+            moved
+                .project_path
+                .as_ref()
+                .map(crate::ai::sessions::BoundProject::as_str),
+            Some(canonical.as_str())
+        );
         assert_eq!(moved.workspace_key, super::super::path_key(&other));
         let (_, stayed) = store.find(&scoped.id).unwrap();
-        assert_eq!(stayed.project_path.as_deref(), Some(canonical.as_str()));
+        assert_eq!(
+            stayed
+                .project_path
+                .as_ref()
+                .map(crate::ai::sessions::BoundProject::as_str),
+            Some(canonical.as_str())
+        );
         assert_eq!(stayed.workspace_key, scoped.workspace_key);
     }
 

@@ -47,15 +47,11 @@ impl Store {
     ) -> Result<(), String> {
         let _lock = self.mutation_lock()?;
         let (dir, mut meta) = self.find(id)?;
-        let project = project.to_string_lossy().to_string();
-        if !meta
-            .project_path
-            .as_deref()
-            .is_some_and(|bound| same_project(bound, &project))
-        {
+        let project = BoundProject::of(project);
+        if meta.project_path.as_ref() != Some(&project) {
             return Ok(());
         }
-        let saved = SavedHistoryMark::for_project(&project, mark.at, mark.max_id);
+        let saved = SavedHistoryMark::for_project(project, mark.at, mark.max_id);
         if meta.history_mark.as_ref() == Some(&saved) {
             return Ok(());
         }

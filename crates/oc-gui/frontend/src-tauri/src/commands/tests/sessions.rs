@@ -244,8 +244,17 @@ fn a_workspace_holds_one_set_of_sessions_across_its_project_files() {
         Some(fixture.dir.canonicalize().unwrap().to_str().unwrap())
     );
     assert_eq!(
-        listed[0].project_path.as_deref(),
-        Some(first.project_path.as_deref().unwrap())
+        listed[0]
+            .project_path
+            .as_ref()
+            .map(crate::ai::sessions::BoundProject::as_str),
+        Some(
+            first
+                .project_path
+                .as_ref()
+                .map(crate::ai::sessions::BoundProject::as_str)
+                .unwrap()
+        )
     );
 
     // A different directory is a different set.
@@ -459,7 +468,10 @@ fn a_headless_turn_bound_to_another_open_file_is_refused_as_session_binding() {
     );
     let (_, saved) = sessions::Store::config().find(&session.id).unwrap();
     assert_eq!(
-        saved.project_path.as_deref(),
+        saved
+            .project_path
+            .as_ref()
+            .map(crate::ai::sessions::BoundProject::as_str),
         Some(other.canonicalize().unwrap().to_string_lossy().as_ref())
     );
     drop(lease);
@@ -479,17 +491,26 @@ fn the_binding_commands_compare_canonically_and_bind_to_the_open_file() {
     }
     let status = crate::commands::binding_for(&state, &session.id).unwrap();
     assert_eq!(
-        status.bound.as_deref(),
+        status
+            .bound
+            .as_ref()
+            .map(crate::ai::sessions::BoundProject::as_str),
         Some(first.canonicalize().unwrap().to_str().unwrap())
     );
     assert_eq!(
-        status.open.as_deref(),
+        status
+            .open
+            .as_ref()
+            .map(crate::ai::sessions::BoundProject::as_str),
         Some(second.canonicalize().unwrap().to_str().unwrap())
     );
     assert!(!status.matches);
     let bound = crate::commands::bind_for(&state, &session.id).unwrap();
     assert_eq!(
-        bound.project_path.as_deref(),
+        bound
+            .project_path
+            .as_ref()
+            .map(crate::ai::sessions::BoundProject::as_str),
         Some(second.canonicalize().unwrap().to_str().unwrap())
     );
     assert_eq!(
@@ -552,7 +573,8 @@ fn a_running_turn_keeps_its_conversation_bound_to_the_file_it_started_on() {
             .unwrap()
             .1
             .project_path
-            .as_deref(),
+            .as_ref()
+            .map(crate::ai::sessions::BoundProject::as_str),
         Some(first.canonicalize().unwrap().to_str().unwrap()),
         "the running turn keeps the binding it started on"
     );
@@ -560,7 +582,10 @@ fn a_running_turn_keeps_its_conversation_bound_to_the_file_it_started_on() {
     requests.release_owned("turn-1", &claim.identity).unwrap();
     let bound = bind_if_idle(&state, &session.id, &requests).unwrap();
     assert_eq!(
-        bound.project_path.as_deref(),
+        bound
+            .project_path
+            .as_ref()
+            .map(crate::ai::sessions::BoundProject::as_str),
         Some(second.canonicalize().unwrap().to_str().unwrap())
     );
 }

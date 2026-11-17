@@ -136,7 +136,10 @@ fn a_chosen_workspace_is_not_the_open_projects_directory() {
         "the session is scoped to the chosen workspace"
     );
     assert_eq!(
-        session.project_path.as_deref(),
+        session
+            .project_path
+            .as_ref()
+            .map(crate::ai::sessions::BoundProject::as_str),
         Some(canonical(&open_file).as_str())
     );
     let listed = list_for(&state, None, false).unwrap();

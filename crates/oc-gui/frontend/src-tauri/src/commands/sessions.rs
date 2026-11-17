@@ -579,8 +579,16 @@ impl BindingStatus {
     /// The typed mismatch, when the conversation and the open project differ.
     pub fn mismatch(&self) -> Option<BindingMismatch> {
         (!self.matches).then(|| BindingMismatch {
-            bound: self.bound.clone().unwrap_or_default(),
-            open: self.open.clone().unwrap_or_default(),
+            bound: self
+                .bound
+                .as_ref()
+                .map(ToString::to_string)
+                .unwrap_or_default(),
+            open: self
+                .open
+                .as_ref()
+                .map(ToString::to_string)
+                .unwrap_or_default(),
         })
     }
 }
@@ -922,13 +930,7 @@ fn outside_changes(
         return None;
     }
     let mark = meta.history_mark.as_ref()?;
-    let open = sessions::canonical_path(project?)
-        .to_string_lossy()
-        .to_string();
-    let saved = sessions::canonical_path(Path::new(&mark.project))
-        .to_string_lossy()
-        .to_string();
-    if open != saved {
+    if mark.project != sessions::BoundProject::of(project?) {
         return None;
     }
     let changes = inner.undo.since(
