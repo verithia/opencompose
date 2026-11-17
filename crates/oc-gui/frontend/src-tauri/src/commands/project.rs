@@ -806,7 +806,7 @@ pub(crate) fn publish_save(state: &AppState, request: &mut SaveRequest) -> Optio
                 to: request.save_path.clone(),
                 how: request.relocation,
             };
-            inner.history_move = Some(pending.clone());
+            inner.begin_history_move(pending.clone());
             request.pending = Some(pending);
         } else {
             inner.rehome_history(crate::state::JournalHome::Fresh, request.file_sha.clone());
@@ -975,7 +975,7 @@ pub(crate) fn move_project_inner(
                 to: to.clone(),
                 how: crate::project_data::Relocation::Move,
             };
-            inner.history_move = Some(pending.clone());
+            inner.begin_history_move(pending.clone());
             pending
         };
         let report = pending.run();

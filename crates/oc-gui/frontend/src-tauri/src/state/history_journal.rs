@@ -914,4 +914,11 @@ impl AppStateInner {
     ) {
         self.rehome_history(report.history_home(), sha256);
     }
+
+    /// Keep the history unreadable and unsynced until its relocation finishes,
+    /// so a concurrent undo cannot apply a patch from the folder being moved.
+    pub(crate) fn begin_history_move(&mut self, pending: crate::project_data::PendingRelocation) {
+        self.history_move = Some(pending);
+        self.undo.dirty = true;
+    }
 }
