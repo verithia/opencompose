@@ -398,6 +398,8 @@ impl From<String> for RecallPointError {
 pub enum CutFailure {
     /// The conversation moved since the point was chosen.
     ConversationChanged,
+    /// The recorded root no longer matches the oldest retained document.
+    PositionCleared,
     Store(String),
 }
 

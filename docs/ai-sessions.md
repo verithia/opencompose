@@ -168,6 +168,10 @@ and summary facts are captured together. A headless request for a different
 open project is refused, and so is any turn on a conversation bound to another
 file than the one that is open.
 
+An original root position is also checked against that message's saved project
+version. If history cleanup rebases level zero to a different document, recall
+refuses with `position_cleared` and keeps the project and conversation intact.
+
 Replayed human turns retain their original version. Tool results, assistant
 replies and typed host deliveries do not acquire a human-turn snapshot. The
 version file and its first transcript reference are written under the same

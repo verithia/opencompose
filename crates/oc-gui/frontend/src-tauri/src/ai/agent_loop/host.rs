@@ -1413,7 +1413,19 @@ fn recall_with(
     // The session store never takes the document lock, so holding it here
     // cannot deadlock. The cut checks that the message is still the one that
     // was chosen, so a compaction in between cannot move it.
-    if let Err(error) = cut(store, &point) {
+    let cut_result = (|| {
+        if request.undo_edits
+            && point
+                .history_at
+                .as_ref()
+                .is_some_and(|position| position.at.is_none())
+            && !recall_root_matches(store, session_id, &point.message, &inner.project)?
+        {
+            return Err(CutFailure::PositionCleared);
+        }
+        cut(store, &point)
+    })();
+    if let Err(error) = cut_result {
         if let Some((project, source, dirty, history)) = before {
             inner.project = project;
             inner.undo.put_back(history);
@@ -1424,6 +1436,9 @@ fn recall_with(
         return match error {
             CutFailure::ConversationChanged => {
                 Ok(RecallOutcome::refused(RecallRefusal::ConversationChanged))
+            }
+            CutFailure::PositionCleared => {
+                Ok(RecallOutcome::refused(RecallRefusal::PositionCleared))
             }
             CutFailure::Store(message) => Err(message),
         };
@@ -1453,6 +1468,23 @@ fn recall_with(
         snapshot,
         unsaved,
     })
+}
+
+/// An absent entry id identifies the original root only while its saved
+/// document still matches. Pruning may rebase level zero without changing
+/// the project path, so the existing snapshot supplies the root identity.
+fn recall_root_matches(
+    store: &Store,
+    session_id: &str,
+    message: &Value,
+    project: &oc_dsl::ast::Project,
+) -> Result<bool, String> {
+    let Some(sha) = message["dsl_sha"].as_str() else {
+        return Ok(false);
+    };
+    let expected = crate::commands::installed_project(&store.dsl_version(session_id, sha)?)?;
+    let actual = crate::commands::installed_project(&oc_dsl::serialize(project))?;
+    Ok(expected == actual)
 }
 
 /// The approvals a running turn is waiting on, for a window that reloaded
@@ -1838,14 +1870,19 @@ mod tests {
     #[test]
     fn a_failed_cut_keeps_a_full_history_and_its_redo_entries_exactly() {
         let (_root, store, id, state, _path) = fixture_edited_as(true);
+        for tempo in 0..crate::state::MAX_UNDO + 2 {
+            let source = AFTER.replace("150", &(151 + tempo).to_string());
+            apply_edit(&state, &source);
+            if tempo == crate::state::MAX_UNDO - 2 {
+                // The original root is evicted. Target a retained entry so
+                // the failed cut still exercises restoration after a move.
+                record_user(&state, &store, &id, "retained position");
+            }
+        }
         {
             let mut inner = state.lock_inner();
             // A full undo stack and two redo entries: a restore that pushed an
             // entry would evict the oldest one and clear the redo stack.
-            for tempo in 0..crate::state::MAX_UNDO + 2 {
-                let source = AFTER.replace("150", &(151 + tempo).to_string());
-                crate::commands::update_dsl_inner(source, &mut inner).unwrap();
-            }
             inner.undo_step().unwrap();
             inner.undo_step().unwrap();
         }
@@ -1860,7 +1897,7 @@ mod tests {
         };
         assert_eq!(redo, 2);
         let requests = Requests::default();
-        recall_with(&requests, &state, &store, &id, with_undo(0), |_, _| {
+        recall_with(&requests, &state, &store, &id, with_undo(3), |_, _| {
             Err(crate::ai::sessions::turns::CutFailure::Store(
                 "the session store is read-only".into(),
             ))
@@ -1989,6 +2026,37 @@ mod tests {
             RecallRefusal::PositionCleared
         );
         assert_eq!(store.view(&id).unwrap().len(), 4);
+    }
+
+    #[test]
+    fn a_recall_refuses_a_root_rebased_by_history_cleanup() {
+        let (_root, store, id, state, _path) = fixture_edited_as(true);
+        let _acting = crate::edit_history::act_as(crate::edit_history::Author::Agent {
+            session: Some(id.clone()),
+        });
+        apply_edit(&state, "@project \"Recall\"\n  tempo: 160\n");
+        let before = {
+            let mut inner = state.lock_inner();
+            assert_eq!(inner.undo.clear_older(1).unwrap(), 1);
+            (
+                inner.project.clone(),
+                inner.dsl_source.clone(),
+                inner.undo.applied_level(),
+                inner.undo.total_levels(),
+            )
+        };
+        let rows = store.view(&id).unwrap();
+        let requests = Requests::default();
+        assert_eq!(
+            refused(recall_in(&requests, &state, &store, &id, with_undo(0)).unwrap()),
+            RecallRefusal::PositionCleared,
+        );
+        let inner = state.lock_inner();
+        assert_eq!(inner.project, before.0);
+        assert_eq!(inner.dsl_source, before.1);
+        assert_eq!(inner.undo.applied_level(), before.2);
+        assert_eq!(inner.undo.total_levels(), before.3);
+        assert_eq!(store.view(&id).unwrap(), rows);
     }
 
     #[test]
