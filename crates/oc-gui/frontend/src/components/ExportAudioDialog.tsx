@@ -32,9 +32,9 @@ import {
   type RenderAudioResult,
   type WritableContainer,
 } from "../types/export";
+import { bytesText } from "../utils/bytesText";
 import {
   estimateExportBytes,
-  formatBytes,
   formatDuration,
   formatMp3Description,
   formatSampleDescription,
@@ -240,7 +240,7 @@ export function ExportAudioDialog(props: ExportAudioDialogProps) {
       sample: depthless()
         ? formatMp3Description(mp3Bitrate(), sampleRate(), mp3Vbr())
         : formatSampleDescription(depth(), sampleRate()),
-      size: formatBytes(size),
+      size: bytesText(size),
     };
   };
 
@@ -763,7 +763,7 @@ export function ExportAudioDialog(props: ExportAudioDialogProps) {
                 <p class="midi-hint export-audio-mp3-estimate">
                   {i18n.t("export.audio.mp3Estimate", {
                     kbps: mp3Bitrate(),
-                    size: formatBytes(perFileBytes() ?? 0),
+                    size: bytesText(perFileBytes() ?? 0),
                   })}
                 </p>
               </Show>
@@ -928,7 +928,7 @@ export function ExportAudioDialog(props: ExportAudioDialogProps) {
                     </div>
                     <div class="export-audio-finished-row">
                       <span>{i18n.t("export.audio.finishedSize")}</span>
-                      <strong>{formatBytes(value().bytes)}</strong>
+                      <strong>{bytesText(value().bytes)}</strong>
                     </div>
                     <div class="export-audio-finished-row">
                       <span>{i18n.t("export.audio.finishedPeak")}</span>

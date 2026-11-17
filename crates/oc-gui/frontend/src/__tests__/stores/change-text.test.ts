@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { changeSetText, changeText } from "../../stores/changeText";
 import { i18n } from "../../stores/i18n";
-import { isChangeSet, type Change, type ChangeSet } from "../../types/change";
+import { parseChangeSet, type Change, type ChangeSet } from "../../types/change";
 import type { ProjectProperties } from "../../types/project";
 
 const properties: ProjectProperties = {
@@ -138,19 +138,22 @@ describe("change text", () => {
   });
 });
 
-describe("change set guard", () => {
+describe("change set parsing", () => {
   it("accepts a bounded list, keeps unknown kinds and drops a malformed count", () => {
-    expect(isChangeSet(null)).toBe(false);
-    expect(isChangeSet({ changes: "no" })).toBe(false);
-    const guarded = { changes: [{ kind: "future_fact" }], more: "4" };
-    expect(isChangeSet(guarded)).toBe(true);
-    expect(guarded.more).toBe(0);
-    expect(changeSetText(guarded as unknown as ChangeSet)).toBe("Edit");
+    expect(parseChangeSet(null)).toBeNull();
+    expect(parseChangeSet({ changes: "no" })).toBeNull();
+    const source = { changes: [{ kind: "future_fact" }], more: "4" };
+    const guarded = parseChangeSet(source);
+    expect(guarded).toEqual({ changes: [{ kind: "future_fact" }], more: 0 });
+    expect(source.more).toBe("4");
+    expect(changeSetText(guarded as ChangeSet)).toBe("Edit");
   });
 
   it("cuts an oversized list to the bound", () => {
-    const huge = { changes: Array.from({ length: 200 }, () => ({ kind: "tempo", from: 1, to: 2 })), more: 0 };
-    expect(isChangeSet(huge)).toBe(true);
-    expect(huge.changes).toHaveLength(64);
+    const huge = parseChangeSet({
+      changes: Array.from({ length: 200 }, () => ({ kind: "tempo", from: 1, to: 2 })),
+      more: 0,
+    });
+    expect(huge?.changes).toHaveLength(64);
   });
 });

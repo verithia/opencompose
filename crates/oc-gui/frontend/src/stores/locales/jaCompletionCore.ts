@@ -289,6 +289,8 @@ export const jaCompletionCore = {
   "history.undid": "取り消し：{brief}",
   "history.redid": "やり直し：{brief}",
   "history.agentEditing": "エージェントがプロジェクトを編集中のため、取り消せません。",
+  "history.nothingToUndo": "取り消す操作はありません。",
+  "history.nothingToRedo": "やり直す操作はありません。",
   "history.author.person": "あなた",
   "history.author.agent": "エージェント",
   "history.author.agentSession": "エージェント - {session}",

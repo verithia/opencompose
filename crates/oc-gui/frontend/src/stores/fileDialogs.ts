@@ -6,6 +6,15 @@ import { workspaceStore } from "./workspace";
 
 let stemImportPending = false;
 
+/** A native yes/no prompt; every confirmation uses the same dialog wrapper. */
+export async function confirm(
+  message: string,
+  options?: { title?: string; kind?: "info" | "warning" | "error" },
+): Promise<boolean> {
+  const { ask } = await import("@tauri-apps/plugin-dialog");
+  return ask(message, options);
+}
+
 export async function openAlignedStemsDialog() {
   if (stemImportPending) return;
   if (!store.filePath() || store.project.tracks.length || store.project.sections?.length) {

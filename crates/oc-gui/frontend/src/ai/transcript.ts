@@ -6,8 +6,8 @@
  */
 import type { ToolCall, TurnStop, WireMessage } from "./wire";
 import type { MediaAttachment } from "./media";
-import { isAuditionKind, messageKind, projectBoundNotice, sessionState as sessionStateOf, toolSurfaceNotice, type HostNotice, type MessageMeta, type PlanItem, type SessionState } from "./messageProtocol";
-import { isChangeSet, type ChangeSet } from "../types/change";
+import { isAuditionKind, messageKind, projectBoundNotice, sessionState as sessionStateOf, toolSurfaceNotice, type HostNotice, type MessageMeta, type ProjectBoundNotice, type SessionState } from "./messageProtocol";
+import { parseChangeSet, type ChangeSet } from "../types/change";
 
 export interface DiffResult {
   old_text: string;
@@ -89,7 +89,7 @@ export interface ChatMessage {
   resume?: StoppedTurn;
   messageMeta?: MessageMeta;
   /** A typed host notice that changed this conversation's project binding. */
-  binding?: { kind: "project_bound"; from?: string; to: string; cause: "chosen" | "moved" };
+  binding?: ProjectBoundNotice;
   /** A typed host notice that changed the tools or permission this turn offers. */
   surface?: Extract<HostNotice, { kind: "tool_surface" }>;
   /** A typed goal or plan change the conversation saved. */
@@ -114,18 +114,19 @@ function contextOf(message: WireMessage): ContextKind | null {
 }
 
 /**
- * A store compaction carries intent metadata; a loop fold row is tagged as a
- * summary but has none. A legacy summary saved before the metadata is treated
- * as a compaction because the loop never wrote one without a tag.
+ * A store compaction carries summary prose or the structured state that went
+ * with it. A loop fold row is tagged as a summary but carries neither, so a
+ * later fold or size trim can keep the one and drop the other. A summary saved
+ * before the stored metadata is treated as a compaction, because the loop never
+ * wrote one without a tag.
  */
 function isCompactionSummary(message: WireMessage): boolean {
   const meta = message.message_meta;
   if (!meta) return true;
   return meta.kind === "summary"
-    && (meta.standing_intent !== undefined
-      || meta.discarded_auditions !== undefined
-      || meta.rollback_notice !== undefined
-      || meta.proposal_notice !== undefined);
+    && (meta.summary_text !== undefined
+      || meta.standing_intent !== undefined
+      || meta.discarded_auditions !== undefined);
 }
 
 export function oneLine(text: string, max: number): string {
@@ -169,13 +170,14 @@ function failedResult(content: string): boolean {
  */
 export function toolRowOf(call: ToolCall | undefined, content: string, changes?: unknown): ChatMessage {
   const args = call?.function?.arguments;
+  const parsed = parseChangeSet(changes);
   return {
     role: "tool",
     content,
     tool: {
       name: call?.function?.name ?? "tool",
       ...(args ? { args } : {}),
-      ...(isChangeSet(changes) ? { changes } : {}),
+      ...(parsed ? { changes: parsed } : {}),
       ...(call?.id ? { call_id: call.id } : {}),
       ...(content.trim() ? { result: oneLine(content, RESULT_SUMMARY_CHARS) } : {}),
     },
@@ -292,29 +294,6 @@ export function restoredTranscript(messages: WireMessage[] | null | undefined, s
     });
   }
   return rows;
-}
-
-/** The goal and plan the newest saved state rows hold. A cut or a fork reads
- * only the rows it copied, so the panel needs no separate state field. */
-export function currentSessionState(rows: readonly ChatMessage[]): { goal: string | null; plan: PlanItem[] | null } {
-  let goal: string | null = null;
-  let plan: PlanItem[] | null = null;
-  let goalSeen = false;
-  let planSeen = false;
-  for (let index = rows.length - 1; index >= 0; index--) {
-    const state = rows[index].state;
-    if (!state) continue;
-    if (!goalSeen && (state.kind === "goal_set" || state.kind === "goal_cleared")) {
-      goalSeen = true;
-      goal = state.kind === "goal_set" ? state.text : null;
-    }
-    if (!planSeen && state.kind === "plan_set") {
-      planSeen = true;
-      plan = state.items.length ? state.items : null;
-    }
-    if (goalSeen && planSeen) break;
-  }
-  return { goal, plan };
 }
 
 /**

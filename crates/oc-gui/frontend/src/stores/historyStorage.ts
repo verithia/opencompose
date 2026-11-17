@@ -30,6 +30,13 @@ async function refresh(): Promise<void> {
   } catch { /* the next refresh answers */ }
 }
 
+/** Adopt a size a command already reported, without a second read. */
+function adopt(next: HistoryInfo): void {
+  if (!next || typeof next.bytes !== "number") return;
+  request += 1;
+  setInfo(next);
+}
+
 function setNoticeBytes(bytes: number) {
   if (!Number.isFinite(bytes) || bytes <= 0) return;
   setNoticeBytesSignal(bytes);
@@ -42,4 +49,4 @@ function overNotice(): boolean {
   return !!current && current.journaled && current.bytes > noticeBytes();
 }
 
-export const historyStorage = { info, refresh, noticeBytes, setNoticeBytes, overNotice };
+export const historyStorage = { info, refresh, adopt, noticeBytes, setNoticeBytes, overNotice };

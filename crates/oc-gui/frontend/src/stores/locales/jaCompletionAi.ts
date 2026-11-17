@@ -125,6 +125,7 @@ export const jaCompletionAi = {
   "ai.question.refused.textNotAccepted": "この質問はテキスト回答を受け付けません。",
   "ai.question.refused.textTooLong": "この質問には回答が長すぎます。",
   "ai.revert.turnRunning": "この会話は処理中です。停止してから元に戻してください。",
+  "ai.recall.turnRunning": "この会話は処理中です。停止してからメッセージを呼び戻してください。",
   "ai.revert.originalView": "この履歴は要約で置き換えられています。元に戻すには、現在の会話に戻ってください。",
   "ai.command.title": "会話コマンド",
   "ai.command.compact": "以前のやりとりをまとめて要約する",

@@ -156,6 +156,15 @@ describe("HistoryPanel", () => {
       .toBe("Dropped 2 entries, freed 1.0 KB"));
   });
 
+  it("names the typed reason when clearing older entries is refused", async () => {
+    const { container, getByLabelText, getByText } = render(() => <HistoryPanel />);
+    await waitFor(() => expect(container.querySelectorAll(".undo-history-entry").length).toBe(4));
+    invokeMock.mockImplementationOnce(async () => ({ status: "refused", reason: "nothing_to_undo" }));
+    fireEvent.input(getByLabelText("Keep newest"), { target: { value: "1" } });
+    fireEvent.click(getByText("Clear older history"));
+    await waitFor(() => expect(container.querySelector(".history-report")?.textContent).toBe("Nothing to undo."));
+  });
+
   it("asks before clearing and clears nothing when the person says no", async () => {
     dialog.ask.mockResolvedValueOnce(false);
     const { container, getByLabelText, getByText } = render(() => <HistoryPanel />);

@@ -3,7 +3,7 @@
  * detail card. The line is one muted row; only the info button is focusable.
  */
 import { For, Show, createEffect, createMemo, createSignal, onCleanup } from "solid-js";
-import { formatBytes } from "../ai/media";
+import { bytesText } from "../utils/bytesText";
 import { accountingErrorMessage } from "../ai/errors";
 import { i18n } from "../stores/i18n";
 import { aiLimits } from "../stores/aiLimits";
@@ -114,7 +114,7 @@ export function AiStats(props: {
     if (parts.attachments > 0) {
       rows.push({
         label: i18n.t("ai.stats.contextAttachments"),
-        value: `${parts.attachments} · ${formatBytes(parts.attachmentBytes)}`,
+        value: `${parts.attachments} · ${bytesText(parts.attachmentBytes)}`,
       });
     }
     return rows;

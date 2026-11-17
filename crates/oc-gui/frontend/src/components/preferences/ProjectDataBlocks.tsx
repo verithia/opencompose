@@ -9,7 +9,7 @@ import { ask } from "@tauri-apps/plugin-dialog";
 import { i18n } from "../../stores/i18n";
 import type { AppFolder, DataItem, DataKind, ProjectDataStorage } from "../../stores/api";
 import { storageStore, type StorageSection } from "../../stores/storage";
-import { sizeText } from "../../stores/historyText";
+import { bytesText } from "../../utils/bytesText";
 
 /** The items of one project or folder, in a fixed kind order. */
 interface DataGroup {
@@ -76,7 +76,7 @@ export function ProjectDataBlock(props: { data: ProjectDataStorage }) {
     <div class="preferences-block preferences-project-data">
       <ScanHeader
         label={i18n.t("preferences.storage.projectData")}
-        size={sizeText(props.data.total_bytes)}
+        size={bytesText(props.data.total_bytes)}
         section="project_data"
       />
       <p class="preferences-hint">
@@ -89,13 +89,13 @@ export function ProjectDataBlock(props: { data: ProjectDataStorage }) {
             <div class="preferences-data-group" data-gone={group.gone ? "true" : undefined}>
               <div class="preferences-path-row">
                 <span class="preferences-path selectable">{path()}</span>
-                <span class="preferences-size">{sizeText(group.bytes)}</span>
+                <span class="preferences-size">{bytesText(group.bytes)}</span>
               </div>
               <For each={group.items}>
                 {(item) => (
                   <div class="preferences-session-row preferences-data-row" data-kind={item.kind}>
                     <span class="preferences-session-title">{kindName(item.kind)}</span>
-                    <span class="preferences-size">{sizeText(item.bytes)}</span>
+                    <span class="preferences-size">{bytesText(item.bytes)}</span>
                     <Show when={item.gone}>
                       <span class="preferences-data-state">
                         {item.due
@@ -126,7 +126,7 @@ export function AppFoldersBlock(props: { folders: readonly AppFolder[] }) {
     <div class="preferences-block preferences-app-folders">
       <ScanHeader
         label={i18n.t("preferences.storage.appFolders")}
-        size={sizeText(total())}
+        size={bytesText(total())}
         section="app_folders"
       />
       <For each={props.folders}>
@@ -140,7 +140,7 @@ export function AppFoldersBlock(props: { folders: readonly AppFolder[] }) {
               <span class="preferences-size">
                 {i18n.t("preferences.storage.folderUsage", {
                   files: folder.files,
-                  size: sizeText(folder.bytes),
+                  size: bytesText(folder.bytes),
                 })}
               </span>
               <button

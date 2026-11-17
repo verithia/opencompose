@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { invokeMock } from "../setup";
 import { DEFAULT_NOTICE_BYTES, historyStorage } from "../../stores/historyStorage";
-import { briefText, sizeText } from "../../stores/historyText";
+import { briefText } from "../../stores/historyText";
+import { bytesText } from "../../utils/bytesText";
 import { rememberSessionTitles } from "../../stores/sessionTitles";
 
 const info = (bytes: number, journaled = true) => ({ total: 3, applied: 3, journaled, bytes });
@@ -57,9 +58,9 @@ describe("history text", () => {
   });
 
   it("sizes bytes in the largest unit that keeps a whole number", () => {
-    expect(sizeText(512)).toBe("512 B");
-    expect(sizeText(2048)).toBe("2.0 KB");
-    expect(sizeText(5 * 1024 ** 2)).toBe("5.0 MB");
-    expect(sizeText(1.5 * 1024 ** 3)).toBe("1.5 GB");
+    expect(bytesText(512)).toBe("512 B");
+    expect(bytesText(2048)).toBe("2.0 KB");
+    expect(bytesText(5 * 1024 ** 2)).toBe("5.0 MB");
+    expect(bytesText(1.5 * 1024 ** 3)).toBe("1.5 GB");
   });
 });

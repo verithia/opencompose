@@ -1,4 +1,5 @@
-import { isChangeSet, type ChangeSet, type EditCause } from "../types/change";
+import { isRecord } from "../utils/isRecord";
+import type { PermissionMode } from "./permission";
 
 /** Local transcript semantics. These tags are never provider API fields. */
 export type MessageKind = "user" | "assistant" | "tool" | "application_result" | "round_budget"
@@ -6,27 +7,10 @@ export type MessageKind = "user" | "assistant" | "tool" | "application_result" |
   | "transaction_rollback" | "proposal_outcome" | "host_notice" | "session_state";
 export type BindCause = "chosen" | "moved";
 
-/** Who made an edit another conversation reports. */
-export type NoticeAuthor =
-  | { kind: "person" }
-  | { kind: "agent"; session?: string }
-  | { kind: "client"; owner: string }
-  | { kind: "outside" };
-
-/** One edit another author made while the conversation was away. */
-export interface OutsideChange {
-  author: NoticeAuthor;
-  cause?: EditCause;
-  changes: ChangeSet;
-}
-
-/** What a tool call that changes the project may do without asking. */
-export type SessionPermission = "require_approval" | "autoreview" | "write";
-
 /** A permission mode change between two turns. */
 export interface PermissionChange {
-  from: SessionPermission;
-  to: SessionPermission;
+  from: PermissionMode;
+  to: PermissionMode;
 }
 
 /** Who wrote a goal change. */
@@ -49,21 +33,16 @@ export type HostNotice =
     to: string;
     cause: BindCause;
   }
-  | {
-    kind: "outside_changes";
-    entries: OutsideChange[];
-    more: number;
-    undone: number;
-    own_undone: number;
-    rewritten: boolean;
-    pruned: boolean;
-  }
+  | { kind: "outside_changes" }
   | {
     kind: "tool_surface";
     added: string[];
     removed: string[];
     permission?: PermissionChange;
   };
+
+/** The typed binding a saved host-notice row carries. */
+export type ProjectBoundNotice = Extract<HostNotice, { kind: "project_bound" }>;
 
 export interface MessageMeta {
   version: 1;
@@ -135,15 +114,6 @@ function isMessageKind(value: unknown): value is MessageKind {
 /** A saved path bound, shared by every notice kind that names one. */
 const MAX_NOTICE_PATH_CHARS = 4096;
 
-/** Entries one outside-changes notice may describe. */
-const MAX_OUTSIDE_ENTRIES = 8;
-
-/** Largest count an outside-changes notice may report. */
-const MAX_OUTSIDE_COUNT = 1_000_000;
-
-/** Longest author identity an outside-changes notice may carry. */
-const MAX_OUTSIDE_AUTHOR_CHARS = 512;
-
 /** Most tool names one surface notice may carry. */
 const MAX_TOOL_SURFACE_NAMES = 512;
 
@@ -158,50 +128,8 @@ function validToolName(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 && [...value].length <= MAX_TOOL_NAME_CHARS;
 }
 
-function permissionName(value: unknown): SessionPermission | null {
+function permissionName(value: unknown): PermissionMode | null {
   return value === "require_approval" || value === "autoreview" || value === "write" ? value : null;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-function noticeAuthor(value: unknown): NoticeAuthor | null {
-  if (!isRecord(value)) return null;
-  switch (value.kind) {
-    case "person":
-      return { kind: "person" };
-    case "outside":
-      return { kind: "outside" };
-    case "agent":
-      if (value.session !== undefined && value.session !== null
-        && (typeof value.session !== "string" || !value.session
-          || [...value.session].length > MAX_OUTSIDE_AUTHOR_CHARS)) return null;
-      return {
-        kind: "agent",
-        ...(typeof value.session === "string" ? { session: value.session } : {}),
-      };
-    case "client":
-      if (typeof value.owner !== "string" || !value.owner
-        || [...value.owner].length > MAX_OUTSIDE_AUTHOR_CHARS) return null;
-      return { kind: "client", owner: value.owner };
-    default:
-      return null;
-  }
-}
-
-function boundedCount(value: unknown): number | null {
-  return typeof value === "number" && Number.isInteger(value) && value >= 0
-    && value <= MAX_OUTSIDE_COUNT ? value : null;
-}
-
-function outsideChange(value: unknown): OutsideChange | null {
-  if (!isRecord(value) || !isChangeSet(value.changes)) return null;
-  const author = noticeAuthor(value.author);
-  if (!author) return null;
-  const cause = value.cause;
-  if (cause !== undefined && cause !== "edit") return null;
-  return { author, ...(cause === undefined ? {} : { cause }), changes: value.changes };
 }
 
 /** Longest goal the store accepts. */
@@ -268,30 +196,9 @@ export function sessionState(value: unknown): SessionState | null {
 /** Validate an untrusted typed notice; unknown kinds read as no notice. */
 export function hostNotice(value: unknown): HostNotice | null {
   if (!isRecord(value)) return null;
-  if (value.kind === "outside_changes") {
-    if (!Array.isArray(value.entries) || value.entries.length > MAX_OUTSIDE_ENTRIES) return null;
-    const entries = value.entries.map(outsideChange);
-    if (entries.some((entry) => entry === null)) return null;
-    const more = boundedCount(value.more);
-    const undone = boundedCount(value.undone);
-    const ownUndone = value.own_undone === undefined ? 0 : boundedCount(value.own_undone);
-    if (
-      more === null
-      || undone === null
-      || ownUndone === null
-      || typeof value.rewritten !== "boolean"
-    ) return null;
-    if (value.pruned !== undefined && typeof value.pruned !== "boolean") return null;
-    return {
-      kind: "outside_changes",
-      entries: entries as OutsideChange[],
-      more,
-      undone,
-      own_undone: ownUndone,
-      rewritten: value.rewritten,
-      pruned: value.pruned === true,
-    };
-  }
+  // The transcript hides an outside-changes row until a view renders its
+  // entries, so only the notice kind is recognized here.
+  if (value.kind === "outside_changes") return { kind: "outside_changes" };
   if (value.kind === "tool_surface") {
     const names = (list: unknown): string[] | null => {
       if (!Array.isArray(list) || list.length > MAX_TOOL_SURFACE_NAMES) return null;
@@ -329,7 +236,7 @@ export function hostNotice(value: unknown): HostNotice | null {
 }
 
 /** The project-bound notice a saved row carries, for the transcript. */
-export function projectBoundNotice(meta: MessageMeta | undefined): Extract<HostNotice, { kind: "project_bound" }> | null {
+export function projectBoundNotice(meta: MessageMeta | undefined): ProjectBoundNotice | null {
   const notice = hostNotice(meta?.notice);
   return notice?.kind === "project_bound" ? notice : null;
 }

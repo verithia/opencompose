@@ -8,7 +8,7 @@ import type { TurnStats } from "../stores/aiStats";
 import type { WireMessage } from "./wire";
 import type { PermissionMode } from "./permission";
 import { i18n } from "../stores/i18n";
-import { sessionState as sessionStateOf, type SessionState } from "./messageProtocol";
+import { sessionState as sessionStateOf, type BindCause, type SessionState } from "./messageProtocol";
 
 /** What a compaction dropped and kept, from `ai_session` or `sessions_compact`. */
 export interface CompactionReport {
@@ -60,7 +60,7 @@ export interface SessionMeta {
   /** The project file this conversation is bound to. */
   project_path?: string | null;
   /** A binding the next turn tells the model about. */
-  pending_binding?: { from?: string | null; cause: "chosen" | "moved" } | null;
+  pending_binding?: { from?: string | null; cause: BindCause } | null;
   workspace?: string | null;
   /** What this conversation may do to the DSL without asking; absent on an
    * older payload, which reads as the default. */
@@ -106,7 +106,7 @@ export interface LoadedSession {
 /** `sessions_open`: the newest page of a saved conversation and its span. */
 export interface LoadedPage extends LoadedSession {
   /** Latest state from the entire view, including explicit clears. */
-  state?: SessionState[];
+  state: SessionState[];
   /** Index in the whole view where `messages` begins. */
   start: number;
   /** Length of the whole view. */
@@ -273,10 +273,11 @@ export function loadedPage(payload: unknown): LoadedPage | null {
   const session = loadedSession(payload);
   if (!session) return null;
   const value = payload as Partial<LoadedPage>;
-  if (!pageSpan(value)) return null;
-  const savedState = (payload as Partial<LoadedPage>).state;
-  if (savedState === undefined) return value as LoadedPage;
+  // The backend always serializes the whole view's goal and plan state; a
+  // payload without it is not a page this build can trust.
+  const savedState = value.state;
   if (!Array.isArray(savedState) || savedState.length > 2) return null;
+  if (!pageSpan(value)) return null;
   // A state entry this build cannot read is dropped; it never hides the page
   // or the conversation the panel asked to open.
   const state = savedState.map(sessionStateOf).filter((item): item is SessionState => item !== null);

@@ -16,7 +16,7 @@ import {
 } from "../../stores/preferencesBundle";
 import { useTooltip } from "../Tooltip";
 import { historyStorage } from "../../stores/historyStorage";
-import { sizeText } from "../../stores/historyText";
+import { bytesText } from "../../utils/bytesText";
 import { AppFoldersBlock, ProjectDataBlock } from "./ProjectDataBlocks";
 
 /** The directory part of a path, for the "open folder" action. */
@@ -255,7 +255,7 @@ export function StoragePage(props: { onClose: () => void }) {
                   <span class="preferences-fact-label">{i18n.t("preferences.storage.history")}</span>
                   <span class="preferences-block-meta">
                     <span class="preferences-size">
-                      {historyStorage.info()?.journaled ? sizeText(historyStorage.info()!.bytes) : ""}
+                      {historyStorage.info()?.journaled ? bytesText(historyStorage.info()!.bytes) : ""}
                     </span>
                   </span>
                 </div>

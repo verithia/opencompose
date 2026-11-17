@@ -32,12 +32,6 @@ export const AUDIO_EXTENSIONS = ["wav", "mp3", "aif", "aiff", "aac", "ogg", "fla
 export const IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "webp"];
 export const MEDIA_EXTENSIONS = [...AUDIO_EXTENSIONS, ...IMAGE_EXTENSIONS];
 
-export function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
-}
-
 /** `m:ss`; `null` when the container duration could not be read. */
 export function formatDuration(seconds: number | null): string | null {
   if (seconds === null || !Number.isFinite(seconds) || seconds < 0) return null;

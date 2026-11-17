@@ -6,6 +6,7 @@
  * owns the wording.
  */
 import type { TimeSignature } from "./project";
+import { isRecord } from "../utils/isRecord";
 
 /** A span on the project's quarter-note beat axis. */
 export interface BeatSpan {
@@ -111,36 +112,24 @@ export const MAX_WIRE_CHANGE_FACTS = 64;
 /** The largest dropped-fact count a wire change set may report. */
 export const MAX_WIRE_MORE = 0xffff_ffff;
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
 /** A change set with at least one fact to name. */
 export function hasChangeFacts(set: ChangeSet): boolean {
   return set.changes.length > 0 || set.more > 0;
 }
 
 /**
- * Whether an untrusted value is a change set. Unknown fact kinds stay in the
- * list so the formatter can draw its generic text for them; the list and the
- * dropped count are bounded so a malformed reply cannot make the UI work for
- * an unbounded time.
+ * A new change set from an untrusted value, or `null` when it is not one.
+ * Unknown fact kinds stay in the list so the formatter can draw its generic
+ * text for them; the list and the dropped count are bounded so a malformed
+ * reply cannot make the UI work for an unbounded time.
  */
-export function isChangeSet(value: unknown): value is ChangeSet {
-  if (!isRecord(value) || !Array.isArray(value.changes)) return false;
+export function parseChangeSet(value: unknown): ChangeSet | null {
+  if (!isRecord(value) || !Array.isArray(value.changes)) return null;
   const changes = value.changes
     .filter((change) => isRecord(change) && typeof change.kind === "string")
     .slice(0, MAX_WIRE_CHANGE_FACTS) as Change[];
   const more = typeof value.more === "number" && Number.isFinite(value.more)
     ? Math.min(MAX_WIRE_MORE, Math.max(0, Math.floor(value.more)))
     : 0;
-  // Tighten the value in place so later readers see the same bounded list.
-  value.changes = changes;
-  value.more = more;
-  return true;
-}
-
-/** The cause of an edit, defaulting a malformed value to a plain edit. */
-export function isEditCause(value: unknown): value is EditCause {
-  return value === "edit";
+  return { changes, more };
 }

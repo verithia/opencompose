@@ -5,7 +5,7 @@
  * the user did not ask for.
  */
 import type { WireMessage } from "./wire";
-import { formatBytes } from "./media";
+import { bytesText } from "../utils/bytesText";
 import type { SessionMeta } from "./sessions";
 import type { ChatMessage } from "./transcript";
 
@@ -27,7 +27,7 @@ function scrubBlobs(text: string): string {
 export function boundedResult(text: string): string {
   const bytes = new TextEncoder().encode(text);
   if (bytes.length <= RESULT_LIMIT_BYTES) return text;
-  return `${decodeHead(bytes)}\n[truncated: ${formatBytes(bytes.length)} result, first ${formatBytes(RESULT_LIMIT_BYTES)} shown]`;
+  return `${decodeHead(bytes)}\n[truncated: ${bytesText(bytes.length)} result, first ${bytesText(RESULT_LIMIT_BYTES)} shown]`;
 }
 
 /**
@@ -70,7 +70,7 @@ function attachmentBlock(row: ChatMessage): string {
   const media = row.media ?? [];
   if (!media.length) return "";
   const lines = media.map((item) => {
-    const line = `- ${item.name} (${item.mime}, ${formatBytes(item.bytes)})`;
+    const line = `- ${item.name} (${item.mime}, ${bytesText(item.bytes)})`;
     return item.missing ? `${line} — the file is missing` : line;
   });
   return ["**Attachments**", ...lines].join("\n");
@@ -155,7 +155,7 @@ function base64Bytes(data: string): number {
 function scrubAudio(message: WireMessage): WireMessage {
   const audio = message.input_audio;
   if (!audio || typeof audio.data !== "string") return message;
-  return { ...message, input_audio: { ...audio, data: `[omitted: ${formatBytes(base64Bytes(audio.data))} of audio]` } };
+  return { ...message, input_audio: { ...audio, data: `[omitted: ${bytesText(base64Bytes(audio.data))} of audio]` } };
 }
 
 /** The raw conversation the store holds, plus the session meta. */

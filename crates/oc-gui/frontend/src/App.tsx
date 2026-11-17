@@ -42,7 +42,8 @@ import { MidiImportDialog } from "./components/MidiImportDialog";
 import { MidiExportDialog } from "./components/MidiExportDialog";
 import { ExportAudioDialog } from "./components/ExportAudioDialog";
 import { HistoryPanel } from "./components/HistoryPanel";
-import { briefText, sizeText } from "./stores/historyText";
+import { briefText } from "./stores/historyText";
+import { bytesText } from "./utils/bytesText";
 import { historyStorage } from "./stores/historyStorage";
 import { WorkspaceChooser, WorkspaceChooserDialog } from "./components/WorkspaceChooser";
 import { LanguagePrompt } from "./components/LanguagePrompt";
@@ -557,7 +558,7 @@ export default function App() {
                     class="status-chip history-size-notice"
                     onClick={() => panelStore.openBottom("history")}
                   >
-                    {i18n.t("history.sizeNotice", { size: sizeText(historyStorage.info()?.bytes ?? 0) })}
+                    {i18n.t("history.sizeNotice", { size: bytesText(historyStorage.info()?.bytes ?? 0) })}
                   </button>
                 </Show>
               </Show>

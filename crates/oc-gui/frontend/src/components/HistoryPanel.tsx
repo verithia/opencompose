@@ -6,11 +6,13 @@
  */
 import { For, Show, createEffect, createSignal, on, onCleanup, onMount } from "solid-js";
 import { store } from "../stores/project";
-import { i18n } from "../stores/i18n";
+import { i18n, type I18nKey } from "../stores/i18n";
 import * as api from "../stores/api";
-import type { UndoHistoryEntry, UndoScope } from "../stores/api";
-import { authorName, entryText as historyEntryText, sizeText } from "../stores/historyText";
+import type { HistoryRefusal, UndoHistoryEntry, UndoScope } from "../stores/api";
+import { authorName, entryText as historyEntryText } from "../stores/historyText";
+import { bytesText } from "../utils/bytesText";
 import { historyStorage } from "../stores/historyStorage";
+import { confirm } from "../stores/fileDialogs";
 import "./HistoryPanel.css";
 
 /** What "Clear older history" keeps unless the person types another count. */
@@ -19,6 +21,13 @@ export const DEFAULT_KEEP = 1000;
 function scopeLabel(scope: UndoScope): string {
   return i18n.t(`history.scope.${scope}` as Parameters<typeof i18n.t>[0]);
 }
+
+/** Why clearing older entries was refused. */
+const REFUSAL_KEYS: Record<HistoryRefusal, I18nKey> = {
+  agent_editing: "history.agentEditing",
+  nothing_to_undo: "history.nothingToUndo",
+  nothing_to_redo: "history.nothingToRedo",
+};
 
 /** An entry's time in the app's language, not the system's. */
 export function formatTimestamp(timestamp: number): string {
@@ -51,8 +60,7 @@ export function HistoryPanel() {
   async function clearOlder() {
     const count = droppable();
     if (count <= 0 || clearing()) return;
-    const { ask } = await import("@tauri-apps/plugin-dialog");
-    const confirmed = await ask(
+    const confirmed = await confirm(
       i18n.t("history.clearConfirm", { count: String(count) }),
       { title: i18n.t("history.clearOlder") },
     );
@@ -61,7 +69,7 @@ export function HistoryPanel() {
     try {
       const outcome = await api.historyClearOlder(keep());
       if (outcome.status === "refused") {
-        setReport(i18n.t("history.agentEditing"));
+        setReport(i18n.t(REFUSAL_KEYS[outcome.reason]));
         return;
       }
       if (outcome.status === "failed") {
@@ -70,9 +78,9 @@ export function HistoryPanel() {
       }
       setReport(i18n.t("history.cleared", {
         count: String(outcome.dropped),
-        size: sizeText(outcome.freed),
+        size: bytesText(outcome.freed),
       }));
-      await historyStorage.refresh();
+      historyStorage.adopt(outcome.info);
       await store.refreshHistory();
       await store.refreshUndoState();
     } catch (error) {
@@ -92,13 +100,13 @@ export function HistoryPanel() {
             fallback={<span class="history-size">{i18n.t("history.notJournaled")}</span>}
           >
             <span class="history-size" data-history-bytes={historyStorage.info()?.bytes}>
-              {i18n.t("history.size", { size: sizeText(historyStorage.info()?.bytes ?? 0) })}
+              {i18n.t("history.size", { size: bytesText(historyStorage.info()?.bytes ?? 0) })}
             </span>
           </Show>
         </span>
         <Show when={historyStorage.overNotice()}>
           <span class="history-notice" role="status">
-            {i18n.t("history.sizeNotice", { size: sizeText(historyStorage.info()?.bytes ?? 0) })}
+            {i18n.t("history.sizeNotice", { size: bytesText(historyStorage.info()?.bytes ?? 0) })}
           </span>
         </Show>
         <span class="history-clear">

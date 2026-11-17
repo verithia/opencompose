@@ -1,7 +1,7 @@
 /** Short activity labels; raw arguments and results remain in the disclosure. */
 import { i18n, type I18nKey } from "../stores/i18n";
 import { changeSetText, type ChangeSetOptions } from "../stores/changeText";
-import { hasChangeFacts, isChangeSet } from "../types/change";
+import { hasChangeFacts } from "../types/change";
 import { humanRange } from "../utils/rangeText";
 import type { ToolRow } from "./transcript";
 import { oneLine } from "./transcript";
@@ -57,7 +57,7 @@ function rangeLabel(args: Record<string, unknown>): string {
   if ((typeof start === "number" || typeof start === "string")
     && (typeof end === "number" || typeof end === "string")) {
     const suffix = typeof start === "number" && typeof end === "number" ? "s" : "";
-    return i18n.t("ai.activity.rangeSpan", { start: `${start}${suffix}`, end: `${end}${suffix}` });
+    return i18n.t("range.span", { start: `${start}${suffix}`, end: `${end}${suffix}` });
   }
   return "";
 }
@@ -150,7 +150,7 @@ function analyzeNotesLabel(args: Record<string, unknown>, payload: Record<string
   const start = numeric(payload?.start_s) ?? argNumber(args, "start");
   const end = numeric(payload?.end_s) ?? argNumber(args, "end");
   const range = start !== null && end !== null
-    ? i18n.t("ai.activity.rangeSpan", { start: `${start}s`, end: `${end}s` })
+    ? i18n.t("range.span", { start: `${start}s`, end: `${end}s` })
     : rangeLabel(args);
   const notes = payload && Array.isArray(payload.notes) ? payload.notes.length : null;
   if (notes === null || !range) return i18n.t("ai.activity.analyze_notes");
@@ -193,7 +193,7 @@ function projectSectionRange(payload: Record<string, unknown> | null): string {
 }
 
 export function activitySummary(tool: ToolRow, result?: string, options?: ChangeSetOptions): string {
-  if (isChangeSet(tool.changes) && hasChangeFacts(tool.changes)) return changeSetText(tool.changes, options);
+  if (tool.changes && hasChangeFacts(tool.changes)) return changeSetText(tool.changes, options);
   let args: Record<string, unknown> = {};
   try {
     const parsed = JSON.parse(tool.args ?? "{}");
