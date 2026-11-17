@@ -764,6 +764,44 @@ describe("a reloaded window", () => {
     expect(document.body.textContent).not.toContain(i18n.t("ai.reload.settled"));
   });
 
+  it("clears an inherited question when the panel moves to another workspace", async () => {
+    reloadWith({ open: "s1", turn: { session: "s1", started: Date.now() } });
+    backend.active = { request_id: "r1", session_id: "s1" };
+    backend.loaded = [{ role: "user", content: "what should we do" }];
+    backend.questions = [{
+      kind: "user_question",
+      call_id: "q7",
+      question: "Which direction?",
+      options: ["Darker", "Brighter"],
+      free_text: true,
+    }];
+    await mount();
+    await waitFor(() => expect(document.querySelector(".ai-question-card")).toBeTruthy());
+
+    await workspaceStore.open("/Users/me/other");
+    await waitFor(() => expect(aiSession.open()).toBeNull());
+    expect(document.querySelector(".ai-question-card")).toBeNull();
+  });
+
+  it("clears an inherited question when its turn ends", async () => {
+    reloadWith({ open: "s1", turn: { session: "s1", started: Date.now() } });
+    backend.active = { request_id: "r1", session_id: "s1" };
+    backend.loaded = [{ role: "user", content: "what should we do" }];
+    backend.questions = [{
+      kind: "user_question",
+      call_id: "q7",
+      question: "Which direction?",
+      options: ["Darker", "Brighter"],
+      free_text: true,
+    }];
+    await mount();
+    await waitFor(() => expect(document.querySelector(".ai-question-card")).toBeTruthy());
+
+    backend.active = null;
+    await pollRounds();
+    expect(document.querySelector(".ai-question-card")).toBeNull();
+  });
+
   it("does not paint a stopped inherited turn into the workspace the panel moved to", async () => {
     reloadWith({ open: "s1", turn: { session: "s1", started: Date.now() } });
     backend.active = { request_id: "r1", session_id: "s1" };

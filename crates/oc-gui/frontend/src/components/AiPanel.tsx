@@ -354,14 +354,18 @@ export function AiPanel(props: { onClose?: () => void }) {
     loading() || reattached() !== null || stoppingInherited() !== null || sessionBusy();
   /** The id of the turn this panel runs; `ai_cancel` and the events name it. */
   let requestId: string | null = null;
+  /** Clears the one question card, whether it asks for approval or an answer. */
+  const clearQuestion = () => {
+    setApproval(null);
+    setUserQuestion(null);
+  };
   const cancel = async () => {
     stoppedTokens.add(turnToken);
     // The pending row says the stop is on its way instead of leaving the turn
     // looking healthy; a second press re-sends the cancel.
     setStopRequestedAt((previous) => previous ?? Date.now());
     // The backend drops the question when its turn stops.
-    setApproval(null);
-    setUserQuestion(null);
+    clearQuestion();
     // This window owned the turn, so the marker it kept is spent: a window that
     // comes back must not ask about a turn this one stopped.
     if (requestId) {
@@ -371,7 +375,7 @@ export function AiPanel(props: { onClose?: () => void }) {
   };
   /** Shows a question a turn asked; the card answers it by call id. */
   const showQuestion = (turn: string, request: ApprovalRequest) => {
-    setUserQuestion(null);
+    clearQuestion();
     setApproval({
       ...request,
       requestId: turn,
@@ -382,7 +386,7 @@ export function AiPanel(props: { onClose?: () => void }) {
   };
   /** Shows a question the model asked; the card replies by call id. */
   const showUserQuestion = (turn: string, request: UserQuestion) => {
-    setApproval(null);
+    clearQuestion();
     setReplyText("");
     setUserQuestion({ ...request, requestId: turn });
   };
@@ -668,7 +672,7 @@ export function AiPanel(props: { onClose?: () => void }) {
     // the panel here. The backend keeps running it.
     stopFollowing();
     setStoppingInherited(null);
-    setApproval(null);
+    clearQuestion();
     setReloadNotice(null);
     finishedTurn = null;
     // Keep the conversation the user just left under its own project path
@@ -1188,7 +1192,8 @@ export function AiPanel(props: { onClose?: () => void }) {
   const stopFollowing = () => {
     if (turnPoll !== null) { clearInterval(turnPoll); turnPoll = null; }
     const inherited = reattached();
-    if (inherited && approval()?.requestId === inherited.requestId) setApproval(null);
+    const open = approval() ?? userQuestion();
+    if (inherited && open?.requestId === inherited.requestId) clearQuestion();
     setReattached(null);
   };
   /** Follows a backend turn this view did not start, until it ends. */
@@ -2186,7 +2191,7 @@ export function AiPanel(props: { onClose?: () => void }) {
         setPartial("");
         setReasoning("");
         setPreparingTool(null);
-        setApproval(null);
+        clearQuestion();
         setLoading(false);
         setTurnStartedAt(null);
         setStopRequestedAt(null);
