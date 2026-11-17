@@ -64,6 +64,7 @@ mod view;
 mod audition_archive;
 mod binding;
 mod journal;
+mod workspace;
 #[cfg(test)]
 mod test_support;
 #[cfg(test)]
@@ -77,6 +78,8 @@ use audition_archive::{ArchiveSweep, archived_bytes, mp3_bitrate};
 #[cfg(test)]
 use journal::newest_that_fit;
 pub use binding::{BindingMismatch, BindingStatus, SavedHistoryMark, binding_status};
+pub use workspace::Scope;
+use workspace::{canonical_dir, hashed_key, is_valid_key};
 use binding::same_project;
 pub use audition_archive::{
     AUDITION_ARCHIVE_BUDGET, AuditionArchive, EvictedAudition, audition_archive,
@@ -106,7 +109,6 @@ use message_protocol::MessageMeta;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -249,20 +251,6 @@ pub struct Fork<'a> {
     pub through: Option<usize>,
 }
 
-/// What a workspace directory records: the key it was derived from and every
-/// directory path seen for it, so a moved workspace can be re-associated.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct WorkspaceRecord {
-    v: u32,
-    key: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    workspace: Option<String>,
-    #[serde(default)]
-    paths: Vec<String>,
-    created: String,
-    updated: String,
-}
-
 /// What the project looked like when a summary was written: the alternate to
 /// carrying the DSL itself into the summary.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -270,27 +258,6 @@ pub struct ProjectFacts {
     pub path: Option<String>,
     pub dsl_digest: String,
     pub track_count: usize,
-}
-
-/// What a listing covers: one workspace (which may be the detached one) or every
-/// workspace.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Scope<'a> {
-    Workspace(Option<&'a Path>),
-    All,
-}
-
-/// One workspace folder of conversations on disk.
-#[derive(Debug, Clone)]
-pub struct StoredWorkspace {
-    pub key: String,
-    /// The folder the conversations belong to; absent for `detached` and for a
-    /// record that lost it.
-    pub path: Option<PathBuf>,
-    pub sessions: usize,
-    pub bytes: u64,
-    /// When a conversation in it last changed.
-    pub touched: Option<std::time::SystemTime>,
 }
 
 /// One loaded conversation.
@@ -637,37 +604,7 @@ impl Store {
 
     /// The key a workspace's conversations live under, following a recorded
     /// directory when the hash of this path has no directory yet.
-    pub fn workspace_key(&self, workspace: Option<&Path>) -> String {
-        let Some(path) = workspace else {
-            return DETACHED_KEY.to_owned();
-        };
-        let key = hashed_key(path);
-        if self.root.join(&key).is_dir() {
-            return key;
-        }
-        let canonical = canonical_dir(path);
-        self.recorded_key(&canonical).unwrap_or(key)
-    }
 
-    fn recorded_key(&self, canonical: &Path) -> Option<String> {
-        let entries = std::fs::read_dir(&self.root).ok()?;
-        for entry in entries.flatten().take(512) {
-            let name = entry.file_name().to_string_lossy().to_string();
-            if !is_valid_key(&name) {
-                continue;
-            }
-            let Ok(bytes) = std::fs::read(entry.path().join(WORKSPACE_FILE)) else {
-                continue;
-            };
-            let Ok(record) = serde_json::from_slice::<WorkspaceRecord>(&bytes) else {
-                continue;
-            };
-            if record.paths.iter().any(|path| Path::new(path) == canonical) {
-                return Some(name);
-            }
-        }
-        None
-    }
 
     /// Re-associates a moved workspace: the directory follows the new path and
     /// the record keeps both. The record itself is written by every save, so this
@@ -697,104 +634,13 @@ impl Store {
         append_records_under(dir, records, self.session_cap)
     }
 
-    fn ensure_root(&self) -> Result<(), String> {
-        private_fs::ensure_dir(&self.root).map_err(|error| format!("sessions: {error}"))
-    }
 
-    fn ensure_workspace(
-        &self,
-        key: &str,
-        workspace: Option<&Path>,
-        at: &str,
-    ) -> Result<(), String> {
-        self.ensure_root()?;
-        let dir = self.root.join(key);
-        private_fs::ensure_dir(&dir).map_err(|error| format!("sessions: {error}"))?;
-        if key == DETACHED_KEY {
-            return Ok(());
-        }
-        let file = dir.join(WORKSPACE_FILE);
-        let existing = std::fs::read(&file)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice::<WorkspaceRecord>(&bytes).ok());
-        let mut record = existing.unwrap_or(WorkspaceRecord {
-            v: VERSION,
-            key: key.to_owned(),
-            workspace: None,
-            paths: Vec::new(),
-            created: at.to_owned(),
-            updated: at.to_owned(),
-        });
-        if let Some(workspace) = workspace {
-            let text = canonical_dir(workspace).to_string_lossy().to_string();
-            record.workspace.get_or_insert_with(|| text.clone());
-            if !record.paths.contains(&text) {
-                record.paths.push(text);
-                record.paths.truncate(8);
-            }
-        }
-        record.updated = at.to_owned();
-        let bytes = serde_json::to_vec_pretty(&record).map_err(|error| error.to_string())?;
-        private_fs::write_atomic(&file, &bytes).map_err(|error| format!("sessions: {error}"))
-    }
 
     // ---- sessions -------------------------------------------------------
 
     /// Sessions newest first, scoped to one workspace or to every workspace.
-    pub fn list(&self, scope: Scope<'_>) -> Result<Vec<SessionMeta>, String> {
-        let keys = match scope {
-            Scope::Workspace(Some(path)) => vec![self.workspace_key(Some(path))],
-            Scope::Workspace(None) => vec![DETACHED_KEY.to_owned()],
-            Scope::All => self.workspace_keys(),
-        };
-        let mut sessions = Vec::new();
-        for key in keys {
-            let Ok(entries) = std::fs::read_dir(self.root.join(&key)) else {
-                continue;
-            };
-            for entry in entries.flatten() {
-                let name = entry.file_name().to_string_lossy().to_string();
-                if !is_valid_id(&name) {
-                    continue;
-                }
-                if let Some(meta) = read_meta(&entry.path().join(META_FILE)) {
-                    sessions.push(meta);
-                }
-            }
-        }
-        let recorded = self.workspace_paths();
-        for meta in &mut sessions {
-            if let Some(path) = recorded.get(&meta.workspace_key) {
-                meta.workspace = Some(path.clone());
-            }
-        }
-        sessions.sort_by(|left, right| {
-            right
-                .updated
-                .cmp(&left.updated)
-                .then_with(|| right.id.cmp(&left.id))
-        });
-        Ok(sessions)
-    }
 
-    fn workspace_keys(&self) -> Vec<String> {
-        self.lookup.workspaces(&self.root).keys
-    }
 
-    fn workspace_paths(&self) -> HashMap<String, String> {
-        let mut paths = HashMap::new();
-        for key in self.workspace_keys() {
-            let Ok(bytes) = std::fs::read(self.root.join(&key).join(WORKSPACE_FILE)) else {
-                continue;
-            };
-            if let Ok(record) = serde_json::from_slice::<WorkspaceRecord>(&bytes)
-                && let Some(workspace) = record.workspace
-            {
-                paths.insert(key, workspace);
-            }
-        }
-        paths
-    }
 
     pub fn find(&self, id: &str) -> Result<(PathBuf, SessionMeta), String> {
         lookup::find(self.lookup.as_ref(), &self.root, id).map_err(|error| error.to_string())
@@ -1075,81 +921,9 @@ impl Store {
 
     /// Every workspace folder of conversations, for the Storage page and the
     /// stale sweep. `detached` has no folder and is never stale.
-    pub fn workspaces_on_disk(&self) -> Vec<StoredWorkspace> {
-        let paths = self.workspace_paths();
-        self.workspace_keys()
-            .into_iter()
-            .map(|key| {
-                let dir = self.root.join(&key);
-                let mut sessions = 0;
-                let mut touched = std::fs::metadata(dir.join(WORKSPACE_FILE))
-                    .and_then(|meta| meta.modified())
-                    .ok();
-                for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
-                    let name = entry.file_name().to_string_lossy().to_string();
-                    if !is_valid_id(&name) {
-                        continue;
-                    }
-                    sessions += 1;
-                    let modified = std::fs::metadata(entry.path().join(MESSAGES_FILE))
-                        .or_else(|_| std::fs::metadata(entry.path().join(META_FILE)))
-                        .and_then(|meta| meta.modified())
-                        .ok();
-                    touched = touched.max(modified);
-                }
-                StoredWorkspace {
-                    path: paths.get(&key).map(PathBuf::from),
-                    bytes: crate::project_data::dir_bytes(&dir),
-                    key,
-                    sessions,
-                    touched,
-                }
-            })
-            .collect()
-    }
 
     /// Remove every conversation of one workspace, then the shared audio
     /// only they named. `guard` refuses while a turn runs in any of them.
-    pub fn remove_workspace_guarded(
-        &self,
-        key: &str,
-        guard: &dyn Fn(&str) -> Result<(), SessionError>,
-    ) -> Result<u64, SessionError> {
-        if !is_valid_key(key) || key == DETACHED_KEY {
-            return Err("not a workspace of conversations".to_owned().into());
-        }
-        let _lock = self.mutation_lock()?;
-        let dir = self.root.join(key);
-        // Every conversation keeps its lock until the workspace directory is
-        // gone. A conversation another process has open refuses the whole
-        // removal instead of deleting it under that process.
-        let mut locks = Vec::new();
-        for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
-            let name = entry.file_name().to_string_lossy().to_string();
-            if !is_valid_id(&name) {
-                continue;
-            }
-            guard(&name)?;
-            match crate::process_lock::ProcessLock::acquire(self.lock_path(&name)) {
-                Ok(lock) => locks.push(lock),
-                Err(error) if error.is_in_use() => {
-                    return Err(SessionError::new(
-                        SessionErrorKind::InUse,
-                        "Another OpenCompose process has one of these conversations open.",
-                    ));
-                }
-                Err(error) => return Err(format!("sessions: {error}").into()),
-            }
-        }
-        let bytes = crate::project_data::dir_bytes(&dir);
-        match std::fs::remove_dir_all(&dir) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(format!("sessions: {error}").into()),
-        }
-        self.collect_unreferenced_locked();
-        Ok(bytes)
-    }
 
     fn delete_inner(&self, id: &str) -> Result<(), String> {
         let (dir, _) = self.find(id)?;
@@ -2234,9 +2008,6 @@ fn rfc3339_from(time: SystemTime) -> String {
 
 /// A directory as the store keys it; a path that does not exist yet stays as
 /// given so a project saved later keeps its key.
-fn canonical_dir(path: &Path) -> PathBuf {
-    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
-}
 
 pub(crate) fn canonical_path(path: &Path) -> PathBuf {
     crate::project_data::canonical_path(path)
@@ -2284,9 +2055,6 @@ fn newest_pinned_rows(view: &[Value]) -> Vec<(usize, Value)> {
         .collect()
 }
 
-fn hashed_key(path: &Path) -> String {
-    crate::project_data::path_key(path)
-}
 
 /// The digest a summary names instead of carrying the project's DSL.
 pub fn dsl_digest(dsl: &str) -> String {
@@ -2315,9 +2083,6 @@ fn is_valid_id(id: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
-fn is_valid_key(key: &str) -> bool {
-    key == DETACHED_KEY || (key.len() == 16 && is_valid_id(key))
-}
 
 fn clean_title(text: &str) -> String {
     let text = clip(&collapse(text), MAX_TITLE_CHARS);
