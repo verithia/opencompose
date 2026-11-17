@@ -3,9 +3,9 @@
 //! Each case builds a small `.ocp` pair, diffs it, inverts the patch, and
 //! asserts the facts the undo UI and the agent panel render.
 
-use oc_dsl::ast::{ProjectProperties, TimeSignature};
+use oc_dsl::ast::{KeyMode, ProjectProperties, TimeSignature};
 use oc_dsl::change::{
-    self, BeatSpan, Change, ChangeSet, MAX_CHANGES, MAX_FACT_TEXT_CHARS, MixParam, Owner,
+    self, BeatSpan, Change, ChangeSet, KeyToken, MAX_CHANGES, MAX_FACT_TEXT_CHARS, MixParam, Owner,
 };
 use oc_dsl::diff::{self, PatchOp, ProjectPatch};
 use oc_dsl::parse;
@@ -25,7 +25,7 @@ fn describe_pair(
         .expect("projects serialize")
         .expect("fixture pair is an edit");
     let inverse = diff::invert_patch(old, new, &forward);
-    let set = change::describe_patches(&forward, &inverse);
+    let set = change::describe(&forward, &inverse, &new.properties);
     (forward, inverse, set)
 }
 
@@ -62,6 +62,39 @@ fn tempo_change_is_a_typed_fact_and_uses_the_snake_case_tag() {
         value,
         serde_json::json!({"kind": "tempo", "from": 120.0, "to": 132.0})
     );
+}
+
+#[test]
+fn key_change_keeps_the_dsl_mode_wire_and_the_project_wire_apart() {
+    let set = describe_sources("@project\n  key: C major\n", "@project\n  key: F# minor\n");
+    let Change::Key {
+        to: Some(token), ..
+    } = only(&set)
+    else {
+        panic!("a key edit is one key fact");
+    };
+    assert_eq!(token.mode, KeyMode::Minor);
+    assert_eq!(
+        serde_json::to_value(Change::Key {
+            from: Some(KeyToken {
+                root: "C".into(),
+                mode: KeyMode::Major,
+            }),
+            to: Some(KeyToken {
+                root: "F#".into(),
+                mode: KeyMode::Minor,
+            }),
+        })
+        .unwrap(),
+        serde_json::json!({
+            "kind": "key",
+            "from": {"root": "C", "mode": "major"},
+            "to": {"root": "F#", "mode": "minor"},
+        })
+    );
+    let project = parse("@project\n  key: C major\n").unwrap();
+    let key = serde_json::to_value(project.properties.key.unwrap()).unwrap();
+    assert_eq!(key["mode"], "Major");
 }
 
 #[test]
@@ -463,23 +496,21 @@ fn a_forward_operation_without_an_inverse_partner_does_not_panic() {
     };
     let forward = ProjectPatch {
         label: String::new(),
-        changes: vec![PatchOp::SetProperties(properties)],
+        changes: vec![PatchOp::SetProperties(properties.clone())],
     };
     let inverse = ProjectPatch {
         label: String::new(),
         changes: Vec::new(),
     };
-    let set = change::describe_patches(&forward, &inverse);
+    let set = change::describe(&forward, &inverse, &properties);
     assert_eq!(only(&set), Change::ProjectSettings);
 
-    let mut removal = ProjectPatch {
-        label: String::new(),
+    let removal = ProjectPatch {
+        label: "missing inverse".into(),
         changes: vec![PatchOp::RemovePreset("gone".into())],
     };
-    removal.label = "missing inverse".into();
-    let mutations = diff::mutations(&removal, &inverse);
-    assert!(mutations.is_empty());
-    assert!(change::describe(&mutations).is_empty());
+    assert!(diff::mutations(&removal, &inverse).is_empty());
+    assert!(change::describe(&removal, &inverse, &properties).is_empty());
 }
 
 #[test]
@@ -490,7 +521,7 @@ fn stored_compressed_patches_still_describe_the_edit() {
     let reopen = |patch: &ProjectPatch| {
         diff::compressed::decode_patch(&diff::compressed::encode_patch(patch).unwrap()).unwrap()
     };
-    let set = change::describe_patches(&reopen(&forward), &reopen(&inverse));
+    let set = change::describe(&reopen(&forward), &reopen(&inverse), &new.properties);
     assert_eq!(
         only(&set),
         Change::Tempo {
@@ -501,14 +532,14 @@ fn stored_compressed_patches_still_describe_the_edit() {
 }
 
 #[test]
-fn describe_with_properties_uses_the_caller_meter_for_spans() {
+fn describe_uses_the_caller_meter_for_spans() {
     let (old, new) = projects(
         "@project\n  time_signature: 3/4\n@section verse [1:1 - 2:1]\n",
         "@project\n  time_signature: 3/4\n@section verse [1:1 - 4:1]\n",
     );
     let forward = diff::diff(&old, &new).unwrap().unwrap();
     let inverse = diff::invert_patch(&old, &new, &forward);
-    let set = change::describe_patches_with_properties(&forward, &inverse, &new.properties);
+    let set = change::describe(&forward, &inverse, &new.properties);
     assert!(
         set.changes.iter().any(|change| matches!(
             change,

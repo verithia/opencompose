@@ -91,9 +91,7 @@ pub(crate) fn entry_changes(
         compressed::decode_patch(forward),
         compressed::decode_patch(inverse),
     ) {
-        (Ok(forward), Ok(inverse)) => {
-            oc_dsl::change::describe_patches_with_properties(&forward, &inverse, properties)
-        }
+        (Ok(forward), Ok(inverse)) => oc_dsl::change::describe(&forward, &inverse, properties),
         _ => oc_dsl::change::ChangeSet {
             changes: Vec::new(),
             more: 0,

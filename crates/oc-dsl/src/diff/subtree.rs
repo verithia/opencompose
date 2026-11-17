@@ -18,164 +18,80 @@ use crate::ast::{
 
 use super::{OrderedAudioClip, PatchOp, ProjectHeader, ProjectPatch};
 
-/// A subtree carried by one side of a paired edit.
+/// One side of a subtree edit: an addition, a removal, or both old and new
+/// values of the same key.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Subtree<'a> {
-    /// Authored project name and declared version.
-    Header(&'a ProjectHeader),
-    /// Musical project properties.
-    Properties(&'a ProjectProperties),
-    /// A named preset declaration.
-    Preset(&'a PresetDef),
-    /// A named pattern declaration.
-    Pattern(&'a PatternDef),
-    /// A track and everything it owns.
-    Track(&'a Track),
-    /// A named bus.
-    Bus(&'a Bus),
-    /// The optional master section.
-    Master(&'a Option<Master>),
-    /// The arrangement sections.
-    Sections(&'a [Section]),
-    /// Timeline markers.
-    Markers(&'a [Marker]),
-    /// Clip groups.
-    Groups(&'a [ClipGroup]),
-    /// Project audio clips in their global order.
-    AudioClips(&'a [OrderedAudioClip]),
+pub enum Side<T> {
+    Added(T),
+    Removed(T),
+    Changed(T, T),
 }
 
-/// The subtree kind a [`Subtree`] carries.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SubtreeKind {
-    Header,
-    Properties,
-    Preset,
-    Pattern,
-    Track,
-    Bus,
-    Master,
-    Sections,
-    Markers,
-    Groups,
-    AudioClips,
-}
-
-impl<'a> Subtree<'a> {
-    /// The kind of subtree this value borrows.
-    pub fn kind(&self) -> SubtreeKind {
+impl<T> Side<T> {
+    /// The value before the edit, when this side carries one.
+    pub fn before(&self) -> Option<&T> {
         match self {
-            Self::Header(_) => SubtreeKind::Header,
-            Self::Properties(_) => SubtreeKind::Properties,
-            Self::Preset(_) => SubtreeKind::Preset,
-            Self::Pattern(_) => SubtreeKind::Pattern,
-            Self::Track(_) => SubtreeKind::Track,
-            Self::Bus(_) => SubtreeKind::Bus,
-            Self::Master(_) => SubtreeKind::Master,
-            Self::Sections(_) => SubtreeKind::Sections,
-            Self::Markers(_) => SubtreeKind::Markers,
-            Self::Groups(_) => SubtreeKind::Groups,
-            Self::AudioClips(_) => SubtreeKind::AudioClips,
+            Self::Removed(value) | Self::Changed(value, _) => Some(value),
+            Self::Added(_) => None,
         }
     }
 
-    /// The header this subtree borrows, if it is a header.
-    pub fn as_header(&self) -> Option<&'a ProjectHeader> {
+    /// The value after the edit, when this side carries one.
+    pub fn after(&self) -> Option<&T> {
         match self {
-            Self::Header(value) => Some(value),
-            _ => None,
-        }
-    }
-
-    /// The properties this subtree borrows, if it is properties.
-    pub fn as_properties(&self) -> Option<&'a ProjectProperties> {
-        match self {
-            Self::Properties(value) => Some(value),
-            _ => None,
-        }
-    }
-
-    /// The preset this subtree borrows, if it is a preset.
-    pub fn as_preset(&self) -> Option<&'a PresetDef> {
-        match self {
-            Self::Preset(value) => Some(value),
-            _ => None,
-        }
-    }
-
-    /// The pattern this subtree borrows, if it is a pattern.
-    pub fn as_pattern(&self) -> Option<&'a PatternDef> {
-        match self {
-            Self::Pattern(value) => Some(value),
-            _ => None,
-        }
-    }
-
-    /// The track this subtree borrows, if it is a track.
-    pub fn as_track(&self) -> Option<&'a Track> {
-        match self {
-            Self::Track(value) => Some(value),
-            _ => None,
-        }
-    }
-
-    /// The bus this subtree borrows, if it is a bus.
-    pub fn as_bus(&self) -> Option<&'a Bus> {
-        match self {
-            Self::Bus(value) => Some(value),
-            _ => None,
-        }
-    }
-
-    /// The master option this subtree borrows, if it is the master section.
-    pub fn as_master(&self) -> Option<&'a Option<Master>> {
-        match self {
-            Self::Master(value) => Some(value),
-            _ => None,
-        }
-    }
-
-    /// The sections this subtree borrows, if it is the section list.
-    pub fn as_sections(&self) -> Option<&'a [Section]> {
-        match self {
-            Self::Sections(value) => Some(value),
-            _ => None,
-        }
-    }
-
-    /// The markers this subtree borrows, if it is the marker list.
-    pub fn as_markers(&self) -> Option<&'a [Marker]> {
-        match self {
-            Self::Markers(value) => Some(value),
-            _ => None,
-        }
-    }
-
-    /// The groups this subtree borrows, if it is the group list.
-    pub fn as_groups(&self) -> Option<&'a [ClipGroup]> {
-        match self {
-            Self::Groups(value) => Some(value),
-            _ => None,
-        }
-    }
-
-    /// The audio clips this subtree borrows, if it is the audio clip list.
-    pub fn as_audio_clips(&self) -> Option<&'a [OrderedAudioClip]> {
-        match self {
-            Self::AudioClips(value) => Some(value),
-            _ => None,
+            Self::Added(value) | Self::Changed(_, value) => Some(value),
+            Self::Removed(_) => None,
         }
     }
 }
 
-/// Two sides of one subtree edit; either side is absent for an addition or a
-/// removal.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct SubtreeChange<'a> {
-    /// The subtree before the edit, when the old patch carried it.
-    pub before: Option<Subtree<'a>>,
-    /// The subtree after the edit, when the new patch carried it.
-    pub after: Option<Subtree<'a>>,
+macro_rules! subtree_kinds {
+    ($($variant:ident($ty:ty)),* $(,)?) => {
+        /// One typed subtree edit, with a variant per subtree kind.
+        #[derive(Debug, Clone, Copy, PartialEq)]
+        pub enum SubtreeChange<'a> {
+            $($variant(Side<&'a $ty>)),*
+        }
+
+        #[derive(Debug, Clone, Copy)]
+        enum Node<'a> {
+            $($variant(&'a $ty)),*
+        }
+
+        fn pair<'a>(
+            before: Option<Node<'a>>,
+            after: Option<Node<'a>>,
+        ) -> Option<SubtreeChange<'a>> {
+            match (before, after) {
+                $(
+                    (None, Some(Node::$variant(after))) => {
+                        Some(SubtreeChange::$variant(Side::Added(after)))
+                    }
+                    (Some(Node::$variant(before)), None) => {
+                        Some(SubtreeChange::$variant(Side::Removed(before)))
+                    }
+                    (Some(Node::$variant(before)), Some(Node::$variant(after))) => {
+                        Some(SubtreeChange::$variant(Side::Changed(before, after)))
+                    }
+                )*
+                _ => None,
+            }
+        }
+    };
+}
+
+subtree_kinds! {
+    Header(ProjectHeader),
+    Properties(ProjectProperties),
+    Preset(PresetDef),
+    Pattern(PatternDef),
+    Track(Track),
+    Bus(Bus),
+    Master(Option<Master>),
+    Sections([Section]),
+    Markers([Marker]),
+    Groups([ClipGroup]),
+    AudioClips([OrderedAudioClip]),
 }
 
 /// A list whose declaration order changed.
@@ -212,13 +128,68 @@ pub enum Mutation<'a> {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum Key<'a> {
+    Header,
+    Properties,
+    Preset(&'a str),
+    Pattern(&'a str),
+    Track(&'a str),
+    Bus(&'a str),
+    Master,
+    Sections,
+    Markers,
+    Groups,
+    AudioClips,
+}
+
+fn key<'a>(op: &'a PatchOp) -> Option<Key<'a>> {
+    match op {
+        PatchOp::SetProjectHeader(_) => Some(Key::Header),
+        PatchOp::SetProperties(_) => Some(Key::Properties),
+        PatchOp::SetPreset(preset) => Some(Key::Preset(&preset.name)),
+        PatchOp::RemovePreset(name) => Some(Key::Preset(name)),
+        PatchOp::SetPattern(pattern) => Some(Key::Pattern(&pattern.name)),
+        PatchOp::RemovePattern(name) => Some(Key::Pattern(name)),
+        PatchOp::SetTrack { track, .. } => Some(Key::Track(&track.name)),
+        PatchOp::RemoveTrack(_) => None,
+        PatchOp::SetBus(bus) => Some(Key::Bus(&bus.name)),
+        PatchOp::RemoveBus(name) => Some(Key::Bus(name)),
+        PatchOp::SetMaster(_) => Some(Key::Master),
+        PatchOp::SetSections(_) => Some(Key::Sections),
+        PatchOp::SetMarkers(_) => Some(Key::Markers),
+        PatchOp::SetGroups(_) => Some(Key::Groups),
+        PatchOp::SetAudioClips(_) => Some(Key::AudioClips),
+        PatchOp::ReorderTracks(_)
+        | PatchOp::ReorderPresets(_)
+        | PatchOp::ReorderPatterns(_)
+        | PatchOp::ReorderBuses(_) => None,
+    }
+}
+
+fn node<'a>(op: &'a PatchOp) -> Option<Node<'a>> {
+    match op {
+        PatchOp::SetProjectHeader(header) => Some(Node::Header(header)),
+        PatchOp::SetProperties(properties) => Some(Node::Properties(properties)),
+        PatchOp::SetPreset(preset) => Some(Node::Preset(preset)),
+        PatchOp::SetPattern(pattern) => Some(Node::Pattern(pattern)),
+        PatchOp::SetTrack { track, .. } => Some(Node::Track(track)),
+        PatchOp::SetBus(bus) => Some(Node::Bus(bus)),
+        PatchOp::SetMaster(master) => Some(Node::Master(master)),
+        PatchOp::SetSections(sections) => Some(Node::Sections(sections)),
+        PatchOp::SetMarkers(markers) => Some(Node::Markers(markers)),
+        PatchOp::SetGroups(groups) => Some(Node::Groups(groups)),
+        PatchOp::SetAudioClips(clips) => Some(Node::AudioClips(clips)),
+        _ => None,
+    }
+}
+
 /// Pair every forward operation with the inverse operation of the same key.
 ///
-/// The result follows the forward patch's operation order. Reorders carry the
-/// names both patches recorded, so a consumer can tell a real reorder from the
-/// bookkeeping placement of a removed or added declaration. A forward operation
-/// with no inverse partner still yields the side that is known, or is skipped
-/// when no name or value can be recovered.
+/// Removed tracks come first in old declaration order, then the remaining
+/// forward operations in patch order, then any reorder that only the inverse
+/// recorded. A forward write with no inverse partner is an addition; a forward
+/// removal with no inverse partner is skipped because its value is unknown.
 pub fn mutations<'a>(forward: &'a ProjectPatch, inverse: &'a ProjectPatch) -> Vec<Mutation<'a>> {
     let forward_track_names: HashSet<&str> = forward
         .changes
@@ -228,18 +199,13 @@ pub fn mutations<'a>(forward: &'a ProjectPatch, inverse: &'a ProjectPatch) -> Ve
             _ => None,
         })
         .collect();
-    let inverse_tracks: Vec<&'a Track> = inverse
+    let restored_tracks: Vec<&'a Track> = inverse
         .changes
         .iter()
         .filter_map(|op| match op {
             PatchOp::SetTrack { track, .. } => Some(track),
             _ => None,
         })
-        .collect();
-    // An inverse SetTrack whose name no forward SetTrack mentions restores a
-    // forward-removed track. Inverse tracks arrive in old declaration order.
-    let restored_tracks: Vec<&'a Track> = inverse_tracks
-        .into_iter()
         .filter(|track| !forward_track_names.contains(track.name.as_str()))
         .collect();
 
@@ -260,197 +226,55 @@ pub fn mutations<'a>(forward: &'a ProjectPatch, inverse: &'a ProjectPatch) -> Ve
         restored_by_position.insert(*position, *track);
     }
 
+    let mut inverse_by_key: HashMap<Key<'a>, Node<'a>> = HashMap::new();
+    for op in &inverse.changes {
+        if let (Some(key), Some(node)) = (key(op), node(op)) {
+            inverse_by_key.entry(key).or_insert(node);
+        }
+    }
+
     let mut out = Vec::with_capacity(forward.changes.len());
     // Removals describe in old declaration order even though the patch removes
     // them back-to-front; a later rename pairing compares them by position.
     for (_, position) in &removals {
         if let Some(track) = restored_by_position.get(position) {
-            out.push(Mutation::Subtree(SubtreeChange {
-                before: Some(Subtree::Track(track)),
-                after: None,
-            }));
+            out.push(Mutation::Subtree(SubtreeChange::Track(Side::Removed(
+                track,
+            ))));
         }
     }
     for op in &forward.changes {
         match op {
-            PatchOp::SetProjectHeader(header) => {
-                let before = find_inverse(inverse, |op| match op {
-                    PatchOp::SetProjectHeader(old) => Some(Subtree::Header(old)),
-                    _ => None,
-                });
-                out.push(Mutation::Subtree(SubtreeChange {
-                    before,
-                    after: Some(Subtree::Header(header)),
-                }));
-            }
-            PatchOp::SetProperties(properties) => {
-                let before = find_inverse(inverse, |op| match op {
-                    PatchOp::SetProperties(old) => Some(Subtree::Properties(old)),
-                    _ => None,
-                });
-                out.push(Mutation::Subtree(SubtreeChange {
-                    before,
-                    after: Some(Subtree::Properties(properties)),
-                }));
-            }
-            PatchOp::SetPreset(preset) => {
-                let before = find_inverse(inverse, |op| match op {
-                    PatchOp::SetPreset(old) if old.name == preset.name => {
-                        Some(Subtree::Preset(old))
-                    }
-                    _ => None,
-                });
-                out.push(Mutation::Subtree(SubtreeChange {
-                    before,
-                    after: Some(Subtree::Preset(preset)),
-                }));
-            }
-            PatchOp::RemovePreset(name) => {
-                if let Some(before) = find_inverse(inverse, |op| match op {
-                    PatchOp::SetPreset(old) if old.name == *name => Some(Subtree::Preset(old)),
-                    _ => None,
-                }) {
-                    out.push(Mutation::Subtree(SubtreeChange {
-                        before: Some(before),
-                        after: None,
-                    }));
-                }
-            }
-            PatchOp::SetPattern(pattern) => {
-                let before = find_inverse(inverse, |op| match op {
-                    PatchOp::SetPattern(old) if old.name == pattern.name => {
-                        Some(Subtree::Pattern(old))
-                    }
-                    _ => None,
-                });
-                out.push(Mutation::Subtree(SubtreeChange {
-                    before,
-                    after: Some(Subtree::Pattern(pattern)),
-                }));
-            }
-            PatchOp::RemovePattern(name) => {
-                if let Some(before) = find_inverse(inverse, |op| match op {
-                    PatchOp::SetPattern(old) if old.name == *name => Some(Subtree::Pattern(old)),
-                    _ => None,
-                }) {
-                    out.push(Mutation::Subtree(SubtreeChange {
-                        before: Some(before),
-                        after: None,
-                    }));
-                }
-            }
-            PatchOp::SetTrack { track, .. } => {
-                let before = find_inverse(inverse, |op| match op {
-                    PatchOp::SetTrack { track: old, .. } if old.name == track.name => {
-                        Some(Subtree::Track(old))
-                    }
-                    _ => None,
-                });
-                out.push(Mutation::Subtree(SubtreeChange {
-                    before,
-                    after: Some(Subtree::Track(track)),
-                }));
-            }
             PatchOp::RemoveTrack(_) => {}
-            PatchOp::ReorderTracks(names) => out.push(Mutation::Reordered {
-                list: OrderedList::Tracks,
-                order: OrderChange {
-                    before: reorder_names(inverse, OrderedList::Tracks),
-                    after: Some(names.as_slice()),
-                },
-            }),
-            PatchOp::SetBus(bus) => {
-                let before = find_inverse(inverse, |op| match op {
-                    PatchOp::SetBus(old) if old.name == bus.name => Some(Subtree::Bus(old)),
-                    _ => None,
-                });
-                out.push(Mutation::Subtree(SubtreeChange {
-                    before,
-                    after: Some(Subtree::Bus(bus)),
-                }));
-            }
-            PatchOp::RemoveBus(name) => {
-                if let Some(before) = find_inverse(inverse, |op| match op {
-                    PatchOp::SetBus(old) if old.name == *name => Some(Subtree::Bus(old)),
-                    _ => None,
-                }) {
-                    out.push(Mutation::Subtree(SubtreeChange {
-                        before: Some(before),
-                        after: None,
-                    }));
+            PatchOp::ReorderTracks(names) => out.push(reordered(
+                OrderedList::Tracks,
+                inverse,
+                Some(names.as_slice()),
+            )),
+            PatchOp::ReorderPresets(names) => out.push(reordered(
+                OrderedList::Presets,
+                inverse,
+                Some(names.as_slice()),
+            )),
+            PatchOp::ReorderPatterns(names) => out.push(reordered(
+                OrderedList::Patterns,
+                inverse,
+                Some(names.as_slice()),
+            )),
+            PatchOp::ReorderBuses(names) => out.push(reordered(
+                OrderedList::Buses,
+                inverse,
+                Some(names.as_slice()),
+            )),
+            _ => {
+                let Some(op_key) = key(op) else {
+                    continue;
+                };
+                let before = inverse_by_key.get(&op_key).copied();
+                if let Some(change) = pair(before, node(op)) {
+                    out.push(Mutation::Subtree(change));
                 }
             }
-            PatchOp::SetMaster(master) => {
-                let before = find_inverse(inverse, |op| match op {
-                    PatchOp::SetMaster(old) => Some(Subtree::Master(old)),
-                    _ => None,
-                });
-                out.push(Mutation::Subtree(SubtreeChange {
-                    before,
-                    after: Some(Subtree::Master(master)),
-                }));
-            }
-            PatchOp::SetSections(sections) => {
-                let before = find_inverse(inverse, |op| match op {
-                    PatchOp::SetSections(old) => Some(Subtree::Sections(old)),
-                    _ => None,
-                });
-                out.push(Mutation::Subtree(SubtreeChange {
-                    before,
-                    after: Some(Subtree::Sections(sections)),
-                }));
-            }
-            PatchOp::SetMarkers(markers) => {
-                let before = find_inverse(inverse, |op| match op {
-                    PatchOp::SetMarkers(old) => Some(Subtree::Markers(old)),
-                    _ => None,
-                });
-                out.push(Mutation::Subtree(SubtreeChange {
-                    before,
-                    after: Some(Subtree::Markers(markers)),
-                }));
-            }
-            PatchOp::SetGroups(groups) => {
-                let before = find_inverse(inverse, |op| match op {
-                    PatchOp::SetGroups(old) => Some(Subtree::Groups(old)),
-                    _ => None,
-                });
-                out.push(Mutation::Subtree(SubtreeChange {
-                    before,
-                    after: Some(Subtree::Groups(groups)),
-                }));
-            }
-            PatchOp::SetAudioClips(clips) => {
-                let before = find_inverse(inverse, |op| match op {
-                    PatchOp::SetAudioClips(old) => Some(Subtree::AudioClips(old)),
-                    _ => None,
-                });
-                out.push(Mutation::Subtree(SubtreeChange {
-                    before,
-                    after: Some(Subtree::AudioClips(clips)),
-                }));
-            }
-            PatchOp::ReorderPresets(names) => out.push(Mutation::Reordered {
-                list: OrderedList::Presets,
-                order: OrderChange {
-                    before: reorder_names(inverse, OrderedList::Presets),
-                    after: Some(names.as_slice()),
-                },
-            }),
-            PatchOp::ReorderPatterns(names) => out.push(Mutation::Reordered {
-                list: OrderedList::Patterns,
-                order: OrderChange {
-                    before: reorder_names(inverse, OrderedList::Patterns),
-                    after: Some(names.as_slice()),
-                },
-            }),
-            PatchOp::ReorderBuses(names) => out.push(Mutation::Reordered {
-                list: OrderedList::Buses,
-                order: OrderChange {
-                    before: reorder_names(inverse, OrderedList::Buses),
-                    after: Some(names.as_slice()),
-                },
-            }),
         }
     }
     // A membership edit can need an inverse reorder without a forward one when
@@ -477,6 +301,20 @@ pub fn mutations<'a>(forward: &'a ProjectPatch, inverse: &'a ProjectPatch) -> Ve
     out
 }
 
+fn reordered<'a>(
+    list: OrderedList,
+    inverse: &'a ProjectPatch,
+    after: Option<&'a [String]>,
+) -> Mutation<'a> {
+    Mutation::Reordered {
+        list,
+        order: OrderChange {
+            before: reorder_names(inverse, list),
+            after,
+        },
+    }
+}
+
 fn reorder_names(patch: &ProjectPatch, list: OrderedList) -> Option<&[String]> {
     patch.changes.iter().find_map(|op| match (list, op) {
         (OrderedList::Tracks, PatchOp::ReorderTracks(names)) => Some(names.as_slice()),
@@ -485,11 +323,4 @@ fn reorder_names(patch: &ProjectPatch, list: OrderedList) -> Option<&[String]> {
         (OrderedList::Buses, PatchOp::ReorderBuses(names)) => Some(names.as_slice()),
         _ => None,
     })
-}
-
-fn find_inverse<'a>(
-    inverse: &'a ProjectPatch,
-    pick: impl Fn(&'a PatchOp) -> Option<Subtree<'a>>,
-) -> Option<Subtree<'a>> {
-    inverse.changes.iter().find_map(pick)
 }

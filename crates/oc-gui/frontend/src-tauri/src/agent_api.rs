@@ -1523,7 +1523,7 @@ pub(crate) fn describe_edit(
 ) -> Option<oc_dsl::change::ChangeSet> {
     let patch = oc_dsl::diff::diff(before, after).ok()??;
     let inverse = oc_dsl::diff::invert_patch(before, after, &patch);
-    Some(oc_dsl::change::describe_patches_with_properties(
+    Some(oc_dsl::change::describe(
         &patch,
         &inverse,
         &after.properties,
