@@ -161,6 +161,14 @@ exceeds 100 MiB. It does not create a GitHub release, sign the macOS bundle,
 or publish the plugin index. Release publishing and index deployment stay
 separate manual actions.
 
+On Windows, your installer checks for the shared Microsoft WebView2 Runtime.
+When it is missing, the installer downloads Microsoft's bootstrapper and runs
+it to download and install the runtime. You need an internet connection for
+this step; an existing runtime avoids the download. The default packages use
+`downloadBootstrapper` and do not embed the full offline runtime installer,
+so the same 100 MiB size budget applies to Windows. See Microsoft's
+[WebView2 deployment guidance](https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/distribution#online-only-deployment).
+
 ## 4. Smoke test the bundle
 
 ```bash

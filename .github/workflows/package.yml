@@ -112,12 +112,7 @@ jobs:
 
       - name: Build the bundle
         working-directory: crates/oc-gui/frontend
-        run: |
-          npm run tauri build -- \
-            --ci \
-            --target ${{ matrix.target }} \
-            --bundles ${{ matrix.bundles }} \
-            -- --locked
+        run: npm run tauri build -- --ci --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} -- --locked
 
       - name: Check the 100 MiB bundle budget
         shell: bash
