@@ -34,29 +34,29 @@
 //! sweep removes a result file no saved line of its session names, a fork
 //! copies the files its inherited rows name, and a read validates the hash and
 //! bounds the bytes it loads.
-#[path = "session_artifacts.rs"]
+#[path = "../session_artifacts.rs"]
 mod artifacts;
-#[path = "session_compaction.rs"]
+#[path = "../session_compaction.rs"]
 mod compaction;
 pub(crate) use compaction::SUMMARY_OUTPUT_TOKENS;
 use compaction::{compaction_input, planned_messages};
 #[cfg(test)]
-#[path = "session_binding_tests.rs"]
+#[path = "../session_binding_tests.rs"]
 mod binding_tests;
 #[cfg(test)]
-#[path = "session_compaction_tests.rs"]
+#[path = "../session_compaction_tests.rs"]
 mod compaction_tests;
-#[path = "session_lookup.rs"]
+#[path = "../session_lookup.rs"]
 pub(super) mod lookup;
-#[path = "session_message.rs"]
+#[path = "../session_message.rs"]
 mod message_protocol;
-#[path = "session_results.rs"]
+#[path = "../session_results.rs"]
 pub mod tool_results;
-#[path = "session_turns.rs"]
+#[path = "../session_turns.rs"]
 pub mod turns;
-#[path = "session_versions.rs"]
+#[path = "../session_versions.rs"]
 pub(crate) mod versions;
-#[path = "session_view.rs"]
+#[path = "../session_view.rs"]
 mod view;
 use super::host_notice::{BindCause, HostNotice, PendingBinding, ToolSurface};
 use super::session_state::{self, SessionState, StateAuthor};
