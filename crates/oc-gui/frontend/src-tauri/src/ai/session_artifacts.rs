@@ -161,6 +161,11 @@ fn collect(view: &[Value]) -> Inventory {
     inventory.omitted_records = inventory.omitted_records.max(prior_omitted);
     inventory
 }
+/// The text before the generated artifact inventory, if the summary has one.
+pub(super) fn strip_inventory(text: &str) -> &str {
+    text.split_once(MARKER).map_or(text, |(head, _)| head)
+}
+
 pub(super) fn append(summary: &mut String, view: &[Value]) {
     let inventory = collect(view);
     if inventory.records.is_empty() && inventory.omitted_records == 0 {

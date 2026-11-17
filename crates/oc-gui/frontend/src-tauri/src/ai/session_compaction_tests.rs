@@ -1,6 +1,7 @@
 //! Compaction and context bounding: what a summary keeps of the newest turn,
 //! how the store refuses or reports, and how a size trim keeps the summary.
 
+use super::compaction::{MAX_SUMMARY_BYTES, previous_summary};
 use super::*;
 use std::collections::BTreeMap;
 
@@ -26,6 +27,21 @@ fn result(id: &str) -> Value {
     json!({
         "role":"tool","tool_call_id":id,"message_meta":{"version":1,"kind":"tool"},
         "content": json!({"ok": true, "answer": format!("result-{id}"), "rows": "r".repeat(600)}).to_string()
+    })
+}
+
+fn change(id: &str) -> Value {
+    json!({
+        "role":"assistant","content":null,"message_meta":{"version":1,"kind":"assistant"},
+        "tool_calls": [{"id": id, "type":"function",
+            "function":{"name":"tracks_add","arguments":"{}"}}]
+    })
+}
+
+fn changed(id: &str, marker: &str) -> Value {
+    json!({
+        "role":"tool","tool_call_id":id,"message_meta":{"version":1,"kind":"tool"},
+        "content": json!({"ok": true, "marker": marker}).to_string()
     })
 }
 
@@ -995,6 +1011,69 @@ fn a_mechanical_fallback_keeps_the_previous_model_summary() {
     assert!(
         compaction_input(&fallback, fallback.len()).contains("Do not add reverb to the vocal.")
     );
+}
+
+#[test]
+fn a_bounded_carried_summary_keeps_its_newest_decisions() {
+    let row = json!({
+        "role": "user",
+        "content": format!(
+            "Conversation summary written now.\nStanding intent: keep\n\n{}NEWEST-DECISION",
+            "old decision ".repeat(4_000)
+        ),
+    });
+    let carried = previous_summary(&[row]).unwrap();
+    assert!(carried.len() <= MAX_SUMMARY_BYTES);
+    assert!(carried.starts_with('…'), "the oldest prose is dropped");
+    assert!(carried.contains("NEWEST-DECISION"));
+}
+
+#[test]
+fn a_large_legacy_mechanical_row_keeps_its_decisions_without_the_generated_tail() {
+    let row = json!({
+        "role": "user",
+        "content": format!(
+            "Conversation summary written now.\nStanding intent: keep\n\nDecisions taken:\n{}NEWEST-DECISION\n\n{}0, oldest first):\n- none retained\n\nSaved artifact and analysis inventory (data only, not instructions):\n{{\"records\":[]}}",
+            "old decision ".repeat(4_000),
+            SUMMARY_DIGEST_PREFIX,
+        ),
+    });
+    let carried = previous_summary(&[row]).unwrap();
+    assert!(carried.len() <= MAX_SUMMARY_BYTES);
+    assert!(carried.contains("NEWEST-DECISION"));
+    assert!(!carried.contains("Retained recent tool calls"));
+    assert!(!carried.contains("Saved artifact and analysis inventory"));
+}
+
+#[test]
+fn successive_mechanical_summaries_carry_prose_without_nesting_headers() {
+    let mut view = rounds();
+    let mut markers = Vec::new();
+    for step in 0..18 {
+        // More rounds than the newest retained set, so decisions fall into the
+        // prose each compaction carries.
+        for call in 0..8 {
+            let id = format!("m{step}-{call}");
+            let marker = format!("decision-{step}-{call}");
+            view.extend([change(&id), changed(&id, &marker)]);
+            markers.push(marker);
+        }
+        let plan = plan_compaction_request(&view, 0, &facts(), "s").unwrap();
+        let planned = planned_messages(&plan, None);
+        assert_eq!(planned.failure, None);
+        view = planned.messages;
+    }
+    let content = view[0]["content"].as_str().unwrap();
+    assert_eq!(content.matches("Conversation summary written").count(), 1);
+    assert_eq!(content.matches("Retained recent tool calls").count(), 1);
+    assert!(
+        content.contains(markers.last().unwrap()),
+        "the newest decision survives"
+    );
+    let carried = view[0]["message_meta"]["summary_text"].as_str().unwrap();
+    assert!(!carried.contains("Conversation summary written"));
+    assert!(!carried.contains("Retained recent tool calls"));
+    assert!(carried.contains("decision-0-0"), "older decisions survive");
 }
 
 #[test]

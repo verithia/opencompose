@@ -9,27 +9,63 @@ const MAX_INPUT_BYTES: usize = 80_000;
 const MAX_TURN_BYTES: usize = 4_000;
 const OMITTED: &str = "Earlier dropped turns are omitted to keep this input bounded.\n";
 
-/// The previous summary's prose, without recursively nesting its generated
-/// project header and artifact inventory. Legacy summaries use their content.
+/// The previous summary's prose, without its generated project header, tool
+/// digest or artifact inventory. Legacy summaries keep those sections inside
+/// their content, so the prose is recovered from the content itself.
 pub(super) fn previous_summary(view: &[Value]) -> Option<String> {
     let row = view.iter().rev().find(|row| is_compaction_summary(row))?;
     let meta = message_protocol::read(row);
-    let text = meta
-        .as_ref()
-        .and_then(|meta| meta.summary_text.as_deref())
-        .or_else(|| row["content"].as_str())?;
-    Some(bounded_text(text, MAX_SUMMARY_BYTES))
+    let text = match meta.as_ref().and_then(|meta| meta.summary_text.as_deref()) {
+        Some(prose) => prose,
+        None => legacy_summary_prose(row["content"].as_str()?),
+    };
+    Some(bounded_text(text, MAX_SUMMARY_BYTES, KeepEnd::Newest))
 }
 
-fn bounded_text(text: &str, bytes: usize) -> String {
+/// The prose inside a legacy mechanical row, without the generated sections.
+/// Its decisions sit before the digest and inventory, so a later bound keeps
+/// them instead of the generated tail.
+fn legacy_summary_prose(content: &str) -> &str {
+    let content = artifacts::strip_inventory(content);
+    let content = content
+        .split(SUMMARY_DIGEST_PREFIX)
+        .next()
+        .unwrap_or(content);
+    for marker in ["Previous conversation summary:\n", "Decisions taken:\n"] {
+        if let Some(index) = content.find(marker) {
+            return &content[index + marker.len()..];
+        }
+    }
+    content
+}
+
+/// Which end of a string a bound keeps.
+pub(super) enum KeepEnd {
+    Oldest,
+    Newest,
+}
+
+pub(super) fn bounded_text(text: &str, bytes: usize, keep: KeepEnd) -> String {
     if text.len() <= bytes {
         return text.to_owned();
     }
-    let mut end = bytes.saturating_sub('…'.len_utf8());
-    while !text.is_char_boundary(end) {
-        end -= 1;
+    let available = bytes.saturating_sub('…'.len_utf8());
+    match keep {
+        KeepEnd::Oldest => {
+            let mut end = available;
+            while !text.is_char_boundary(end) {
+                end -= 1;
+            }
+            format!("{}…", &text[..end])
+        }
+        KeepEnd::Newest => {
+            let mut start = text.len() - available;
+            while !text.is_char_boundary(start) {
+                start += 1;
+            }
+            format!("…{}", &text[start..])
+        }
     }
-    format!("{}…", &text[..end])
 }
 
 pub(super) fn compaction_input(view: &[Value], split: usize) -> String {
@@ -107,6 +143,7 @@ fn input_line(view: &[Value], index: usize, message: &Value) -> Option<String> {
                     bounded_text(
                         &collapse(call["function"]["arguments"].as_str().unwrap_or_default()),
                         MAX_TURN_BYTES,
+                        KeepEnd::Oldest,
                     )
                 ));
             }
@@ -124,7 +161,7 @@ fn input_line(view: &[Value], index: usize, message: &Value) -> Option<String> {
     }
     Some(format!(
         "{}\n",
-        bounded_text(line.trim_end(), MAX_TURN_BYTES - 1)
+        bounded_text(line.trim_end(), MAX_TURN_BYTES - 1, KeepEnd::Oldest)
     ))
 }
 

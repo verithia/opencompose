@@ -123,6 +123,9 @@ pub const RETAINED_TOOL_PAIRS: usize = 6;
 const CONTEXT_AUDITION: &str = "audition";
 /// Marks the message that replaces compacted turns.
 const CONTEXT_SUMMARY: &str = "summary";
+/// The line the generated tool digest starts with; legacy summaries carry it
+/// inside their content.
+const SUMMARY_DIGEST_PREFIX: &str = "Retained recent tool calls (newest ";
 /// The wire accepts 100 messages per request; compact before a saved session
 /// gets close, so a restored conversation is always sendable.
 pub const MAX_AUTO_COMPACT_MESSAGES: usize = 80;
@@ -3325,11 +3328,16 @@ fn plan_compaction(
         if split == 0 {
             return Err("This session has nothing older to compact.".into());
         }
-        let summary = summary_text(view, split, retained, facts, before, at.as_str());
+        let summary = summary_body(view, split, retained, facts, before, at.as_str());
         let mut messages = Vec::with_capacity(1 + retained.len() + view.len() - split);
         let mut summary_row =
-            json!({ "role": "user", "content": summary, "context": CONTEXT_SUMMARY });
-        message_protocol::tag(&mut summary_row, summary_metadata(view, split, retained));
+            json!({ "role": "user", "content": summary.full, "context": CONTEXT_SUMMARY });
+        let mut metadata = summary_metadata(view, split, retained);
+        // The prose survives without the generated header, digest or inventory,
+        // so a later mechanical summary carries decisions rather than nesting
+        // the whole row.
+        metadata.summary_text = Some(summary.carried);
+        message_protocol::tag(&mut summary_row, metadata);
         messages.push(summary_row);
         // The bound project stays beside the summary: every later path in the
         // conversation is relative to it.
@@ -3650,6 +3658,32 @@ fn summary_metadata(view: &[Value], split: usize, retained: &[(usize, usize)]) -
     metadata
 }
 
+/// The viewable summary and the prose a later compaction carries, both built
+/// from one reading of the previous summary and this compaction's decisions.
+struct SummaryBody {
+    full: String,
+    carried: String,
+}
+
+fn summary_body(
+    view: &[Value],
+    split: usize,
+    retained: &[(usize, usize)],
+    facts: &ProjectFacts,
+    tokens_before: u64,
+    at: &str,
+) -> SummaryBody {
+    let prose = summary_prose(view, split);
+    let mut full = summary_intro(view, split, retained, facts, at);
+    full.push_str(&prose.content);
+    full.push_str(&summary_digest(view, split, retained, tokens_before));
+    SummaryBody {
+        full,
+        carried: prose.carried,
+    }
+}
+
+#[cfg(test)]
 fn summary_text(
     view: &[Value],
     split: usize,
@@ -3658,13 +3692,32 @@ fn summary_text(
     tokens_before: u64,
     at: &str,
 ) -> String {
-    let mut text = summary_intro(view, split, retained, facts, at);
-    if let Some(previous) = compaction::previous_summary(&view[..split]) {
-        text.push_str(&format!("Previous conversation summary:\n{previous}\n\n"));
+    summary_body(view, split, retained, facts, tokens_before, at).full
+}
+
+struct SummaryProse {
+    content: String,
+    carried: String,
+}
+
+fn summary_prose(view: &[Value], split: usize) -> SummaryProse {
+    let previous = compaction::previous_summary(&view[..split]);
+    let decisions = summary_decisions(view, split);
+    let mut content = String::new();
+    let mut carried = String::new();
+    if let Some(previous) = previous.as_deref() {
+        content.push_str(&format!("Previous conversation summary:\n{previous}\n\n"));
+        carried.push_str(previous);
+        carried.push_str("\n\n");
     }
-    text.push_str(&summary_decisions(view, split));
-    text.push_str(&summary_digest(view, split, retained, tokens_before));
-    text
+    content.push_str(&decisions);
+    carried.push_str(&decisions);
+    let carried = compaction::bounded_text(
+        &carried,
+        compaction::MAX_SUMMARY_BYTES,
+        compaction::KeepEnd::Newest,
+    );
+    SummaryProse { content, carried }
 }
 
 /// The deterministic header a summary starts with: the project it was written
@@ -3803,7 +3856,7 @@ fn summary_digest(
 ) -> String {
     let mut text = String::new();
     text.push_str(&format!(
-        "Retained recent tool calls (newest {}, oldest first):\n",
+        "{SUMMARY_DIGEST_PREFIX}{}, oldest first):\n",
         retained.len()
     ));
     if retained.is_empty() {

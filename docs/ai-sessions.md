@@ -809,19 +809,25 @@ conversation's `standing_intent`, discarded audition count and rollback or
 proposal notices, and the newest pinned host notices stay beside it. The
 project's DSL is named by **digest** rather than carried, which would defeat the
 purpose. The store accepts model prose only when the complete replacement is
-bounded, reduces the conversation and meets the planned target; otherwise it
-keeps the mechanical fallback. Saved summary prose is separate from generated
-headers and inventories so repeated summaries do not nest those sections.
+bounded, reduces the conversation and either meets the planned target or is
+smaller than the mechanical fallback; otherwise it keeps the fallback. Saved
+summary prose is separate from generated headers and inventories so repeated
+summaries do not nest those sections. The mechanical fallback records its own
+prose, the previous prose plus this compaction's decisions, in the same field,
+and a bound over that prose drops its oldest part so the newest decisions
+survive.
 
-When the provider errors, the reply is empty or the
-conversation changes before the answer lands, the store writes its deterministic
-summary instead and the turn goes on. The caller reports the typed reason as
+When the provider errors, the reply is empty, the model prose does not improve
+the fallback, or the conversation changes before the answer lands, the store
+writes its deterministic summary instead and the turn goes on. The caller
+reports the typed reason as
 `{session_id, notice: "compaction_failed", reason}`, where `reason` is
-`provider_error`, `cancelled`, `empty` or `conflict`.
+`provider_error`, `empty`, `conflict` or `rejected`.
 
 Stop interrupts a summary request during preparation or between tool rounds,
 finalizes its accounting, and leaves the existing conversation view intact.
-Cancellation does not publish a mechanical replacement or a late model summary.
+Cancellation does not publish a mechanical replacement or a late model summary,
+so it emits no `compaction_failed` notice.
 
 Compaction is two-phase because the model call is slow. The store plans under
 its mutation lock: it chooses the split, renders the request input and builds
