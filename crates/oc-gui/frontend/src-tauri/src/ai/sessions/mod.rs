@@ -74,11 +74,11 @@ pub use audition_archive::{
     bound_media_replay,
 };
 use journal::{
-    AppendOutcome, Dropped, Record, RecordKind, VERSION, compaction_indices, read_current, read_meta,
-    read_records, read_view, write_meta, write_records,
+    AppendOutcome, Dropped, Record, RecordKind, VERSION, append_records_under, compaction_indices,
+    read_current, read_meta, read_records, read_view, write_meta, write_records,
 };
 #[cfg(test)]
-use journal::{append_records, append_records_under};
+use journal::append_records;
 pub use journal::{read_meta_for_storage, read_original};
 use row::{
     CONTEXT_AUDITION, CONTEXT_SUMMARY, MAX_PROJECT_PATH, canonical_media, canonicalize_media,
@@ -1982,34 +1982,9 @@ impl Store {
         let (view, _) = read_view(&dir)?;
         let target = target_tokens.filter(|tokens| *tokens > 0).unwrap_or(0);
         let outcome = plan_compaction(&view, target, facts, &meta.id)?;
-        let at = outcome.compacted_at.clone();
-        let record = Record {
-            v: VERSION,
-            kind: RecordKind::Compaction,
-            at: at.clone(),
-            dropped: Some(Dropped {
-                from: outcome.dropped_from,
-                to: outcome.dropped_to,
-            }),
-            tokens_before: Some(outcome.tokens_before),
-            tokens_after: Some(outcome.tokens_after),
-            truncated: None,
-            messages: outcome.messages.clone(),
-        };
         // Append, never rewrite: the turns this summary replaces stay on disk so
         // the user can still read them (the panel's original view).
-        let written = self.append(&dir, &[record])?;
-        // The record is the compaction; the metadata only caches what the
-        // records already say (the token estimate is recomputed on the next
-        // write). Once the record landed the compaction happened, so a cache
-        // write failure is reported in the log rather than as a failure the
-        // caller would take to mean nothing changed.
-        meta.compacted_at = Some(at);
-        meta.tokens = written.kept_tokens(&outcome.messages);
-        meta.updated = now();
-        if let Err(error) = write_meta(&dir, &meta) {
-            log::warn!("[ai] session {id} compacted, but its metadata was not updated: {error}");
-        }
+        self.append_compaction(&dir, &mut meta, &outcome)?;
         Ok(outcome)
     }
 
@@ -2049,6 +2024,23 @@ impl Store {
             tokens_after,
             retained_pairs: plan.retained_pairs,
         };
+        self.append_compaction(&dir, &mut meta, &outcome)?;
+        Ok(CompactionCommit {
+            compaction: outcome,
+            summary_failure: planned.failure,
+        })
+    }
+
+    /// Writes one compaction record and refreshes the metadata that caches it.
+    /// The record is the compaction; once it landed the compaction happened, so
+    /// a metadata write failure is reported in the log instead of as a failure
+    /// the caller would take to mean nothing changed.
+    fn append_compaction(
+        &self,
+        dir: &Path,
+        meta: &mut SessionMeta,
+        outcome: &Compaction,
+    ) -> Result<(), String> {
         let record = Record {
             v: VERSION,
             kind: RecordKind::Compaction,
@@ -2062,20 +2054,17 @@ impl Store {
             truncated: None,
             messages: outcome.messages.clone(),
         };
-        let written = self.append(&dir, &[record])?;
+        let written = self.append(dir, &[record])?;
         meta.compacted_at = Some(outcome.compacted_at.clone());
         meta.tokens = written.kept_tokens(&outcome.messages);
         meta.updated = now();
-        if let Err(error) = write_meta(&dir, &meta) {
+        if let Err(error) = write_meta(dir, meta) {
             log::warn!(
                 "[ai] session {} compacted, but its metadata was not updated: {error}",
-                plan.id
+                outcome.id
             );
         }
-        Ok(CompactionCommit {
-            compaction: outcome,
-            summary_failure: planned.failure,
-        })
+        Ok(())
     }
 
     /// Publishes a planned compaction and owns the retry policy. A conflict

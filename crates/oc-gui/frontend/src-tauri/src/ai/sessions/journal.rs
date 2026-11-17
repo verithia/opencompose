@@ -5,7 +5,7 @@
 
 use super::view;
 use super::{
-    MAX_SESSION_BYTES, MESSAGES_FILE, MessageKind, MessageMeta, SessionMeta, artifacts,
+    MESSAGES_FILE, MessageKind, MessageMeta, SessionMeta, artifacts,
     canonicalize_media, estimate_tokens, is_compaction_summary, message_protocol,
     newest_pinned_rows, now, tool_results,
 };
@@ -193,7 +193,7 @@ impl AppendOutcome {
 /// `trim` record that states what it dropped.
 #[cfg(test)]
 pub(super) fn append_records(dir: &Path, records: &[Record]) -> Result<AppendOutcome, String> {
-    append_records_under(dir, records, MAX_SESSION_BYTES)
+    append_records_under(dir, records, super::MAX_SESSION_BYTES)
 }
 
 /// The cap is a parameter so the trimming path is testable without writing a
