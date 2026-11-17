@@ -708,3 +708,143 @@ fn an_oversized_saved_tool_surface_is_dropped_on_load() {
     assert_eq!(loaded.tool_surface, None);
     std::fs::remove_dir_all(store.root().parent().unwrap()).unwrap();
 }
+
+#[test]
+fn a_fork_on_another_file_owes_a_chosen_binding_notice() {
+    use crate::ai::host_notice::PendingBinding;
+    let (store, first) = fixture("fork-bind");
+    let second = first.parent().unwrap().join("second.ocp");
+    std::fs::write(&second, "@project\n").unwrap();
+    let parent = store
+        .create(
+            Some(first.parent().unwrap()),
+            Some(&first),
+            Some("parent"),
+            None,
+        )
+        .unwrap();
+    let fork = store
+        .create(
+            Some(first.parent().unwrap()),
+            Some(&second),
+            Some("fork"),
+            Some(Fork {
+                parent: &parent.id,
+                through: None,
+            }),
+        )
+        .unwrap();
+    assert_eq!(
+        fork.pending_binding,
+        Some(PendingBinding {
+            from: Some(canonical(&first)),
+            cause: BindCause::Chosen,
+        })
+    );
+    std::fs::remove_dir_all(store.root().parent().unwrap()).unwrap();
+}
+
+#[test]
+fn a_move_keeps_the_first_unsent_binding_path() {
+    use crate::ai::host_notice::PendingBinding;
+    let (store, first) = fixture("move-keeps");
+    let second = first.parent().unwrap().join("second.ocp");
+    std::fs::write(&second, "@project\n").unwrap();
+    let moved = first.parent().unwrap().join("moved").join("song.ocp");
+    std::fs::create_dir_all(moved.parent().unwrap()).unwrap();
+    std::fs::write(&moved, "@project\n").unwrap();
+    let session = store
+        .create(
+            Some(first.parent().unwrap()),
+            Some(&first),
+            Some("bound"),
+            None,
+        )
+        .unwrap();
+    store
+        .bind(&session.id, Some(&second), BindCause::Chosen)
+        .unwrap();
+    assert_eq!(store.relocate_project(&second, &moved).unwrap(), 1);
+    let saved = store.find(&session.id).unwrap().1;
+    assert_eq!(
+        saved.pending_binding,
+        Some(PendingBinding {
+            from: Some(canonical(&first)),
+            cause: BindCause::Chosen,
+        }),
+        "the notice still names the path the model last saw"
+    );
+    assert_eq!(
+        saved.project_path.as_deref(),
+        Some(canonical(&moved).as_str())
+    );
+    std::fs::remove_dir_all(store.root().parent().unwrap()).unwrap();
+}
+
+#[test]
+fn a_fork_names_the_parents_unsent_binding_path() {
+    use crate::ai::host_notice::PendingBinding;
+    let (store, first) = fixture("fork-unsent");
+    let second = first.parent().unwrap().join("second.ocp");
+    let third = first.parent().unwrap().join("third.ocp");
+    std::fs::write(&second, "@project\n").unwrap();
+    std::fs::write(&third, "@project\n").unwrap();
+    let parent = store
+        .create(
+            Some(first.parent().unwrap()),
+            Some(&first),
+            Some("parent"),
+            None,
+        )
+        .unwrap();
+    store
+        .bind(&parent.id, Some(&second), BindCause::Chosen)
+        .unwrap();
+    let fork = store
+        .create(
+            Some(first.parent().unwrap()),
+            Some(&third),
+            Some("fork"),
+            Some(Fork {
+                parent: &parent.id,
+                through: None,
+            }),
+        )
+        .unwrap();
+    assert_eq!(
+        fork.pending_binding,
+        Some(PendingBinding {
+            from: Some(canonical(&first)),
+            cause: BindCause::Chosen,
+        }),
+        "the fork names the path its parent last showed the model"
+    );
+    std::fs::remove_dir_all(store.root().parent().unwrap()).unwrap();
+}
+
+#[test]
+fn a_fork_with_no_project_owes_no_binding_notice() {
+    let (store, first) = fixture("fork-no-project");
+    let parent = store
+        .create(
+            Some(first.parent().unwrap()),
+            Some(&first),
+            Some("parent"),
+            None,
+        )
+        .unwrap();
+    let fork = store
+        .create(
+            Some(first.parent().unwrap()),
+            None,
+            Some("fork"),
+            Some(Fork {
+                parent: &parent.id,
+                through: None,
+            }),
+        )
+        .unwrap();
+    assert_eq!(fork.project_path, None);
+    assert_eq!(fork.pending_binding, None);
+    std::fs::remove_dir_all(store.root().parent().unwrap()).unwrap();
+}

@@ -911,6 +911,25 @@ impl Store {
         let forked_title = parent
             .as_ref()
             .map(|parent| format!("{} (fork)", parent.title));
+        let parent_from = parent.as_ref().and_then(|parent| {
+            parent
+                .pending_binding
+                .as_ref()
+                .and_then(|pending| pending.from.clone())
+                .or_else(|| parent.project_path.clone())
+        });
+        let project_path = project.map(|path| canonical_path(path).to_string_lossy().to_string());
+        // A fork of a conversation bound to another file starts on the chosen
+        // file like a rebind. It names the path the model last saw, which is an
+        // unsent binding when the parent still owes one. A fork with no project
+        // has no boundary to explain.
+        let pending_binding = match (&project_path, parent_from) {
+            (Some(to), Some(from)) if from != *to => Some(PendingBinding {
+                from: Some(from),
+                cause: BindCause::Chosen,
+            }),
+            _ => None,
+        };
         let meta = SessionMeta {
             id: new_id(),
             title: clean_title(title.or(forked_title.as_deref()).unwrap_or_default()),
@@ -925,8 +944,8 @@ impl Store {
                 .map(|parent| parent.provider.clone())
                 .unwrap_or_default(),
             workspace_key: key.clone(),
-            project_path: project.map(|path| canonical_path(path).to_string_lossy().to_string()),
-            pending_binding: None,
+            project_path,
+            pending_binding,
             pending_state: None,
             history_mark: None,
             workspace: workspace.map(|path| canonical_dir(path).to_string_lossy().to_string()),
@@ -1106,7 +1125,9 @@ impl Store {
                     continue;
                 }
                 let to_text = to_canonical.to_string_lossy().to_string();
-                if from_text != to_text {
+                // Like an explicit bind, a move keeps the path the model last
+                // saw, so an unsent binding still names where it started.
+                if from_text != to_text && meta.pending_binding.is_none() {
                     meta.pending_binding = Some(PendingBinding {
                         from: Some(from_text.clone()),
                         cause: BindCause::Moved,
