@@ -59,8 +59,8 @@ describe("history text", () => {
 
   it("sizes bytes in the largest unit that keeps a whole number", () => {
     expect(bytesText(512)).toBe("512 B");
-    expect(bytesText(2048)).toBe("2.0 KB");
-    expect(bytesText(5 * 1024 ** 2)).toBe("5.0 MB");
-    expect(bytesText(1.5 * 1024 ** 3)).toBe("1.5 GB");
+    expect(bytesText(2048)).toBe("2.0 KiB");
+    expect(bytesText(5 * 1024 ** 2)).toBe("5.0 MiB");
+    expect(bytesText(1.5 * 1024 ** 3)).toBe("1.5 GiB");
   });
 });

@@ -773,7 +773,7 @@ describe("audio export dialog", () => {
 
     expect(view.container.querySelector(".export-audio-finished-path")?.textContent).toBe(MIX_PATH);
     const text = view.container.textContent ?? "";
-    expect(text).toContain("3.1 MB");
+    expect(text).toContain("3.0 MiB");
     expect(text).toContain("0.25 dBFS");
     const clipped = view.container.querySelector(".export-audio-clipped")!;
     expect(clipped.getAttribute("data-clipped")).toBe("true");

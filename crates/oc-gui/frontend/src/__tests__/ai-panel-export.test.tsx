@@ -135,7 +135,7 @@ describe("the Markdown transcript", () => {
 
   it("names an attachment instead of inlining its bytes", () => {
     const markdown = exportMarkdown(META, rows());
-    expect(markdown).toContain("- take.wav (audio/wav, 312.5 KB)");
+    expect(markdown).toContain("- take.wav (audio/wav, 312.5 KiB)");
     expect(markdown).not.toContain("data:image");
     expect(markdown).not.toContain("base64,");
     expect(markdown).not.toContain("A".repeat(200));
@@ -146,7 +146,7 @@ describe("the Markdown transcript", () => {
   it("clips only the result that is over the limit, and says so", () => {
     const markdown = exportMarkdown(META, rows());
     expect(markdown).toContain("[truncated: ");
-    expect(markdown).toContain("first 8.0 KB shown");
+    expect(markdown).toContain("first 8.0 KiB shown");
     // The shorter result is whole.
     expect(markdown).toContain('{"ok":true,"notes":"gain -2 dB"}');
     // Nothing near the whole large body survives.
@@ -176,7 +176,7 @@ describe("the Markdown transcript", () => {
     const markdown = exportMarkdown(META, [
       { role: "user", content: "what do you hear?", timestamp: AT, media: [{ ...ATTACHMENT, missing: true }] },
     ]);
-    expect(markdown).toContain("- take.wav (audio/wav, 312.5 KB) — the file is missing");
+    expect(markdown).toContain("- take.wav (audio/wav, 312.5 KiB) — the file is missing");
   });
 
   it("prints a row whose recorded time cannot be read without a time", () => {
@@ -228,7 +228,7 @@ describe("the JSON transcript", () => {
     const parsed = JSON.parse(text);
     expect(text).not.toContain(clip.slice(0, 200));
     // The message keeps the clip's format, and the document says how much it dropped.
-    expect(parsed.messages[0].input_audio).toEqual({ data: "[omitted: 2.9 KB of audio]", format: "wav" });
+    expect(parsed.messages[0].input_audio).toEqual({ data: "[omitted: 2.9 KiB of audio]", format: "wav" });
   });
 });
 

@@ -383,7 +383,7 @@ describe("the Storage page", () => {
     const block = container.querySelector(".preferences-app-folders")!;
     const runtimes = block.querySelector('[data-folder="runtimes"]')!;
     expect(runtimes.textContent).toContain(i18n.t("preferences.storage.folder.runtimes"));
-    expect(runtimes.textContent).toContain(i18n.t("preferences.storage.folderUsage", { files: 3, size: "2.0 MB" }));
+    expect(runtimes.textContent).toContain(i18n.t("preferences.storage.folderUsage", { files: 3, size: "2.0 MiB" }));
     expect(block.querySelector<HTMLButtonElement>('[data-folder="logs"] .preferences-open-folder')?.disabled).toBe(true);
     fireEvent.click(runtimes.querySelector(".preferences-open-folder")!);
     await vi.waitFor(() => expectInvoked("open_storage_folder", { path: "/config/runtimes" }));

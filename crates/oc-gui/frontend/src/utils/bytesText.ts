@@ -2,9 +2,9 @@
 import { i18n } from "../stores/i18n";
 
 const UNITS = [
-  { scale: 1024 ** 3, suffix: "GB" },
-  { scale: 1024 ** 2, suffix: "MB" },
-  { scale: 1024, suffix: "KB" },
+  { scale: 1024 ** 3, suffix: "GiB" },
+  { scale: 1024 ** 2, suffix: "MiB" },
+  { scale: 1024, suffix: "KiB" },
 ] as const;
 
 export function bytesText(bytes: number): string {

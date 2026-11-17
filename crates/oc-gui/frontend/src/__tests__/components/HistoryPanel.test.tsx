@@ -97,7 +97,7 @@ describe("HistoryPanel", () => {
     expect(container.querySelector('[data-scope="transport"]')?.textContent).toBe("transport");
     expect(container.querySelectorAll(".undo-history-entry.redo").length).toBe(1);
     expect(container.querySelector(".undo-history-entry.current")?.getAttribute("data-level")).toBe("2");
-    await waitFor(() => expect(container.querySelector(".history-size")?.textContent).toBe("2.0 KB on disk"));
+    await waitFor(() => expect(container.querySelector(".history-size")?.textContent).toBe("2.0 KiB on disk"));
   });
 
   it("names a span in bars", async () => {
@@ -153,7 +153,7 @@ describe("HistoryPanel", () => {
     await waitFor(() => expectInvoked("history_clear_older", { keep: 1 }));
     expect(dialog.ask).toHaveBeenCalledTimes(1);
     await waitFor(() => expect(container.querySelector(".history-report")?.textContent)
-      .toBe("Dropped 2 entries, freed 1.0 KB"));
+      .toBe("Dropped 2 entries, freed 1.0 KiB"));
   });
 
   it("names the typed reason when clearing older entries is refused", async () => {
