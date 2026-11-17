@@ -1091,7 +1091,6 @@ fn audio_clip_follows_rename(before: &AudioClip, after: &AudioClip, renames: &Re
         && before.gain_envelope == after.gain_envelope
 }
 
-#[cfg(debug_assertions)]
 fn paired_declaration_names_match(change: &SubtreeChange<'_>) -> bool {
     match (change.before, change.after) {
         (Some(Subtree::Preset(before)), Some(Subtree::Preset(after))) => before.name == after.name,

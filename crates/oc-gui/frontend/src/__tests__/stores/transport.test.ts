@@ -218,7 +218,7 @@ describe("transport polling", () => {
     await store.openFile("/missing.ocp");
     failPreview(new Error("Obsolete preview error"));
     await pending;
-    expect(store.error()).toBe("Error: File unavailable");
+    expect(store.error()).toBe("File unavailable");
     expect(store.auditionActive()).toBe(false);
     expect(store.transport().playing).toBe(false);
     expect(store.loading()).toBe(false);
