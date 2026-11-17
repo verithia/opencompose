@@ -1275,8 +1275,7 @@ impl Store {
         // the next turn; it is still the conversation's newest state, so the
         // page carries it as if its row were already written.
         if let Some(pending) = meta.pending_state.clone() {
-            let goal = !matches!(pending, SessionState::PlanSet { .. });
-            state.retain(|saved| matches!(saved, SessionState::PlanSet { .. }) != goal);
+            state.retain(|saved| saved.is_plan() != pending.is_plan());
             state.push(pending);
         }
         let start = view::page_start(&current.messages, total, turns);

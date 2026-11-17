@@ -85,6 +85,11 @@ pub enum SessionState {
 }
 
 impl SessionState {
+    /// Whether this change writes the plan rather than the goal.
+    pub fn is_plan(&self) -> bool {
+        matches!(self, Self::PlanSet { .. })
+    }
+
     /// Whether every text and count is bounded. A row outside these bounds is
     /// not part of the conversation state.
     pub fn valid(&self) -> bool {
@@ -235,9 +240,10 @@ pub fn latest_states(view: &[Value]) -> Vec<SessionState> {
         .rev()
         .filter_map(crate::ai::sessions::saved_session_state)
     {
-        let seen = match &state {
-            SessionState::GoalSet { .. } | SessionState::GoalCleared { .. } => &mut goal,
-            SessionState::PlanSet { .. } => &mut plan,
+        let seen = if state.is_plan() {
+            &mut plan
+        } else {
+            &mut goal
         };
         if !*seen {
             *seen = true;
