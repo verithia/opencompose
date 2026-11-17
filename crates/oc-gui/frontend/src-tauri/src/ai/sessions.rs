@@ -1270,7 +1270,15 @@ impl Store {
         let (dir, meta) = self.find(id)?;
         let mut current = read_current(&dir)?;
         let total = current.messages.len();
-        let state = session_state::latest_states(&current.messages);
+        let mut state = session_state::latest_states(&current.messages);
+        // A change recorded while a round is open waits in the metadata for
+        // the next turn; it is still the conversation's newest state, so the
+        // page carries it as if its row were already written.
+        if let Some(pending) = meta.pending_state.clone() {
+            let goal = !matches!(pending, SessionState::PlanSet { .. });
+            state.retain(|saved| matches!(saved, SessionState::PlanSet { .. }) != goal);
+            state.push(pending);
+        }
         let start = view::page_start(&current.messages, total, turns);
         let page = current.messages.split_off(start);
         let older_tokens = view::panel_tokens(&current.messages);
@@ -7177,6 +7185,13 @@ mod tests {
             Some(SessionState::GoalCleared {
                 author: StateAuthor::Person
             })
+        );
+        assert_eq!(
+            store.open_page(&session.id, 10).unwrap().state,
+            vec![SessionState::GoalCleared {
+                author: StateAuthor::Person
+            }],
+            "a page carries the state the next turn will write"
         );
         // The next admission closes the open round and writes the state row
         // before the new message.

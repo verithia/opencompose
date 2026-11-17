@@ -434,11 +434,14 @@ appends one `goal_set` row, and clears it with the chip, which appends a
 `goal_cleared` row. The agent writes both through the panel-local `plan_update`
 tool. While a turn has a tool round open, a goal change waits in `meta.json` as
 `pending_state`; the next admitted turn writes it before the new message,
-because a state row cannot follow calls that have no result yet.
+because a state row cannot follow calls that have no result yet. The newest
+transcript page reports `pending_state` as part of its state, so a reload or a
+recall repaint shows the goal or plan the next turn will write.
 
 On every request the backend adds one short derived row after the system rows,
 naming the current goal and plan. It is not saved, and the loop rebuilds it after
-a `plan_update` call, so every round carries the same state. A fold keeps the
+a `plan_update` call, so every round carries the same state. Admission counts
+the row before it decides whether the request fits. A fold keeps the
 newest goal and plan rows, and a compaction or a size trim re-inserts them after
 its summary, so the model never follows a plan the conversation has replaced.
 
@@ -475,7 +478,8 @@ workspace directory on one truncated line. The list shows the recorded
 a row, because the saved wire has none.
 
 The newest transcript page also carries the current goal and plan from the
-whole saved view, including explicit clears. Loading older transcript pages
+whole saved view, including explicit clears and a change still waiting in
+`pending_state`. Loading older transcript pages
 does not replace that current state with an older goal or plan.
 
 Each row offers, for that conversation:
