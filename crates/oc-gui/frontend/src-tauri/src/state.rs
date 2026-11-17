@@ -391,6 +391,9 @@ pub struct UndoStack {
     /// Open gesture, if any.
     gesture: Option<GestureState>,
     gesture_ownership: GestureOwnership,
+    /// Ids and authors of entries a redo branch discarded, so a conversation
+    /// learns that its own edits are no longer applied.
+    discarded: Vec<(u64, Author)>,
     /// Test-only switch: fail patch encoding, which cannot fail otherwise.
     #[cfg(test)]
     fail_encode: bool,
@@ -408,6 +411,7 @@ impl UndoStack {
             history_epoch: Some(0),
             gesture: None,
             gesture_ownership: GestureOwnership::default(),
+            discarded: Vec::new(),
             #[cfg(test)]
             fail_encode: false,
         }
@@ -744,6 +748,7 @@ impl UndoStack {
         self.redo = history.redo;
         self.below = history.below;
         self.above = history.above;
+        self.discarded.clear();
         self.merge_base = None;
         self.invalidate_gestures();
     }

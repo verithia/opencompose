@@ -54,7 +54,9 @@ export type HostNotice =
     entries: OutsideChange[];
     more: number;
     undone: number;
+    own_undone: number;
     rewritten: boolean;
+    pruned: boolean;
   }
   | {
     kind: "tool_surface";
@@ -272,13 +274,22 @@ export function hostNotice(value: unknown): HostNotice | null {
     if (entries.some((entry) => entry === null)) return null;
     const more = boundedCount(value.more);
     const undone = boundedCount(value.undone);
-    if (more === null || undone === null || typeof value.rewritten !== "boolean") return null;
+    const ownUndone = value.own_undone === undefined ? 0 : boundedCount(value.own_undone);
+    if (
+      more === null
+      || undone === null
+      || ownUndone === null
+      || typeof value.rewritten !== "boolean"
+    ) return null;
+    if (value.pruned !== undefined && typeof value.pruned !== "boolean") return null;
     return {
       kind: "outside_changes",
       entries: entries as OutsideChange[],
       more,
       undone,
+      own_undone: ownUndone,
       rewritten: value.rewritten,
+      pruned: value.pruned === true,
     };
   }
   if (value.kind === "tool_surface") {

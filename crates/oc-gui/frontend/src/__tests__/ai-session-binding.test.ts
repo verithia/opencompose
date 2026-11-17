@@ -51,6 +51,12 @@ describe("typed host notices in the transcript", () => {
     expect(messageKind({ role: "user", content: "outside", message_meta: noticeMeta(notice) } as WireMessage)).toBe("host_notice");
     expect(hostNotice({ ...notice, entries: Array(9).fill(notice.entries[0]) })).toBeNull();
     expect(hostNotice({ ...notice, more: 1_000_001 })).toBeNull();
+    const pruned = hostNotice({ ...notice, pruned: true });
+    expect(pruned?.kind === "outside_changes" && pruned.pruned).toBe(true);
+    expect(hostNotice({ ...notice, pruned: "yes" })).toBeNull();
+    const own = hostNotice({ ...notice, own_undone: 2 });
+    expect(own?.kind === "outside_changes" && own.own_undone).toBe(2);
+    expect(hostNotice({ ...notice, own_undone: 1_000_001 })).toBeNull();
     expect(hostNotice({
       ...notice,
       entries: [{ author: { kind: "client", owner: "x".repeat(513) }, changes: { changes: [], more: 0 } }],

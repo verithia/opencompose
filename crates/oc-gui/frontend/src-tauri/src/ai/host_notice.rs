@@ -37,8 +37,16 @@ pub enum HostNotice {
         entries: Vec<OutsideEntry>,
         more: usize,
         undone: usize,
+        /// This conversation's own edits since its mark that a person undid or
+        /// replaced.
+        #[serde(default)]
+        own_undone: usize,
         #[serde(default)]
         rewritten: bool,
+        /// History cleanup dropped entries the model saw; nothing replaced
+        /// them and the notice distinguishes this from a rewritten history.
+        #[serde(default)]
+        pruned: bool,
     },
     /// The tools or permission mode a turn offers changed since an earlier
     /// turn, so the model does not call a tool the turn does not offer.
@@ -130,11 +138,14 @@ impl HostNotice {
                 entries,
                 more,
                 undone,
+                own_undone,
                 rewritten: _,
+                pruned: _,
             } => {
                 entries.len() <= MAX_OUTSIDE_ENTRIES
                     && *more <= MAX_OUTSIDE_COUNT
                     && *undone <= MAX_OUTSIDE_COUNT
+                    && *own_undone <= MAX_OUTSIDE_COUNT
                     && entries.iter().all(valid_outside_entry)
             }
             Self::ToolSurface {
@@ -180,13 +191,24 @@ impl HostNotice {
                 entries,
                 more,
                 undone,
+                own_undone,
                 rewritten,
+                pruned,
             } => {
                 let mut text = String::from(
                     "Since your previous turn, the project changed outside this conversation.",
                 );
                 if *undone > 0 {
                     text.push_str(&format!(" Undo moved it back {undone} {}.", steps(*undone)));
+                }
+                if *own_undone > 0 {
+                    let noun = if *own_undone == 1 { "edit" } else { "edits" };
+                    let pronoun = if *own_undone == 1 { "it" } else { "they" };
+                    let verb = if *own_undone == 1 { "stands" } else { "stand" };
+                    text.push_str(&format!(
+                        " Undo also removed {own_undone} of your own {noun} since then; do \
+                         not assume {pronoun} still {verb}."
+                    ));
                 }
                 if !entries.is_empty() {
                     let facts: Vec<Value> = entries.iter().map(outside_entry_fact).collect();
@@ -202,6 +224,12 @@ impl HostNotice {
                     text.push_str(
                         " The history before your previous turn was rewritten, so earlier edits \
                          you saw may be gone.",
+                    );
+                }
+                if *pruned {
+                    text.push_str(
+                        " History cleanup dropped earlier entries, so edits you saw before your \
+                         previous turn are no longer kept; none were replaced.",
                     );
                 }
                 text
@@ -270,7 +298,9 @@ impl HostNotice {
                 entries,
                 more,
                 undone,
+                own_undone,
                 rewritten,
+                pruned,
             } => {
                 let mut entries = entries.clone();
                 let mut more = *more;
@@ -282,7 +312,9 @@ impl HostNotice {
                     entries,
                     more,
                     undone: *undone,
+                    own_undone: *own_undone,
                     rewritten: *rewritten,
+                    pruned: *pruned,
                 }
             }
             Self::ToolSurface {
@@ -492,6 +524,27 @@ mod tests {
         let notice: HostNotice =
             serde_json::from_value(row["message_meta"]["notice"].clone()).unwrap();
         assert!(notice.valid(), "a saved notice stays readable");
+    }
+
+    #[test]
+    fn pruned_and_rewritten_histories_read_as_different_events() {
+        let notice = |rewritten, pruned| HostNotice::OutsideChanges {
+            entries: Vec::new(),
+            more: 0,
+            undone: 0,
+            own_undone: 0,
+            rewritten,
+            pruned,
+        };
+        let pruned = notice(false, true).model_text();
+        assert!(
+            pruned.contains("cleanup dropped earlier entries"),
+            "{pruned}"
+        );
+        assert!(!pruned.contains("rewritten"), "{pruned}");
+        let rewritten = notice(true, false).model_text();
+        assert!(rewritten.contains("was rewritten"), "{rewritten}");
+        assert!(!rewritten.contains("cleanup dropped"), "{rewritten}");
     }
 
     #[test]

@@ -202,6 +202,12 @@ pub struct OutsideChanges {
     pub more: usize,
     /// Steps undo took back past the conversation's mark.
     pub undone: usize,
+    /// This conversation's own edits since the mark that a person undid or
+    /// replaced, so the model does not assume they are still applied.
+    pub own_undone: usize,
     /// Whether the entry at the mark is gone, so earlier entries may differ.
     pub rewritten: bool,
+    /// Whether history cleanup dropped the entry at the mark. The earlier
+    /// entries are simply no longer kept; they were not replaced.
+    pub pruned: bool,
 }

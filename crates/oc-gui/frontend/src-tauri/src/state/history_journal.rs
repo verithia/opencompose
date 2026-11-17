@@ -17,7 +17,8 @@ use super::{
 };
 use crate::edit_history::journal::{self, Journal, StoredEntry};
 use crate::edit_history::{
-    Author, Brief, EditCause, HistoryMark, MAX_OUTSIDE_ENTRIES, OutsideChanges, OutsideEntry,
+    Author, Brief, EditCause, HistoryMark, MAX_OUTSIDE_COUNT, MAX_OUTSIDE_ENTRIES, OutsideChanges,
+    OutsideEntry,
 };
 
 /// Entries a window reload keeps below the cursor; the rest stay on disk.
@@ -120,8 +121,17 @@ impl UndoStack {
         }
     }
 
-    /// A new edit after an undo discards the redo branch, on disk too.
+    /// A new edit after an undo discards the redo branch, on disk too. The
+    /// discarded authors are kept only long enough for a conversation to learn
+    /// its own edits are gone.
     pub(super) fn drop_redo(&mut self) {
+        for entry in &self.redo {
+            self.discarded.push((entry.id, entry.author.clone()));
+        }
+        if self.discarded.len() > super::MAX_UNDO {
+            let excess = self.discarded.len() - super::MAX_UNDO;
+            self.discarded.drain(..excess);
+        }
         self.redo.clear();
         self.above = 0;
     }
@@ -224,32 +234,70 @@ impl UndoStack {
         };
         let mut positions = Vec::new();
         let mut undone = 0;
-        let rewritten;
+        let mut rewritten = false;
+        let mut pruned = false;
         match found {
             Some(position) if applied >= position => {
-                rewritten = false;
                 // `position` counts entries up to the mark, so the new entries
                 // start at that zero-based index. Newest first describes the
                 // edits a reader needs.
                 positions.extend((position..applied).rev());
             }
             Some(position) => {
-                rewritten = false;
                 undone = position - applied;
             }
             None => {
-                rewritten = true;
-                // Ids rise along the linear history, so scanning back to the
-                // mark's largest id finds the entries it never saw.
-                for position in (0..applied).rev() {
-                    match self.id_at_level(position) {
-                        Some(id) if id > mark.max_id => positions.push(position),
-                        _ => break,
+                // Ids rise along the linear history. A mark below the oldest
+                // entry it still holds was dropped by history cleanup; a mark
+                // that is missing inside that range was replaced by an undo
+                // branch. A history rewritten and later pruned past the mark
+                // reads as pruned, because the whole range it named is gone.
+                let oldest = self.id_at_level(0);
+                let dropped = mark
+                    .at
+                    .is_some_and(|id| oldest.is_none_or(|oldest| id < oldest));
+                if dropped {
+                    pruned = true;
+                    let at = mark.at.unwrap_or_default();
+                    for position in (0..applied).rev() {
+                        match self.id_at_level(position) {
+                            Some(id) if id > at => positions.push(position),
+                            _ => break,
+                        }
+                    }
+                } else {
+                    rewritten = true;
+                    // Scanning back to the mark's largest id finds the entries
+                    // it never saw.
+                    for position in (0..applied).rev() {
+                        match self.id_at_level(position) {
+                            Some(id) if id > mark.max_id => positions.push(position),
+                            _ => break,
+                        }
                     }
                 }
             }
         }
         let own = |author: &Author| matches!(author, Author::Agent { session: Some(session) } if session == session_id);
+        // Own edits the person undid are invisible to the applied scan. Count
+        // the ones the redo branch still holds and the ones a new edit
+        // discarded, so the model never assumes its work still stands.
+        let mut own_undone = 0usize;
+        for (id, author) in &self.discarded {
+            if *id > mark.max_id && own(author) {
+                own_undone = own_undone.saturating_add(1).min(MAX_OUTSIDE_COUNT);
+            }
+        }
+        for position in (applied..self.total_levels()).rev() {
+            match self.id_at_level(position) {
+                Some(id) if id > mark.max_id => {
+                    if self.author_at(position).is_some_and(|author| own(&author)) {
+                        own_undone = own_undone.saturating_add(1).min(MAX_OUTSIDE_COUNT);
+                    }
+                }
+                _ => break,
+            }
+        }
         let mut listed = Vec::new();
         let mut read = 0;
         for &position in &positions {
@@ -278,14 +326,16 @@ impl UndoStack {
                 changes: entry_changes(&forward, &inverse, properties),
             })
             .collect();
-        if entries.is_empty() && undone == 0 && !rewritten {
+        if entries.is_empty() && undone == 0 && own_undone == 0 && !rewritten && !pruned {
             return None;
         }
         Some(OutsideChanges {
             entries,
             more,
             undone,
+            own_undone,
             rewritten,
+            pruned,
         })
     }
 
@@ -304,6 +354,38 @@ impl UndoStack {
             entry.forward.clone(),
             entry.inverse.clone(),
         ))
+    }
+
+    /// The author at any history level, from the window or the journal.
+    fn author_at(&self, position: usize) -> Option<Author> {
+        if position < self.below {
+            let journal = self.journal.as_ref()?;
+            return journal
+                .read_range(position..position + 1)
+                .ok()?
+                .pop()
+                .map(|entry| entry.author);
+        }
+        let applied = self.below + self.undo.len();
+        if position < applied {
+            return self
+                .undo
+                .get(position - self.below)
+                .map(|entry| entry.author.clone());
+        }
+        let offset = position - applied;
+        if offset < self.redo.len() {
+            return self
+                .redo
+                .get(self.redo.len() - 1 - offset)
+                .map(|entry| entry.author.clone());
+        }
+        let journal = self.journal.as_ref()?;
+        journal
+            .read_range(position..position + 1)
+            .ok()?
+            .pop()
+            .map(|entry| entry.author)
     }
 
     pub fn journaled(&self) -> bool {
@@ -447,6 +529,7 @@ impl UndoStack {
             .collect();
         self.below = low;
         self.above = len - high;
+        self.discarded.clear();
         self.merge_base = None;
         self.invalidate_gestures();
         Ok(())

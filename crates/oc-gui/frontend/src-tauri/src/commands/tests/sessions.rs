@@ -582,13 +582,17 @@ fn a_prepared_turn_reports_edits_made_outside_its_conversation() {
             entries,
             more,
             undone,
+            own_undone,
             rewritten,
+            pruned,
         } => {
             assert_eq!(entries.len(), 1);
             assert_eq!(entries[0].author, crate::edit_history::Author::Person);
             assert_eq!(more, 0);
             assert_eq!(undone, 0);
+            assert_eq!(own_undone, 0);
             assert!(!rewritten);
+            assert!(!pruned);
         }
         other => panic!("expected outside changes, got {other:?}"),
     }

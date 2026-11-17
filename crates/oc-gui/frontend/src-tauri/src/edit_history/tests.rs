@@ -1502,6 +1502,90 @@ fn an_undo_past_the_mark_and_a_new_edit_reads_as_rewritten() {
 }
 
 #[test]
+fn since_reports_own_edits_no_longer_applied() {
+    let agent = Author::Agent {
+        session: Some("s1".into()),
+    };
+    for journaled in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut stack = stack(journaled, dir.path());
+        let mut project = tempo(100);
+        let mark = stack.mark();
+        let before = project.clone();
+        project = tempo(110);
+        push_edit(&mut stack, &before, &project, agent.clone());
+        if journaled {
+            stack.sync_journal(&oc_dsl::serialize(&project)).unwrap();
+        }
+        stack.undo(&mut project).unwrap();
+        if journaled {
+            stack.sync_journal(&oc_dsl::serialize(&project)).unwrap();
+        }
+        let changes = stack
+            .since(&mark, "s1", &project.properties)
+            .expect("an undone own edit is news");
+        assert_eq!(changes.own_undone, 1);
+        assert!(changes.entries.is_empty());
+
+        stack.redo(&mut project).unwrap();
+        stack.undo(&mut project).unwrap();
+        let before = project.clone();
+        project = tempo(130);
+        push_edit(&mut stack, &before, &project, Author::Person);
+        if journaled {
+            stack.sync_journal(&oc_dsl::serialize(&project)).unwrap();
+        }
+        let changes = stack
+            .since(&mark, "s1", &project.properties)
+            .expect("a discarded own edit is news");
+        assert_eq!(changes.own_undone, 1, "the redo branch took the own edit");
+        assert_eq!(changes.entries.len(), 1);
+        assert_eq!(changes.entries[0].author, Author::Person);
+    }
+}
+
+#[test]
+fn a_pruned_mark_reports_pruning_not_a_rewrite() {
+    for journaled in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut stack = stack(journaled, dir.path());
+        let mut project = tempo(100);
+        for tempo_value in [110, 120, 130] {
+            let before = project.clone();
+            project = tempo(tempo_value);
+            push_edit(&mut stack, &before, &project, Author::Person);
+            if journaled {
+                stack.sync_journal(&oc_dsl::serialize(&project)).unwrap();
+            }
+        }
+        let mark = stack.mark();
+        for tempo_value in [140, 150] {
+            let before = project.clone();
+            project = tempo(tempo_value);
+            push_edit(&mut stack, &before, &project, Author::Person);
+            if journaled {
+                stack.sync_journal(&oc_dsl::serialize(&project)).unwrap();
+            }
+        }
+        assert!(stack.clear_older(2).unwrap() > 0);
+        let changes = stack
+            .since(&mark, "s1", &project.properties)
+            .expect("new entries and the dropped mark are news");
+        assert!(changes.pruned, "cleanup dropped the mark");
+        assert!(!changes.rewritten, "nothing replaced the earlier history");
+        let newest: Vec<u32> = changes
+            .entries
+            .iter()
+            .filter_map(|entry| match entry.changes.changes.first() {
+                Some(Change::Tempo { to, .. }) => Some(*to as u32),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(newest, [150, 140]);
+    }
+}
+
+#[test]
 fn ten_outside_edits_list_the_newest_eight() {
     for journaled in [false, true] {
         let dir = tempfile::tempdir().unwrap();

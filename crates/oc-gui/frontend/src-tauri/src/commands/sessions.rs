@@ -747,7 +747,9 @@ fn outside_changes(
         entries: changes.entries,
         more: changes.more,
         undone: changes.undone,
+        own_undone: changes.own_undone,
         rewritten: changes.rewritten,
+        pruned: changes.pruned,
     })
 }
 

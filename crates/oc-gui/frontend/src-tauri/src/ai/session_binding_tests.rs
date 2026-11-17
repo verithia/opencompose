@@ -294,6 +294,7 @@ fn binding_to_the_project_it_already_has_changes_nothing() {
 
 fn outside_notice() -> HostNotice {
     HostNotice::OutsideChanges {
+        own_undone: 0,
         entries: vec![OutsideEntry {
             author: Author::Person,
             cause: EditCause::Edit,
@@ -308,6 +309,7 @@ fn outside_notice() -> HostNotice {
         more: 0,
         undone: 0,
         rewritten: false,
+        pruned: false,
     }
 }
 
@@ -335,7 +337,9 @@ fn an_outside_changes_notice_is_saved_before_the_turn_message() {
         entries,
         more,
         undone,
+        own_undone,
         rewritten,
+        pruned,
     } = notice.clone()
     else {
         panic!("expected outside changes, got {notice:?}");
@@ -345,7 +349,9 @@ fn an_outside_changes_notice_is_saved_before_the_turn_message() {
     assert_eq!(entries[0].cause, EditCause::Edit);
     assert_eq!(more, 0);
     assert_eq!(undone, 0);
+    assert_eq!(own_undone, 0);
     assert!(!rewritten);
+    assert!(!pruned);
     assert_eq!(prepared.messages[0]["content"], notice.model_text());
     assert_eq!(
         prepared
