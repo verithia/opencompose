@@ -1,6 +1,6 @@
 //! The per-resource locks a second process has to respect.
 
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::path::{Path, PathBuf};
 
 use crate::commands::{ProjectError, create_project_in, open_project};
@@ -12,15 +12,12 @@ fn hold_elsewhere(path: &Path) -> File {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).unwrap();
     }
-    let file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(path)
-        .unwrap();
-    <File as fs4::FileExt>::try_lock(&file).unwrap();
-    file
+    crate::private_fs::lock(
+        path,
+        crate::private_fs::LockMode::Exclusive,
+        crate::private_fs::LockWait::NoWait,
+    )
+    .unwrap()
 }
 
 fn project_file(dir: &Path, name: &str, source: &str) -> PathBuf {

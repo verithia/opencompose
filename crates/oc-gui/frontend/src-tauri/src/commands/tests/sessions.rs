@@ -841,14 +841,12 @@ fn hold_session_elsewhere(id: &str) -> (sessions::Store, std::fs::File) {
     let store = sessions::Store::config();
     let path = store.lock_path(id);
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(path)
-        .unwrap();
-    <std::fs::File as fs4::FileExt>::try_lock(&file).unwrap();
+    let file = crate::private_fs::lock(
+        &path,
+        crate::private_fs::LockMode::Exclusive,
+        crate::private_fs::LockWait::NoWait,
+    )
+    .unwrap();
     (store, file)
 }
 

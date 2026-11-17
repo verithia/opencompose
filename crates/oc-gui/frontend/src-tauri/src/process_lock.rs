@@ -6,12 +6,12 @@
 //! same process may acquire the key again until every guard is dropped.
 
 use std::collections::HashMap;
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
-use fs4::{FileExt, TryLockError};
+use crate::private_fs::{LockMode, LockWait};
 
 /// Why a resource lock was not acquired.
 #[derive(Debug)]
@@ -72,19 +72,12 @@ impl ProcessLock {
         if let Some(parent) = path.parent() {
             crate::private_fs::ensure_dir(parent).map_err(LockError::Io)?;
         }
-        let mut options = OpenOptions::new();
-        options.read(true).write(true).create(true).truncate(false);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let file = options.open(&path).map_err(LockError::Io)?;
-        match <File as FileExt>::try_lock(&file) {
-            Ok(()) => {}
-            Err(TryLockError::WouldBlock) => return Err(LockError::InUse),
-            Err(TryLockError::Error(error)) => return Err(LockError::Io(error)),
-        }
+        let file = crate::private_fs::lock(&path, LockMode::Exclusive, LockWait::NoWait).map_err(
+            |error| match error.kind() {
+                io::ErrorKind::WouldBlock => LockError::InUse,
+                _ => LockError::Io(error),
+            },
+        )?;
         held.insert(
             path.clone(),
             Held {
@@ -115,17 +108,9 @@ mod tests {
 
     fn other_process(path: &Path) -> File {
         // A separate open is a separate file description, which is what a
-        // second process presents to `flock`; the same process can hold the
+        // second process presents to the lock; the same process can hold the
         // key again through the registry while this description stays locked.
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(path)
-            .unwrap();
-        <File as FileExt>::try_lock(&file).unwrap();
-        file
+        crate::private_fs::lock(path, LockMode::Exclusive, LockWait::NoWait).unwrap()
     }
 
     #[test]

@@ -781,7 +781,11 @@ impl Store {
     }
     fn mutation_lock_io(&self) -> std::io::Result<std::fs::File> {
         private_fs::ensure_dir(&self.root)?;
-        let lock = private_fs::lock(&self.root.join(".sessions.lock"), false, false)?;
+        let lock = private_fs::lock(
+            &self.root.join(".sessions.lock"),
+            private_fs::LockMode::Exclusive,
+            private_fs::LockWait::Wait,
+        )?;
         // Only a stopped writer can leave a stage while the lock is held.
         let _ = std::fs::remove_file(self.root.join(AUDITION_RENDER_STAGE));
         Ok(lock)
@@ -6235,7 +6239,12 @@ mod tests {
 
         const CHILD_ROOT: &str = "OCP_TEST_AUDITION_COLLECT_ROOT";
         if let Some(root) = std::env::var_os(CHILD_ROOT).map(PathBuf::from) {
-            let error = private_fs::lock(&root.join(".sessions.lock"), false, true).unwrap_err();
+            let error = private_fs::lock(
+                &root.join(".sessions.lock"),
+                private_fs::LockMode::Exclusive,
+                private_fs::LockWait::NoWait,
+            )
+            .unwrap_err();
             assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
             std::fs::write(root.join("collector-ready"), []).unwrap();
             assert_eq!(Store::new(root).collect_unreferenced().unwrap(), 1);

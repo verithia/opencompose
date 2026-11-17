@@ -142,7 +142,11 @@ async fn install_from_catalog(
     // callers agree on the same installation owner.
     let lock_path = parent.join(".install.lock");
     let lock = loop {
-        match crate::private_fs::lock(&lock_path, false, true) {
+        match crate::private_fs::lock(
+            &lock_path,
+            crate::private_fs::LockMode::Exclusive,
+            crate::private_fs::LockWait::NoWait,
+        ) {
             Ok(lock) => break lock,
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                 tokio::time::sleep(Duration::from_millis(100)).await;

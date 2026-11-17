@@ -16,24 +16,45 @@ pub fn config_dir() -> std::path::PathBuf {
 
 use std::{io, path::Path};
 
+/// Whether a lock is shared by readers or excludes every other holder.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LockMode {
+    Shared,
+    Exclusive,
+}
+
+/// Whether [`lock`] waits for a holder to release or reports it at once.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LockWait {
+    Wait,
+    NoWait,
+}
+
 /// The caller keeps this file open to hold the lock and leaves its path in place
 /// so every process coordinates on the same file.
-pub(crate) fn lock(path: &Path, shared: bool, nonblocking: bool) -> io::Result<std::fs::File> {
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(path)?;
-    lock_file(&file, shared, nonblocking)?;
+pub(crate) fn lock(path: &Path, mode: LockMode, wait: LockWait) -> io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let file = options.open(path)?;
+    lock_file(&file, mode, wait)?;
     Ok(file)
 }
 
 #[cfg(unix)]
-fn lock_file(file: &std::fs::File, shared: bool, nonblocking: bool) -> io::Result<()> {
+fn lock_file(file: &std::fs::File, mode: LockMode, wait: LockWait) -> io::Result<()> {
     use std::os::fd::AsRawFd;
-    let mode = if shared { libc::LOCK_SH } else { libc::LOCK_EX }
-        | if nonblocking { libc::LOCK_NB } else { 0 };
+    let mode = match mode {
+        LockMode::Shared => libc::LOCK_SH,
+        LockMode::Exclusive => libc::LOCK_EX,
+    } | match wait {
+        LockWait::Wait => 0,
+        LockWait::NoWait => libc::LOCK_NB,
+    };
     loop {
         // SAFETY: The borrowed File keeps this descriptor open through the call.
         if unsafe { libc::flock(file.as_raw_fd(), mode) } == 0 {
@@ -47,19 +68,20 @@ fn lock_file(file: &std::fs::File, shared: bool, nonblocking: bool) -> io::Resul
 }
 
 #[cfg(windows)]
-fn lock_file(file: &std::fs::File, shared: bool, nonblocking: bool) -> io::Result<()> {
+fn lock_file(file: &std::fs::File, mode: LockMode, wait: LockWait) -> io::Result<()> {
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Foundation::ERROR_LOCK_VIOLATION;
     use windows_sys::Win32::Storage::FileSystem::{
         LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY, LockFileEx,
     };
     use windows_sys::Win32::System::IO::OVERLAPPED;
-    let flags = if shared { 0 } else { LOCKFILE_EXCLUSIVE_LOCK }
-        | if nonblocking {
-            LOCKFILE_FAIL_IMMEDIATELY
-        } else {
-            0
-        };
+    let flags = match mode {
+        LockMode::Shared => 0,
+        LockMode::Exclusive => LOCKFILE_EXCLUSIVE_LOCK,
+    } | match wait {
+        LockWait::Wait => 0,
+        LockWait::NoWait => LOCKFILE_FAIL_IMMEDIATELY,
+    };
     let mut offset = OVERLAPPED::default();
     // SAFETY: The File owns a synchronous handle and offset remains valid for
     // the call. Byte zero belongs to the separate, stable pool lock file.

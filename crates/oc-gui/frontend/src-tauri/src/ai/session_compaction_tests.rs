@@ -465,9 +465,13 @@ fn a_reshaping_guard_runs_while_the_store_lock_is_held() {
     let session = store.create(None, None, None, None).unwrap();
     let lock_path = store.root().join(".sessions.lock");
     let held = || {
-        private_fs::lock(&lock_path, false, true)
-            .map(|_| ())
-            .is_err()
+        private_fs::lock(
+            &lock_path,
+            private_fs::LockMode::Exclusive,
+            private_fs::LockWait::NoWait,
+        )
+        .map(|_| ())
+        .is_err()
     };
     let busy = || -> Result<(), SessionError> {
         assert!(held(), "the guard runs under the mutation lock");
