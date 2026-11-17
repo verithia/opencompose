@@ -619,11 +619,45 @@ describe("the turn in flight", () => {
       expect(element).toBeTruthy();
       return element!;
     });
+    expect(field.getAttribute("maxlength")).toBe("4000");
     fireEvent.input(field, { target: { value: "Late-night jazz" } });
     fireEvent.click(document.querySelector(".ai-question-submit") as HTMLButtonElement);
     await waitFor(() => expect(backend.replies).toHaveLength(1));
     expect(backend.replies[0].reply).toEqual({ text: "Late-night jazz" });
     await waitFor(() => expect(answers().at(-1)?.textContent).toContain("Noted."));
+  });
+
+  it("keeps the question card and its text when the host refuses the answer", async () => {
+    let round = 0;
+    backend.chat = async () => {
+      round += 1;
+      return round === 1
+        ? { role: "assistant", content: null, tool_calls: [{
+            id: "q3", type: "function",
+            function: { name: "ask_user", arguments: JSON.stringify({ question: "What mood?", free_text: true }) },
+          }] }
+        : { role: "assistant", content: "Noted." };
+    };
+    backend.askUser = (call) => call.tool === "ask_user";
+    const base = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation(async (command: string, args?: unknown) => {
+      if (command === "ai_turn_reply") throw "text_too_long";
+      return base(command, args);
+    });
+    await mount();
+    await typeAndSend("describe the mood");
+
+    const field = await waitFor(() => {
+      const element = document.querySelector(".ai-question-input") as HTMLInputElement | null;
+      expect(element).toBeTruthy();
+      return element!;
+    });
+    fireEvent.input(field, { target: { value: "Too long to accept" } });
+    fireEvent.click(document.querySelector(".ai-question-submit") as HTMLButtonElement);
+    await waitFor(() => expect(document.querySelector(".ai-question-error")?.textContent)
+      .toBe(i18n.t("ai.question.refused.textTooLong")));
+    expect(document.querySelector(".ai-question-card")).toBeTruthy();
+    expect((document.querySelector(".ai-question-input") as HTMLInputElement).value).toBe("Too long to accept");
   });
 
   it("keeps a pasted multi-line draft and does not send on Shift+Enter", async () => {

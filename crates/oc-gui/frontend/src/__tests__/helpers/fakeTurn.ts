@@ -209,6 +209,7 @@ export async function runFakeTurn(args: TurnStartArgs, backend: FakeTurnBackend)
             question: String(callArgs.question ?? ""),
             ...(options.length ? { options } : {}),
             free_text: callArgs.free_text !== false,
+            max_chars: 4_000,
           };
           const reply = await new Promise<TurnReply | null>((resolve) => {
             turn.userReplies.set(call.id, resolve);

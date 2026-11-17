@@ -128,6 +128,8 @@ export interface UserQuestion {
   question: string;
   options?: string[];
   free_text: boolean;
+  /** Longest answer the host accepts, so the field uses the same bound. */
+  max_chars: number;
 }
 
 /** One pending question as a reloaded window reads it. */

@@ -55,6 +55,28 @@ export interface TurnDecision { approved: boolean; target?: string; always?: boo
 /** A person's answer to `ask_user`: a chosen option, free text, or both. */
 export interface TurnReply { option?: number; text?: string }
 
+/** Why the host refused a question answer. */
+export type ReplyError =
+  | "not_waiting"
+  | "option_out_of_range"
+  | "text_not_accepted"
+  | "text_too_long"
+  | "turn_stopped";
+
+const REPLY_ERRORS: Readonly<Record<ReplyError, true>> = {
+  not_waiting: true,
+  option_out_of_range: true,
+  text_not_accepted: true,
+  text_too_long: true,
+  turn_stopped: true,
+};
+
+/** The typed refusal behind a rejected `ai_turn_reply`, or null when it was not one. */
+export function replyErrorOf(error: unknown): ReplyError | null {
+  return typeof error === "string" && Object.hasOwn(REPLY_ERRORS, error)
+    ? error as ReplyError : null;
+}
+
 /**
  * Runs one agent turn in the backend. `messages` is the system prompt and the
  * new user message, or the system prompt alone to resume the saved

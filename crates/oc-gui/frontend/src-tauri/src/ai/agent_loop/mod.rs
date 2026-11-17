@@ -118,6 +118,9 @@ pub struct UserQuestion {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub options: Vec<String>,
     pub free_text: bool,
+    /// Longest free-text answer this question accepts, so the card and the
+    /// host validate against one bound.
+    pub max_chars: usize,
 }
 
 /// Longest free-text answer a question accepts, in characters.
@@ -903,6 +906,7 @@ impl<H: Host> Turn<'_, H> {
                 question: prompt.question,
                 options: options.clone(),
                 free_text: prompt.free_text,
+                max_chars: MAX_ANSWER_CHARS,
             };
             match self.ask_user(question).await? {
                 None => ran.result = crate::agent_tools::question::unanswered("no_user"),

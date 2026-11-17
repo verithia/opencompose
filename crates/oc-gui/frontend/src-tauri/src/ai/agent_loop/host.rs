@@ -1196,20 +1196,13 @@ impl std::fmt::Display for ReplyError {
 /// bounds is refused before anything is removed, so the card can try again.
 pub fn reply(request_id: &str, call_id: &str, reply: Reply) -> Result<(), ReplyError> {
     let key = (request_id.to_owned(), call_id.to_owned());
-    let request = {
-        let pending = lock(&PENDING);
-        match pending.get(&key) {
-            Some(Waiting::UserQuestion { request, .. }) => request.clone(),
-            _ => return Err(ReplyError::NotWaiting),
-        }
+    let mut pending = lock(&PENDING);
+    let Some(Waiting::UserQuestion { request, .. }) = pending.get(&key) else {
+        return Err(ReplyError::NotWaiting);
     };
-    validate_reply(&reply, &request)?;
-    let answer = {
-        let mut pending = lock(&PENDING);
-        match pending.remove(&key) {
-            Some(Waiting::UserQuestion { answer, .. }) => answer,
-            _ => return Err(ReplyError::NotWaiting),
-        }
+    validate_reply(&reply, request)?;
+    let Some(Waiting::UserQuestion { answer, .. }) = pending.remove(&key) else {
+        return Err(ReplyError::NotWaiting);
     };
     answer.send(reply).map_err(|_| ReplyError::TurnStopped)
 }
@@ -1223,11 +1216,15 @@ fn validate_reply(reply: &Reply, request: &UserQuestion) -> Result<(), ReplyErro
     {
         return Err(ReplyError::OptionOutOfRange);
     }
-    if let Some(text) = reply.text.as_deref().filter(|text| !text.trim().is_empty()) {
+    if let Some(text) = reply
+        .text
+        .as_deref()
+        .filter(|text| !crate::ai::session_state::is_blank_text(text))
+    {
         if !request.free_text {
             return Err(ReplyError::TextNotAccepted);
         }
-        if text.chars().count() > super::MAX_ANSWER_CHARS {
+        if text.chars().count() > request.max_chars {
             return Err(ReplyError::TextTooLong);
         }
     }
@@ -2589,6 +2586,7 @@ mod tests {
                     question: "Which mood?".into(),
                     options: vec!["Warm".into(), "Bright".into()],
                     free_text: true,
+                    max_chars: crate::ai::agent_loop::MAX_ANSWER_CHARS,
                 },
             },
         );
@@ -2631,6 +2629,7 @@ mod tests {
                     question: "Which mood?".into(),
                     options: vec!["Warm".into(), "Bright".into()],
                     free_text: false,
+                    max_chars: crate::ai::agent_loop::MAX_ANSWER_CHARS,
                 },
             },
         );
@@ -2676,6 +2675,7 @@ mod tests {
                     question: "Which mood?".into(),
                     options: Vec::new(),
                     free_text: true,
+                    max_chars: crate::ai::agent_loop::MAX_ANSWER_CHARS,
                 },
             },
         );

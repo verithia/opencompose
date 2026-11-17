@@ -1606,6 +1606,7 @@ fieldset.ai-settings { margin: 0; border: 0; min-width: 0; max-height: 75%; flex
 /* A question from the model is ordinary context, not a destructive pause. */
 .ai-question-card { background: var(--bg-surface); border-color: var(--border); }
 .ai-question-text { font-size: var(--font-size-sm); line-height: 1.4; white-space: pre-wrap; }
+.ai-question-error { color: var(--stop-red); font-size: 11px; line-height: 1.4; }
 .ai-question-free { display: flex; gap: 6px; margin-top: 4px; }
 .ai-question-input {
   flex: 1;

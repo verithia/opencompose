@@ -116,7 +116,7 @@ const backend = {
   project: makeSnapshot() as ProjectSnapshot,
   /** The questions the inherited turn waits on. */
   questions: [] as ({ kind?: "approval"; call_id: string; tool: string; args: Record<string, unknown> }
-    | { kind: "user_question"; call_id: string; question: string; options?: string[]; free_text: boolean })[],
+    | { kind: "user_question"; call_id: string; question: string; options?: string[]; free_text: boolean; max_chars: number })[],
   /** Every `ai_turn_answer`, in order. */
   answers: [] as Record<string, unknown>[],
   /** Every `ai_turn_reply`, in order. */
@@ -191,6 +191,7 @@ function installBackend() {
       case "ai_turn_questions": return backend.questionsReply ?? backend.questions;
       case "ai_turn_reply": {
         backend.replies.push(typed);
+        if (backend.active && typed.requestId === backend.active.request_id) return undefined;
         return replyFakeTurn(String(typed.requestId), String(typed.callId), typed.reply as never);
       }
       case "ai_turn_steer": {
@@ -571,6 +572,7 @@ describe("a reloaded window", () => {
       question: "Which direction?",
       options: ["Darker", "Brighter"],
       free_text: true,
+      max_chars: 4_000,
     }];
     await mount();
 
@@ -774,6 +776,7 @@ describe("a reloaded window", () => {
       question: "Which direction?",
       options: ["Darker", "Brighter"],
       free_text: true,
+      max_chars: 4_000,
     }];
     await mount();
     await waitFor(() => expect(document.querySelector(".ai-question-card")).toBeTruthy());
@@ -793,6 +796,7 @@ describe("a reloaded window", () => {
       question: "Which direction?",
       options: ["Darker", "Brighter"],
       free_text: true,
+      max_chars: 4_000,
     }];
     await mount();
     await waitFor(() => expect(document.querySelector(".ai-question-card")).toBeTruthy());

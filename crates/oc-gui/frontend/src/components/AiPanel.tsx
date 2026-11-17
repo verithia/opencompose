@@ -17,7 +17,7 @@ import { store } from "../stores/project";
 import { previewStore } from "../stores/preview";
 import { log } from "../stores/log";
 import type { ApprovalRequest, TurnStop, UserQuestion, WireMessage } from "../ai/wire";
-import type { RecallOther, RecallRefusal, TurnEnvelope, TurnOutcome } from "../ai/api";
+import { replyErrorOf, type RecallOther, type RecallRefusal, type ReplyError, type TurnEnvelope, type TurnOutcome } from "../ai/api";
 import { changeSetText } from "../stores/changeText";
 import { hasChangeFacts, isChangeSet } from "../types/change";
 import { approvalEffect, approvalTarget } from "../ai/approval";
@@ -188,6 +188,9 @@ export function AiPanel(props: { onClose?: () => void }) {
   /** A question the model asked, in the same slot as an approval card. */
   const [userQuestion, setUserQuestion] = createSignal<(UserQuestion & { requestId: string }) | null>(null);
   const [replyText, setReplyText] = createSignal("");
+  /** Why the host refused the current answer; the card stays open to correct it. */
+  const [questionError, setQuestionError] = createSignal<string | null>(null);
+  const [answering, setAnswering] = createSignal(false);
   /** When the turn in flight started, so the pending row can count seconds. */
   const [turnStartedAt, setTurnStartedAt] = createSignal<number | null>(null);
   /** When Stop was pressed; the pending row says so until the turn settles. */
@@ -358,6 +361,7 @@ export function AiPanel(props: { onClose?: () => void }) {
   const clearQuestion = () => {
     setApproval(null);
     setUserQuestion(null);
+    setQuestionError(null);
   };
   const cancel = async () => {
     stoppedTokens.add(turnToken);
@@ -388,7 +392,18 @@ export function AiPanel(props: { onClose?: () => void }) {
   const showUserQuestion = (turn: string, request: UserQuestion) => {
     clearQuestion();
     setReplyText("");
+    setQuestionError(null);
     setUserQuestion({ ...request, requestId: turn });
+  };
+  /** The localized sentence for a typed answer refusal. */
+  const replyRefusalText = (reason: ReplyError): string => {
+    switch (reason) {
+      case "not_waiting": return i18n.t("ai.question.refused.notWaiting");
+      case "turn_stopped": return i18n.t("ai.question.refused.turnStopped");
+      case "option_out_of_range": return i18n.t("ai.question.refused.optionOutOfRange");
+      case "text_not_accepted": return i18n.t("ai.question.refused.textNotAccepted");
+      case "text_too_long": return i18n.t("ai.question.refused.textTooLong");
+    }
   };
   /** The call's arguments as the card shows them: bounded, one line. */
   const argumentLine = (args: Record<string, unknown>): string => {
@@ -406,17 +421,38 @@ export function AiPanel(props: { onClose?: () => void }) {
     setAllowed(next);
     return next;
   };
-  /** Sends the question card's answer; the backend's turn goes on with it. */
-  const answerQuestion = (option?: number) => {
+  /** Sends the question card's answer; the card closes only once it landed. */
+  const answerQuestion = async (option?: number): Promise<void> => {
     const request = userQuestion();
-    setUserQuestion(null);
-    if (!request) return;
-    const text = replyText().trim();
-    setReplyText("");
-    void aiApi.replyTurn(request.requestId, request.call_id, {
-      ...(option !== undefined ? { option } : {}),
-      ...(text ? { text } : {}),
-    }).catch((error) => log.warn("ai", `answer not delivered: ${errorMessage(error)}`));
+    if (!request || answering()) return;
+    const epoch = scopeEpoch;
+    const text = trimStateText(replyText());
+    setAnswering(true);
+    try {
+      await aiApi.replyTurn(request.requestId, request.call_id, {
+        ...(option !== undefined ? { option } : {}),
+        ...(text ? { text } : {}),
+      });
+      if (disposed || epoch !== scopeEpoch || userQuestion() !== request) return;
+      setUserQuestion(null);
+      setReplyText("");
+      setQuestionError(null);
+    } catch (error) {
+      if (disposed || epoch !== scopeEpoch || userQuestion() !== request) return;
+      const refusal = replyErrorOf(error);
+      const message = refusal === null
+        ? i18n.t("ai.question.answerFailed", { error: errorMessage(error) })
+        : replyRefusalText(refusal);
+      if (refusal === "not_waiting" || refusal === "turn_stopped") {
+        clearQuestion();
+        setReplyText("");
+        notify(message, "error");
+      } else {
+        setQuestionError(message);
+      }
+    } finally {
+      setAnswering(false);
+    }
   };
   /** Sends the card's answer; the backend's turn goes on with it. */
   const answerApproval = (approved: boolean, always = false) => {
@@ -3135,11 +3171,14 @@ export function AiPanel(props: { onClose?: () => void }) {
         <div class="ai-approval-card ai-question-card" role="alert" aria-label={i18n.t("ai.question.title")}>
           <div class="ai-approval-title">{i18n.t("ai.question.title")}</div>
           <div class="ai-question-text selectable">{userQuestion()!.question}</div>
+          <Show when={questionError()}>
+            <div class="ai-question-error" role="alert">{questionError()}</div>
+          </Show>
           <Show when={(userQuestion()!.options?.length ?? 0) > 0}>
             <div class="ai-approval-actions">
               <For each={userQuestion()!.options!}>
                 {(option, index) => (
-                  <button class="ai-question-option" onClick={() => answerQuestion(index())}>{option}</button>
+                  <button class="ai-question-option" disabled={answering()} onClick={() => void answerQuestion(index())}>{option}</button>
                 )}
               </For>
             </div>
@@ -3152,18 +3191,19 @@ export function AiPanel(props: { onClose?: () => void }) {
                 aria-label={i18n.t("ai.question.placeholder")}
                 placeholder={i18n.t("ai.question.placeholder")}
                 value={replyText()}
+                maxlength={userQuestion()!.max_chars}
                 onInput={(event) => setReplyText(event.currentTarget.value)}
                 onKeyDown={(event) => {
                   if (event.key === "Enter") {
                     event.preventDefault();
-                    answerQuestion();
+                    void answerQuestion();
                   }
                 }}
               />
               <button
                 class="ai-question-submit"
-                disabled={!replyText().trim()}
-                onClick={() => answerQuestion()}
+                disabled={answering() || !trimStateText(replyText())}
+                onClick={() => void answerQuestion()}
               >{i18n.t("ai.question.submit")}</button>
             </div>
           </Show>
