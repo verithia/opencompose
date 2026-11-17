@@ -1213,7 +1213,12 @@ impl Store {
     /// conversation has an open round the change waits in the metadata: a row
     /// may not follow calls that have no result yet, and the next admitted
     /// turn writes it before that turn's message.
-    pub fn set_goal(&self, id: &str, text: Option<&str>) -> Result<SessionMeta, String> {
+    pub fn set_goal(
+        &self,
+        id: &str,
+        text: Option<&str>,
+        turn_running: bool,
+    ) -> Result<SessionMeta, String> {
         let state = match text.map(session_state::trim_text) {
             None => SessionState::GoalCleared {
                 author: StateAuthor::Person,
@@ -1235,8 +1240,7 @@ impl Store {
         let _lock = self.mutation_lock()?;
         let (dir, mut meta) = self.find(id)?;
         let (view, _) = read_view(&dir)?;
-        let open_round = crate::ai::agent_loop::host::session_running(id)
-            || !turns::open_calls(&view).is_empty();
+        let open_round = turn_running || !turns::open_calls(&view).is_empty();
         meta.updated = now();
         if open_round {
             meta.pending_state = Some(state);
@@ -6057,7 +6061,7 @@ mod tests {
             .record_reply(&parent.id, &reply("on it"), &context, "p", "m")
             .unwrap();
         store
-            .set_goal(&parent.id, Some("finish the bridge"))
+            .set_goal(&parent.id, Some("finish the bridge"), false)
             .unwrap();
         let view = store.view(&parent.id).unwrap();
         let (goal, _) = crate::ai::session_state::current_state(&view);
@@ -6144,7 +6148,7 @@ mod tests {
                 None,
             )
             .unwrap();
-        store.set_goal(&session.id, None).unwrap();
+        store.set_goal(&session.id, None, false).unwrap();
         assert!(
             store
                 .view(&session.id)

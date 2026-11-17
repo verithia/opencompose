@@ -385,7 +385,8 @@ pub fn sessions_set_permission(
 /// round waits for the next admitted turn.
 #[tauri::command]
 pub fn sessions_set_goal(id: String, text: Option<String>) -> Result<SessionMeta, String> {
-    store().set_goal(&id, text.as_deref())
+    let running = crate::ai::agent_loop::host::session_running(&id);
+    store().set_goal(&id, text.as_deref(), running)
 }
 
 #[tauri::command]
