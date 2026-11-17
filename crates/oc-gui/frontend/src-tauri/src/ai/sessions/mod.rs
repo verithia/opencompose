@@ -3291,31 +3291,20 @@ pub fn pinned_notice_indices(view: &[Value]) -> Vec<usize> {
 /// with its view index, in the view's order.
 fn newest_pinned_rows(view: &[Value]) -> Vec<(usize, Value)> {
     let mut seen_notice = std::collections::HashSet::new();
-    let mut goal = false;
-    let mut plan = false;
     let mut indices = Vec::new();
     for (index, message) in view.iter().enumerate().rev() {
-        if let Some(notice) = message_protocol::notice(message) {
-            if notice.pinned() && seen_notice.insert(notice.kind()) {
-                indices.push(index);
-            }
-            continue;
-        }
-        let Some(state) = message_protocol::state(message) else {
+        let Some(notice) = message_protocol::notice(message) else {
             continue;
         };
-        match state {
-            SessionState::GoalSet { .. } | SessionState::GoalCleared { .. } if !goal => {
-                goal = true;
-                indices.push(index);
-            }
-            SessionState::PlanSet { .. } if !plan => {
-                plan = true;
-                indices.push(index);
-            }
-            _ => {}
+        if notice.pinned() && seen_notice.insert(notice.kind()) {
+            indices.push(index);
         }
     }
+    indices.extend(
+        session_state::latest_state_rows(view)
+            .into_iter()
+            .map(|(index, _)| index),
+    );
     indices.sort_unstable();
     indices
         .into_iter()

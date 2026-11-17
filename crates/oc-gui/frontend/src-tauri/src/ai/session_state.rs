@@ -121,18 +121,7 @@ impl SessionState {
             Self::GoalSet { text, .. } => format!("Goal: {text}"),
             Self::GoalCleared { .. } => "Goal cleared.".into(),
             Self::PlanSet { items } if items.is_empty() => "Plan cleared.".into(),
-            Self::PlanSet { items } => {
-                let mut text = String::from("Plan:");
-                for (index, item) in items.iter().enumerate() {
-                    text.push_str(&format!(
-                        "\n{}. [{}] {}",
-                        index + 1,
-                        item.status.model_label(),
-                        item.text
-                    ));
-                }
-                text
-            }
+            Self::PlanSet { items } => plan_text(items),
         }
     }
 }
@@ -196,46 +185,32 @@ pub fn state_row(state: &SessionState) -> Value {
 /// newest plan row decides the plan. A rewind removes the rows after its cut,
 /// so the state rewinds with the conversation.
 pub fn current_state(view: &[Value]) -> (Option<Goal>, Option<Vec<PlanItem>>) {
-    let mut goal = None;
-    let mut goal_found = false;
-    let mut plan = None;
-    let mut plan_found = false;
-    for message in view.iter().rev() {
-        let Some(state) = crate::ai::sessions::saved_session_state(message) else {
-            continue;
-        };
-        match state {
-            SessionState::GoalSet { text, author } if !goal_found => {
-                goal_found = true;
-                goal = Some(Goal { text, author });
-            }
-            SessionState::GoalCleared { .. } if !goal_found => {
-                goal_found = true;
-            }
-            SessionState::PlanSet { items } if !plan_found => {
-                plan_found = true;
-                plan = Some(items);
-            }
-            _ => {}
-        }
-        if goal_found && plan_found {
-            break;
-        }
-    }
+    let rows = latest_state_rows(view);
+    let goal = rows.iter().find_map(|(_, state)| match state {
+        SessionState::GoalSet { text, author } => Some(Goal {
+            text: text.clone(),
+            author: *author,
+        }),
+        _ => None,
+    });
+    let plan = rows.iter().find_map(|(_, state)| match state {
+        SessionState::PlanSet { items } => Some(items.clone()),
+        _ => None,
+    });
     (goal, plan)
 }
 
-/// The latest goal and plan changes, including explicit clears, independent
-/// of which transcript page a window loads.
-pub fn latest_states(view: &[Value]) -> Vec<SessionState> {
-    let mut states = Vec::new();
+/// The newest goal row and the newest plan row, with their view indices, in
+/// view order. An explicit clear is the newest row of its kind and is kept as
+/// such. This is the one place that decides which state rows are current.
+pub fn latest_state_rows(view: &[Value]) -> Vec<(usize, SessionState)> {
+    let mut rows = Vec::new();
     let mut goal = false;
     let mut plan = false;
-    for state in view
-        .iter()
-        .rev()
-        .filter_map(crate::ai::sessions::saved_session_state)
-    {
+    for (index, message) in view.iter().enumerate().rev() {
+        let Some(state) = crate::ai::sessions::saved_session_state(message) else {
+            continue;
+        };
         let seen = if state.is_plan() {
             &mut plan
         } else {
@@ -243,14 +218,23 @@ pub fn latest_states(view: &[Value]) -> Vec<SessionState> {
         };
         if !*seen {
             *seen = true;
-            states.push(state);
+            rows.push((index, state));
         }
         if goal && plan {
             break;
         }
     }
-    states.reverse();
-    states
+    rows.reverse();
+    rows
+}
+
+/// The latest goal and plan changes, including explicit clears, independent
+/// of which transcript page a window loads.
+pub fn latest_states(view: &[Value]) -> Vec<SessionState> {
+    latest_state_rows(view)
+        .into_iter()
+        .map(|(_, state)| state)
+        .collect()
 }
 
 /// Insert one derived row after the leading system rows, so the model reads it
@@ -264,6 +248,21 @@ pub fn insert_after_system(messages: &mut Vec<Value>, row: Value) -> usize {
     head
 }
 
+/// The English plan text the model reads, shared by a plan row and the
+/// request's derived context row.
+fn plan_text(items: &[PlanItem]) -> String {
+    let mut text = String::from("Plan:");
+    for (index, item) in items.iter().enumerate() {
+        text.push_str(&format!(
+            "\n{}. [{}] {}",
+            index + 1,
+            item.status.model_label(),
+            item.text
+        ));
+    }
+    text
+}
+
 /// The one short context row a request carries before its conversation. The
 /// row is derived, never saved, and refreshed after `plan_update`.
 pub fn context_row(goal: Option<&Goal>, plan: Option<&[PlanItem]>) -> Option<Value> {
@@ -275,15 +274,7 @@ pub fn context_row(goal: Option<&Goal>, plan: Option<&[PlanItem]>) -> Option<Val
         if !text.is_empty() {
             text.push('\n');
         }
-        text.push_str("Plan:");
-        for (index, item) in items.iter().enumerate() {
-            text.push_str(&format!(
-                "\n{}. [{}] {}",
-                index + 1,
-                item.status.model_label(),
-                item.text
-            ));
-        }
+        text.push_str(&plan_text(items));
     }
     (!text.is_empty()).then(|| {
         json!({
