@@ -448,8 +448,7 @@ fn fitted_request(
     saved: &[Value],
     tokens: Option<wire::TokenBudget>,
 ) -> Result<Vec<Value>, PrepareTurnError> {
-    let mut outbound = system.to_vec();
-    outbound.extend_from_slice(saved);
+    let mut outbound = request_with_state(system, saved);
     let limits = wire::FoldLimits {
         rows: PREPARED_WIRE_ROWS,
         bytes: crate::ai::LIMIT,
@@ -484,6 +483,22 @@ fn fitted_request(
         }
     }
     Ok(outbound)
+}
+
+/// The system rows and the conversation, with the one derived goal-and-plan
+/// row after them. The row is part of every request, so admission measures it.
+fn request_with_state(system: &[Value], saved: &[Value]) -> Vec<Value> {
+    let mut outbound = system.to_vec();
+    outbound.extend_from_slice(saved);
+    let (goal, plan) = crate::ai::session_state::current_state(&outbound);
+    if let Some(row) = crate::ai::session_state::context_row(goal.as_ref(), plan.as_deref()) {
+        let head = outbound
+            .iter()
+            .take_while(|message| message["role"] == "system")
+            .count();
+        outbound.insert(head, row);
+    }
+    outbound
 }
 
 /// Resolves the active session for the open workspace (creating one on the first
@@ -663,23 +678,11 @@ where
     // contradict it. The turn is sent as fitted, or unfitted if that fails.
     let mut outbound = fitted_request(&system, &saved, tokens).unwrap_or_else(|error| {
         log::warn!("[ai] session {session_id} was saved but does not fit: {error}");
-        let mut outbound = system.clone();
-        outbound.extend(saved);
-        outbound
+        request_with_state(&system, &saved)
     });
     outbound.insert(0, json!({"role": "system", "content": format!(
         "Authoritative current project state at request time: DSL sha256 {}; track count {}. Historical tool successes may have been rolled back or superseded. Inspect current project when continuing edits; do not assume historical mutations remain applied.", facts.dsl_digest, facts.track_count
     )}));
-    // The current goal and plan ride once, after the system rows. The row is
-    // derived from the saved state rows, so a rewind or a fork changes it.
-    let (goal, plan) = crate::ai::session_state::current_state(&outbound);
-    if let Some(row) = crate::ai::session_state::context_row(goal.as_ref(), plan.as_deref()) {
-        let head = outbound
-            .iter()
-            .take_while(|message| message["role"] == "system")
-            .count();
-        outbound.insert(head, row);
-    }
     if crate::ai::media::audio_supported(provider) {
         sessions::describe_audition_renders(store.root(), &mut outbound);
     } else {
@@ -856,6 +859,34 @@ mod fit_tests {
         );
         assert_eq!(outbound[2]["content"], "continue the arrangement");
         assert_eq!(turns::check_pairing(&outbound[1..]), Ok(()));
+    }
+
+    #[test]
+    fn the_goal_and_plan_row_is_measured_before_admission() {
+        use crate::ai::session_state::{SessionState, StateAuthor, state_row};
+        let system = [json!({"role":"system","content":"prompt"})];
+        let saved = [
+            state_row(&SessionState::GoalSet {
+                text: "finish the bridge".into(),
+                author: StateAuthor::Person,
+            }),
+            user("continue"),
+        ];
+        let budget = wire::TokenBudget::new(1_000_000, 0).unwrap();
+        let mut without_row = system.to_vec();
+        without_row.extend(saved.iter().cloned());
+        // One token more than the conversation alone needs leaves room for the
+        // derived row only if admission forgets to count it.
+        let window = budget.measure(&without_row) + 1;
+        let error = fitted_request(&system, &saved, wire::TokenBudget::new(window, 0)).unwrap_err();
+        assert!(matches!(error, PrepareTurnError::ContextOverflow { .. }));
+        let outbound = fitted_request(&system, &saved, None).unwrap();
+        assert!(
+            outbound
+                .iter()
+                .any(|row| row["context"] == crate::ai::session_state::CONTEXT_STATE),
+            "the row the model reads is part of the request"
+        );
     }
 
     #[test]
