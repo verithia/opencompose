@@ -322,7 +322,11 @@ mod tests {
             &crate::edit_history::journal::dir_for(&target),
         )
         .expect("the new project has a history marker");
-        assert_eq!(marker.sha256, None);
+        assert_eq!(
+            marker.sha256,
+            crate::project_data::content_sha256(&target),
+            "the marker names the file the write produced"
+        );
         assert_eq!(marker.path, crate::project_data::canonical_path(&target));
         // The validated path refuses a file it would replace.
         let error = validate_new_project_path(target.to_str().unwrap()).unwrap_err();

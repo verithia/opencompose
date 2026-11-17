@@ -573,7 +573,7 @@ fn a_rolled_back_batch_leaves_no_entry_on_disk() {
 }
 
 #[test]
-fn save_as_copies_the_history_and_new_project_discards_one() {
+fn save_as_copies_the_history_and_new_starts_a_fresh_one() {
     let dir = tempfile::tempdir().unwrap();
     let state = opened(dir.path(), SOURCE);
     set_tempo(&mut state.lock_inner(), 120.0);
@@ -584,9 +584,15 @@ fn save_as_copies_the_history_and_new_project_discards_one() {
     assert_eq!(Journal::open(&copy).unwrap().len(), 2);
     assert_eq!(Journal::open(&project_file(dir.path())).unwrap().len(), 1);
 
-    crate::commands::create_project_in(&mut state.lock_inner(), Some(copy.clone())).unwrap();
+    // New refuses a path that holds a file, so the copy keeps its history.
+    assert!(
+        crate::commands::create_project_in(&mut state.lock_inner(), Some(copy.clone())).is_err()
+    );
+    assert_eq!(Journal::open(&copy).unwrap().len(), 2);
+    let fresh = dir.path().join("fresh.ocp");
+    crate::commands::create_project_in(&mut state.lock_inner(), Some(fresh.clone())).unwrap();
     assert_eq!(state.lock_inner().undo.total_levels(), 0);
-    assert_eq!(Journal::open(&copy).unwrap().len(), 0);
+    assert_eq!(Journal::open(&fresh).unwrap().len(), 0);
 }
 
 #[test]
@@ -834,6 +840,89 @@ fn a_history_on_an_unmounted_volume_is_copied_not_moved() {
         journal::dir_for(&unmounted).exists(),
         "a file on an unmounted volume still owns its history"
     );
+}
+
+#[test]
+fn an_exclusive_new_refuses_a_file_that_appeared() {
+    super::enable_persistence_for_test();
+    let dir = tempfile::tempdir().unwrap();
+    let state = AppState::new();
+    let target = dir.path().join("taken.ocp");
+    std::fs::write(&target, "keep me").unwrap();
+    let before = state.lock_inner().project.clone();
+    let error = crate::commands::create_project_in(&mut state.lock_inner(), Some(target.clone()))
+        .unwrap_err();
+    assert!(error.contains("already exists"), "{error}");
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "keep me");
+    assert_eq!(state.lock_inner().project, before);
+    assert_eq!(state.lock_inner().file_path, None);
+}
+
+#[test]
+fn a_refused_new_leaves_the_targets_history_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = opened(dir.path(), SOURCE);
+    let target = dir.path().join("target.ocp");
+    std::fs::write(&target, SOURCE).unwrap();
+    let mut journal = Journal::open(&target).unwrap();
+    journal.append(&[entry(1)]).unwrap();
+    drop(journal);
+    let mut inner = state.lock_inner();
+    inner
+        .begin_transaction("batch".into(), "owner".into())
+        .unwrap();
+    assert!(crate::commands::create_project_in(&mut inner, Some(target.clone())).is_err());
+    assert_eq!(
+        Journal::open(&target).unwrap().len(),
+        1,
+        "the refused New kept the target's history"
+    );
+}
+
+#[test]
+fn new_over_the_open_path_starts_a_history_of_its_own() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = opened(dir.path(), SOURCE);
+    let path = project_file(dir.path());
+    {
+        let mut inner = state.lock_inner();
+        set_tempo(&mut inner, 120.0);
+        inner.sync_history();
+    }
+    assert_eq!(Journal::open(&path).unwrap().len(), 1);
+    // New writes the file at the path first; the open document is the same.
+    std::fs::remove_file(&path).unwrap();
+    crate::commands::create_project_in(&mut state.lock_inner(), Some(path.clone())).unwrap();
+    assert_eq!(
+        Journal::open(&path).unwrap().len(),
+        0,
+        "no outgoing entry carried into the new history"
+    );
+    assert_eq!(state.lock_inner().undo.total_levels(), 0);
+}
+
+#[test]
+fn a_failed_new_leaves_the_open_document_and_its_history_alone() {
+    super::enable_persistence_for_test();
+    let dir = tempfile::tempdir().unwrap();
+    let state = opened(dir.path(), SOURCE);
+    let path = project_file(dir.path());
+    {
+        let mut inner = state.lock_inner();
+        set_tempo(&mut inner, 120.0);
+        inner.sync_history();
+    }
+    let target = dir.path().join("missing").join("New.ocp");
+    {
+        let mut inner = state.lock_inner();
+        let before = inner.project.clone();
+        assert!(crate::commands::create_project_in(&mut inner, Some(target)).is_err());
+        assert_eq!(inner.project, before, "the outgoing document stayed");
+        assert_eq!(inner.file_path.as_deref(), Some(path.as_path()));
+        assert_eq!(inner.undo.total_levels(), 1);
+        assert!(inner.dirty, "the unsaved edit stayed unsaved");
+    }
+    assert_eq!(Journal::open(&path).unwrap().len(), 1);
 }
 
 #[test]

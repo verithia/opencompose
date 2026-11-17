@@ -19,6 +19,23 @@ fn has_active_take(inner: &AppStateInner) -> bool {
     inner.audio.recorder.recording() || inner.audio.midi_recorder.recording()
 }
 
+/// Refuse a project replacement while a batch or a take holds the document.
+fn refuse_project_change(inner: &AppStateInner) -> Result<(), String> {
+    inner.refuse_in_transaction()?;
+    if has_active_take(inner) {
+        return Err("Stop recording before changing projects.".into());
+    }
+    Ok(())
+}
+
+fn starter_template(template: Option<&str>) -> Result<bool, String> {
+    match template {
+        None => Ok(false),
+        Some("starter") => Ok(true),
+        Some(other) => Err(format!("Unknown project template: {other}")),
+    }
+}
+
 /// File ▸ New at a chosen path: one command creates the document, names it after
 /// the file and writes it, so the workspace's New is not New + rename + save.
 ///
@@ -30,11 +47,7 @@ pub async fn new_project_at(
     template: Option<String>,
     app: tauri::AppHandle,
 ) -> Result<ProjectSnapshot, String> {
-    let starter = match template.as_deref() {
-        None => false,
-        Some("starter") => true,
-        Some(other) => return Err(format!("Unknown project template: {other}")),
-    };
+    let starter = starter_template(template.as_deref())?;
     create_project(app, Some(PathBuf::from(path)), starter).await
 }
 
@@ -84,23 +97,40 @@ pub(crate) fn create_project_in(
         .and_then(Path::file_stem)
         .map(|stem| stem.to_string_lossy().into_owned())
         .unwrap_or_else(|| "Untitled".to_string());
-    if let Some(path) = path.as_deref() {
-        // A new project replaces whatever file was there, and its history too.
-        crate::edit_history::start_fresh(path);
-    }
-    replace_project_with(inner, new_project_document(name), path.clone(), false, None)?;
-    if let Some(path) = path.as_deref() {
-        // A directory that refuses the file must not leave the document claiming
-        // a path that does not exist.
-        if let Err(error) = write_new_project_file(inner, path) {
-            inner.file_path = None;
-            inner.audio.resource_root = None;
-            inner.undo.clear();
-            crate::edit_history::discard(path);
-            return Err(error);
+    refuse_project_change(inner)?;
+    let mut project = new_project_document(name);
+    let text = match path.as_deref() {
+        Some(path) => {
+            // The file reaches disk before the document changes, so a refused
+            // or failed write leaves the open project and its history alone.
+            crate::project_resources::claim_new(path)?;
+            oc_dsl::instruments::apply_defaults(&mut project);
+            let source = oc_dsl::serialize(&project);
+            if let Err(error) = crate::project_resources::write_new(path, &source) {
+                let _ = std::fs::remove_file(path);
+                return Err(error);
+            }
+            Some(ProjectText {
+                source,
+                parsed: project.clone(),
+            })
+        }
+        None => None,
+    };
+    match replace_project_unchecked(inner, project, path.clone(), false, text, path.is_some()) {
+        Ok(snapshot) => {
+            if let Some(path) = path.as_deref() {
+                finish_new_project_file(inner, path);
+            }
+            Ok(snapshot)
+        }
+        Err(error) => {
+            if let Some(path) = path.as_deref() {
+                let _ = std::fs::remove_file(path);
+            }
+            Err(error)
         }
     }
-    Ok(snapshot(inner))
 }
 
 /// Create the complete sample-free starter before replacing the current project.
@@ -109,11 +139,7 @@ pub(crate) fn create_starter_project_in(
     inner: &mut AppStateInner,
     path: PathBuf,
 ) -> Result<ProjectSnapshot, String> {
-    use std::io::Write;
-    inner.refuse_in_transaction()?;
-    if has_active_take(inner) {
-        return Err("Stop recording before changing projects.".into());
-    }
+    refuse_project_change(inner)?;
     let mut project = oc_dsl::parse(include_str!("starter.ocp"))
         .map_err(|error| format!("Invalid bundled starter: {error}"))?;
     project.name = path
@@ -121,28 +147,21 @@ pub(crate) fn create_starter_project_in(
         .map(|name| name.to_string_lossy().into_owned());
     oc_dsl::instruments::apply_defaults(&mut project);
     let source = oc_dsl::serialize(&project);
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&path)
-        .map_err(|error| {
-            format!(
-                "Cannot create starter {}: {error}. Choose a new filename.",
-                path.display()
-            )
-        })?;
-    if let Err(error) = file
-        .write_all(source.as_bytes())
-        .and_then(|_| file.sync_all())
-    {
-        drop(file);
+    crate::project_resources::claim_new(&path)
+        .map_err(|error| format!("Cannot create starter {error}. Choose a new filename."))?;
+    if let Err(error) = crate::project_resources::write_new(&path, &source) {
         let _ = std::fs::remove_file(&path);
-        return Err(format!("Cannot write starter {}: {error}", path.display()));
+        return Err(format!("Cannot write starter {error}"));
     }
-    drop(file);
-    crate::edit_history::start_fresh(&path);
-    match replace_project_with(inner, project, Some(path.clone()), false, None) {
-        Ok(snapshot) => Ok(snapshot),
+    let text = Some(ProjectText {
+        source,
+        parsed: project.clone(),
+    });
+    match replace_project_unchecked(inner, project, Some(path.clone()), false, text, true) {
+        Ok(snapshot) => {
+            finish_new_project_file(inner, &path);
+            Ok(snapshot)
+        }
         Err(error) => {
             let _ = std::fs::remove_file(&path);
             Err(error)
@@ -261,7 +280,7 @@ pub(crate) async fn replace_project_on_main_thread(
     // copy of unsaved work before it goes.
     save_before_replacement(&app);
     dispatch_replacement(app, load_epoch, move |inner| {
-        replace_project_with(inner, project, path, preload, text)?;
+        replace_project_with(inner, project, path, preload, text, false)?;
         if recovered {
             inner.dirty = true;
             inner.autosave_at = None;
@@ -369,7 +388,7 @@ pub(crate) fn replace_project(
     project: Project,
     path: Option<PathBuf>,
 ) -> Result<ProjectSnapshot, String> {
-    replace_project_with(inner, project, path, true, None)
+    replace_project_with(inner, project, path, true, None, false)
 }
 
 /// Install a project file through the open path, without the app handle.
@@ -383,7 +402,7 @@ pub(crate) fn open_project(
     path: Option<PathBuf>,
 ) -> Result<ProjectSnapshot, String> {
     let (project, text) = parse_project_source(source.to_string())?;
-    replace_project_with(inner, project, path, false, Some(text))
+    replace_project_with(inner, project, path, false, Some(text), false)
 }
 
 /// The replacement, with the audio warm-up under the caller's control.
@@ -393,17 +412,27 @@ pub(crate) fn open_project(
 /// the panel paints. Every other replacement keeps it inline.
 fn replace_project_with(
     inner: &mut crate::state::AppStateInner,
+    project: Project,
+    path: Option<PathBuf>,
+    preload: bool,
+    text: Option<ProjectText>,
+    fresh_history: bool,
+) -> Result<ProjectSnapshot, String> {
+    // A batch's edits exist only in memory until it commits; replacing the
+    // document would drop them and leave the agent committing into nothing.
+    refuse_project_change(inner)?;
+    replace_project_unchecked(inner, project, path, preload, text, fresh_history)
+}
+
+/// The replacement after its refusals, for a caller that already made them.
+fn replace_project_unchecked(
+    inner: &mut crate::state::AppStateInner,
     mut project: Project,
     path: Option<PathBuf>,
     preload: bool,
     text: Option<ProjectText>,
+    fresh_history: bool,
 ) -> Result<ProjectSnapshot, String> {
-    // A batch's edits exist only in memory until it commits; replacing the
-    // document would drop them and leave the agent committing into nothing.
-    inner.refuse_in_transaction()?;
-    if has_active_take(inner) {
-        return Err("Stop recording before changing projects.".into());
-    }
     inner.close_editor_helpers();
     #[cfg(target_os = "macos")]
     for instance in inner.vst3_plugin_instances.values() {
@@ -450,6 +479,11 @@ fn replace_project_with(
     inner.transaction = None;
     // A replacement is a new document; a preview of the old one cannot survive.
     inner.preview = None;
+    // New replaces the target's history only after the outgoing document's
+    // history is on disk, so its entries never land in the fresh folder.
+    if fresh_history && let Some(path) = inner.file_path.clone() {
+        crate::edit_history::start_fresh(&path);
+    }
     install_document_with(inner, project, dsl_source, preload);
     inner.attach_history();
     Ok(snapshot(inner))
@@ -741,28 +775,12 @@ pub(crate) fn save_document(path: Option<String>, state: &AppState) -> Result<Sa
     })
 }
 
-/// Write a newly created project to its path, without warming the graph.
-///
-/// `create_project_in` installs the document cold and writes the file under the
-/// same load token; the caller warms behind the response, so this must not call
-/// `preload_project`. It mirrors the save path's bookkeeping: the recovery
-/// copies for an untitled document become obsolete, and playback follows the
-/// new resource root.
-fn write_new_project_file(inner: &mut AppStateInner, path: &Path) -> Result<(), String> {
-    crate::project_resources::save(
-        &inner.project,
-        &inner.dsl_source,
-        inner.file_path.as_deref(),
-        path,
-    )?;
-    let was_untitled = inner.file_path.is_none();
-    inner.file_path = Some(path.to_path_buf());
-    if let Err(error) = crate::autosave::clear_saved(
-        &crate::autosave::app_root(),
-        path,
-        was_untitled,
-        &inner.session_id,
-    ) {
+/// Finish the bookkeeping of a New whose file was written before the document
+/// changed. The replacement already set the path, revision and history.
+fn finish_new_project_file(inner: &mut AppStateInner, path: &Path) {
+    if let Err(error) =
+        crate::autosave::clear_saved(&crate::autosave::app_root(), path, false, &inner.session_id)
+    {
         log::warn!("autosave: {error}");
     }
     inner.autosave_at = None;
@@ -774,7 +792,6 @@ fn write_new_project_file(inner: &mut AppStateInner, path: &Path) -> Result<(), 
         .map(Path::to_path_buf);
     inner.audio.mark_dirty();
     inner.dirty = false;
-    Ok(())
 }
 
 /// File > Move Project: give the project another file, taking its history
@@ -1983,7 +2000,7 @@ mod project_load_order_tests {
         let mut inner = state.lock_inner();
         let stale = inner.undo.begin_owned_gesture(UndoScope::Project).unwrap();
         let replacement = oc_dsl::parse("@project \"Replacement\"\n").unwrap();
-        replace_project_with(&mut inner, replacement, None, false, None).unwrap();
+        replace_project_with(&mut inner, replacement, None, false, None, false).unwrap();
         assert_eq!(inner.project.name.as_deref(), Some("Replacement"));
         assert!(!inner.undo.is_in_gesture());
         let current = inner.undo.begin_owned_gesture(UndoScope::Preset).unwrap();

@@ -235,6 +235,25 @@ fn starter_is_written_complete_with_builtins_before_installation() {
 }
 
 #[test]
+fn starter_records_the_file_fingerprint() {
+    crate::edit_history::enable_persistence_for_test();
+    let dir = TempDir::new("starter-marker");
+    std::fs::create_dir_all(dir.path()).unwrap();
+    let path = dir.path().join("Marked.ocp");
+    let state = AppState::new();
+    let mut inner = state.lock_inner();
+    crate::commands::create_starter_project_in(&mut inner, path.clone()).unwrap();
+    let marker =
+        crate::edit_history::journal::read_marker(&crate::edit_history::journal::dir_for(&path))
+            .expect("the starter has a history marker");
+    assert_eq!(
+        marker.sha256,
+        crate::project_data::content_sha256(&path),
+        "the starter records the file it wrote"
+    );
+}
+
+#[test]
 fn starter_never_overwrites_an_existing_file_or_document() {
     let dir = TempDir::new("starter-exists");
     std::fs::create_dir_all(dir.path()).unwrap();

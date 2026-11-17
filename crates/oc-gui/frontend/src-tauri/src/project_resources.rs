@@ -21,6 +21,36 @@ pub struct Collected {
     pub warnings: Vec<String>,
 }
 
+/// Claim a new project path with an exclusive create, refusing an existing
+/// file. The caller writes the project over the claim it now owns.
+pub fn claim_new(path: &Path) -> Result<(), String> {
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map(|_| ())
+        .map_err(|error| {
+            if error.kind() == std::io::ErrorKind::AlreadyExists {
+                format!("{} already exists", path.display())
+            } else {
+                format!("Cannot create {}: {error}", path.display())
+            }
+        })
+}
+
+/// Write a project into a path [`claim_new`] reserved. The bytes reach disk
+/// before the caller replaces the document, so a failed write changes nothing.
+pub fn write_new(path: &Path, source: &str) -> Result<(), String> {
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(path)
+        .map_err(|error| format!("Cannot write {}: {error}", path.display()))?;
+    file.write_all(source.as_bytes())
+        .and_then(|()| file.sync_all())
+        .map_err(|error| format!("Cannot write {}: {error}", path.display()))
+}
+
 /// Publish DSL last, so a failed Save As does not replace a valid saved project.
 pub fn save(project: &Project, source: &str, old: Option<&Path>, new: &Path) -> Result<(), String> {
     save_with_assets(project, source, old, new, None).map(|_| ())
