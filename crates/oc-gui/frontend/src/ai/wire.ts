@@ -44,15 +44,6 @@ export interface WireMessage {
   usage?: WireUsage;
   /** The DSL snapshot taken before this message; session metadata, not wire. */
   dsl_sha?: string;
-  /** The edit-history position this message was sent from; session metadata. */
-  history_at?: HistoryAt;
-}
-
-/** A saved position in one project's edit history. */
-export interface HistoryAt {
-  project: string;
-  level: number;
-  at?: number;
 }
 export interface Proposal { path: string; dsl: string; expectedDsl: string }
 /**

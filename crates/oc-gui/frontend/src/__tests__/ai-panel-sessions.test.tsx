@@ -144,6 +144,8 @@ const backend = {
   needsConfirmation: false,
   /** The token a confirmation was shown for. */
   confirmationToken: { applied: 4, newest: 99 },
+  /** Saved rows whose message recorded no history position, as `session:index`. */
+  missingPositions: new Set<string>(),
   /** The request and conversation of the most recent turn start. */
   lastTurn: null as { requestId: string; sessionId: string } | null,
   /** The turn the backend reports running, if any. */
@@ -269,7 +271,7 @@ function installBackend() {
         });
         const conversation = backend.conversations[sessionId] ?? [];
         const cut = conversation[index];
-        if (undoEdits && !cut?.history_at) {
+        if (undoEdits && backend.missingPositions.has(`${sessionId}:${index}`)) {
           return { status: "refused", reason: "no_recorded_position" };
         }
         if (undoEdits && !confirmed && backend.needsConfirmation) {
@@ -381,6 +383,7 @@ beforeEach(() => {
   backend.recallSnapshot = makeSnapshot();
   backend.needsConfirmation = false;
   backend.confirmationToken = { applied: 4, newest: 99 };
+  backend.missingPositions = new Set();
   backend.lastTurn = null;
   backend.active = null;
   backend.compactedSessions = [];
@@ -1504,10 +1507,10 @@ describe("recalling a message", () => {
     tool_calls: [{ id: "call-1", type: "function", function: { name: "tracks_list", arguments: "{}" } }],
   };
   const conversation: WireMessage[] = [
-    { role: "user", content: "first take", dsl_sha: "a".repeat(64), history_at: { project: "/songs/song.ocp", level: 0 } },
+    { role: "user", content: "first take", dsl_sha: "a".repeat(64) },
     hiddenCall,
     { role: "tool", tool_call_id: "call-1", content: '{"ok":true}' },
-    { role: "user", content: "second take", dsl_sha: "b".repeat(64), history_at: { project: "/songs/song.ocp", level: 2, at: 5 } },
+    { role: "user", content: "second take", dsl_sha: "b".repeat(64) },
     { role: "assistant", content: "Done." },
   ];
   const labeledItem = (label: string) => screen
@@ -1635,7 +1638,7 @@ describe("recalling a message", () => {
     backend.conversations.s1 = [
       { role: "user", content: "first take" },
       { role: "assistant", content: "Done." },
-      { role: "user", content: "list the mix", history_at: { project: "/songs/song.ocp", level: 1, at: 4 } },
+      { role: "user", content: "list the mix" },
       { role: "assistant", content: "Done: the mix is quiet." },
     ];
     const liveUser = messageRows().find((row) => row.textContent?.includes("list the mix"))!;
@@ -1736,6 +1739,7 @@ describe("recalling a message", () => {
       { role: "user", content: "second take" },
       { role: "assistant", content: "Done again." },
     ] };
+    backend.missingPositions.add("s1:2");
     await mountPanel();
     await openSwitcher();
     fireEvent.click(document.querySelector(".ai-session-row-title")!);
