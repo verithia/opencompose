@@ -137,6 +137,51 @@ fn a_torn_index_tail_is_dropped_on_open() {
 }
 
 #[test]
+fn a_state_whose_cursor_moved_follows_the_entry_id() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = project_file(dir.path());
+    let mut journal = Journal::open(&path).unwrap();
+    journal.append(&[entry(1), entry(2), entry(3)]).unwrap();
+    journal.write_state(2, "head at two").unwrap();
+    drop(journal);
+    // A drop of the oldest index row moved entry 2 to the first position.
+    let index = journal::dir_for(&path).join("index.bin");
+    let rows = std::fs::read(&index).unwrap();
+    std::fs::write(&index, &rows[journal::INDEX_ROW..]).unwrap();
+    let journal = Journal::open(&path).unwrap();
+    assert_eq!(journal.applied(), 1, "the cursor followed entry 2");
+    assert_eq!(
+        journal.head(),
+        Some("head at two"),
+        "the history and its document survived"
+    );
+}
+
+#[test]
+fn a_state_whose_cursor_is_gone_drops_the_document() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = project_file(dir.path());
+    let mut journal = Journal::open(&path).unwrap();
+    journal.append(&[entry(1), entry(2), entry(3)]).unwrap();
+    journal.write_state(2, "head at two").unwrap();
+    drop(journal);
+    // The index lost entry 2 entirely, so the head names no row.
+    let index = journal::dir_for(&path).join("index.bin");
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&index)
+        .unwrap();
+    file.set_len(journal::INDEX_ROW as u64).unwrap();
+    let journal = Journal::open(&path).unwrap();
+    assert_eq!(journal.applied(), 1);
+    assert_eq!(
+        journal.head(),
+        None,
+        "a head whose cursor row is gone cannot anchor undo"
+    );
+}
+
+#[test]
 fn clear_older_keeps_the_newest_entries_and_never_an_undone_one() {
     let dir = tempfile::tempdir().unwrap();
     let path = project_file(dir.path());

@@ -209,6 +209,11 @@ struct Row {
 struct StateFile {
     version: u32,
     applied: usize,
+    /// The id of the applied entry the cursor rests on. An open checks it
+    /// against the index row, so a head whose cursor a torn or failed write
+    /// moved is not applied to the wrong document.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cursor: Option<u64>,
     head: String,
 }
 
@@ -217,6 +222,7 @@ pub struct Journal {
     dir: PathBuf,
     rows: Vec<Row>,
     applied: usize,
+    cursor: Option<u64>,
     head: Option<String>,
     entries_len: u64,
     /// Test-only switch: make the index write fail, which the filesystem
@@ -264,17 +270,40 @@ impl Journal {
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(error),
         }
-        let (applied, head) = match std::fs::read(dir.join(STATE)) {
+        let (applied, cursor, head) = match std::fs::read(dir.join(STATE)) {
             Ok(bytes) => match serde_json::from_slice::<StateFile>(&bytes) {
-                Ok(state) if state.version == STATE_VERSION => (state.applied, Some(state.head)),
-                _ => (rows.len(), None),
+                Ok(state) if state.version == STATE_VERSION => {
+                    let mut applied = state.applied.min(rows.len());
+                    // The cursor id names the row the head belongs to. When a
+                    // shorter index moved the row, follow the id; only an id the
+                    // index no longer has makes the head unusable.
+                    let verified = state.cursor.is_none_or(|id| {
+                        if applied > 0 && rows[applied - 1].id == id {
+                            return true;
+                        }
+                        match rows.iter().position(|row| row.id == id) {
+                            Some(position) => {
+                                applied = position + 1;
+                                true
+                            }
+                            None => false,
+                        }
+                    });
+                    if verified {
+                        (applied, state.cursor, Some(state.head))
+                    } else {
+                        (applied, state.cursor, None)
+                    }
+                }
+                _ => (rows.len(), None, None),
             },
-            Err(error) if error.kind() == io::ErrorKind::NotFound => (rows.len(), None),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => (rows.len(), None, None),
             Err(error) => return Err(error),
         };
         Ok(Self {
             dir,
             applied: applied.min(rows.len()),
+            cursor,
             rows,
             head,
             entries_len,
@@ -345,6 +374,11 @@ impl Journal {
         truncate_index(&self.dir, len)?;
         self.rows.truncate(len);
         self.applied = self.applied.min(len);
+        self.cursor = self
+            .applied
+            .checked_sub(1)
+            .and_then(|index| self.rows.get(index))
+            .map(|row| row.id);
         Ok(())
     }
 
@@ -413,17 +447,23 @@ impl Journal {
     /// Record the cursor and the document at it in one atomic replace.
     pub fn write_state(&mut self, applied: usize, head: &str) -> io::Result<()> {
         let applied = applied.min(self.rows.len());
-        if self.applied == applied && self.head.as_deref() == Some(head) {
+        let cursor = applied
+            .checked_sub(1)
+            .and_then(|index| self.rows.get(index))
+            .map(|row| row.id);
+        if self.applied == applied && self.cursor == cursor && self.head.as_deref() == Some(head) {
             return Ok(());
         }
         let bytes = serde_json::to_vec(&StateFile {
             version: STATE_VERSION,
             applied,
+            cursor,
             head: head.to_owned(),
         })
         .map_err(io::Error::other)?;
         crate::private_fs::write_atomic(&self.dir.join(STATE), &bytes)?;
         self.applied = applied;
+        self.cursor = cursor;
         self.head = Some(head.to_owned());
         Ok(())
     }
@@ -455,6 +495,7 @@ impl Journal {
             dir: staging.clone(),
             rows: Vec::new(),
             applied: 0,
+            cursor: None,
             head: None,
             entries_len: 0,
             #[cfg(test)]
