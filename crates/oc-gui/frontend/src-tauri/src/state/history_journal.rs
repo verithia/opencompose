@@ -454,14 +454,14 @@ impl UndoStack {
         level: usize,
         project: &mut Project,
     ) -> Result<Option<String>, String> {
+        if !self.journal_is_current() {
+            return Err("the edit history is not saved yet; try again".into());
+        }
         let journal = self
             .journal
             .as_ref()
             .ok_or("the edit history is not kept on disk")?;
         let current = self.below + self.undo.len();
-        if journal.applied() != current || journal.len() != self.total_levels() {
-            return Err("the edit history is not saved yet; try again".into());
-        }
         let mut candidate = project.clone();
         let decode = |bytes: &[u8]| {
             compressed::decode_patch(bytes).map_err(|reason| {
@@ -552,18 +552,32 @@ impl UndoStack {
     /// Keep the newest `keep` entries; entries above the cursor always stay.
     /// The window must be synced. Returns how many entries were dropped.
     pub(crate) fn clear_older(&mut self, keep: usize) -> Result<usize, String> {
-        let Some(journal) = self.journal.as_mut() else {
+        if self.journal.is_none() {
             let drop = self
                 .total_levels()
                 .saturating_sub(keep)
                 .min(self.undo.len());
             self.undo.drain(..drop);
             return Ok(drop);
-        };
+        }
+        if !self.journal_is_current() {
+            return Err("the edit history is not saved yet; try again".into());
+        }
+        let journal = self.journal.as_mut().expect("the journal was checked");
         let applied = journal.applied();
         let dropped = journal.clear_older(keep).map_err(io_text)?;
         self.reload_window(applied - dropped)?;
         Ok(dropped)
+    }
+
+    /// Whether the journal holds exactly the window and cursor in memory. A
+    /// window that has entries the journal never received must not be replaced
+    /// from the journal, or undo would apply an inverse to the wrong document.
+    fn journal_is_current(&self) -> bool {
+        self.journal.as_ref().is_some_and(|journal| {
+            journal.applied() == self.below + self.undo.len()
+                && journal.len() == self.total_levels()
+        })
     }
 }
 
@@ -572,13 +586,21 @@ impl AppStateInner {
     /// is open (its entries are provisional until it commits) and while a
     /// preview holds the document (neither side is at a history cursor).
     pub(crate) fn sync_history(&mut self) {
+        if let Err(error) = self.try_sync_history() {
+            log::warn!("[history] {error}");
+        }
+    }
+
+    /// Write the history's changes to disk, reporting whether the journal now
+    /// holds the window and the cursor. A caller that reloads the window from
+    /// the journal must refuse when this fails.
+    pub(crate) fn try_sync_history(&mut self) -> Result<(), String> {
         if self.transaction.is_some() || self.preview.is_some() || !self.undo.journaled() {
-            return;
+            return Ok(());
         }
-        match self.undo.sync_journal(&self.dsl_source) {
-            Ok(()) => self.history_synced = Some(self.revision),
-            Err(error) => log::warn!("[history] {error}"),
-        }
+        self.undo.sync_journal(&self.dsl_source)?;
+        self.history_synced = Some(self.revision);
+        Ok(())
     }
 
     /// Whether the history has changes the journal does not hold yet.
@@ -598,7 +620,10 @@ impl AppStateInner {
         if self.transaction.is_some() {
             return Err("older history becomes available once the agent's batch ends".into());
         }
-        self.sync_history();
+        self.try_sync_history()?;
+        if !self.undo.journal_is_current() {
+            return Err("the edit history is not saved yet; try again".into());
+        }
         let applied = self.undo.applied_level();
         self.undo.reload_window(applied)
     }

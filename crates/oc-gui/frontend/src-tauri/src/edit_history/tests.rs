@@ -333,6 +333,71 @@ fn the_window_pages_from_disk_and_memory_stays_bounded() {
 }
 
 #[test]
+fn a_window_reload_keeps_memory_when_the_journal_did_not_sync() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = opened(dir.path(), SOURCE);
+    let mut inner = state.lock_inner();
+    let edits = MAX_UNDO + 20;
+    for step in 0..edits {
+        set_tempo(&mut inner, 101.0 + step as f64);
+    }
+    inner.sync_history();
+    for _ in 0..MAX_UNDO {
+        inner.undo_step().unwrap();
+    }
+    assert!(inner.undo.undo.is_empty());
+    let applied = inner.undo.applied_level();
+    assert!(applied > 0, "the window has entries below it");
+    // The cursor write fails, so the journal is behind the document.
+    let state_file = journal::dir_for(&project_file(dir.path())).join("state.json");
+    std::fs::remove_file(&state_file).unwrap();
+    std::fs::create_dir(&state_file).unwrap();
+
+    let before = inner.project.clone();
+    assert!(
+        inner.undo_step().is_err(),
+        "a stale journal is not reloaded"
+    );
+    assert_eq!(inner.project, before);
+    assert_eq!(inner.undo.applied_level(), applied);
+    assert!(inner.undo.undo.is_empty(), "the window stayed");
+    assert_eq!(inner.undo.redo.len(), MAX_UNDO);
+}
+
+#[test]
+fn clearing_older_refuses_a_window_the_journal_did_not_receive() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = opened(dir.path(), SOURCE);
+    let mut inner = state.lock_inner();
+    set_tempo(&mut inner, 120.0);
+    assert_eq!(inner.undo.undo.len(), 1);
+    assert!(
+        inner.undo.clear_older(0).is_err(),
+        "an unsynced entry cannot be dropped"
+    );
+    assert_eq!(inner.undo.undo.len(), 1, "the entry stayed in memory");
+}
+
+#[test]
+fn clearing_older_reports_a_failed_append() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = opened(dir.path(), SOURCE);
+    let mut inner = state.lock_inner();
+    let index = journal::dir_for(&project_file(dir.path())).join("index.bin");
+    std::fs::create_dir_all(&index).unwrap();
+    set_tempo(&mut inner, 120.0);
+    let outcome = crate::commands::clear_older_history(&mut inner, 0).unwrap();
+    let crate::commands::HistoryClearOutcome::Failed { message } = outcome else {
+        panic!("a failed append is not a clear");
+    };
+    assert!(
+        message.contains("edit history"),
+        "the real write failure is reported: {message}"
+    );
+    assert_eq!(inner.undo.total_levels(), 1, "the entry stayed");
+}
+
+#[test]
 fn a_jump_beyond_the_window_streams_patches_and_lands_exactly() {
     let dir = tempfile::tempdir().unwrap();
     let state = opened(dir.path(), SOURCE);

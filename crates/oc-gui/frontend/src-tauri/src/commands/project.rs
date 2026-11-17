@@ -1766,9 +1766,23 @@ pub fn history_clear_older(
             reason: HistoryRefusal::AgentEditing,
         });
     }
-    inner.sync_history();
+    clear_older_history(&mut inner, keep)
+}
+
+/// Drop older entries after making the journal current. A failed sync is
+/// returned as its real error, so the panel can say why clearing did not run.
+pub(crate) fn clear_older_history(
+    inner: &mut AppStateInner,
+    keep: usize,
+) -> Result<HistoryClearOutcome, String> {
+    if let Err(message) = inner.try_sync_history() {
+        return Ok(HistoryClearOutcome::Failed { message });
+    }
     let before = inner.undo.history_info().bytes;
-    let dropped = inner.undo.clear_older(keep)?;
+    let dropped = match inner.undo.clear_older(keep) {
+        Ok(dropped) => dropped,
+        Err(message) => return Ok(HistoryClearOutcome::Failed { message }),
+    };
     let info = inner.undo.history_info();
     Ok(HistoryClearOutcome::Cleared {
         dropped,
@@ -1787,6 +1801,10 @@ pub enum HistoryClearOutcome {
     },
     Refused {
         reason: HistoryRefusal,
+    },
+    /// The history could not be rewritten; the message names the write error.
+    Failed {
+        message: String,
     },
 }
 

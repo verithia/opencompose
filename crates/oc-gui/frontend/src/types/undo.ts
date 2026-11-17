@@ -74,4 +74,5 @@ export interface HistoryInfo {
 
 export type HistoryClearOutcome =
   | { status: "cleared"; dropped: number; freed: number; info: HistoryInfo }
-  | { status: "refused"; reason: HistoryRefusal };
+  | { status: "refused"; reason: HistoryRefusal }
+  | { status: "failed"; message: string };

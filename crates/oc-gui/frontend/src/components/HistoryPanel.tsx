@@ -64,6 +64,10 @@ export function HistoryPanel() {
         setReport(i18n.t("history.agentEditing"));
         return;
       }
+      if (outcome.status === "failed") {
+        store.setError(outcome.message);
+        return;
+      }
       setReport(i18n.t("history.cleared", {
         count: String(outcome.dropped),
         size: sizeText(outcome.freed),
