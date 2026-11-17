@@ -194,3 +194,60 @@ fn results_are_stable_for_equal_scores() {
         ["track:same", "track:Same"]
     );
 }
+
+#[test]
+fn numeric_and_child_like_track_names_extract_the_matching_track() {
+    let mut project = fixture();
+    for name in ["0", "01", "Lead Guitar.mix", "Lead Guitar.effects"] {
+        let mut track = project.tracks[0].clone();
+        track.name = name.into();
+        project.tracks.push(track);
+        let hit = search(&project, &SearchRequest::new(name))
+            .into_iter()
+            .find(|hit| hit.kind == SearchKind::Track && hit.name == name)
+            .unwrap();
+        let extracted = oc_dsl::ops::extract(&project, &hit.path).unwrap();
+        assert_eq!(extracted.affected_tracks, vec![project.tracks.len() - 1]);
+        assert!(extracted.dsl_text.contains(name), "{}", extracted.dsl_text);
+    }
+}
+
+#[test]
+fn numeric_and_child_like_item_names_preserve_their_identity() {
+    let mut project = fixture();
+    for name in ["0", "Main Hook.effects"] {
+        let mut phrase = project.tracks[0].phrases[0].clone();
+        phrase.name = name.into();
+        project.tracks[0].phrases.push(phrase);
+        let hit = search(&project, &SearchRequest::new(name))
+            .into_iter()
+            .find(|hit| hit.kind == SearchKind::Phrase && hit.name == name)
+            .unwrap();
+        let extracted = oc_dsl::ops::extract(&project, &hit.path).unwrap();
+        assert!(extracted.dsl_text.contains(name), "{}", extracted.dsl_text);
+
+        let mut pattern = project.patterns[0].clone();
+        pattern.name = name.into();
+        project.patterns.push(pattern);
+        let hit = search(&project, &SearchRequest::new(name))
+            .into_iter()
+            .find(|hit| hit.kind == SearchKind::Pattern && hit.name == name)
+            .unwrap();
+        let extracted = oc_dsl::ops::extract(&project, &hit.path).unwrap();
+        assert!(extracted.dsl_text.contains(name), "{}", extracted.dsl_text);
+    }
+}
+
+#[test]
+fn unaddressable_preset_and_bus_names_do_not_alias_other_objects() {
+    let mut project = fixture();
+    let mut preset = project.presets[0].clone();
+    preset.name = "Warm Pad.effects".into();
+    project.presets.push(preset);
+    let mut bus = project.buses[0].clone();
+    bus.name = "reverb.effects".into();
+    project.buses.push(bus);
+    for name in ["Warm Pad.effects", "reverb.effects"] {
+        assert!(search(&project, &SearchRequest::new(name)).is_empty());
+    }
+}

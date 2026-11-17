@@ -5,7 +5,7 @@
 //! it straight to the same subtree operations the editing tools use.
 
 use crate::ast::{Effect, EffectType, Project};
-use crate::ops::AstPath;
+use crate::ops::{AstPath, ItemRef, PathSegment, TrackRef};
 use serde::{Deserialize, Serialize};
 
 /// Longest query the matcher reads, in characters.
@@ -198,7 +198,7 @@ fn collect(project: &Project, out: &mut Vec<Candidate>) {
     }
     for preset in &project.presets {
         let path = format!("preset:{}", preset.name);
-        if let Some(path) = addressable(path) {
+        if single_named_segment(&path, &preset.name) {
             push(
                 out,
                 SearchKind::Preset,
@@ -226,7 +226,7 @@ fn collect(project: &Project, out: &mut Vec<Candidate>) {
     }
     for bus in &project.buses {
         let path = format!("bus:{}", bus.name);
-        if let Some(path) = addressable(path) {
+        if single_named_segment(&path, &bus.name) {
             push(out, SearchKind::Bus, &path, &bus.name, None);
             for effect in &bus.effects {
                 push_effect(out, effect, &path, &bus.name);
@@ -315,7 +315,7 @@ fn addressable(path: String) -> Option<String> {
 /// cannot be a path segment, such as a quoted name containing a dot.
 fn named_segment(prefix: &str, name: &str, index: usize) -> String {
     let named = format!("{prefix}:{name}");
-    if AstPath::parse(&named).is_ok() {
+    if single_named_segment(&named, name) {
         named
     } else {
         format!("{prefix}:{index}")
@@ -323,9 +323,24 @@ fn named_segment(prefix: &str, name: &str, index: usize) -> String {
 }
 
 fn item_segment(name: &str, index: usize) -> String {
-    if AstPath::parse(&format!("phrase:{name}")).is_ok() {
+    if single_named_segment(&format!("phrase:{name}"), name) {
         name.to_owned()
     } else {
         index.to_string()
     }
+}
+
+/// A name is safe only when parsing preserves its identity as one name,
+/// rather than interpreting a number as an index or a dot as a child path.
+fn single_named_segment(path: &str, name: &str) -> bool {
+    let Ok(path) = AstPath::parse(path) else {
+        return false;
+    };
+    matches!(path.segments.as_slice(),
+        [PathSegment::Track(TrackRef::Name(parsed))]
+        | [PathSegment::Phrase(ItemRef::Name(parsed))]
+        | [PathSegment::Pattern(ItemRef::Name(parsed))]
+        | [PathSegment::Preset(parsed)]
+        | [PathSegment::Bus(parsed)] if parsed == name
+    )
 }
