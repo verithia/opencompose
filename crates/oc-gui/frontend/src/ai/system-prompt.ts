@@ -205,7 +205,7 @@ function searching(tools: ToolDef[]): string {
   if (!tools.some((tool) => tool.name === "project_search")) return "";
   return `
 ## Searching names
-Before you guess a track, preset, pattern, bus, section, marker, effect or phrase name, call \`project_search\` with the words you know. It returns addressable paths; sections and markers report \`sections\`. Search again after an edit changes the names.
+Before you guess a track, preset, pattern, bus, section, marker, effect or phrase name, call \`project_search\` with the words you know. It returns one addressable path per hit, section and marker included. Search again after an edit changes the names.
 
 `;
 }

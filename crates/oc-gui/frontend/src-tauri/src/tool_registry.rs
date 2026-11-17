@@ -386,7 +386,7 @@ pub fn catalog() -> Vec<ToolSpec> {
             "Line diff between two DSL strings.",
         ),
         arguments::tool::<crate::agent_tools::search::SearchArgs>(
-            "Search the open project by name before guessing one: tracks, presets, patterns, buses, sections, markers, effects and phrases. Case-insensitive tokens match names and meaningful labels such as an instrument, effect type or section label. Read-only. Returns bounded hits with an addressable `path`; sections and markers report `sections` in `path` and their own name in `name`.",
+            "Search the open project by name before guessing one: tracks, presets, patterns, buses, sections, markers, effects and phrases. Case-insensitive tokens match names and meaningful labels such as an instrument, effect type or section label. Read-only. Returns bounded hits with one addressable `path` per hit, section and marker included.",
         ),
         // tracks
         arguments::tool::<crate::agent_tools::misc::TracksListArgs>(

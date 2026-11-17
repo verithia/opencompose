@@ -4,7 +4,7 @@
 //! returns is accepted by [`crate::ops::AstPath::parse`] so a caller can pass
 //! it straight to the same subtree operations the editing tools use.
 
-use crate::ast::{Effect, EffectType, Project};
+use crate::ast::{Effect, Owner, Project};
 use crate::ops::{AstPath, ItemRef, PathSegment, TrackRef};
 use serde::{Deserialize, Serialize};
 
@@ -37,6 +37,10 @@ pub struct SearchHit {
     pub path: String,
     pub kind: SearchKind,
     pub name: String,
+    /// The object whose list or chain contains this hit.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner: Option<Owner>,
+    /// A non-owner label such as a preset patch or section label.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
 }
@@ -76,16 +80,11 @@ pub fn search(project: &Project, request: &SearchRequest<'_>) -> Vec<SearchHit> 
     }
     let limit = request.limit.clamp(1, MAX_LIMIT);
     let mut candidates = Vec::new();
-    collect(project, &mut candidates);
+    collect(project, request.kinds, &mut candidates);
+    let query = query.to_lowercase();
     let mut scored = Vec::new();
     for candidate in candidates {
-        if request
-            .kinds
-            .is_some_and(|kinds| !kinds.contains(&candidate.hit.kind))
-        {
-            continue;
-        }
-        let Some(score) = candidate.score(&tokens, query) else {
+        let Some(score) = candidate.score(&tokens, &query) else {
             continue;
         };
         scored.push((score, candidate.hit));
@@ -97,25 +96,26 @@ pub fn search(project: &Project, request: &SearchRequest<'_>) -> Vec<SearchHit> 
 
 struct Candidate {
     hit: SearchHit,
+    /// The hit name in lowercase, first in `fields`.
+    name_lower: String,
+    /// Lowercase name and typed tokens the query is matched against.
     fields: Vec<String>,
 }
 
 impl Candidate {
     fn score(&self, tokens: &[String], query: &str) -> Option<u32> {
-        let name = self.hit.name.to_lowercase();
-        let query = query.to_lowercase();
         let mut total = 0u32;
         for token in tokens {
             let mut best = 0u32;
             for (index, field) in self.fields.iter().enumerate() {
-                best = best.max(field_score(&field.to_lowercase(), token, index == 0));
+                best = best.max(field_score(field, token, index == 0));
             }
             if best == 0 {
                 return None;
             }
             total += best;
         }
-        total += whole_name_bonus(&name, &query);
+        total += whole_name_bonus(&self.name_lower, query);
         Some(total)
     }
 }
@@ -156,44 +156,53 @@ fn normalized_tokens(query: &str) -> Vec<String> {
         .collect()
 }
 
-fn collect(project: &Project, out: &mut Vec<Candidate>) {
+fn collect(project: &Project, kinds: Option<&[SearchKind]>, out: &mut Vec<Candidate>) {
     for (index, track) in project.tracks.iter().enumerate() {
         let track_path = named_segment("track", &track.name, index);
+        let owner = Owner::Track {
+            name: track.name.clone(),
+        };
         push(
             out,
+            kinds,
             SearchKind::Track,
             &track_path,
             &track.name,
+            None,
             Some(track.instrument.as_path()),
         );
         for (phrase_index, phrase) in track.phrases.iter().enumerate() {
             let path = format!(
                 "{track_path}.phrase:{}",
-                item_segment(&phrase.name, phrase_index)
+                item_segment("phrase", &phrase.name, phrase_index)
             );
             push(
                 out,
+                kinds,
                 SearchKind::Phrase,
                 &path,
                 &phrase.name,
-                Some(format!("on {}", track.name)),
+                Some(owner.clone()),
+                None,
             );
         }
         for (pattern_index, pattern) in track.patterns.iter().enumerate() {
             let path = format!(
                 "{track_path}.pattern:{}",
-                item_segment(&pattern.name, pattern_index)
+                item_segment("pattern", &pattern.name, pattern_index)
             );
             push(
                 out,
+                kinds,
                 SearchKind::Pattern,
                 &path,
                 &pattern.name,
-                Some(format!("on {}", track.name)),
+                Some(owner.clone()),
+                None,
             );
         }
-        for effect in &track.effects {
-            push_effect(out, effect, &format!("{track_path}.effects"), &track.name);
+        for (effect_index, effect) in track.effects.iter().enumerate() {
+            push_effect(out, kinds, effect, &track_path, effect_index, owner.clone());
         }
     }
     for preset in &project.presets {
@@ -201,58 +210,77 @@ fn collect(project: &Project, out: &mut Vec<Candidate>) {
         if single_named_segment(&path, &preset.name) {
             push(
                 out,
+                kinds,
                 SearchKind::Preset,
                 &path,
                 &preset.name,
+                None,
                 preset_detail(preset),
             );
-            for effect in &preset.effects {
-                push_effect(out, effect, &path, &preset.name);
+            let owner = Owner::Preset {
+                name: preset.name.clone(),
+            };
+            for (effect_index, effect) in preset.effects.iter().enumerate() {
+                push_effect(out, kinds, effect, &path, effect_index, owner.clone());
             }
         }
     }
     for (index, pattern) in project.patterns.iter().enumerate() {
-        let path = format!("pattern:{}", item_segment(&pattern.name, index));
+        let path = format!("pattern:{}", item_segment("pattern", &pattern.name, index));
         push(
             out,
+            kinds,
             SearchKind::Pattern,
             &path,
             &pattern.name,
+            None,
             Some(pattern.instrument.as_path()),
         );
-        for effect in &pattern.effects {
-            push_effect(out, effect, &path, &pattern.name);
+        let owner = Owner::Pattern {
+            name: pattern.name.clone(),
+        };
+        for (effect_index, effect) in pattern.effects.iter().enumerate() {
+            push_effect(out, kinds, effect, &path, effect_index, owner.clone());
         }
     }
     for bus in &project.buses {
         let path = format!("bus:{}", bus.name);
         if single_named_segment(&path, &bus.name) {
-            push(out, SearchKind::Bus, &path, &bus.name, None);
-            for effect in &bus.effects {
-                push_effect(out, effect, &path, &bus.name);
+            push(out, kinds, SearchKind::Bus, &path, &bus.name, None, None);
+            let owner = Owner::Bus {
+                name: bus.name.clone(),
+            };
+            for (effect_index, effect) in bus.effects.iter().enumerate() {
+                push_effect(out, kinds, effect, &path, effect_index, owner.clone());
             }
         }
     }
     if let Some(master) = &project.master {
-        for effect in &master.effects {
-            push_effect(out, effect, "master", "master");
+        for (effect_index, effect) in master.effects.iter().enumerate() {
+            push_effect(out, kinds, effect, "master", effect_index, Owner::Master);
         }
     }
-    for section in &project.sections {
+    for (index, section) in project.sections.iter().enumerate() {
+        let path = format!("section:{}", item_segment("section", &section.name, index));
         push(
             out,
+            kinds,
             SearchKind::Section,
-            "sections",
+            &path,
             &section.name,
+            None,
             section.label.clone(),
         );
     }
-    for marker in &project.markers {
+    for (index, marker) in project.markers.iter().enumerate() {
+        let path = format!("marker:{}", item_segment("marker", &marker.name, index));
         push(
             out,
+            kinds,
             SearchKind::Marker,
-            "sections",
+            &path,
             &marker.name,
+            None,
             Some(format!("{}:{}", marker.position.bar, marker.position.beat)),
         );
     }
@@ -268,42 +296,60 @@ fn preset_detail(preset: &crate::ast::PresetDef) -> Option<String> {
 
 fn push(
     out: &mut Vec<Candidate>,
+    kinds: Option<&[SearchKind]>,
     kind: SearchKind,
     path: &str,
     name: &str,
+    owner: Option<Owner>,
     detail: Option<String>,
 ) {
+    if kinds.is_some_and(|kinds| !kinds.contains(&kind)) {
+        return;
+    }
     // A quoted name with a path separator cannot be addressed by `AstPath`;
     // omit the hit rather than return a path that parses to another object.
     let Some(path) = addressable(path.to_owned()) else {
         return;
     };
-    let mut fields = vec![name.to_owned()];
+    let name_lower = name.to_lowercase();
+    let mut fields = vec![name_lower.clone()];
+    if let Some(owner_name) = owner.as_ref().and_then(Owner::name) {
+        fields.push(owner_name.to_lowercase());
+    }
     if let Some(detail) = &detail {
-        fields.push(detail.clone());
+        fields.push(detail.to_lowercase());
     }
     out.push(Candidate {
         hit: SearchHit {
             path,
             kind,
             name: name.to_owned(),
+            owner,
             detail,
         },
+        name_lower,
         fields,
     });
 }
 
-fn push_effect(out: &mut Vec<Candidate>, effect: &Effect, path: &str, owner: &str) {
-    let token = match &effect.effect_type {
-        EffectType::Plugin(id) => id.clone(),
-        builtin => builtin.lane_name().to_owned(),
-    };
+fn push_effect(
+    out: &mut Vec<Candidate>,
+    kinds: Option<&[SearchKind]>,
+    effect: &Effect,
+    owner_path: &str,
+    index: usize,
+    owner: Owner,
+) {
+    let token = effect.effect_type.token();
+    let path = format!("{owner_path}.effect:{index}");
     push(
         out,
+        kinds,
         SearchKind::Effect,
-        path,
+        &path,
         &token,
-        Some(format!("on {owner}")),
+        Some(owner),
+        None,
     );
 }
 
@@ -322,8 +368,8 @@ fn named_segment(prefix: &str, name: &str, index: usize) -> String {
     }
 }
 
-fn item_segment(name: &str, index: usize) -> String {
-    if single_named_segment(&format!("phrase:{name}"), name) {
+fn item_segment(prefix: &str, name: &str, index: usize) -> String {
+    if single_named_segment(&format!("{prefix}:{name}"), name) {
         name.to_owned()
     } else {
         index.to_string()
@@ -340,6 +386,8 @@ fn single_named_segment(path: &str, name: &str) -> bool {
         [PathSegment::Track(TrackRef::Name(parsed))]
         | [PathSegment::Phrase(ItemRef::Name(parsed))]
         | [PathSegment::Pattern(ItemRef::Name(parsed))]
+        | [PathSegment::Section(ItemRef::Name(parsed))]
+        | [PathSegment::Marker(ItemRef::Name(parsed))]
         | [PathSegment::Preset(parsed)]
         | [PathSegment::Bus(parsed)] if parsed == name
     )

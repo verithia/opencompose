@@ -103,12 +103,19 @@ fn an_empty_or_oversized_query_returns_nothing() {
 }
 
 #[test]
-fn every_returned_path_parses() {
+fn every_returned_path_parses_and_extracts_its_object() {
     let project = fixture();
     for query in ["a", "e", "o", "warm", "guitar", "chorus", "drop", "limiter"] {
         for hit in search(&project, &SearchRequest::new(query)) {
             AstPath::parse(&hit.path)
                 .unwrap_or_else(|error| panic!("{} does not parse: {error}", hit.path));
+            let extracted = oc_dsl::ops::extract(&project, &hit.path)
+                .unwrap_or_else(|error| panic!("{} does not extract: {error}", hit.path));
+            assert!(
+                !extracted.dsl_text.is_empty(),
+                "{} extracted nothing",
+                hit.path
+            );
         }
     }
 }
@@ -117,10 +124,16 @@ fn every_returned_path_parses() {
 fn labels_types_and_instruments_are_searchable() {
     let project = fixture();
     let chorus = search(&project, &SearchRequest::new("big chorus"));
+    let section = chorus
+        .iter()
+        .find(|hit| hit.kind == SearchKind::Section)
+        .expect("the section label matches");
+    assert!(section.path.starts_with("section:"), "{}", section.path);
     assert!(
-        chorus
-            .iter()
-            .any(|hit| hit.kind == SearchKind::Section && hit.path == "sections")
+        oc_dsl::ops::extract(&project, &section.path)
+            .unwrap()
+            .dsl_text
+            .contains("@section chorus")
     );
     let guitar = search(&project, &SearchRequest::new("guitar"));
     assert!(
@@ -128,26 +141,90 @@ fn labels_types_and_instruments_are_searchable() {
         "{guitar:?}"
     );
     let delay = search(&project, &SearchRequest::new("delay"));
+    let effect = delay
+        .iter()
+        .find(|hit| hit.kind == SearchKind::Effect)
+        .expect("the effect type matches");
+    assert!(effect.path.ends_with(".effect:0"), "{}", effect.path);
     assert!(
-        delay
-            .iter()
-            .any(|hit| hit.kind == SearchKind::Effect && hit.path.ends_with(".effects")),
-        "{delay:?}"
+        oc_dsl::ops::extract(&project, &effect.path)
+            .unwrap()
+            .dsl_text
+            .contains("delay")
     );
+    let limiter = search(&project, &SearchRequest::new("limiter"));
+    let master_effect = limiter
+        .iter()
+        .find(|hit| hit.kind == SearchKind::Effect)
+        .expect("the master effect matches");
+    assert_eq!(master_effect.path, "master.effect:0");
+    assert_eq!(master_effect.owner, Some(oc_dsl::ast::Owner::Master));
     let patch = search(&project, &SearchRequest::new("pads/warm"));
     assert!(patch.iter().any(|hit| hit.kind == SearchKind::Preset));
 }
 
 #[test]
-fn sections_and_markers_report_the_sections_path() {
+fn hits_carry_a_typed_owner_instead_of_english_detail() {
     let project = fixture();
-    for query in ["chorus", "drop two"] {
-        let hits = search(&project, &SearchRequest::new(query));
-        assert!(
-            hits.iter()
-                .any(|hit| hit.path == "sections" && hit.kind != SearchKind::Track)
-        );
+    let phrase = search(&project, &SearchRequest::new("main hook"))
+        .into_iter()
+        .find(|hit| hit.kind == SearchKind::Phrase)
+        .expect("the phrase matches");
+    assert_eq!(
+        phrase.owner,
+        Some(oc_dsl::ast::Owner::Track {
+            name: "Lead Guitar".into()
+        })
+    );
+    assert_eq!(phrase.detail, None);
+    let effect = search(&project, &SearchRequest::new("delay"))
+        .into_iter()
+        .find(|hit| hit.kind == SearchKind::Effect)
+        .expect("the effect matches");
+    assert_eq!(
+        effect.owner,
+        Some(oc_dsl::ast::Owner::Track {
+            name: "Lead Guitar".into()
+        })
+    );
+    assert_eq!(effect.detail, None);
+    for hit in search(&project, &SearchRequest::new("a")) {
+        if let Some(detail) = hit.detail {
+            assert!(!detail.starts_with("on "), "{detail}");
+        }
     }
+}
+
+#[test]
+fn sections_and_markers_report_their_own_paths() {
+    let project = fixture();
+    let section = search(&project, &SearchRequest::new("chorus"))
+        .into_iter()
+        .find(|hit| hit.kind == SearchKind::Section)
+        .expect("the section matches");
+    assert!(section.path.starts_with("section:"), "{}", section.path);
+    assert!(
+        oc_dsl::ops::extract(&project, &section.path)
+            .unwrap()
+            .dsl_text
+            .contains("@section chorus")
+    );
+    let marker = search(&project, &SearchRequest::new("drop two"))
+        .into_iter()
+        .find(|hit| hit.kind == SearchKind::Marker)
+        .expect("the marker matches");
+    assert!(marker.path.starts_with("marker:"), "{}", marker.path);
+    let extracted = oc_dsl::ops::extract(&project, &marker.path).unwrap();
+    assert!(
+        extracted.dsl_text.contains("@marker"),
+        "{}",
+        extracted.dsl_text
+    );
+    assert!(
+        extracted.dsl_text.contains("Drop Two"),
+        "{}",
+        extracted.dsl_text
+    );
 }
 
 #[test]
