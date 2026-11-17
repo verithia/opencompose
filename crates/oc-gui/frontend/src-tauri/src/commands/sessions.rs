@@ -13,6 +13,8 @@ use crate::ai::sessions::{
 use crate::ai_service::{AiError, AiErrorDetail};
 use crate::commands::AiProviderEntry;
 use crate::edit_history::HistoryMark;
+use crate::process_lock::{LockError, ProcessLock};
+use crate::state::OpenSessionLock;
 use crate::state::{AppState, AppStateInner};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -23,6 +25,51 @@ pub const AUTO_SESSION_EVENT: &str = "ai_session";
 
 fn store() -> Store {
     Store::config()
+}
+
+fn lock_refusal(error: LockError) -> SessionError {
+    if error.is_in_use() {
+        SessionError::new(
+            SessionErrorKind::InUse,
+            "Another OpenCompose process has this conversation open.",
+        )
+    } else {
+        SessionError::new(
+            SessionErrorKind::SessionStore,
+            format!("Cannot lock the conversation: {error}"),
+        )
+    }
+}
+
+/// Take the lock a conversation is opened under. The caller keeps the guard for
+/// as long as the conversation is open.
+fn acquire_session_lock(store: &Store, id: &str) -> Result<ProcessLock, SessionError> {
+    store.acquire_lock(id).map_err(lock_refusal)
+}
+
+/// Make `id` the panel's open conversation under a fresh hold. A conversation
+/// this process already has open re-acquires in place; a failed acquisition
+/// leaves the current one open.
+fn hold_open_session(state: &AppState, store: &Store, id: &str) -> Result<(), SessionError> {
+    let guard = acquire_session_lock(store, id)?;
+    let mut inner = state.lock_inner();
+    inner.session_lock = Some(OpenSessionLock {
+        id: id.to_owned(),
+        _guard: guard,
+    });
+    Ok(())
+}
+
+/// Release the panel's hold when it names `id`.
+fn release_open_session(state: &AppState, id: &str) {
+    let mut inner = state.lock_inner();
+    if inner
+        .session_lock
+        .as_ref()
+        .is_some_and(|open| open.id == id)
+    {
+        inner.session_lock = None;
+    }
 }
 
 /// The project file a request is about: the given path, or the open one.
@@ -101,14 +148,18 @@ pub fn sessions_new(
     parent: Option<String>,
     through: Option<usize>,
     state: State<AppState>,
-) -> Result<SessionMeta, String> {
-    new_fork(
+) -> Result<SessionMeta, SessionError> {
+    let meta = new_fork(
         &state,
         project.as_deref(),
         title.as_deref(),
         parent.as_deref(),
         through,
     )
+    .map_err(SessionError::from)?;
+    let store = store();
+    hold_open_session(&state, &store, &meta.id)?;
+    Ok(meta)
 }
 
 /// Binds a conversation to the project that is open now. The next turn carries
@@ -118,8 +169,9 @@ pub fn sessions_bind(
     id: String,
     state: State<AppState>,
     requests: State<crate::ai_service::Requests>,
-) -> Result<SessionMeta, String> {
-    bind_if_idle(&state, &id, &requests)
+) -> Result<SessionMeta, SessionError> {
+    let _lock = acquire_session_lock(&store(), &id)?;
+    bind_if_idle(&state, &id, &requests).map_err(SessionError::from)
 }
 
 /// Bind a conversation to the open project. A turn that is still running owns
@@ -211,8 +263,32 @@ pub fn sessions_load(id: String) -> Result<Loaded, String> {
 
 /// The conversation at its newest turns, for the panel to open.
 #[tauri::command]
-pub fn sessions_open(id: String, turns: Option<usize>) -> Result<LoadedPage, String> {
-    store().open_page(&id, turns.unwrap_or(MAX_PAGE_TURNS))
+pub fn sessions_open(
+    id: String,
+    turns: Option<usize>,
+    state: State<AppState>,
+) -> Result<LoadedPage, SessionError> {
+    open_session_for(&state, &id, turns)
+}
+
+/// Open a conversation for the panel and keep its lock until another one opens.
+pub(crate) fn open_session_for(
+    state: &AppState,
+    id: &str,
+    turns: Option<usize>,
+) -> Result<LoadedPage, SessionError> {
+    let store = store();
+    // The panel opens one conversation at a time. Taking the new lock first
+    // keeps the current conversation open when another process holds this one.
+    let guard = acquire_session_lock(&store, id)?;
+    let page = store
+        .open_page(id, turns.unwrap_or(MAX_PAGE_TURNS))
+        .map_err(SessionError::from)?;
+    state.lock_inner().session_lock = Some(OpenSessionLock {
+        id: id.to_owned(),
+        _guard: guard,
+    });
+    Ok(page)
 }
 
 /// The older turns before message `before`, refused as stale when the view
@@ -235,7 +311,9 @@ pub fn sessions_page(
 /// than three compactions keeps everything.
 #[tauri::command]
 pub fn sessions_clear_history(id: String) -> Result<sessions::ClearReport, SessionError> {
-    store().clear_old_history_guarded(&id, &|| refuse_while_running(&id))
+    let store = store();
+    let _lock = acquire_session_lock(&store, &id)?;
+    store.clear_old_history_guarded(&id, &|| refuse_while_running(&id))
 }
 
 /// Drop old history for every conversation, skipping the ones a turn is
@@ -311,9 +389,20 @@ pub fn sessions_set_goal(id: String, text: Option<String>) -> Result<SessionMeta
 }
 
 #[tauri::command]
-/// Delete one saved session.
-pub fn sessions_delete(id: String) -> Result<(), String> {
-    Ok(store().delete_guarded(&id, &|| refuse_while_running(&id))?)
+/// Delete one saved session. The conversation's lock is required, so another
+/// process cannot delete a conversation the panel has open.
+pub fn sessions_delete(id: String, state: State<AppState>) -> Result<(), SessionError> {
+    delete_session_for(&state, &id)
+}
+
+/// Delete a conversation after taking its lock; also releases the panel's hold
+/// when the deleted conversation is the open one.
+pub fn delete_session_for(state: &AppState, id: &str) -> Result<(), SessionError> {
+    let store = store();
+    let _lock = acquire_session_lock(&store, id)?;
+    store.delete_guarded(id, &|| refuse_while_running(id))?;
+    release_open_session(state, id);
+    Ok(())
 }
 
 /// Folds the older turns of a session into one plain-text summary. A refusal

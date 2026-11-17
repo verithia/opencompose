@@ -597,6 +597,18 @@ fn handle_ai_turn(app: &AppHandle, body: &[u8]) -> (u16, String) {
         Ok(request) => request,
         Err(error) => return complete_failure(error),
     };
+    // Another process may have this conversation open in its panel or in a
+    // turn; both processes name the same key.
+    let _session_lock = match crate::ai::sessions::Store::config().acquire_lock(&start.session_id) {
+        Ok(lock) => lock,
+        Err(error) if error.is_in_use() => {
+            return complete_failure(AiError::new(
+                "session_in_use",
+                "Another OpenCompose process has this conversation open.",
+            ));
+        }
+        Err(error) => return complete_failure(AiError::new("session_save", error.to_string())),
+    };
     match block_on(crate::ai::agent_loop::host::run(
         app,
         start,
@@ -717,8 +729,9 @@ fn complete_status(kind: &str) -> u16 {
         "busy" | "cancelled" | "steer_closed" | "not_running" => 409,
         // The saved endpoint or provider has to change before a retry can work.
         "config" | "redirect" => 409,
-        // The request names a conversation or project this host does not have open.
-        "session_binding" => 409,
+        // The request names a conversation or project this host does not have open,
+        // or another process holds the conversation it names.
+        "session_binding" | "session_in_use" => 409,
         // The conversation does not fit the model's window even compacted.
         "context_overflow" => 413,
         // The local conversation store failed; no provider was at fault.
@@ -829,6 +842,25 @@ async fn complete_turn(
     request: &CompleteRequest,
     app: Option<&AppHandle>,
 ) -> Result<Value, AiError> {
+    // A saved turn owns its conversation for the request's duration, in this
+    // process or another.
+    let _session_lock = match request.saved.as_ref() {
+        Some(binding) => Some(
+            crate::ai::sessions::Store::config()
+                .acquire_lock(binding.id())
+                .map_err(|error| {
+                    if error.is_in_use() {
+                        AiError::new(
+                            "session_in_use",
+                            "Another OpenCompose process has this conversation open.",
+                        )
+                    } else {
+                        AiError::new("session_save", error.to_string())
+                    }
+                })?,
+        ),
+        None => None,
+    };
     let entry = crate::ai_service::provider(&request.provider).map_err(AiError::config)?;
     crate::ai::endpoint(&entry.endpoint).map_err(AiError::config)?;
     let stats = crate::ai::timing::TurnStatsHandle::new(&entry.id, &entry.model, entry.wire());
@@ -985,16 +1017,31 @@ fn handle_call(app: &AppHandle, body: &[u8]) -> (u16, String) {
         Ok(binding) => binding,
         Err(error) => return (400, error_body(error)),
     };
-    let caller = match binding {
-        Some(binding) => match binding.caller(app) {
-            Ok(caller) => caller,
-            Err(error) => return complete_failure(error),
-        },
-        None => HTTP_BATCH_OWNER.to_owned(),
+    let (caller, _session_lock) = match binding {
+        Some(binding) => {
+            let caller = match binding.caller(app) {
+                Ok(caller) => caller,
+                Err(error) => return complete_failure(error),
+            };
+            let lock = match crate::ai::sessions::Store::config().acquire_lock(binding.id()) {
+                Ok(lock) => lock,
+                Err(error) if error.is_in_use() => {
+                    return complete_failure(AiError::new(
+                        "session_in_use",
+                        "Another OpenCompose process has this conversation open.",
+                    ));
+                }
+                Err(error) => {
+                    return complete_failure(AiError::new("session_save", error.to_string()));
+                }
+            };
+            (caller, Some(lock))
+        }
+        None => (HTTP_BATCH_OWNER.to_owned(), None),
     };
     match dispatch(app, tool, &args, &caller) {
         Ok(result) => (200, ok_body(result)),
-        Err(error) => (400, error_body(error)),
+        Err(error) => (error.status(), error.body()),
     }
 }
 
@@ -1047,7 +1094,7 @@ fn handle_mcp(app: &AppHandle, body: &[u8]) -> (u16, String) {
                         "isError": !ok
                     }))
                 }
-                Err(error) => Ok(mcp_error(error)),
+                Err(error) => Ok(mcp_error(error.message)),
             }
         }
         "ping" => Ok(json!({})),
@@ -1117,8 +1164,8 @@ fn block_on<F: std::future::Future>(future: F) -> F::Output {
     tauri::async_runtime::block_on(future)
 }
 
-fn to_value<T: Serialize>(value: T) -> Result<Value, String> {
-    serde_json::to_value(value).map_err(|error| error.to_string())
+fn to_value<T: Serialize>(value: T) -> Result<Value, ToolError> {
+    serde_json::to_value(value).map_err(|error| ToolError::from(error.to_string()))
 }
 
 /// The shapes `presets_set_params` accepts, spelled once for every refusal.
@@ -1281,9 +1328,107 @@ fn foreign_batch_error(open: &str, caller: &str) -> String {
     )
 }
 
+/// A tool refusal with the stable kind a client may branch on.
+#[derive(Debug)]
+pub struct ToolError {
+    kind: Option<&'static str>,
+    message: String,
+}
+
+impl ToolError {
+    fn new(kind: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            kind: Some(kind),
+            message: message.into(),
+        }
+    }
+
+    /// A refusal caused by another process holding a resource answers 409.
+    fn status(&self) -> u16 {
+        match self.kind {
+            Some("project_in_use" | "session_in_use") => 409,
+            _ => 400,
+        }
+    }
+
+    fn body(&self) -> String {
+        let mut payload = crate::ai::skill_hints::refusal(&self.message);
+        if let Some(kind) = self.kind {
+            payload["kind"] = json!(kind);
+        }
+        payload.to_string()
+    }
+}
+
+impl std::fmt::Display for ToolError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl From<String> for ToolError {
+    fn from(message: String) -> Self {
+        Self {
+            kind: None,
+            message,
+        }
+    }
+}
+
+impl From<&str> for ToolError {
+    fn from(message: &str) -> Self {
+        Self::from(message.to_owned())
+    }
+}
+
+impl From<ToolError> for String {
+    fn from(error: ToolError) -> Self {
+        error.message
+    }
+}
+
+impl From<crate::process_lock::LockError> for ToolError {
+    fn from(error: crate::process_lock::LockError) -> Self {
+        if error.is_in_use() {
+            Self::new(
+                "session_in_use",
+                "Another OpenCompose process has this conversation open.",
+            )
+        } else {
+            error.to_string().into()
+        }
+    }
+}
+
+impl From<crate::ai::sessions::SessionError> for ToolError {
+    fn from(error: crate::ai::sessions::SessionError) -> Self {
+        if error.kind == crate::ai::sessions::SessionErrorKind::InUse {
+            Self::new("session_in_use", error.message)
+        } else {
+            error.message.into()
+        }
+    }
+}
+
+impl From<crate::commands::ProjectError> for ToolError {
+    fn from(error: crate::commands::ProjectError) -> Self {
+        match error {
+            crate::commands::ProjectError::ProjectInUse { message } => {
+                Self::new("project_in_use", message)
+            }
+            crate::commands::ProjectError::Project { message } => message.into(),
+        }
+    }
+}
+
 /// Entry point shared by MCP and the panel. A refused call returns its error and
 /// leaves the batch open, so the turn keeps the edits that already landed.
-pub fn dispatch(app: &AppHandle, tool: &str, args: &Value, caller: &str) -> Result<Value, String> {
+pub fn dispatch(
+    app: &AppHandle,
+    tool: &str,
+    args: &Value,
+    caller: &str,
+) -> Result<Value, ToolError> {
     dispatch_with_policy(app, tool, args, caller, InstallPolicy::External, false)
 }
 
@@ -1296,6 +1441,7 @@ pub(crate) fn dispatch_panel(
     caller: &str,
 ) -> Result<Value, String> {
     dispatch_with_policy(app, tool, args, caller, InstallPolicy::Panel, true)
+        .map_err(|error| error.message)
 }
 
 /// The document a call starts from. A batch commit leaves the document as it
@@ -1391,7 +1537,7 @@ fn dispatch_with_policy(
     caller: &str,
     install_policy: InstallPolicy,
     attach_changes: bool,
-) -> Result<Value, String> {
+) -> Result<Value, ToolError> {
     let tool = tool.replace('.', "_");
     let state = state(app);
     guard_mutation(&state, &tool, args, caller)?;
@@ -1628,7 +1774,7 @@ pub(crate) fn audio_analyze_request(
     if decoded_media {
         report.warnings.push("Media decoded to stereo for analysis; channels describes the analyzed signal, not the source channel count.".into());
     }
-    to_value(report)
+    to_value(report).map_err(String::from)
 }
 
 fn read_analysis_media(
@@ -1817,7 +1963,7 @@ pub(crate) fn analyze_notes_request(
     let mut report = oc_engine::note_analysis::analyze_notes(&path, &options)
         .map_err(|error| format!("note analysis failed: {error}"))?;
     report.warnings.splice(0..0, resolved.warnings);
-    to_value(report)
+    to_value(report).map_err(String::from)
 }
 
 /// Separation CLIs `separate_stems` can drive, with the arguments before the
@@ -2739,13 +2885,14 @@ fn dispatch_tool(
     args: &Value,
     caller: &str,
     install_policy: InstallPolicy,
-) -> Result<Value, String> {
+) -> Result<Value, ToolError> {
     let id = ToolId::parse(tool).ok_or_else(|| format!("unknown tool '{tool}'"))?;
     match id {
         ToolId::ListSkills | ToolId::ReadSkill => dispatch_skill(id, args)
-            .ok_or_else(|| format!("No reference handler for '{}'", id.name()))?,
+            .ok_or_else(|| format!("No reference handler for '{}'", id.name()))?
+            .map_err(ToolError::from),
         ToolId::EditSubtree | ToolId::PlanUpdate | ToolId::AskUser => {
-            Err(format!("unknown tool '{}'", id.name()))
+            Err(format!("unknown tool '{}'", id.name()).into())
         }
         // ---- system -----------------------------------------------------
         ToolId::SystemCapabilities => {
@@ -2774,12 +2921,17 @@ fn dispatch_tool(
         ToolId::SessionsNew => {
             let request = crate::agent_tools::session::SessionsNewArgs::decode(args)
                 .map_err(|error| error.to_string())?;
-            to_value(crate::commands::new_for(
+            let meta = crate::commands::new_for(
                 &state(app),
                 request.project.as_deref(),
                 request.title.as_deref(),
                 request.parent.as_deref(),
-            )?)
+            )
+            .map_err(ToolError::from)?;
+            let _lock = crate::ai::sessions::Store::config()
+                .acquire_lock(&meta.id)
+                .map_err(ToolError::from)?;
+            to_value(meta)
         }
         ToolId::SessionsLoad => {
             let request = crate::agent_tools::session::SessionsLoadArgs::decode(args)
@@ -2794,7 +2946,7 @@ fn dispatch_tool(
         ToolId::SessionsDelete => {
             let request = crate::agent_tools::session::SessionsDeleteArgs::decode(args)
                 .map_err(|error| error.to_string())?;
-            crate::commands::sessions_delete(request.id)?;
+            crate::commands::delete_session_for(&state(app), &request.id)?;
             Ok(json!({ "deleted": true }))
         }
         ToolId::SessionsCompact => {
@@ -2813,17 +2965,17 @@ fn dispatch_tool(
         ToolId::TransactionBegin => {
             let request = crate::agent_tools::session::TransactionBeginArgs::decode(args)
                 .map_err(|error| error.to_string())?;
-            transaction_begin(&state(app), request.label, caller)
+            transaction_begin(&state(app), request.label, caller).map_err(ToolError::from)
         }
         ToolId::TransactionCommit => {
             let _ = crate::agent_tools::session::TransactionCommitArgs::decode(args)
                 .map_err(|error| error.to_string())?;
-            transaction_commit(&state(app), caller)
+            transaction_commit(&state(app), caller).map_err(ToolError::from)
         }
         ToolId::TransactionRollback => {
             let _ = crate::agent_tools::session::TransactionRollbackArgs::decode(args)
                 .map_err(|error| error.to_string())?;
-            transaction_rollback(&state(app), caller)
+            transaction_rollback(&state(app), caller).map_err(ToolError::from)
         }
 
         // ---- project ----------------------------------------------------
@@ -2893,7 +3045,7 @@ fn dispatch_tool(
                 request.duration_seconds.unwrap_or(30.0),
                 request.limit.unwrap_or(24),
             )?;
-            serde_json::to_value(result).map_err(|error| error.to_string())
+            serde_json::to_value(result).map_err(|error| ToolError::from(error.to_string()))
         }
         ToolId::AudioClipEditRange => {
             use crate::tool_registry::arguments::{RevisionGuard, ToolArguments};
@@ -2921,9 +3073,11 @@ fn dispatch_tool(
         }
         ToolId::AudioClipSetPlacement => {
             audio_clip_set_placement_request(state(app).inner(), args, caller)
+                .map_err(ToolError::from)
         }
         ToolId::AudioClipSetPlayback => {
             audio_clip_set_playback_request(state(app).inner(), args, caller)
+                .map_err(ToolError::from)
         }
         ToolId::ImportAlignedStems => {
             use crate::tool_registry::arguments::ToolArguments;
@@ -2946,23 +3100,31 @@ fn dispatch_tool(
             let request = crate::agent_tools::project_mutation::ProjectNewArgs::decode(args)
                 .map_err(|error| error.to_string())?;
             crate::agent_tools::project_mutation::validate_new_project_path(&request.path)?;
-            to_value(block_on(commands::new_project_at(
-                request.path,
-                request.template,
-                app.clone(),
-            ))?)
+            to_value(
+                block_on(commands::new_project_at(
+                    request.path,
+                    request.template,
+                    app.clone(),
+                ))
+                .map_err(ToolError::from)?,
+            )
         }
         ToolId::ProjectOpen => {
             use crate::tool_registry::arguments::ToolArguments;
             let request = crate::agent_tools::project_mutation::ProjectOpenArgs::decode(args)
                 .map_err(|error| error.to_string())?;
-            to_value(block_on(commands::open_file(request.path, app.clone()))?)
+            to_value(
+                block_on(commands::open_file(request.path, app.clone()))
+                    .map_err(ToolError::from)?,
+            )
         }
         ToolId::ProjectSave => {
             use crate::tool_registry::arguments::ToolArguments;
             let request = crate::agent_tools::project_mutation::ProjectSaveArgs::decode(args)
                 .map_err(|error| error.to_string())?;
-            Ok(json!({ "path": block_on(commands::save_file(request.path, app.clone()))? }))
+            Ok(
+                json!({ "path": block_on(commands::save_file(request.path, app.clone())).map_err(ToolError::from)? }),
+            )
         }
         ToolId::ProjectSetTempo
         | ToolId::ProjectSetName
@@ -2972,8 +3134,11 @@ fn dispatch_tool(
             let request = crate::agent_tools::project_mutation::Request::decode(id, args)
                 .map_err(|error| error.to_string())?;
             crate::agent_tools::project_mutation::execute(state(app), request)
+                .map_err(ToolError::from)
         }
-        ToolId::TempoMapSet => tempo_map_set_request(state(app).inner(), args),
+        ToolId::TempoMapSet => {
+            tempo_map_set_request(state(app).inner(), args).map_err(ToolError::from)
+        }
         ToolId::PictureClockSet => {
             use crate::tool_registry::arguments::ToolArguments;
             let request = crate::agent_tools::picture::PictureClockSetArgs::decode(args)
@@ -2996,7 +3161,9 @@ fn dispatch_tool(
                 request.0,
             )?)
         }
-        ToolId::TimeSignatureSet => time_signature_set_request(state(app).inner(), args),
+        ToolId::TimeSignatureSet => {
+            time_signature_set_request(state(app).inner(), args).map_err(ToolError::from)
+        }
 
         // ---- MIDI import / export --------------------------------------
         ToolId::MidiImportHandoff => {
@@ -3056,6 +3223,7 @@ fn dispatch_tool(
             let request = crate::agent_tools::search::SearchArgs::decode(args)
                 .map_err(|error| error.to_string())?;
             crate::agent_tools::search::execute(state(app).inner(), request)
+                .map_err(ToolError::from)
         }
         ToolId::ProjectGet
         | ToolId::ProjectDsl
@@ -3067,12 +3235,13 @@ fn dispatch_tool(
             let request = crate::agent_tools::project_query::Request::decode(id, args)
                 .map_err(|error| error.to_string())?;
             crate::agent_tools::project_query::execute(state(app).inner(), request)
+                .map_err(ToolError::from)
         }
         // ---- tracks -----------------------------------------------------
         ToolId::TracksList => {
             let _ = crate::agent_tools::misc::TracksListArgs::decode(args)
                 .map_err(|error| error.to_string())?;
-            tracks_list(state(app).inner())
+            tracks_list(state(app).inner()).map_err(ToolError::from)
         }
         ToolId::TracksAdd => {
             use crate::tool_registry::arguments::ToolArguments;
@@ -3113,7 +3282,7 @@ fn dispatch_tool(
             use crate::tool_registry::arguments::ToolArguments;
             let request = crate::agent_tools::tracks::TracksDuplicateArgs::decode(args)
                 .map_err(|error| error.to_string())?;
-            tracks_duplicate(state(app).inner(), &request)
+            tracks_duplicate(state(app).inner(), &request).map_err(ToolError::from)
         }
         ToolId::TracksRename => {
             use crate::tool_registry::arguments::ToolArguments;
@@ -3210,7 +3379,7 @@ fn dispatch_tool(
                 .map_err(|error| error.to_string())?;
             let app_state = state(app);
             let inner = app_state.lock_inner();
-            commands::summary(&inner.project, inner.revision)
+            commands::summary(&inner.project, inner.revision).map_err(ToolError::from)
         }
         ToolId::SectionsAdd => {
             use crate::tool_registry::arguments::ToolArguments;
@@ -3226,7 +3395,7 @@ fn dispatch_tool(
                 request.label,
                 state(app),
             )?;
-            commands::summary(&snapshot.project, snapshot.revision)
+            commands::summary(&snapshot.project, snapshot.revision).map_err(ToolError::from)
         }
         ToolId::SectionsSet => {
             use crate::tool_registry::arguments::ToolArguments;
@@ -3253,14 +3422,14 @@ fn dispatch_tool(
                 label,
                 state(app),
             )?;
-            commands::summary(&snapshot.project, snapshot.revision)
+            commands::summary(&snapshot.project, snapshot.revision).map_err(ToolError::from)
         }
         ToolId::SectionsRemove => {
             use crate::tool_registry::arguments::ToolArguments;
             let request = crate::agent_tools::sections::SectionsRemoveArgs::decode(args)
                 .map_err(|error| error.to_string())?;
             let snapshot = commands::remove_section(request.name, state(app))?;
-            commands::summary(&snapshot.project, snapshot.revision)
+            commands::summary(&snapshot.project, snapshot.revision).map_err(ToolError::from)
         }
 
         // ---- content libraries ------------------------------------------
@@ -3315,7 +3484,7 @@ fn dispatch_tool(
             if let Some(name) = request.name.as_deref() {
                 let state = state(app);
                 let inner = state.lock_inner();
-                return preset_details(&inner.project, name);
+                return preset_details(&inner.project, name).map_err(ToolError::from);
             }
             let snapshot = commands::get_project(state(app))?;
             // A pack is named by an absolute path, so the listing carries both
@@ -3375,13 +3544,13 @@ fn dispatch_tool(
             use crate::tool_registry::arguments::ToolArguments;
             let request = crate::agent_tools::presets::PresetsRenameArgs::decode(args)
                 .map_err(|error| error.to_string())?;
-            presets_rename(state(app).inner(), &request)
+            presets_rename(state(app).inner(), &request).map_err(ToolError::from)
         }
         ToolId::PresetsDuplicate => {
             use crate::tool_registry::arguments::ToolArguments;
             let request = crate::agent_tools::presets::PresetsDuplicateArgs::decode(args)
                 .map_err(|error| error.to_string())?;
-            presets_duplicate(state(app).inner(), &request)
+            presets_duplicate(state(app).inner(), &request).map_err(ToolError::from)
         }
         ToolId::PresetsSetParam => {
             use crate::tool_registry::arguments::ToolArguments;
@@ -3507,12 +3676,12 @@ fn dispatch_tool(
         ToolId::SampleSearch => {
             let request =
                 crate::samples::SearchArgs::decode(args).map_err(|error| error.to_string())?;
-            crate::samples::search_request(&request)
+            crate::samples::search_request(&request).map_err(ToolError::from)
         }
         ToolId::SamplePull => {
             let request = crate::agent_tools::sample::SamplePullArgs::decode(args)
                 .map_err(|error| error.to_string())?;
-            crate::samples::pull(&state(app), &request)
+            crate::samples::pull(&state(app), &request).map_err(ToolError::from)
         }
         ToolId::PluginsScan => {
             let request = crate::agent_tools::plugins::PluginsScanArgs::decode(args)
@@ -3621,7 +3790,7 @@ fn dispatch_tool(
         | ToolId::TransportUnmute => {
             let request = crate::agent_tools::transport::Request::decode(id, args)
                 .map_err(|error| error.to_string())?;
-            crate::agent_tools::transport::execute(app, request)
+            crate::agent_tools::transport::execute(app, request).map_err(ToolError::from)
         }
 
         // ---- render / audio --------------------------------------------
@@ -3668,7 +3837,9 @@ fn dispatch_tool(
                 .map_err(|error| error.to_string())?;
             to_value(commands::project_compatibility_report_blocking(&state(app)))
         }
-        ToolId::RenderStems => block_on(render_stems(state(app).inner(), args)),
+        ToolId::RenderStems => {
+            block_on(render_stems(state(app).inner(), args)).map_err(ToolError::from)
+        }
         ToolId::AuditionRange => {
             use crate::tool_registry::arguments::ToolArguments;
             let request = crate::agent_tools::render::AuditionRangeArgs::decode(args)
@@ -3701,10 +3872,10 @@ fn dispatch_tool(
                 crate::state::caller_conversation(caller).is_some(),
             )?)
         }
-        ToolId::AudioAnalyze => audio_analyze_tool(args),
-        ToolId::AnalyzeNotes => analyze_notes_tool(args),
-        ToolId::SeparateStems => separate_stems_tool(args),
-        ToolId::AudioCompare => audio_compare_tool(args),
+        ToolId::AudioAnalyze => audio_analyze_tool(args).map_err(ToolError::from),
+        ToolId::AnalyzeNotes => analyze_notes_tool(args).map_err(ToolError::from),
+        ToolId::SeparateStems => separate_stems_tool(args).map_err(ToolError::from),
+        ToolId::AudioCompare => audio_compare_tool(args).map_err(ToolError::from),
         ToolId::AudioDevices => {
             let _ = crate::agent_tools::misc::AudioDevicesArgs::decode(args)
                 .map_err(|error| error.to_string())?;
@@ -3725,7 +3896,7 @@ fn dispatch_tool(
         ToolId::UndoHistory => {
             let _ = crate::agent_tools::misc::UndoHistoryArgs::decode(args)
                 .map_err(|error| error.to_string())?;
-            undo_history(state(app).inner())
+            undo_history(state(app).inner()).map_err(ToolError::from)
         }
 
         // ---- sampler assets --------------------------------------------
@@ -3740,11 +3911,12 @@ fn dispatch_tool(
             let request = crate::agent_tools::metering::decode(id, args)
                 .map_err(|error| error.to_string())?;
             crate::agent_tools::metering::execute(state(app).inner(), request)
+                .map_err(ToolError::from)
         }
         ToolId::DevicesCatalog => {
             let request =
                 crate::device_catalog::Query::decode(args).map_err(|error| error.to_string())?;
-            crate::device_catalog::catalog_request(&request)
+            crate::device_catalog::catalog_request(&request).map_err(ToolError::from)
         }
         ToolId::DevicePresetsList => {
             let request = crate::agent_tools::device::DevicePresetsListArgs::decode(args)
@@ -3753,6 +3925,7 @@ fn dispatch_tool(
                 &crate::device_presets::user_path(),
                 request.device.as_deref(),
             )
+            .map_err(ToolError::from)
         }
         ToolId::DevicePresetApply => {
             let request = crate::agent_tools::device::DevicePresetApplyArgs::decode(args)
@@ -3792,6 +3965,7 @@ fn dispatch_tool(
             )
             .map_err(|error| error.to_string())?;
             effects_set_bypass(state(app).inner(), &request, guard.expected(), caller)
+                .map_err(ToolError::from)
         }
         ToolId::EffectsSetParam => {
             let request = crate::agent_tools::effects::EffectsSetParamArgs::decode(args)
@@ -8478,5 +8652,38 @@ providers:
             note["duration_beats_quantised"].as_f64().is_some(),
             "{report}"
         );
+    }
+
+    #[test]
+    fn a_saved_turn_on_a_conversation_held_elsewhere_answers_409() {
+        let id = "abcdef0123456789";
+        let dir = tempfile::tempdir().unwrap();
+        let _root = crate::ai::sessions::test_root(dir.path().join("sessions"));
+        let store = crate::ai::sessions::Store::config();
+        let path = store.lock_path(id);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let foreign = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)
+            .unwrap();
+        <std::fs::File as fs4::FileExt>::try_lock(&foreign).unwrap();
+        let project = std::env::temp_dir().join("oc-session-in-use.ocp");
+        let body = json!({
+            "provider": "fixture",
+            "messages": [{"role": "user", "content": "hello"}],
+            "session_id": id,
+            "project_path": project,
+        });
+        assert!(
+            saved_completion::Binding::parse(&body).unwrap().is_some(),
+            "{body}"
+        );
+        let (status, body) = handle_ai_complete(&serde_json::to_vec(&body).unwrap());
+        assert_eq!(status, 409);
+        let payload: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(payload["kind"], "session_in_use", "{payload}");
     }
 }

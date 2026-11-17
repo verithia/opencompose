@@ -16,10 +16,22 @@ conversation inside a model's context window.
   <workspace key>/<session id>/results/<sha256>.txt    full tool results
   <workspace key>/<session id>/versions/<sha256>.ocp   project versions
   detached/<session id>/...                 a conversation with no workspace
+  locks/session-<id>.lock                   the process that has one open
 ```
 
+A conversation is open in one process at a time. The panel holds the lock of
+the conversation it shows, and a headless turn, `/ai/complete`, `/call` or
+`ai_chat` holds it for the request's duration; the same process re-acquires its
+own lock. Another process opening the same conversation is refused with the
+typed code `session_in_use`: the panel keeps its current conversation and shows
+a localized message, and an HTTP request answers 409. Deleting or clearing a
+conversation also takes its lock, so neither removes a conversation another
+process has open. The lock file sits outside the workspace and session
+directories and is never listed as a conversation.
+
 Directories are `0700` and files are `0600`, written through the same private
-filesystem layer as the provider configuration (`private_fs`).
+filesystem layer as the provider configuration (`private_fs`). Reads take no
+lock: listing, previewing and exporting a conversation only read it.
 
 ### Audition audio
 

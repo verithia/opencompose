@@ -1242,6 +1242,24 @@ pub async fn ai_chat(
     else {
         return Err(AiError::new("busy", "Another AI request is active"));
     };
+    // The conversation stays this process's for the turn's duration. The panel
+    // already holds it, so a panel turn re-acquires in place.
+    let _session_lock = match session_id.as_deref() {
+        Some(id) => match ai::sessions::Store::config().acquire_lock(id) {
+            Ok(lock) => Some(lock),
+            Err(error) => {
+                let _ = requests.release_owned(&request_id, &owner);
+                if error.is_in_use() {
+                    return Err(AiError::new(
+                        "session_in_use",
+                        "Another OpenCompose process has this conversation open.",
+                    ));
+                }
+                return Err(AiError::new("session_save", error.to_string()));
+            }
+        },
+        None => None,
+    };
     if let Some(id) = session_id.as_deref() {
         match ai::session_usage::SessionLease::admit(
             ai::sessions::Store::config(),

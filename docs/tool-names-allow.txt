@@ -100,3 +100,6 @@ transport_snapshot                       Internal rendering helper, not an agent
 undo_edits                               Recall command option, not an agent tool
 
 project_path                             Saved conversation project-file field, not an agent tool
+
+project_in_use                          An HTTP error kind, not an agent tool
+session_in_use                          An HTTP error kind, not an agent tool

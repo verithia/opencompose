@@ -27,6 +27,12 @@ The GUI starts the server when it launches:
 | `POST /ai/steer` | Deliver a person's message into a running turn. |
 | `POST /ai/cancel` | Stop a running turn: `{request_id, session_id}`. |
 
+Opening a project another process holds answers 409 with `kind`
+`project_in_use`, and the caller's own document is not replaced. A saved
+conversation another process has open answers 409 with `kind` `session_in_use`;
+the same rule covers `/ai/complete`, a `/call` envelope that names a session,
+and `POST /ai/turn`.
+
 A client starts a full turn with `POST /ai/turn`: it carries `provider`,
 `messages` (system messages and at most one message of the person),
 `session_id` and the absolute `project_path`, with optional `toolsets`, `label`

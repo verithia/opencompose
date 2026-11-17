@@ -82,6 +82,10 @@ const AUDITION_RENDER_STAGE: &str = ".audition-render.part";
 pub const DIR_NAME: &str = "sessions";
 /// Key for a session not bound to a project.
 pub const DETACHED_KEY: &str = "detached";
+/// The folder under the sessions root that holds per-conversation locks. It
+/// sits outside every workspace and session directory, so deleting or renaming
+/// a conversation never takes its lock file with it.
+pub const LOCKS_DIR: &str = "locks";
 /// Session metadata file.
 pub const META_FILE: &str = "meta.json";
 /// Session transcript file.
@@ -492,6 +496,9 @@ pub enum SessionErrorKind {
     /// The conversation changed under the request: another window already
     /// did what this one asked for.
     Conflict,
+    /// Another process holds this conversation's lock.
+    #[serde(rename = "session_in_use")]
+    InUse,
     /// The store refused or failed for any other reason.
     SessionStore,
 }
@@ -687,6 +694,25 @@ impl Store {
     /// The directory sessions live in; the audition archive sits beside them.
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// The lock file that keeps one conversation open in one process.
+    pub fn lock_path(&self, id: &str) -> PathBuf {
+        self.root.join(LOCKS_DIR).join(format!("session-{id}.lock"))
+    }
+
+    /// Take this conversation's lock, without waiting.
+    pub fn acquire_lock(
+        &self,
+        id: &str,
+    ) -> Result<crate::process_lock::ProcessLock, crate::process_lock::LockError> {
+        if !is_valid_id(id) {
+            return Err(crate::process_lock::LockError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "invalid session id",
+            )));
+        }
+        crate::process_lock::ProcessLock::acquire(self.lock_path(id))
     }
 
     // ---- workspace keys -------------------------------------------------
@@ -1298,10 +1324,25 @@ impl Store {
         }
         let _lock = self.mutation_lock()?;
         let dir = self.root.join(key);
+        // Every conversation keeps its lock until the workspace directory is
+        // gone. A conversation another process has open refuses the whole
+        // removal instead of deleting it under that process.
+        let mut locks = Vec::new();
         for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
-            if is_valid_id(&name) {
-                guard(&name)?;
+            if !is_valid_id(&name) {
+                continue;
+            }
+            guard(&name)?;
+            match crate::process_lock::ProcessLock::acquire(self.lock_path(&name)) {
+                Ok(lock) => locks.push(lock),
+                Err(error) if error.is_in_use() => {
+                    return Err(SessionError::new(
+                        SessionErrorKind::InUse,
+                        "Another OpenCompose process has one of these conversations open.",
+                    ));
+                }
+                Err(error) => return Err(format!("sessions: {error}").into()),
             }
         }
         let bytes = crate::project_data::dir_bytes(&dir);
@@ -2142,6 +2183,17 @@ impl Store {
                 if !is_valid_id(&name) || skip(&name) {
                     continue;
                 }
+                // A conversation another process has open keeps its history
+                // until that process closes it.
+                let _lock = match crate::process_lock::ProcessLock::acquire(self.lock_path(&name)) {
+                    Ok(lock) => lock,
+                    Err(error) => {
+                        if !error.is_in_use() {
+                            log::warn!("[ai] conversation {name} stays: {error}");
+                        }
+                        continue;
+                    }
+                };
                 let dir = entry.path();
                 let Ok(records) = read_records(&dir) else {
                     continue;

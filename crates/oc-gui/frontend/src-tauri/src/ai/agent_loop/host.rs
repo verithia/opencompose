@@ -2479,7 +2479,10 @@ mod tests {
         assert!(session_running(id));
         let state = AppState::new();
         for error in [
-            crate::commands::sessions_delete(id.into()).unwrap_err(),
+            crate::commands::delete_session_for(&state, id)
+                .map(|_| ())
+                .map_err(|error| error.message)
+                .unwrap_err(),
             crate::commands::sessions_clear_history(id.into())
                 .map(|_| ())
                 .map_err(|error| error.message)

@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 
 use crate::ai::sessions;
 use crate::commands::{
-    compact_for, current_for, facts, list_for, new_for, new_fork, open_for, sessions_delete,
-    sessions_load, sessions_open, sessions_page, sessions_rename, sessions_set_permission,
+    compact_for, current_for, delete_session_for, facts, list_for, new_for, new_fork, open_for,
+    open_session_for, sessions_load, sessions_page, sessions_rename, sessions_set_permission,
 };
 use crate::state::AppState;
 use crate::workspaces;
@@ -137,12 +137,12 @@ fn renaming_and_deleting_act_on_the_saved_conversation() {
         sessions_load(session.id.clone()).unwrap().meta.title,
         "after the fix"
     );
-    sessions_delete(session.id.clone()).unwrap();
+    delete_session_for(&state, &session.id).unwrap();
     let error = sessions_load(session.id.clone()).unwrap_err();
     assert!(error.contains("No matching saved session"), "{error}");
     assert!(list_for(&state, None, false).unwrap().is_empty());
     // Deleting twice is a refusal, not a panic.
-    assert!(sessions_delete(session.id).is_err());
+    assert!(delete_session_for(&state, &session.id).is_err());
 }
 
 #[test]
@@ -166,7 +166,8 @@ fn the_panel_opens_a_conversation_at_its_newest_turns_and_pages_back_through_the
             )
             .unwrap();
     }
-    let opened = serde_json::to_value(sessions_open(session.id.clone(), Some(1)).unwrap()).unwrap();
+    let opened =
+        serde_json::to_value(open_session_for(&state, &session.id, Some(1)).unwrap()).unwrap();
     assert_eq!(opened["start"], 4);
     assert_eq!(opened["total"], 6);
     assert_eq!(opened["messages"].as_array().unwrap().len(), 2);
@@ -834,4 +835,84 @@ fn every_prepared_turn_moves_the_mark_so_the_outside_notice_is_not_repeated() {
         1,
         "the mark now stands after the person's edit, so no new notice is saved"
     );
+}
+
+fn hold_session_elsewhere(id: &str) -> (sessions::Store, std::fs::File) {
+    let store = sessions::Store::config();
+    let path = store.lock_path(id);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)
+        .unwrap();
+    <std::fs::File as fs4::FileExt>::try_lock(&file).unwrap();
+    (store, file)
+}
+
+#[test]
+fn a_conversation_held_elsewhere_is_not_deleted_and_stays_listed() {
+    let fixture = fixture("held-delete");
+    let state = state_with_project(&fixture.dir, PROJECT);
+    let session = new_for(&state, None, Some("held"), None).unwrap();
+    let (_store, foreign) = hold_session_elsewhere(&session.id);
+    let before = list_for(&state, None, true).unwrap();
+
+    let error = delete_session_for(&state, &session.id).unwrap_err();
+    assert_eq!(error.kind, sessions::SessionErrorKind::InUse);
+    assert!(sessions::Store::config().find(&session.id).is_ok());
+    let after = list_for(&state, None, true).unwrap();
+    assert_eq!(after.len(), before.len());
+    assert!(
+        after.iter().all(|meta| meta.id != "locks"),
+        "the locks folder is not a workspace"
+    );
+
+    drop(foreign);
+    delete_session_for(&state, &session.id).unwrap();
+    assert!(sessions::Store::config().find(&session.id).is_err());
+}
+
+#[test]
+fn opening_a_conversation_held_elsewhere_keeps_the_current_one() {
+    let fixture = fixture("held-open");
+    let state = state_with_project(&fixture.dir, PROJECT);
+    let first = new_for(&state, None, Some("first"), None).unwrap();
+    let second = new_for(&state, None, Some("second"), None).unwrap();
+    open_session_for(&state, &first.id, Some(1)).unwrap();
+    let (_store, foreign) = hold_session_elsewhere(&second.id);
+
+    let error = open_session_for(&state, &second.id, Some(1)).unwrap_err();
+    assert_eq!(error.kind, sessions::SessionErrorKind::InUse);
+    assert_eq!(
+        state
+            .lock_inner()
+            .session_lock
+            .as_ref()
+            .map(|open| open.id.as_str()),
+        Some(first.id.as_str())
+    );
+
+    drop(foreign);
+    open_session_for(&state, &second.id, Some(1)).unwrap();
+    assert_eq!(
+        state
+            .lock_inner()
+            .session_lock
+            .as_ref()
+            .map(|open| open.id.as_str()),
+        Some(second.id.as_str())
+    );
+}
+
+#[test]
+fn a_held_conversation_refusal_uses_the_session_in_use_wire_kind() {
+    let value = serde_json::to_value(sessions::SessionError::new(
+        sessions::SessionErrorKind::InUse,
+        "held",
+    ))
+    .unwrap();
+    assert_eq!(value["kind"], "session_in_use");
 }
