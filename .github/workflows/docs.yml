@@ -1,18 +1,19 @@
 name: Documentation site
 
-# Publishes the book and the API reference as one GitHub Pages artifact:
-# the book at the site root, rustdoc at /api/.
+# Publishes the book, the API reference and the signed plugin index as one
+# GitHub Pages artifact: the book at the site root, rustdoc at /api/ and the
+# committed plugin-index/ directory at /plugin-index/.
 #
-# Deployment is automatic on a push to main that touches documentation or Rust
-# sources. Unlike the plugin index, a documentation site is not a signed or
-# immutable artifact: an out-of-date copy of a page costs a reader a wrong
-# answer, not a compromised install, so no manual confirmation is needed. The
-# workflow still refuses to publish when the documentation checks fail.
+# Deployment is automatic on a push to main that touches documentation, Rust
+# sources or the index. The index is signed before it is committed, so the
+# site only carries its bytes; the app verifies them against the release keys.
+# The workflow still refuses to publish when the documentation checks fail.
 on:
   push:
     branches: [main]
     paths:
       - 'docs/**'
+      - 'plugin-index/**'
       - 'crates/**/src/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
@@ -73,7 +74,8 @@ jobs:
 
       - name: Upload the combined site
         # book/ is the artifact root: index.html and the chapters at the top
-        # level, the rustdoc for the same commit under api/.
+        # level, the rustdoc for the same commit under api/ and the signed
+        # index under plugin-index/.
         uses: actions/upload-pages-artifact@v3
         with:
           path: book

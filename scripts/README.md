@@ -46,3 +46,15 @@ the documentation gate in a separate CI job):
 ```sh
 scripts/doc-coverage.sh --min 58
 ```
+
+## `publish-plugin-index.sh` and `check-plugin-index-live.sh`
+
+Sign the plugin catalog into `plugin-index/`, then, after the push deploys,
+check that both index origins serve the committed bytes:
+
+```sh
+scripts/publish-plugin-index.sh --key ~/.config/opencompose/plugin-index-release/plugin-index.key
+scripts/check-plugin-index-live.sh --wait 900
+```
+
+See [docs/plugin-index.md](../docs/plugin-index.md) section 7.

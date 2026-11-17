@@ -17,10 +17,12 @@ else. If you are unsure, put it in `./private/`.
 | Notes about third-party products | |
 
 Committed binaries are limited to tiny generated test fixtures, the app's
-icons and brand art, and the licensed bundled resources listed with their
+icons and brand art, the licensed bundled resources listed with their
 license files (for example the GM SoundFont in
-`crates/oc-gui/frontend/src-tauri/resources/soundfonts/`). Build output
-(`target/`, `dist/`, `out/`, `*.vsix`, `book/`) is never committed.
+`crates/oc-gui/frontend/src-tauri/resources/soundfonts/`) and the signed plugin
+index in `plugin-index/`, which only `scripts/publish-plugin-index.sh` writes.
+Build output (`target/`, `dist/`, `out/`, `*.vsix`, `book/`) is never
+committed.
 
 `.gitignore` lists only standard build, cache and dependency patterns, plus
 `/private/` and the signing key. Put personal patterns in
