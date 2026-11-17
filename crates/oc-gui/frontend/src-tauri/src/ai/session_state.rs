@@ -2,6 +2,8 @@
 //! from these values, and the panel paints the rows. The newest row of each
 //! kind is the current state, so a rewind cuts it and a fork copies it.
 
+use crate::ai::sessions::MessageKind;
+use crate::ai::sessions::message_protocol::{self, MessageMeta};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
@@ -185,15 +187,9 @@ pub fn plan_update_states(args: &Map<String, Value>) -> Result<Vec<SessionState>
 /// The saved row a state change becomes: a user row whose metadata carries the
 /// typed value and whose content is the text the model reads.
 pub fn state_row(state: &SessionState) -> Value {
-    json!({
-        "role": "user",
-        "message_meta": {
-            "version": 1,
-            "kind": "session_state",
-            "state": state,
-        },
-        "content": state.model_text(),
-    })
+    let mut meta = MessageMeta::new(MessageKind::SessionState);
+    meta.state = Some(state.clone());
+    message_protocol::typed_row(meta, state.model_text())
 }
 
 /// The current goal and plan: the newest goal row decides the goal, and the

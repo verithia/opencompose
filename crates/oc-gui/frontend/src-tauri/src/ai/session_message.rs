@@ -25,7 +25,7 @@ pub enum MessageKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub(super) struct MessageMeta {
+pub(crate) struct MessageMeta {
     pub version: u8,
     pub kind: MessageKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -70,7 +70,7 @@ pub struct TextCall {
 const MAX_TEXT_CALL_FIELD: usize = 128;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub(super) struct AudioRange {
+pub(crate) struct AudioRange {
     pub start_seconds: f64,
     pub end_seconds: f64,
     #[serde(default)]
@@ -208,6 +208,13 @@ pub(super) fn for_new(message: &Value) -> Option<MessageMeta> {
         role
     };
     Some(MessageMeta::new(kind))
+}
+
+/// A user-kind row that carries a typed value and the text derived from it.
+pub(crate) fn typed_row(meta: MessageMeta, content: String) -> Value {
+    let mut row = json!({ "role": "user", "content": content });
+    tag(&mut row, meta);
+    row
 }
 
 pub(super) fn tag(message: &mut Value, meta: MessageMeta) {

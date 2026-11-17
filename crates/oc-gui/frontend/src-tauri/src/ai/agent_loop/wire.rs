@@ -3,6 +3,7 @@
 //! folding an over-budget wire. Nothing here touches the project or the store.
 
 use crate::ai::host_notice::HostNotice;
+use crate::ai::sessions::message_protocol::{self, MessageMeta};
 use crate::ai::sessions::{MessageKind, message_meta, turns};
 use serde_json::{Map, Value, json};
 
@@ -408,16 +409,9 @@ pub fn budget_notice(rounds_left: Option<u32>, context_share: Option<u8>) -> Val
         rounds_left,
         context_share,
     };
-    let text = notice.model_text();
-    json!({
-        "role": "user",
-        "message_meta": {
-            "version": 1,
-            "kind": MessageKind::RoundBudget,
-            "notice": notice,
-        },
-        "content": text,
-    })
+    let mut meta = MessageMeta::new(MessageKind::RoundBudget);
+    meta.notice = Some(notice.clone());
+    message_protocol::typed_row(meta, notice.model_text())
 }
 
 /// Rows and prompt-text bytes of a wire, counted the way the request validator

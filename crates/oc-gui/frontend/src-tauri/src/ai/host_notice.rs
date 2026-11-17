@@ -2,12 +2,13 @@
 //! its localization stay separate: the row carries the typed value, and its
 //! English text is derived from that value alone.
 
-use crate::ai::sessions::SessionPermission;
+use crate::ai::sessions::message_protocol::{self, MessageMeta};
+use crate::ai::sessions::{MessageKind, SessionPermission};
 use crate::edit_history::{
     Author, MAX_OUTSIDE_AUTHOR_CHARS, MAX_OUTSIDE_COUNT, MAX_OUTSIDE_ENTRIES, OutsideEntry,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::collections::BTreeSet;
 
 /// Longest project path a notice may carry.
@@ -449,15 +450,9 @@ fn bounded_path(path: &str) -> String {
 /// typed value and whose content is the text the model reads.
 pub fn notice_row(notice: &HostNotice) -> Value {
     let notice = notice.bounded();
-    json!({
-        "role": "user",
-        "message_meta": {
-            "version": 1,
-            "kind": "host_notice",
-            "notice": notice,
-        },
-        "content": notice.model_text(),
-    })
+    let mut meta = MessageMeta::new(MessageKind::HostNotice);
+    meta.notice = Some(notice.clone());
+    message_protocol::typed_row(meta, notice.model_text())
 }
 
 #[cfg(test)]

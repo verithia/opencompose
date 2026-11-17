@@ -49,7 +49,7 @@ mod compaction_tests;
 #[path = "../session_lookup.rs"]
 pub(super) mod lookup;
 #[path = "../session_message.rs"]
-mod message_protocol;
+pub(crate) mod message_protocol;
 #[path = "../session_results.rs"]
 pub mod tool_results;
 #[path = "../session_turns.rs"]
