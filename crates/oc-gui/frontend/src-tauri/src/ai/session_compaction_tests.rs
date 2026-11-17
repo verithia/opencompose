@@ -717,16 +717,21 @@ fn a_model_summary_becomes_the_first_row_with_the_digest_and_pinned_rows() {
         200,
         r#"{"choices":[{"message":{"role":"assistant","content":"MODEL SUMMARY"},"finish_reason":"stop"}],"usage":{"prompt_tokens":11,"completion_tokens":3}}"#,
     );
+    let mut summary_provider = canned_provider(&base);
+    summary_provider.max_tokens = 32_000;
     let summary =
         tauri::async_runtime::block_on(crate::ai_service::compaction_summary_with_credential(
-            canned_provider(&base),
+            summary_provider,
             &session.id,
             plan.input.clone(),
             crate::ai::auth::Credential::ApiKey(Some("fixture-secret".into())),
+            None,
         ))
         .unwrap();
     assert_eq!(summary, "MODEL SUMMARY");
     let request = server.join().unwrap();
+    let body: Value = serde_json::from_str(request.split_once("\r\n\r\n").unwrap().1).unwrap();
+    assert_eq!(body["max_tokens"], SUMMARY_OUTPUT_TOKENS);
     assert!(
         request.contains("Summarize the conversation below"),
         "{request}"
@@ -778,6 +783,7 @@ fn a_failed_summary_call_falls_back_to_the_mechanical_summary() {
             &session.id,
             plan.input.clone(),
             crate::ai::auth::Credential::ApiKey(Some("fixture-secret".into())),
+            None,
         ))
         .unwrap_err();
     assert_eq!(failure, CompactionFailure::ProviderError);
@@ -818,6 +824,7 @@ fn an_empty_summary_reply_is_a_typed_failure() {
             &session.id,
             plan.input.clone(),
             crate::ai::auth::Credential::ApiKey(Some("fixture-secret".into())),
+            None,
         ))
         .unwrap_err();
     assert_eq!(failure, CompactionFailure::Empty);
@@ -847,6 +854,90 @@ fn a_commit_after_the_conversation_changed_is_a_conflict_and_loses_nothing() {
     assert_eq!(current.last().unwrap()["content"], "a newer ask");
     assert!(current.iter().any(|row| row["content"] == "now the bass"));
     std::fs::remove_dir_all(store.root().parent().unwrap()).unwrap();
+}
+
+#[test]
+fn successive_model_summaries_receive_the_previous_decisions() {
+    let (store, _project) = fixture("summary-continuity");
+    let session = store.create(None, None, None, None).unwrap();
+    store.append_turn(&session.id, &rounds(), None).unwrap();
+    let plan = store.plan_compaction_now(&session.id, 0, &facts()).unwrap();
+    let first = store
+        .commit_compaction(plan, Some("Keep vocals dry; reject the metallic bass."))
+        .unwrap();
+    assert!(
+        first.messages[0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("Keep vocals dry")
+    );
+    let mut later = vec![user("continue")];
+    for step in 0..8 {
+        let id = format!("later-{step}");
+        later.extend([round(&[&id]), result(&id)]);
+    }
+    store.append_turn(&session.id, &later, None).unwrap();
+    let plan = store.plan_compaction_now(&session.id, 0, &facts()).unwrap();
+    assert!(
+        plan.input
+            .contains("Keep vocals dry; reject the metallic bass.")
+    );
+    let next = store
+        .commit_compaction(
+            plan,
+            Some("Keep vocals dry; reject the metallic bass. Finish the bridge."),
+        )
+        .unwrap();
+    assert!(
+        next.messages[0]["message_meta"]["summary_text"]
+            .as_str()
+            .unwrap()
+            .contains("Keep vocals dry")
+    );
+    std::fs::remove_dir_all(store.root().parent().unwrap()).unwrap();
+}
+
+#[test]
+fn an_oversized_or_nonreducing_summary_uses_the_mechanical_fallback() {
+    let view = rounds();
+    let plan = plan_compaction_request(&view, 0, &facts(), "s").unwrap();
+    for summary in ["x".repeat(50_000), "word ".repeat(3_000)] {
+        assert_eq!(planned_messages(&plan, Some(&summary)), plan.fallback);
+    }
+    let mut target = plan.clone();
+    target.target_tokens = estimate_tokens(&planned_messages(&plan, Some("Short summary"))) - 1;
+    assert_eq!(
+        planned_messages(&target, Some("Short summary")),
+        target.fallback
+    );
+    let mut no_reduction = plan.clone();
+    no_reduction.tokens_before = 1;
+    assert_eq!(
+        planned_messages(&no_reduction, Some("Short summary")),
+        no_reduction.fallback
+    );
+}
+
+#[test]
+fn a_mechanical_fallback_keeps_the_previous_model_summary() {
+    let mut view = rounds();
+    let first = plan_compaction_request(&view, 0, &facts(), "s").unwrap();
+    view = planned_messages(&first, Some("Do not add reverb to the vocal."));
+    for step in 0..8 {
+        let id = format!("next-{step}");
+        view.extend([round(&[&id]), result(&id)]);
+    }
+    let next = plan_compaction_request(&view, 0, &facts(), "s").unwrap();
+    let fallback = planned_messages(&next, None);
+    assert!(
+        fallback[0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("Do not add reverb to the vocal.")
+    );
+    assert!(
+        compaction_input(&fallback, fallback.len()).contains("Do not add reverb to the vocal.")
+    );
 }
 
 #[test]

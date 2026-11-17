@@ -46,6 +46,7 @@ struct World {
     edit_elsewhere_on: Option<String>,
     /// The model's input window in tokens; 0 when unknown.
     context_length: u64,
+    hold_compaction: bool,
 }
 
 struct Fake {
@@ -54,6 +55,7 @@ struct Fake {
     session: String,
     cancel: Cancel,
     steering: steering::Steering,
+    compaction_started: tokio::sync::Notify,
     _root: tempfile::TempDir,
 }
 
@@ -88,6 +90,7 @@ impl Fake {
             session,
             cancel: Cancel::default(),
             steering: steering::Steering::default(),
+            compaction_started: tokio::sync::Notify::new(),
             _root: root,
         }
     }
@@ -270,7 +273,13 @@ impl Host for Fake {
         Vec::new()
     }
 
-    async fn compact(&self) -> Result<Vec<Value>, CompactionFailure> {
+    async fn compact(&self, cancel: &Cancel) -> Result<Vec<Value>, CompactionFailure> {
+        let hold = self.world().hold_compaction;
+        if hold {
+            self.compaction_started.notify_one();
+            cancel.cancelled().await;
+            return Err(CompactionFailure::Cancelled);
+        }
         let dsl = self.world().dsl.clone();
         let facts = crate::ai::sessions::ProjectFacts {
             path: None,
@@ -1453,4 +1462,36 @@ fn a_mid_turn_compaction_keeps_the_open_round_and_pairing() {
     let saved = fake.saved();
     assert_eq!(check_pairing(&saved), Ok(()));
     assert!(saved.iter().any(|row| row["tool_call_id"] == "a"));
+}
+
+#[test]
+fn cancellation_during_compaction_stops_before_another_provider_round() {
+    let fake = Fake::new(vec![
+        json!({"role":"assistant","content":"must not be sent"}),
+    ]);
+    fake.world().hold_compaction = true;
+    let mut spec = fake.spec(SessionPermission::Write);
+    spec.toolsets = Some(Vec::new());
+    spec.context_length = 4_000;
+    let padding = json!({"role":"assistant","content":"old ".repeat(5_000)});
+    fake.store
+        .append_turn(&fake.session, std::slice::from_ref(&padding), None)
+        .unwrap();
+    spec.wire.push(padding);
+    let before = fake.saved();
+    let outcome = block_on(async {
+        let stop = async {
+            fake.compaction_started.notified().await;
+            fake.cancel.cancel();
+        };
+        let (outcome, ()) = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            tokio::join!(run_turn(&fake, spec, fake.cancel.clone()), stop)
+        })
+        .await
+        .expect("Stop must not wait for a summary response");
+        outcome
+    });
+    assert!(outcome.stop.is_some_and(|stop| stop.cancelled));
+    assert!(fake.world().sent.is_empty());
+    assert_eq!(fake.saved(), before);
 }

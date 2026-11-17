@@ -371,7 +371,10 @@ pub trait Host: Sync {
     /// Compacts the saved conversation mid-turn and returns the new saved
     /// view. The host plans, calls the model with no store lock, and commits
     /// one record; a failure leaves the saved conversation unchanged.
-    fn compact(&self) -> impl Future<Output = Result<Vec<Value>, CompactionFailure>> + Send {
+    fn compact(
+        &self,
+        _cancel: &Cancel,
+    ) -> impl Future<Output = Result<Vec<Value>, CompactionFailure>> + Send {
         std::future::ready(Err(CompactionFailure::ProviderError))
     }
     /// The full result behind the newest saved preview of `call`, read from
@@ -766,12 +769,14 @@ impl<H: Host> Turn<'_, H> {
         if budget.measure(&self.wire) <= budget.limit() {
             return Ok(());
         }
-        let saved = match self.host.compact().await {
+        let saved = match self.host.compact(&self.cancel).await {
             Ok(saved) if !saved.is_empty() => saved,
+            Err(CompactionFailure::Cancelled) => return Err(Ending::Cancelled),
             // A failed compaction leaves the saved conversation unchanged; the
             // fold below still keeps the request inside the provider bounds.
             Ok(_) | Err(_) => return Ok(()),
         };
+        self.stop_if_cancelled()?;
         let mut wire = self.wire[..self.system_len].to_vec();
         wire.extend(saved);
         self.wire = wire;

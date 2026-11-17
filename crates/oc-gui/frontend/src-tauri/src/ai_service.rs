@@ -21,6 +21,11 @@ use tauri::{Emitter, State};
 use tokio::sync::oneshot;
 use zeroize::Zeroize;
 
+mod compaction;
+pub(crate) use compaction::compaction_summary;
+#[cfg(test)]
+pub(crate) use compaction::compaction_summary_with_credential;
+
 /// The one provider request the backend is running, if any. The slot is claimed
 /// before the request is prepared, and the conversation it saves into is filled
 /// in once that is known, so a window that reloaded mid-turn can ask whether the
@@ -843,6 +848,8 @@ pub(crate) struct TurnRequest<'a> {
     /// Offers `read_toolcall` beside the registry's tools: the backend agent
     /// loop keeps the full results its previews point to.
     pub(crate) pager: bool,
+    /// A request-specific cap, applied after model limits are resolved.
+    pub(crate) output_limit: Option<u64>,
 }
 
 #[derive(Default, Clone)]
@@ -906,6 +913,7 @@ where
         use_tools,
         toolsets,
         pager,
+        output_limit,
     } = request;
     // History the model cannot take degrades to a text line; only the turn's own
     // attachment can refuse the request below.
@@ -923,6 +931,9 @@ where
         request
             .tools
             .push(ai::agent_loop::wire::read_toolcall_spec());
+    }
+    if let Some(limit) = output_limit {
+        request.max_tokens = request.max_tokens.min(limit.max(1));
     }
     let is_oauth = matches!(credential, Credential::OAuth(_));
     let result = match run_once(&p, &request, &channels, credential, stats).await {
@@ -1104,6 +1115,7 @@ pub async fn ai_name_session(
             use_tools: false,
             toolsets: None,
             pager: false,
+            output_limit: None,
         },
         TurnChannels {
             delta: None,
@@ -1161,118 +1173,6 @@ pub async fn ai_name_session(
     let meta =
         crate::ai::sessions::Store::config().rename_owned(&id, &title, incarnation.as_deref())?;
     Ok(json!({ "title": meta.title }))
-}
-
-/// Writes one model summary for a compaction, accounted as its own request in
-/// the same conversation. It reads no store state; the caller planned the
-/// input under the store lock and commits the answer only if the view is
-/// unchanged.
-pub(crate) async fn compaction_summary<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
-    provider: AiProviderEntry,
-    session_id: &str,
-    input: String,
-) -> Result<String, ai::sessions::CompactionFailure> {
-    use ai::session_usage::Purpose;
-    let p = provider;
-    let stats = ai::timing::TurnStatsHandle::new(&p.id, &p.model, p.wire());
-    let request = ai::session_usage::title_id()
-        .map_err(|_| ai::sessions::CompactionFailure::ProviderError)?;
-    let lease = ai::session_usage::SessionLease::admit(
-        ai::sessions::Store::config(),
-        session_id,
-        &request,
-        Purpose::Compaction,
-    )
-    .map_err(|_| ai::sessions::CompactionFailure::ProviderError)?;
-    stats.set_accounting(lease);
-    let outcome = send(
-        p,
-        TurnRequest {
-            messages: compaction_request(input),
-            use_tools: false,
-            toolsets: None,
-            pager: false,
-        },
-        TurnChannels::default(),
-        &stats,
-    )
-    .await;
-    let _ = ai::session_usage::checkpoint_final(
-        &stats,
-        app,
-        &request,
-        ai::session_usage::Purpose::Compaction,
-    )
-    .await;
-    compaction_text(outcome)
-}
-
-/// The summary request body both the production path and its test send.
-fn compaction_request(input: String) -> Value {
-    json!([
-        {"role": "system", "content": ai::compaction_prompt::COMPACTION_PROMPT},
-        {"role": "user", "content": input},
-    ])
-}
-
-/// The accounting and result handling shared by the credential-resolving path
-/// and the explicit-credential test path.
-fn compaction_text(
-    outcome: Result<Value, AiError>,
-) -> Result<String, ai::sessions::CompactionFailure> {
-    let reply = outcome.map_err(|error| {
-        if error.kind == "cancelled" {
-            ai::sessions::CompactionFailure::Cancelled
-        } else {
-            ai::sessions::CompactionFailure::ProviderError
-        }
-    })?;
-    let text = reply["content"].as_str().unwrap_or_default().trim();
-    if text.is_empty() {
-        Err(ai::sessions::CompactionFailure::Empty)
-    } else {
-        Ok(text.to_owned())
-    }
-}
-
-/// Test path: one summary request over a canned server with a fixed credential,
-/// so the request shape and accounting run without touching the OS key store.
-#[cfg(test)]
-pub(crate) async fn compaction_summary_with_credential(
-    provider: AiProviderEntry,
-    session_id: &str,
-    input: String,
-    credential: Credential,
-) -> Result<String, ai::sessions::CompactionFailure> {
-    use ai::session_usage::Purpose;
-    let stats = ai::timing::TurnStatsHandle::new(&provider.id, &provider.model, provider.wire());
-    let request = ai::session_usage::title_id()
-        .map_err(|_| ai::sessions::CompactionFailure::ProviderError)?;
-    let lease = ai::session_usage::SessionLease::admit(
-        ai::sessions::Store::config(),
-        session_id,
-        &request,
-        Purpose::Compaction,
-    )
-    .map_err(|_| ai::sessions::CompactionFailure::ProviderError)?;
-    stats.set_accounting(lease);
-    let outcome = send_http(
-        provider,
-        TurnRequest {
-            messages: compaction_request(input),
-            use_tools: false,
-            toolsets: None,
-            pager: false,
-        },
-        TurnChannels::default(),
-        credential,
-        |_| async { Err(AiError::config("unexpected refresh")) },
-        &stats,
-    )
-    .await;
-    let _ = ai::session_usage::checkpoint(&stats, true).await;
-    compaction_text(outcome)
 }
 
 #[tauri::command]
@@ -1333,6 +1233,15 @@ pub async fn ai_chat(
     } else {
         0
     };
+    let cancel = ai::agent_loop::Cancel::default();
+    let (forward, waiting) = oneshot::channel();
+    let preparation_cancel = cancel.clone();
+    tauri::async_runtime::spawn(async move {
+        if rx.await.is_ok() {
+            preparation_cancel.cancel();
+            let _ = forward.send(());
+        }
+    });
     let preparation = match session_id.as_ref() {
         Some(session_id) => {
             let incarnation = stats
@@ -1350,6 +1259,7 @@ pub async fn ai_chat(
                     project: None,
                     tool_tokens,
                     surface: None,
+                    cancel: Some(&cancel),
                 },
             )
             .await
@@ -1427,7 +1337,7 @@ pub async fn ai_chat(
     let mut result = cancellable_request(
         &requests,
         &request_id,
-        rx,
+        waiting,
         owner.clone(),
         send(
             p,
@@ -1436,6 +1346,7 @@ pub async fn ai_chat(
                 use_tools,
                 toolsets: toolsets.as_deref(),
                 pager: false,
+                output_limit: None,
             },
             TurnChannels {
                 delta: Some(on_delta),
@@ -2187,6 +2098,7 @@ mod tests {
                 use_tools: false,
                 toolsets: None,
                 pager: false,
+                output_limit: None,
             },
             TurnChannels {
                 delta: None,
@@ -2237,6 +2149,7 @@ mod tests {
                     use_tools: true,
                     toolsets: None,
                     pager,
+                    output_limit: None,
                 },
                 TurnChannels::default(),
                 Credential::ApiKey(None),
@@ -2371,6 +2284,7 @@ mod tests {
                 use_tools: false,
                 toolsets: None,
                 pager: false,
+                output_limit: None,
             },
             TurnChannels {
                 delta: None,
@@ -2614,6 +2528,7 @@ mod tests {
                 use_tools: false,
                 toolsets: None,
                 pager: false,
+                output_limit: None,
             },
             TurnChannels {
                 delta: None,
@@ -2720,6 +2635,7 @@ mod tests {
                     use_tools: true,
                     toolsets: None,
                     pager: false,
+                    output_limit: None,
                 },
                 TurnChannels {
                     delta: None,
@@ -2776,6 +2692,7 @@ mod tests {
                 use_tools: false,
                 toolsets: None,
                 pager: false,
+                output_limit: None,
             },
             TurnChannels {
                 delta: None,
@@ -2828,6 +2745,7 @@ mod tests {
                 use_tools: false,
                 toolsets: None,
                 pager: false,
+                output_limit: None,
             },
             TurnChannels {
                 delta: None,
@@ -2861,6 +2779,7 @@ mod tests {
                 use_tools: false,
                 toolsets: None,
                 pager: false,
+                output_limit: None,
             },
             TurnChannels {
                 delta: None,
@@ -2932,6 +2851,7 @@ mod tests {
                 use_tools: false,
                 toolsets: None,
                 pager: false,
+                output_limit: None,
             },
             TurnChannels {
                 delta: None,
@@ -2994,6 +2914,7 @@ mod tests {
                 use_tools: false,
                 toolsets: None,
                 pager: false,
+                output_limit: None,
             },
             TurnChannels {
                 delta: None,

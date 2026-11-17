@@ -351,13 +351,20 @@ pub struct SavedTurnBinding<'a> {
     /// The tools and permission this turn offers, compared with the last saved
     /// surface before the turn's message.
     pub surface: Option<crate::ai::host_notice::ToolSurface>,
+    /// Stops preparation's summary request with the turn that owns it.
+    pub cancel: Option<&'a crate::ai::agent_loop::Cancel>,
 }
 
-/// Why a turn was not prepared. Every variant leaves the store unchanged.
+/// Why preparation produced no outbound request. Once admitted, the incoming
+/// message stays saved even if its subsequent summary request is cancelled.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PrepareTurnError {
+    Cancelled,
     /// Even compacted, the request is larger than the model's window.
-    ContextOverflow { tokens: u64, window: u64 },
+    ContextOverflow {
+        tokens: u64,
+        window: u64,
+    },
     /// No cut brings the saved conversation under the request's row bound.
     Unreplayable,
     /// The conversation is bound to another project than the open one.
@@ -370,6 +377,7 @@ impl PrepareTurnError {
     /// The stable code an `ai_turn` failure carries.
     pub fn kind(&self) -> &'static str {
         match self {
+            Self::Cancelled => "cancelled",
             Self::ContextOverflow { .. } => "context_overflow",
             Self::Binding(_) => "session_binding",
             Self::Unreplayable | Self::Store(_) => "session_save",
@@ -380,6 +388,7 @@ impl PrepareTurnError {
 impl std::fmt::Display for PrepareTurnError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Cancelled => formatter.write_str("Request cancelled"),
             Self::ContextOverflow { tokens, window } => write!(
                 formatter,
                 "This message makes the request about {tokens} tokens, more than the model's \
@@ -489,6 +498,34 @@ pub async fn prepare_turn_for<R: tauri::Runtime>(
     messages: &Value,
     binding: SavedTurnBinding<'_>,
 ) -> Result<PreparedTurn, PrepareTurnError> {
+    let id = binding.id.to_owned();
+    let cancel = binding.cancel;
+    prepare_turn_using(app, provider, messages, binding, |input| {
+        crate::ai_service::compaction_summary(app, provider.clone(), &id, input, cancel)
+    })
+    .await
+}
+
+/// Preparation with an explicit summary provider. Tests inject credentials at
+/// this boundary while exercising the same admission and publication path.
+pub(crate) async fn prepare_turn_using<R, F, Fut>(
+    app: &tauri::AppHandle<R>,
+    provider: &AiProviderEntry,
+    messages: &Value,
+    binding: SavedTurnBinding<'_>,
+    summarize: F,
+) -> Result<PreparedTurn, PrepareTurnError>
+where
+    R: tauri::Runtime,
+    F: FnOnce(String) -> Fut,
+    Fut: std::future::Future<Output = Result<String, sessions::CompactionFailure>>,
+{
+    if binding
+        .cancel
+        .is_some_and(crate::ai::agent_loop::Cancel::is_cancelled)
+    {
+        return Err(PrepareTurnError::Cancelled);
+    }
     let state = app.state::<AppState>();
     let session_id = binding.id;
     let store = store();
@@ -565,17 +602,18 @@ pub async fn prepare_turn_for<R: tauri::Runtime>(
     // matches the plan; a failure compacts mechanically instead.
     if let Some(plan) = prepared.pending_compaction.take() {
         let target = (context as f64 * sessions::AUTO_COMPACT_TARGET_FRACTION) as u64;
-        let summary = crate::ai_service::compaction_summary(
-            app,
-            provider.clone(),
-            &session_id,
-            plan.input.clone(),
-        )
-        .await;
+        let summary = summarize(plan.input.clone()).await;
         let (summary, mut failure) = match summary {
             Ok(summary) => (Some(summary), None),
+            Err(sessions::CompactionFailure::Cancelled) => return Err(PrepareTurnError::Cancelled),
             Err(failure) => (None, Some(failure)),
         };
+        if binding
+            .cancel
+            .is_some_and(crate::ai::agent_loop::Cancel::is_cancelled)
+        {
+            return Err(PrepareTurnError::Cancelled);
+        }
         let outcome = match store.commit_compaction(plan, summary.as_deref()) {
             Ok(outcome) => Some(outcome),
             Err(error) if error.kind == SessionErrorKind::Conflict => {

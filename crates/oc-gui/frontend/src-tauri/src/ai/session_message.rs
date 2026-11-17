@@ -30,6 +30,9 @@ pub(super) struct MessageMeta {
     pub kind: MessageKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub standing_intent: Option<String>,
+    /// Summary prose kept separately from generated headers and inventories.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary_text: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub discarded_auditions: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -81,6 +84,7 @@ impl MessageMeta {
             version: 1,
             kind,
             standing_intent: None,
+            summary_text: None,
             discarded_auditions: None,
             rollback_notice: None,
             proposal_notice: None,
@@ -115,9 +119,17 @@ pub(super) fn read(message: &Value) -> Option<MessageMeta> {
     }
     if meta.kind != MessageKind::Summary
         && (meta.standing_intent.is_some()
+            || meta.summary_text.is_some()
             || meta.discarded_auditions.is_some()
             || meta.rollback_notice.is_some()
             || meta.proposal_notice.is_some())
+    {
+        return None;
+    }
+    if meta
+        .summary_text
+        .as_ref()
+        .is_some_and(|text| text.len() > super::compaction::MAX_SUMMARY_BYTES)
     {
         return None;
     }
@@ -385,6 +397,23 @@ mod tests {
         row["message_meta"]["kind"] = json!("host_notice");
         row["message_meta"]["notice"]["to"] = json!("x".repeat(4097));
         assert!(read(&row).is_none(), "an oversized path is refused");
+    }
+
+    #[test]
+    fn summary_prose_is_bounded_and_belongs_only_to_a_summary() {
+        let mut row = json!({"role":"user","content":"summary", "message_meta":{
+            "version":1,"kind":"summary","summary_text":"keep vocals dry"
+        }});
+        assert_eq!(
+            read(&row).unwrap().summary_text.as_deref(),
+            Some("keep vocals dry")
+        );
+        row["message_meta"]["kind"] = json!("user");
+        assert!(read(&row).is_none());
+        row["message_meta"]["kind"] = json!("summary");
+        row["message_meta"]["summary_text"] =
+            json!("x".repeat(super::super::compaction::MAX_SUMMARY_BYTES + 1));
+        assert!(read(&row).is_none());
     }
 
     #[test]

@@ -328,6 +328,7 @@ impl Host for AppHost {
                 use_tools: true,
                 toolsets: self.toolsets.as_deref(),
                 pager: true,
+                output_limit: None,
             },
             self.channels.clone(),
             &stats,
@@ -509,7 +510,10 @@ impl Host for AppHost {
         lock(&self.allowed).clone()
     }
 
-    async fn compact(&self) -> Result<Vec<Value>, crate::ai::sessions::CompactionFailure> {
+    async fn compact(
+        &self,
+        cancel: &Cancel,
+    ) -> Result<Vec<Value>, crate::ai::sessions::CompactionFailure> {
         use crate::ai::sessions::CompactionFailure;
         let facts = {
             let state = self.state();
@@ -534,12 +538,17 @@ impl Host for AppHost {
             self.provider.clone(),
             &id,
             plan.input.clone(),
+            Some(cancel),
         )
         .await;
         let (summary, mut failure) = match summary {
             Ok(summary) => (Some(summary), None),
+            Err(CompactionFailure::Cancelled) => return Err(CompactionFailure::Cancelled),
             Err(failure) => (None, Some(failure)),
         };
+        if cancel.is_cancelled() {
+            return Err(CompactionFailure::Cancelled);
+        }
         let outcome = match Store::config().commit_compaction(plan, summary.as_deref()) {
             Ok(outcome) => outcome,
             Err(error) => {
@@ -1037,6 +1046,7 @@ async fn run_claimed(
             project: start.project.as_deref(),
             tool_tokens,
             surface: Some(surface),
+            cancel: Some(&control.cancel),
         },
     )
     .await

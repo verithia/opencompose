@@ -1162,6 +1162,33 @@ pub(crate) mod test_support {
         (base, server)
     }
 
+    /// Accepts a complete request but withholds its response, so cancellation
+    /// can be checked against a real connection without a slow fixture sleep.
+    pub fn held_response() -> (String, tokio::sync::oneshot::Receiver<()>, JoinHandle<bool>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}/", listener.local_addr().unwrap());
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let server = std::thread::spawn(move || {
+            let mut socket = accept_within(&listener);
+            read_request(&mut socket);
+            socket
+                .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                .unwrap();
+            let _ = started.send(());
+            match socket.read(&mut [0u8; 1]) {
+                Ok(0) => true,
+                Err(error) => matches!(
+                    error.kind(),
+                    std::io::ErrorKind::ConnectionReset
+                        | std::io::ErrorKind::ConnectionAborted
+                        | std::io::ErrorKind::UnexpectedEof
+                ),
+                _ => false,
+            }
+        });
+        (base, ready, server)
+    }
+
     /// Serves one response per connection, in order, and returns the raw request
     /// for each. Used by adapters that re-send a request to continue a response.
     pub fn canned_sequence(

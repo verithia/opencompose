@@ -788,20 +788,30 @@ prompt lives in the backend and asks, in order, for the person's goals and
 constraints, the decisions and rejected options, the current state by project
 path, the open problems and errors, and what remains. The input is the dropped
 part of the saved view rendered as plain text, with each turn and tool result
-bounded; it is never the whole history on disk. The model's answer becomes the
+bounded; it is never the whole history on disk. The input includes the previous
+summary and prioritizes the newest dropped turns when it reaches its byte
+limit. Summary generation has an output allowance of at most 4,096 tokens.
+The model's answer becomes the
 first row of the new view, followed by the mechanical digest of the newest six
 tool pairs and the artifact inventory, so the compacted conversation never
 depends on the model having copied exact paths or results. The row keeps the
 conversation's `standing_intent`, discarded audition count and rollback or
 proposal notices, and the newest pinned host notices stay beside it. The
 project's DSL is named by **digest** rather than carried, which would defeat the
-purpose.
+purpose. The store accepts model prose only when the complete replacement is
+bounded, reduces the conversation and meets the planned target; otherwise it
+keeps the mechanical fallback. Saved summary prose is separate from generated
+headers and inventories so repeated summaries do not nest those sections.
 
-When the provider errors, the person cancels, the reply is empty or the
+When the provider errors, the reply is empty or the
 conversation changes before the answer lands, the store writes its deterministic
 summary instead and the turn goes on. The caller reports the typed reason as
 `{session_id, notice: "compaction_failed", reason}`, where `reason` is
 `provider_error`, `cancelled`, `empty` or `conflict`.
+
+Stop interrupts a summary request during preparation or between tool rounds,
+finalizes its accounting, and leaves the existing conversation view intact.
+Cancellation does not publish a mechanical replacement or a late model summary.
 
 Compaction is two-phase because the model call is slow. The store plans under
 its mutation lock: it chooses the split, renders the request input and builds

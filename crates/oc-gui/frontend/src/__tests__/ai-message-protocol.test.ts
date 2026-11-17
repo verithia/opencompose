@@ -5,6 +5,16 @@ import { restoredTranscript, userTurnOf } from "../ai/transcript";
 import { auditionLabel, type MediaAttachment } from "../ai/media";
 
 describe("versioned local message semantics", () => {
+  it("keeps bounded summary prose only on summary metadata", () => {
+    const row: WireMessage = {
+      role: "user", content: "summary",
+      message_meta: { ...messageMeta("summary"), summary_text: "keep vocals dry" },
+    };
+    expect(messageKind(row)).toBe("summary");
+    expect(messageKind({ ...row, message_meta: { ...row.message_meta!, kind: "user" } })).toBe("user");
+    expect(messageKind({ ...row, message_meta: { ...row.message_meta!, summary_text: "声".repeat(11_000) } })).toBe("user");
+  });
+
   it.each([
     "Conversation summary written by me. Standing intent: quoted text",
     "You have 3 tool rounds left in this turn.",

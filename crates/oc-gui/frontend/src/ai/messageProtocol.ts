@@ -67,6 +67,8 @@ export interface MessageMeta {
   version: 1;
   kind: MessageKind;
   standing_intent?: string;
+  /** Bounded prose independent of generated summary headers and inventory. */
+  summary_text?: string;
   discarded_auditions?: number;
   rollback_notice?: string;
   proposal_notice?: string;
@@ -318,10 +320,12 @@ export function messageKind(message: MessageLike): MessageKind {
       : meta.kind === "tool" ? message.role === "tool"
       : meta.kind === "proposal_outcome" ? message.role === "user" || message.role === "tool"
       : message.role === "user";
-    const summaryFields = meta.standing_intent !== undefined || meta.discarded_auditions !== undefined
+    const summaryFields = meta.standing_intent !== undefined || meta.summary_text !== undefined || meta.discarded_auditions !== undefined
       || meta.rollback_notice !== undefined || meta.proposal_notice !== undefined;
     const invalidText = [meta.standing_intent, meta.rollback_notice, meta.proposal_notice]
       .some(value => value !== undefined && (typeof value !== "string" || [...value].length > 4096));
+    const invalidSummary = meta.summary_text !== undefined && (typeof meta.summary_text !== "string"
+      || new TextEncoder().encode(meta.summary_text).length > 32_768);
     const range = meta.audio_range;
     const invalidRange = range !== undefined && (!range || typeof range !== "object"
       || !Number.isFinite(range.start_seconds) || !Number.isFinite(range.end_seconds)
@@ -330,7 +334,7 @@ export function messageKind(message: MessageLike): MessageKind {
       && (meta.kind !== "host_notice" || hostNotice(meta.notice) === null);
     const invalidState = meta.state !== undefined
       && (meta.kind !== "session_state" || sessionState(meta.state) === null);
-    if (meta.version !== 1 || !isMessageKind(meta.kind) || !compatible || invalidText || invalidRange
+    if (meta.version !== 1 || !isMessageKind(meta.kind) || !compatible || invalidText || invalidSummary || invalidRange
       || invalidNotice || invalidState || (summaryFields && meta.kind !== "summary") || (meta.audio_range && !isAuditionKind(meta.kind))) return structuralKind(message);
     return meta.kind;
   }

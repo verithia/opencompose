@@ -36,6 +36,10 @@
 //! bounds the bytes it loads.
 #[path = "session_artifacts.rs"]
 mod artifacts;
+#[path = "session_compaction.rs"]
+mod compaction;
+pub(crate) use compaction::SUMMARY_OUTPUT_TOKENS;
+use compaction::{compaction_input, planned_messages};
 #[cfg(test)]
 #[path = "session_binding_tests.rs"]
 mod binding_tests;
@@ -374,8 +378,8 @@ pub struct ClearReport {
     pub freed_bytes: u64,
 }
 
-/// Why a model-written compaction did not produce a summary. Every case still
-/// compacts with the mechanical summary, and the panel says which happened.
+/// Why a model-written compaction did not produce a summary. Cancellation
+/// leaves the current view intact; other failures use the mechanical summary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CompactionFailure {
@@ -398,6 +402,7 @@ pub struct CompactionPlan {
     pub(crate) dropped_to: usize,
     pub(crate) retained_pairs: usize,
     pub(crate) tokens_before: u64,
+    pub(crate) target_tokens: u64,
     pub(crate) compacted_at: String,
     /// The dropped turns as plain text, bounded for one request.
     pub(crate) input: String,
@@ -3350,76 +3355,13 @@ fn plan_compaction_request(
         dropped_to: split,
         retained_pairs: outcome.retained_pairs,
         tokens_before: outcome.tokens_before,
+        target_tokens: target,
         compacted_at: outcome.compacted_at.clone(),
         input: compaction_input(view, split),
         prefix: summary_intro(view, split, retained, facts, &outcome.compacted_at),
         digest: summary_digest(view, split, retained, outcome.tokens_before),
         fallback: outcome.messages,
     })
-}
-
-/// The dropped turns as plain text for the summary request, bounded so a huge
-/// tool result cannot become the request. Tool results keep their shape but
-/// never their whole payload.
-fn compaction_input(view: &[Value], split: usize) -> String {
-    const MAX_INPUT_CHARS: usize = 80_000;
-    const MAX_TURN_CHARS: usize = 4_000;
-    let mut text = String::new();
-    for (index, message) in view[..split].iter().enumerate() {
-        let line = match message["role"].as_str() {
-            Some("user") => {
-                let Some(plain) = plain_message(message) else {
-                    continue;
-                };
-                let content = clip(
-                    &collapse(plain["content"].as_str().unwrap_or_default()),
-                    MAX_TURN_CHARS,
-                );
-                if content.is_empty() {
-                    continue;
-                }
-                format!("User: {content}\n")
-            }
-            Some("assistant") => {
-                let mut line = String::new();
-                if let Some(content) = message["content"]
-                    .as_str()
-                    .filter(|content| !content.trim().is_empty())
-                {
-                    line.push_str(&format!(
-                        "Assistant: {}\n",
-                        clip(&collapse(content), MAX_TURN_CHARS)
-                    ));
-                }
-                for call in message["tool_calls"].as_array().into_iter().flatten() {
-                    line.push_str(&format!(
-                        "Assistant called {} with {}\n",
-                        call["function"]["name"].as_str().unwrap_or("tool"),
-                        clip(
-                            &collapse(call["function"]["arguments"].as_str().unwrap_or_default()),
-                            MAX_TURN_CHARS
-                        )
-                    ));
-                }
-                line
-            }
-            Some("tool") => format!(
-                "Tool {} result: {}\n",
-                tool_name_of(view, index),
-                clip(
-                    &collapse(message["content"].as_str().unwrap_or_default()),
-                    MAX_TURN_CHARS
-                )
-            ),
-            _ => continue,
-        };
-        if text.len() + line.len() > MAX_INPUT_CHARS {
-            text.push_str("Earlier turns omitted from this input to keep it bounded.\n");
-            break;
-        }
-        text.push_str(&line);
-    }
-    text
 }
 
 /// Names one view exactly, so a commit can tell that the conversation it
@@ -3435,19 +3377,6 @@ fn view_digest(view: &[Value]) -> String {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()
-}
-
-/// The messages a planned compaction writes, with `summary` as their first
-/// row. `None` keeps the mechanical summary the plan already holds.
-fn planned_messages(plan: &CompactionPlan, summary: Option<&str>) -> Vec<Value> {
-    let mut messages = plan.fallback.clone();
-    if let Some(summary) = summary {
-        let summary = summary.trim();
-        if let Some(row) = messages.first_mut() {
-            row["content"] = json!(format!("{}{summary}\n\n{}", plan.prefix, plan.digest));
-        }
-    }
-    messages
 }
 
 /// The messages after `split` that are safe to keep: prose only, never a
@@ -3641,6 +3570,9 @@ fn summary_text(
     at: &str,
 ) -> String {
     let mut text = summary_intro(view, split, retained, facts, at);
+    if let Some(previous) = compaction::previous_summary(&view[..split]) {
+        text.push_str(&format!("Previous conversation summary:\n{previous}\n\n"));
+    }
     text.push_str(&summary_decisions(view, split));
     text.push_str(&summary_digest(view, split, retained, tokens_before));
     text
