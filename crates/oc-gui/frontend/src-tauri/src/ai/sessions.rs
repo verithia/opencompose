@@ -558,6 +558,9 @@ pub struct Prepared {
 pub struct Store {
     root: PathBuf,
     lookup: Arc<dyn lookup::Io>,
+    /// The largest `messages.jsonl` this store writes; tests lower it to
+    /// exercise the trim path without a gigabyte of data.
+    session_cap: u64,
 }
 
 impl Store {
@@ -565,6 +568,7 @@ impl Store {
         Self {
             root: root.into(),
             lookup: Arc::new(lookup::Disk),
+            session_cap: MAX_SESSION_BYTES,
         }
     }
 
@@ -573,7 +577,14 @@ impl Store {
         Self {
             root: root.into(),
             lookup,
+            session_cap: MAX_SESSION_BYTES,
         }
+    }
+
+    #[cfg(test)]
+    pub(super) fn with_session_cap(mut self, cap: u64) -> Self {
+        self.session_cap = cap;
+        self
     }
 
     /// The operator's store: `~/.opencompose/ai/sessions`.
@@ -1133,7 +1144,7 @@ impl Store {
             return Ok(meta);
         }
         let row = session_state::state_row(&state);
-        append_records(&dir, &[turn_record(&now(), vec![row])])?;
+        let _ = append_records(&dir, &[turn_record(&now(), vec![row])])?;
         let (view, _) = read_view(&dir)?;
         meta.tokens = estimate_tokens(&view);
         write_meta(&dir, &meta)?;
@@ -1673,7 +1684,7 @@ impl Store {
         if appended > 0 || closed_round || notice_added {
             let mut added = closed;
             added.extend_from_slice(&pending[start..]);
-            append_records(&dir, &[turn_record(&now(), added)])?;
+            let _ = append_records(&dir, &[turn_record(&now(), added)])?;
         }
         if closed_round {
             // The round is answered on disk, so its started markers are spent.
@@ -1769,15 +1780,25 @@ impl Store {
         let (dir, mut meta) = self.find(id)?;
         super::session_usage::verify_at(&dir, incarnation).map_err(|error| error.message)?;
         let (mut view, _) = read_view(&dir)?;
-        if let Some(message) = saved_message(reply)
+        let appended = if let Some(message) = saved_message(reply)
             && view.last() != Some(&message)
         {
-            append_records(&dir, &[turn_record(&now(), vec![message.clone()])])?;
+            let appended = append_records_under(
+                &dir,
+                &[turn_record(&now(), vec![message.clone()])],
+                self.session_cap,
+            )?;
             view.push(message);
-        }
+            Some(appended)
+        } else {
+            None
+        };
         meta.provider = provider.to_owned();
         meta.model = model.to_owned();
-        meta.tokens = estimate_tokens(&view);
+        meta.tokens = appended.map_or_else(
+            || estimate_tokens(&view),
+            |appended| appended.kept_tokens(&view),
+        );
         meta.updated = now();
         let _ = facts;
         write_meta(&dir, &meta)?;
@@ -1851,7 +1872,7 @@ impl Store {
         };
         // Append, never rewrite: the turns this summary replaces stay on disk so
         // the user can still read them (the panel's original view).
-        append_records(&dir, &[record])?;
+        let _ = append_records(&dir, &[record])?;
         // The record is the compaction; the metadata only caches what the
         // records already say (the token estimate is recomputed on the next
         // write). Once the record landed the compaction happened, so a cache
@@ -1914,7 +1935,7 @@ impl Store {
             truncated: None,
             messages: outcome.messages.clone(),
         };
-        append_records(&dir, &[record])?;
+        let _ = append_records(&dir, &[record])?;
         meta.compacted_at = Some(outcome.compacted_at.clone());
         meta.tokens = outcome.tokens_after;
         meta.updated = now();
@@ -4164,16 +4185,37 @@ fn write_records(dir: &Path, records: &[Record]) -> Result<(), String> {
         .map_err(|error| format!("sessions: {error}"))
 }
 
+/// What an append did to the saved view.
+#[must_use = "count the tokens of the view the append left"]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AppendOutcome {
+    /// The records joined the existing view.
+    Appended,
+    /// The cap replaced the view with its newest rows; the caller counts these.
+    Trimmed { tokens_after: u64 },
+}
+
+impl AppendOutcome {
+    /// The token count of the view the append left, from the caller's view
+    /// after it added the same records.
+    fn kept_tokens(self, view: &[Value]) -> u64 {
+        match self {
+            Self::Appended => estimate_tokens(view),
+            Self::Trimmed { tokens_after } => tokens_after,
+        }
+    }
+}
+
 /// Appends records as lines, keeping the file under [`MAX_SESSION_BYTES`]. An
 /// append that would exceed the cap first replaces the conversation with a
 /// `trim` record that states what it dropped.
-fn append_records(dir: &Path, records: &[Record]) -> Result<(), String> {
+fn append_records(dir: &Path, records: &[Record]) -> Result<AppendOutcome, String> {
     append_records_under(dir, records, MAX_SESSION_BYTES)
 }
 
 /// The cap is a parameter so the trimming path is testable without writing a
 /// gigabyte.
-fn append_records_under(dir: &Path, records: &[Record], cap: u64) -> Result<(), String> {
+fn append_records_under(dir: &Path, records: &[Record], cap: u64) -> Result<AppendOutcome, String> {
     let path = dir.join(MESSAGES_FILE);
     let mut bytes = Vec::new();
     for record in records {
@@ -4186,8 +4228,8 @@ fn append_records_under(dir: &Path, records: &[Record], cap: u64) -> Result<(), 
     }
     let current = std::fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0);
     if current + bytes.len() as u64 <= cap {
-        return private_fs::append_private(&path, &bytes)
-            .map_err(|error| format!("sessions: {error}"));
+        private_fs::append_private(&path, &bytes).map_err(|error| format!("sessions: {error}"))?;
+        return Ok(AppendOutcome::Appended);
     }
     let (mut view, _) = read_view(dir)?;
     for record in records {
@@ -4213,6 +4255,7 @@ fn append_records_under(dir: &Path, records: &[Record], cap: u64) -> Result<(), 
     message_protocol::tag(&mut note, MessageMeta::new(MessageKind::HostNotice));
     let mut messages = vec![note];
     messages.extend(kept);
+    let tokens_after = estimate_tokens(&messages);
     let trim = Record {
         v: VERSION,
         kind: RecordKind::Trim,
@@ -4222,14 +4265,14 @@ fn append_records_under(dir: &Path, records: &[Record], cap: u64) -> Result<(), 
             to: view.len() - messages.len() + 1,
         }),
         tokens_before: Some(estimate_tokens(&view)),
-        tokens_after: Some(estimate_tokens(&messages)),
+        tokens_after: Some(tokens_after),
         truncated: Some(true),
         messages,
     };
     write_records(dir, &[trim])?;
     // The rows the trim dropped were the only owners of their results.
     tool_results::collect(dir);
-    Ok(())
+    Ok(AppendOutcome::Trimmed { tokens_after })
 }
 
 /// The newest messages of a conversation that fit in `budget` bytes, in order.
@@ -4516,7 +4559,7 @@ mod original_tests {
             truncated: None,
             messages: vec![json!({"role":"user","content":"summary"})],
         };
-        append_records(&dir, &[turn, compaction]).unwrap();
+        let _ = append_records(&dir, &[turn, compaction]).unwrap();
 
         let (current, _) = read_view(&dir).unwrap();
         assert_eq!(current.len(), 1, "the model sees the summary");
@@ -4963,6 +5006,39 @@ mod tests {
     }
 
     #[test]
+    fn a_reply_append_the_cap_trimmed_counts_the_view_it_kept() {
+        let (store, project) = fixture("reply-cap");
+        let store = store.with_session_cap(100_000);
+        let session = store
+            .create(Some(project.parent().unwrap()), Some(&project), None, None)
+            .unwrap();
+        let context = facts(&project);
+        let filler = "x".repeat(60_000);
+        store
+            .append_turn(&session.id, &[user(&format!("old {filler}"))], None)
+            .unwrap();
+        store
+            .record_reply(
+                &session.id,
+                &reply(&format!("new {filler}")),
+                &context,
+                "p",
+                "m",
+            )
+            .unwrap();
+        let view = store.view(&session.id).unwrap();
+        let (_, meta) = store.find(&session.id).unwrap();
+        assert!(
+            view[0]["content"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("dropped"),
+            "the cap replaced the view and states what it dropped"
+        );
+        assert_eq!(meta.tokens, estimate_tokens(&view));
+    }
+
+    #[test]
     fn autosave_appends_a_turn_once_and_never_replays_the_rebuilt_history() {
         let (store, project) = fixture("autosave");
         let session = store
@@ -5319,7 +5395,7 @@ mod tests {
         for message in &mut legacy.messages {
             message.as_object_mut().unwrap().remove("message_meta");
         }
-        append_records(&dir, &[legacy]).unwrap();
+        let _ = append_records(&dir, &[legacy]).unwrap();
 
         let outcome = store.compact(&session.id, None, &context).unwrap();
         assert!(strips_replay_state(&outcome.messages));
@@ -5996,7 +6072,7 @@ mod tests {
             let _ = child.kill();
         }
         let status = child.wait().unwrap();
-        result.unwrap();
+        let _ = result.unwrap();
         assert!(published && status.success());
         assert!(clip.is_file());
         assert!(!orphan.exists());
@@ -6631,7 +6707,7 @@ mod tests {
             truncated: None,
             messages: vec![json!({"role":"user","content":"summary","dsl_sha":keep_sha})],
         };
-        append_records(&dir, &[first, compaction]).unwrap();
+        let _ = append_records(&dir, &[first, compaction]).unwrap();
 
         // One referenced asset and one orphan, in each content store.
         std::fs::create_dir_all(store.root().join("audition-media")).unwrap();
@@ -6930,7 +7006,7 @@ mod tests {
             });
         }
         let dir = store.find(&session.id).unwrap().0;
-        append_records_under(&dir, &records, cap).unwrap();
+        let _ = append_records_under(&dir, &records, cap).unwrap();
         let size = std::fs::metadata(dir.join(MESSAGES_FILE)).unwrap().len();
         assert!(size <= cap, "{size} bytes");
         let (view, _) = read_view(&dir).unwrap();
@@ -8514,7 +8590,7 @@ mod tests {
             saved_message(&assistant).unwrap(),
         ];
         let dir = store.find(&session.id).unwrap().0;
-        append_records(&dir, &[turn_record("now", saved.to_vec())]).unwrap();
+        let _ = append_records(&dir, &[turn_record("now", saved.to_vec())]).unwrap();
         let (loaded, _) = read_view(&dir).unwrap();
         assert_eq!(loaded, saved);
         assert_eq!(loaded[0]["message_meta"], user["message_meta"]);

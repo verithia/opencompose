@@ -328,9 +328,9 @@ mod tests {
     fn a_read_starts_at_the_newest_replacing_record_the_index_names() {
         let root = tempfile::tempdir().unwrap();
         let dir = root.path();
-        append_records(dir, &[record(RecordKind::Turn, "t1", turn(0))]).unwrap();
-        append_records(dir, &[record(RecordKind::Trim, "t2", turn(1))]).unwrap();
-        append_records(dir, &[record(RecordKind::Turn, "t3", turn(2))]).unwrap();
+        let _ = append_records(dir, &[record(RecordKind::Turn, "t1", turn(0))]).unwrap();
+        let _ = append_records(dir, &[record(RecordKind::Trim, "t2", turn(1))]).unwrap();
+        let _ = append_records(dir, &[record(RecordKind::Turn, "t3", turn(2))]).unwrap();
         let first = read_current(dir).unwrap();
         assert_eq!(first.messages.len(), 8);
         let index = index_of(dir).expect("the read indexes the trim");
@@ -357,8 +357,8 @@ mod tests {
     fn an_index_that_names_another_line_is_not_trusted() {
         let root = tempfile::tempdir().unwrap();
         let dir = root.path();
-        append_records(dir, &[record(RecordKind::Trim, "t1", turn(0))]).unwrap();
-        append_records(dir, &[record(RecordKind::Turn, "t2", turn(1))]).unwrap();
+        let _ = append_records(dir, &[record(RecordKind::Trim, "t1", turn(0))]).unwrap();
+        let _ = append_records(dir, &[record(RecordKind::Turn, "t2", turn(1))]).unwrap();
         let expected = read_current(dir).unwrap().messages;
         let good = index_of(dir).unwrap();
         for wrong in [
@@ -407,11 +407,11 @@ mod tests {
     fn an_index_one_replacement_behind_still_reads_the_newest_view() {
         let root = tempfile::tempdir().unwrap();
         let dir = root.path();
-        append_records(dir, &[record(RecordKind::Compaction, "t1", turn(0))]).unwrap();
+        let _ = append_records(dir, &[record(RecordKind::Compaction, "t1", turn(0))]).unwrap();
         read_current(dir).unwrap();
         let behind = index_of(dir).unwrap();
-        append_records(dir, &[record(RecordKind::Trim, "t2", turn(1))]).unwrap();
-        append_records(dir, &[record(RecordKind::Turn, "t3", turn(2))]).unwrap();
+        let _ = append_records(dir, &[record(RecordKind::Trim, "t2", turn(1))]).unwrap();
+        let _ = append_records(dir, &[record(RecordKind::Turn, "t3", turn(2))]).unwrap();
         let current = read_current(dir).unwrap();
         assert_eq!(current.messages, [turn(1), turn(2)].concat());
         assert!(
@@ -432,8 +432,8 @@ mod tests {
     fn a_rewrite_removes_the_index_before_it_replaces_the_file() {
         let root = tempfile::tempdir().unwrap();
         let dir = root.path();
-        append_records(dir, &[record(RecordKind::Turn, "t1", turn(0))]).unwrap();
-        append_records(dir, &[record(RecordKind::Trim, "t2", turn(1))]).unwrap();
+        let _ = append_records(dir, &[record(RecordKind::Turn, "t1", turn(0))]).unwrap();
+        let _ = append_records(dir, &[record(RecordKind::Trim, "t2", turn(1))]).unwrap();
         let before = read_current(dir).unwrap();
         assert!(index_of(dir).is_some());
         write_records(dir, &[record(RecordKind::Turn, "t3", turn(5))]).unwrap();
@@ -540,7 +540,7 @@ mod tests {
             store.page(&id, usize::MAX, 2, &opened.revision).unwrap(),
             PageRead::Stale
         ));
-        append_records(
+        let _ = append_records(
             &dir_of(&store, &id),
             // Longer than before, so only the revision tells the shape changed.
             &[record(

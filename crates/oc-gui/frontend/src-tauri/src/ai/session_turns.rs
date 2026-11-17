@@ -17,7 +17,9 @@
 //! both protocols keep the same guarantee.
 
 use super::message_protocol::{self, MessageKind, MessageMeta};
-use super::{Store, VERSION, append_records, now, read_view, saved_message, write_meta};
+use super::{
+    Store, VERSION, append_records, append_records_under, now, read_view, saved_message, write_meta,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashSet;
@@ -494,14 +496,14 @@ impl Store {
         }
         let record = super::turn_record(&now(), added);
         let saved = record.messages.clone();
-        append_records(&dir, &[record])?;
+        let appended = append_records_under(&dir, &[record], self.session_cap)?;
         // The round is saved, so the append succeeded whatever happens to the
         // markers. A marker that outlives its call only makes that call read
         // as "outcome unknown" if it is ever left open, the cautious side.
         if (rewrite && before > 0) || started.len() != before {
             spend_started(&dir, &started);
         }
-        meta.tokens = super::estimate_tokens(&view);
+        meta.tokens = appended.kept_tokens(&view);
         meta.updated = now();
         write_meta(&dir, &meta)?;
         Ok(saved)
@@ -550,7 +552,7 @@ impl Store {
         let closed = close_open_typed(&view, &started);
         if !closed.is_empty() {
             let messages = closed.iter().map(|closed| closed.message.clone()).collect();
-            append_records(dir, &[super::turn_record(&now(), messages)])?;
+            let _ = append_records(dir, &[super::turn_record(&now(), messages)])?;
             let (view, _) = read_view(dir)?;
             meta.tokens = super::estimate_tokens(&view);
             meta.updated = now();
@@ -598,7 +600,7 @@ impl Store {
             truncated: None,
             messages: kept.clone(),
         };
-        append_records(&dir, &[record])?;
+        let _ = append_records(&dir, &[record])?;
         // The saved record is the commit point: the cut happened even when the
         // marker or the metadata cannot follow it, and both are derived state
         // a reload rebuilds from the record.
@@ -670,6 +672,40 @@ mod tests {
         store.append_turn(&id, &[result("a")], None).unwrap();
         let view = store.view(&id).unwrap();
         let (_, meta) = store.find(&id).unwrap();
+        assert_eq!(meta.tokens, super::super::estimate_tokens(&view));
+    }
+
+    #[test]
+    fn an_append_the_cap_trimmed_counts_the_view_it_kept() {
+        let (_root, store, id) = fixture();
+        let store = store.with_session_cap(100_000);
+        let filler = "x".repeat(60_000);
+        store
+            .append_turn(
+                &id,
+                &[
+                    user(&format!("old {filler}")),
+                    user(&format!("new {filler}")),
+                ],
+                None,
+            )
+            .unwrap();
+        let view = store.view(&id).unwrap();
+        let (_, meta) = store.find(&id).unwrap();
+        assert!(
+            view[0]["content"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("dropped"),
+            "the cap replaced the view and states what it dropped"
+        );
+        assert!(
+            view.iter().all(|row| !row["content"]
+                .as_str()
+                .unwrap_or_default()
+                .starts_with("old ")),
+            "the older row is gone"
+        );
         assert_eq!(meta.tokens, super::super::estimate_tokens(&view));
     }
 
@@ -1015,7 +1051,7 @@ mod tests {
         // Saved that way, the conversation still accepts the next round.
         let (_root, store, id) = fixture();
         let (dir, _) = store.find(&id).unwrap();
-        super::super::append_records(
+        let _ = super::super::append_records(
             &dir,
             &[super::super::turn_record(
                 &now(),
