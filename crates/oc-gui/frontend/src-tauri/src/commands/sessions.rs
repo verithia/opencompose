@@ -114,11 +114,31 @@ pub fn sessions_new(
 /// Binds a conversation to the project that is open now. The next turn carries
 /// one typed notice for the model; this command writes no transcript row.
 #[tauri::command]
-pub fn sessions_bind(id: String, state: State<AppState>) -> Result<SessionMeta, String> {
-    bind_for(&state, &id)
+pub fn sessions_bind(
+    id: String,
+    state: State<AppState>,
+    requests: State<crate::ai_service::Requests>,
+) -> Result<SessionMeta, String> {
+    bind_if_idle(&state, &id, &requests)
 }
 
-/// Bind a conversation to the open project.
+/// Bind a conversation to the open project. A turn that is still running owns
+/// its conversation's binding, so a file opened meanwhile waits for it to end.
+pub(crate) fn bind_if_idle(
+    state: &AppState,
+    id: &str,
+    requests: &crate::ai_service::Requests,
+) -> Result<SessionMeta, String> {
+    requests
+        .bind_unless_running(id, || bind_for(state, id))?
+        .ok_or_else(|| {
+            "This conversation is running a turn; wait for it to finish before binding it to \
+             another file."
+                .to_owned()
+        })?
+}
+
+/// Bind a conversation to the open project without the request-slot check.
 pub fn bind_for(state: &AppState, id: &str) -> Result<SessionMeta, String> {
     let open = state.lock_inner().file_path.clone();
     store().bind(id, open.as_deref(), BindCause::Chosen)

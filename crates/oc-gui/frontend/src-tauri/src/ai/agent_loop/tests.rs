@@ -47,6 +47,8 @@ struct World {
     /// The model's input window in tokens; 0 when unknown.
     context_length: u64,
     hold_compaction: bool,
+    /// Why a modifying call cannot run on the open project.
+    binding_refusal: Option<String>,
 }
 
 struct Fake {
@@ -151,6 +153,9 @@ impl Host for Fake {
         Some(&self.steering)
     }
     async fn begin_batch(&self, label: &str) -> Result<(), String> {
+        if let Some(refusal) = self.world().binding_refusal.clone() {
+            return Err(refusal);
+        }
         self.call(
             "transaction_begin",
             &json!({ "label": label }),
@@ -431,6 +436,30 @@ fn an_answered_turn_saves_every_round_and_commits_once() {
     // The second request carried the first round's results exactly as saved.
     let second = &world.sent[1];
     assert_eq!(&second[1..], &saved[..second.len() - 1]);
+}
+
+#[test]
+fn a_file_switch_mid_turn_refuses_every_mutation_before_a_batch_opens() {
+    let fake = Fake::new(vec![
+        round(&[("a", "tracks_add")]),
+        json!({"role":"assistant","content":"nothing applied"}),
+    ]);
+    fake.world().binding_refusal = Some("The conversation is bound to another file".into());
+    let outcome = block_on(fake.run(SessionPermission::Write));
+    let world = fake.world();
+    assert!(!world.calls.iter().any(|call| call == "tracks_add"));
+    assert!(
+        !world.calls.iter().any(|call| call == "transaction_begin"),
+        "no batch opens on the file the conversation left"
+    );
+    assert_eq!(world.revision, 0, "the document is untouched");
+    assert_eq!(
+        world.sent.len(),
+        2,
+        "the model gets the refusal and answers"
+    );
+    assert_eq!(outcome.text, "nothing applied");
+    assert!(!outcome.failed);
 }
 
 #[test]

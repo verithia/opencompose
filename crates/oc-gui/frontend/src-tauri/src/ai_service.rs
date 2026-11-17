@@ -95,13 +95,10 @@ impl Requests {
         let Some(RequestClaim {
             cancel_rx,
             identity,
-        }) = self.claim(id).map_err(AiError::config)?
+        }) = self.claim_for(id, session).map_err(AiError::config)?
         else {
             return Err(AiError::new("busy", "Another AI request is active"));
         };
-        if let Some(session) = session {
-            self.set_session_owned(id, &identity, session);
-        }
         Ok(HeadlessRequest {
             requests: self,
             id: id.into(),
@@ -112,18 +109,34 @@ impl Requests {
 
     /// Claims the one slot. `Ok(None)` means another request is already running,
     /// so the caller must refuse with `busy` and claim nothing.
+    #[cfg(test)]
     pub(crate) fn claim(&self, request_id: &str) -> Result<Option<RequestClaim>, String> {
-        self.claim_as(request_id, false)
+        self.claim_for(request_id, None)
+    }
+
+    /// Claims the slot with the conversation it will save into, so a rebind
+    /// cannot slip between the claim and the later session assignment.
+    pub(crate) fn claim_for(
+        &self,
+        request_id: &str,
+        session: Option<&str>,
+    ) -> Result<Option<RequestClaim>, String> {
+        self.claim_as(request_id, false, session)
     }
 
     /// Claims the slot for a host operation (a recall, a batch recovery). It
     /// blocks turns like any claim, but it is no turn: `ai_active_turn` does
     /// not report it and `ai_cancel` cannot release it.
     pub(crate) fn claim_internal(&self, slot: &str) -> Result<Option<RequestClaim>, String> {
-        self.claim_as(slot, true)
+        self.claim_as(slot, true, None)
     }
 
-    fn claim_as(&self, request_id: &str, internal: bool) -> Result<Option<RequestClaim>, String> {
+    fn claim_as(
+        &self,
+        request_id: &str,
+        internal: bool,
+        session: Option<&str>,
+    ) -> Result<Option<RequestClaim>, String> {
         let mut pending = self.0.lock().map_err(|_| "Request lock failed")?;
         if !pending.is_empty() {
             return Ok(None);
@@ -134,7 +147,7 @@ impl Requests {
             request_id.to_owned(),
             ActiveRequest {
                 cancel: tx,
-                session_id: None,
+                session_id: session.map(str::to_owned),
                 identity: identity.clone(),
                 internal,
             },
@@ -177,6 +190,24 @@ impl Requests {
         {
             request.session_id = Some(session_id.to_owned());
         }
+    }
+
+    /// Run `bind` unless a request already holds `session`. The request lock
+    /// stays held for the decision and the bind, so a claim for the same
+    /// conversation cannot slip between them.
+    pub(crate) fn bind_unless_running<T>(
+        &self,
+        session: &str,
+        bind: impl FnOnce() -> T,
+    ) -> Result<Option<T>, String> {
+        let pending = self.0.lock().map_err(|_| "Request lock failed")?;
+        if pending
+            .values()
+            .any(|request| request.session_id.as_deref() == Some(session))
+        {
+            return Ok(None);
+        }
+        Ok(Some(bind()))
     }
 
     /// The request in flight; the slot holds at most one.
@@ -1205,7 +1236,9 @@ pub async fn ai_chat(
     let Some(RequestClaim {
         cancel_rx: rx,
         identity: owner,
-    }) = requests.claim(&request_id).map_err(AiError::config)?
+    }) = requests
+        .claim_for(&request_id, session_id.as_deref())
+        .map_err(AiError::config)?
     else {
         return Err(AiError::new("busy", "Another AI request is active"));
     };

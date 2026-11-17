@@ -525,6 +525,44 @@ fn outside_provider() -> crate::commands::AiProviderEntry {
 }
 
 #[test]
+fn a_running_turn_keeps_its_conversation_bound_to_the_file_it_started_on() {
+    use crate::commands::bind_if_idle;
+
+    let fixture = fixture("bind-running");
+    let state = state_with_project(&fixture.dir, PROJECT);
+    let first = fixture.dir.join("song.ocp");
+    let second = fixture.dir.join("second.ocp");
+    std::fs::write(&second, PROJECT).unwrap();
+    let session = new_for(&state, None, Some("running"), None).unwrap();
+    let requests = crate::ai_service::Requests::default();
+    let claim = requests
+        .claim_for("turn-1", Some(&session.id))
+        .unwrap()
+        .expect("the slot is free");
+    state.lock_inner().file_path = Some(second.clone());
+
+    let error = bind_if_idle(&state, &session.id, &requests).unwrap_err();
+    assert!(error.contains("running a turn"), "{error}");
+    assert_eq!(
+        sessions::Store::config()
+            .find(&session.id)
+            .unwrap()
+            .1
+            .project_path
+            .as_deref(),
+        Some(first.canonicalize().unwrap().to_str().unwrap()),
+        "the running turn keeps the binding it started on"
+    );
+
+    requests.release_owned("turn-1", &claim.identity).unwrap();
+    let bound = bind_if_idle(&state, &session.id, &requests).unwrap();
+    assert_eq!(
+        bound.project_path.as_deref(),
+        Some(second.canonicalize().unwrap().to_str().unwrap())
+    );
+}
+
+#[test]
 fn a_prepared_turn_reports_edits_made_outside_its_conversation() {
     use crate::ai::agent_loop::wire;
     use crate::ai::session_usage::{Purpose, SessionLease};

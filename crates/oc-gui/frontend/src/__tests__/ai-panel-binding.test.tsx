@@ -36,6 +36,8 @@ const backend = {
   open: FIRST,
   binds: [] as string[],
   order: [] as string[],
+  holdTurn: false,
+  releaseTurn: null as ((value: unknown) => void) | null,
 };
 
 function installBackend() {
@@ -51,7 +53,11 @@ function installBackend() {
       case "ai_tools": return [];
       case "ai_batch_recover": return null;
       case "ai_build_context": return { dsl_context: '@project "Test Project"\n' };
-      case "ai_turn_start": throw new Error("the fixture runs no turn");
+      case "ai_turn_start":
+        if (backend.holdTurn) {
+          return new Promise((resolve) => { backend.releaseTurn = resolve; });
+        }
+        throw new Error("the fixture runs no turn");
       case "get_project": return { ...makeSnapshot(), file_path: backend.open };
       case "sessions_list": return [{ ...META, project_path: backend.bound }];
       case "sessions_open":
@@ -98,6 +104,8 @@ beforeEach(() => {
   backend.open = FIRST;
   backend.binds = [];
   backend.order = [];
+  backend.holdTurn = false;
+  backend.releaseTurn = null;
   i18n.setLocale("en");
   aiSession.reset();
   resetContextMeter();
@@ -143,5 +151,23 @@ describe("a conversation follows the open project", () => {
 
     await waitFor(() => expect(backend.order).toEqual(["sessions_bind", "ai_turn_start"]));
     expect(backend.bound).toBe(FIRST);
+  });
+
+  it("waits for a running turn before rebinding to a file opened meanwhile", async () => {
+    await mountWithConversation();
+    backend.holdTurn = true;
+    const input = document.querySelector(".ai-input") as HTMLInputElement;
+    fireEvent.input(input, { target: { value: "keep going" } });
+    fireEvent.click(document.querySelector(".ai-send-btn") as HTMLButtonElement);
+    await waitFor(() => expect(backend.order).toEqual(["ai_turn_start"]));
+
+    openFile(SECOND);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(backend.binds, "the running turn keeps its binding").toEqual([]);
+    expect(backend.bound).toBe(FIRST);
+
+    backend.releaseTurn?.({ text: "done", failed: false });
+    await waitFor(() => expect(backend.binds).toEqual(["s1"]));
+    expect(backend.bound).toBe(SECOND);
   });
 });

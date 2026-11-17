@@ -352,8 +352,9 @@ impl Host for AppHost {
     async fn begin_batch(&self, label: &str) -> Result<(), String> {
         let owner = self.owner.clone();
         let label = label.to_owned();
+        let session = self.session_id.clone();
         let stranded = self
-            .blocking(move |app| begin_loop_batch(&app.state::<AppState>(), label, owner))
+            .blocking(move |app| begin_loop_batch(&app.state::<AppState>(), label, owner, &session))
             .await??;
         if let Some(stranded) = stranded {
             if let Err(reason) = stranded {
@@ -831,36 +832,30 @@ pub(crate) fn begin_loop_batch(
     state: &AppState,
     label: String,
     owner: String,
+    session: &str,
 ) -> Result<Option<Result<(), String>>, String> {
     let stranded = commit_stranded(state)?;
-    state.begin_transaction(label, owner)?;
-    Ok(stranded)
-}
-
-/// Save where the bound project's history stands after a turn. A turn that
-/// ended on another open file leaves the conversation's mark untouched; a
-/// failed write is reported and never fails the turn.
-async fn record_history_mark(app: &AppHandle, session_id: &str) {
-    let Some((project, mark)) = ({
-        let state = app.state::<AppState>();
-        let inner = state.lock_inner();
-        inner
-            .file_path
-            .clone()
-            .map(|path| (path, inner.undo.mark()))
-    }) else {
-        return;
-    };
-    let id = session_id.to_owned();
-    let result = tauri::async_runtime::spawn_blocking(move || {
-        Store::config().record_history_mark(&id, &project, mark)
-    })
-    .await;
-    match result {
-        Ok(Ok(())) => {}
-        Ok(Err(error)) => log::warn!("[ai] session {session_id} history mark not saved: {error}"),
-        Err(error) => log::warn!("[ai] session {session_id} history mark task failed: {error}"),
+    // The binding and the batch open under the same state lock, so a file
+    // opened meanwhile cannot receive the batch the conversation did not bind.
+    let mut inner = state.lock_inner();
+    let open = inner.file_path.clone();
+    let (_, meta) = Store::config()
+        .find(session)
+        .map_err(|error| format!("The conversation's binding could not be read: {error}"))?;
+    let status = crate::ai::sessions::binding_status(&meta, open.as_deref());
+    if !status.matches {
+        let mismatch = crate::ai::sessions::BindingMismatch {
+            bound: status.bound.unwrap_or_default(),
+            open: status.open.unwrap_or_default(),
+        };
+        return Err(format!(
+            "{} This turn cannot edit the open file; stop it and bind the conversation to that \
+             file before trying again.",
+            mismatch.message()
+        ));
     }
+    inner.begin_transaction(label, owner)?;
+    Ok(stranded)
 }
 
 fn commit_batch_and_save(state: &AppState, owner: &str) -> Result<(), super::CommitError> {
@@ -953,7 +948,7 @@ pub async fn run(
         request_id: start.request_id.clone(),
         control: control.clone(),
     };
-    let claim = match requests.claim(&start.request_id) {
+    let claim = match requests.claim_for(&start.request_id, Some(&start.session_id)) {
         Ok(Some(claim)) => claim,
         refused => {
             return Err(match refused {

@@ -428,14 +428,48 @@ fn a_stranded_batch_that_cannot_be_saved_still_lets_the_next_turn_begin() {
     std::fs::remove_file(&fixture.path).unwrap();
     std::fs::create_dir(&fixture.path).unwrap();
 
-    let next = crate::state::turn_batch_owner("turn-2", "s1");
-    let stranded =
-        crate::ai::agent_loop::host::begin_loop_batch(&fixture.state, "next".into(), next.clone())
-            .expect("the next turn's batch opens");
+    let sessions_root = fixture.dir.path().join("sessions");
+    let _sessions = crate::ai::sessions::test_root(sessions_root);
+    let store = crate::ai::sessions::Store::config();
+    let session = store
+        .create(
+            Some(fixture.dir.path()),
+            Some(&fixture.path),
+            Some("stranded"),
+            None,
+        )
+        .unwrap();
+    let next = crate::state::turn_batch_owner("turn-2", &session.id);
+    let stranded = crate::ai::agent_loop::host::begin_loop_batch(
+        &fixture.state,
+        "next".into(),
+        next.clone(),
+        &session.id,
+    )
+    .expect("the next turn's batch opens");
     assert!(matches!(stranded, Some(Err(_))), "{stranded:?}");
     assert_eq!(fixture.state.batch_owner().as_deref(), Some(next.as_str()));
     let inner = fixture.state.lock_inner();
     assert!(inner.project.tracks[0].mix.mute, "the stranded edit stays");
+}
+
+#[test]
+fn a_batch_refuses_a_conversation_whose_binding_cannot_be_read() {
+    let fixture = Fixture::new("agent-batch-no-binding");
+    let sessions_root = fixture.dir.path().join("sessions");
+    let _sessions = crate::ai::sessions::test_root(sessions_root);
+    let before = fixture.state.lock_inner().revision;
+    let error = crate::ai::agent_loop::host::begin_loop_batch(
+        &fixture.state,
+        "next".into(),
+        "panel:missing".into(),
+        "missing-session",
+    )
+    .unwrap_err();
+    assert!(error.contains("binding could not be read"), "{error}");
+    let inner = fixture.state.lock_inner();
+    assert!(inner.transaction.is_none(), "the refusal opened no batch");
+    assert_eq!(inner.revision, before);
 }
 
 #[test]

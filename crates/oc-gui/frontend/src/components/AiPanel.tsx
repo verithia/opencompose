@@ -731,6 +731,10 @@ export function AiPanel(props: { onClose?: () => void }) {
   // such as `track:kick` names a track in the file that was open before it.
   createEffect(on(() => store.filePath(), () => {
     aiWorkspace.setTargetPath("project");
+    // A file opened while a turn runs belongs to that turn's next boundary: the
+    // backend keeps the conversation on the file it started with, and the panel
+    // follows once the turn settles.
+    if (loading() || reattached() !== null || stoppingInherited() !== null) return;
     void followOpenProject(openId());
   }, { defer: true }));
   /**
@@ -1349,6 +1353,7 @@ export function AiPanel(props: { onClose?: () => void }) {
       timestamp: Date.now(),
     }]);
     settleLostSteer(painted);
+    void followOpenProject(openId());
     void flushQueued();
   };
   /**
@@ -1397,6 +1402,9 @@ export function AiPanel(props: { onClose?: () => void }) {
         timestamp: Date.now(),
       }]);
       settleLostSteer(painted);
+      // The turn let go of the conversation, so a file opened meanwhile is the
+      // one the conversation follows next.
+      void followOpenProject(openId());
       // A settled turn sends the message waiting for it, as any stop does.
       void flushQueued();
     } finally {
@@ -2242,6 +2250,9 @@ export function AiPanel(props: { onClose?: () => void }) {
         setCurrentTool(null);
         // The turn settled here, so no window may report it as still running.
         aiSession.setTurn(null);
+        // A file opened while the turn ran is the one the conversation follows
+        // now; the backend kept it bound to the file the turn started on.
+        void followOpenProject(openId());
         // The turn moved this conversation's title, turn count and time.
         void refreshSessions();
         // A message composed while the turn ran goes out now, exactly once. A
