@@ -45,11 +45,37 @@ pub(crate) const MAX_UNDO: usize = 256;
 /// most this many from the journal at once.
 pub(crate) const HISTORY_PAGE: usize = 64;
 static NEXT_TRANSACTION_ID: AtomicU64 = AtomicU64::new(0);
-static NEXT_ENTRY_ID: AtomicU64 = AtomicU64::new(1);
+static NEXT_ENTRY_ID: AtomicU64 = AtomicU64::new(0);
+/// Bits the wall clock leaves for the ids allocated in one millisecond. Eleven
+/// bits keep ids below 2^53 until 2109.
+const ENTRY_ID_TIME_SHIFT: u32 = 11;
+/// Largest integer a JavaScript number represents exactly; ids reach the panel
+/// and saved conversations as numbers.
+pub(crate) const MAX_ENTRY_ID: u64 = (1 << 53) - 1;
 
 /// A history entry id no entry in this process or an attached journal has.
+///
+/// The high bits carry the wall clock, so a fresh process or a history a New
+/// replaced never reuses an id a conversation recorded for a recall. A clock
+/// that moves backwards between runs could fall below an old maximum; attach
+/// and adopt raise this counter above every id their journal still stores. A
+/// history replaced while the process was closed stores no maximum, so the
+/// scheme assumes the clock has not moved backwards across that replacement.
 fn fresh_entry_id() -> u64 {
-    NEXT_ENTRY_ID.fetch_add(1, Ordering::Relaxed)
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as u64)
+        .unwrap_or(0);
+    let base = (now << ENTRY_ID_TIME_SHIFT).min(MAX_ENTRY_ID);
+    let mut last = NEXT_ENTRY_ID.load(Ordering::Relaxed);
+    loop {
+        let next = base.max(last.saturating_add(1)).min(MAX_ENTRY_ID);
+        match NEXT_ENTRY_ID.compare_exchange_weak(last, next, Ordering::Relaxed, Ordering::Relaxed)
+        {
+            Ok(_) => return next,
+            Err(actual) => last = actual,
+        }
+    }
 }
 
 /// Typed facts for one entry, both patches in their stored forward direction.

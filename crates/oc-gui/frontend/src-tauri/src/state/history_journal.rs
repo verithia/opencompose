@@ -340,7 +340,10 @@ impl UndoStack {
     /// Use `journal` as the history and load the window around its cursor.
     /// The window it replaces is dropped: the journal is the history.
     pub(crate) fn attach_journal(&mut self, journal: Journal) -> Result<(), String> {
-        NEXT_ENTRY_ID.fetch_max(journal.max_id() + 1, std::sync::atomic::Ordering::Relaxed);
+        NEXT_ENTRY_ID.fetch_max(
+            journal.max_id().saturating_add(1),
+            std::sync::atomic::Ordering::Relaxed,
+        );
         let applied = journal.applied();
         let previous = self.journal.replace(journal);
         if let Err(error) = self.reload_window(applied) {
@@ -354,7 +357,10 @@ impl UndoStack {
     /// the project gets a path (or a new one) and its history moves with it:
     /// `journal` is either empty or a copy of the journal the window came from.
     pub(crate) fn adopt_journal(&mut self, journal: Journal) {
-        NEXT_ENTRY_ID.fetch_max(journal.max_id() + 1, std::sync::atomic::Ordering::Relaxed);
+        NEXT_ENTRY_ID.fetch_max(
+            journal.max_id().saturating_add(1),
+            std::sync::atomic::Ordering::Relaxed,
+        );
         if journal.len() < self.below + self.undo.len() + self.redo.len() + self.above {
             // A fresh journal holds nothing beyond the window.
             self.below = 0;

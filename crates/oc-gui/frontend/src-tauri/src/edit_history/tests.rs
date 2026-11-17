@@ -1292,6 +1292,44 @@ fn a_sessions_own_edit_is_not_listed_but_another_sessions_is() {
 }
 
 #[test]
+fn entry_ids_stay_within_the_javascript_number_range() {
+    let mut stack = UndoStack::new();
+    let mut project = tempo(100);
+    for step in 0..4 {
+        let before = project.clone();
+        project = tempo(110 + step);
+        push_edit(&mut stack, &before, &project, Author::Person);
+        let id = stack.undo.last().unwrap().id;
+        assert!(id <= crate::state::MAX_ENTRY_ID, "{id}");
+    }
+}
+
+#[test]
+fn a_new_history_does_not_match_an_old_recall_position() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = opened(dir.path(), SOURCE);
+    let path = project_file(dir.path());
+    let at = {
+        let mut inner = state.lock_inner();
+        set_tempo(&mut inner, 120.0);
+        inner.sync_history();
+        crate::ai::sessions::HistoryAt::of(&inner)
+            .unwrap()
+            .at
+            .unwrap()
+    };
+    // New replaces the history for the same path; the saved position must not
+    // find an unrelated entry in it.
+    std::fs::remove_file(&path).unwrap();
+    {
+        let mut inner = state.lock_inner();
+        crate::commands::create_project_in(&mut inner, Some(path)).unwrap();
+        set_tempo(&mut inner, 130.0);
+        assert_eq!(inner.undo.level_of(at), None);
+    }
+}
+
+#[test]
 fn level_of_finds_a_mark_on_either_side_of_the_cursor() {
     for journaled in [false, true] {
         let dir = tempfile::tempdir().unwrap();
