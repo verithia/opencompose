@@ -447,6 +447,9 @@ fn the_turn_outcome_carries_the_committed_batches_changes_once() {
         }],
         more: 0,
     });
+    // The loop answers the model's commit itself; were it dispatched, the fake
+    // would also attach the batch facts to that row.
+    fake.world().typed_changes_on = Some("transaction_commit".into());
     let outcome = block_on(fake.run(SessionPermission::Write));
     assert!(!outcome.failed);
     assert_eq!(
@@ -519,6 +522,27 @@ fn plan_update_records_typed_rows_and_refreshes_the_derived_context_row() {
         "Goal: finish the bridge\nPlan:\n1. [done] write\n2. [in progress] mix"
     );
     assert!(context < crate::ai::agent_loop::wire::turn_ask(second).unwrap());
+}
+
+#[test]
+fn a_failed_batch_commit_reports_no_changes() {
+    use oc_dsl::change::{Change, ChangeSet};
+    let fake = Fake::new(vec![round(&[("a", "tracks_add")])]);
+    fake.world().turn_changes = Some(ChangeSet {
+        changes: vec![Change::Tempo {
+            from: 120.0,
+            to: 132.0,
+        }],
+        more: 0,
+    });
+    fake.world().commit_failure = Some(CommitFailure::Commit);
+    let outcome = block_on(fake.run(SessionPermission::Write));
+    assert!(outcome.failed);
+    assert_eq!(
+        outcome.stop.as_ref().and_then(|stop| stop.commit_failure),
+        Some(CommitFailure::Commit)
+    );
+    assert!(outcome.changes.is_none());
 }
 
 #[test]

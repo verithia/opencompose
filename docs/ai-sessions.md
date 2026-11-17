@@ -71,13 +71,15 @@ reported missing until a range is asked for again.
 
 ### Edit facts on a tool row
 
-A tool call that changes the project saves a `changes` field on its row: the
+The panel saves a `changes` field on a tool row that changed the project: the
 typed facts (`oc_dsl::change::ChangeSet`) between the document before the call
-and the document after it, bounded in count and text length. A read-only call
-has no such field, and a batch commit describes its base-to-final run. The
-field is local-only: the provider replays the tool result `content`, never the
-facts. A restored transcript keeps the field, so a reloaded row still describes
-its edit.
+and the document after it, bounded in count and text length. The field is
+panel-only; an external `/call` or MCP result never carries it. It is omitted
+for a read-only call, when the result reports no revision to compare, or when
+the document moved after the call. A batch commit describes its base-to-final
+run on the turn outcome instead. The field is local-only: the provider replays
+the tool result `content`, never the facts. A restored transcript keeps the
+field, so a reloaded row still describes its edit.
 
 ### Full tool results
 

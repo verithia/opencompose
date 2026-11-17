@@ -378,10 +378,15 @@ impl Host for AppHost {
     }
 
     async fn batch_changes(&self) -> Option<oc_dsl::change::ChangeSet> {
-        let state = self.state();
-        let inner = state.lock_inner();
-        let base = inner.transaction_base_project()?;
-        crate::agent_api::describe_edit(base, &inner.project)
+        self.blocking(move |app| {
+            let state = app.state::<AppState>();
+            let inner = state.lock_inner();
+            let base = inner.transaction_base_project()?;
+            crate::agent_api::describe_edit(base, &inner.project)
+        })
+        .await
+        .ok()
+        .flatten()
     }
 
     async fn call(&self, tool: &str, args: &Value, cancel: &Cancel) -> Result<Value, Value> {

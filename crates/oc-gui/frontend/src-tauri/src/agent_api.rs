@@ -1286,7 +1286,7 @@ fn foreign_batch_error(open: &str, caller: &str) -> String {
 /// Entry point shared by MCP and the panel. A refused call returns its error and
 /// leaves the batch open, so the turn keeps the edits that already landed.
 pub fn dispatch(app: &AppHandle, tool: &str, args: &Value, caller: &str) -> Result<Value, String> {
-    dispatch_with_policy(app, tool, args, caller, InstallPolicy::External)
+    dispatch_with_policy(app, tool, args, caller, InstallPolicy::External, false)
 }
 
 /// The panel's installation authority is selected by its trusted entry point,
@@ -1297,30 +1297,72 @@ pub(crate) fn dispatch_panel(
     args: &Value,
     caller: &str,
 ) -> Result<Value, String> {
-    dispatch_with_policy(app, tool, args, caller, InstallPolicy::Panel)
+    dispatch_with_policy(app, tool, args, caller, InstallPolicy::Panel, true)
 }
 
-/// The document a call starts from, cloned only for a call that may change it.
-/// A batch commit leaves the document as it is, so it describes its base.
-fn tool_before_project(state: &AppState, tool: &str) -> Option<oc_dsl::ast::Project> {
+/// The document a call starts from. A batch commit leaves the document as it
+/// is, so it describes its base.
+fn baseline_project<'a>(
+    inner: &'a crate::state::AppStateInner,
+    tool: &str,
+) -> Option<&'a oc_dsl::ast::Project> {
     if tool == "transaction_commit" {
-        return state.lock_inner().transaction_base_project().cloned();
+        return inner.transaction_base_project();
     }
-    is_mutation_tool(tool).then(|| state.lock_inner().project.clone())
+    is_mutation_tool(tool).then_some(&inner.project)
 }
 
-/// Attach the typed facts between `before` and the current document to the
+/// The document and revision a tool call starts from.
+struct ChangeBaseline {
+    project: oc_dsl::ast::Project,
+    revision: u64,
+}
+
+/// The revision a tool's result reports publishing, read at the JSON boundary.
+#[derive(Clone, Copy)]
+struct PublishedRevision(u64);
+
+fn published_revision(result: &Value) -> Option<PublishedRevision> {
+    let revision = result.get("revision")?;
+    serde_json::from_value::<u64>(revision.clone())
+        .ok()
+        .map(PublishedRevision)
+}
+
+fn changes_baseline(state: &AppState, tool: &str, attach_changes: bool) -> Option<ChangeBaseline> {
+    if !attach_changes {
+        return None;
+    }
+    // The project and the revision that describes it come from one lock, so a
+    // later comparison cannot mix a document with another revision.
+    let inner = state.lock_inner();
+    let project = baseline_project(&inner, tool)?.clone();
+    Some(ChangeBaseline {
+        project,
+        revision: inner.revision,
+    })
+}
+
+/// Attach the typed facts between `baseline` and the current document to the
 /// tool result. The loop moves them onto the saved message row, where they are
 /// local-only; the model never reads them.
 fn attach_tool_changes(
     state: &AppState,
-    before: Option<&oc_dsl::ast::Project>,
+    baseline: Option<&ChangeBaseline>,
+    published: Option<PublishedRevision>,
     result: &mut Value,
 ) {
-    let Some(before) = before else {
+    let (Some(baseline), Some(published)) = (baseline, published) else {
         return;
     };
-    let changes = describe_edit(before, &state.lock_inner().project);
+    let inner = state.lock_inner();
+    // A document that moved after the tool reported it is no longer the tool's
+    // result, so its edit would be attributed to the wrong caller. A result
+    // without a typed revision fails closed instead of skipping the check.
+    if inner.revision != published.0 || published.0 < baseline.revision {
+        return;
+    }
+    let changes = describe_edit(&baseline.project, &inner.project);
     if let Some(changes) = changes.and_then(|changes| serde_json::to_value(changes).ok())
         && let Some(object) = result.as_object_mut()
     {
@@ -1350,15 +1392,17 @@ fn dispatch_with_policy(
     args: &Value,
     caller: &str,
     install_policy: InstallPolicy,
+    attach_changes: bool,
 ) -> Result<Value, String> {
     let tool = tool.replace('.', "_");
     let state = state(app);
     guard_mutation(&state, &tool, args, caller)?;
-    let before = tool_before_project(&state, &tool);
+    let baseline = changes_baseline(&state, &tool, attach_changes);
     let acting = crate::edit_history::act_as(crate::edit_history::Author::from_caller(caller));
     let mut result = dispatch_tool(app, &tool, args, caller, install_policy)?;
     drop(acting);
-    attach_tool_changes(&state, before.as_ref(), &mut result);
+    let published = published_revision(&result);
+    attach_tool_changes(&state, baseline.as_ref(), published, &mut result);
     // A call that published a document leaves the project file stale, and the
     // file is the durable record the next process reads. A write that failed is
     // put into the result, so the model does not report a save that did not happen.
@@ -6051,26 +6095,48 @@ providers:
             )
             .unwrap();
         }
+        let baseline = ChangeBaseline {
+            project: before.clone(),
+            revision: 0,
+        };
         let mut changed = json!({"revision": 1});
-        attach_tool_changes(&state, Some(&before), &mut changed);
+        let published = published_revision(&changed);
+        attach_tool_changes(&state, Some(&baseline), published, &mut changed);
         assert_eq!(
             changed["changes"]["changes"],
             json!([{"kind": "tempo", "from": 120.0, "to": 132.0}])
         );
 
+        // A document that moved after the tool answered is not the tool's
+        // edit, so its facts are not attributed to that row.
+        let mut stale = json!({"revision": 0});
+        let published = published_revision(&stale);
+        attach_tool_changes(&state, Some(&baseline), published, &mut stale);
+        assert!(stale.get("changes").is_none(), "{stale}");
+
+        // A result without the typed revision fails closed instead of skipping
+        // the comparison.
+        let mut untyped = json!({});
+        let published = published_revision(&untyped);
+        attach_tool_changes(&state, Some(&baseline), published, &mut untyped);
+        assert!(untyped.get("changes").is_none(), "{untyped}");
+
         let mut read = json!({"tracks": []});
-        attach_tool_changes(&state, None, &mut read);
+        attach_tool_changes(&state, None, None, &mut read);
         assert!(read.get("changes").is_none(), "{read}");
-        assert!(tool_before_project(&state, "tracks_list").is_none());
-        assert!(tool_before_project(&state, "project_set_tempo").is_some());
+        assert!(changes_baseline(&state, "tracks_list", true).is_none());
+        assert!(changes_baseline(&state, "project_set_tempo", true).is_some());
+        // Only the panel path takes the baseline, so an external adapter's
+        // result can never carry the facts.
+        assert!(changes_baseline(&state, "project_set_tempo", false).is_none());
 
         // A batch commit leaves the document as it is; its base is what the
         // commit's typed facts compare against.
         state
             .begin_transaction("turn".into(), crate::state::panel_batch_owner(Some("s1")))
             .unwrap();
-        let base = tool_before_project(&state, "transaction_commit").unwrap();
-        assert_eq!(base.properties.tempo, 132.0);
+        let base = changes_baseline(&state, "transaction_commit", true).unwrap();
+        assert_eq!(base.project.properties.tempo, 132.0);
         state.rollback_transaction().unwrap();
     }
 
