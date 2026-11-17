@@ -83,18 +83,6 @@ impl std::fmt::Display for ProjectError {
 
 impl std::error::Error for ProjectError {}
 
-impl From<String> for ProjectError {
-    fn from(message: String) -> Self {
-        Self::other(message)
-    }
-}
-
-impl From<&str> for ProjectError {
-    fn from(message: &str) -> Self {
-        Self::other(message)
-    }
-}
-
 impl From<ProjectError> for String {
     fn from(error: ProjectError) -> Self {
         error.message().to_owned()
@@ -118,7 +106,7 @@ pub async fn new_project_at(
     template: Option<String>,
     app: tauri::AppHandle,
 ) -> Result<ProjectSnapshot, ProjectError> {
-    let starter = starter_template(template.as_deref())?;
+    let starter = starter_template(template.as_deref()).map_err(ProjectError::other)?;
     create_project(app, Some(PathBuf::from(path)), starter).await
 }
 
@@ -127,8 +115,12 @@ async fn create_project(
     path: Option<PathBuf>,
     starter: bool,
 ) -> Result<ProjectSnapshot, ProjectError> {
-    app.state::<AppState>().ensure_writable()?;
-    app.state::<AppState>().refuse_in_transaction()?;
+    app.state::<AppState>()
+        .ensure_writable()
+        .map_err(ProjectError::other)?;
+    app.state::<AppState>()
+        .refuse_in_transaction()
+        .map_err(ProjectError::other)?;
     let load_epoch = begin_project_load(&app.state::<AppState>());
     let snapshot = create_project_on_main_thread(app.clone(), path, load_epoch, starter).await?;
     // The document is on screen; the graph and the device open behind it.
@@ -171,18 +163,18 @@ pub(crate) fn create_project_in(
     // A New over a path another process holds must leave that file and this
     // document alone, so the lock is taken before the file is claimed.
     let _target_lock = path.as_deref().map(acquire_project_lock).transpose()?;
-    refuse_project_change(inner)?;
+    refuse_project_change(inner).map_err(ProjectError::other)?;
     let mut project = new_project_document(name);
     let text = match path.as_deref() {
         Some(path) => {
             // The file reaches disk before the document changes, so a refused
             // or failed write leaves the open project and its history alone.
-            crate::project_resources::claim_new(path)?;
+            crate::project_resources::claim_new(path).map_err(ProjectError::other)?;
             oc_dsl::instruments::apply_defaults(&mut project);
             let source = oc_dsl::serialize(&project);
             if let Err(error) = crate::project_resources::write_new(path, &source) {
                 let _ = std::fs::remove_file(path);
-                return Err(error.into());
+                return Err(ProjectError::other(error));
             }
             Some(ProjectText {
                 source,
@@ -214,19 +206,22 @@ pub(crate) fn create_starter_project_in(
     path: PathBuf,
 ) -> Result<ProjectSnapshot, ProjectError> {
     let _target_lock = acquire_project_lock(&path)?;
-    refuse_project_change(inner)?;
+    refuse_project_change(inner).map_err(ProjectError::other)?;
     let mut project = oc_dsl::parse(include_str!("starter.ocp"))
-        .map_err(|error| format!("Invalid bundled starter: {error}"))?;
+        .map_err(|error| ProjectError::other(format!("Invalid bundled starter: {error}")))?;
     project.name = path
         .file_stem()
         .map(|name| name.to_string_lossy().into_owned());
     oc_dsl::instruments::apply_defaults(&mut project);
     let source = oc_dsl::serialize(&project);
-    crate::project_resources::claim_new(&path)
-        .map_err(|error| format!("Cannot create starter {error}. Choose a new filename."))?;
+    crate::project_resources::claim_new(&path).map_err(|error| {
+        ProjectError::other(format!(
+            "Cannot create starter {error}. Choose a new filename."
+        ))
+    })?;
     if let Err(error) = crate::project_resources::write_new(&path, &source) {
         let _ = std::fs::remove_file(&path);
-        return Err(format!("Cannot write starter {error}").into());
+        return Err(ProjectError::other(format!("Cannot write starter {error}")));
     }
     let text = Some(ProjectText {
         source,
@@ -250,8 +245,12 @@ pub async fn open_file(
     path: String,
     app: tauri::AppHandle,
 ) -> Result<ProjectSnapshot, ProjectError> {
-    app.state::<AppState>().ensure_writable()?;
-    app.state::<AppState>().refuse_in_transaction()?;
+    app.state::<AppState>()
+        .ensure_writable()
+        .map_err(ProjectError::other)?;
+    app.state::<AppState>()
+        .refuse_in_transaction()
+        .map_err(ProjectError::other)?;
     let load_epoch = begin_project_load(&app.state::<AppState>());
     let started = std::time::Instant::now();
     // Reading, parsing and plugin resolution are all blocking work; the commit
@@ -266,7 +265,8 @@ pub async fn open_file(
         warm_transport_plugins(&project);
         Ok::<_, String>((project, text))
     })
-    .await?;
+    .await
+    .map_err(ProjectError::other)?;
     let parsed = started.elapsed();
     let snapshot = replace_project_on_main_thread(
         app.clone(),
@@ -333,19 +333,16 @@ pub(crate) fn begin_project_load(state: &AppState) -> u64 {
 
 /// Hold request acceptance through the commit: a newer accepted request must
 /// never be overwritten by an older parse or queued main-thread callback.
-fn commit_project_load<T, E>(
+fn commit_project_load<T>(
     gate: &std::sync::Mutex<u64>,
     expected: u64,
-    apply: impl FnOnce() -> Result<T, E>,
-) -> Result<T, E>
-where
-    E: From<String>,
-{
+    apply: impl FnOnce() -> Result<T, ProjectError>,
+) -> Result<T, ProjectError> {
     let current = gate.lock().unwrap_or_else(|e| e.into_inner());
     if *current != expected {
-        return Err("Project load superseded by a newer request"
-            .to_owned()
-            .into());
+        return Err(ProjectError::other(
+            "Project load superseded by a newer request",
+        ));
     }
     apply()
 }
@@ -383,7 +380,8 @@ async fn create_project_on_main_thread(
     save_before_replacement(&app);
     dispatch_replacement(app, load_epoch, move |inner| {
         if starter {
-            let path = path.ok_or("A starter project needs a filename")?;
+            let path =
+                path.ok_or_else(|| ProjectError::other("A starter project needs a filename"))?;
             create_starter_project_in(inner, path)?;
         } else {
             create_project_in(inner, path)?;
@@ -503,7 +501,7 @@ fn replace_project_with(
 ) -> Result<ProjectSnapshot, ProjectError> {
     // A batch's edits exist only in memory until it commits; replacing the
     // document would drop them and leave the agent committing into nothing.
-    refuse_project_change(inner)?;
+    refuse_project_change(inner).map_err(ProjectError::other)?;
     replace_project_unchecked(inner, project, path, preload, text, fresh_history)
 }
 
@@ -523,8 +521,11 @@ fn replace_project_unchecked(
     inner.close_editor_helpers();
     #[cfg(target_os = "macos")]
     for instance in inner.vst3_plugin_instances.values() {
-        if let Some(gui) = crate::state::lock_vst3_preview(instance).try_gui_handle()? {
-            gui.close()?;
+        if let Some(gui) = crate::state::lock_vst3_preview(instance)
+            .try_gui_handle()
+            .map_err(ProjectError::other)?
+        {
+            gui.close().map_err(ProjectError::other)?;
         }
     }
     inner.open_clap_editors.clear();
@@ -706,22 +707,26 @@ pub(crate) fn snapshot_for_save(
 ) -> Result<SaveRequest, ProjectError> {
     let mut inner = state.lock_inner();
     // A preview is not the document: never write either side to disk.
-    inner.refuse_in_preview()?;
+    inner.refuse_in_preview().map_err(ProjectError::other)?;
     // Never persist a half-applied agent batch.
     if inner.transaction.is_some() {
-        return Err("commit or roll back the active transaction before saving".into());
+        return Err(ProjectError::other(
+            "commit or roll back the active transaction before saving",
+        ));
     }
     let save_path = match path {
         Some(p) => PathBuf::from(p),
         None => inner
             .file_path
             .clone()
-            .ok_or_else(|| "No file path specified".to_string())?,
+            .ok_or_else(|| ProjectError::other("No file path specified"))?,
     };
     if has_active_take(&inner)
         && inner.file_path.as_deref().and_then(Path::parent) != save_path.parent()
     {
-        return Err("Stop recording before saving the project in another folder.".into());
+        return Err(ProjectError::other(
+            "Stop recording before saving the project in another folder.",
+        ));
     }
     // Save As reserves its destination before it writes, so a path another
     // process holds leaves both files and this document unchanged.
@@ -844,7 +849,7 @@ pub(crate) fn save_document(
     // The write runs unlocked; the session key is part of the recovery store's
     // identity, so capture it with the snapshot.
     let session = state.lock_inner().session_id.clone();
-    write_save(&mut request)?;
+    write_save(&mut request).map_err(ProjectError::other)?;
     // A clean save makes the recovery copies obsolete, including any written
     // while the project had no path yet.
     if let Err(error) = crate::autosave::clear_saved(
@@ -933,29 +938,30 @@ pub(crate) fn move_project_inner(
 ) -> Result<(ProjectSnapshot, bool), ProjectError> {
     let from = {
         let inner = state.lock_inner();
-        inner.refuse_in_preview()?;
+        inner.refuse_in_preview().map_err(ProjectError::other)?;
         if inner.transaction.is_some() {
-            return Err(
-                "commit or roll back the active transaction before moving the project".into(),
-            );
+            return Err(ProjectError::other(
+                "commit or roll back the active transaction before moving the project",
+            ));
         }
         if has_active_take(&inner) {
-            return Err("Stop recording before moving the project.".into());
+            return Err(ProjectError::other(
+                "Stop recording before moving the project.",
+            ));
         }
         inner
             .file_path
             .clone()
-            .ok_or("Save the project before moving it.")?
+            .ok_or_else(|| ProjectError::other("Save the project before moving it."))?
     };
     if to == from {
         return Ok((snapshot(&state.lock_inner()), false));
     }
     if to.exists() {
-        return Err(format!(
+        return Err(ProjectError::other(format!(
             "{} already exists; choose a name that is free.",
             to.display()
-        )
-        .into());
+        )));
     }
     let backup = crate::project_persist::backup_path(&from);
     let file_sha = crate::project_data::content_sha256(&from);
@@ -966,8 +972,9 @@ pub(crate) fn move_project_inner(
         let pending = {
             let mut inner = state.lock_inner();
             inner.sync_history();
-            std::fs::rename(&from, &to)
-                .map_err(|error| format!("Cannot move the project: {error}"))?;
+            std::fs::rename(&from, &to).map_err(|error| {
+                ProjectError::other(format!("Cannot move the project: {error}"))
+            })?;
             inner.file_path = Some(to.clone());
             inner.project_lock = Some(next_lock);
             let pending = crate::project_data::PendingRelocation {
@@ -993,11 +1000,13 @@ pub(crate) fn move_project_inner(
     };
     if let Err(error) = write_save(&mut request) {
         undo_new_files(&request);
-        return Err(error.into());
+        return Err(ProjectError::other(error));
     }
     let Some(repointed) = publish_save(state, &mut request) else {
         undo_new_files(&request);
-        return Err("The project changed during the move; try again.".into());
+        return Err(ProjectError::other(
+            "The project changed during the move; try again.",
+        ));
     };
     if let Some(pending) = request.pending.take() {
         let report = pending.run();
@@ -2148,9 +2157,13 @@ mod project_load_order_tests {
             let result = commit_project_load(&gate, 1, || {
                 project = old_kind;
                 dirty = old_kind == "recovery";
-                Ok::<(), String>(())
+                Ok::<(), ProjectError>(())
             });
-            assert!(result.unwrap_err().contains("superseded"));
+            let error = result.unwrap_err();
+            assert!(
+                matches!(&error, ProjectError::Project { message } if message.contains("superseded")),
+                "a superseded load is a plain refusal, not a lock conflict: {error:?}"
+            );
             assert_eq!(project, "newest");
             assert!(
                 !dirty,
@@ -2158,7 +2171,7 @@ mod project_load_order_tests {
             );
             commit_project_load(&gate, 2, || {
                 project = "accepted";
-                Ok::<(), String>(())
+                Ok::<(), ProjectError>(())
             })
             .unwrap();
             assert_eq!(project, "accepted");
@@ -2179,12 +2192,12 @@ mod project_load_order_tests {
             });
             ready_rx.recv().unwrap();
             assert!(done_rx.try_recv().is_err());
-            Ok::<_, String>(worker)
+            Ok::<_, ProjectError>(worker)
         })
         .unwrap();
         worker.join().unwrap();
         done_rx.recv().unwrap();
-        assert!(commit_project_load(&gate, 1, || Ok::<(), String>(())).is_err());
-        assert!(commit_project_load(&gate, 2, || Ok::<(), String>(())).is_ok());
+        assert!(commit_project_load(&gate, 1, || Ok::<(), ProjectError>(())).is_err());
+        assert!(commit_project_load(&gate, 2, || Ok::<(), ProjectError>(())).is_ok());
     }
 }
