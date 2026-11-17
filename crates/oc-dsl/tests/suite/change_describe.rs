@@ -509,7 +509,6 @@ fn a_forward_operation_without_an_inverse_partner_does_not_panic() {
         label: "missing inverse".into(),
         changes: vec![PatchOp::RemovePreset("gone".into())],
     };
-    assert!(diff::mutations(&removal, &inverse).is_empty());
     assert!(change::describe(&removal, &inverse, &properties).is_empty());
 }
 

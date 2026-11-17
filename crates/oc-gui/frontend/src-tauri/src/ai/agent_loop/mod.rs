@@ -48,6 +48,8 @@ pub const READ_TOOLCALL: &str = "read_toolcall";
 pub const PLAN_UPDATE: &str = "plan_update";
 /// The panel-local question to the person.
 pub const ASK_USER: &str = "ask_user";
+/// The panel-local subtree edit; it runs through the host, not the registry.
+pub const EDIT_SUBTREE: &str = "edit_subtree";
 
 /// The tools the loop answers itself, without the registry dispatcher.
 #[derive(Clone, Copy)]
@@ -64,7 +66,7 @@ impl LocalTool {
             ASK_USER => Some(Self::AskUser),
             READ_TOOLCALL => Some(Self::ReadToolcall),
             PLAN_UPDATE => Some(Self::PlanUpdate),
-            "edit_subtree" => Some(Self::EditSubtree),
+            EDIT_SUBTREE => Some(Self::EditSubtree),
             _ => None,
         }
     }

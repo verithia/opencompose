@@ -306,16 +306,14 @@ pub fn describe(
 ) -> ChangeSet {
     let mutations = crate::diff::mutations(forward, inverse);
     let clock = clock_from_properties(properties);
-    let context = Context {
-        before_clock: clock.clone(),
-        after_clock: clock,
-    };
+    let context = Context { clock };
     describe_in(&context, &mutations)
 }
 
+/// What every fact in one description shares: the project's current meter,
+/// which places both sides of an edit on the same bar grid.
 struct Context {
-    before_clock: ProjectClock,
-    after_clock: ProjectClock,
+    clock: ProjectClock,
 }
 
 fn default_clock() -> ProjectClock {
@@ -583,15 +581,20 @@ trait Declaration<'a>: Clone + PartialEq {
 
 macro_rules! declaration {
     ($ty:ty, $variant:ident, $rename:ident) => {
+        declaration!($ty, $variant, $rename, |value: &$ty, name: &str| {
+            let mut renamed = value.clone();
+            renamed.name = name.to_owned();
+            renamed
+        });
+    };
+    ($ty:ty, $variant:ident, $rename:ident, $renamed:expr) => {
         impl<'a> Declaration<'a> for $ty {
             fn name(&self) -> &str {
                 &self.name
             }
 
             fn renamed(&self, name: &str) -> Self {
-                let mut renamed = self.clone();
-                renamed.name = name.to_owned();
-                renamed
+                ($renamed)(self, name)
             }
 
             fn rename(&self, after: &Self) -> Change {
@@ -621,45 +624,17 @@ macro_rules! declaration {
 declaration!(PresetDef, Preset, PresetRenamed);
 declaration!(PatternDef, Pattern, PatternRenamed);
 declaration!(Bus, Bus, BusRenamed);
-
-impl<'a> Declaration<'a> for Track {
-    fn name(&self) -> &str {
-        &self.name
-    }
-
-    fn renamed(&self, name: &str) -> Self {
-        let mut renamed = self.clone();
-        let previous = renamed.name.clone();
-        for clip in renamed.clips.audio_clips_mut() {
-            if clip.track == previous {
-                clip.track = name.to_owned();
-            }
-        }
-        renamed.name = name.to_owned();
-        renamed
-    }
-
-    fn rename(&self, after: &Self) -> Change {
-        Change::TrackRenamed {
-            from: self.name.clone(),
-            to: after.name.clone(),
+// A track's audio clips name the track they sit on, so a rename carries them.
+declaration!(Track, Track, TrackRenamed, |track: &Track, name: &str| {
+    let mut renamed = track.clone();
+    for clip in renamed.clips.audio_clips_mut() {
+        if clip.track == track.name {
+            clip.track = name.to_owned();
         }
     }
-
-    fn removed(mutation: &Mutation<'a>) -> Option<&'a Self> {
-        match mutation {
-            Mutation::Subtree(SubtreeChange::Track(Side::Removed(value))) => Some(value),
-            _ => None,
-        }
-    }
-
-    fn added(mutation: &Mutation<'a>) -> Option<&'a Self> {
-        match mutation {
-            Mutation::Subtree(SubtreeChange::Track(Side::Added(value))) => Some(value),
-            _ => None,
-        }
-    }
-}
+    renamed.name = name.to_owned();
+    renamed
+});
 
 type DeclarationGap<'a> = (Option<&'a str>, Option<&'a str>);
 
@@ -1266,8 +1241,8 @@ fn describe_track(
         out,
     );
 
-    let before_notes = collect_notes(before, &context.before_clock);
-    let after_notes = collect_notes(after, &context.after_clock);
+    let before_notes = collect_notes(before, &context.clock);
+    let after_notes = collect_notes(after, &context.clock);
     let notes_fact = notes_edited(&after.name, &before_notes, &after_notes);
     let notes_changed = notes_fact.is_some();
     if let Some(fact) = notes_fact {
@@ -1589,10 +1564,10 @@ fn describe_clips(context: &Context, before: &Track, after: &Track, out: &mut Ve
             continue;
         }
         if let Some(clip) = previous {
-            span.add_range(range_quarters(&context.before_clock, &clip.time_range));
+            span.add_range(range_quarters(&context.clock, &clip.time_range));
         }
         if let Some(clip) = current {
-            span.add_range(range_quarters(&context.after_clock, &clip.time_range));
+            span.add_range(range_quarters(&context.clock, &clip.time_range));
         }
     }
     out.push(Change::ClipsEdited {
@@ -1617,8 +1592,7 @@ fn describe_track_automation(
         &after_lanes,
         &before.gain_automation,
         &after.gain_automation,
-        &context.before_clock,
-        &context.after_clock,
+        &context.clock,
     );
     out.push(Change::AutomationEdited {
         owner: Owner::Track {
@@ -1633,8 +1607,7 @@ fn automation_span(
     after_lanes: &[&AutomationLane],
     before_gain: &[GainAutomation],
     after_gain: &[GainAutomation],
-    before_clock: &ProjectClock,
-    after_clock: &ProjectClock,
+    clock: &ProjectClock,
 ) -> Option<BeatSpan> {
     let mut span = SpanAccumulator::default();
     let count = before_lanes.len().max(after_lanes.len());
@@ -1645,10 +1618,10 @@ fn automation_span(
             continue;
         }
         if let Some(lane) = previous {
-            span.add_range(lane_extent(lane, before_clock));
+            span.add_range(lane_extent(lane, clock));
         }
         if let Some(lane) = current {
-            span.add_range(lane_extent(lane, after_clock));
+            span.add_range(lane_extent(lane, clock));
         }
     }
     let count = before_gain.len().max(after_gain.len());
@@ -1659,10 +1632,10 @@ fn automation_span(
             continue;
         }
         if let Some(clip) = previous {
-            span.add_range(range_quarters(before_clock, &clip.time_range));
+            span.add_range(range_quarters(clock, &clip.time_range));
         }
         if let Some(clip) = current {
-            span.add_range(range_quarters(after_clock, &clip.time_range));
+            span.add_range(range_quarters(clock, &clip.time_range));
         }
     }
     span.finish()
@@ -1755,8 +1728,7 @@ fn describe_bus(
             &after_lanes,
             &before.gain_automation,
             &after.gain_automation,
-            &context.before_clock,
-            &context.after_clock,
+            &context.clock,
         );
         out.push(Change::AutomationEdited {
             owner: Owner::Bus {
@@ -1803,8 +1775,7 @@ fn describe_master(
             &after_lanes,
             &before.gain_automation,
             &after.gain_automation,
-            &context.before_clock,
-            &context.after_clock,
+            &context.clock,
         );
         out.push(Change::AutomationEdited {
             owner: Owner::Master,
@@ -1833,10 +1804,10 @@ fn describe_sections(
     }
     let mut span = SpanAccumulator::default();
     for section in unmatched_sections(before, after) {
-        span.add_range(range_quarters(&context.before_clock, &section.time_range));
+        span.add_range(range_quarters(&context.clock, &section.time_range));
     }
     for section in unmatched_sections(after, before) {
-        span.add_range(range_quarters(&context.after_clock, &section.time_range));
+        span.add_range(range_quarters(&context.clock, &section.time_range));
     }
     out.push(Change::SectionsEdited {
         span: span.finish(),
@@ -1953,10 +1924,10 @@ fn describe_audio_clips(
         }
         let mut span = SpanAccumulator::default();
         if let Some(clip) = previous {
-            span.add_range(range_quarters(&context.before_clock, &clip.time_range));
+            span.add_range(range_quarters(&context.clock, &clip.time_range));
         }
         if let Some(clip) = current {
-            span.add_range(range_quarters(&context.after_clock, &clip.time_range));
+            span.add_range(range_quarters(&context.clock, &clip.time_range));
         }
         out.push(Change::AudioClipsEdited {
             track: current.or(previous).map(|clip| clip.track.clone()),
