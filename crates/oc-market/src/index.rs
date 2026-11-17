@@ -247,7 +247,9 @@ mod tests {
     fn the_committed_plugin_index_verifies_against_the_release_keys() {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugin-index");
         let read = |name: &str| std::fs::read(dir.join(name)).unwrap();
-        let keys = configured_keys().unwrap().expect("release keys are configured");
+        let keys = configured_keys()
+            .unwrap()
+            .expect("release keys are configured");
         let manifest = read(MANIFEST_FILE);
         let signature = read(SIGNATURE_FILE);
         let declared = authenticate(&manifest, &signature, &keys).unwrap();
