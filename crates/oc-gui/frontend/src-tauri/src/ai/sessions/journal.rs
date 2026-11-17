@@ -191,6 +191,7 @@ impl AppendOutcome {
 /// Appends records as lines, keeping the file under [`MAX_SESSION_BYTES`]. An
 /// append that would exceed the cap first replaces the conversation with a
 /// `trim` record that states what it dropped.
+#[cfg(test)]
 pub(super) fn append_records(dir: &Path, records: &[Record]) -> Result<AppendOutcome, String> {
     append_records_under(dir, records, MAX_SESSION_BYTES)
 }

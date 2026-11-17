@@ -74,9 +74,11 @@ pub use audition_archive::{
     bound_media_replay,
 };
 use journal::{
-    Dropped, Record, RecordKind, VERSION, append_records, append_records_under, compaction_indices,
-    read_current, read_meta, read_records, read_view, write_meta, write_records,
+    AppendOutcome, Dropped, Record, RecordKind, VERSION, compaction_indices, read_current, read_meta,
+    read_records, read_view, write_meta, write_records,
 };
+#[cfg(test)]
+use journal::{append_records, append_records_under};
 pub use journal::{read_meta_for_storage, read_original};
 use row::{
     CONTEXT_AUDITION, CONTEXT_SUMMARY, MAX_PROJECT_PATH, canonical_media, canonicalize_media,
@@ -768,6 +770,12 @@ impl Store {
         Ok(lock)
     }
 
+    /// Appends records to a conversation under this store's byte cap. Every
+    /// write of a turn, compaction or trim goes through here.
+    fn append(&self, dir: &Path, records: &[Record]) -> Result<AppendOutcome, String> {
+        append_records_under(dir, records, self.session_cap)
+    }
+
     fn ensure_root(&self) -> Result<(), String> {
         private_fs::ensure_dir(&self.root).map_err(|error| format!("sessions: {error}"))
     }
@@ -1236,9 +1244,9 @@ impl Store {
             return Ok(meta);
         }
         let row = session_state::state_row(&state);
-        let _ = append_records(&dir, &[turn_record(&now(), vec![row])])?;
+        let written = self.append(&dir, &[turn_record(&now(), vec![row])])?;
         let (view, _) = read_view(&dir)?;
-        meta.tokens = estimate_tokens(&view);
+        meta.tokens = written.kept_tokens(&view);
         write_meta(&dir, &meta)?;
         Ok(meta)
     }
@@ -1799,10 +1807,11 @@ impl Store {
             .iter()
             .any(|message| message.get("input_audio").is_some());
         let closed_round = !closed.is_empty();
+        let mut written = None;
         if appended > 0 || closed_round || notice_added {
             let mut added = closed;
             added.extend_from_slice(&pending[start..]);
-            let _ = append_records(&dir, &[turn_record(&now(), added)])?;
+            written = Some(self.append(&dir, &[turn_record(&now(), added)])?);
         }
         if closed_round {
             // The round is answered on disk, so its started markers are spent.
@@ -1851,7 +1860,10 @@ impl Store {
         {
             meta.provider = provider.to_owned();
             meta.model = model.to_owned();
-            meta.tokens = estimate_tokens(&view);
+            meta.tokens = written.map_or_else(
+                || estimate_tokens(&view),
+                |outcome| outcome.kept_tokens(&view),
+            );
             if appended > 0 {
                 meta.turns += 1;
             }
@@ -1901,11 +1913,7 @@ impl Store {
         let appended = if let Some(message) = saved_message(reply)
             && view.last() != Some(&message)
         {
-            let appended = append_records_under(
-                &dir,
-                &[turn_record(&now(), vec![message.clone()])],
-                self.session_cap,
-            )?;
+            let appended = self.append(&dir, &[turn_record(&now(), vec![message.clone()])])?;
             view.push(message);
             Some(appended)
         } else {
@@ -1990,14 +1998,14 @@ impl Store {
         };
         // Append, never rewrite: the turns this summary replaces stay on disk so
         // the user can still read them (the panel's original view).
-        let _ = append_records(&dir, &[record])?;
+        let written = self.append(&dir, &[record])?;
         // The record is the compaction; the metadata only caches what the
         // records already say (the token estimate is recomputed on the next
         // write). Once the record landed the compaction happened, so a cache
         // write failure is reported in the log rather than as a failure the
         // caller would take to mean nothing changed.
         meta.compacted_at = Some(at);
-        meta.tokens = outcome.tokens_after;
+        meta.tokens = written.kept_tokens(&outcome.messages);
         meta.updated = now();
         if let Err(error) = write_meta(&dir, &meta) {
             log::warn!("[ai] session {id} compacted, but its metadata was not updated: {error}");
@@ -2054,9 +2062,9 @@ impl Store {
             truncated: None,
             messages: outcome.messages.clone(),
         };
-        let _ = append_records(&dir, &[record])?;
+        let written = self.append(&dir, &[record])?;
         meta.compacted_at = Some(outcome.compacted_at.clone());
-        meta.tokens = outcome.tokens_after;
+        meta.tokens = written.kept_tokens(&outcome.messages);
         meta.updated = now();
         if let Err(error) = write_meta(&dir, &meta) {
             log::warn!(

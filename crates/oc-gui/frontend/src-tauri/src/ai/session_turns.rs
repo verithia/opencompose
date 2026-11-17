@@ -18,7 +18,7 @@
 
 use super::message_protocol::{self, MessageKind, MessageMeta};
 use super::{
-    Store, VERSION, append_records, append_records_under, now, read_view, saved_message, write_meta,
+    Store, VERSION, now, read_view, saved_message, write_meta,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -496,7 +496,7 @@ impl Store {
         }
         let record = super::turn_record(&now(), added);
         let saved = record.messages.clone();
-        let appended = append_records_under(&dir, &[record], self.session_cap)?;
+        let appended = self.append(&dir, &[record])?;
         // The round is saved, so the append succeeded whatever happens to the
         // markers. A marker that outlives its call only makes that call read
         // as "outcome unknown" if it is ever left open, the cautious side.
@@ -552,9 +552,9 @@ impl Store {
         let closed = close_open_typed(&view, &started);
         if !closed.is_empty() {
             let messages = closed.iter().map(|closed| closed.message.clone()).collect();
-            let _ = append_records(dir, &[super::turn_record(&now(), messages)])?;
+            let appended = self.append(dir, &[super::turn_record(&now(), messages)])?;
             let (view, _) = read_view(dir)?;
-            meta.tokens = super::estimate_tokens(&view);
+            meta.tokens = appended.kept_tokens(&view);
             meta.updated = now();
             write_meta(dir, meta)?;
         }
@@ -600,12 +600,12 @@ impl Store {
             truncated: None,
             messages: kept.clone(),
         };
-        let _ = append_records(&dir, &[record])?;
+        let appended = self.append(&dir, &[record])?;
         // The saved record is the commit point: the cut happened even when the
         // marker or the metadata cannot follow it, and both are derived state
         // a reload rebuilds from the record.
         spend_started(&dir, &HashSet::new());
-        meta.tokens = super::estimate_tokens(&kept);
+        meta.tokens = appended.kept_tokens(&kept);
         meta.updated = now();
         if let Err(error) = write_meta(&dir, &meta) {
             log::warn!(
