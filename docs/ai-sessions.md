@@ -112,14 +112,22 @@ conversation is bound to one **project file**, recorded as `project_path` in
 turn while another `.ocp` is open. The panel keeps the two in step: opening
 another file rebinds the open conversation to it, and a conversation opened from
 the list rebinds to the open file when the person sends. Either rebind is saved
-as a typed notice the model reads with the next message. An unbound
-conversation binds to the open project on its first turn without a notice.
+as a typed notice the model reads with the next message. A conversation that is
+running a turn keeps the binding it started with: the backend refuses a rebind
+until the turn ends, the loop checks the binding and opens the turn's batch
+under one project lock, and the panel waits for the turn before following a file
+opened meanwhile. An unbound conversation binds to the open project on its first
+turn without a notice. A fork made while another file is open starts on that
+file and owes the model a chosen-binding notice naming the parent's file; when
+the parent still owes an unsent binding, the fork names the parent's original
+path instead.
 
 **Move project** rebinds every conversation that names the old file and records
-a moved notice for the model to read on the next turn. **Save As** leaves
-conversations on the original file: the copy is a new file with no conversations
-of its own. A headless caller never rebinds a conversation; it starts a new one
-for another project.
+a moved notice for the model to read on the next turn. A move keeps the first
+unsent pending binding, as an explicit rebind does, so the notice names the path
+the model last saw. **Save As** leaves conversations on the original file: the
+copy is a new file with no conversations of its own. A headless caller never
+rebinds a conversation; it starts a new one for another project.
 
 The **workspace key** is the first eight bytes of the SHA-256 of the canonical
 directory path, as hex. It is stable, opaque, and does not leak the path.
@@ -407,10 +415,16 @@ There is no save action. Every model turn writes to the store:
    `project_bound` notice immediately before that turn's message. When the
    conversation carries a `history_mark` and its bound project changed since
    then, one typed `outside_changes` notice follows it with the entries other
-   authors made, the steps undo moved back, and any rewrite of the history. A
-   turn whose tools or permission differ from the saved `tool_surface`
-   contributes one typed `tool_surface` notice after those and records the new
-   surface.
+   authors made, the steps undo moved back, the conversation's own edits a
+   person undid or replaced, and whether the history was rewritten or only
+   pruned by cleanup. Preparation then saves the mark at the turn's start for
+   every caller, in the same write, so a later turn does not repeat the same
+   notice. A turn whose tools or permission differ from the saved
+   `tool_surface` contributes one typed `tool_surface` notice after those and
+   records the new surface. A person's edit during an open agent batch keeps
+   its own author, scope and timestamp when the batch commits: the turn's own
+   edits become one entry for each run between them. The next turn therefore
+   reports the person's edit among the outside changes.
 2. The assistant message the provider returned is appended, so an answer is
    saved even if the panel closes before the next turn.
 3. When the estimate says the conversation no longer fits, it is compacted

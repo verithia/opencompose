@@ -64,8 +64,10 @@ from a transcript write failure.
 A binding that names a conversation or project this host does not have open,
 or a conversation bound to another project file, answers 409 with `kind`
 `session_binding`, before any provider call. The refusal carries a typed
-`detail` with `kind` `binding_mismatch` and both canonical paths. A local
-conversation-store failure answers 500 with `kind` `session_save`.
+`detail` with `kind` `binding_mismatch` and both canonical paths. A `/call`
+envelope with the same wrong binding answers that same 409 typed envelope
+instead of dispatching the tool. A local conversation-store failure answers 500
+with `kind` `session_save`.
 
 A conversation's project binding is durable conversation state, not a field
 each request may choose. An unbound conversation binds to the open project on
@@ -74,16 +76,25 @@ conversation bound to another file), and a project move, record a pending
 binding; the next admitted turn writes one typed `project_bound` host
 notice before the person's message, telling the model which file edits apply
 to. A fold or a compaction keeps the newest binding notice, so the model never
-interprets later paths against a file the conversation left.
+interprets later paths against a file the conversation left. A conversation that
+is running a turn keeps the binding it started with: a rebind is refused until
+the turn ends, and the loop checks that the open project is still the bound file
+while holding the same project lock it opens the turn's batch under. A file
+opened in that gap therefore receives no batch, and no edits authored as that
+conversation.
 
 After its first turn, a conversation also reads what changed in its bound
-project since its previous turn ended. The next admitted turn compares the
-project's edit-history cursor with the saved mark and writes one typed
-`outside_changes` host notice before the person's message. The notice names the
-entries other authors made, newest first and at most eight, how many more exist,
-how many steps undo moved back, and whether the history was rewritten so earlier
-entries are gone. It is model context, so a fold may drop it and the transcript
-does not show it. The notice is skipped on the first turn and when a
+project since its previous turn started. Preparation saves the conversation's
+mark on every turn path (the panel, `ai_chat` and `/ai/complete`), in the same
+store write as the notices, so consecutive headless turns do not repeat an old
+notice. The next admitted turn compares the project's edit-history cursor with
+the saved mark and writes one typed `outside_changes` host notice before the
+person's message. The notice names the entries other authors made, newest first
+and at most eight, how many more exist, how many steps undo moved back, how many
+of the conversation's own edits a person undid or replaced, and whether the
+history was rewritten so earlier entries are gone, or only pruned by history
+cleanup. It is model context, so a fold may drop it and the transcript does not
+show it. The notice is skipped on the first turn and when a
 `project_bound` notice already explains a file boundary.
 
 Before each turn, the backend compares the tools the turn offers and the
