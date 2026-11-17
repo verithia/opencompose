@@ -58,8 +58,14 @@ pub mod turns;
 pub(crate) mod versions;
 #[path = "../session_view.rs"]
 mod view;
+mod journal;
 mod row;
 mod tokens;
+use journal::{
+    Dropped, Record, RecordKind, VERSION, append_records, append_records_under, compaction_indices,
+    read_current, read_meta, read_records, read_view, write_meta, write_records,
+};
+pub use journal::{read_meta_for_storage, read_original};
 use row::{
     CONTEXT_AUDITION, CONTEXT_SUMMARY, MAX_PROJECT_PATH, canonical_media, canonicalize_media,
     mark_missing_media, plain_message, saved_message, same_turn, strips_replay_state,
@@ -78,7 +84,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
-use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -140,8 +145,6 @@ pub const MAX_TITLE_CHARS: usize = 80;
 const MAX_SUMMARY_RESULT_CHARS: usize = 200;
 const MAX_SUMMARY_ITEM_CHARS: usize = 160;
 const MAX_INTENT_CHARS: usize = 600;
-
-const VERSION: u32 = 1;
 
 static TEST_ROOT: Mutex<Option<PathBuf>> = Mutex::new(None);
 #[cfg(test)]
@@ -266,40 +269,6 @@ struct WorkspaceRecord {
     paths: Vec<String>,
     created: String,
     updated: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-enum RecordKind {
-    /// Messages appended for one model turn.
-    Turn,
-    /// Replaces the whole conversation with a summary.
-    Compaction,
-    /// Replaces the whole conversation with the newest messages that fit.
-    Trim,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-struct Dropped {
-    from: usize,
-    to: usize,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-struct Record {
-    v: u32,
-    kind: RecordKind,
-    at: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    dropped: Option<Dropped>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    tokens_before: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    tokens_after: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    truncated: Option<bool>,
-    #[serde(default)]
-    messages: Vec<Value>,
 }
 
 /// What the project looked like when a summary was written: the alternate to
@@ -3879,104 +3848,7 @@ pub fn is_compaction_summary(message: &Value) -> bool {
 
 // ---- file I/O -----------------------------------------------------------
 
-fn read_meta(path: &Path) -> Option<SessionMeta> {
-    lookup::read_meta(path).ok().flatten()
-}
-
-fn write_meta(dir: &Path, meta: &SessionMeta) -> Result<(), String> {
-    let bytes = serde_json::to_vec_pretty(meta).map_err(|error| error.to_string())?;
-    private_fs::write_atomic(&dir.join(META_FILE), &bytes)
-        .map_err(|error| format!("sessions: {error}"))
-}
-
-/// The conversation the records add up to, plus how many lines were unreadable.
-/// Every turn the file ever recorded, with the compaction records ignored.
-/// `read_view` is the conversation the model gets; this is the history the user
-/// wrote, so a compacted session can still be inspected in full.
-pub fn read_original(dir: &Path) -> Result<(Vec<Value>, u64, u64), String> {
-    let path = dir.join(MESSAGES_FILE);
-    let file = match std::fs::File::open(&path) {
-        Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok((Vec::new(), 0, 0));
-        }
-        Err(error) => return Err(format!("sessions: {error}")),
-    };
-    let mut messages = Vec::new();
-    let mut compactions = 0;
-    let mut skipped = 0;
-    for line in std::io::BufReader::new(file).lines() {
-        let line = line.map_err(|error| format!("sessions: {error}"))?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        match serde_json::from_str::<Record>(&line) {
-            Ok(record) => match record.kind {
-                RecordKind::Turn => messages.extend(record.messages),
-                RecordKind::Compaction => compactions += 1,
-                RecordKind::Trim => {}
-            },
-            Err(_) => skipped += 1,
-        }
-    }
-    canonicalize_media(&mut messages);
-    message_protocol::migrate(&mut messages);
-    artifacts::repair(&mut messages);
-    Ok((messages, compactions, skipped))
-}
-
-/// The metadata of one session directory, for callers that only need its name
-/// and size. `None` when the directory is not a session this build can read.
-pub fn read_meta_for_storage(dir: &Path) -> Option<SessionMeta> {
-    read_meta(&dir.join(META_FILE))
-}
-
-fn read_view(dir: &Path) -> Result<(Vec<Value>, u64), String> {
-    read_current(dir).map(|current| (current.messages, current.skipped))
-}
-
-/// The repaired view with what the read learned about the file.
-fn read_current(dir: &Path) -> Result<view::Tail, String> {
-    let mut current = view::read_tail(dir)?;
-    let view = &mut current.messages;
-    canonicalize_media(view);
-    message_protocol::migrate(view);
-    artifacts::repair(view);
-    turns::repair_pairing(view);
-    Ok(current)
-}
-
-/// Every record in order. Unlike [`read_view`] this keeps the compaction and
-/// trim records, so a rewrite can decide what to keep.
-fn read_records(dir: &Path) -> Result<Vec<Record>, String> {
-    let path = dir.join(MESSAGES_FILE);
-    let file = match std::fs::File::open(&path) {
-        Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => return Err(format!("sessions: {error}")),
-    };
-    let mut records = Vec::new();
-    for line in std::io::BufReader::new(file).lines() {
-        let line = line.map_err(|error| format!("sessions: {error}"))?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        if let Ok(record) = serde_json::from_str::<Record>(&line) {
-            records.push(record);
-        }
-    }
-    Ok(records)
-}
-
-/// The record indices of every compaction, oldest first.
-fn compaction_indices(records: &[Record]) -> Vec<usize> {
-    records
-        .iter()
-        .enumerate()
-        .filter(|(_, record)| record.kind == RecordKind::Compaction)
-        .map(|(index, _)| index)
-        .collect()
-}
+// ---- helpers ------------------------------------------------------------
 
 /// Total bytes of the files under a directory, for a before/after report.
 fn root_size(root: &Path) -> u64 {
@@ -3994,170 +3866,6 @@ fn root_size(root: &Path) -> u64 {
     }
     total
 }
-
-fn write_records(dir: &Path, records: &[Record]) -> Result<(), String> {
-    // The index points into the file this replaces; without it the next read
-    // scans the new file and indexes it.
-    view::forget(dir)?;
-    let mut bytes = Vec::new();
-    for record in records {
-        bytes.extend(
-            serde_json::to_vec(record)
-                .map_err(|error| format!("sessions: {error}"))?
-                .as_slice(),
-        );
-        bytes.push(b'\n');
-    }
-    private_fs::write_atomic(&dir.join(MESSAGES_FILE), &bytes)
-        .map_err(|error| format!("sessions: {error}"))
-}
-
-/// What an append did to the saved view.
-#[must_use = "count the tokens of the view the append left"]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AppendOutcome {
-    /// The records joined the existing view.
-    Appended,
-    /// The cap replaced the view with its newest rows; the caller counts these.
-    Trimmed { tokens_after: u64 },
-}
-
-impl AppendOutcome {
-    /// The token count of the view the append left, from the caller's view
-    /// after it added the same records.
-    fn kept_tokens(self, view: &[Value]) -> u64 {
-        match self {
-            Self::Appended => estimate_tokens(view),
-            Self::Trimmed { tokens_after } => tokens_after,
-        }
-    }
-}
-
-/// Appends records as lines, keeping the file under [`MAX_SESSION_BYTES`]. An
-/// append that would exceed the cap first replaces the conversation with a
-/// `trim` record that states what it dropped.
-fn append_records(dir: &Path, records: &[Record]) -> Result<AppendOutcome, String> {
-    append_records_under(dir, records, MAX_SESSION_BYTES)
-}
-
-/// The cap is a parameter so the trimming path is testable without writing a
-/// gigabyte.
-fn append_records_under(dir: &Path, records: &[Record], cap: u64) -> Result<AppendOutcome, String> {
-    let path = dir.join(MESSAGES_FILE);
-    let mut bytes = Vec::new();
-    for record in records {
-        bytes.extend(
-            serde_json::to_vec(record)
-                .map_err(|error| format!("sessions: {error}"))?
-                .as_slice(),
-        );
-        bytes.push(b'\n');
-    }
-    let current = std::fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0);
-    if current + bytes.len() as u64 <= cap {
-        private_fs::append_private(&path, &bytes).map_err(|error| format!("sessions: {error}"))?;
-        return Ok(AppendOutcome::Appended);
-    }
-    let (mut view, _) = read_view(dir)?;
-    for record in records {
-        match record.kind {
-            RecordKind::Turn => view.extend(record.messages.clone()),
-            RecordKind::Compaction | RecordKind::Trim => view = record.messages.clone(),
-        }
-    }
-    let kept = newest_that_fit(&view, cap / 2);
-    if kept.is_empty() {
-        return Err("This turn is larger than a session may hold.".into());
-    }
-    let mut note = json!({
-        "role": "user",
-        "content": format!(
-            "Earlier messages of this session were dropped to keep it under {} bytes. \
-             Messages {}..{} are gone; the conversation resumes below.",
-            cap,
-            view.len() - kept.len(),
-            view.len()
-        )
-    });
-    message_protocol::tag(&mut note, MessageMeta::new(MessageKind::HostNotice));
-    let mut messages = vec![note];
-    messages.extend(kept);
-    let tokens_after = estimate_tokens(&messages);
-    let trim = Record {
-        v: VERSION,
-        kind: RecordKind::Trim,
-        at: now(),
-        dropped: Some(Dropped {
-            from: 0,
-            to: view.len() - messages.len() + 1,
-        }),
-        tokens_before: Some(estimate_tokens(&view)),
-        tokens_after: Some(tokens_after),
-        truncated: Some(true),
-        messages,
-    };
-    write_records(dir, &[trim])?;
-    // The rows the trim dropped were the only owners of their results.
-    tool_results::collect(dir);
-    Ok(AppendOutcome::Trimmed { tokens_after })
-}
-
-/// The newest messages of a conversation that fit in `budget` bytes, in order.
-/// The latest compaction summary leads them when the cut fell after it: it
-/// holds the standing intent and the decisions the dropped turns made.
-fn newest_that_fit(view: &[Value], budget: u64) -> Vec<Value> {
-    let size_of = |message: &Value| {
-        serde_json::to_vec(message)
-            .map(|bytes| bytes.len())
-            .unwrap_or(0) as u64
-            + 1
-    };
-    let summary = view.iter().rposition(is_compaction_summary);
-    let pinned = newest_pinned_rows(view);
-    let reserved = summary.map_or(0, |index| size_of(&view[index]))
-        + pinned.iter().map(|(_, row)| size_of(row)).sum::<u64>();
-    let mut kept: Vec<Value> = Vec::new();
-    let mut used = 0u64;
-    for message in view.iter().rev() {
-        let size = size_of(message);
-        if used + size + reserved > budget && !kept.is_empty() {
-            break;
-        }
-        used += size;
-        kept.push(message.clone());
-    }
-    kept.reverse();
-    // A cut inside a round can keep results whose call fell off the front;
-    // dropping them keeps the conversation one every later append accepts.
-    while !kept.is_empty() && turns::check_pairing(&kept).is_err() {
-        kept.remove(0);
-    }
-    // The summary and the pinned notices are user rows, so they open no call
-    // and answer none: in front of a well-paired tail the conversation stays
-    // well paired.
-    let dropped = view.len() - kept.len();
-    if !kept.is_empty() {
-        let mut front = Vec::new();
-        if let Some(index) = summary
-            && dropped > index
-        {
-            front.push(view[index].clone());
-        }
-        front.extend(
-            pinned
-                .into_iter()
-                .filter(|(index, _)| dropped > *index)
-                .map(|(_, row)| row),
-        );
-        if !front.is_empty() {
-            front.extend(kept);
-            return front;
-        }
-    }
-    kept
-}
-
-// ---- helpers ------------------------------------------------------------
 
 /// The timestamp form every store records, so one file's times compare with
 /// another's.
