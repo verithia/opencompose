@@ -219,6 +219,10 @@ pub struct Journal {
     applied: usize,
     head: Option<String>,
     entries_len: u64,
+    /// Test-only switch: make the index write fail, which the filesystem
+    /// cannot provoke on demand cross-platform.
+    #[cfg(test)]
+    fail_index_write: bool,
 }
 
 impl Journal {
@@ -274,6 +278,8 @@ impl Journal {
             rows,
             head,
             entries_len,
+            #[cfg(test)]
+            fail_index_write: false,
         })
     }
 
@@ -365,17 +371,40 @@ impl Journal {
         if file.metadata()?.len() != self.entries_len {
             return Err(io::Error::other("history entries changed outside this app"));
         }
-        file.write_all(&lines)?;
-        file.sync_data()?;
-        let mut index = open_append_private(&self.dir.join(INDEX))?;
+        if let Err(error) = file.write_all(&lines).and_then(|()| file.sync_data()) {
+            truncate_entries(&mut file, self.entries_len);
+            return Err(error);
+        }
+        let mut index = match open_append_private(&self.dir.join(INDEX)) {
+            Ok(index) => index,
+            Err(error) => {
+                truncate_entries(&mut file, self.entries_len);
+                return Err(error);
+            }
+        };
         let mut bytes = Vec::with_capacity(rows.len() * ROW);
         for row in &rows {
             bytes.extend_from_slice(&row.id.to_le_bytes());
             bytes.extend_from_slice(&row.offset.to_le_bytes());
             bytes.extend_from_slice(&row.len.to_le_bytes());
         }
-        index.write_all(&bytes)?;
-        index.sync_data()?;
+        #[cfg(test)]
+        let write = if self.fail_index_write {
+            self.fail_index_write = false;
+            Err(io::Error::other("test build: index write failed"))
+        } else {
+            index.write_all(&bytes).and_then(|()| index.sync_data())
+        };
+        #[cfg(not(test))]
+        let write = index.write_all(&bytes).and_then(|()| index.sync_data());
+        if let Err(error) = write {
+            // The entries write above is only reachable through its index row.
+            // Rewinding both files keeps the next append's length check honest.
+            let _ = index.set_len((self.rows.len() * ROW) as u64);
+            let _ = index.sync_data();
+            truncate_entries(&mut file, self.entries_len);
+            return Err(error);
+        }
         self.entries_len += lines.len() as u64;
         self.rows.extend(rows);
         Ok(())
@@ -397,6 +426,12 @@ impl Journal {
         self.applied = applied;
         self.head = Some(head.to_owned());
         Ok(())
+    }
+
+    /// Make the next index write fail, for the rollback test.
+    #[cfg(test)]
+    pub(crate) fn fail_next_index_write(&mut self) {
+        self.fail_index_write = true;
     }
 
     /// Bytes the history directory occupies.
@@ -422,6 +457,8 @@ impl Journal {
             applied: 0,
             head: None,
             entries_len: 0,
+            #[cfg(test)]
+            fail_index_write: false,
         };
         let built = (|| {
             const PAGE: usize = 64;
@@ -472,6 +509,13 @@ fn sibling(dir: &Path, tag: &str) -> PathBuf {
     let mut name = dir.as_os_str().to_owned();
     name.push(format!(".{tag}"));
     PathBuf::from(name)
+}
+
+/// Cut the entries file back to `len`, so a failed append leaves the length the
+/// next append expects.
+fn truncate_entries(file: &mut File, len: u64) {
+    let _ = file.set_len(len);
+    let _ = file.sync_data();
 }
 
 fn truncate_index(dir: &Path, rows: usize) -> io::Result<()> {

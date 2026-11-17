@@ -74,6 +74,48 @@ fn journal_appends_truncates_and_reopens_with_its_cursor_and_head() {
 }
 
 #[test]
+fn a_failed_index_write_rewinds_the_entries_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = project_file(dir.path());
+    let mut journal = Journal::open(&path).unwrap();
+    journal.append(&[entry(1)]).unwrap();
+    let entries = journal::dir_for(&path).join("entries.jsonl");
+    let before = std::fs::metadata(&entries).unwrap().len();
+    // The index cannot be opened, so the append fails after writing its lines.
+    let index = journal::dir_for(&path).join("index.bin");
+    std::fs::remove_file(&index).unwrap();
+    std::fs::create_dir(&index).unwrap();
+    assert!(journal.append(&[entry(2)]).is_err());
+    assert_eq!(
+        std::fs::metadata(&entries).unwrap().len(),
+        before,
+        "the entries file kept its length"
+    );
+    // The rewind leaves the journal ready for the next append.
+    std::fs::remove_dir(&index).unwrap();
+    journal.append(&[entry(2)]).unwrap();
+    assert_eq!(journal.len(), 2);
+}
+
+#[test]
+fn a_failed_index_write_rewinds_the_index_and_the_entries() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = project_file(dir.path());
+    let mut journal = Journal::open(&path).unwrap();
+    journal.append(&[entry(1)]).unwrap();
+    let entries = journal::dir_for(&path).join("entries.jsonl");
+    let index = journal::dir_for(&path).join("index.bin");
+    let entries_before = std::fs::metadata(&entries).unwrap().len();
+    let index_before = std::fs::metadata(&index).unwrap().len();
+    journal.fail_next_index_write();
+    assert!(journal.append(&[entry(2)]).is_err());
+    assert_eq!(std::fs::metadata(&entries).unwrap().len(), entries_before);
+    assert_eq!(std::fs::metadata(&index).unwrap().len(), index_before);
+    journal.append(&[entry(2)]).unwrap();
+    assert_eq!(journal.len(), 2);
+}
+
+#[test]
 fn a_torn_index_tail_is_dropped_on_open() {
     let dir = tempfile::tempdir().unwrap();
     let path = project_file(dir.path());
