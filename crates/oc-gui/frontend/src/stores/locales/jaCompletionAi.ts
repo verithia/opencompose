@@ -102,7 +102,6 @@ export const jaCompletionAi = {
   "ai.recall.messageHint": "このメッセージ以降を会話から削除します。",
   "ai.recall.andUndoEdits": "メッセージを呼び戻して編集を元に戻す",
   "ai.recall.andUndoEditsHint": "プロジェクトの履歴もこのメッセージの位置まで戻します。やり直しで編集を復元できます。",
-  "ai.recall.noPosition": "このメッセージには戻せる履歴位置が記録されていません。",
   "ai.recall.unsaved": "この行は保存済みのメッセージではないため、呼び戻す位置がありません。",
   "ai.recall.done": "呼び戻しました。このメッセージ以降は削除されました。",
   "ai.recall.doneUndo": "呼び戻し、このメッセージ以降の編集を元に戻しました。やり直しで復元できます。",

@@ -2279,7 +2279,6 @@ export const zhHant = {
   "ai.recall.messageHint": "從對話中刪除這則訊息及其之後的內容。",
   "ai.recall.andUndoEdits": "召回訊息並復原編輯",
   "ai.recall.andUndoEditsHint": "同時把工程歷史移回這則訊息的位置。重做可以恢復這些編輯。",
-  "ai.recall.noPosition": "這則訊息沒有記錄可復原到的歷史位置。",
   "ai.recall.unsaved": "這一列不是已儲存的訊息，沒有可召回的位置。",
   "ai.recall.done": "已召回：這則訊息及其之後的內容都已刪除。",
   "ai.recall.doneUndo": "已召回，而且這則訊息之後的編輯已復原。重做可以恢復它們。",

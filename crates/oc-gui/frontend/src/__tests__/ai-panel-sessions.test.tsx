@@ -1612,6 +1612,44 @@ describe("recalling a message", () => {
     );
   });
 
+  it("recalls a live-sent message with undo edits from its saved position", async () => {
+    backend.conversations = { s1: [
+      { role: "user", content: "first take" },
+      { role: "assistant", content: "Done." },
+    ] };
+    const restored = '@project "Recalled"\n  tempo: 90\n';
+    backend.recallSnapshot = { ...makeSnapshot(), dsl_source: restored };
+    await mountPanel();
+    await openSwitcher();
+    fireEvent.click(document.querySelector(".ai-session-row-title")!);
+    await waitFor(() => expect(aiSession.open()).toBe("s1"));
+
+    backend.chat = async () => ({ role: "assistant", content: "Done: the mix is quiet." });
+    fireEvent.input(input(), { target: { value: "list the mix" } });
+    fireEvent.click(sendButton());
+    await waitFor(() => expect(backend.lastTurn?.sessionId).toBe("s1"));
+    await waitFor(() => expect(document.querySelector(".ai-pending")).toBeNull());
+
+    // The saved message records the history position the backend saved; the
+    // live row carries no wire index, so the panel matches it against the store.
+    backend.conversations.s1 = [
+      { role: "user", content: "first take" },
+      { role: "assistant", content: "Done." },
+      { role: "user", content: "list the mix", history_at: { project: "/songs/song.ocp", level: 1, at: 4 } },
+      { role: "assistant", content: "Done: the mix is quiet." },
+    ];
+    const liveUser = messageRows().find((row) => row.textContent?.includes("list the mix"))!;
+    fireEvent.contextMenu(liveUser);
+    // The backend owns the position, so the live row offers the undo action.
+    expect(undoItem().getAttribute("aria-disabled")).not.toBe("true");
+    fireEvent.click(undoItem());
+    await waitFor(() => expect(backend.recalls).toEqual([
+      { sessionId: "s1", index: 2, undoEdits: true, confirmed: false },
+    ]));
+    await waitFor(() => expect(store.dslSource()).toBe(restored));
+    expect(input().value).toBe("list the mix");
+  });
+
   it("recalls and undoes edits in one command, applying the moved document", async () => {
     backend.conversations = { s1: conversation };
     const restored = '@project "Recalled"\n  tempo: 90\n';
@@ -1705,10 +1743,56 @@ describe("recalling a message", () => {
 
     fireEvent.contextMenu(messageRows()[2]);
     const item = undoItem();
-    expect(item.getAttribute("aria-disabled")).toBe("true");
-    expect(item.querySelector(".context-menu-hint")?.textContent).toBe(i18n.t("ai.recall.noPosition"));
+    // The backend owns the recorded position; the menu never guesses one.
+    expect(item.getAttribute("aria-disabled")).not.toBe("true");
+    expect(item.querySelector(".context-menu-hint")?.textContent).toBe(i18n.t("ai.recall.andUndoEditsHint"));
     fireEvent.click(item);
-    expect(backend.recalls).toHaveLength(0);
+    await waitFor(() => expect(backend.recalls).toEqual([{
+      sessionId: "s1",
+      index: 2,
+      undoEdits: true,
+      confirmed: false,
+    }]));
+    await waitFor(() => expect(aiWorkspace.notice()).toEqual({
+      text: i18n.t("ai.recall.refused.noRecordedPosition"),
+      tone: "error",
+    }));
+    expect(input().value).toBe("");
+    expect(messageRows()).toHaveLength(4);
+  });
+
+  it("refuses a confirmation whose edits moved after the dialog opened", async () => {
+    backend.conversations = { s1: conversation };
+    backend.needsConfirmation = true;
+    askDialogMock.mockResolvedValueOnce(true);
+    const base = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation(async (command: string, args?: unknown) => {
+      if (command === "ai_recall" && (args as Record<string, unknown>).confirmed === true) {
+        backend.recalls.push({
+          sessionId: "s1",
+          index: 3,
+          undoEdits: true,
+          confirmed: true,
+          token: (args as Record<string, unknown>).token,
+        });
+        return { status: "refused", reason: "edits_changed" };
+      }
+      return base(command, args);
+    });
+    await mountPanel();
+    await openSwitcher();
+    fireEvent.click(document.querySelector(".ai-session-row-title")!);
+    await waitFor(() => expect(messageRows()).toHaveLength(4));
+
+    fireEvent.contextMenu(messageRows()[2]);
+    fireEvent.click(undoItem());
+    await waitFor(() => expect(backend.recalls).toHaveLength(2));
+    expect(backend.recalls[1].token).toEqual({ applied: 4, newest: 99 });
+    await waitFor(() => expect(aiWorkspace.notice()).toEqual({
+      text: i18n.t("ai.recall.refused.editsChanged"),
+      tone: "error",
+    }));
+    expect(messageRows()).toHaveLength(4);
   });
 
   it("applies a recall the file did not take and says the file is behind", async () => {

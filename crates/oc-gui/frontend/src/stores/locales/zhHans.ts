@@ -2279,7 +2279,6 @@ export const zhHans = {
   "ai.recall.messageHint": "从对话中删除这条消息及其之后的内容。",
   "ai.recall.andUndoEdits": "召回消息并撤销编辑",
   "ai.recall.andUndoEditsHint": "同时把工程历史移回这条消息的位置。重做可以恢复这些编辑。",
-  "ai.recall.noPosition": "这条消息没有记录可撤销到的历史位置。",
   "ai.recall.unsaved": "这一行不是已保存的消息，没有可召回的位置。",
   "ai.recall.done": "已召回：这条消息及其之后的内容都已删除。",
   "ai.recall.doneUndo": "已召回，并且这条消息之后的编辑已撤销。重做可以恢复它们。",

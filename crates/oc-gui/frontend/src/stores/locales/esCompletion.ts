@@ -93,7 +93,6 @@ export const esCompletion = {
   "ai.recall.messageHint": "Elimina este mensaje y todo lo posterior de la conversación.",
   "ai.recall.andUndoEdits": "Recuperar el mensaje y deshacer los cambios",
   "ai.recall.andUndoEditsHint": "También mueve el historial del proyecto hasta este mensaje. Rehacer recupera los cambios.",
-  "ai.recall.noPosition": "Este mensaje no guardó una posición del historial a la que volver.",
   "ai.recall.unsaved": "Esta fila no es un mensaje guardado; no hay una posición a la que recuperar.",
   "ai.recall.done": "Recuperado: este mensaje y todo lo posterior ya no están.",
   "ai.recall.doneUndo": "Recuperado y los cambios posteriores a este mensaje están deshechos. Rehacer los recupera.",

@@ -60,8 +60,6 @@ export interface StoppedTurn {
 export interface ChatMessage {
   /** The DSL snapshot taken just before this message was sent. */
   dslSha?: string;
-  /** Whether the saved row recorded an edit-history position to recall to. */
-  historyAt?: boolean;
   /**
    * The saved wire message this row came from; a rewind cuts there. Absent on a
    * row the live turn painted, whose position is resolved against the saved
@@ -213,7 +211,6 @@ export function restoredTranscript(messages: WireMessage[] | null | undefined, s
     const content = typeof message.content === "string" ? message.content : "";
     const snapshot = {
       ...(message.dsl_sha ? { dslSha: message.dsl_sha } : {}),
-      ...(message.history_at ? { historyAt: true } : {}),
     };
     if (message.role === "assistant") {
       const calls = message.tool_calls ?? [];
@@ -348,7 +345,6 @@ export function userTurnOf(messages: WireMessage[]): ChatMessage | null {
       content,
       ...(message.media?.length ? { media: message.media } : {}),
       ...((message as { dsl_sha?: string }).dsl_sha ? { dslSha: (message as { dsl_sha?: string }).dsl_sha } : {}),
-      ...(message.history_at ? { historyAt: true } : {}),
     };
   }
   return null;

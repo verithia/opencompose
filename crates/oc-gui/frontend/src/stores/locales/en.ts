@@ -2255,7 +2255,6 @@ export const en = {
   "ai.recall.messageHint": "Remove this message and everything after it from the conversation.",
   "ai.recall.andUndoEdits": "Recall message and undo edits",
   "ai.recall.andUndoEditsHint": "Also move the project history back to this message. A redo brings the edits back.",
-  "ai.recall.noPosition": "This message recorded no history position to undo to.",
   "ai.recall.unsaved": "This row is not a saved message; there is nothing to recall to.",
   "ai.recall.done": "Recalled: the message and everything after it are gone.",
   "ai.recall.doneUndo": "Recalled and the edits after this message are undone. Redo brings them back.",

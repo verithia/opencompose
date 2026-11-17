@@ -1051,11 +1051,6 @@ export function AiPanel(props: { onClose?: () => void }) {
     // The original view shows the history a compaction replaced, whose indices
     // do not address the saved wire a recall cuts.
     if (originalView() || sessionBusy()) return;
-    // Older rows recorded no position, so there is nothing to move the cursor to.
-    if (undoEdits && !msg.historyAt) {
-      notify(i18n.t("ai.recall.noPosition"), "error");
-      return;
-    }
     // The conversation stays on screen until the reply lands: switching away
     // would leave a moved history without the transcript that goes with it.
     setSessionBusy(true);
@@ -2666,16 +2661,14 @@ export function AiPanel(props: { onClose?: () => void }) {
                     onSelect: () => void recallMessage(msg, false),
                   }, {
                     label: i18n.t("ai.recall.andUndoEdits"),
-                    // A row saved before positions were recorded has none to
-                    // move the cursor back to.
-                    disabled: busy || originalView() || !msg.historyAt,
+                    // The backend owns the recorded position; a row without
+                    // one is refused there with a typed reason.
+                    disabled: busy || originalView(),
                     hint: busy
                       ? i18n.t("ai.revert.turnRunning")
                       : originalView()
                         ? i18n.t("ai.revert.originalView")
-                        : !msg.historyAt
-                          ? i18n.t("ai.recall.noPosition")
-                          : i18n.t("ai.recall.andUndoEditsHint"),
+                        : i18n.t("ai.recall.andUndoEditsHint"),
                     onSelect: () => void recallMessage(msg, true),
                   }] : []),
                 ];
