@@ -129,7 +129,7 @@ pub(super) fn read(message: &Value) -> Option<MessageMeta> {
     if meta
         .summary_text
         .as_ref()
-        .is_some_and(|text| text.len() > super::compaction::MAX_SUMMARY_BYTES)
+        .is_some_and(|text| text.len() > super::summary::MAX_SUMMARY_BYTES)
     {
         return None;
     }
@@ -419,7 +419,7 @@ mod tests {
         assert!(read(&row).is_none());
         row["message_meta"]["kind"] = json!("summary");
         row["message_meta"]["summary_text"] =
-            json!("x".repeat(super::super::compaction::MAX_SUMMARY_BYTES + 1));
+            json!("x".repeat(super::super::summary::MAX_SUMMARY_BYTES + 1));
         assert!(read(&row).is_none());
     }
 

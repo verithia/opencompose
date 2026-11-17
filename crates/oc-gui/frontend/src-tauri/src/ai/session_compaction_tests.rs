@@ -1,7 +1,7 @@
 //! Compaction and context bounding: what a summary keeps of the newest turn,
 //! how the store refuses or reports, and how a size trim keeps the summary.
 
-use super::compaction::{MAX_SUMMARY_BYTES, previous_summary};
+use super::summary::{MAX_SUMMARY_BYTES, previous_summary};
 use super::*;
 use std::collections::BTreeMap;
 
