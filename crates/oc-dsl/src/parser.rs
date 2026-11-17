@@ -2696,23 +2696,7 @@ fn parse_pitch_text(text: &str) -> Option<Pitch> {
 
 /// Render one pitch (`C4`, `F#3`, `Bb5`) for diagnostics.
 fn format_pitch_text(pitch: &Pitch) -> String {
-    let note = match pitch.note {
-        NoteName::C => "C",
-        NoteName::D => "D",
-        NoteName::E => "E",
-        NoteName::F => "F",
-        NoteName::G => "G",
-        NoteName::A => "A",
-        NoteName::B => "B",
-    };
-    let accidental = match pitch.accidental {
-        Accidental::Natural => "",
-        Accidental::Sharp => "#",
-        Accidental::DoubleSharp => "##",
-        Accidental::Flat => "b",
-        Accidental::DoubleFlat => "bb",
-    };
-    format!("{note}{accidental}{}", pitch.octave)
+    pitch.to_text()
 }
 
 // ============================================================================
