@@ -217,8 +217,13 @@ function planStatus(value: unknown): PlanStatus | null {
   return value === "pending" || value === "in_progress" || value === "done" ? value : null;
 }
 
+/** The characters the Rust state owner treats as blank, mirrored exactly:
+ * Unicode White_Space plus the byte-order mark. */
+const STATE_BLANK_CHARS = /[\u0009-\u000D\u0020\u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000\uFEFF]/g;
+
 function textWithin(value: unknown, max: number): string | null {
-  return typeof value === "string" && value.trim().length > 0 && [...value].length <= max ? value : null;
+  return typeof value === "string" && value.replace(STATE_BLANK_CHARS, "").length > 0
+    && [...value].length <= max ? value : null;
 }
 
 /** Validate an untrusted goal or plan change; unknown shapes read as none. */

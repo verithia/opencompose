@@ -417,7 +417,8 @@ prose rows the transcript shows.
 The goal and the plan are typed conversation state, saved like any other row:
 
 - `goal_set` carries the goal text (at most 600 characters) and its author,
-  `person` or `agent`.
+  `person` or `agent`. Text that is blank under the shared whitespace set,
+  Unicode White_Space plus the byte-order mark, is refused.
 - `goal_cleared` records that the goal was cleared.
 - `plan_set` carries at most 32 items of at most 200 characters each, each
   `pending`, `in_progress` or `done`, with at most one item in progress.

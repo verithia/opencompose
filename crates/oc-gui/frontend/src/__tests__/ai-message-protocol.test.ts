@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { WireMessage } from "../ai/wire";
-import { messageKind, messageMeta, tagNewMessage } from "../ai/messageProtocol";
+import { messageKind, messageMeta, sessionState as sessionStateOf, tagNewMessage } from "../ai/messageProtocol";
 import { restoredTranscript, userTurnOf } from "../ai/transcript";
 import { auditionLabel, type MediaAttachment } from "../ai/media";
+import { loadedPage } from "../ai/sessions";
 
 describe("versioned local message semantics", () => {
   it("keeps bounded summary prose only on summary metadata", () => {
@@ -89,6 +90,34 @@ describe("versioned local message semantics", () => {
         ] },
       },
     } as WireMessage)).toBe("user");
+  });
+
+  it("treats every blank the Rust state owner trims as blank", () => {
+    // Rust owns the set: Unicode White_Space plus the byte-order mark.
+    for (const blank of ["\uFEFF", "\u00A0", "\u2028", "\u2029", "\u3000", "\u0085", "\uFEFF\u3000\u00A0"]) {
+      expect(sessionStateOf({ kind: "goal_set", text: blank, author: "person" })).toBeNull();
+      expect(sessionStateOf({
+        kind: "plan_set",
+        items: [{ text: blank, status: "pending" }],
+      })).toBeNull();
+    }
+    expect(sessionStateOf({ kind: "goal_set", text: "\uFEFFfinish\u3000", author: "person" }))
+      .toEqual({ kind: "goal_set", text: "\uFEFFfinish\u3000", author: "person" });
+  });
+
+  it("drops one unreadable page state entry instead of the whole page", () => {
+    const goal = { kind: "goal_set", text: "finish", author: "person" } as const;
+    const page = loadedPage({
+      meta: { id: "s1", title: "page" },
+      messages: [],
+      skipped: 0,
+      start: 0,
+      total: 0,
+      revision: "1",
+      older_tokens: 0,
+      state: [goal, { kind: "goal_set", text: "\uFEFF", author: "person" }],
+    });
+    expect(page?.state).toEqual([goal]);
   });
 
   it("still reads untagged legacy notices and summaries", () => {

@@ -274,9 +274,10 @@ export function loadedPage(payload: unknown): LoadedPage | null {
   const savedState = (payload as Partial<LoadedPage>).state;
   if (savedState === undefined) return value as LoadedPage;
   if (!Array.isArray(savedState) || savedState.length > 2) return null;
-  const state = savedState.map(sessionStateOf);
-  if (state.some(item => item === null)) return null;
-  return { ...value, state: state as SessionState[] } as LoadedPage;
+  // A state entry this build cannot read is dropped; it never hides the page
+  // or the conversation the panel asked to open.
+  const state = savedState.map(sessionStateOf).filter((item): item is SessionState => item !== null);
+  return { ...value, state } as LoadedPage;
 }
 
 /** An older page, or `null` when the payload names neither status. */

@@ -5,6 +5,23 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
+/// A character a goal or plan text treats as blank. The set is the Unicode
+/// White_Space property plus the byte-order mark, which JavaScript's `trim`
+/// removes; the panel validates with the same set.
+pub fn is_blank_char(value: char) -> bool {
+    value.is_whitespace() || value == '\u{FEFF}'
+}
+
+/// Trim the blank characters Rust and the panel agree on.
+pub fn trim_text(text: &str) -> &str {
+    text.trim_matches(is_blank_char)
+}
+
+/// Whether a text holds nothing but blanks both sides agree on.
+pub fn is_blank_text(text: &str) -> bool {
+    trim_text(text).is_empty()
+}
+
 /// Longest goal the store accepts.
 pub const MAX_GOAL_CHARS: usize = 600;
 /// Most plan items one plan may carry.
@@ -73,13 +90,13 @@ impl SessionState {
     pub fn valid(&self) -> bool {
         match self {
             Self::GoalSet { text, .. } => {
-                !text.trim().is_empty() && text.chars().count() <= MAX_GOAL_CHARS
+                !is_blank_text(text) && text.chars().count() <= MAX_GOAL_CHARS
             }
             Self::GoalCleared { .. } => true,
             Self::PlanSet { items } => {
                 items.len() <= MAX_PLAN_ITEMS
                     && items.iter().all(|item| {
-                        !item.text.trim().is_empty()
+                        !is_blank_text(&item.text)
                             && item.text.chars().count() <= MAX_PLAN_ITEM_CHARS
                     })
                     && items
@@ -123,7 +140,7 @@ pub fn plan_update_states(args: &Map<String, Value>) -> Result<Vec<SessionState>
                 author: StateAuthor::Agent,
             },
             Value::String(text) => SessionState::GoalSet {
-                text: text.trim().to_owned(),
+                text: trim_text(text).to_owned(),
                 author: StateAuthor::Agent,
             },
             _ => return Err("goal must be a string or null".into()),
@@ -141,7 +158,7 @@ pub fn plan_update_states(args: &Map<String, Value>) -> Result<Vec<SessionState>
             .map(|item| {
                 let mut item: PlanItem = serde_json::from_value(item.clone())
                     .map_err(|_| "each item needs text and status".to_owned())?;
-                item.text = item.text.trim().to_owned();
+                item.text = trim_text(&item.text).to_owned();
                 Ok(item)
             })
             .collect::<Result<Vec<_>, String>>()?;
@@ -384,6 +401,45 @@ mod tests {
         let mut unknown = Map::new();
         unknown.insert("goal".into(), json!({ "text": "x" }));
         assert!(plan_update_states(&unknown).is_err());
+    }
+
+    #[test]
+    fn blanks_javascript_trims_are_blank_here_too() {
+        // The panel validates with JavaScript semantics; every character its
+        // `trim` removes, including the byte-order mark, must read as blank.
+        for blank in [
+            "\u{FEFF}",
+            "\u{00A0}",
+            "\u{2028}",
+            "\u{2029}",
+            "\u{3000}",
+            "\u{0085}",
+            "\u{FEFF}\u{3000}\u{00A0}",
+        ] {
+            assert!(!goal_set(blank).valid(), "{blank:?} is blank");
+            assert!(
+                !plan(&[(blank, PlanStatus::Pending)]).valid(),
+                "{blank:?} is blank in a plan item"
+            );
+            assert!(is_blank_text(blank));
+        }
+        assert!(!is_blank_text("\u{FEFF}finish\u{3000}"));
+
+        let mut args = Map::new();
+        args.insert("goal".into(), json!("\u{FEFF}finish\u{FEFF}"));
+        args.insert(
+            "items".into(),
+            json!([{"text": "\u{00A0}write\u{3000}", "status": "done"}]),
+        );
+        let states = plan_update_states(&args).unwrap();
+        assert_eq!(
+            states[0],
+            SessionState::GoalSet {
+                text: "finish".into(),
+                author: StateAuthor::Agent,
+            }
+        );
+        assert_eq!(states[1], plan(&[("write", PlanStatus::Done)]));
     }
 
     #[test]

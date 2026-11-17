@@ -1103,7 +1103,7 @@ impl Store {
     /// may not follow calls that have no result yet, and the next admitted
     /// turn writes it before that turn's message.
     pub fn set_goal(&self, id: &str, text: Option<&str>) -> Result<SessionMeta, String> {
-        let state = match text.map(str::trim) {
+        let state = match text.map(session_state::trim_text) {
             None => SessionState::GoalCleared {
                 author: StateAuthor::Person,
             },
