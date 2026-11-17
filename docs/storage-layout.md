@@ -69,21 +69,26 @@ Storage page can show what an item belongs to.
 
 | File | Contents |
 |---|---|
-| `project.json` | Marker `{version: 1, path, sha256}`: the canonical project path and the file's content SHA-256 as the app last read or wrote it. |
+| `project.json` | Marker `{version: 1, path, sha256}`: the canonical project path and the file's content SHA-256 as the app last read or wrote it. Every successful project write updates it, including an agent publish, an exit flush and a project created by New. |
 | `entries.jsonl` | One stored entry per line, with its compressed forward and inverse patches, author, scope and an optional `cause` (`conversation_revert`; an ordinary edit omits it). Display text is not stored. The file only grows; a line a redo branch replaced stays as garbage until the history is rewritten. |
 | `index.bin` | Fixed-size rows for the live linear history, oldest first. Dropping a redo branch truncates it. |
-| `state.json` | The cursor and the document text at the cursor, written in one atomic replace, so an open can tell whether the file still matches. |
+| `state.json` | The cursor, the id of the applied entry it rests on, and the document text at the cursor, written in one atomic replace. An open follows the id when a shorter index moved its row; only an id the index no longer has discards the head, so a torn write never pairs a cursor with another document. |
 
 The history is matched by path first. When the path has no history, the file's
 content SHA-256 is compared with the marker of every history: a history whose
 project file is gone follows the file, which is how a file moved or copied
 outside the app keeps its undo. The adoption is a copy when the old file still
-exists and a move when the old file is gone. A project created with **New**
-starts a fresh history and never adopts another file's.
+exists and a move when the old file is gone; a file on a volume that is not
+mounted still owns its history. A project created with **New** starts a fresh
+history and never adopts another file's. An interrupted rewrite of a history is
+finished from its `.old` directory when the history is opened again; a crashed
+copy's staging and every other leftover sibling are removed instead of
+promoted.
 
 **Move Project** moves the history to the new path. **Save As** copies it and
 leaves the source history in place. Both keep the marker in step with the new
-path.
+path, and every successful project write records the file's fingerprint under
+the document lock.
 
 The journal is synced once a second, after an agent tool mutation, and when the
 app exits, so an edit made just before a quit keeps its undo entry. An open

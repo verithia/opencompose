@@ -60,7 +60,9 @@ media folder and the audio graph untouched.
 Each project keeps the 10 newest copies; writing an 11th removes the oldest. A
 successful save deletes every copy of that project, including copies made while
 it was untitled: the saved file holds the document, so they would only take
-space.
+space. Move Project merges the copies under the project's current key and the
+keys earlier builds wrote, so copies from either directory survive the move;
+files in those directories that are not recovery copies keep their directory.
 
 ## Discovery and restore
 

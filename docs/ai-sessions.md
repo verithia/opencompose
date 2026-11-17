@@ -169,8 +169,12 @@ content-addressed project version (`dsl_sha`) to each newly admitted human
 message. Beside it, `history_at` records the edit-history position the message
 was sent from: `{project, level, at}`, where `project` is the canonical project
 path, `level` is the number of applied entries and `at` is the id of the entry
-at that level (absent at the start of the history). A recall that undoes edits
-uses this position to move the history cursor back. The project path, source
+at that level (absent at the start of the history). Entry ids carry the wall
+clock and stay within JavaScript's exact integer range, so a saved position
+never rounds. A history replaced while the app was closed keeps no stored
+maximum, so the ids assume the clock has not moved backwards across that
+replacement. A recall that undoes edits uses this position to move the history
+cursor back. The project path, source
 and summary facts are captured together. A headless request for a different
 open project is refused, and so is any turn on a conversation bound to another
 file than the one that is open.

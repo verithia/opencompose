@@ -52,10 +52,11 @@ project), MIDI import and export, offline render to WAV, stems export, the theme
 family/variant pickers, and the preferences popover (output device, live MIDI
 input, diagnostics, shortcut list).
 
-Every project has a file from the start: **New** asks where to put it and writes
-it there, and with no project open the start surface offers to open or create
-one. **Move Project** gives the open project another file and takes its edit
-history and backup along; nothing stays at the old place.
+Every project has a file from the start: **New** asks where to put it, writes
+it there and refuses a path that already holds a file, and with no project open
+the start surface offers to open or create one. **Move Project** gives the open
+project another file and takes its edit history and backup along; nothing stays
+at the old place.
 
 ## Edit history
 
@@ -68,7 +69,8 @@ project's canonical path, in hex.
 
 The folder holds `project.json` (the marker: version, canonical project path and
 the file's content SHA-256), `entries.jsonl` (one entry per line), `index.bin`
-(the live linear history) and `state.json` (the cursor and the document at it).
+(the live linear history) and `state.json` (the cursor, the applied entry's id
+and the document at it).
 Every entry records who made it (you, the agent of a named conversation, an
 external client, or a change made to the file outside OpenCompose), the typed
 changes its patches describe, and a cause that marks an entry written by an
