@@ -1536,12 +1536,12 @@ pub fn ai_recall(
     index: usize,
     undo_edits: bool,
     confirmed: bool,
-    token: Option<ai::agent_loop::host::RecallToken>,
-) -> Result<ai::agent_loop::host::RecallOutcome, String> {
-    ai::agent_loop::host::recall(
+    token: Option<ai::recall::RecallToken>,
+) -> Result<ai::recall::RecallOutcome, String> {
+    ai::recall::recall(
         &app,
         &session_id,
-        ai::agent_loop::host::RecallRequest {
+        ai::recall::RecallRequest {
             index,
             undo_edits,
             confirmed,

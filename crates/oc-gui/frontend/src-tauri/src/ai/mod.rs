@@ -19,6 +19,7 @@ pub mod models;
 pub mod oauth;
 pub mod prices;
 pub mod project_instructions;
+pub mod recall;
 pub mod responses;
 pub mod route;
 pub mod secret;
