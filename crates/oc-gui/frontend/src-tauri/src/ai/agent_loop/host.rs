@@ -1436,6 +1436,12 @@ fn recall_with(
     if inner.transaction.is_some() {
         return Ok(RecallOutcome::refused(RecallRefusal::BatchOpen));
     }
+    // A preview holds two documents; moving the history under it would land
+    // the cursor on whichever side is on screen. The typed refusal says so
+    // before a confirmation dialog can offer the action.
+    if request.undo_edits && inner.previewing() {
+        return Ok(RecallOutcome::refused(RecallRefusal::PreviewOpen));
+    }
     let mut moved = false;
     let mut before = None;
     if request.undo_edits {
@@ -2221,6 +2227,30 @@ mod tests {
         assert_eq!(inner.undo.applied_level(), before.2);
         assert_eq!(inner.undo.total_levels(), before.3);
         assert_eq!(store.view(&id).unwrap(), rows);
+    }
+
+    #[test]
+    fn a_recall_with_undo_is_refused_inside_an_edit_preview() {
+        let (_root, store, id, state, _path) = fixture();
+        {
+            let mut inner = state.lock_inner();
+            inner.preview = Some(crate::preview::PreviewSession {
+                base_project: inner.project.clone(),
+                base_dsl: inner.dsl_source.clone(),
+                proposal_project: inner.project.clone(),
+                proposal_dsl: inner.dsl_source.clone(),
+                subtree_dsl: String::new(),
+                side: crate::preview::PreviewSide::Base,
+                target_path: "project".into(),
+                highlight: crate::preview::PreviewHighlight::default(),
+                base_dirty: inner.dirty,
+            });
+        }
+        let requests = Requests::default();
+        let outcome = recall_in(&requests, &state, &store, &id, with_undo(&state, 0)).unwrap();
+        assert_eq!(refused(outcome), RecallRefusal::PreviewOpen);
+        assert_eq!(state.lock_inner().project.properties.tempo, 150.0);
+        assert_eq!(store.view(&id).unwrap().len(), 3);
     }
 
     #[test]
