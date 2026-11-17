@@ -523,14 +523,49 @@ fn clearing_older_reports_a_failed_append() {
     std::fs::create_dir_all(&index).unwrap();
     set_tempo(&mut inner, 120.0);
     let outcome = crate::commands::clear_older_history(&mut inner, 0).unwrap();
-    let crate::commands::HistoryClearOutcome::Failed { message } = outcome else {
+    let wire = serde_json::to_value(&outcome).unwrap();
+    assert_eq!(wire["status"], "failed");
+    assert_eq!(wire["reason"], "io");
+    assert!(
+        wire["detail"].is_string(),
+        "an I/O failure carries its text: {wire}"
+    );
+    let crate::commands::HistoryClearOutcome::Failed { reason, detail } = outcome else {
         panic!("a failed append is not a clear");
     };
+    assert_eq!(reason, crate::state::HistoryFailure::Io, "the write failed");
     assert!(
-        message.contains("edit history"),
-        "the real write failure is reported: {message}"
+        detail.is_some_and(|text| !text.is_empty()),
+        "the operating system's text rides along for display"
     );
     assert_eq!(inner.undo.total_levels(), 1, "the entry stayed");
+}
+
+#[test]
+fn every_history_error_maps_to_one_wire_reason_without_text_outside_io() {
+    use crate::state::{HistoryError, HistoryFailure};
+    let cases = [
+        (
+            HistoryError::NotSynced,
+            HistoryFailure::NotSynced,
+            "not_synced",
+        ),
+        (HistoryError::InBatch, HistoryFailure::InBatch, "in_batch"),
+        (
+            HistoryError::NotJournaled,
+            HistoryFailure::NotJournaled,
+            "not_journaled",
+        ),
+    ];
+    for (error, failure, wire) in cases {
+        assert_eq!(error.failure(), failure);
+        assert_eq!(error.detail(), None, "{wire} has no display text");
+        assert_eq!(serde_json::to_value(failure).unwrap(), wire);
+    }
+    let io = HistoryError::Io(std::io::Error::other("disk is full"));
+    assert_eq!(io.failure(), HistoryFailure::Io);
+    assert_eq!(io.detail().as_deref(), Some("disk is full"));
+    assert_eq!(serde_json::to_value(HistoryFailure::Io).unwrap(), "io");
 }
 
 #[test]

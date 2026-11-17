@@ -1909,18 +1909,12 @@ pub(crate) fn clear_older_history(
     keep: usize,
 ) -> Result<HistoryClearOutcome, String> {
     if let Err(error) = inner.try_sync_history() {
-        return Ok(HistoryClearOutcome::Failed {
-            message: error.to_string(),
-        });
+        return Ok(HistoryClearOutcome::failed(&error));
     }
     let before = inner.undo.history_info().bytes;
     let dropped = match inner.undo.clear_older(keep) {
         Ok(dropped) => dropped,
-        Err(error) => {
-            return Ok(HistoryClearOutcome::Failed {
-                message: error.to_string(),
-            });
-        }
+        Err(error) => return Ok(HistoryClearOutcome::failed(&error)),
     };
     let info = inner.undo.history_info();
     Ok(HistoryClearOutcome::Cleared {
@@ -1941,10 +1935,22 @@ pub enum HistoryClearOutcome {
     Refused {
         reason: HistoryRefusal,
     },
-    /// The history could not be rewritten; the message names the write error.
+    /// The history could not be rewritten. `detail` is the operating system's
+    /// text for an I/O failure, for display only.
     Failed {
-        message: String,
+        reason: crate::state::HistoryFailure,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        detail: Option<String>,
     },
+}
+
+impl HistoryClearOutcome {
+    fn failed(error: &crate::state::HistoryError) -> Self {
+        Self::Failed {
+            reason: error.failure(),
+            detail: error.detail(),
+        }
+    }
 }
 
 #[tauri::command]

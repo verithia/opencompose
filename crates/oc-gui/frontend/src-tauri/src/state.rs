@@ -45,7 +45,7 @@ mod automation_history;
 mod history_journal;
 mod undo_gestures;
 pub(crate) use history_journal::JournalHome;
-pub use history_journal::{HistoryInfo, HistoryPage};
+pub use history_journal::{HistoryError, HistoryFailure, HistoryInfo, HistoryPage};
 use undo_gestures::GestureOwnership;
 pub use undo_gestures::{
     ParameterTargetError, ParameterTargetStamp, UndoGestureError, UndoGestureToken,

@@ -58,6 +58,36 @@ impl std::fmt::Display for HistoryError {
 
 impl std::error::Error for HistoryError {}
 
+/// The stable wire name for why a history operation failed. The UI localizes it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HistoryFailure {
+    NotSynced,
+    InBatch,
+    NotJournaled,
+    Io,
+}
+
+impl HistoryError {
+    /// The typed reason, without the display text.
+    pub fn failure(&self) -> HistoryFailure {
+        match self {
+            Self::NotSynced => HistoryFailure::NotSynced,
+            Self::InBatch => HistoryFailure::InBatch,
+            Self::NotJournaled => HistoryFailure::NotJournaled,
+            Self::Io(_) => HistoryFailure::Io,
+        }
+    }
+
+    /// The operating system's text for an I/O failure, shown as is and never parsed.
+    pub fn detail(&self) -> Option<String> {
+        match self {
+            Self::Io(error) => Some(error.to_string()),
+            Self::NotSynced | Self::InBatch | Self::NotJournaled => None,
+        }
+    }
+}
+
 impl From<std::io::Error> for HistoryError {
     fn from(error: std::io::Error) -> Self {
         Self::Io(error)

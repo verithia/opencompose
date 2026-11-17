@@ -72,7 +72,11 @@ export interface HistoryInfo {
   path?: string;
 }
 
+/** Why the history could not be rewritten. */
+export type HistoryFailure = "not_synced" | "in_batch" | "not_journaled" | "io";
+
 export type HistoryClearOutcome =
   | { status: "cleared"; dropped: number; freed: number; info: HistoryInfo }
   | { status: "refused"; reason: HistoryRefusal }
-  | { status: "failed"; message: string };
+  /** `detail` is the operating system's text for `io`, for display only. */
+  | { status: "failed"; reason: HistoryFailure; detail?: string };

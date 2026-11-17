@@ -8,7 +8,7 @@ import { For, Show, createEffect, createSignal, on, onCleanup, onMount } from "s
 import { store } from "../stores/project";
 import { i18n, type I18nKey } from "../stores/i18n";
 import * as api from "../stores/api";
-import type { HistoryRefusal, UndoHistoryEntry, UndoScope } from "../stores/api";
+import type { HistoryFailure, HistoryRefusal, UndoHistoryEntry, UndoScope } from "../stores/api";
 import { authorName, entryText as historyEntryText } from "../stores/historyText";
 import { bytesText } from "../utils/bytesText";
 import { historyStorage } from "../stores/historyStorage";
@@ -28,6 +28,20 @@ const REFUSAL_KEYS: Record<HistoryRefusal, I18nKey> = {
   nothing_to_undo: "history.nothingToUndo",
   nothing_to_redo: "history.nothingToRedo",
 };
+
+/** Why clearing older entries could not rewrite the history. */
+const FAILURE_KEYS: Record<HistoryFailure, I18nKey> = {
+  not_synced: "history.failure.notSynced",
+  in_batch: "history.failure.inBatch",
+  not_journaled: "history.failure.notJournaled",
+  io: "history.failure.io",
+};
+
+/** The localized failure; an I/O failure appends the operating system's text when there is one. */
+function failureText(reason: HistoryFailure, detail?: string): string {
+  if (reason === "io" && detail) return i18n.t("history.failure.ioDetail", { detail });
+  return i18n.t(FAILURE_KEYS[reason]);
+}
 
 /** An entry's time in the app's language, not the system's. */
 export function formatTimestamp(timestamp: number): string {
@@ -73,7 +87,7 @@ export function HistoryPanel() {
         return;
       }
       if (outcome.status === "failed") {
-        store.setError(outcome.message);
+        store.setError(failureText(outcome.reason, outcome.detail));
         return;
       }
       setReport(i18n.t("history.cleared", {

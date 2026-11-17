@@ -165,6 +165,20 @@ describe("HistoryPanel", () => {
     await waitFor(() => expect(container.querySelector(".history-report")?.textContent).toBe("Nothing to undo."));
   });
 
+  it("localizes a failed clear by its typed reason and appends the I/O text", async () => {
+    const { container, getByLabelText, getByText } = render(() => <HistoryPanel />);
+    await waitFor(() => expect(container.querySelectorAll(".undo-history-entry").length).toBe(4));
+    fireEvent.input(getByLabelText("Keep newest"), { target: { value: "1" } });
+    invokeMock.mockImplementationOnce(async () => ({ status: "failed", reason: "in_batch" }));
+    fireEvent.click(getByText("Clear older history"));
+    await waitFor(() => expect(store.error())
+      .toBe("Older history can be cleared once the agent's batch ends."));
+    invokeMock.mockImplementationOnce(async () => ({ status: "failed", reason: "io", detail: "disk is full" }));
+    fireEvent.click(getByText("Clear older history"));
+    await waitFor(() => expect(store.error())
+      .toBe("The project's edit history could not be written: disk is full"));
+  });
+
   it("asks before clearing and clears nothing when the person says no", async () => {
     dialog.ask.mockResolvedValueOnce(false);
     const { container, getByLabelText, getByText } = render(() => <HistoryPanel />);

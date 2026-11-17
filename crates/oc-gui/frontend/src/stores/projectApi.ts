@@ -13,7 +13,8 @@ import type {
   HistoryClearOutcome, HistoryInfo, HistoryPage, HistoryStep, UndoGestureToken, UndoScope, UndoState,
 } from "../types/undo";
 export type {
-  HistoryAuthor, HistoryBrief, HistoryClearOutcome, HistoryInfo, HistoryPage, HistoryRefusal, HistoryStep,
+  HistoryAuthor, HistoryBrief, HistoryClearOutcome, HistoryFailure, HistoryInfo, HistoryPage, HistoryRefusal,
+  HistoryStep,
   UndoHistoryEntry, UndoScope, UndoState,
 } from "../types/undo";
 
