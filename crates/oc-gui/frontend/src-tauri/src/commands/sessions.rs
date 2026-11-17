@@ -637,7 +637,7 @@ where
             return Err(PrepareTurnError::Cancelled);
         }
         let outcome = match store.commit_compaction(plan, summary.as_deref()) {
-            Ok(outcome) => Some(outcome),
+            Ok(commit) => Some(commit.into_compaction(&mut failure)),
             Err(error) if error.kind == SessionErrorKind::Conflict => {
                 // The conversation moved after planning. One retry from the
                 // current view still compacts, and the panel is told why the
@@ -662,17 +662,20 @@ where
             prepared.meta.compacted_at = Some(outcome.compacted_at.clone());
             prepared.compacted = Some(outcome);
         }
-        if let Some(failure) = failure {
+        if let Some(reason) = failure.and_then(sessions::CompactionFailure::notice_reason) {
             let _ = app.emit(
                 AUTO_SESSION_EVENT,
-                compaction_failed_event(&session_id, failure),
+                compaction_failed_event(&session_id, reason),
             );
         }
     }
     if let Some(error) = prepared.compaction_error.as_ref() {
         let _ = app.emit(
             AUTO_SESSION_EVENT,
-            compaction_failed_event(&session_id, sessions::CompactionFailure::ProviderError),
+            compaction_failed_event(
+                &session_id,
+                sessions::CompactionFailureReason::ProviderError,
+            ),
         );
         log::warn!("[ai] session {session_id} auto-compaction failed: {error}");
     }
@@ -807,7 +810,10 @@ pub fn compaction_recorded_event(session_id: &str, compaction: &Compaction) -> V
 /// The payload of [`AUTO_SESSION_EVENT`] when the summary call for a
 /// compaction failed: the mechanical summary replaced it, and the panel says
 /// why the model text is missing.
-pub fn compaction_failed_event(session_id: &str, reason: sessions::CompactionFailure) -> Value {
+pub fn compaction_failed_event(
+    session_id: &str,
+    reason: sessions::CompactionFailureReason,
+) -> Value {
     json!({
         "session_id": session_id,
         "notice": "compaction_failed",

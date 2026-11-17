@@ -169,7 +169,7 @@ export const jaCompletionAi = {
   "ai.sessions.archiveEvicted": "試聴用の保存領域を確保するため、{names} など {count} 件のファイルを削除しました。",
   "ai.sessions.compactionFailed": "要約の呼び出しに失敗しました：{reason}。会話は機械的な要約で圧縮されました。",
   "ai.sessions.compactionFailedProvider": "プロバイダーが応答しませんでした",
-  "ai.sessions.compactionFailedCancelled": "リクエストがキャンセルされました",
+  "ai.sessions.compactionFailedRejectedNotice": "モデルの要約は機械的な要約より小さくなかったため、機械的な要約を保持しました。",
   "ai.sessions.compactionFailedEmpty": "プロバイダーがテキストを返しませんでした",
   "ai.sessions.compactionFailedConflict": "書き込み中に会話が変わりました",
 } as const;

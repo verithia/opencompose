@@ -2641,7 +2641,7 @@ export const zhHant = {
   "ai.sessions.archiveEvicted": "為騰出試聽封存空間刪除了 {count} 個檔案，從 {names} 開始。",
     "ai.sessions.compactionFailed": "摘要呼叫失敗：{reason}。對話已改用機械摘要壓縮。",
     "ai.sessions.compactionFailedProvider": "服務商未回應",
-    "ai.sessions.compactionFailedCancelled": "請求已被取消",
+    "ai.sessions.compactionFailedRejectedNotice": "模型摘要並不比機械摘要小，因此保留了機械摘要。",
     "ai.sessions.compactionFailedEmpty": "服務商未傳回文字",
     "ai.sessions.compactionFailedConflict": "寫入期間對話已發生變化",
   "ai.sessions.retainedOne": "1 個最近的工具呼叫",

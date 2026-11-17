@@ -2641,7 +2641,7 @@ export const zhHans = {
   "ai.sessions.archiveEvicted": "为腾出试听归档空间删除了 {count} 个文件，从 {names} 开始。",
     "ai.sessions.compactionFailed": "摘要调用失败：{reason}。对话已改用机械摘要压缩。",
     "ai.sessions.compactionFailedProvider": "服务商未响应",
-    "ai.sessions.compactionFailedCancelled": "请求已被取消",
+    "ai.sessions.compactionFailedRejectedNotice": "模型摘要并不比机械摘要小，因此保留了机械摘要。",
     "ai.sessions.compactionFailedEmpty": "服务商未返回文本",
     "ai.sessions.compactionFailedConflict": "写入期间对话已发生变化",
   "ai.sessions.retainedOne": "1 个最近的工具调用",

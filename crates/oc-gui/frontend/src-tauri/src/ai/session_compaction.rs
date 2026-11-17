@@ -128,29 +128,51 @@ fn input_line(view: &[Value], index: usize, message: &Value) -> Option<String> {
     ))
 }
 
+/// The messages a commit writes, and why the model text was replaced when it
+/// was not used.
+pub(super) struct PlannedSummary {
+    pub messages: Vec<Value>,
+    pub failure: Option<CompactionFailure>,
+}
+
 /// Only a complete, bounded answer that improves the plan may replace the
 /// mechanical fallback. Its typed prose survives a later mechanical summary.
-pub(super) fn planned_messages(plan: &CompactionPlan, summary: Option<&str>) -> Vec<Value> {
-    let fallback = || plan.fallback.clone();
+/// A summary above the target is still an improvement when the fallback is
+/// larger: the target is a goal, not a reason to keep a bigger summary.
+pub(super) fn planned_messages(plan: &CompactionPlan, summary: Option<&str>) -> PlannedSummary {
+    let rejected = || PlannedSummary {
+        messages: plan.fallback.clone(),
+        failure: Some(CompactionFailure::Rejected),
+    };
+    let fallback = || PlannedSummary {
+        messages: plan.fallback.clone(),
+        failure: None,
+    };
     let Some(summary) = summary.map(str::trim).filter(|summary| !summary.is_empty()) else {
         return fallback();
     };
     if summary.len() > MAX_SUMMARY_BYTES || estimate_text_tokens(summary) > SUMMARY_OUTPUT_TOKENS {
-        return fallback();
+        return rejected();
     }
-    let mut messages = fallback();
+    let fallback_tokens = estimate_tokens(&plan.fallback);
+    let mut messages = plan.fallback.clone();
     let Some(row) = messages.first_mut() else {
-        return messages;
+        return fallback();
     };
     row["content"] = json!(format!("{}{summary}\n\n{}", plan.prefix, plan.digest));
     let mut meta = message_protocol::read(row).expect("a planned summary has typed metadata");
     meta.summary_text = Some(summary.to_owned());
     message_protocol::tag(row, meta);
     let after = estimate_tokens(&messages);
-    if after >= plan.tokens_before || (plan.target_tokens > 0 && after > plan.target_tokens) {
-        return fallback();
+    let improves = after < plan.tokens_before
+        && (plan.target_tokens == 0 || after <= plan.target_tokens || after < fallback_tokens);
+    if !improves {
+        return rejected();
     }
-    messages
+    PlannedSummary {
+        messages,
+        failure: None,
+    }
 }
 
 #[cfg(test)]

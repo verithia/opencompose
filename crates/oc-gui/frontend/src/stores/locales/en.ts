@@ -2640,7 +2640,7 @@ export const en = {
     "ai.sessions.archiveEvicted": "Made room in the audition archive: removed {count} file(s), starting with {names}.",
     "ai.sessions.compactionFailed": "The summary call failed: {reason}. The conversation compacted with a mechanical summary instead.",
     "ai.sessions.compactionFailedProvider": "the provider did not answer",
-    "ai.sessions.compactionFailedCancelled": "the request was cancelled",
+    "ai.sessions.compactionFailedRejectedNotice": "The model summary was not smaller than the mechanical one, so the mechanical summary was kept.",
     "ai.sessions.compactionFailedEmpty": "the provider returned no text",
     "ai.sessions.compactionFailedConflict": "the conversation changed while it was written",
     "ai.sessions.retainedOne": "1 recent tool call",

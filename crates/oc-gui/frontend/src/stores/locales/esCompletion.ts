@@ -122,7 +122,7 @@ export const esCompletion = {
   "ai.sessions.archiveEvicted": "Se liberó espacio en el archivo de escuchas. Se eliminaron {count} archivos, empezando por {names}.",
   "ai.sessions.compactionFailed": "Falló la llamada de resumen: {reason}. La conversación se compactó con un resumen mecánico.",
   "ai.sessions.compactionFailedProvider": "el proveedor no respondió",
-  "ai.sessions.compactionFailedCancelled": "la solicitud se canceló",
+  "ai.sessions.compactionFailedRejectedNotice": "El resumen del modelo no era más pequeño que el mecánico, así que se conservó el resumen mecánico.",
   "ai.sessions.compactionFailedEmpty": "el proveedor no devolvió texto",
   "ai.sessions.compactionFailedConflict": "la conversación cambió mientras se escribía",
   "ai.sessions.original": "Ver historial original",

@@ -139,7 +139,7 @@ export interface CompactionResult extends CompactionReport {
 }
 
 /** Why a model-written summary was replaced by the mechanical one. */
-export type CompactionFailure = "provider_error" | "cancelled" | "empty" | "conflict";
+export type CompactionFailure = "provider_error" | "empty" | "conflict" | "rejected";
 
 /** Payload of the backend's `ai_session` event after a failed summary call. */
 export interface SessionCompactionFailure {
@@ -166,20 +166,21 @@ export function sessionCompaction(event: unknown): SessionCompaction | null {
 export function sessionCompactionFailure(event: unknown): SessionCompactionFailure | null {
   const value = event as Partial<SessionCompactionFailure> | null;
   if (!value || value.notice !== "compaction_failed" || typeof value.session_id !== "string") return null;
-  if (value.reason !== "provider_error" && value.reason !== "cancelled"
-    && value.reason !== "empty" && value.reason !== "conflict") return null;
+  if (value.reason !== "provider_error" && value.reason !== "empty"
+    && value.reason !== "conflict" && value.reason !== "rejected") return null;
   return value as SessionCompactionFailure;
 }
 
 const COMPACTION_FAILURE_KEYS = {
   provider_error: "ai.sessions.compactionFailedProvider",
-  cancelled: "ai.sessions.compactionFailedCancelled",
   empty: "ai.sessions.compactionFailedEmpty",
   conflict: "ai.sessions.compactionFailedConflict",
 } as const;
 
 /** The transcript line for a compaction whose summary call failed. */
 export function compactionFailureNotice(failure: SessionCompactionFailure): string {
+  // A rejected summary did reach the provider: only its text was not used.
+  if (failure.reason === "rejected") return i18n.t("ai.sessions.compactionFailedRejectedNotice");
   return i18n.t("ai.sessions.compactionFailed", {
     reason: i18n.t(COMPACTION_FAILURE_KEYS[failure.reason]),
   });

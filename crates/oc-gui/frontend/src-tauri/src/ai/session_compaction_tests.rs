@@ -741,8 +741,9 @@ fn a_model_summary_becomes_the_first_row_with_the_digest_and_pinned_rows() {
         "the dropped turns are the input"
     );
 
-    let outcome = store.commit_compaction(plan, Some(&summary)).unwrap();
-    let rows = &outcome.messages;
+    let commit = store.commit_compaction(plan, Some(&summary)).unwrap();
+    assert_eq!(commit.summary_failure, None);
+    let rows = &commit.compaction.messages;
     let first = rows[0]["content"].as_str().unwrap();
     assert!(first.contains("MODEL SUMMARY"), "{first}");
     assert!(first.contains("Retained recent tool calls"), "{first}");
@@ -789,14 +790,14 @@ fn a_failed_summary_call_falls_back_to_the_mechanical_summary() {
     assert_eq!(failure, CompactionFailure::ProviderError);
     let _ = server.join();
     let outcome = store.commit_compaction(plan, None).unwrap();
-    let first = outcome.messages[0]["content"].as_str().unwrap();
+    let first = outcome.compaction.messages[0]["content"].as_str().unwrap();
     assert!(
         first.starts_with("Conversation summary written "),
         "{first}"
     );
     assert!(first.contains("Decisions taken:"), "{first}");
     assert_eq!(
-        crate::commands::compaction_failed_event(&session.id, failure)["reason"],
+        crate::commands::compaction_failed_event(&session.id, failure.notice_reason().unwrap())["reason"],
         json!("provider_error")
     );
     std::fs::remove_dir_all(store.root().parent().unwrap()).unwrap();
@@ -864,7 +865,8 @@ fn successive_model_summaries_receive_the_previous_decisions() {
     let plan = store.plan_compaction_now(&session.id, 0, &facts()).unwrap();
     let first = store
         .commit_compaction(plan, Some("Keep vocals dry; reject the metallic bass."))
-        .unwrap();
+        .unwrap()
+        .compaction;
     assert!(
         first.messages[0]["content"]
             .as_str()
@@ -887,7 +889,8 @@ fn successive_model_summaries_receive_the_previous_decisions() {
             plan,
             Some("Keep vocals dry; reject the metallic bass. Finish the bridge."),
         )
-        .unwrap();
+        .unwrap()
+        .compaction;
     assert!(
         next.messages[0]["message_meta"]["summary_text"]
             .as_str()
@@ -902,33 +905,87 @@ fn an_oversized_or_nonreducing_summary_uses_the_mechanical_fallback() {
     let view = rounds();
     let plan = plan_compaction_request(&view, 0, &facts(), "s").unwrap();
     for summary in ["x".repeat(50_000), "word ".repeat(3_000)] {
-        assert_eq!(planned_messages(&plan, Some(&summary)), plan.fallback);
+        let planned = planned_messages(&plan, Some(&summary));
+        assert_eq!(planned.messages, plan.fallback);
+        assert_eq!(planned.failure, Some(CompactionFailure::Rejected));
     }
-    let mut target = plan.clone();
-    target.target_tokens = estimate_tokens(&planned_messages(&plan, Some("Short summary"))) - 1;
-    assert_eq!(
-        planned_messages(&target, Some("Short summary")),
-        target.fallback
-    );
     let mut no_reduction = plan.clone();
     no_reduction.tokens_before = 1;
+    let planned = planned_messages(&no_reduction, Some("Short summary"));
+    assert_eq!(planned.messages, no_reduction.fallback);
+    assert_eq!(planned.failure, Some(CompactionFailure::Rejected));
+}
+
+#[test]
+fn a_summary_above_the_target_still_replaces_a_larger_fallback() {
+    let view = rounds();
+    let plan = plan_compaction_request(&view, 0, &facts(), "s").unwrap();
+    let model = planned_messages(&plan, Some("Short summary"));
+    assert_eq!(model.failure, None);
+    let mut target = plan.clone();
+    target.target_tokens = estimate_tokens(&model.messages) - 1;
+    let planned = planned_messages(&target, Some("Short summary"));
     assert_eq!(
-        planned_messages(&no_reduction, Some("Short summary")),
-        no_reduction.fallback
+        planned.failure, None,
+        "the model text is smaller than the fallback"
     );
+    assert_ne!(planned.messages, target.fallback);
+    assert!(
+        planned.messages[0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("Short summary")
+    );
+}
+
+#[test]
+fn a_summary_that_does_not_beat_a_smaller_fallback_is_rejected() {
+    let view = rounds();
+    let mut plan = plan_compaction_request(&view, 0, &facts(), "s").unwrap();
+    plan.fallback[0]["content"] = json!("fallback");
+    plan.target_tokens = 1;
+    let planned = planned_messages(&plan, Some("a model summary larger than the fallback"));
+    assert_eq!(planned.messages, plan.fallback);
+    assert_eq!(planned.failure, Some(CompactionFailure::Rejected));
+}
+
+#[test]
+fn a_rejected_summary_commit_reports_its_reason() {
+    let (store, _project) = fixture("summary-rejected");
+    let session = store.create(None, None, None, None).unwrap();
+    store.append_turn(&session.id, &rounds(), None).unwrap();
+    let plan = store.plan_compaction_now(&session.id, 0, &facts()).unwrap();
+    let commit = store
+        .commit_compaction(plan, Some(&"x".repeat(50_000)))
+        .unwrap();
+    assert_eq!(commit.summary_failure, Some(CompactionFailure::Rejected));
+    assert!(
+        commit.compaction.messages[0]["content"]
+            .as_str()
+            .unwrap()
+            .starts_with("Conversation summary written")
+    );
+    assert_eq!(
+        crate::commands::compaction_failed_event(
+            &session.id,
+            commit.summary_failure.unwrap().notice_reason().unwrap(),
+        )["reason"],
+        json!("rejected")
+    );
+    std::fs::remove_dir_all(store.root().parent().unwrap()).unwrap();
 }
 
 #[test]
 fn a_mechanical_fallback_keeps_the_previous_model_summary() {
     let mut view = rounds();
     let first = plan_compaction_request(&view, 0, &facts(), "s").unwrap();
-    view = planned_messages(&first, Some("Do not add reverb to the vocal."));
+    view = planned_messages(&first, Some("Do not add reverb to the vocal.")).messages;
     for step in 0..8 {
         let id = format!("next-{step}");
         view.extend([round(&[&id]), result(&id)]);
     }
     let next = plan_compaction_request(&view, 0, &facts(), "s").unwrap();
-    let fallback = planned_messages(&next, None);
+    let fallback = planned_messages(&next, None).messages;
     assert!(
         fallback[0]["content"]
             .as_str()

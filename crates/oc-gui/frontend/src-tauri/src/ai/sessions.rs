@@ -387,6 +387,51 @@ pub enum CompactionFailure {
     Cancelled,
     Empty,
     Conflict,
+    /// The model text was too large or did not reduce the conversation more
+    /// than the mechanical fallback.
+    Rejected,
+}
+
+/// Why a compaction failure reaches the panel. Cancellation returns before a
+/// notice, so it has no wire form.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompactionFailureReason {
+    ProviderError,
+    Empty,
+    Conflict,
+    Rejected,
+}
+
+impl CompactionFailure {
+    /// The reason a notice can carry; cancellation is not one.
+    pub fn notice_reason(self) -> Option<CompactionFailureReason> {
+        Some(match self {
+            Self::Cancelled => return None,
+            Self::ProviderError => CompactionFailureReason::ProviderError,
+            Self::Empty => CompactionFailureReason::Empty,
+            Self::Conflict => CompactionFailureReason::Conflict,
+            Self::Rejected => CompactionFailureReason::Rejected,
+        })
+    }
+}
+
+/// What a committed compaction wrote, and why its model text was replaced when
+/// it was not used.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompactionCommit {
+    pub compaction: Compaction,
+    pub summary_failure: Option<CompactionFailure>,
+}
+
+impl CompactionCommit {
+    /// The compaction, with a replaced model text noted in `failure`.
+    pub fn into_compaction(self, failure: &mut Option<CompactionFailure>) -> Compaction {
+        if let Some(reason) = self.summary_failure {
+            failure.get_or_insert(reason);
+        }
+        self.compaction
+    }
 }
 
 /// What a compaction that needs a model call decides under the store lock.
@@ -1512,7 +1557,8 @@ impl Store {
         // the plan, asks the model outside the lock and commits the answer.
         if let Some(plan) = prepared.pending_compaction.take() {
             match self.commit_compaction(plan, None) {
-                Ok(outcome) => {
+                Ok(commit) => {
+                    let outcome = commit.compaction;
                     prepared.messages = outcome.messages.clone();
                     prepared.meta.tokens = outcome.tokens_after;
                     prepared.meta.compacted_at = Some(outcome.compacted_at.clone());
@@ -1894,7 +1940,7 @@ impl Store {
         &self,
         plan: CompactionPlan,
         summary: Option<&str>,
-    ) -> Result<Compaction, SessionError> {
+    ) -> Result<CompactionCommit, SessionError> {
         let _lock = self.mutation_lock()?;
         let (dir, mut meta) = self.find(&plan.id)?;
         let (view, _) = read_view(&dir)?;
@@ -1904,7 +1950,8 @@ impl Store {
                 "The conversation changed while its summary was being written.",
             ));
         }
-        let messages = planned_messages(&plan, summary);
+        let planned = planned_messages(&plan, summary);
+        let messages = planned.messages;
         if !strips_replay_state(&messages) {
             return Err(SessionError::new(
                 SessionErrorKind::SessionStore,
@@ -1945,7 +1992,10 @@ impl Store {
                 plan.id
             );
         }
-        Ok(outcome)
+        Ok(CompactionCommit {
+            compaction: outcome,
+            summary_failure: planned.failure,
+        })
     }
 
     /// Plans a compaction from the conversation as it stands now, under the
@@ -1973,7 +2023,9 @@ impl Store {
     ) -> Result<Option<Compaction>, SessionError> {
         let view = self.view(id)?;
         match plan_compaction_request(&view, target, facts, id) {
-            Ok(plan) => self.commit_compaction(plan, None).map(Some),
+            Ok(plan) => self
+                .commit_compaction(plan, None)
+                .map(|commit| Some(commit.compaction)),
             Err(_) => Ok(None),
         }
     }

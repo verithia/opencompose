@@ -550,7 +550,7 @@ impl Host for AppHost {
             return Err(CompactionFailure::Cancelled);
         }
         let outcome = match Store::config().commit_compaction(plan, summary.as_deref()) {
-            Ok(outcome) => outcome,
+            Ok(commit) => commit.into_compaction(&mut failure),
             Err(error) => {
                 failure.get_or_insert(CompactionFailure::Conflict);
                 let retried = Store::config().mechanical_recompaction(&id, target, &facts);
@@ -564,11 +564,11 @@ impl Host for AppHost {
                 }
             }
         };
-        match failure {
-            Some(failure) => {
+        match failure.and_then(CompactionFailure::notice_reason) {
+            Some(reason) => {
                 let _ = self.app.emit(
                     crate::commands::AUTO_SESSION_EVENT,
-                    crate::commands::compaction_failed_event(&id, failure),
+                    crate::commands::compaction_failed_event(&id, reason),
                 );
             }
             None => {
