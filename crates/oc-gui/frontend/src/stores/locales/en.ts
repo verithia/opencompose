@@ -2643,6 +2643,7 @@ export const en = {
     "ai.sessions.compactionFailedRejectedNotice": "The model summary was not smaller than the mechanical one, so the mechanical summary was kept.",
     "ai.sessions.compactionFailedEmpty": "the provider returned no text",
     "ai.sessions.compactionFailedConflict": "the conversation changed while it was written",
+    "ai.sessions.compactionFailedStore": "the conversation could not save the summary",
     "ai.sessions.retainedOne": "1 recent tool call",
     "ai.sessions.retained": "{count} recent tool calls",
     "toolbar.exportAudio": "Export audio…",

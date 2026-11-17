@@ -66,7 +66,9 @@ use audition_archive::{
     AUDITION_RENDER_STAGE, clip_dir, persist_auditions, render_dir, session_references, sweep,
 };
 #[cfg(test)]
-use audition_archive::{archive_mp3_rate, archived_bytes, mp3_bitrate};
+use audition_archive::{ArchiveSweep, archived_bytes, mp3_bitrate};
+#[cfg(test)]
+use journal::newest_that_fit;
 pub use audition_archive::{
     AUDITION_ARCHIVE_BUDGET, AuditionArchive, EvictedAudition, audition_archive,
     bound_media_replay,
@@ -392,33 +394,27 @@ pub enum CompactionFailure {
     Cancelled,
     Empty,
     Conflict,
+    /// The store could not publish the summary. The panel shows a failed
+    /// summary, not a provider problem.
+    Store,
     /// The model text was too large or did not reduce the conversation more
     /// than the mechanical fallback.
     Rejected,
 }
 
-/// Why a compaction failure reaches the panel. Cancellation returns before a
-/// notice, so it has no wire form.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CompactionFailureReason {
-    ProviderError,
-    Empty,
-    Conflict,
-    Rejected,
-}
-
 impl CompactionFailure {
     /// The reason a notice can carry; cancellation is not one.
-    pub fn notice_reason(self) -> Option<CompactionFailureReason> {
-        Some(match self {
-            Self::Cancelled => return None,
-            Self::ProviderError => CompactionFailureReason::ProviderError,
-            Self::Empty => CompactionFailureReason::Empty,
-            Self::Conflict => CompactionFailureReason::Conflict,
-            Self::Rejected => CompactionFailureReason::Rejected,
-        })
+    pub fn notice_reason(self) -> Option<Self> {
+        (self != Self::Cancelled).then_some(self)
     }
+}
+
+/// What publishing a planned compaction produced: the committed compaction
+/// when one was written, and why model text was replaced when it was not used.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompactionResolution {
+    pub compaction: Option<Compaction>,
+    pub failure: Option<CompactionFailure>,
 }
 
 /// What a committed compaction wrote, and why its model text was replaced when
@@ -427,16 +423,6 @@ impl CompactionFailure {
 pub struct CompactionCommit {
     pub compaction: Compaction,
     pub summary_failure: Option<CompactionFailure>,
-}
-
-impl CompactionCommit {
-    /// The compaction, with a replaced model text noted in `failure`.
-    pub fn into_compaction(self, failure: &mut Option<CompactionFailure>) -> Compaction {
-        if let Some(reason) = self.summary_failure {
-            failure.get_or_insert(reason);
-        }
-        self.compaction
-    }
 }
 
 /// What a compaction that needs a model call decides under the store lock.
@@ -462,6 +448,9 @@ pub struct CompactionPlan {
     pub(crate) digest: String,
     /// The mechanical summary the store writes when no model answer is used.
     pub(crate) fallback: Vec<Value>,
+    /// What the project looked like when the plan was built, so a retry can
+    /// write the same deterministic header without re-reading the project.
+    pub(crate) facts: ProjectFacts,
 }
 
 /// What a refused reshaping of a conversation (compact, drop history, delete)
@@ -600,11 +589,21 @@ pub struct Prepared {
     pub pending_compaction: Option<CompactionPlan>,
     /// Why the automatic compaction this turn needed did not happen. The turn
     /// still goes out; the caller tells the panel.
-    pub compaction_error: Option<String>,
+    pub compaction_error: Option<CompactionFailure>,
     /// Archive files this turn's auditions evicted to stay inside the budget.
     pub evicted_auditions: Vec<EvictedAudition>,
     /// Audition rows added by this request, for the live operator transcript.
     pub saved_auditions: Vec<Value>,
+}
+
+impl Prepared {
+    /// Replaces the saved view with the compaction that was just published.
+    pub fn apply(&mut self, compaction: &Compaction) {
+        self.messages = compaction.messages.clone();
+        self.meta.tokens = compaction.tokens_after;
+        self.meta.compacted_at = Some(compaction.compacted_at.clone());
+        self.compacted = Some(compaction.clone());
+    }
 }
 
 #[derive(Debug)]
@@ -1619,16 +1618,11 @@ impl Store {
         // The mechanical path commits the plan it just built. A real turn keeps
         // the plan, asks the model outside the lock and commits the answer.
         if let Some(plan) = prepared.pending_compaction.take() {
-            match self.commit_compaction(plan, None) {
-                Ok(commit) => {
-                    let outcome = commit.compaction;
-                    prepared.messages = outcome.messages.clone();
-                    prepared.meta.tokens = outcome.tokens_after;
-                    prepared.meta.compacted_at = Some(outcome.compacted_at.clone());
-                    prepared.compacted = Some(outcome);
-                }
-                Err(error) => prepared.compaction_error = Some(error.message),
+            let resolution = self.finish_compaction(plan, None);
+            if let Some(compaction) = resolution.compaction.as_ref() {
+                prepared.apply(compaction);
             }
+            prepared.compaction_error = resolution.failure;
         }
         Ok(prepared)
     }
@@ -1845,7 +1839,7 @@ impl Store {
                 Ok(plan) => pending_compaction = Some(plan),
                 Err(error) => {
                     log::warn!("[ai] session {id} auto-compaction failed: {error}");
-                    compaction_error = Some(error);
+                    compaction_error = Some(CompactionFailure::Store);
                 }
             }
         }
@@ -2074,6 +2068,49 @@ impl Store {
             compaction: outcome,
             summary_failure: planned.failure,
         })
+    }
+
+    /// Publishes a planned compaction and owns the retry policy. A conflict
+    /// means the conversation moved after the plan was built: the model text
+    /// cannot be used, but one mechanical retry from the current view still
+    /// compacts. Any other store failure leaves the view untouched and is
+    /// reported as a store failure, never as a provider problem.
+    pub fn finish_compaction(
+        &self,
+        plan: CompactionPlan,
+        summary: Option<&str>,
+    ) -> CompactionResolution {
+        let id = plan.id.clone();
+        let target = plan.target_tokens;
+        let facts = plan.facts.clone();
+        match self.commit_compaction(plan, summary) {
+            Ok(commit) => CompactionResolution {
+                compaction: Some(commit.compaction),
+                failure: commit.summary_failure,
+            },
+            Err(error) if error.kind == SessionErrorKind::Conflict => {
+                match self.mechanical_recompaction(&id, target, &facts) {
+                    Ok(compaction) => CompactionResolution {
+                        compaction,
+                        failure: Some(CompactionFailure::Conflict),
+                    },
+                    Err(error) => {
+                        log::warn!("[ai] session {id} mechanical recompaction failed: {error}");
+                        CompactionResolution {
+                            compaction: None,
+                            failure: Some(CompactionFailure::Store),
+                        }
+                    }
+                }
+            }
+            Err(error) => {
+                log::warn!("[ai] session {id} compaction could not be published: {error}");
+                CompactionResolution {
+                    compaction: None,
+                    failure: Some(CompactionFailure::Store),
+                }
+            }
+        }
     }
 
     /// Plans a compaction from the conversation as it stands now, under the
@@ -2556,6 +2593,7 @@ fn plan_compaction_request(
         prefix: summary_intro(view, split, retained, facts, &outcome.compacted_at),
         digest: summary_digest(view, split, retained, outcome.tokens_before),
         fallback: outcome.messages,
+        facts: facts.clone(),
     })
 }
 

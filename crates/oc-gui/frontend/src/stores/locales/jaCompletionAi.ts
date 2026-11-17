@@ -172,4 +172,5 @@ export const jaCompletionAi = {
   "ai.sessions.compactionFailedRejectedNotice": "モデルの要約は機械的な要約より小さくなかったため、機械的な要約を保持しました。",
   "ai.sessions.compactionFailedEmpty": "プロバイダーがテキストを返しませんでした",
   "ai.sessions.compactionFailedConflict": "書き込み中に会話が変わりました",
+  "ai.sessions.compactionFailedStore": "セッションが要約を保存できませんでした",
 } as const;

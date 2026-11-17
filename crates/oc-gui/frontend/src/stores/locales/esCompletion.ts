@@ -125,6 +125,7 @@ export const esCompletion = {
   "ai.sessions.compactionFailedRejectedNotice": "El resumen del modelo no era más pequeño que el mecánico, así que se conservó el resumen mecánico.",
   "ai.sessions.compactionFailedEmpty": "el proveedor no devolvió texto",
   "ai.sessions.compactionFailedConflict": "la conversación cambió mientras se escribía",
+  "ai.sessions.compactionFailedStore": "la conversación no pudo guardar el resumen",
   "ai.sessions.original": "Ver historial original",
   "ai.sessions.originalBack": "Volver a la vista resumida",
   "ai.sessions.originalBanner": "Historial anterior al resumen. El asistente recibe el resumen de estos mensajes.",

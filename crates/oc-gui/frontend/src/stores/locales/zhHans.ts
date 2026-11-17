@@ -2644,6 +2644,7 @@ export const zhHans = {
     "ai.sessions.compactionFailedRejectedNotice": "模型摘要并不比机械摘要小，因此保留了机械摘要。",
     "ai.sessions.compactionFailedEmpty": "服务商未返回文本",
     "ai.sessions.compactionFailedConflict": "写入期间对话已发生变化",
+    "ai.sessions.compactionFailedStore": "对话无法保存摘要",
   "ai.sessions.retainedOne": "1 个最近的工具调用",
   "ai.sessions.retained": "{count} 个最近的工具调用",
   "toolbar.exportAudio": "导出音频…",

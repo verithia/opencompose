@@ -242,12 +242,14 @@ impl HostNotice {
                 if let Some(rounds) = rounds_left {
                     let plural = if *rounds == 1 { "" } else { "s" };
                     lines.push(format!(
-                        "You have {rounds} tool round{plural} left in this turn. Write or answer                          with what you have now; if something is still missing, say what it is."
+                        "You have {rounds} tool round{plural} left in this turn. Write or answer \
+                         with what you have now; if something is still missing, say what it is."
                     ));
                 }
                 if let Some(share) = context_share {
                     lines.push(format!(
-                        "This turn has used about {share}% of the model's context window. Keep                          the remaining work small and summarize what you already found."
+                        "This turn has used about {share}% of the model's context window. Keep \
+                         the remaining work small and summarize what you already found."
                     ));
                 }
                 lines.join(" ")
@@ -608,6 +610,22 @@ mod tests {
         };
         assert!(!context.model_text().contains("tool round"));
         assert!(context.model_text().contains("75%"));
+    }
+
+    #[test]
+    fn a_budget_notice_has_single_spaces_at_its_line_breaks() {
+        let text = HostNotice::Budget {
+            rounds_left: Some(3),
+            context_share: Some(61),
+        }
+        .model_text();
+        assert_eq!(
+            text,
+            "You have 3 tool rounds left in this turn. Write or answer with what you have now; \
+             if something is still missing, say what it is. This turn has used about 61% of the \
+             model's context window. Keep the remaining work small and summarize what you already \
+             found."
+        );
     }
 
     #[test]

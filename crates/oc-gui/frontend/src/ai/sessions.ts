@@ -139,7 +139,7 @@ export interface CompactionResult extends CompactionReport {
 }
 
 /** Why a model-written summary was replaced by the mechanical one. */
-export type CompactionFailure = "provider_error" | "empty" | "conflict" | "rejected";
+export type CompactionFailure = "provider_error" | "empty" | "conflict" | "store" | "rejected";
 
 /** Payload of the backend's `ai_session` event after a failed summary call. */
 export interface SessionCompactionFailure {
@@ -167,7 +167,8 @@ export function sessionCompactionFailure(event: unknown): SessionCompactionFailu
   const value = event as Partial<SessionCompactionFailure> | null;
   if (!value || value.notice !== "compaction_failed" || typeof value.session_id !== "string") return null;
   if (value.reason !== "provider_error" && value.reason !== "empty"
-    && value.reason !== "conflict" && value.reason !== "rejected") return null;
+    && value.reason !== "conflict" && value.reason !== "store"
+    && value.reason !== "rejected") return null;
   return value as SessionCompactionFailure;
 }
 
@@ -175,6 +176,7 @@ const COMPACTION_FAILURE_KEYS = {
   provider_error: "ai.sessions.compactionFailedProvider",
   empty: "ai.sessions.compactionFailedEmpty",
   conflict: "ai.sessions.compactionFailedConflict",
+  store: "ai.sessions.compactionFailedStore",
 } as const;
 
 /** The transcript line for a compaction whose summary call failed. */

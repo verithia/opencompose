@@ -227,7 +227,7 @@ pub(super) fn sweep(dir: &Path, referenced: &std::collections::HashSet<String>, 
 
 /// One write into the shared archive: the hashes conversations name, the files
 /// this write already produced, and what it had to remove for room.
-struct ArchiveSweep<'a> {
+pub(super) struct ArchiveSweep<'a> {
     root: &'a Path,
     referenced: Option<std::collections::HashSet<String>>,
     protected: std::collections::HashSet<String>,
@@ -235,7 +235,7 @@ struct ArchiveSweep<'a> {
 }
 
 impl<'a> ArchiveSweep<'a> {
-    fn new(root: &'a Path) -> Self {
+    pub(super) fn new(root: &'a Path) -> Self {
         Self {
             root,
             referenced: None,
@@ -246,14 +246,14 @@ impl<'a> ArchiveSweep<'a> {
 
     /// Reads the conversations once, and only when the archive is actually over
     /// its budget.
-    fn referenced(&mut self) -> std::collections::HashSet<String> {
+    pub(super) fn referenced(&mut self) -> std::collections::HashSet<String> {
         self.referenced
             .get_or_insert_with(|| referenced_tokens(self.root))
             .clone()
     }
 
     /// Makes room for `add` bytes, evicting the archive's oldest files.
-    fn room(&mut self, add: u64) -> Result<(), String> {
+    pub(super) fn room(&mut self, add: u64) -> Result<(), String> {
         let used = archived_bytes(self.root);
         if used.saturating_add(add) <= AUDITION_ARCHIVE_BUDGET {
             return Ok(());
@@ -276,7 +276,7 @@ impl<'a> ArchiveSweep<'a> {
 
     /// Keep the bounded model delivery byte-for-byte so later turns hear
     /// the same sample rate, channels and duration.
-    fn clip(&mut self, raw: &[u8]) -> Result<PathBuf, String> {
+    pub(super) fn clip(&mut self, raw: &[u8]) -> Result<PathBuf, String> {
         let hash = format!("{:x}", Sha256::digest(raw));
         let path = clip_dir(self.root).join(format!("{hash}.wav"));
         self.protected.insert(hash);
@@ -291,7 +291,7 @@ impl<'a> ArchiveSweep<'a> {
     /// Archive a rendered file at its own rate and channel count, so a stereo
     /// render stays stereo. Falls back to the clip's bytes when the container
     /// cannot hold the file's rate.
-    fn render(
+    pub(super) fn render(
         &mut self,
         source: &Path,
         settings: &crate::gui_settings::SessionAudioSettings,

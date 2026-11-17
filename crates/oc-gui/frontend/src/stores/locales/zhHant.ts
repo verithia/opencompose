@@ -2644,6 +2644,7 @@ export const zhHant = {
     "ai.sessions.compactionFailedRejectedNotice": "模型摘要並不比機械摘要小，因此保留了機械摘要。",
     "ai.sessions.compactionFailedEmpty": "服務商未傳回文字",
     "ai.sessions.compactionFailedConflict": "寫入期間對話已發生變化",
+    "ai.sessions.compactionFailedStore": "對話無法儲存摘要",
   "ai.sessions.retainedOne": "1 個最近的工具呼叫",
   "ai.sessions.retained": "{count} 個最近的工具呼叫",
   "toolbar.exportAudio": "匯出音訊…",

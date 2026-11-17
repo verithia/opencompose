@@ -547,7 +547,7 @@ impl Host for AppHost {
             Some(cancel),
         )
         .await;
-        let (summary, mut failure) = match summary {
+        let (summary, provider_failure) = match summary {
             Ok(summary) => (Some(summary), None),
             Err(CompactionFailure::Cancelled) => return Err(CompactionFailure::Cancelled),
             Err(failure) => (None, Some(failure)),
@@ -555,21 +555,10 @@ impl Host for AppHost {
         if cancel.is_cancelled() {
             return Err(CompactionFailure::Cancelled);
         }
-        let outcome = match Store::config().commit_compaction(plan, summary.as_deref()) {
-            Ok(commit) => commit.into_compaction(&mut failure),
-            Err(error) => {
-                failure.get_or_insert(CompactionFailure::Conflict);
-                let retried = Store::config().mechanical_recompaction(&id, target, &facts);
-                match retried {
-                    Ok(Some(outcome)) => outcome,
-                    Ok(None) => return Err(CompactionFailure::Conflict),
-                    Err(_) => {
-                        log::warn!("[ai] session {id} mid-turn compaction failed: {error}");
-                        return Err(CompactionFailure::Conflict);
-                    }
-                }
-            }
-        };
+        let crate::ai::sessions::CompactionResolution { compaction, failure } =
+            Store::config().finish_compaction(plan, summary.as_deref());
+        let failure = provider_failure.or(failure);
+        let outcome = compaction.ok_or(failure.unwrap_or(CompactionFailure::Store))?;
         match failure.and_then(CompactionFailure::notice_reason) {
             Some(reason) => {
                 let _ = self.app.emit(

@@ -732,9 +732,8 @@ where
     // commit appends one compaction record only if the conversation still
     // matches the plan; a failure compacts mechanically instead.
     if let Some(plan) = prepared.pending_compaction.take() {
-        let target = (context as f64 * sessions::AUTO_COMPACT_TARGET_FRACTION) as u64;
         let summary = summarize(plan.input.clone()).await;
-        let (summary, mut failure) = match summary {
+        let (summary, provider_failure) = match summary {
             Ok(summary) => (Some(summary), None),
             Err(sessions::CompactionFailure::Cancelled) => return Err(PrepareTurnError::Cancelled),
             Err(failure) => (None, Some(failure)),
@@ -745,48 +744,23 @@ where
         {
             return Err(PrepareTurnError::Cancelled);
         }
-        let outcome = match store.commit_compaction(plan, summary.as_deref()) {
-            Ok(commit) => Some(commit.into_compaction(&mut failure)),
-            Err(error) if error.kind == SessionErrorKind::Conflict => {
-                // The conversation moved after planning. One retry from the
-                // current view still compacts, and the panel is told why the
-                // model text was replaced.
-                failure.get_or_insert(sessions::CompactionFailure::Conflict);
-                match store.mechanical_recompaction(&session_id, target, &facts) {
-                    Ok(outcome) => outcome,
-                    Err(error) => {
-                        prepared.compaction_error = Some(error.message);
-                        None
-                    }
-                }
-            }
-            Err(error) => {
-                prepared.compaction_error = Some(error.message);
-                None
-            }
-        };
-        if let Some(outcome) = outcome {
-            prepared.messages = outcome.messages.clone();
-            prepared.meta.tokens = outcome.tokens_after;
-            prepared.meta.compacted_at = Some(outcome.compacted_at.clone());
-            prepared.compacted = Some(outcome);
+        let resolution = store.finish_compaction(plan, summary.as_deref());
+        if let Some(compaction) = resolution.compaction.as_ref() {
+            prepared.apply(compaction);
         }
-        if let Some(reason) = failure.and_then(sessions::CompactionFailure::notice_reason) {
-            let _ = app.emit(
-                AUTO_SESSION_EVENT,
-                compaction_failed_event(&session_id, reason),
-            );
-        }
+        prepared.compaction_error = provider_failure.or(resolution.failure);
     }
-    if let Some(error) = prepared.compaction_error.as_ref() {
+    if let Some(reason) = prepared
+        .compaction_error
+        .and_then(sessions::CompactionFailure::notice_reason)
+    {
         let _ = app.emit(
             AUTO_SESSION_EVENT,
-            compaction_failed_event(
-                &session_id,
-                sessions::CompactionFailureReason::ProviderError,
-            ),
+            compaction_failed_event(&session_id, reason),
         );
-        log::warn!("[ai] session {session_id} auto-compaction failed: {error}");
+        if reason == sessions::CompactionFailure::Store {
+            log::warn!("[ai] session {session_id} auto-compaction failed");
+        }
     }
     let saved = match prepared.live {
         Some(live) => live,
@@ -923,7 +897,7 @@ pub fn compaction_recorded_event(session_id: &str, compaction: &Compaction) -> V
 /// why the model text is missing.
 pub fn compaction_failed_event(
     session_id: &str,
-    reason: sessions::CompactionFailureReason,
+    reason: sessions::CompactionFailure,
 ) -> Value {
     json!({
         "session_id": session_id,

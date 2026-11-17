@@ -879,6 +879,37 @@ fn a_commit_after_the_conversation_changed_is_a_conflict_and_loses_nothing() {
 }
 
 #[test]
+fn a_conflict_retries_the_mechanical_summary_and_reports_the_replaced_text() {
+    let (store, project) = fixture("summary-finish-conflict");
+    let session = store
+        .create(Some(project.parent().unwrap()), Some(&project), None, None)
+        .unwrap();
+    let mut view = rounds();
+    view.push(user("now the bass"));
+    store.append_turn(&session.id, &view, None).unwrap();
+    let saved = store.view(&session.id).unwrap();
+    let plan = plan_compaction_request(&saved, 0, &facts(), &session.id).unwrap();
+    // The conversation moves while the model writes its summary.
+    store
+        .append_turn(&session.id, &[user("a newer ask")], None)
+        .unwrap();
+    let resolution = store.finish_compaction(plan, Some("late summary"));
+    assert_eq!(resolution.failure, Some(CompactionFailure::Conflict));
+    let compaction = resolution.compaction.expect("the retry compacts");
+    assert!(compaction.messages.iter().any(|row| row["content"] == "a newer ask"));
+    assert!(
+        !compaction.messages[0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("late summary"),
+        "a stale model answer is never published"
+    );
+    let current = store.view(&session.id).unwrap();
+    assert_eq!(current, compaction.messages);
+    std::fs::remove_dir_all(store.root().parent().unwrap()).unwrap();
+}
+
+#[test]
 fn successive_model_summaries_receive_the_previous_decisions() {
     let (store, _project) = fixture("summary-continuity");
     let session = store.create(None, None, None, None).unwrap();
