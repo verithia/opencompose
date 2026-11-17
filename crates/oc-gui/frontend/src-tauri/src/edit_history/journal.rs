@@ -144,7 +144,7 @@ pub fn find_by_fingerprint(sha256: &str, except: &Path) -> Option<Stored> {
         .filter(|stored| stored.dir != except)
         .filter(|stored| stored.marker.sha256.as_deref() == Some(sha256))
         .map(|stored| {
-            let gone = !stored.marker.path.exists();
+            let gone = crate::project_data::is_gone(&stored.marker.path);
             let at = std::fs::metadata(stored.dir.join(STATE))
                 .and_then(|meta| meta.modified())
                 .unwrap_or(std::time::UNIX_EPOCH);

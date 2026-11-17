@@ -788,6 +788,29 @@ fn a_file_copied_outside_the_app_gets_a_copy_of_the_history() {
 }
 
 #[test]
+fn a_history_on_an_unmounted_volume_is_copied_not_moved() {
+    super::enable_persistence_for_test();
+    let dir = tempfile::tempdir().unwrap();
+    let copy = project_file(dir.path());
+    std::fs::write(&copy, SOURCE).unwrap();
+    let sha = journal::fingerprint(&copy).unwrap();
+    let unmounted = PathBuf::from("/Volumes/NotMounted-oc-history-test/song.ocp");
+    assert!(!unmounted.exists(), "the fixture volume is not mounted");
+    let mut journal = Journal::open(&unmounted).unwrap();
+    journal.append(&[entry(1)]).unwrap();
+    journal.write_state(1, SOURCE).unwrap();
+    journal::write_marker(journal.dir(), &journal::Marker::new(&unmounted, Some(sha))).unwrap();
+    drop(journal);
+
+    let reopened = reopen(&copy);
+    assert_eq!(reopened.lock_inner().undo.total_levels(), 1);
+    assert!(
+        journal::dir_for(&unmounted).exists(),
+        "a file on an unmounted volume still owns its history"
+    );
+}
+
+#[test]
 fn a_new_project_never_takes_a_history_by_content() {
     let dir = tempfile::tempdir().unwrap();
     super::enable_persistence_for_test();

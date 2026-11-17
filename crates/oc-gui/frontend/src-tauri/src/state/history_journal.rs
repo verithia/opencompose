@@ -650,10 +650,10 @@ impl AppStateInner {
         {
             // A history whose file is gone moves with the file; one whose file
             // is still there is copied, like a Save As.
-            let how = if found.marker.path.exists() {
-                crate::project_data::Relocation::Copy
-            } else {
+            let how = if crate::project_data::is_gone(&found.marker.path) {
                 crate::project_data::Relocation::Move
+            } else {
+                crate::project_data::Relocation::Copy
             };
             let adopted = match how {
                 crate::project_data::Relocation::Copy => journal::copy_dir(&found.dir, &dir),
