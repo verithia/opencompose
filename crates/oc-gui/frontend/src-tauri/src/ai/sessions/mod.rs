@@ -1469,23 +1469,15 @@ impl Store {
         }
         let (dir, mut meta) = self.find(id)?;
         let records = read_records(&dir)?;
-        let compactions: Vec<usize> = records
-            .iter()
-            .enumerate()
-            .filter(|(_, record)| record.kind == RecordKind::Compaction)
-            .map(|(index, _)| index)
-            .collect();
+        let count = compaction_indices(&records).len();
         let keep = keep as usize;
-        if keep > compactions.len() {
+        let Some((from, kept)) = keep_from_compaction(&records, keep) else {
             return Err(format!(
-                "drop_history {keep}: this session has {} compaction(s)",
-                compactions.len()
+                "drop_history {keep}: this session has {count} compaction(s)"
             )
             .into());
-        }
-        let from = compactions[keep - 1];
+        };
         let dropped = records.len() - from;
-        let kept = records[from..].to_vec();
         write_records(&dir, &kept)?;
         meta.updated = now();
         write_meta(&dir, &meta)?;
@@ -2155,13 +2147,10 @@ impl Store {
         let before = root_size(&self.root);
         let (dir, meta) = self.find(id)?;
         let records = read_records(&dir)?;
-        let compactions = compaction_indices(&records);
-        if compactions.len() < 3 {
+        let Some((from, kept)) = old_history_from(&records) else {
             return Ok(ClearReport::default());
-        }
-        let from = compactions[compactions.len() - 2];
+        };
         let dropped = records.len() - from;
-        let kept = records[from..].to_vec();
         write_records(&dir, &kept)?;
         let mut meta = meta;
         meta.updated = now();
@@ -2177,8 +2166,9 @@ impl Store {
     }
 
     /// [`Self::clear_old_history_guarded`] for every conversation, skipping the
-    /// ones `skip` names. The whole sweep runs under one store lock, so a
-    /// failure leaves every conversation as it was.
+    /// ones `skip` names. The sweep reads and plans every rewrite under one
+    /// store lock before writing any of them, so a read or lock failure leaves
+    /// the conversations it could reach unchanged.
     pub fn clear_all_old_history(
         &self,
         skip: &dyn Fn(&str) -> bool,
@@ -2190,6 +2180,10 @@ impl Store {
         if !keys.iter().any(|key| key == DETACHED_KEY) {
             keys.push(DETACHED_KEY.to_owned());
         }
+        // Read and plan every rewrite before the first write, so a read or lock
+        // failure leaves the conversations this sweep did reach untouched.
+        let mut rewrites = Vec::new();
+        let mut locks = Vec::new();
         for key in keys {
             let Ok(entries) = std::fs::read_dir(self.root.join(&key)) else {
                 continue;
@@ -2201,7 +2195,7 @@ impl Store {
                 }
                 // A conversation another process has open keeps its history
                 // until that process closes it.
-                let _lock = match crate::process_lock::ProcessLock::acquire(self.lock_path(&name)) {
+                let lock = match crate::process_lock::ProcessLock::acquire(self.lock_path(&name)) {
                     Ok(lock) => lock,
                     Err(error) => {
                         if !error.is_in_use() {
@@ -2214,20 +2208,23 @@ impl Store {
                 let Ok(records) = read_records(&dir) else {
                     continue;
                 };
-                let compactions = compaction_indices(&records);
-                if compactions.len() < 3 {
+                let Some((from, kept)) = old_history_from(&records) else {
                     continue;
-                }
-                let from = compactions[compactions.len() - 2];
-                let kept = records[from..].to_vec();
-                write_records(&dir, &kept)?;
-                if let Some(mut meta) = read_meta(&dir.join(META_FILE)) {
-                    meta.updated = now();
-                    let _ = write_meta(&dir, &meta);
-                }
-                report.sessions += 1;
-                report.dropped_records += (records.len() - from) as u64;
+                };
+                locks.push(lock);
+                rewrites.push((dir, from, records.len(), kept));
             }
+        }
+        // The locks stay held until every staged rewrite is published.
+        let _locks = locks;
+        for (dir, from, total, kept) in rewrites {
+            write_records(&dir, &kept)?;
+            if let Some(mut meta) = read_meta(&dir.join(META_FILE)) {
+                meta.updated = now();
+                let _ = write_meta(&dir, &meta);
+            }
+            report.sessions += 1;
+            report.dropped_records += (total - from) as u64;
         }
         report.removed_assets = self.collect_unreferenced_locked();
         report.freed_bytes = before.saturating_sub(root_size(&self.root));
@@ -3199,6 +3196,22 @@ pub fn is_compaction_summary(message: &Value) -> bool {
 // ---- file I/O -----------------------------------------------------------
 
 // ---- helpers ------------------------------------------------------------
+
+/// The records from the `keep`-th compaction onward, counted from the oldest.
+/// The compactions before it are the history this rewrite drops.
+fn keep_from_compaction(records: &[Record], keep: usize) -> Option<(usize, Vec<Record>)> {
+    let from = *compaction_indices(records).get(keep.checked_sub(1)?)?;
+    Some((from, records[from..].to_vec()))
+}
+
+/// The rewrite that keeps only the newest two compactions and what followed
+/// them. A conversation with fewer than three compactions has nothing older.
+fn old_history_from(records: &[Record]) -> Option<(usize, Vec<Record>)> {
+    let compactions = compaction_indices(records).len();
+    (compactions >= 3)
+        .then_some(compactions - 1)
+        .and_then(|keep| keep_from_compaction(records, keep))
+}
 
 /// Total bytes of the files under a directory, for a before/after report.
 fn root_size(root: &Path) -> u64 {
