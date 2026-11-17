@@ -74,6 +74,7 @@ function installBackend() {
       case "ai_turn_start": throw new Error("the fixture runs no turn");
       case "get_project": return { ...makeSnapshot(), file_path: null };
       case "sessions_list": return [META];
+      case "sessions_new": return { ...META };
       case "sessions_open":
         return {
           meta: META,
@@ -81,7 +82,10 @@ function installBackend() {
           skipped: 0,
           start: backend.start,
           total: backend.start + backend.messages.length,
-          state: backend.state,
+          state: backend.state ?? backend.messages.flatMap((message) => {
+            const meta = (message as { message_meta?: { kind?: string; state?: SessionState } }).message_meta;
+            return meta?.kind === "session_state" && meta.state ? [meta.state] : [];
+          }),
           revision: "rev-1",
           older_tokens: 0,
         };
@@ -209,6 +213,19 @@ describe("goal and plan are saved session rows", () => {
     await waitFor(() => expect(backend.goals).toEqual([{ id: "s1", text: null }]));
     await waitFor(() => expect(document.querySelector(".ai-goal-chip")).toBeFalsy());
     expect(document.querySelector(".ai-plan-strip")).toBeTruthy();
+  });
+
+  it("writes a goal staged before the first message once its conversation exists", async () => {
+    await store.initProject();
+    render(() => <><AiPanel /><TooltipLayer /><ContextMenuLayer /></>);
+    await waitFor(() => expect(invokeMock.mock.calls.some(([command]) => command === "sessions_list")).toBe(true));
+    fireEvent.input(input(), { target: { value: "/goal keep the low end steady" } });
+    await waitFor(() => expect(document.querySelector(".ai-command-row")).toBeTruthy());
+    fireEvent.click(document.querySelector(".ai-command-row") as HTMLElement);
+    await waitFor(() => expect(document.querySelector(".ai-goal-text")?.textContent).toBe("keep the low end steady"));
+    fireEvent.input(input(), { target: { value: "start the work" } });
+    fireEvent.click(document.querySelector(".ai-send-btn") as HTMLElement);
+    await waitFor(() => expect(backend.goals).toEqual([{ id: "s1", text: "keep the low end steady" }]));
   });
 
   it("migrates a goal kept in the window store once", async () => {

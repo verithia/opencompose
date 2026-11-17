@@ -105,7 +105,7 @@ function installBackend() {
           start: state.start,
           total: state.total,
           revision: state.revision,
-          older_tokens: state.older,
+          older_tokens: state.older, state: [],
         };
       }
       case "sessions_page": {
@@ -361,6 +361,38 @@ describe("opening a paged conversation", () => {
     await waitFor(() => expect(document.body.textContent).not.toContain("newest answer"));
     expect(earlier()).toBeNull();
     expect(backend.pageReads).toEqual([]);
+  });
+
+  it("exports only the rows it can still address when the saved view changed shape", async () => {
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: vi.fn(async () => {}) },
+    });
+    await mountPanel();
+    await openConversation("paged conversation", "newest answer");
+
+    backend.conversations.s1 = [
+      { role: "user", content: "rewritten question" },
+      { role: "assistant", content: "rewritten answer" },
+    ];
+    backend.open.s1 = {
+      messages: backend.conversations.s1,
+      start: 0,
+      total: 2,
+      revision: "rev-2",
+      older: 0,
+    };
+
+    fireEvent.click(document.querySelector(".ai-session-export") as HTMLElement);
+    await waitFor(() => expect(document.querySelector(".ai-export-menu")).toBeTruthy());
+    fireEvent.click(document.querySelector(".ai-export-copy-markdown") as HTMLElement);
+    await waitFor(() => expect(document.querySelector(".ai-export-note")).toBeTruthy());
+
+    const copied = (navigator.clipboard.writeText as unknown as { mock: { calls: string[][] } })
+      .mock.calls.at(-1)![0];
+    expect(copied).toContain("newest answer");
+    expect(copied).not.toContain("rewritten answer");
+    expect(copied).not.toContain("first question");
   });
 
   it("exports the turns the panel has not loaded", async () => {

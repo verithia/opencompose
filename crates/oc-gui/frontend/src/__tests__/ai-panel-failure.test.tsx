@@ -87,7 +87,7 @@ function installBackend() {
       case "sessions_new": return { id: "s1", title: String(typed.title ?? "new") };
       case "sessions_list": return [];
       case "sessions_load":
-      case "sessions_open": return { meta: { id: "s1", title: "new" }, messages: [], skipped: 0, start: 0, total: 0, revision: "0", older_tokens: 0 };
+      case "sessions_open": return { meta: { id: "s1", title: "new" }, messages: [], skipped: 0, start: 0, total: 0, revision: "0", older_tokens: 0, state: [] };
       default: return makeSnapshot();
     }
   });

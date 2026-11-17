@@ -91,7 +91,7 @@ function installBackend(overrides: Partial<Backend> = {}): Backend {
           start: 0,
           total: Array.isArray(loaded.messages) ? loaded.messages.length : 0,
           revision: "0",
-          older_tokens: 0,
+          older_tokens: 0, state: [],
         };
       }
       case "ai_turn_start": {

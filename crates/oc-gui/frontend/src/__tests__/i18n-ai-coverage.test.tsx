@@ -208,7 +208,7 @@ function installBackend() {
       case "sessions_new": return { id: "s1", title: String(typed.title ?? "new") };
       case "sessions_list": return [];
       case "sessions_load":
-      case "sessions_open": return { meta: { id: "s1", title: "new" }, messages: [], skipped: 0, start: 0, total: 0, revision: "0", older_tokens: 0 };
+      case "sessions_open": return { meta: { id: "s1", title: "new" }, messages: [], skipped: 0, start: 0, total: 0, revision: "0", older_tokens: 0, state: [] };
       case "ai_oauth_status":
         return { state: "signed_out", account: null, project: null, expires_at: null, reauth_required: true, message: "" };
       default: return makeSnapshot();

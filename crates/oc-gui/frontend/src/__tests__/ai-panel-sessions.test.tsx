@@ -225,7 +225,7 @@ function installBackend() {
           start: 0,
           total: messages.length,
           revision: "0",
-          older_tokens: 0,
+          older_tokens: 0, state: [],
         };
       }
       case "sessions_original": {
@@ -636,7 +636,7 @@ describe("conversation switcher", () => {
     emitUsage(usageSnapshot("s2", 2, 2400));
     expect(openTitle()).toBe("one");
     expect(aiStats.session().input).toBe(120);
-    delayed.resolve({ meta: session({ id: "s2", title: "two" }), messages: [], skipped: 0, usage: usageSnapshot("s2", 1, 1000), start: 0, total: 0, revision: "0", older_tokens: 0 });
+    delayed.resolve({ meta: session({ id: "s2", title: "two" }), messages: [], skipped: 0, usage: usageSnapshot("s2", 1, 1000), start: 0, total: 0, revision: "0", older_tokens: 0, state: [] });
     await waitFor(() => expect(openTitle()).toBe("two"));
     expect(aiStats.snapshot()?.revision).toBe(2);
     expect(aiStats.session().input).toBe(2400);
@@ -652,14 +652,14 @@ describe("conversation switcher", () => {
     invokeMock.mockImplementation((command: string, args?: unknown) => {
       if (command === "sessions_open" && (args as { id?: string })?.id === "s2") {
         loads += 1;
-        return loads === 1 ? delayed.promise : Promise.resolve({ meta: session({ id: "s2", title: "two" }), messages: [], skipped: 0, usage: usageSnapshot("s2", 2, 2400), start: 0, total: 0, revision: "0", older_tokens: 0 });
+        return loads === 1 ? delayed.promise : Promise.resolve({ meta: session({ id: "s2", title: "two" }), messages: [], skipped: 0, usage: usageSnapshot("s2", 2, 2400), start: 0, total: 0, revision: "0", older_tokens: 0, state: [] });
       }
       return original(command, args);
     });
     await openSwitcher(); fireEvent.click(screen.getByText("two"));
     await waitFor(() => expect(loads).toBe(1));
     emitUsage(usageSnapshot("s2", 2, 2400));
-    delayed.resolve({ meta: session({ id: "s2", title: "two" }), messages: [], skipped: 0, start: 0, total: 0, revision: "0", older_tokens: 0 });
+    delayed.resolve({ meta: session({ id: "s2", title: "two" }), messages: [], skipped: 0, start: 0, total: 0, revision: "0", older_tokens: 0, state: [] });
     await waitFor(() => expect(openTitle()).toBe("two"));
     expect(loads).toBe(2); expect(aiStats.session().input).toBe(2400);
   });
@@ -697,7 +697,7 @@ describe("conversation switcher", () => {
     backend.projectPath = "/Users/me/other/next.ocp";
     backend.sessions = [];
     await store.initProject();
-    finish({ meta: session({ id: "s1", title: "old songs" }), messages: [{ role: "assistant", content: "DELAYED OLD TRANSCRIPT" }], skipped: 0, usage: usageSnapshot("s1", 1, 120), start: 0, total: 1, revision: "0", older_tokens: 0 });
+    finish({ meta: session({ id: "s1", title: "old songs" }), messages: [{ role: "assistant", content: "DELAYED OLD TRANSCRIPT" }], skipped: 0, usage: usageSnapshot("s1", 1, 120), start: 0, total: 1, revision: "0", older_tokens: 0, state: [] });
     await new Promise(resolve => setTimeout(resolve, 20));
     expect(view.container.textContent).not.toContain("DELAYED OLD TRANSCRIPT");
     expect(aiSession.open()).toBeNull();

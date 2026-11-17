@@ -110,7 +110,7 @@ function installBackend() {
       case "sessions_open": {
         const meta = backend.sessions.find((entry) => entry.id === "s1")!;
         const messages = [{ role: "user", content: "make the kick punchier" }];
-        return { meta: { ...meta }, messages, skipped: 0, start: 0, total: messages.length, revision: "0", older_tokens: 0 };
+        return { meta: { ...meta }, messages, skipped: 0, start: 0, total: messages.length, revision: "0", older_tokens: 0, state: [] };
       }
       case "get_project": return makeSnapshot();
       default: return makeSnapshot();

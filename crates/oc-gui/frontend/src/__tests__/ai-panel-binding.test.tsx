@@ -68,7 +68,7 @@ function installBackend() {
           start: 0,
           total: 1,
           revision: "rev-1",
-          older_tokens: 0,
+          older_tokens: 0, state: [],
         };
       case "sessions_binding":
         return { bound: backend.bound, open: backend.open, matches: backend.bound === backend.open };

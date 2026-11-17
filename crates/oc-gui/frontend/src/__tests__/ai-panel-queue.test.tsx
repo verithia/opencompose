@@ -142,7 +142,7 @@ function installBackend() {
         return meta;
       }
       case "sessions_load":
-      case "sessions_open": return { meta: session(), messages: [], skipped: 0, start: 0, total: 0, revision: "0", older_tokens: 0 };
+      case "sessions_open": return { meta: session(), messages: [], skipped: 0, start: 0, total: 0, revision: "0", older_tokens: 0, state: [] };
       default: return makeSnapshot();
     }
   });

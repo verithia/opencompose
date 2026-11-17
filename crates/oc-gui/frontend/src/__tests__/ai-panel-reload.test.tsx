@@ -231,7 +231,7 @@ function installBackend() {
         const id = String(typed.id ?? "s1");
         backend.loadedIds.push(id);
         const next = backend.loads.length > 0 ? backend.loads.shift()! : backend.loaded;
-        return { meta: session({ id }), messages: next, skipped: 0, start: 0, total: next.length, revision: "0", older_tokens: 0 };
+        return { meta: session({ id }), messages: next, skipped: 0, start: 0, total: next.length, revision: "0", older_tokens: 0, state: [] };
       }
       default: return makeSnapshot();
     }
