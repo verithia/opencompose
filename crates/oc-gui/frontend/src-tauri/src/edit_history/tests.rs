@@ -603,6 +603,32 @@ fn a_first_save_writes_the_window_of_an_unsaved_document() {
 }
 
 #[test]
+fn every_project_write_records_the_files_fingerprint() {
+    super::enable_persistence_for_test();
+    let dir = tempfile::tempdir().unwrap();
+    let state = AppState::new();
+    let path = project_file(dir.path());
+    {
+        let mut inner = state.lock_inner();
+        crate::commands::create_project_in(&mut inner, Some(path.clone())).unwrap();
+        let marker = journal::read_marker(&journal::dir_for(&path)).unwrap();
+        assert_eq!(
+            marker.sha256,
+            journal::fingerprint(&path),
+            "New records the file it wrote"
+        );
+        set_tempo(&mut inner, 140.0);
+        crate::project_persist::flush(&mut inner).unwrap();
+    }
+    let marker = journal::read_marker(&journal::dir_for(&path)).unwrap();
+    assert_eq!(
+        marker.sha256,
+        journal::fingerprint(&path),
+        "a publish outside Save records the file it wrote"
+    );
+}
+
+#[test]
 fn history_is_not_written_unless_a_test_asks() {
     let dir = tempfile::tempdir().unwrap();
     let path = project_file(dir.path());

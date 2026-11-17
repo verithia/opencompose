@@ -540,7 +540,7 @@ pub(crate) struct SaveRequest {
     relocated: bool,
     /// The history was copied to the new path's, for a save to another file.
     history_copied: bool,
-    /// SHA-256 of the file the save wrote, for the history's marker.
+    /// SHA-256 of the bytes the save wrote, recorded in the history marker.
     file_sha: Option<String>,
 }
 
@@ -642,9 +642,7 @@ pub(crate) fn write_save_with_library(
         request.dsl_source = source;
         request.relocated = true;
     }
-    if crate::edit_history::persistence_enabled() {
-        request.file_sha = crate::edit_history::journal::fingerprint(&request.save_path);
-    }
+    request.file_sha = crate::project_data::content_sha256_bytes(request.dsl_source.as_bytes());
     Ok(())
 }
 
@@ -674,7 +672,7 @@ pub(crate) fn publish_save(state: &AppState, request: &SaveRequest) -> Option<bo
     inner.autosave_at = None;
     inner.autosave_digest = 0;
     if request.changes_path() {
-        inner.rehome_history(request.history_copied);
+        inner.rehome_history(request.history_copied, request.file_sha.clone());
         if let Some(old) = request.old_path.as_deref() {
             crate::project_data::relocate(
                 old,
@@ -682,8 +680,9 @@ pub(crate) fn publish_save(state: &AppState, request: &SaveRequest) -> Option<bo
                 crate::project_data::Relocation::Copy,
             );
         }
+    } else {
+        inner.record_history_file(request.file_sha.clone());
     }
-    inner.mark_history_file(request.file_sha.clone());
     let root = request.save_path.parent().map(Path::to_path_buf);
     let repointed =
         request.relocated || needs_repoint(inner.audio.resource_root.as_deref(), root.as_deref());
@@ -832,6 +831,7 @@ pub(crate) fn move_project_inner(
         ));
     }
     let backup = crate::project_persist::backup_path(&from);
+    let file_sha = crate::edit_history::journal::fingerprint(&from);
     if from.parent() == to.parent() {
         let mut inner = state.lock_inner();
         inner.sync_history();
@@ -847,7 +847,7 @@ pub(crate) fn move_project_inner(
             let _ = std::fs::rename(&backup, crate::project_persist::backup_path(&to));
         }
         inner.file_path = Some(to.clone());
-        inner.rehome_history(true);
+        inner.rehome_history(true, file_sha);
         crate::project_data::relocate(&from, &to, crate::project_data::Relocation::Move);
         return Ok((snapshot(&inner), false));
     }

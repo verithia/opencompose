@@ -107,6 +107,19 @@ pub fn discard(project: &std::path::Path) {
     }
 }
 
+/// Record the content SHA-256 of `project` after the app wrote it, so its
+/// history is found again if the file moves outside the app. The caller holds
+/// the document lock, so a marker write cannot race a history rewrite.
+pub fn record_fingerprint(project: &std::path::Path, sha256: Option<String>) {
+    if !persistence_enabled() || sha256.is_none() {
+        return;
+    }
+    let dir = journal::dir_for(project);
+    if let Err(error) = journal::write_marker(&dir, &journal::Marker::new(project, sha256)) {
+        log::warn!("[history] cannot record {}: {error}", project.display());
+    }
+}
+
 /// Start an empty history for a new document written at `project`. The
 /// history exists before the file is opened, so the open never adopts another
 /// project's history by fingerprint: a new file can match an old one's bytes.

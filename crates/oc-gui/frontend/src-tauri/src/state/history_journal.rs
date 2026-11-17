@@ -713,7 +713,7 @@ impl AppStateInner {
     /// Give the history a new home after the project got a new path: a copy
     /// of the old journal when one was made, otherwise a fresh one that the
     /// window is written into.
-    pub(crate) fn rehome_history(&mut self, copied: bool) {
+    pub(crate) fn rehome_history(&mut self, copied: bool, sha256: Option<String>) {
         if !crate::edit_history::persistence_enabled() {
             return;
         }
@@ -724,12 +724,9 @@ impl AppStateInner {
         if !copied {
             let _ = std::fs::remove_dir_all(&dir);
         }
-        // A copied or moved directory still names the old path; the
-        // fingerprint stays until the save that follows records the new file.
-        let sha = journal::read_marker(&dir).and_then(|marker| marker.sha256);
-        if let Err(error) = journal::write_marker(&dir, &journal::Marker::new(&path, sha)) {
-            log::warn!("[history] {}", io_text(error));
-        }
+        // The file at the new path is the one the save or move just wrote, so
+        // its bytes, not the copied marker, name the history from here on.
+        crate::edit_history::record_fingerprint(&path, sha256);
         match Journal::open(&path) {
             Ok(journal) => self.undo.adopt_journal(journal),
             Err(error) => log::warn!("[history] {}", io_text(error)),
@@ -738,18 +735,12 @@ impl AppStateInner {
         self.sync_history();
     }
 
-    /// Record the fingerprint of the project file the app just wrote, so the
-    /// history can be found again if the file moves outside the app.
-    pub(crate) fn mark_history_file(&mut self, sha256: Option<String>) {
-        if !crate::edit_history::persistence_enabled() || sha256.is_none() {
-            return;
-        }
+    /// Record the fingerprint of the file the save or publish just wrote. The
+    /// document lock is held, so the marker write cannot meet a history rewrite.
+    pub(crate) fn record_history_file(&mut self, sha256: Option<String>) {
         let Some(path) = self.file_path.clone() else {
             return;
         };
-        let dir = journal::dir_for(&path);
-        if let Err(error) = journal::write_marker(&dir, &journal::Marker::new(&path, sha256)) {
-            log::warn!("[history] {}", io_text(error));
-        }
+        crate::edit_history::record_fingerprint(&path, sha256);
     }
 }

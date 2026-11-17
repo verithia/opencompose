@@ -76,6 +76,14 @@ pub fn content_sha256(path: &Path) -> Option<String> {
     Some(format!("{:x}", hasher.finalize()))
 }
 
+/// The SHA-256 of `bytes`, in hex; `None` when they exceed any project.
+pub fn content_sha256_bytes(bytes: &[u8]) -> Option<String> {
+    if bytes.len() as u64 > MAX_FINGERPRINT_BYTES {
+        return None;
+    }
+    Some(format!("{:x}", Sha256::digest(bytes)))
+}
+
 /// Whether the file at `path` is gone, rather than out of reach. A file on a
 /// volume that is not mounted is out of reach: the nearest folder that still
 /// exists is then a volume root or the folder volumes mount under, and data

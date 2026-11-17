@@ -49,6 +49,13 @@ struct Publication {
     path: PathBuf,
 }
 
+/// What a publication left on disk, for the caller that records the marker.
+struct PublishResult {
+    bytes: Option<usize>,
+    path: PathBuf,
+    sha256: Option<String>,
+}
+
 /// Publish the open document to its project file after an agent mutation.
 ///
 /// Returns the byte count written. A clean document, a discarded one, an open
@@ -58,7 +65,11 @@ struct Publication {
 /// error, so the caller can tell the file is stale.
 pub fn flush(inner: &mut AppStateInner) -> Result<Option<usize>, String> {
     let publication = snapshot_for_publish(inner)?;
-    publish_captured(publication)
+    let published = publish_captured(publication)?;
+    if let Some(published) = &published {
+        inner.record_history_file(published.sha256.clone());
+    }
+    Ok(published.and_then(|published| published.bytes))
 }
 
 /// Publish a dirty project before the process leaves. The window-close path and
@@ -72,7 +83,13 @@ pub fn flush_state(state: &AppState) -> Result<Option<usize>, String> {
         let inner = state.lock_inner();
         snapshot_for_publish(&inner)
     }?;
-    publish_captured(publication)
+    let published = publish_captured(publication)?;
+    if let Some(published) = &published {
+        // The marker is written under the document lock the history owns.
+        let _inner = state.lock_inner();
+        crate::edit_history::record_fingerprint(&published.path, published.sha256.clone());
+    }
+    Ok(published.and_then(|published| published.bytes))
 }
 
 /// Decide whether the document may be published and capture what the write
@@ -93,7 +110,7 @@ fn snapshot_for_publish(inner: &AppStateInner) -> Result<Option<Publication>, St
 }
 
 /// Publish a captured document. Runs without the document lock.
-fn publish_captured(publication: Option<Publication>) -> Result<Option<usize>, String> {
+fn publish_captured(publication: Option<Publication>) -> Result<Option<PublishResult>, String> {
     let Some(Publication {
         project,
         source,
@@ -102,14 +119,23 @@ fn publish_captured(publication: Option<Publication>) -> Result<Option<usize>, S
     else {
         return Ok(None);
     };
+    let sha256 = crate::project_data::content_sha256_bytes(source.as_bytes());
     let _publishing = PUBLISH_LOCK
         .lock()
         .unwrap_or_else(|error| error.into_inner());
     match publish(&project, &source, &path) {
-        Ok(Published::Current) => Ok(None),
+        Ok(Published::Current) => Ok(Some(PublishResult {
+            bytes: None,
+            path,
+            sha256,
+        })),
         Ok(Published::Bytes(bytes)) => {
             report_write(&path, bytes);
-            Ok(Some(bytes))
+            Ok(Some(PublishResult {
+                bytes: Some(bytes),
+                path,
+                sha256,
+            }))
         }
         Err(reason) => {
             report_refusal(Some(&path), &reason);
