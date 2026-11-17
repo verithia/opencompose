@@ -55,7 +55,7 @@ import {
   type ActiveTurn,
   type SessionMeta,
 } from "../ai/sessions";
-import type { SessionState } from "../ai/messageProtocol";
+import { trimStateText, type SessionState } from "../ai/messageProtocol";
 import {
   canContinue,
   canRetry,
@@ -934,7 +934,7 @@ export function AiPanel(props: { onClose?: () => void }) {
     if (name === "goal") {
       // The goal is one typed session row, so a rewind returns to the earlier
       // goal and a fork carries the one it copied.
-      const text = draft.slice(1).replace(/^\s*goal\s*/, "").trim();
+      const text = trimStateText(draft.slice(1).replace(/^\s*goal\s*/, ""));
       if (!text) {
         setInput("/goal ");
         return;

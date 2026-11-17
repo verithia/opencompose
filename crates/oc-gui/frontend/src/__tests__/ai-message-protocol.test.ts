@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { WireMessage } from "../ai/wire";
-import { messageKind, messageMeta, sessionState as sessionStateOf, tagNewMessage } from "../ai/messageProtocol";
+import { messageKind, messageMeta, sessionState as sessionStateOf, tagNewMessage, trimStateText } from "../ai/messageProtocol";
 import { restoredTranscript, userTurnOf } from "../ai/transcript";
 import { auditionLabel, type MediaAttachment } from "../ai/media";
 import { loadedPage } from "../ai/sessions";
@@ -103,6 +103,7 @@ describe("versioned local message semantics", () => {
     }
     expect(sessionStateOf({ kind: "goal_set", text: "\uFEFFfinish\u3000", author: "person" }))
       .toEqual({ kind: "goal_set", text: "\uFEFFfinish\u3000", author: "person" });
+    expect(trimStateText("\uFEFF\u3000finish the bridge\u00A0")).toBe("finish the bridge");
   });
 
   it("drops one unreadable page state entry instead of the whole page", () => {

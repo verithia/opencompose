@@ -217,12 +217,24 @@ function planStatus(value: unknown): PlanStatus | null {
   return value === "pending" || value === "in_progress" || value === "done" ? value : null;
 }
 
-/** The characters the Rust state owner treats as blank, mirrored exactly:
+/** The characters the Rust state owner treats as blank, copied exactly:
  * Unicode White_Space plus the byte-order mark. */
-const STATE_BLANK_CHARS = /[\u0009-\u000D\u0020\u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000\uFEFF]/g;
+const STATE_BLANK_CLASS = "\u0009-\u000D\u0020\u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000\uFEFF";
+const STATE_BLANK_CHARS = new RegExp(`[${STATE_BLANK_CLASS}]`, "g");
+const STATE_BLANK_EDGES = new RegExp(`^[${STATE_BLANK_CLASS}]+|[${STATE_BLANK_CLASS}]+$`, "g");
+
+/** Whether a text holds nothing the Rust owner also reads as blank. */
+export function isBlankText(value: string): boolean {
+  return value.replace(STATE_BLANK_CHARS, "").length === 0;
+}
+
+/** Trim the blank characters the Rust owner trims. */
+export function trimStateText(value: string): string {
+  return value.replace(STATE_BLANK_EDGES, "");
+}
 
 function textWithin(value: unknown, max: number): string | null {
-  return typeof value === "string" && value.replace(STATE_BLANK_CHARS, "").length > 0
+  return typeof value === "string" && !isBlankText(value)
     && [...value].length <= max ? value : null;
 }
 

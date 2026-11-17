@@ -5,9 +5,9 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
-/// A character a goal or plan text treats as blank. The set is the Unicode
-/// White_Space property plus the byte-order mark, which JavaScript's `trim`
-/// removes; the panel validates with the same set.
+/// A character a goal or plan text treats as blank. This is the owning set:
+/// Unicode White_Space plus the byte-order mark. The panel copies it exactly,
+/// because JavaScript's `trim` neither removes U+0085 nor keeps the same set.
 pub fn is_blank_char(value: char) -> bool {
     value.is_whitespace() || value == '\u{FEFF}'
 }
