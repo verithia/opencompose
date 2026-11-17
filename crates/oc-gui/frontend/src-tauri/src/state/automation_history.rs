@@ -44,8 +44,13 @@ impl UndoStack {
         if let Some(scopes) = gesture_scopes {
             edit.scopes.insert_all(scopes);
         }
+        let author = edit
+            .author
+            .clone()
+            .unwrap_or_else(crate::edit_history::acting);
         let merge = !self.undo.is_empty()
             && self.merge_base.is_some()
+            && self.undo.last().is_some_and(|entry| entry.author == author)
             && if gesture_scopes.is_some() {
                 gesture_started
             } else {
@@ -78,7 +83,7 @@ impl UndoStack {
             let inverse = diff::invert_patch(&old, new, &patch);
             StagedAction::Append(UndoEntry {
                 id: fresh_entry_id(),
-                author: edit.author.unwrap_or_else(crate::edit_history::acting),
+                author,
                 cause: edit.cause,
                 forward: self.encode(&patch)?,
                 inverse: self.encode(&inverse)?,

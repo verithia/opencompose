@@ -761,49 +761,166 @@ impl UndoStack {
         self.invalidate_gestures();
     }
 
-    /// Replace the edits recorded after `mark` with one combined entry.
+    /// Replace the edits recorded after `mark` with one entry for each maximal
+    /// run of the batch owner's entries. A foreign author's entry keeps its own
+    /// patches, cause, scopes and timestamp in place, so a person's edit inside
+    /// a batch stays theirs and `since` reports it to the next turn.
     pub fn squash_since(&mut self, mark: UndoMark, old: Project, new: &Project, edit: UndoEdit) {
         let cut = mark.undo.min(self.undo.len());
-        let mut scopes = edit.scopes;
-        for entry in &self.undo[cut..] {
-            scopes.insert_all(entry.scopes);
-        }
+        let owner = edit
+            .author
+            .clone()
+            .unwrap_or_else(crate::edit_history::acting);
+        let entries = self.undo[cut..].to_vec();
+        let now = SystemTime::now();
+        let rebuilt = self.rebuilt_batch(&old, &entries, new, &owner, &edit, now);
+        let (replacement, merge_base) = match rebuilt {
+            Some(rebuilt) => rebuilt,
+            None => (
+                self.combined_batch(&old, new, &entries, &edit, &owner, now)
+                    .into_iter()
+                    .collect(),
+                Some(old),
+            ),
+        };
         self.undo.truncate(cut);
         self.drop_redo();
-        match diff::diff(&old, new) {
-            Ok(Some(patch)) => {
-                let inverse = diff::invert_patch(&old, new, &patch);
-                match (self.encode(&patch), self.encode(&inverse)) {
-                    (Ok(forward), Ok(inverse)) => {
-                        self.undo.push(UndoEntry {
-                            id: fresh_entry_id(),
-                            author: edit.author.unwrap_or_else(crate::edit_history::acting),
-                            cause: edit.cause,
-                            forward,
-                            inverse,
-                            tag: edit.tag,
-                            scopes,
-                            timestamp: SystemTime::now(),
-                        });
-                        self.cap_unjournaled();
-                    }
-                    // The batch stays committed; its history entry is what failed.
-                    _ => log::error!("[undo] cannot encode the transaction history entry"),
+        self.undo.extend(replacement);
+        self.cap_unjournaled();
+        self.merge_base = merge_base;
+        self.invalidate_gestures();
+    }
+
+    /// Rebuild the batch from its recorded forward patches. `None` means the
+    /// chain no longer reaches `new` (an undo moved the cursor below the batch
+    /// base), so the caller combines the whole batch instead.
+    fn rebuilt_batch(
+        &self,
+        old: &Project,
+        entries: &[UndoEntry],
+        new: &Project,
+        owner: &Author,
+        edit: &UndoEdit,
+        now: SystemTime,
+    ) -> Option<(Vec<UndoEntry>, Option<Project>)> {
+        let mut cursor = old.clone();
+        let mut rebuilt = Vec::new();
+        let mut merge_base = None;
+        let mut run_start: Option<Project> = None;
+        let mut run_scopes = UndoScopes::default();
+        for entry in entries {
+            let patch = match compressed::decode_patch(&entry.forward) {
+                Ok(patch) => patch,
+                Err(error) => {
+                    log::error!("[undo] cannot decode a batch entry: {error}");
+                    return None;
+                }
+            };
+            if entry.author == *owner {
+                if run_start.is_none() {
+                    run_start = Some(cursor.clone());
+                    run_scopes = UndoScopes::default();
+                }
+                run_scopes.insert_all(entry.scopes);
+                if let Err(error) = diff::apply_patch(&mut cursor, &patch) {
+                    log::error!("[undo] cannot reconstruct the transaction history: {error}");
+                    return None;
+                }
+                continue;
+            }
+            if let Some(start) = run_start.take() {
+                match self.combined_entry(&start, &cursor, &run_scopes, edit, owner, now) {
+                    Ok(Some(entry)) => rebuilt.push(entry),
+                    Ok(None) => {}
+                    Err(()) => return None,
                 }
             }
-            Ok(None) => {}
-            Err(error) => {
-                log::error!("[undo] cannot compare the transaction history: {error}");
+            merge_base = Some(cursor.clone());
+            if let Err(error) = diff::apply_patch(&mut cursor, &patch) {
+                log::error!("[undo] cannot reconstruct the transaction history: {error}");
+                return None;
+            }
+            rebuilt.push(entry.clone());
+        }
+        if let Some(start) = run_start.take() {
+            match self.combined_entry(&start, &cursor, &run_scopes, edit, owner, now) {
+                Ok(Some(entry)) => {
+                    merge_base = Some(start);
+                    rebuilt.push(entry);
+                }
+                Ok(None) => {}
+                Err(()) => return None,
             }
         }
-        self.merge_base = Some(old);
-        self.invalidate_gestures();
+        if cursor != *new {
+            return None;
+        }
+        Some((rebuilt, merge_base.or_else(|| Some(old.clone()))))
+    }
+
+    /// One entry from `from` to `to` for the batch owner. `Err` means the
+    /// patches could not be built; `Ok(None)` means the run changed nothing.
+    fn combined_entry(
+        &self,
+        from: &Project,
+        to: &Project,
+        run_scopes: &UndoScopes,
+        edit: &UndoEdit,
+        owner: &Author,
+        now: SystemTime,
+    ) -> Result<Option<UndoEntry>, ()> {
+        let patch = match diff::diff(from, to) {
+            Ok(Some(patch)) => patch,
+            Ok(None) => return Ok(None),
+            Err(error) => {
+                log::error!("[undo] cannot compare the transaction history: {error}");
+                return Err(());
+            }
+        };
+        let inverse = diff::invert_patch(from, to, &patch);
+        let (Ok(forward), Ok(inverse)) = (self.encode(&patch), self.encode(&inverse)) else {
+            log::error!("[undo] cannot encode the transaction history entry");
+            return Err(());
+        };
+        let mut scopes = edit.scopes;
+        scopes.insert_all(*run_scopes);
+        Ok(Some(UndoEntry {
+            id: fresh_entry_id(),
+            author: owner.clone(),
+            cause: edit.cause,
+            forward,
+            inverse,
+            tag: edit.tag.clone(),
+            scopes,
+            timestamp: now,
+        }))
+    }
+
+    /// The whole batch as one entry, for a batch whose recorded chain no longer
+    /// reconstructs the document, as when undo moved the cursor below its base.
+    fn combined_batch(
+        &self,
+        old: &Project,
+        new: &Project,
+        entries: &[UndoEntry],
+        edit: &UndoEdit,
+        owner: &Author,
+        now: SystemTime,
+    ) -> Option<UndoEntry> {
+        let mut scopes = edit.scopes;
+        for entry in entries {
+            scopes.insert_all(entry.scopes);
+        }
+        self.combined_entry(old, new, &scopes, edit, owner, now)
+            .ok()
+            .flatten()
     }
 
     pub fn clear(&mut self) {
         self.advance_history_epoch();
         self.undo.clear();
         self.redo.clear();
+        self.discarded.clear();
         self.journal = None;
         self.below = 0;
         self.above = 0;
@@ -1806,8 +1923,12 @@ mod tests {
         inner
             .begin_transaction("turn".into(), crate::state::panel_batch_owner(Some("s1")))
             .unwrap();
+        let _acting = crate::edit_history::act_as(Author::Agent {
+            session: Some("s1".into()),
+        });
         edit_tempo(&mut inner, 130.0);
         edit_tempo(&mut inner, 142.0);
+        drop(_acting);
         inner.commit_transaction().unwrap();
         let history = inner.undo.history(&inner.project.properties);
         assert_eq!(history.len(), 1);

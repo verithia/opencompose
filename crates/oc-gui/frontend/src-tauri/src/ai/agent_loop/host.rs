@@ -680,8 +680,11 @@ impl Host for AppHost {
 
     async fn apply_edit(&self, path: &str, dsl: &str, expected: &str) -> Result<Edited, String> {
         let (path, dsl, expected) = (path.to_owned(), dsl.to_owned(), expected.to_owned());
+        let owner = self.owner.clone();
         let (snapshot, changes) = self
             .blocking(move |app| {
+                let _acting =
+                    crate::edit_history::act_as(crate::edit_history::Author::from_caller(&owner));
                 let state = app.state::<AppState>();
                 let mut inner = state.lock_inner();
                 let before = inner.project.clone();

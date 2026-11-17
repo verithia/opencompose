@@ -583,6 +583,9 @@ fn a_rolled_back_batch_leaves_no_entry_on_disk() {
         .unwrap();
     {
         let mut inner = state.lock_inner();
+        let _acting = crate::edit_history::act_as(Author::Agent {
+            session: Some("s1".into()),
+        });
         set_tempo(&mut inner, 140.0);
         inner.sync_history();
     }
@@ -599,7 +602,13 @@ fn a_rolled_back_batch_leaves_no_entry_on_disk() {
     state
         .begin_transaction("turn".into(), crate::state::panel_batch_owner(Some("s1")))
         .unwrap();
-    set_tempo(&mut state.lock_inner(), 150.0);
+    {
+        let mut inner = state.lock_inner();
+        let _acting = crate::edit_history::act_as(Author::Agent {
+            session: Some("s1".into()),
+        });
+        set_tempo(&mut inner, 150.0);
+    }
     state.commit_transaction().unwrap();
     let journal = Journal::open(&path).unwrap();
     assert_eq!(journal.len(), 1);
@@ -610,6 +619,75 @@ fn a_rolled_back_batch_leaves_no_entry_on_disk() {
             session: Some("s1".into())
         }
     );
+}
+
+#[test]
+fn a_batch_keeps_a_person_edit_between_agent_runs() {
+    let agent = Author::Agent {
+        session: Some("s1".into()),
+    };
+    for journaled in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut stack = stack(journaled, dir.path());
+        let mut project = tempo(100);
+        let mark = stack.mark();
+        let batch = stack.rollback_mark();
+        let old = project.clone();
+        for (tempo_value, author) in [
+            (110, agent.clone()),
+            (125, Author::Person),
+            (140, agent.clone()),
+        ] {
+            let before = project.clone();
+            project = tempo(tempo_value);
+            push_edit(&mut stack, &before, &project, author);
+            if journaled {
+                stack.sync_journal(&oc_dsl::serialize(&project)).unwrap();
+            }
+        }
+        stack.squash_since(
+            batch,
+            old,
+            &project,
+            UndoEdit::new("turn", UndoScope::Project).by(agent.clone()),
+        );
+        let authors: Vec<Author> = stack
+            .undo
+            .iter()
+            .map(|entry| entry.author.clone())
+            .collect();
+        assert_eq!(
+            authors,
+            vec![agent.clone(), Author::Person, agent.clone()],
+            "the person's entry keeps its author and place"
+        );
+        if journaled {
+            stack.sync_journal(&oc_dsl::serialize(&project)).unwrap();
+            let journal = Journal::open(&project_file(dir.path())).unwrap();
+            let stored = journal.read_range(0..3).unwrap();
+            let authors: Vec<Author> = stored.into_iter().map(|entry| entry.author).collect();
+            assert_eq!(
+                authors,
+                vec![agent.clone(), Author::Person, agent.clone()],
+                "the journal keeps the foreign entry"
+            );
+        }
+        let mut cursor = project.clone();
+        for expected in [125, 110, 100] {
+            stack.undo(&mut cursor).unwrap();
+            assert_eq!(cursor, tempo(expected));
+        }
+        for expected in [110, 125, 140] {
+            stack.redo(&mut cursor).unwrap();
+            assert_eq!(cursor, tempo(expected));
+        }
+        let changes = stack
+            .since(&mark, "s1", &project.properties)
+            .expect("the person's edit is outside news");
+        assert_eq!(changes.entries.len(), 1);
+        assert_eq!(changes.entries[0].author, Author::Person);
+        assert_eq!(changes.own_undone, 0);
+    }
 }
 
 #[test]
