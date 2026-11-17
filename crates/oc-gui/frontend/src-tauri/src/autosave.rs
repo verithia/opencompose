@@ -247,7 +247,8 @@ fn write_owner(root: &Path, key: &str, project_path: &Path) {
 }
 
 /// Move the copies under `from_key` to `to_path`'s key, renaming each copy so
-/// its name carries the new key. A failure leaves the copies where they were.
+/// its name carries the new key. Each copy moves on its own, so a failure
+/// leaves the unmoved ones under their source key.
 fn rekey(root: &Path, from_key: &str, to_path: &Path) -> std::io::Result<()> {
     let to_key = copy_key(Some(to_path), "");
     if from_key == to_key {
@@ -255,20 +256,35 @@ fn rekey(root: &Path, from_key: &str, to_path: &Path) -> std::io::Result<()> {
     }
     let from = root.join(from_key);
     let to = root.join(&to_key);
-    if to.exists() {
+    // A directory under the destination key whose owner names another file
+    // describes copies this project must not list.
+    if read_owner(root, &to_key).is_some_and(|owner| owner != resolved(to_path)) {
         std::fs::remove_dir_all(&to)?;
+        let _ = std::fs::remove_file(owner_path(root, &to_key));
     }
-    std::fs::rename(&from, &to)?;
-    for entry in std::fs::read_dir(&to)?.filter_map(Result::ok) {
+    private_fs::ensure_dir(&to)?;
+    // Several candidate keys can hold copies of one file. Their copies merge
+    // into the destination instead of each key replacing the one before.
+    let mut unknown = false;
+    for entry in std::fs::read_dir(&from)?.filter_map(Result::ok) {
         let name = entry.file_name();
-        let Some((stamp, key)) = name.to_str().and_then(parse_file_name) else {
+        let Some((stamp, _)) = name.to_str().and_then(parse_file_name) else {
+            unknown = true;
             continue;
         };
-        if key == from_key {
-            std::fs::rename(entry.path(), to.join(file_name(stamp, &to_key)))?;
+        let target = to.join(file_name(stamp, &to_key));
+        if target.exists() {
+            // The same stamp names the same copy; keep the one already moved.
+            let _ = std::fs::remove_file(entry.path());
+        } else {
+            std::fs::rename(entry.path(), &target)?;
         }
     }
-    let _ = std::fs::remove_file(owner_path(root, from_key));
+    // Keep a source directory that still holds something this module did not
+    // write; removing it would delete a file it cannot name.
+    if !unknown && std::fs::remove_dir(&from).is_ok() {
+        let _ = std::fs::remove_file(owner_path(root, from_key));
+    }
     write_owner(root, &to_key, to_path);
     Ok(())
 }
@@ -1748,6 +1764,132 @@ mod tests {
         assert_eq!(
             read_owner(&fixture.0, &copy_key(Some(&to), "")),
             Some(resolved(&to))
+        );
+    }
+
+    #[test]
+    fn moving_a_project_merges_its_current_and_legacy_copies() {
+        let fixture = Fixture::new();
+        let (from, project, source) = fixture.project("merge");
+        let current = write_copy(
+            &fixture.0,
+            Some(&from),
+            project.name.as_deref(),
+            "session",
+            &source,
+            above_file(&from),
+        )
+        .unwrap();
+        let legacy = legacy_key(&from);
+        let directory = fixture.0.join(&legacy);
+        std::fs::create_dir_all(&directory).unwrap();
+        let stamp = above_file(&from) + 1;
+        std::fs::write(directory.join(file_name(stamp, &legacy)), &source).unwrap();
+
+        let to = fixture.0.join("merged.ocp");
+        std::fs::copy(&from, &to).unwrap();
+        relocate_copies(&fixture.0, &from, &to);
+
+        let listed = list_copies(&fixture.0, Some(&to), "session").unwrap();
+        assert_eq!(listed.len(), 2, "both keys' copies survived");
+        let stamps: Vec<u64> = listed.iter().map(|entry| entry.saved_at_ms).collect();
+        assert!(stamps.contains(&current.saved_at_ms));
+        assert!(stamps.contains(&stamp));
+        assert!(!fixture.0.join(&legacy).exists());
+    }
+
+    #[test]
+    fn moving_a_project_keeps_files_it_cannot_name() {
+        let fixture = Fixture::new();
+        let (from, _project, source) = fixture.project("unknown");
+        let legacy = legacy_key(&from);
+        let directory = fixture.0.join(&legacy);
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(
+            directory.join(file_name(above_file(&from), &legacy)),
+            &source,
+        )
+        .unwrap();
+        std::fs::write(directory.join("notes.txt"), "keep me").unwrap();
+
+        let to = fixture.0.join("moved.ocp");
+        std::fs::copy(&from, &to).unwrap();
+        relocate_copies(&fixture.0, &from, &to);
+
+        assert_eq!(
+            list_copies(&fixture.0, Some(&to), "session").unwrap().len(),
+            1
+        );
+        assert_eq!(
+            std::fs::read_to_string(directory.join("notes.txt")).unwrap(),
+            "keep me",
+            "an unnamed file kept its directory"
+        );
+    }
+
+    #[test]
+    fn moving_a_project_replaces_another_files_copies_at_the_destination() {
+        let fixture = Fixture::new();
+        let (from, project, source) = fixture.project("source");
+        write_copy(
+            &fixture.0,
+            Some(&from),
+            project.name.as_deref(),
+            "session",
+            &source,
+            above_file(&from),
+        )
+        .unwrap();
+        let to = fixture.0.join("taken.ocp");
+        std::fs::copy(&from, &to).unwrap();
+        let (other, _other_project, other_source) = fixture.project("other");
+        let to_key = copy_key(Some(&to), "");
+        let dest = fixture.0.join(&to_key);
+        std::fs::create_dir_all(&dest).unwrap();
+        std::fs::write(
+            dest.join(file_name(above_file(&from) + 1, &to_key)),
+            &other_source,
+        )
+        .unwrap();
+        write_owner(&fixture.0, &to_key, &other);
+
+        relocate_copies(&fixture.0, &from, &to);
+
+        assert_eq!(
+            list_copies(&fixture.0, Some(&to), "session").unwrap().len(),
+            1,
+            "the destination listed only this project's copy"
+        );
+    }
+
+    #[test]
+    fn a_merge_writes_a_private_destination_directory() {
+        let fixture = Fixture::new();
+        let (from, _project, source) = fixture.project("private");
+        let legacy = legacy_key(&from);
+        let directory = fixture.0.join(&legacy);
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(
+            directory.join(file_name(above_file(&from), &legacy)),
+            &source,
+        )
+        .unwrap();
+        let to = fixture.0.join("private-moved.ocp");
+        std::fs::copy(&from, &to).unwrap();
+        relocate_copies(&fixture.0, &from, &to);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(fixture.0.join(copy_key(Some(&to), "")))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(mode & 0o077, 0, "the destination is private");
+        }
+        assert_eq!(
+            list_copies(&fixture.0, Some(&to), "session").unwrap().len(),
+            1
         );
     }
 
