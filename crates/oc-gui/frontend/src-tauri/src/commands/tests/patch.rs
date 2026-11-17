@@ -177,7 +177,11 @@ fn duplicate_track_is_one_undo_entry() {
     let snapshot = duplicate_track_inner(&mut inner, 0, "lead 2").unwrap();
 
     assert_eq!(snapshot.project.tracks.len(), 2);
-    assert_eq!(inner.undo.undo.len(), 1, "track and preset copy, one entry");
+    assert_eq!(
+        inner.undo.undo_entries().len(),
+        1,
+        "track and preset copy, one entry"
+    );
     inner.undo.undo(&mut inner.project).unwrap();
     assert_eq!(inner.project, before);
     inner.undo.redo(&mut inner.project).unwrap();

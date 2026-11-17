@@ -20,9 +20,74 @@ use crate::edit_history::{
     Author, Brief, EditCause, HistoryMark, MAX_OUTSIDE_COUNT, MAX_OUTSIDE_ENTRIES, OutsideChanges,
     OutsideEntry,
 };
+use crate::project_data::{Relocation, RelocationReport};
 
 /// Entries a window reload keeps below the cursor; the rest stay on disk.
 const WINDOW_BELOW: usize = 2 * HISTORY_PAGE;
+
+/// Why a history operation was refused.
+#[derive(Debug)]
+pub enum HistoryError {
+    /// The in-memory window holds entries the journal has not received yet.
+    NotSynced,
+    /// A batch holds provisional entries, so the window may not move.
+    InBatch,
+    /// The document has no journal.
+    NotJournaled,
+    /// Reading or writing the journal failed.
+    Io(std::io::Error),
+}
+
+impl std::fmt::Display for HistoryError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotSynced => formatter.write_str("the edit history is not saved yet; try again"),
+            Self::InBatch => {
+                formatter.write_str("older history becomes available once the agent's batch ends")
+            }
+            Self::NotJournaled => formatter.write_str("the edit history is not kept on disk"),
+            Self::Io(error) => {
+                write!(
+                    formatter,
+                    "the project's edit history could not be used: {error}"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for HistoryError {}
+
+impl From<std::io::Error> for HistoryError {
+    fn from(error: std::io::Error) -> Self {
+        Self::Io(error)
+    }
+}
+
+impl From<HistoryError> for String {
+    fn from(error: HistoryError) -> Self {
+        error.to_string()
+    }
+}
+
+/// Whether an adopted journal already holds the window (`Copy`) or is empty
+/// (`Fresh`). The window keeps its base and redo depth only for a copy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum JournalHome {
+    Fresh,
+    Copy,
+}
+
+impl RelocationReport {
+    /// The history home a relocation left for the open document.
+    pub(crate) fn history_home(&self) -> JournalHome {
+        match self.history {
+            crate::project_data::StoreOutcome::Copied
+            | crate::project_data::StoreOutcome::Moved => JournalHome::Copy,
+            _ => JournalHome::Fresh,
+        }
+    }
+}
 
 /// One page of the history, newest first, for the History tab.
 #[derive(Debug, Clone, Serialize)]
@@ -108,8 +173,24 @@ fn page_entry(
     }
 }
 
-fn io_text(error: std::io::Error) -> String {
-    format!("the project's edit history could not be used: {error}")
+fn io_text(error: std::io::Error) -> HistoryError {
+    HistoryError::Io(error)
+}
+
+fn restore_text(reason: String) -> HistoryError {
+    HistoryError::Io(std::io::Error::other(reason))
+}
+
+/// Where one zero-based history position lives.
+enum Slot {
+    /// An entry older than the window, read from the journal.
+    Below(usize),
+    /// An applied entry in the window.
+    Undo(usize),
+    /// An undone entry in the window, newest first.
+    Redo(usize),
+    /// An entry newer than the window, read from the journal.
+    Above(usize),
 }
 
 impl UndoStack {
@@ -118,6 +199,7 @@ impl UndoStack {
     pub(super) fn cap_unjournaled(&mut self) {
         if self.journal.is_none() && self.undo.len() > MAX_UNDO {
             self.undo.remove(0);
+            self.dirty = true;
         }
     }
 
@@ -134,6 +216,7 @@ impl UndoStack {
         }
         self.redo.clear();
         self.above = 0;
+        self.dirty = true;
     }
 
     /// Applied entries in the whole history.
@@ -176,30 +259,30 @@ impl UndoStack {
             .collect()
     }
 
-    /// The id at a zero-based position in the whole history, from the window
-    /// where it holds the entry and from the journal elsewhere.
-    fn id_at_level(&self, position: usize) -> Option<u64> {
+    /// Where a zero-based position in the whole history lives.
+    fn slot(&self, position: usize) -> Slot {
         if position < self.below {
-            return self
-                .journal
-                .as_ref()
-                .and_then(|journal| journal.id_at(position));
+            return Slot::Below(position);
         }
         let applied = self.below + self.undo.len();
         if position < applied {
-            return self.undo.get(position - self.below).map(|entry| entry.id);
+            return Slot::Undo(position - self.below);
         }
-        let redo_start = applied;
-        if position < redo_start + self.redo.len() {
-            let offset = position - redo_start;
-            return self
-                .redo
-                .get(self.redo.len() - 1 - offset)
-                .map(|entry| entry.id);
+        let after = applied + self.redo.len();
+        if position < after {
+            return Slot::Redo(self.redo.len() - 1 - (position - applied));
         }
-        self.journal
-            .as_ref()
-            .and_then(|journal| journal.id_at(position))
+        Slot::Above(position - after)
+    }
+
+    /// The id at a zero-based position in the whole history, from the window
+    /// where it holds the entry and from the journal elsewhere.
+    fn id_at_level(&self, position: usize) -> Option<u64> {
+        match self.slot(position) {
+            Slot::Below(position) | Slot::Above(position) => self.journal.as_ref()?.id_at(position),
+            Slot::Undo(index) => self.undo.get(index).map(|entry| entry.id),
+            Slot::Redo(index) => self.redo.get(index).map(|entry| entry.id),
+        }
     }
 
     /// The cursor and the largest id the history holds, for a conversation to
@@ -342,50 +425,42 @@ impl UndoStack {
     /// One applied entry as its author, cause and forward-oriented patches.
     /// Applied positions live in the window or below it, never on the redo side.
     fn applied_entry_at(&self, position: usize) -> Option<(Author, EditCause, Vec<u8>, Vec<u8>)> {
-        if position < self.below {
-            let journal = self.journal.as_ref()?;
-            let entry = journal.read_range(position..position + 1).ok()?.pop()?;
-            return Some((entry.author, entry.cause, entry.forward, entry.inverse));
+        match self.slot(position) {
+            Slot::Below(position) => {
+                let entry = self
+                    .journal
+                    .as_ref()?
+                    .read_range(position..position + 1)
+                    .ok()?
+                    .pop()?;
+                Some((entry.author, entry.cause, entry.forward, entry.inverse))
+            }
+            Slot::Undo(index) => {
+                let entry = self.undo.get(index)?;
+                Some((
+                    entry.author.clone(),
+                    entry.cause,
+                    entry.forward.clone(),
+                    entry.inverse.clone(),
+                ))
+            }
+            Slot::Redo(_) | Slot::Above(_) => None,
         }
-        let entry = self.undo.get(position - self.below)?;
-        Some((
-            entry.author.clone(),
-            entry.cause,
-            entry.forward.clone(),
-            entry.inverse.clone(),
-        ))
     }
 
     /// The author at any history level, from the window or the journal.
     fn author_at(&self, position: usize) -> Option<Author> {
-        if position < self.below {
-            let journal = self.journal.as_ref()?;
-            return journal
+        match self.slot(position) {
+            Slot::Below(position) | Slot::Above(position) => self
+                .journal
+                .as_ref()?
                 .read_range(position..position + 1)
                 .ok()?
                 .pop()
-                .map(|entry| entry.author);
+                .map(|entry| entry.author),
+            Slot::Undo(index) => self.undo.get(index).map(|entry| entry.author.clone()),
+            Slot::Redo(index) => self.redo.get(index).map(|entry| entry.author.clone()),
         }
-        let applied = self.below + self.undo.len();
-        if position < applied {
-            return self
-                .undo
-                .get(position - self.below)
-                .map(|entry| entry.author.clone());
-        }
-        let offset = position - applied;
-        if offset < self.redo.len() {
-            return self
-                .redo
-                .get(self.redo.len() - 1 - offset)
-                .map(|entry| entry.author.clone());
-        }
-        let journal = self.journal.as_ref()?;
-        journal
-            .read_range(position..position + 1)
-            .ok()?
-            .pop()
-            .map(|entry| entry.author)
     }
 
     pub fn journaled(&self) -> bool {
@@ -421,7 +496,7 @@ impl UndoStack {
 
     /// Use `journal` as the history and load the window around its cursor.
     /// The window it replaces is dropped: the journal is the history.
-    pub(crate) fn attach_journal(&mut self, journal: Journal) -> Result<(), String> {
+    pub(crate) fn attach_journal(&mut self, journal: Journal) -> Result<(), HistoryError> {
         NEXT_ENTRY_ID.fetch_max(
             journal.max_id().saturating_add(1),
             std::sync::atomic::Ordering::Relaxed,
@@ -432,29 +507,32 @@ impl UndoStack {
             self.journal = previous;
             return Err(error);
         }
+        self.dirty = false;
+        self.discarded.clear();
         Ok(())
     }
 
     /// Keep the window and write it into `journal` at the next sync. Used when
-    /// the project gets a path (or a new one) and its history moves with it:
-    /// `journal` is either empty or a copy of the journal the window came from.
-    pub(crate) fn adopt_journal(&mut self, journal: Journal) {
+    /// the project gets a path (or a new one) and its history moves with it.
+    pub(crate) fn adopt_journal(&mut self, journal: Journal, home: JournalHome) {
         NEXT_ENTRY_ID.fetch_max(
             journal.max_id().saturating_add(1),
             std::sync::atomic::Ordering::Relaxed,
         );
-        if journal.len() < self.below + self.undo.len() + self.redo.len() + self.above {
+        if home == JournalHome::Fresh {
             // A fresh journal holds nothing beyond the window.
             self.below = 0;
             self.above = 0;
         }
+        self.discarded.clear();
         self.journal = Some(journal);
+        self.dirty = true;
     }
 
     /// Write the window's changes and the cursor to the journal, then move
     /// entries beyond the window out of memory. `head` is the document text at
     /// the cursor. Nothing leaves memory unless its write succeeded.
-    pub(crate) fn sync_journal(&mut self, head: &str) -> Result<(), String> {
+    pub(crate) fn sync_journal(&mut self, head: &str) -> Result<(), HistoryError> {
         let Some(journal) = self.journal.as_mut() else {
             return Ok(());
         };
@@ -502,16 +580,14 @@ impl UndoStack {
             self.redo.drain(..excess);
             self.above += excess;
         }
+        self.dirty = false;
         Ok(())
     }
 
     /// Replace the window with the journal's entries around `applied`. The
     /// window must already be synced; a read failure changes nothing.
-    fn reload_window(&mut self, applied: usize) -> Result<(), String> {
-        let journal = self
-            .journal
-            .as_ref()
-            .ok_or("the edit history is not kept on disk")?;
+    fn reload_window(&mut self, applied: usize) -> Result<(), HistoryError> {
+        let journal = self.journal.as_ref().ok_or(HistoryError::NotJournaled)?;
         let len = journal.len();
         let applied = applied.min(len);
         let low = applied.saturating_sub(WINDOW_BELOW);
@@ -529,7 +605,6 @@ impl UndoStack {
             .collect();
         self.below = low;
         self.above = len - high;
-        self.discarded.clear();
         self.merge_base = None;
         self.invalidate_gestures();
         Ok(())
@@ -542,19 +617,18 @@ impl UndoStack {
         &mut self,
         level: usize,
         project: &mut Project,
-    ) -> Result<Option<String>, String> {
-        if !self.journal_is_current() {
-            return Err("the edit history is not saved yet; try again".into());
+    ) -> Result<Option<String>, HistoryError> {
+        if self.is_dirty() {
+            return Err(HistoryError::NotSynced);
         }
-        let journal = self
-            .journal
-            .as_ref()
-            .ok_or("the edit history is not kept on disk")?;
+        let journal = self.journal.as_ref().ok_or(HistoryError::NotJournaled)?;
         let current = self.below + self.undo.len();
         let mut candidate = project.clone();
         let decode = |bytes: &[u8]| {
             compressed::decode_patch(bytes).map_err(|reason| {
-                format!("could not restore history at \"history entry\": {reason}")
+                restore_text(format!(
+                    "could not restore history at \"history entry\": {reason}"
+                ))
             })
         };
         if level < current {
@@ -567,8 +641,9 @@ impl UndoStack {
                     .rev()
                     .map(|entry| decode(&entry.inverse))
                     .collect::<Result<Vec<_>, _>>()?;
-                diff::apply_patches(&mut candidate, &patches)
-                    .map_err(|reason| format!("could not restore history: {reason}"))?;
+                diff::apply_patches(&mut candidate, &patches).map_err(|reason| {
+                    restore_text(format!("could not restore history: {reason}"))
+                })?;
                 end = start;
             }
         } else {
@@ -580,12 +655,14 @@ impl UndoStack {
                     .iter()
                     .map(|entry| decode(&entry.forward))
                     .collect::<Result<Vec<_>, _>>()?;
-                diff::apply_patches(&mut candidate, &patches)
-                    .map_err(|reason| format!("could not restore history: {reason}"))?;
+                diff::apply_patches(&mut candidate, &patches).map_err(|reason| {
+                    restore_text(format!("could not restore history: {reason}"))
+                })?;
                 start = end;
             }
         }
         self.reload_window(level)?;
+        self.dirty = true;
         *project = candidate;
         Ok(self.undo.last().map(|entry| entry.tag.clone()))
     }
@@ -598,7 +675,7 @@ impl UndoStack {
         before: Option<usize>,
         limit: usize,
         properties: &ProjectProperties,
-    ) -> Result<HistoryPage, String> {
+    ) -> Result<HistoryPage, HistoryError> {
         let total = self.total_levels();
         let applied = self.applied_level();
         let end = before.unwrap_or(total).min(total);
@@ -640,33 +717,32 @@ impl UndoStack {
 
     /// Keep the newest `keep` entries; entries above the cursor always stay.
     /// The window must be synced. Returns how many entries were dropped.
-    pub(crate) fn clear_older(&mut self, keep: usize) -> Result<usize, String> {
+    pub(crate) fn clear_older(&mut self, keep: usize) -> Result<usize, HistoryError> {
         if self.journal.is_none() {
             let drop = self
                 .total_levels()
                 .saturating_sub(keep)
                 .min(self.undo.len());
             self.undo.drain(..drop);
+            self.dirty = true;
             return Ok(drop);
         }
-        if !self.journal_is_current() {
-            return Err("the edit history is not saved yet; try again".into());
+        if self.is_dirty() {
+            return Err(HistoryError::NotSynced);
         }
         let journal = self.journal.as_mut().expect("the journal was checked");
         let applied = journal.applied();
         let dropped = journal.clear_older(keep).map_err(io_text)?;
         self.reload_window(applied - dropped)?;
+        self.dirty = false;
         Ok(dropped)
     }
 
-    /// Whether the journal holds exactly the window and cursor in memory. A
-    /// window that has entries the journal never received must not be replaced
-    /// from the journal, or undo would apply an inverse to the wrong document.
-    fn journal_is_current(&self) -> bool {
-        self.journal.as_ref().is_some_and(|journal| {
-            journal.applied() == self.below + self.undo.len()
-                && journal.len() == self.total_levels()
-        })
+    /// Whether the in-memory window has changes the journal does not hold yet.
+    /// A window the journal never received must not be replaced from it, or
+    /// undo would apply an inverse to the wrong document.
+    pub(crate) fn is_dirty(&self) -> bool {
+        self.dirty
     }
 }
 
@@ -683,12 +759,15 @@ impl AppStateInner {
     /// Write the history's changes to disk, reporting whether the journal now
     /// holds the window and the cursor. A caller that reloads the window from
     /// the journal must refuse when this fails.
-    pub(crate) fn try_sync_history(&mut self) -> Result<(), String> {
-        if self.transaction.is_some() || self.preview.is_some() || !self.undo.journaled() {
+    pub(crate) fn try_sync_history(&mut self) -> Result<(), HistoryError> {
+        if self.transaction.is_some()
+            || self.preview.is_some()
+            || !self.undo.journaled()
+            || self.history_move.is_some()
+        {
             return Ok(());
         }
         self.undo.sync_journal(&self.dsl_source)?;
-        self.history_synced = Some(self.revision);
         Ok(())
     }
 
@@ -697,24 +776,27 @@ impl AppStateInner {
         self.undo.journaled()
             && self.transaction.is_none()
             && self.preview.is_none()
-            && self.history_synced != Some(self.revision)
+            && self.history_move.is_none()
+            && self.undo.is_dirty()
     }
 
     /// Load the window the next undo (or redo) needs from disk. Inside a batch
     /// the window cannot move, because the batch's marks index into it.
-    pub(crate) fn ensure_history_window(&mut self, undo: bool) -> Result<(), String> {
+    pub(crate) fn ensure_history_window(&mut self, undo: bool) -> Result<(), HistoryError> {
         if !self.undo.needs_window(undo) {
             return Ok(());
         }
         if self.transaction.is_some() {
-            return Err("older history becomes available once the agent's batch ends".into());
+            return Err(HistoryError::InBatch);
         }
         self.try_sync_history()?;
-        if !self.undo.journal_is_current() {
-            return Err("the edit history is not saved yet; try again".into());
+        if self.undo.is_dirty() {
+            return Err(HistoryError::NotSynced);
         }
         let applied = self.undo.applied_level();
-        self.undo.reload_window(applied)
+        self.undo.reload_window(applied)?;
+        self.undo.dirty = false;
+        Ok(())
     }
 
     /// Open (or start) the project's history, after the document was
@@ -725,46 +807,37 @@ impl AppStateInner {
     /// bridges the two, so every older entry still undoes onto the document
     /// it was recorded against.
     pub(crate) fn attach_history(&mut self) {
-        if !crate::edit_history::persistence_enabled() {
-            return;
-        }
         let Some(path) = self.file_path.clone() else {
             return;
         };
-        let file_sha = journal::fingerprint(&path);
+        let file_sha = crate::project_data::content_sha256(&path);
         let dir = journal::dir_for(&path);
         if journal::read_marker(&dir).is_none()
             && let Some(sha) = file_sha.as_deref()
             && let Some(found) = journal::find_by_fingerprint(sha, &dir)
         {
             // A history whose file is gone moves with the file; one whose file
-            // is still there is copied, like a Save As.
+            // is still there is copied, like a Save As. The history and every
+            // other store follow the same relocation.
             let how = if crate::project_data::is_gone(&found.marker.path) {
-                crate::project_data::Relocation::Move
+                Relocation::Move
             } else {
-                crate::project_data::Relocation::Copy
+                Relocation::Copy
             };
-            let adopted = match how {
-                crate::project_data::Relocation::Copy => journal::copy_dir(&found.dir, &dir),
-                crate::project_data::Relocation::Move => journal::move_dir(&found.dir, &dir),
-            };
-            match adopted {
-                Ok(()) => {
-                    log::info!(
-                        "[history] found the history of {} by its content",
-                        found.marker.path.display()
-                    );
-                    // The note, the conversations and the recovery copies
-                    // follow the file the same way.
-                    crate::project_data::relocate(&found.marker.path, &path, how);
-                }
-                Err(error) => log::warn!("[history] {}", io_text(error)),
+            let report = crate::project_data::relocate(&found.marker.path, &path, how);
+            if report.history.is_failure() {
+                log::warn!(
+                    "[history] the history of {} stays where it was",
+                    found.marker.path.display()
+                );
+            } else {
+                log::info!(
+                    "[history] found the history of {} by its content",
+                    found.marker.path.display()
+                );
             }
         }
-        if let Err(error) = journal::write_marker(&dir, &journal::Marker::new(&path, file_sha)) {
-            log::warn!("[history] {}", io_text(error));
-            return;
-        }
+        self.record_written(&path, file_sha);
         let mut journal = match Journal::open(&path) {
             Ok(journal) => journal,
             Err(error) => {
@@ -799,37 +872,46 @@ impl AppStateInner {
         self.sync_history();
     }
 
-    /// Give the history a new home after the project got a new path: a copy
-    /// of the old journal when one was made, otherwise a fresh one that the
-    /// window is written into.
-    pub(crate) fn rehome_history(&mut self, copied: bool, sha256: Option<String>) {
-        if !crate::edit_history::persistence_enabled() {
-            return;
+    /// Start an empty history for a new document at `path`, so an open never
+    /// adopts another project's history by content.
+    pub(crate) fn start_history(&mut self, path: &std::path::Path) {
+        if let Err(error) = journal::reset(path) {
+            log::warn!("[history] {}", io_text(error));
         }
+    }
+
+    /// Record the content SHA-256 of the file the app just wrote, so its
+    /// history is found if the file moves outside the app. The caller holds the
+    /// document lock, so the marker write cannot race a history rewrite.
+    pub(crate) fn record_written(&mut self, path: &std::path::Path, sha256: Option<String>) {
+        let dir = journal::dir_for(path);
+        if let Err(error) = journal::Marker::new(path, sha256).write(&dir) {
+            log::warn!("[history] cannot record {}: {error}", path.display());
+        }
+    }
+
+    /// Give the history its home at the document's new path. Relocation has
+    /// already put the files there; this opens the journal and adopts the
+    /// window, then writes any entries the move held back.
+    pub(crate) fn rehome_history(&mut self, home: JournalHome, sha256: Option<String>) {
         let Some(path) = self.file_path.clone() else {
             return;
         };
-        let dir = journal::dir_for(&path);
-        if !copied {
-            let _ = std::fs::remove_dir_all(&dir);
-        }
-        // The file at the new path is the one the save or move just wrote, so
-        // its bytes, not the copied marker, name the history from here on.
-        crate::edit_history::record_fingerprint(&path, sha256);
+        self.record_written(&path, sha256);
         match Journal::open(&path) {
-            Ok(journal) => self.undo.adopt_journal(journal),
+            Ok(journal) => self.undo.adopt_journal(journal, home),
             Err(error) => log::warn!("[history] {}", io_text(error)),
         }
-        self.history_synced = None;
+        self.history_move = None;
         self.sync_history();
     }
 
-    /// Record the fingerprint of the file the save or publish just wrote. The
-    /// document lock is held, so the marker write cannot meet a history rewrite.
-    pub(crate) fn record_history_file(&mut self, sha256: Option<String>) {
-        let Some(path) = self.file_path.clone() else {
-            return;
-        };
-        crate::edit_history::record_fingerprint(&path, sha256);
+    /// Finish a relocation that ran after the document lock was released.
+    pub(crate) fn finish_history_move(
+        &mut self,
+        report: crate::project_data::RelocationReport,
+        sha256: Option<String>,
+    ) {
+        self.rehome_history(report.history_home(), sha256);
     }
 }

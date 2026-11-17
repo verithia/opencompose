@@ -326,7 +326,6 @@ fn a_mutating_tool_publishes_the_file_and_a_batch_waits_for_its_commit() {
 
 /// An open project with its history attached and persistence enabled.
 fn history_state(label: &str) -> (TempDir, AppState, PathBuf) {
-    crate::edit_history::enable_persistence_for_test();
     let dir = TempDir::new(label);
     std::fs::create_dir_all(dir.path()).unwrap();
     let path = dir.path().join("song.ocp");

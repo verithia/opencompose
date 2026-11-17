@@ -45,7 +45,7 @@ fn toggles_the_field_on_and_off_and_undo_restores_it() {
         "the field reaches the DSL text:\n{}",
         inner.dsl_source
     );
-    assert_eq!(inner.undo.undo[0].tag, "bypass effect");
+    assert_eq!(inner.undo.undo_entries()[0].tag, "bypass effect");
 
     set_effect_bypass_inner(&mut inner, "track:0", 0, false).unwrap();
     assert!(!inner.project.tracks[0].effects[0].bypass);
@@ -65,7 +65,10 @@ fn a_missing_effect_index_refuses_without_an_edit() {
 
     let error = set_effect_bypass_inner(&mut inner, "track:0", 9, true).unwrap_err();
     assert_eq!(error, "Effect index 9 out of range");
-    assert!(inner.undo.undo.is_empty(), "a refusal adds no undo entry");
+    assert!(
+        inner.undo.undo_entries().is_empty(),
+        "a refusal adds no undo entry"
+    );
     assert_eq!(inner.project, before, "a refusal leaves the project alone");
 }
 
@@ -77,7 +80,10 @@ fn a_bypass_parameter_is_refused_so_the_field_has_one_meaning() {
     let error = set_effect_param_inner(&mut inner, "track:0", 0, "bypass", "true").unwrap_err();
     assert!(error.contains("effect field"), "{error}");
     assert!(error.contains("set_effect_bypass"), "{error}");
-    assert!(inner.undo.undo.is_empty(), "a refusal adds no undo entry");
+    assert!(
+        inner.undo.undo_entries().is_empty(),
+        "a refusal adds no undo entry"
+    );
     assert_eq!(inner.project, before, "a refusal leaves the project alone");
 }
 
@@ -101,7 +107,7 @@ fn a_batch_that_names_bypass_is_refused_atomically() {
         inner.project, before,
         "the valid half of a refused batch must not land"
     );
-    assert!(inner.undo.undo.is_empty());
+    assert!(inner.undo.undo_entries().is_empty());
 }
 
 #[test]

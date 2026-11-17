@@ -239,7 +239,6 @@ fn starter_is_written_complete_with_builtins_before_installation() {
 
 #[test]
 fn starter_records_the_file_fingerprint() {
-    crate::edit_history::enable_persistence_for_test();
     let dir = TempDir::new("starter-marker");
     std::fs::create_dir_all(dir.path()).unwrap();
     let path = dir.path().join("Marked.ocp");

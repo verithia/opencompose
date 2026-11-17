@@ -300,32 +300,6 @@ pub(crate) fn relocate_copies(root: &Path, from: &Path, to: &Path) {
     }
 }
 
-/// Copies of a file this path has none for, found by the content SHA-256 its
-/// owner marker recorded: the file was renamed or moved outside the app.
-fn adopt_by_content(root: &Path, project_path: &Path) {
-    let Some(sha) = crate::project_data::content_sha256(project_path) else {
-        return;
-    };
-    let Ok(read_dir) = std::fs::read_dir(root) else {
-        return;
-    };
-    let found = read_dir
-        .filter_map(Result::ok)
-        .filter_map(|entry| entry.file_name().to_str().map(str::to_owned))
-        .filter_map(|name| name.strip_suffix(OWNER_SUFFIX).map(str::to_owned))
-        .find(|key| {
-            root.join(key).is_dir()
-                && read_owner_marker(root, key).is_some_and(|owner| {
-                    owner.sha256.as_deref() == Some(sha.as_str()) && !owner.path.exists()
-                })
-        });
-    if let Some(key) = found
-        && let Err(error) = rekey(root, &key, project_path)
-    {
-        log::warn!("[recovery] cannot adopt the copies of a moved file: {error}");
-    }
-}
-
 /// Keys whose owner marker names `project_path`. A save clears these too: an
 /// earlier build keyed copies by file identity, which an atomic replace
 /// changes.
@@ -422,9 +396,6 @@ pub fn list_copies(
 ) -> Result<Vec<RecoveryEntry>, String> {
     let keys = candidate_keys(project_path, session);
     if let Some(path) = project_path {
-        if !keys.iter().any(|key| root.join(key).is_dir()) {
-            adopt_by_content(root, path);
-        }
         // Refresh the markers so the sweep does not later mistake a live
         // project for an orphan.
         for key in &keys {
@@ -1600,9 +1571,12 @@ mod tests {
         .unwrap();
         let new_path = fixture.0.join("after.ocp");
         std::fs::rename(&old_path, &new_path).unwrap();
+        // The relocation that follows a file the app recognises takes the
+        // copies with it; listing a path never searches other keys by content.
+        crate::autosave::relocate_copies(&fixture.0, &old_path, &new_path);
 
         let copies = list_copies(&fixture.0, Some(&new_path), "session").unwrap();
-        assert_eq!(copies.len(), 1, "the copies follow the file's content");
+        assert_eq!(copies.len(), 1, "the copies follow the file's move");
         assert_eq!(copies[0].saved_at_ms, entry.saved_at_ms);
         assert!(!Path::new(&entry.path).exists(), "moved under the new key");
         assert_eq!(copies[0].restore_disabled_reason, None);

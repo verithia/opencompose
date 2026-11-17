@@ -332,7 +332,7 @@ fn one_lv2_drag_is_one_undo_entry_and_reaches_the_plugin() {
         );
 
         // The whole drag is one undo entry.
-        assert_eq!(inner.undo.undo.len(), 1);
+        assert_eq!(inner.undo.undo_entries().len(), 1);
     }
 
     // Undo takes the lane away again, so the drag left exactly one entry.

@@ -131,7 +131,11 @@ fn an_unchanged_section_edit_reports_no_change_and_pushes_no_undo() {
         UndoEdit::new("add section", UndoScope::Project),
     )
     .expect("resync");
-    assert_eq!(inner.undo.undo.len(), 1, "one section, one undo entry");
+    assert_eq!(
+        inner.undo.undo_entries().len(),
+        1,
+        "one section, one undo entry"
+    );
     assert!(inner.revision > revision, "the edit bumps the revision");
     assert!(inner.dsl_source.contains("@section verse"));
     inner.undo.undo(&mut inner.project).unwrap();

@@ -111,7 +111,11 @@ fn one_undo_restores_the_pattern_and_its_clips() {
     rename_pattern_blocking(&state, "My Riff", "Verse 2").expect("the rename lands");
 
     let mut inner = state.lock_inner();
-    assert_eq!(inner.undo.undo.len(), 1, "one edit is one undo entry");
+    assert_eq!(
+        inner.undo.undo_entries().len(),
+        1,
+        "one edit is one undo entry"
+    );
     let mut project = inner.project.clone();
     inner.undo.undo(&mut project).expect("one undo entry");
 

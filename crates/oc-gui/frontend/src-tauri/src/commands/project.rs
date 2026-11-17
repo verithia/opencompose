@@ -562,14 +562,14 @@ fn replace_project_unchecked(
     // The outgoing document's history is complete on disk before it goes.
     inner.sync_history();
     inner.undo.clear();
-    inner.history_synced = None;
+    inner.history_move = None;
     inner.transaction = None;
     // A replacement is a new document; a preview of the old one cannot survive.
     inner.preview = None;
     // New replaces the target's history only after the outgoing document's
     // history is on disk, so its entries never land in the fresh folder.
     if fresh_history && let Some(path) = inner.file_path.clone() {
-        crate::edit_history::start_fresh(&path);
+        inner.start_history(&path);
     }
     // The new document becomes the locked one here; the outgoing lock drops
     // with the value it is replacing.
@@ -668,8 +668,11 @@ pub(crate) struct SaveRequest {
     pub(crate) save_path: PathBuf,
     pub(crate) revision: u64,
     relocated: bool,
-    /// The history was copied to the new path's, for a save to another file.
-    history_copied: bool,
+    /// How the project's stores follow the file when the save gives it a new
+    /// path. Save As copies; Move Project moves.
+    relocation: crate::project_data::Relocation,
+    /// The relocation captured here, to run after the document lock drops.
+    pending: Option<crate::project_data::PendingRelocation>,
     /// SHA-256 of the bytes the save wrote, recorded in the history marker.
     file_sha: Option<String>,
     /// The destination's lock, taken before the write and installed when the
@@ -681,26 +684,6 @@ impl SaveRequest {
     /// Whether the save gives the project another file.
     fn changes_path(&self) -> bool {
         self.old_path.as_deref() != Some(self.save_path.as_path())
-    }
-
-    /// Copy the history to the new file's, so Save As keeps it. Runs
-    /// without the document lock; the history was synced at capture.
-    fn copy_history(&mut self) {
-        if !self.changes_path() || !crate::edit_history::persistence_enabled() {
-            return;
-        }
-        let Some(old) = self.old_path.as_deref() else {
-            return;
-        };
-        let from = crate::edit_history::journal::dir_for(old);
-        if !from.is_dir() {
-            return;
-        }
-        let to = crate::edit_history::journal::dir_for(&self.save_path);
-        match crate::edit_history::journal::copy_dir(&from, &to) {
-            Ok(()) => self.history_copied = true,
-            Err(error) => log::warn!("[history] Save As could not copy the history: {error}"),
-        }
     }
 }
 
@@ -756,7 +739,8 @@ pub(crate) fn snapshot_for_save(
         save_path,
         revision: inner.revision,
         relocated: false,
-        history_copied: false,
+        relocation: crate::project_data::Relocation::Copy,
+        pending: None,
         file_sha: None,
         target_lock,
     })
@@ -816,16 +800,20 @@ pub(crate) fn publish_save(state: &AppState, request: &mut SaveRequest) -> Optio
     inner.autosave_at = None;
     inner.autosave_digest = 0;
     if request.changes_path() {
-        inner.rehome_history(request.history_copied, request.file_sha.clone());
-        if let Some(old) = request.old_path.as_deref() {
-            crate::project_data::relocate(
-                old,
-                &request.save_path,
-                crate::project_data::Relocation::Copy,
-            );
+        if let Some(from) = request.old_path.clone() {
+            let pending = crate::project_data::PendingRelocation {
+                from,
+                to: request.save_path.clone(),
+                how: request.relocation,
+            };
+            inner.history_move = Some(pending.clone());
+            request.pending = Some(pending);
+        } else {
+            inner.rehome_history(crate::state::JournalHome::Fresh, request.file_sha.clone());
         }
     } else {
-        inner.record_history_file(request.file_sha.clone());
+        let path = request.save_path.clone();
+        inner.record_written(&path, request.file_sha.clone());
     }
     let root = request.save_path.parent().map(Path::to_path_buf);
     let repointed =
@@ -857,7 +845,6 @@ pub(crate) fn save_document(
     // identity, so capture it with the snapshot.
     let session = state.lock_inner().session_id.clone();
     write_save(&mut request)?;
-    request.copy_history();
     // A clean save makes the recovery copies obsolete, including any written
     // while the project had no path yet.
     if let Err(error) = crate::autosave::clear_saved(
@@ -869,6 +856,12 @@ pub(crate) fn save_document(
         log::warn!("autosave: {error}");
     }
     let published = publish_save(state, &mut request);
+    if let Some(pending) = request.pending.take() {
+        let report = pending.run();
+        state
+            .lock_inner()
+            .finish_history_move(report, request.file_sha.clone());
+    }
     let revision = request
         .revision
         .saturating_add(u64::from(request.relocated && published.is_some()));
@@ -938,7 +931,6 @@ pub(crate) fn move_project_inner(
     state: &AppState,
     to: PathBuf,
 ) -> Result<(ProjectSnapshot, bool), ProjectError> {
-    use crate::edit_history::journal::dir_for;
     let from = {
         let inner = state.lock_inner();
         inner.refuse_in_preview()?;
@@ -966,48 +958,53 @@ pub(crate) fn move_project_inner(
         .into());
     }
     let backup = crate::project_persist::backup_path(&from);
-    let file_sha = crate::edit_history::journal::fingerprint(&from);
+    let file_sha = crate::project_data::content_sha256(&from);
     if from.parent() == to.parent() {
         // The destination's lock is taken before the rename; a path another
         // process holds leaves the project where it is.
         let next_lock = acquire_project_lock(&to)?;
-        let mut inner = state.lock_inner();
-        inner.sync_history();
-        std::fs::rename(&from, &to).map_err(|error| format!("Cannot move the project: {error}"))?;
-        let history = dir_for(&from);
-        if history.exists()
-            && let Err(error) = crate::edit_history::journal::move_dir(&history, &dir_for(&to))
-        {
-            let _ = std::fs::rename(&to, &from);
-            return Err(format!("Cannot move the project's history: {error}").into());
-        }
+        let pending = {
+            let mut inner = state.lock_inner();
+            inner.sync_history();
+            std::fs::rename(&from, &to)
+                .map_err(|error| format!("Cannot move the project: {error}"))?;
+            inner.file_path = Some(to.clone());
+            inner.project_lock = Some(next_lock);
+            let pending = crate::project_data::PendingRelocation {
+                from: from.clone(),
+                to: to.clone(),
+                how: crate::project_data::Relocation::Move,
+            };
+            inner.history_move = Some(pending.clone());
+            pending
+        };
+        let report = pending.run();
+        state.lock_inner().finish_history_move(report, file_sha);
         if backup.exists() {
             let _ = std::fs::rename(&backup, crate::project_persist::backup_path(&to));
         }
-        inner.file_path = Some(to.clone());
-        inner.project_lock = Some(next_lock);
-        inner.rehome_history(true, file_sha);
-        crate::project_data::relocate(&from, &to, crate::project_data::Relocation::Move);
-        return Ok((snapshot(&inner), false));
+        return Ok((snapshot(&state.lock_inner()), false));
     }
     let mut request = snapshot_for_save(Some(to.display().to_string()), state)?;
+    request.relocation = crate::project_data::Relocation::Move;
     let undo_new_files = |request: &SaveRequest| {
         let _ = std::fs::remove_file(&request.save_path);
-        let _ = std::fs::remove_dir_all(dir_for(&request.save_path));
+        let _ = crate::edit_history::journal::discard(&request.save_path);
     };
     if let Err(error) = write_save(&mut request) {
         undo_new_files(&request);
         return Err(error.into());
     }
-    request.copy_history();
-    if dir_for(&from).exists() && !request.history_copied {
-        undo_new_files(&request);
-        return Err("Cannot copy the project's history to the new folder.".into());
-    }
     let Some(repointed) = publish_save(state, &mut request) else {
         undo_new_files(&request);
         return Err("The project changed during the move; try again.".into());
     };
+    if let Some(pending) = request.pending.take() {
+        let report = pending.run();
+        state
+            .lock_inner()
+            .finish_history_move(report, request.file_sha.clone());
+    }
     for (old, what) in [(&from, "file"), (&backup, "backup")] {
         if let Err(error) = std::fs::remove_file(old)
             && error.kind() != std::io::ErrorKind::NotFound
@@ -1018,12 +1015,6 @@ pub(crate) fn move_project_inner(
             );
         }
     }
-    if let Err(error) = std::fs::remove_dir_all(dir_for(&from))
-        && error.kind() != std::io::ErrorKind::NotFound
-    {
-        log::warn!("move: the old history of {} stays: {error}", from.display());
-    }
-    crate::project_data::relocate(&from, &to, crate::project_data::Relocation::Move);
     let inner = state.lock_inner();
     Ok((snapshot(&inner), repointed))
 }
@@ -1877,11 +1868,14 @@ pub fn history_page(
 ) -> Result<crate::state::HistoryPage, String> {
     let mut inner = state.lock_inner();
     inner.sync_history();
-    inner.undo.history_page(
-        before,
-        limit.unwrap_or(crate::state::HISTORY_PAGE),
-        &inner.project.properties,
-    )
+    inner
+        .undo
+        .history_page(
+            before,
+            limit.unwrap_or(crate::state::HISTORY_PAGE),
+            &inner.project.properties,
+        )
+        .map_err(String::from)
 }
 
 /// Where the history is kept and the space it occupies.
@@ -1914,13 +1908,19 @@ pub(crate) fn clear_older_history(
     inner: &mut AppStateInner,
     keep: usize,
 ) -> Result<HistoryClearOutcome, String> {
-    if let Err(message) = inner.try_sync_history() {
-        return Ok(HistoryClearOutcome::Failed { message });
+    if let Err(error) = inner.try_sync_history() {
+        return Ok(HistoryClearOutcome::Failed {
+            message: error.to_string(),
+        });
     }
     let before = inner.undo.history_info().bytes;
     let dropped = match inner.undo.clear_older(keep) {
         Ok(dropped) => dropped,
-        Err(message) => return Ok(HistoryClearOutcome::Failed { message }),
+        Err(error) => {
+            return Ok(HistoryClearOutcome::Failed {
+                message: error.to_string(),
+            });
+        }
     };
     let info = inner.undo.history_info();
     Ok(HistoryClearOutcome::Cleared {

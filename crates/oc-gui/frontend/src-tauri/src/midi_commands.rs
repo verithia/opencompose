@@ -532,7 +532,7 @@ mod tests {
                 .count(),
             2
         );
-        assert_eq!(source.lock_inner().undo.undo.len(), 0);
+        assert_eq!(source.lock_inner().undo.undo_entries().len(), 0);
 
         let destination = saved_project(
             &temp.path().join("destination.ocp"),
@@ -547,7 +547,7 @@ mod tests {
         assert_eq!(inner.project.properties.tempo, 96.0);
         assert_eq!(inner.project.properties.time_signature.numerator, 3);
         assert_eq!(inner.project.properties.live_resample, Some(3));
-        assert_eq!(inner.undo.undo.len(), 1);
+        assert_eq!(inner.undo.undo_entries().len(), 1);
         let exported = midi_bridge::export_smf(&inner.project, &ExportOptions::default()).unwrap();
         let midi = midly::Smf::parse(&exported.bytes).unwrap();
         let mut tick = 0;

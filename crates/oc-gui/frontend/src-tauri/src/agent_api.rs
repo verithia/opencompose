@@ -5129,7 +5129,7 @@ providers:
         expected.tracks[0].effects[0].bypass = true;
         assert_eq!(inner.project, expected);
         let revision = inner.revision;
-        let undo_count = inner.undo.undo.len();
+        let undo_count = inner.undo.undo_entries().len();
         drop(inner);
         args["expected_revision"] = json!(revision);
         let receipt = effects_set_bypass_json(&state, &args, "panel:test").unwrap();
@@ -5139,7 +5139,7 @@ providers:
         );
         let inner = state.lock_inner();
         assert_eq!(inner.revision, revision);
-        assert_eq!(inner.undo.undo.len(), undo_count);
+        assert_eq!(inner.undo.undo_entries().len(), undo_count);
     }
 
     #[test]
@@ -6576,7 +6576,7 @@ providers:
         assert_eq!(committed["label"], "agent transaction");
         assert_eq!(committed["revision"], base + 1);
         assert_eq!(state.lock_inner().project.properties.tempo, 128.0);
-        assert_eq!(state.lock_inner().undo.undo.len(), 1);
+        assert_eq!(state.lock_inner().undo.undo_entries().len(), 1);
         assert!(
             transaction_commit(&state, "test")
                 .unwrap_err()
@@ -6779,7 +6779,7 @@ providers:
             inner.bump_revision();
         }
         transaction_commit(&state, "test").unwrap();
-        let entries_before = state.lock_inner().undo.undo.len();
+        let entries_before = state.lock_inner().undo.undo_entries().len();
 
         // Turn 2 edits, then asks for another write planned against turn 1's revision.
         transaction_begin(&state, Some("turn 2".into()), "test").unwrap();
@@ -6819,7 +6819,7 @@ providers:
         let inner = state.lock_inner();
         assert_eq!(inner.project.properties.tempo, 140.0);
         assert_eq!(
-            inner.undo.undo.len(),
+            inner.undo.undo_entries().len(),
             entries_before + 1,
             "the turn is one undo entry"
         );
@@ -6853,7 +6853,10 @@ providers:
         transaction_commit(&state, "test").unwrap();
         let inner = state.lock_inner();
         assert!(inner.transaction.is_none());
-        assert!(inner.undo.undo.is_empty(), "nothing landed, so no entry");
+        assert!(
+            inner.undo.undo_entries().is_empty(),
+            "nothing landed, so no entry"
+        );
         assert_eq!(inner.revision, base, "nothing landed, so no revision");
     }
 
@@ -7987,7 +7990,7 @@ providers:
         transaction_commit(&state, "panel:test").unwrap();
         let inner = state.lock_inner();
         assert_eq!(inner.project.audio_clip(0).unwrap().offset_seconds, 0.0);
-        assert_eq!(inner.undo.undo.len(), 1);
+        assert_eq!(inner.undo.undo_entries().len(), 1);
     }
 
     #[test]
@@ -8125,7 +8128,10 @@ providers:
         assert!(range.contains("valid tempos"), "{range}");
         let inner = state.lock_inner();
         assert!(inner.project.properties.tempo_map.is_empty());
-        assert!(inner.undo.undo.is_empty(), "a refusal adds no history");
+        assert!(
+            inner.undo.undo_entries().is_empty(),
+            "a refusal adds no history"
+        );
     }
 
     #[test]
@@ -8180,7 +8186,7 @@ providers:
             assert!(error.contains("bar "), "{points}: {error}");
             let inner = state.lock_inner();
             assert!(inner.project.properties.time_sig_map.is_empty());
-            assert!(inner.undo.undo.is_empty());
+            assert!(inner.undo.undo_entries().is_empty());
         }
     }
 
@@ -8236,7 +8242,7 @@ providers:
         );
         let inner = state.lock_inner();
         assert_eq!(inner.project.tracks.len(), 2);
-        assert!(inner.undo.undo.is_empty());
+        assert!(inner.undo.undo_entries().is_empty());
     }
 
     #[test]
@@ -8288,7 +8294,7 @@ providers:
         );
         let inner = state.lock_inner();
         assert_eq!(inner.project, before);
-        assert!(inner.undo.undo.is_empty());
+        assert!(inner.undo.undo_entries().is_empty());
     }
 
     #[test]
@@ -8348,7 +8354,7 @@ providers:
         );
         let inner = state.lock_inner();
         assert_eq!(inner.project.presets.len(), 2);
-        assert!(inner.undo.undo.is_empty());
+        assert!(inner.undo.undo_entries().is_empty());
     }
 
     #[test]
@@ -8380,7 +8386,7 @@ providers:
         assert_eq!(history["applied"], json!(2));
         assert_eq!(history["redoable"], json!(0));
         // Read-only: nothing was undone and no entry was added.
-        assert_eq!(state.lock_inner().undo.undo.len(), 2);
+        assert_eq!(state.lock_inner().undo.undo_entries().len(), 2);
     }
 
     #[test]
@@ -8662,14 +8668,12 @@ providers:
         let store = crate::ai::sessions::Store::config();
         let path = store.lock_path(id);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        let foreign = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&path)
-            .unwrap();
-        <std::fs::File as fs4::FileExt>::try_lock(&foreign).unwrap();
+        let _foreign = crate::private_fs::lock(
+            &path,
+            crate::private_fs::LockMode::Exclusive,
+            crate::private_fs::LockWait::NoWait,
+        )
+        .unwrap();
         let project = std::env::temp_dir().join("oc-session-in-use.ocp");
         let body = json!({
             "provider": "fixture",

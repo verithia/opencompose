@@ -46,8 +46,8 @@ fn applying_a_preset_writes_every_parameter_in_one_undo_entry() {
 
     apply_with(&mut inner, &path, &preset.id, "track:0", 0, "eq").expect("applied");
 
-    assert_eq!(inner.undo.undo.len(), 1, "one undo entry");
-    let entry = &inner.undo.undo[0];
+    assert_eq!(inner.undo.undo_entries().len(), 1, "one undo entry");
+    let entry = &inner.undo.undo_entries()[0];
     assert_eq!(entry.tag, "effect parameters");
     assert!(
         entry.scopes.iter().any(|scope| scope == UndoScope::Preset),
@@ -88,7 +88,10 @@ fn applying_a_preset_to_another_device_type_is_refused() {
         find_device("compression").expect("a catalog device").name,
     );
     assert_eq!(error, expected);
-    assert!(inner.undo.undo.is_empty(), "a refusal writes nothing");
+    assert!(
+        inner.undo.undo_entries().is_empty(),
+        "a refusal writes nothing"
+    );
     assert!(inner.project.tracks[0].effects[0].params.is_empty());
 }
 
@@ -101,7 +104,7 @@ fn a_preset_id_that_does_not_exist_is_refused_by_name() {
     let error = apply_with(&mut inner, &path, "factory.eq.nope", "track:0", 0, "eq")
         .expect_err("an unknown id is refused");
     assert_eq!(error, "No device preset has the id 'factory.eq.nope'");
-    assert!(inner.undo.undo.is_empty());
+    assert!(inner.undo.undo_entries().is_empty());
 }
 
 #[test]

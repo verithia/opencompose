@@ -85,7 +85,7 @@ fn velocities(state: &AppState) -> Vec<Option<u8>> {
 }
 
 fn undo_len(state: &AppState) -> usize {
-    state.lock_inner().undo.undo.len()
+    state.lock_inner().undo.undo_entries().len()
 }
 
 #[test]
@@ -281,7 +281,7 @@ fn a_track_gesture_covers_every_phrase_in_one_entry() {
         inner.project.tracks[0].phrases[1].events[0].velocity,
         Some(120)
     );
-    assert_eq!(inner.undo.undo.len(), undo + 1);
+    assert_eq!(inner.undo.undo_entries().len(), undo + 1);
 }
 
 #[test]

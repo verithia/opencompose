@@ -189,7 +189,11 @@ fn adding_moving_and_removing_a_point_are_one_undo_entry_each() {
 
     // Add: the point lands on the notated grid at the asked position and value.
     add_automation_point_inner(&mut inner, "track:0", EFFECT_LANE, None, 4.0, 0.25).unwrap();
-    assert_eq!(inner.undo.undo.len(), 1, "adding a point is one entry");
+    assert_eq!(
+        inner.undo.undo_entries().len(),
+        1,
+        "adding a point is one entry"
+    );
     let points = &lane(&inner, 0).points;
     assert_eq!(points.len(), 3);
     assert_eq!(points[2].position, ast::BarBeat::new(2, 1, 0));
@@ -197,14 +201,22 @@ fn adding_moving_and_removing_a_point_are_one_undo_entry_each() {
 
     // Move: both axes, the same index, one more entry.
     move_automation_point_inner(&mut inner, "track:0", EFFECT_LANE, None, 2, 6.25, 0.75).unwrap();
-    assert_eq!(inner.undo.undo.len(), 2, "moving a point is one entry");
+    assert_eq!(
+        inner.undo.undo_entries().len(),
+        2,
+        "moving a point is one entry"
+    );
     let points = &lane(&inner, 0).points;
     assert_eq!(points[2].position, ast::BarBeat::new(2, 3, 1));
     assert_eq!(points[2].value, ast::ParamValue::Number(0.75));
 
     // Remove: one entry, and undo brings the point back.
     remove_automation_point_inner(&mut inner, "track:0", EFFECT_LANE, None, 1).unwrap();
-    assert_eq!(inner.undo.undo.len(), 3, "removing a point is one entry");
+    assert_eq!(
+        inner.undo.undo_entries().len(),
+        3,
+        "removing a point is one entry"
+    );
     assert_eq!(lane(&inner, 0).points.len(), 2);
     inner.undo.undo(&mut inner.project).unwrap();
     assert_eq!(lane(&inner, 0).points.len(), 3);
@@ -222,7 +234,7 @@ fn a_point_may_sit_outside_a_clip_span_because_only_writes_are_gated() {
     let mut inner = state(CLIP);
     // The clip writes bars 1 only; the move puts the point in bar 3.
     move_automation_point_inner(&mut inner, "track:0", EFFECT_LANE, None, 1, 8.0, 0.9).unwrap();
-    assert_eq!(inner.undo.undo.len(), 1);
+    assert_eq!(inner.undo.undo_entries().len(), 1);
     assert_eq!(
         lane(&inner, 0).points[1].position,
         ast::BarBeat::new(3, 1, 0)
@@ -248,7 +260,7 @@ fn a_muted_lane_refuses_every_point_edit_with_its_reason() {
     let mut inner = state(&effect_project());
     set_automation_lane_mute_inner(&mut inner, "track:0", EFFECT_LANE, None, true).unwrap();
     assert!(lane(&inner, 0).muted);
-    assert_eq!(inner.undo.undo.len(), 1, "the mute is one entry");
+    assert_eq!(inner.undo.undo_entries().len(), 1, "the mute is one entry");
 
     let added = add_automation_point_inner(&mut inner, "track:0", EFFECT_LANE, None, 4.0, 0.5);
     assert_eq!(added.unwrap_err(), MUTED_LANE);
@@ -256,7 +268,11 @@ fn a_muted_lane_refuses_every_point_edit_with_its_reason() {
     assert_eq!(moved.unwrap_err(), MUTED_LANE);
     let removed = remove_automation_point_inner(&mut inner, "track:0", EFFECT_LANE, None, 0);
     assert_eq!(removed.unwrap_err(), MUTED_LANE);
-    assert_eq!(inner.undo.undo.len(), 1, "a refused edit adds no history");
+    assert_eq!(
+        inner.undo.undo_entries().len(),
+        1,
+        "a refused edit adds no history"
+    );
     assert_eq!(lane(&inner, 0).points.len(), 2, "the points are untouched");
 }
 
@@ -377,8 +393,12 @@ fn an_effect_write_creates_the_lane_and_records_one_undo_entry() {
             && matches!(value, ast::ParamValue::Db(number) if (number + 6.0).abs() < 1e-9)
     }));
 
-    assert_eq!(inner.undo.undo.len(), 1, "one drag is one undo entry");
-    assert_eq!(inner.undo.undo[0].tag, "write automation");
+    assert_eq!(
+        inner.undo.undo_entries().len(),
+        1,
+        "one drag is one undo entry"
+    );
+    assert_eq!(inner.undo.undo_entries()[0].tag, "write automation");
     let mut project = inner.project.clone();
     inner.undo.undo(&mut project).expect("one undo entry");
     assert!(project.tracks[0].automation_count() == 0);
@@ -407,7 +427,7 @@ fn a_write_on_an_existing_lane_replaces_the_point_at_one_position() {
         lane.points[0].value,
         ast::ParamValue::Db(value) if (value + 24.0).abs() < 1e-9
     ));
-    assert_eq!(inner.undo.undo.len(), 1);
+    assert_eq!(inner.undo.undo_entries().len(), 1);
 }
 
 #[test]
@@ -417,7 +437,10 @@ fn an_unknown_effect_parameter_is_refused_before_any_point() {
     assert!(error.contains("has no parameter 'treshold'"), "{error}");
     assert!(error.contains("expected one of"), "{error}");
     assert!(inner.project.tracks[0].automation_count() == 0);
-    assert!(inner.undo.undo.is_empty(), "a refusal records nothing");
+    assert!(
+        inner.undo.undo_entries().is_empty(),
+        "a refusal records nothing"
+    );
 
     // A value outside the device range is refused too, and keeps no point.
     begin_effect_param_write_inner(&mut inner, "track:0", 0, "threshold").unwrap();
@@ -460,7 +483,11 @@ fn a_point_outside_the_device_range_is_refused_with_the_range() {
     )
     .unwrap_err();
     assert!(error.contains("outside -60..0"), "{error}");
-    assert_eq!(inner.undo.undo.len(), 0, "a refusal adds no history");
+    assert_eq!(
+        inner.undo.undo_entries().len(),
+        0,
+        "a refusal adds no history"
+    );
     assert_eq!(
         lane(&inner, 0).points[1].value,
         ast::ParamValue::Db(-24.0),
@@ -494,7 +521,7 @@ fn a_point_outside_the_device_range_is_refused_with_the_range() {
         -6.0,
     )
     .unwrap();
-    assert_eq!(inner.undo.undo.len(), 1);
+    assert_eq!(inner.undo.undo_entries().len(), 1);
     assert_eq!(
         lane(&inner, 0).points[2].value,
         ast::ParamValue::Db(-6.0),

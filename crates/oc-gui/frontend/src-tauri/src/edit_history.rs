@@ -6,7 +6,7 @@
 //! changes to the journal at settle points (a committed edit, an undo, a tick)
 //! and reloads its window from it when the cursor leaves the window.
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 
 use serde::{Deserialize, Serialize};
 
@@ -57,7 +57,6 @@ impl Author {
 
 thread_local! {
     static ACTING: RefCell<Option<Author>> = const { RefCell::new(None) };
-    static PERSIST_IN_TEST: Cell<bool> = const { Cell::new(false) };
 }
 
 /// The author edits on this thread are recorded for; the person by default.
@@ -82,72 +81,24 @@ pub fn act_as(author: Author) -> Acting {
     Acting(ACTING.with(|acting| acting.borrow_mut().replace(author)))
 }
 
-/// Whether histories are written to disk. A test build writes none unless the
-/// test asks, and then into a folder of the test thread's own.
-pub fn persistence_enabled() -> bool {
-    !cfg!(test) || PERSIST_IN_TEST.with(Cell::get)
-}
-
-/// Let this test thread write histories for the projects it opens.
-#[cfg(test)]
-pub fn enable_persistence_for_test() {
-    PERSIST_IN_TEST.with(|enabled| enabled.set(true));
-}
-
-/// Remove the history of `project`.
-pub fn discard(project: &std::path::Path) {
-    if !persistence_enabled() {
-        return;
-    }
-    let dir = journal::dir_for(project);
-    if let Err(error) = std::fs::remove_dir_all(&dir)
-        && error.kind() != std::io::ErrorKind::NotFound
-    {
-        log::warn!("[history] cannot remove {}: {error}", dir.display());
-    }
-}
-
-/// Record the content SHA-256 of `project` after the app wrote it, so its
-/// history is found again if the file moves outside the app. The caller holds
-/// the document lock, so a marker write cannot race a history rewrite.
-pub fn record_fingerprint(project: &std::path::Path, sha256: Option<String>) {
-    if !persistence_enabled() || sha256.is_none() {
-        return;
-    }
-    let dir = journal::dir_for(project);
-    if let Err(error) = journal::write_marker(&dir, &journal::Marker::new(project, sha256)) {
-        log::warn!("[history] cannot record {}: {error}", project.display());
-    }
-}
-
-/// Start an empty history for a new document written at `project`. The
-/// history exists before the file is opened, so the open never adopts another
-/// project's history by fingerprint: a new file can match an old one's bytes.
-pub fn start_fresh(project: &std::path::Path) {
-    discard(project);
-    if !persistence_enabled() {
-        return;
-    }
-    let dir = journal::dir_for(project);
-    if let Err(error) = journal::write_marker(&dir, &journal::Marker::new(project, None)) {
-        log::warn!("[history] cannot start {}: {error}", dir.display());
-    }
-}
-
-/// What a patch cannot say about why an entry exists.
-///
-/// A conversation restore writes a saved document, so its diff names the same
-/// facts as an ordinary edit. The persisted cause lets a UI describe an entry
-/// written by that flow as a conversation revert instead. Recall moves the
-/// cursor and never writes one.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+/// What a patch cannot say about why an entry exists. Ordinary edits are the
+/// only cause the app records; older journals may name causes this build no
+/// longer produces, and those load as an ordinary edit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EditCause {
     /// An ordinary document edit.
     #[default]
     Edit,
-    /// A conversation restored an earlier document snapshot.
-    ConversationRevert,
+}
+
+impl<'de> serde::Deserialize<'de> for EditCause {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        // The journal is untrusted input; a cause this build does not know is
+        // an ordinary edit rather than a reason to lose the whole entry.
+        let _ = String::deserialize(deserializer)?;
+        Ok(Self::Edit)
+    }
 }
 
 impl EditCause {

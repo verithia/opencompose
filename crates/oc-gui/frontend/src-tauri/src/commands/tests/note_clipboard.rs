@@ -109,7 +109,7 @@ fn refs(indices: &[usize]) -> Vec<NoteRef> {
 }
 
 fn undo_len(state: &AppState) -> usize {
-    state.lock_inner().undo.undo.len()
+    state.lock_inner().undo.undo_entries().len()
 }
 
 fn pattern_len(state: &AppState) -> usize {
@@ -165,7 +165,7 @@ fn a_paste_keeps_every_field_and_one_undo_restores_the_list() {
             pasted.modifiers,
             vec![("timing_offset_beats".to_string(), ParamValue::Number(0.125))]
         );
-        assert_eq!(inner.undo.undo.len(), 1);
+        assert_eq!(inner.undo.undo_entries().len(), 1);
     }
 
     {
@@ -280,7 +280,7 @@ fn duplicate_copies_every_field_and_one_undo_removes_the_copy() {
         assert_eq!(events[1].pitch, events[0].pitch);
         assert_eq!(events[1].duration, events[0].duration);
         assert_eq!(events[1].dynamics, events[0].dynamics);
-        assert_eq!(inner.undo.undo.len(), 1);
+        assert_eq!(inner.undo.undo_entries().len(), 1);
     }
 
     {
@@ -301,7 +301,7 @@ fn a_multi_note_duplicate_is_one_undo_entry() {
     let inner = state.lock_inner();
     assert_eq!(inner.project.tracks[0].phrases[0].events.len(), 2);
     assert_eq!(inner.project.tracks[0].phrases[0].events[1].start_beat, 1.0);
-    assert_eq!(inner.undo.undo.len(), 1);
+    assert_eq!(inner.undo.undo_entries().len(), 1);
 }
 
 #[test]

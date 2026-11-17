@@ -111,6 +111,7 @@ impl UndoStack {
             StagedAction::Remove => {
                 self.undo.pop();
                 self.merge_base = None;
+                self.dirty = true;
             }
             StagedAction::Merge {
                 forward,
@@ -126,6 +127,7 @@ impl UndoStack {
                 last.scopes.insert_all(scopes);
                 // The journal holds the entry as it was before the merge.
                 last.id = fresh_entry_id();
+                self.dirty = true;
             }
             StagedAction::Append(entry) => {
                 self.undo.push(entry);
@@ -135,6 +137,7 @@ impl UndoStack {
                 if let Some(gesture) = &mut self.gesture {
                     gesture.push_started = true;
                 }
+                self.dirty = true;
             }
         }
         self.history_epoch = Some(staged.next_epoch);

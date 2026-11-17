@@ -1,4 +1,14 @@
 //! Application state — single source of truth for the entire DAW session.
+//!
+//! Lock order: the document mutex ([`AppState::lock_inner`]) is taken before a
+//! project's [`crate::process_lock::ProcessLock`], a session-store lock or any
+//! history file. A save or move captures a
+//! [`crate::project_data::PendingRelocation`] under the document mutex, drops
+//! the guard, runs the relocation, then takes the guard again to adopt the
+//! history. While a relocation is pending the history stays unsynced, so no
+//! writer can target the old folder. Opening a project is the exception: it
+//! relocates by fingerprint before any other command can reach the new
+//! document.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -34,6 +44,7 @@ use crate::midi_live::MidiLive;
 mod automation_history;
 mod history_journal;
 mod undo_gestures;
+pub(crate) use history_journal::JournalHome;
 pub use history_journal::{HistoryInfo, HistoryPage};
 use undo_gestures::GestureOwnership;
 pub use undo_gestures::{
@@ -377,11 +388,13 @@ pub struct UndoHistory {
 /// in the journal. Without one (a document with no file) the vectors are the
 /// whole history, capped at [`MAX_UNDO`].
 pub struct UndoStack {
-    pub undo: Vec<UndoEntry>,
-    pub redo: Vec<UndoEntry>,
+    undo: Vec<UndoEntry>,
+    redo: Vec<UndoEntry>,
     journal: Option<Journal>,
     below: usize,
     above: usize,
+    /// Entries in the window or its base that the journal has not received.
+    dirty: bool,
     /// Project before the newest edit; the base for a merged patch.
     merge_base: Option<Project>,
     /// Non-reusing identity for staged history publication; None fails closed.
@@ -390,7 +403,8 @@ pub struct UndoStack {
     gesture: Option<GestureState>,
     gesture_ownership: GestureOwnership,
     /// Ids and authors of entries a redo branch discarded, so a conversation
-    /// learns that its own edits are no longer applied.
+    /// learns that its own edits are no longer applied. Kept across window
+    /// reloads; only a clear or a new journal attachment empties it.
     discarded: Vec<(u64, Author)>,
     /// Test-only switch: fail patch encoding, which cannot fail otherwise.
     #[cfg(test)]
@@ -405,6 +419,7 @@ impl UndoStack {
             journal: None,
             below: 0,
             above: 0,
+            dirty: false,
             merge_base: None,
             history_epoch: Some(0),
             gesture: None,
@@ -413,6 +428,18 @@ impl UndoStack {
             #[cfg(test)]
             fail_encode: false,
         }
+    }
+
+    /// The applied and undone entries the window currently holds.
+    #[cfg(test)]
+    pub(crate) fn undo_entries(&self) -> &[UndoEntry] {
+        &self.undo
+    }
+
+    /// The undone entries the window currently holds, oldest first.
+    #[cfg(test)]
+    pub(crate) fn redo_entries(&self) -> &[UndoEntry] {
+        &self.redo
     }
 
     fn join_gesture(&mut self, scope: UndoScope) {
@@ -572,6 +599,7 @@ impl UndoStack {
         // A new edit after this starts a fresh entry, never a merged one.
         self.merge_base = None;
         self.invalidate_gestures();
+        self.dirty = true;
 
         Ok(tag)
     }
@@ -601,6 +629,7 @@ impl UndoStack {
 
         self.merge_base = None;
         self.invalidate_gestures();
+        self.dirty = true;
 
         Ok(tag)
     }
@@ -619,7 +648,9 @@ impl UndoStack {
             ));
         }
         if level < self.below || level > self.below + self.undo.len() + self.redo.len() {
-            return self.restore_from_journal(level, project);
+            return self
+                .restore_from_journal(level, project)
+                .map_err(String::from);
         }
         let level = level - self.below;
         // Decode and apply the entire jump before moving either stack: a later
@@ -665,6 +696,7 @@ impl UndoStack {
         }
         self.merge_base = None;
         self.invalidate_gestures();
+        self.dirty = true;
         Ok(self.undo.last().map(|entry| entry.tag.clone()))
     }
 
@@ -746,9 +778,9 @@ impl UndoStack {
         self.redo = history.redo;
         self.below = history.below;
         self.above = history.above;
-        self.discarded.clear();
         self.merge_base = None;
         self.invalidate_gestures();
+        self.dirty = true;
     }
 
     /// Drop edits recorded after `mark`, e.g. when a transaction rolls back.
@@ -757,6 +789,14 @@ impl UndoStack {
         self.redo.truncate(mark.redo.min(self.redo.len()));
         self.merge_base = None;
         self.invalidate_gestures();
+        self.dirty = true;
+    }
+
+    /// Put back applied entries a batch undid from below its mark, oldest
+    /// first, after [`Self::restore`] removed what the batch added.
+    pub fn restore_base_entries(&mut self, entries: impl IntoIterator<Item = UndoEntry>) {
+        self.undo.extend(entries);
+        self.dirty = true;
     }
 
     /// Replace the edits recorded after `mark` with one entry for each maximal
@@ -787,6 +827,7 @@ impl UndoStack {
         self.cap_unjournaled();
         self.merge_base = merge_base;
         self.invalidate_gestures();
+        self.dirty = true;
     }
 
     /// Rebuild the batch from its recorded forward patches. `None` means the
@@ -925,6 +966,7 @@ impl UndoStack {
         self.merge_base = None;
         self.gesture = None;
         self.gesture_ownership.replace_document();
+        self.dirty = false;
     }
 }
 
@@ -1271,9 +1313,9 @@ pub struct AppStateInner {
     pub scanned_plugins: Vec<PluginInfo>,
     /// Backend-managed undo/redo stack (patch-based)
     pub undo: UndoStack,
-    /// Revision whose history the on-disk journal holds; `None`
-    /// until the first sync after the history was attached.
-    pub history_synced: Option<u64>,
+    /// A relocation captured while the document was locked and still to run.
+    /// The history stays unsynced until it finishes.
+    pub(crate) history_move: Option<crate::project_data::PendingRelocation>,
     /// The open edit preview: the base and the proposal, one of them live.
     /// While it is open the document is read-only.
     pub preview: Option<crate::preview::PreviewSession>,
@@ -1423,7 +1465,7 @@ impl AppState {
                 editor_helpers: HashMap::new(),
                 scanned_plugins: plugins,
                 undo: UndoStack::new(),
-                history_synced: None,
+                history_move: None,
                 preview: None,
                 midi_live,
                 audition_epoch,
@@ -1615,9 +1657,8 @@ impl AppStateInner {
             undo: keep,
             redo: transaction.undo_mark.redo,
         });
-        for entry in transaction.base_undos.into_iter().rev() {
-            self.undo.undo.push(entry);
-        }
+        self.undo
+            .restore_base_entries(transaction.base_undos.into_iter().rev());
         self.audio.resource_root = self
             .file_path
             .as_deref()

@@ -1398,11 +1398,14 @@ mod tests {
             update_mixer_touch_inner(&mut inner, "track:0", Some(db), None).unwrap();
         }
         assert_eq!(inner.project.tracks[0].mix.volume_db, -6.0);
-        assert!(inner.undo.undo.is_empty(), "live updates record no history");
+        assert!(
+            inner.undo.undo_entries().is_empty(),
+            "live updates record no history"
+        );
         assert!(!inner.dirty, "nothing is committed before the release");
         // The release is the only whole-document mutation.
         update_track_mix_inner(&mut inner, 0, Some(-6.0), None).unwrap();
-        assert_eq!(inner.undo.undo.len(), 1);
+        assert_eq!(inner.undo.undo_entries().len(), 1);
         assert!(inner.dirty);
         assert!(inner.dsl_source.contains("-6"), "{}", inner.dsl_source);
     }
@@ -1414,7 +1417,7 @@ mod tests {
         begin_mixer_touch_inner(&mut inner, "track:0").unwrap();
         update_mixer_touch_inner(&mut inner, "track:0", Some(-9.0), None).unwrap();
         update_track_mix_inner(&mut inner, 0, Some(0.0), None).unwrap();
-        assert!(inner.undo.undo.is_empty());
+        assert!(inner.undo.undo_entries().is_empty());
         assert_eq!(inner.project.tracks[0].mix.volume_db, 0.0);
     }
 }

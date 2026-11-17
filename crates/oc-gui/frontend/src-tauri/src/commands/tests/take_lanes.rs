@@ -60,7 +60,7 @@ fn found(inner: &crate::state::AppStateInner, take: u32, start: BarBeat, end: Ba
 #[test]
 fn comping_a_range_splits_at_the_edges_and_mutes_the_other_takes() {
     let mut inner = take_project();
-    let before = inner.undo.undo.len();
+    let before = inner.undo.undo_entries().len();
     comp_audio_takes_inner(
         &mut inner,
         "vox",
@@ -73,7 +73,7 @@ fn comping_a_range_splits_at_the_edges_and_mutes_the_other_takes() {
     // Three takes, each split into before / comp / after.
     assert_eq!(inner.project.audio_clip_count(), 9);
     assert_eq!(
-        inner.undo.undo.len(),
+        inner.undo.undo_entries().len(),
         before + 1,
         "one gesture, one history entry"
     );
@@ -137,9 +137,9 @@ fn a_take_mute_is_one_undo_entry_and_covers_every_segment() {
         BarBeat::new(3, 1, 0),
     )
     .expect("comp");
-    let before = inner.undo.undo.len();
+    let before = inner.undo.undo_entries().len();
     set_audio_take_mute_inner(&mut inner, "vox", 2, true).expect("mute take 2");
-    assert_eq!(inner.undo.undo.len(), before + 1);
+    assert_eq!(inner.undo.undo_entries().len(), before + 1);
     assert!(
         inner
             .project

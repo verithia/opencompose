@@ -96,31 +96,61 @@ fn item(found: Found, now: SystemTime) -> DataItem {
     }
 }
 
+/// Why a stored item could not be removed.
+#[derive(Debug)]
+pub enum DataRemoveError {
+    /// No item of that kind and key is on disk.
+    NotFound,
+    /// The item's project or folder still exists.
+    NotGone,
+    /// The open project owns the item.
+    Open,
+    /// Another process holds the item's project.
+    InUse,
+    /// The item's store failed to remove it.
+    Store(String),
+}
+
+impl std::fmt::Display for DataRemoveError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotFound => formatter.write_str("That project data is not on disk."),
+            Self::NotGone => formatter
+                .write_str("Only data whose project or folder is gone can be removed here."),
+            Self::Open => formatter.write_str("This is the open project's data."),
+            Self::InUse => {
+                formatter.write_str("Another OpenCompose process is using this project's data.")
+            }
+            Self::Store(message) => formatter.write_str(message),
+        }
+    }
+}
+
+impl std::error::Error for DataRemoveError {}
+
+impl From<DataRemoveError> for String {
+    fn from(error: DataRemoveError) -> Self {
+        error.to_string()
+    }
+}
+
 /// Every item of project data the app keeps, gone or not.
 pub fn inventory(now: SystemTime) -> Vec<DataItem> {
     let mut items = Vec::new();
     for stored in journal::list() {
-        let touched = ["state.json", "entries.jsonl", "project.json"]
-            .iter()
-            .filter_map(|name| std::fs::metadata(stored.dir.join(name)).ok())
-            .filter_map(|meta| meta.modified().ok())
-            .max();
         let key = stored
             .dir
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let count = std::fs::metadata(stored.dir.join("index.bin"))
-            .map(|meta| meta.len() as usize / journal::INDEX_ROW)
-            .unwrap_or(0);
         items.push(item(
             Found {
                 kind: DataKind::History,
                 key,
-                path: Some(stored.marker.path),
-                bytes: journal::dir_bytes(&stored.dir),
-                count,
-                touched,
+                path: Some(stored.marker.path.clone()),
+                bytes: stored.bytes(),
+                count: stored.entry_count(),
+                touched: stored.touched(),
             },
             now,
         ));
@@ -169,18 +199,18 @@ pub fn inventory(now: SystemTime) -> Vec<DataItem> {
 
 /// Remove one item. Only a gone item may go this way, and never the open
 /// project's: its data is in use.
-pub fn remove(kind: DataKind, key: &str, open: Option<&Path>) -> Result<u64, String> {
+pub fn remove(kind: DataKind, key: &str, open: Option<&Path>) -> Result<u64, DataRemoveError> {
     let found = inventory(SystemTime::now())
         .into_iter()
         .find(|item| item.kind == kind && item.key == key)
-        .ok_or_else(|| "That project data is not on disk.".to_string())?;
+        .ok_or(DataRemoveError::NotFound)?;
     if !found.gone {
-        return Err("Only data whose project or folder is gone can be removed here.".into());
+        return Err(DataRemoveError::NotGone);
     }
     if let (Some(open), Some(path)) = (open, found.path.as_deref())
         && super::canonical_path(open) == super::canonical_path(Path::new(path))
     {
-        return Err("This is the open project's data.".into());
+        return Err(DataRemoveError::Open);
     }
     remove_item(&found)?;
     Ok(found.bytes)
@@ -189,7 +219,9 @@ pub fn remove(kind: DataKind, key: &str, open: Option<&Path>) -> Result<u64, Str
 /// Take the lock of the project an item belongs to, so a sweep never deletes
 /// data another process is using. Data without a project path is guarded by
 /// its own store.
-fn project_guard(item: &DataItem) -> Result<Option<crate::process_lock::ProcessLock>, String> {
+fn project_guard(
+    item: &DataItem,
+) -> Result<Option<crate::process_lock::ProcessLock>, DataRemoveError> {
     let path = match item.kind {
         DataKind::History | DataKind::Note | DataKind::Recovery => item.path.as_deref(),
         DataKind::Conversations => None,
@@ -199,26 +231,39 @@ fn project_guard(item: &DataItem) -> Result<Option<crate::process_lock::ProcessL
     };
     match crate::process_lock::ProcessLock::acquire(super::project_lock_path(Path::new(path))) {
         Ok(lock) => Ok(Some(lock)),
-        Err(error) if error.is_in_use() => {
-            Err("Another OpenCompose process is using this project's data.".into())
-        }
-        Err(error) => Err(format!("Cannot lock the project's data: {error}")),
+        Err(error) if error.is_in_use() => Err(DataRemoveError::InUse),
+        Err(error) => Err(DataRemoveError::Store(format!(
+            "Cannot lock the project's data: {error}"
+        ))),
     }
 }
 
-fn remove_item(item: &DataItem) -> Result<(), String> {
+fn remove_item(item: &DataItem) -> Result<(), DataRemoveError> {
     let _lock = project_guard(item)?;
     match item.kind {
         DataKind::History => {
             if !super::is_path_key(&item.key) {
-                return Err("not a history".into());
+                return Err(DataRemoveError::Store("not a history".into()));
             }
-            std::fs::remove_dir_all(journal::root().join(&item.key))
-                .map_err(|error| format!("cannot remove the history: {error}"))
+            let stored = journal::list()
+                .into_iter()
+                .find(|stored| {
+                    stored
+                        .dir
+                        .file_name()
+                        .is_some_and(|name| name == item.key.as_str())
+                })
+                .ok_or(DataRemoveError::NotFound)?;
+            stored.remove().map_err(|error| {
+                DataRemoveError::Store(format!("cannot remove the history: {error}"))
+            })
         }
-        DataKind::Note => project_instructions::Store::config().remove_key(&item.key),
+        DataKind::Note => project_instructions::Store::config()
+            .remove_key(&item.key)
+            .map_err(DataRemoveError::Store),
         DataKind::Recovery => {
             crate::autosave::remove_stored(&crate::autosave::app_root(), &item.key)
+                .map_err(DataRemoveError::Store)
         }
         DataKind::Conversations => sessions::Store::config()
             .remove_workspace_guarded(&item.key, &|id| {
@@ -232,7 +277,7 @@ fn remove_item(item: &DataItem) -> Result<(), String> {
                 }
             })
             .map(|_| ())
-            .map_err(|error| error.message),
+            .map_err(|error| DataRemoveError::Store(error.message)),
     }
 }
 
@@ -311,11 +356,9 @@ mod tests {
     }
 
     fn history_for(project: &Path) {
-        journal::write_marker(
-            &journal::dir_for(project),
-            &journal::Marker::new(project, None),
-        )
-        .unwrap();
+        journal::Marker::new(project, None)
+            .write(&journal::dir_for(project))
+            .unwrap();
     }
 
     fn kinds_of(items: &[DataItem], path: &Path) -> Vec<DataKind> {
@@ -426,14 +469,12 @@ mod tests {
         std::fs::remove_file(&gone).unwrap();
         let lock_path = crate::project_data::project_lock_path(&gone);
         std::fs::create_dir_all(lock_path.parent().unwrap()).unwrap();
-        let foreign = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&lock_path)
-            .unwrap();
-        <std::fs::File as fs4::FileExt>::try_lock(&foreign).unwrap();
+        let foreign = crate::private_fs::lock(
+            &lock_path,
+            crate::private_fs::LockMode::Exclusive,
+            crate::private_fs::LockWait::NoWait,
+        )
+        .unwrap();
 
         let later = SystemTime::now() + STALE_AFTER + DAY;
         assert!(sweep(later, None).is_empty());

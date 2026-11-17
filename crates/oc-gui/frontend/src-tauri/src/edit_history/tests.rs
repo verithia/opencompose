@@ -25,7 +25,6 @@ fn project_file(dir: &Path) -> PathBuf {
 /// A state whose open project is `song.ocp` in a fresh directory, with its
 /// history kept in this test thread's history folder.
 fn opened(dir: &Path, source: &str) -> AppState {
-    super::enable_persistence_for_test();
     let path = project_file(dir);
     std::fs::write(&path, source).unwrap();
     let state = AppState::new();
@@ -97,8 +96,10 @@ fn a_failed_index_write_rewinds_the_entries_file() {
     assert_eq!(journal.len(), 2);
 }
 
+#[cfg(unix)]
 #[test]
-fn a_failed_index_write_rewinds_the_index_and_the_entries() {
+fn a_read_only_index_rewinds_the_index_and_the_entries() {
+    use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir().unwrap();
     let path = project_file(dir.path());
     let mut journal = Journal::open(&path).unwrap();
@@ -107,10 +108,14 @@ fn a_failed_index_write_rewinds_the_index_and_the_entries() {
     let index = journal::dir_for(&path).join("index.bin");
     let entries_before = std::fs::metadata(&entries).unwrap().len();
     let index_before = std::fs::metadata(&index).unwrap().len();
-    journal.fail_next_index_write();
+    let mut permissions = std::fs::metadata(&index).unwrap().permissions();
+    permissions.set_mode(0o444);
+    std::fs::set_permissions(&index, permissions.clone()).unwrap();
     assert!(journal.append(&[entry(2)]).is_err());
     assert_eq!(std::fs::metadata(&entries).unwrap().len(), entries_before);
     assert_eq!(std::fs::metadata(&index).unwrap().len(), index_before);
+    permissions.set_mode(0o600);
+    std::fs::set_permissions(&index, permissions).unwrap();
     journal.append(&[entry(2)]).unwrap();
     assert_eq!(journal.len(), 2);
 }
@@ -444,11 +449,11 @@ fn the_window_pages_from_disk_and_memory_stays_bounded() {
     }
     inner.sync_history();
     assert_eq!(inner.undo.total_levels(), edits);
-    assert!(inner.undo.undo.len() <= MAX_UNDO);
+    assert!(inner.undo.undo_entries().len() <= MAX_UNDO);
     for _ in 0..edits {
         inner.undo_step().unwrap();
         inner.sync_history();
-        assert!(inner.undo.undo.len() + inner.undo.redo.len() <= 2 * MAX_UNDO);
+        assert!(inner.undo.undo_entries().len() + inner.undo.redo_entries().len() <= 2 * MAX_UNDO);
     }
     assert_eq!(inner.project.properties.tempo, 100.0);
     assert!(inner.undo_step().is_err());
@@ -472,7 +477,7 @@ fn a_window_reload_keeps_memory_when_the_journal_did_not_sync() {
     for _ in 0..MAX_UNDO {
         inner.undo_step().unwrap();
     }
-    assert!(inner.undo.undo.is_empty());
+    assert!(inner.undo.undo_entries().is_empty());
     let applied = inner.undo.applied_level();
     assert!(applied > 0, "the window has entries below it");
     // The cursor write fails, so the journal is behind the document.
@@ -487,8 +492,8 @@ fn a_window_reload_keeps_memory_when_the_journal_did_not_sync() {
     );
     assert_eq!(inner.project, before);
     assert_eq!(inner.undo.applied_level(), applied);
-    assert!(inner.undo.undo.is_empty(), "the window stayed");
-    assert_eq!(inner.undo.redo.len(), MAX_UNDO);
+    assert!(inner.undo.undo_entries().is_empty(), "the window stayed");
+    assert_eq!(inner.undo.redo_entries().len(), MAX_UNDO);
 }
 
 #[test]
@@ -497,12 +502,16 @@ fn clearing_older_refuses_a_window_the_journal_did_not_receive() {
     let state = opened(dir.path(), SOURCE);
     let mut inner = state.lock_inner();
     set_tempo(&mut inner, 120.0);
-    assert_eq!(inner.undo.undo.len(), 1);
+    assert_eq!(inner.undo.undo_entries().len(), 1);
     assert!(
         inner.undo.clear_older(0).is_err(),
         "an unsynced entry cannot be dropped"
     );
-    assert_eq!(inner.undo.undo.len(), 1, "the entry stayed in memory");
+    assert_eq!(
+        inner.undo.undo_entries().len(),
+        1,
+        "the entry stayed in memory"
+    );
 }
 
 #[test]
@@ -652,7 +661,7 @@ fn a_batch_keeps_a_person_edit_between_agent_runs() {
             UndoEdit::new("turn", UndoScope::Project).by(agent.clone()),
         );
         let authors: Vec<Author> = stack
-            .undo
+            .undo_entries()
             .iter()
             .map(|entry| entry.author.clone())
             .collect();
@@ -715,7 +724,6 @@ fn save_as_copies_the_history_and_new_starts_a_fresh_one() {
 
 #[test]
 fn a_first_save_writes_the_window_of_an_unsaved_document() {
-    super::enable_persistence_for_test();
     let dir = tempfile::tempdir().unwrap();
     let state = AppState::new();
     set_tempo(&mut state.lock_inner(), 111.0);
@@ -728,7 +736,6 @@ fn a_first_save_writes_the_window_of_an_unsaved_document() {
 
 #[test]
 fn every_project_write_records_the_files_fingerprint() {
-    super::enable_persistence_for_test();
     let dir = tempfile::tempdir().unwrap();
     let state = AppState::new();
     let path = project_file(dir.path());
@@ -738,7 +745,7 @@ fn every_project_write_records_the_files_fingerprint() {
         let marker = journal::read_marker(&journal::dir_for(&path)).unwrap();
         assert_eq!(
             marker.sha256,
-            journal::fingerprint(&path),
+            crate::project_data::content_sha256(&path),
             "New records the file it wrote"
         );
         set_tempo(&mut inner, 140.0);
@@ -747,26 +754,24 @@ fn every_project_write_records_the_files_fingerprint() {
     let marker = journal::read_marker(&journal::dir_for(&path)).unwrap();
     assert_eq!(
         marker.sha256,
-        journal::fingerprint(&path),
+        crate::project_data::content_sha256(&path),
         "a publish outside Save records the file it wrote"
     );
 }
 
 #[test]
-fn history_is_not_written_unless_a_test_asks() {
+fn a_test_thread_writes_history_under_its_injected_root() {
     let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("history");
+    let _root = journal::test_root(&root);
     let path = project_file(dir.path());
-    let result = std::thread::spawn(move || {
-        std::fs::write(&path, SOURCE).unwrap();
-        let state = AppState::new();
-        crate::commands::open_project(&mut state.lock_inner(), SOURCE, Some(path.clone())).unwrap();
-        set_tempo(&mut state.lock_inner(), 120.0);
-        state.lock_inner().sync_history();
-        journal::dir_for(&path).exists()
-    })
-    .join()
-    .unwrap();
-    assert!(!result);
+    std::fs::write(&path, SOURCE).unwrap();
+    let state = AppState::new();
+    crate::commands::open_project(&mut state.lock_inner(), SOURCE, Some(path.clone())).unwrap();
+    set_tempo(&mut state.lock_inner(), 120.0);
+    state.lock_inner().sync_history();
+    assert!(journal::dir_for(&path).starts_with(&root));
+    assert!(journal::dir_for(&path).exists());
 }
 
 #[test]
@@ -939,17 +944,18 @@ fn a_file_copied_outside_the_app_gets_a_copy_of_the_history() {
 
 #[test]
 fn a_history_on_an_unmounted_volume_is_copied_not_moved() {
-    super::enable_persistence_for_test();
     let dir = tempfile::tempdir().unwrap();
     let copy = project_file(dir.path());
     std::fs::write(&copy, SOURCE).unwrap();
-    let sha = journal::fingerprint(&copy).unwrap();
+    let sha = crate::project_data::content_sha256(&copy).unwrap();
     let unmounted = PathBuf::from("/Volumes/NotMounted-oc-history-test/song.ocp");
     assert!(!unmounted.exists(), "the fixture volume is not mounted");
     let mut journal = Journal::open(&unmounted).unwrap();
     journal.append(&[entry(1)]).unwrap();
     journal.write_state(1, SOURCE).unwrap();
-    journal::write_marker(journal.dir(), &journal::Marker::new(&unmounted, Some(sha))).unwrap();
+    journal::Marker::new(&unmounted, Some(sha))
+        .write(journal.dir())
+        .unwrap();
     drop(journal);
 
     let reopened = reopen(&copy);
@@ -962,7 +968,6 @@ fn a_history_on_an_unmounted_volume_is_copied_not_moved() {
 
 #[test]
 fn an_exclusive_new_refuses_a_file_that_appeared() {
-    super::enable_persistence_for_test();
     let dir = tempfile::tempdir().unwrap();
     let state = AppState::new();
     let target = dir.path().join("taken.ocp");
@@ -1021,7 +1026,6 @@ fn new_over_the_open_path_starts_a_history_of_its_own() {
 
 #[test]
 fn a_failed_new_leaves_the_open_document_and_its_history_alone() {
-    super::enable_persistence_for_test();
     let dir = tempfile::tempdir().unwrap();
     let state = opened(dir.path(), SOURCE);
     let path = project_file(dir.path());
@@ -1046,7 +1050,6 @@ fn a_failed_new_leaves_the_open_document_and_its_history_alone() {
 #[test]
 fn a_new_project_never_takes_a_history_by_content() {
     let dir = tempfile::tempdir().unwrap();
-    super::enable_persistence_for_test();
     let state = AppState::new();
     let first = dir.path().join("first.ocp");
     crate::commands::create_project_in(&mut state.lock_inner(), Some(first.clone())).unwrap();
@@ -1070,23 +1073,20 @@ fn a_new_project_never_takes_a_history_by_content() {
 }
 
 #[test]
-fn start_fresh_replaces_a_history_with_an_unfingerprinted_marker() {
+fn a_reset_replaces_a_history_with_an_unfingerprinted_marker() {
     let dir = tempfile::tempdir().unwrap();
-    super::enable_persistence_for_test();
     let path = dir.path().join("fresh.ocp");
     std::fs::write(&path, SOURCE).unwrap();
 
     // An old history with an entry and a fingerprint stands in for another file.
     let mut journal = Journal::open(&path).unwrap();
     journal.append(&[entry(1)]).unwrap();
-    journal::write_marker(
-        journal.dir(),
-        &journal::Marker::new(&path, Some("old-fingerprint".into())),
-    )
-    .unwrap();
+    journal::Marker::new(&path, Some("old-fingerprint".into()))
+        .write(journal.dir())
+        .unwrap();
     drop(journal);
 
-    super::start_fresh(&path);
+    journal::reset(&path).unwrap();
 
     let marker = journal::read_marker(&journal::dir_for(&path)).unwrap();
     assert_eq!(marker.path, crate::project_data::canonical_path(&path));
@@ -1098,9 +1098,8 @@ fn start_fresh_replaces_a_history_with_an_unfingerprinted_marker() {
 }
 
 #[test]
-fn start_fresh_keeps_attach_from_adopting_a_matching_fingerprint() {
+fn a_reset_keeps_attach_from_adopting_a_matching_fingerprint() {
     let dir = tempfile::tempdir().unwrap();
-    super::enable_persistence_for_test();
     let first = dir.path().join("first.ocp");
     std::fs::write(&first, SOURCE).unwrap();
     let state = AppState::new();
@@ -1112,7 +1111,7 @@ fn start_fresh_keeps_attach_from_adopting_a_matching_fingerprint() {
     // The same bytes at another path would match the first history by content.
     let bytes = std::fs::read(&first).unwrap();
     let second = dir.path().join("second.ocp");
-    super::start_fresh(&second);
+    journal::reset(&second).unwrap();
     std::fs::write(&second, &bytes).unwrap();
 
     let reopened = reopen(&second);
@@ -1191,43 +1190,27 @@ fn a_merged_gesture_describes_its_whole_run() {
 }
 
 #[test]
-fn a_conversation_revert_cause_survives_the_journal() {
+fn an_unknown_stored_cause_loads_as_an_ordinary_edit() {
     let dir = tempfile::tempdir().unwrap();
-    let state = opened(dir.path(), SOURCE);
-    {
-        let mut inner = state.lock_inner();
-        let mut target = inner.project.clone();
-        target.properties.tempo = 140.0;
-        crate::commands::restore_dsl_with_undo(
-            &mut inner,
-            oc_dsl::serialize(&target),
-            "revert conversation",
-            EditCause::ConversationRevert,
-        )
-        .unwrap();
-        inner.sync_history();
-    }
-    crate::commands::save_file_inner(None, &state).unwrap();
-    drop(state);
-
     let path = project_file(dir.path());
-    let source = std::fs::read_to_string(&path).unwrap();
-    let reopened = AppState::new();
-    let mut inner = reopened.lock_inner();
-    crate::commands::open_project(&mut inner, &source, Some(path)).unwrap();
-    let page = inner
-        .undo
-        .history_page(None, 64, &inner.project.properties)
-        .unwrap();
-    assert_eq!(page.entries.len(), 1);
-    assert_eq!(page.entries[0].cause, EditCause::ConversationRevert);
-    assert_eq!(
-        page.entries[0].changes.changes,
-        vec![Change::Tempo {
-            from: 100.0,
-            to: 140.0
-        }]
-    );
+    let stored = entry(7);
+    let mut line = serde_json::to_value(&stored).unwrap();
+    line["cause"] = serde_json::json!("conversation_revert");
+    let mut text = serde_json::to_string(&line).unwrap();
+    text.push('\n');
+    let history = journal::dir_for(&path);
+    std::fs::create_dir_all(&history).unwrap();
+    std::fs::write(history.join("entries.jsonl"), &text).unwrap();
+    let mut row = Vec::new();
+    row.extend_from_slice(&stored.id.to_le_bytes());
+    row.extend_from_slice(&0u64.to_le_bytes());
+    row.extend_from_slice(&(text.len() as u64).to_le_bytes());
+    std::fs::write(history.join("index.bin"), &row).unwrap();
+
+    let journal = Journal::open(&path).unwrap();
+    let loaded = journal.read_range(0..1).unwrap().remove(0);
+    assert_eq!(loaded.cause, EditCause::Edit);
+    assert_eq!(loaded, stored);
 }
 
 #[test]
@@ -1377,7 +1360,7 @@ fn entry_ids_stay_within_the_javascript_number_range() {
         let before = project.clone();
         project = tempo(110 + step);
         push_edit(&mut stack, &before, &project, Author::Person);
-        let id = stack.undo.last().unwrap().id;
+        let id = stack.undo_entries().last().unwrap().id;
         assert!(id <= crate::state::MAX_ENTRY_ID, "{id}");
     }
 }
@@ -1418,7 +1401,7 @@ fn level_of_finds_a_mark_on_either_side_of_the_cursor() {
             let before = project.clone();
             project = tempo(tempo_value);
             push_edit(&mut stack, &before, &project, Author::Person);
-            ids.push(stack.undo.last().unwrap().id);
+            ids.push(stack.undo_entries().last().unwrap().id);
             if journaled {
                 stack.sync_journal(&oc_dsl::serialize(&project)).unwrap();
             }
@@ -1620,6 +1603,42 @@ fn since_reports_own_edits_no_longer_applied() {
         assert_eq!(changes.entries.len(), 1);
         assert_eq!(changes.entries[0].author, Author::Person);
     }
+}
+
+#[test]
+fn a_window_reload_keeps_the_own_edit_it_discarded() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = opened(dir.path(), SOURCE);
+    let mut inner = state.lock_inner();
+    let agent = Author::Agent {
+        session: Some("s1".into()),
+    };
+    let mark = inner.undo.mark();
+    {
+        let _acting = act_as(agent.clone());
+        set_tempo(&mut inner, 110.0);
+    }
+    inner.sync_history();
+    inner.undo_step().unwrap();
+    // A new edit after the undo discards the agent's redo entry.
+    set_tempo(&mut inner, 120.0);
+    for step in 0..(MAX_UNDO + 10) {
+        set_tempo(&mut inner, 200.0 + step as f64);
+        if step % 50 == 0 {
+            inner.sync_history();
+        }
+    }
+    inner.sync_history();
+    // Undo past the window reloads it from the journal.
+    inner.restore_level(0).unwrap();
+    let changes = inner
+        .undo
+        .since(&mark, "s1", &inner.project.properties)
+        .expect("the discarded own edit is still news");
+    assert!(
+        changes.own_undone >= 1,
+        "a reload kept the own edit the redo branch discarded"
+    );
 }
 
 #[test]

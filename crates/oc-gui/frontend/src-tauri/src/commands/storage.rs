@@ -724,11 +724,9 @@ mod tests {
         std::fs::write(&live, "x").unwrap();
         let gone = dir.path().join("gone.ocp");
         for project in [&live, &gone] {
-            journal::write_marker(
-                &journal::dir_for(project),
-                &journal::Marker::new(project, None),
-            )
-            .unwrap();
+            journal::Marker::new(project, None)
+                .write(&journal::dir_for(project))
+                .unwrap();
         }
         let report = project_data_report();
         let state = |path: &Path| {

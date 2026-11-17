@@ -202,7 +202,11 @@ mod tests {
         )
         .unwrap();
         assert!(
-            app.state::<AppState>().lock_inner().undo.undo.is_empty(),
+            app.state::<AppState>()
+                .lock_inner()
+                .undo
+                .undo_entries()
+                .is_empty(),
             "an unchanged tempo must not create history"
         );
         let changed = run(
@@ -213,14 +217,28 @@ mod tests {
         .unwrap();
         assert_eq!(changed["project"]["properties"]["tempo"], 150.0);
         assert!(changed["revision"].as_u64().unwrap() > before["revision"].as_u64().unwrap());
-        assert_eq!(app.state::<AppState>().lock_inner().undo.undo.len(), 1);
+        assert_eq!(
+            app.state::<AppState>()
+                .lock_inner()
+                .undo
+                .undo_entries()
+                .len(),
+            1
+        );
         let undone = run(&app, ToolId::Undo, Value::Null).unwrap();
         assert_eq!(undone["project"], before["project"]);
         let redone = run(&app, ToolId::Redo, json!({"ignored":true})).unwrap();
         assert_eq!(redone["project"], changed["project"]);
         let named = run(&app, ToolId::ProjectSetName, json!({"name":"Typed edit"})).unwrap();
         assert_eq!(named["project"]["name"], "Typed edit");
-        assert_eq!(app.state::<AppState>().lock_inner().undo.undo.len(), 2);
+        assert_eq!(
+            app.state::<AppState>()
+                .lock_inner()
+                .undo
+                .undo_entries()
+                .len(),
+            2
+        );
         let stable = snapshot(&app);
         assert!(run(&app, ToolId::ProjectSetTempo, json!({"tempo":19})).is_err());
         assert_eq!(snapshot(&app), stable);
@@ -248,7 +266,13 @@ mod tests {
             .is_err()
         );
         assert_eq!(snapshot(&app), before);
-        assert!(app.state::<AppState>().lock_inner().undo.undo.is_empty());
+        assert!(
+            app.state::<AppState>()
+                .lock_inner()
+                .undo
+                .undo_entries()
+                .is_empty()
+        );
         let applied = run(
             &app,
             ToolId::ProjectEdit,
@@ -257,7 +281,14 @@ mod tests {
         .unwrap();
         assert_eq!(applied["snapshot"]["project"]["properties"]["tempo"], 132.0);
         assert!(!applied["diff"]["hunks"].as_array().unwrap().is_empty());
-        assert_eq!(app.state::<AppState>().lock_inner().undo.undo.len(), 1);
+        assert_eq!(
+            app.state::<AppState>()
+                .lock_inner()
+                .undo
+                .undo_entries()
+                .len(),
+            1
+        );
         let undone = run(&app, ToolId::Undo, json!({})).unwrap();
         assert_eq!(undone["project"], before["project"]);
     }
@@ -282,7 +313,14 @@ mod tests {
         assert_eq!(snapshot(&app), after_undo);
         app.state::<AppState>().rollback_transaction().unwrap();
         assert_eq!(snapshot(&app)["project"], before["project"]);
-        assert_eq!(app.state::<AppState>().lock_inner().undo.undo.len(), 1);
+        assert_eq!(
+            app.state::<AppState>()
+                .lock_inner()
+                .undo
+                .undo_entries()
+                .len(),
+            1
+        );
     }
 
     #[test]
@@ -308,7 +346,6 @@ mod tests {
     fn a_validated_new_project_path_creates_the_file_and_its_history_marker() {
         let dir = tempfile::tempdir().unwrap();
         let target = dir.path().join("Fresh.ocp");
-        crate::edit_history::enable_persistence_for_test();
         let path = validate_new_project_path(target.to_str().unwrap()).unwrap();
         let state = AppState::new();
         let snapshot = commands::create_project_in(&mut state.lock_inner(), Some(path)).unwrap();

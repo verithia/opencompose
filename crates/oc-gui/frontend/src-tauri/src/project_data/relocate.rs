@@ -1,8 +1,11 @@
 //! One routine that gives everything the app keeps for a project to another
-//! path. The edit history moves with the open document (see
-//! `AppStateInner::rehome_history`); this moves the rest.
+//! path, including the edit history, the AI note, the conversations and the
+//! recovery copies. Callers run it without the document lock; it takes the
+//! destination's process lock and each store keeps its own lock.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+use crate::edit_history::journal;
 
 /// How the data follows the project.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -12,17 +15,55 @@ pub enum Relocation {
     Move,
     /// The file was copied: Save As, or a file copied outside the app. The
     /// old path keeps its data; conversations and recovery copies stay with
-    /// it, the note is copied.
+    /// it, the note and the history are copied.
     Copy,
 }
 
-/// Give the AI note, the conversations and the recovery copies of `from` to
-/// `to`. Each store is moved on its own; one that fails is logged and keeps
-/// its data at the old path, which the stale sweep reports instead of losing.
-pub fn relocate(from: &Path, to: &Path, how: Relocation) {
-    if !crate::edit_history::persistence_enabled() {
-        return;
+/// What one store did during a relocation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StoreOutcome {
+    /// The old path kept no data for this store.
+    Absent,
+    Moved,
+    Copied,
+    /// The store failed; its data stays at the old path.
+    Failed,
+}
+
+impl StoreOutcome {
+    pub(crate) fn is_failure(self) -> bool {
+        self == Self::Failed
     }
+}
+
+/// What every store did, so the caller can name the history's new home and
+/// report a store that stayed behind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RelocationReport {
+    pub history: StoreOutcome,
+    pub note: StoreOutcome,
+    pub conversations: StoreOutcome,
+    pub recovery: StoreOutcome,
+}
+
+/// A relocation captured under the document lock, to run after it drops.
+#[derive(Debug, Clone)]
+pub(crate) struct PendingRelocation {
+    pub(crate) from: PathBuf,
+    pub(crate) to: PathBuf,
+    pub(crate) how: Relocation,
+}
+
+impl PendingRelocation {
+    pub(crate) fn run(self) -> RelocationReport {
+        relocate(&self.from, &self.to, self.how)
+    }
+}
+
+/// Give every store of `from` to `to`. Each store moves on its own; one that
+/// fails is logged and keeps its data at the old path, which the stale sweep
+/// reports instead of losing. The history is a store like the rest.
+pub fn relocate(from: &Path, to: &Path, how: Relocation) -> RelocationReport {
     // The destination belongs to the project being opened; another process
     // holding it keeps the data where it is instead of mixing the two.
     let _to_lock =
@@ -35,35 +76,81 @@ pub fn relocate(from: &Path, to: &Path, how: Relocation) {
                     to.display(),
                     from.display()
                 );
-                return;
+                return RelocationReport {
+                    history: StoreOutcome::Failed,
+                    note: StoreOutcome::Failed,
+                    conversations: StoreOutcome::Failed,
+                    recovery: StoreOutcome::Failed,
+                };
             }
         };
     let copy = how == Relocation::Copy;
-    if let Err(error) = crate::ai::project_instructions::Store::config().relocate(from, to, copy) {
-        log::warn!(
-            "[project data] the AI note of {} stays: {error}",
-            from.display()
-        );
-    }
-    if copy {
-        return;
-    }
-    match crate::ai::sessions::Store::config().relocate_project(from, to) {
-        Ok(count) if count > 0 => {
-            log::info!(
-                "[project data] {count} conversation(s) follow {}",
-                to.display()
+    let history = relocate_history(from, to, how);
+    let note = match crate::ai::project_instructions::Store::config().relocate(from, to, copy) {
+        Ok(_) if copy => StoreOutcome::Copied,
+        Ok(_) => StoreOutcome::Moved,
+        Err(error) => {
+            log::warn!(
+                "[project data] the AI note of {} stays: {error}",
+                from.display()
             );
+            StoreOutcome::Failed
         }
-        Ok(_) => {}
+    };
+    if copy {
+        return RelocationReport {
+            history,
+            note,
+            conversations: StoreOutcome::Absent,
+            recovery: StoreOutcome::Absent,
+        };
+    }
+    let conversations = match crate::ai::sessions::Store::config().relocate_project(from, to) {
+        Ok(count) => {
+            if count > 0 {
+                log::info!(
+                    "[project data] {count} conversation(s) follow {}",
+                    to.display()
+                );
+            }
+            StoreOutcome::Moved
+        }
         Err(error) => {
             log::warn!(
                 "[project data] conversations of {} stay: {error}",
                 from.display()
             );
+            StoreOutcome::Failed
+        }
+    };
+    crate::autosave::relocate_copies(&crate::autosave::app_root(), from, to);
+    RelocationReport {
+        history,
+        note,
+        conversations,
+        recovery: StoreOutcome::Moved,
+    }
+}
+
+/// Move or copy the history directory of `from` to the one for `to`.
+fn relocate_history(from: &Path, to: &Path, how: Relocation) -> StoreOutcome {
+    let source = journal::dir_for(from);
+    if !source.is_dir() {
+        return StoreOutcome::Absent;
+    }
+    let destination = journal::dir_for(to);
+    let result = match how {
+        Relocation::Copy => journal::copy_dir(&source, &destination),
+        Relocation::Move => journal::move_dir(&source, &destination),
+    };
+    match result {
+        Ok(()) if how == Relocation::Copy => StoreOutcome::Copied,
+        Ok(()) => StoreOutcome::Moved,
+        Err(error) => {
+            log::warn!("[history] the history of {} stays: {error}", from.display());
+            StoreOutcome::Failed
         }
     }
-    crate::autosave::relocate_copies(&crate::autosave::app_root(), from, to);
 }
 
 #[cfg(test)]
@@ -76,7 +163,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let _sessions = sessions::test_root(dir.path().join("sessions"));
         let _notes = project_instructions::test_root(&dir.path().join("notes"));
-        crate::edit_history::enable_persistence_for_test();
         let folder = dir.path().join("songs");
         std::fs::create_dir(&folder).unwrap();
         let from = folder.join("song.ocp");
@@ -126,7 +212,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let _sessions = sessions::test_root(dir.path().join("sessions"));
         let _notes = project_instructions::test_root(&dir.path().join("notes"));
-        crate::edit_history::enable_persistence_for_test();
         let from = dir.path().join("song.ocp");
         let source = "@project \"Song\"\n  tempo: 100\n";
         std::fs::write(&from, source).unwrap();

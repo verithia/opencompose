@@ -67,7 +67,7 @@ pub fn flush(inner: &mut AppStateInner) -> Result<Option<usize>, String> {
     let publication = snapshot_for_publish(inner)?;
     let published = publish_captured(publication)?;
     if let Some(published) = &published {
-        inner.record_history_file(published.sha256.clone());
+        inner.record_written(&published.path, published.sha256.clone());
     }
     Ok(published.and_then(|published| published.bytes))
 }
@@ -86,8 +86,8 @@ pub fn flush_state(state: &AppState) -> Result<Option<usize>, String> {
     let published = publish_captured(publication)?;
     if let Some(published) = &published {
         // The marker is written under the document lock the history owns.
-        let _inner = state.lock_inner();
-        crate::edit_history::record_fingerprint(&published.path, published.sha256.clone());
+        let mut inner = state.lock_inner();
+        inner.record_written(&published.path, published.sha256.clone());
     }
     Ok(published.and_then(|published| published.bytes))
 }

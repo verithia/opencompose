@@ -32,8 +32,9 @@ const ENTRIES: &str = "entries.jsonl";
 const INDEX: &str = "index.bin";
 const STATE: &str = "state.json";
 /// Bytes of one `index.bin` row.
-pub const INDEX_ROW: usize = 24;
-const ROW: usize = INDEX_ROW;
+const ROW: usize = 24;
+#[cfg(test)]
+pub(crate) const INDEX_ROW: usize = ROW;
 const STATE_VERSION: u32 = 1;
 
 #[cfg(test)]
@@ -58,15 +59,33 @@ pub fn root() -> PathBuf {
     }
 }
 
-/// The key of `project`: the first 8 bytes of the SHA-256 of its canonical
-/// path, in hex. A file that does not exist yet resolves through its folder,
-/// so the key is the same before and after the first write.
-pub fn key_for(project: &Path) -> String {
+/// A test thread's history folder, restored when the guard drops.
+#[cfg(test)]
+pub(crate) struct TestRootGuard(Option<PathBuf>);
+
+#[cfg(test)]
+impl Drop for TestRootGuard {
+    fn drop(&mut self) {
+        let previous = self.0.take();
+        TEST_ROOT.with(|root| *root.borrow_mut() = previous);
+    }
+}
+
+/// Keep this test thread's histories under `path`.
+#[cfg(test)]
+pub(crate) fn test_root(path: impl Into<PathBuf>) -> TestRootGuard {
+    TestRootGuard(TEST_ROOT.with(|root| root.replace(Some(path.into()))))
+}
+
+/// The key of `project`, from the first 8 bytes of the SHA-256 of its
+/// canonical path, in hex. A file that does not exist yet resolves through its
+/// folder, so the key is the same before and after the first write.
+fn key_for(project: &Path) -> String {
     crate::project_data::path_key(project)
 }
 
 /// The history directory of `project`.
-pub fn dir_for(project: &Path) -> PathBuf {
+pub(crate) fn dir_for(project: &Path) -> PathBuf {
     root().join(key_for(project))
 }
 
@@ -89,24 +108,40 @@ impl Marker {
             sha256,
         }
     }
+
+    /// Record this marker in a history directory.
+    pub fn write(&self, dir: &Path) -> io::Result<()> {
+        write_marker(dir, self)
+    }
 }
 
-pub fn read_marker(dir: &Path) -> Option<Marker> {
+pub(crate) fn read_marker(dir: &Path) -> Option<Marker> {
     let bytes = std::fs::read(dir.join(MARKER)).ok()?;
     serde_json::from_slice::<Marker>(&bytes)
         .ok()
         .filter(|marker| marker.version == MARKER_VERSION)
 }
 
-pub fn write_marker(dir: &Path, marker: &Marker) -> io::Result<()> {
+fn write_marker(dir: &Path, marker: &Marker) -> io::Result<()> {
     crate::private_fs::ensure_dir(dir)?;
     let bytes = serde_json::to_vec_pretty(marker).map_err(io::Error::other)?;
     crate::private_fs::write_atomic(&dir.join(MARKER), &bytes)
 }
 
-/// The content SHA-256 the marker records; see [`crate::project_data`].
-pub fn fingerprint(path: &Path) -> Option<String> {
-    crate::project_data::content_sha256(path)
+/// Start an empty history at `project`'s directory. The marker carries no
+/// fingerprint, so an open never adopts another project's history by content.
+pub(crate) fn reset(project: &Path) -> io::Result<()> {
+    discard(project)?;
+    Marker::new(project, None).write(&dir_for(project))
+}
+
+/// Remove `project`'s history directory.
+pub(crate) fn discard(project: &Path) -> io::Result<()> {
+    match std::fs::remove_dir_all(dir_for(project)) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
 }
 
 /// One history directory under [`root`], with its marker.
@@ -153,6 +188,34 @@ pub fn find_by_fingerprint(sha256: &str, except: &Path) -> Option<Stored> {
         .collect();
     matches.sort_by_key(|(_, gone, at)| (*gone, *at));
     matches.pop().map(|(stored, _, _)| stored)
+}
+
+impl Stored {
+    /// Entries in the linear history, from the index the open reads.
+    pub(crate) fn entry_count(&self) -> usize {
+        std::fs::metadata(self.dir.join(INDEX))
+            .map(|meta| meta.len() as usize / ROW)
+            .unwrap_or(0)
+    }
+
+    /// When the history last changed, from the newest of its files.
+    pub(crate) fn touched(&self) -> Option<std::time::SystemTime> {
+        [STATE, ENTRIES, MARKER, INDEX]
+            .iter()
+            .filter_map(|name| std::fs::metadata(self.dir.join(name)).ok())
+            .filter_map(|meta| meta.modified().ok())
+            .max()
+    }
+
+    /// Bytes the history directory occupies.
+    pub(crate) fn bytes(&self) -> u64 {
+        crate::project_data::dir_bytes(&self.dir)
+    }
+
+    /// Remove the history directory.
+    pub(crate) fn remove(&self) -> io::Result<()> {
+        std::fs::remove_dir_all(&self.dir)
+    }
 }
 
 /// Move a history directory to `to`, replacing a stale one there.
@@ -222,16 +285,22 @@ pub struct Journal {
     dir: PathBuf,
     rows: Vec<Row>,
     applied: usize,
-    cursor: Option<u64>,
     head: Option<String>,
     entries_len: u64,
-    /// Test-only switch: make the index write fail, which the filesystem
-    /// cannot provoke on demand cross-platform.
-    #[cfg(test)]
-    fail_index_write: bool,
 }
 
 impl Journal {
+    /// An empty journal rooted at `dir`, before its first write.
+    fn empty(dir: PathBuf) -> Self {
+        Self {
+            dir,
+            rows: Vec::new(),
+            applied: 0,
+            head: None,
+            entries_len: 0,
+        }
+    }
+
     /// Open or create the history of `project`. A torn tail (an index row
     /// pointing past the entries file) is dropped, and a cursor past the end
     /// is clamped, so a crash mid-write loses at most the unfinished write.
@@ -271,7 +340,7 @@ impl Journal {
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(error),
         }
-        let (applied, cursor, head) = match std::fs::read(dir.join(STATE)) {
+        let (applied, head) = match std::fs::read(dir.join(STATE)) {
             Ok(bytes) => match serde_json::from_slice::<StateFile>(&bytes) {
                 Ok(state) if state.version == STATE_VERSION => {
                     let mut applied = state.applied.min(rows.len());
@@ -291,25 +360,22 @@ impl Journal {
                         }
                     });
                     if verified {
-                        (applied, state.cursor, Some(state.head))
+                        (applied, Some(state.head))
                     } else {
-                        (applied, state.cursor, None)
+                        (applied, None)
                     }
                 }
-                _ => (rows.len(), None, None),
+                _ => (rows.len(), None),
             },
-            Err(error) if error.kind() == io::ErrorKind::NotFound => (rows.len(), None, None),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => (rows.len(), None),
             Err(error) => return Err(error),
         };
         Ok(Self {
             dir,
             applied: applied.min(rows.len()),
-            cursor,
             rows,
             head,
             entries_len,
-            #[cfg(test)]
-            fail_index_write: false,
         })
     }
 
@@ -375,11 +441,6 @@ impl Journal {
         truncate_index(&self.dir, len)?;
         self.rows.truncate(len);
         self.applied = self.applied.min(len);
-        self.cursor = self
-            .applied
-            .checked_sub(1)
-            .and_then(|index| self.rows.get(index))
-            .map(|row| row.id);
         Ok(())
     }
 
@@ -423,14 +484,6 @@ impl Journal {
             bytes.extend_from_slice(&row.offset.to_le_bytes());
             bytes.extend_from_slice(&row.len.to_le_bytes());
         }
-        #[cfg(test)]
-        let write = if self.fail_index_write {
-            self.fail_index_write = false;
-            Err(io::Error::other("test build: index write failed"))
-        } else {
-            index.write_all(&bytes).and_then(|()| index.sync_data())
-        };
-        #[cfg(not(test))]
         let write = index.write_all(&bytes).and_then(|()| index.sync_data());
         if let Err(error) = write {
             // The entries write above is only reachable through its index row.
@@ -452,7 +505,12 @@ impl Journal {
             .checked_sub(1)
             .and_then(|index| self.rows.get(index))
             .map(|row| row.id);
-        if self.applied == applied && self.cursor == cursor && self.head.as_deref() == Some(head) {
+        let current = self
+            .applied
+            .checked_sub(1)
+            .and_then(|index| self.rows.get(index))
+            .map(|row| row.id);
+        if self.applied == applied && current == cursor && self.head.as_deref() == Some(head) {
             return Ok(());
         }
         let bytes = serde_json::to_vec(&StateFile {
@@ -464,20 +522,13 @@ impl Journal {
         .map_err(io::Error::other)?;
         crate::private_fs::write_atomic(&self.dir.join(STATE), &bytes)?;
         self.applied = applied;
-        self.cursor = cursor;
         self.head = Some(head.to_owned());
         Ok(())
     }
 
-    /// Make the next index write fail, for the rollback test.
-    #[cfg(test)]
-    pub(crate) fn fail_next_index_write(&mut self) {
-        self.fail_index_write = true;
-    }
-
     /// Bytes the history directory occupies.
     pub fn bytes(&self) -> u64 {
-        dir_bytes(&self.dir)
+        crate::project_data::dir_bytes(&self.dir)
     }
 
     /// Keep only the newest `keep` entries, never dropping one above the
@@ -492,16 +543,7 @@ impl Journal {
         let staging = sibling(&self.dir, "new");
         let _ = std::fs::remove_dir_all(&staging);
         crate::private_fs::ensure_dir(&staging)?;
-        let mut fresh = Journal {
-            dir: staging.clone(),
-            rows: Vec::new(),
-            applied: 0,
-            cursor: None,
-            head: None,
-            entries_len: 0,
-            #[cfg(test)]
-            fail_index_write: false,
-        };
+        let mut fresh = Journal::empty(staging.clone());
         let built = (|| {
             const PAGE: usize = 64;
             let mut at = drop;
@@ -585,11 +627,6 @@ fn truncate_index(dir: &Path, rows: usize) -> io::Result<()> {
     let file = OpenOptions::new().write(true).open(dir.join(INDEX))?;
     file.set_len((rows * ROW) as u64)?;
     file.sync_data()
-}
-
-/// Total size of the files under `dir`, recursively.
-pub fn dir_bytes(dir: &Path) -> u64 {
-    crate::project_data::dir_bytes(dir)
 }
 
 /// Copy a history directory for Save As. The copy is assembled beside the

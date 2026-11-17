@@ -588,7 +588,7 @@ fn a_later_pass_open_failure_preserves_the_completed_take() {
         "{report}"
     );
     assert!(report.contains("Recorded 1 take"), "{report}");
-    assert_eq!(inner.undo.undo.len(), 1);
+    assert_eq!(inner.undo.undo_entries().len(), 1);
 }
 
 #[test]
@@ -649,7 +649,7 @@ fn a_refused_placement_reports_the_saved_wav_path() {
         assert!(inner.project.audio_clips().is_empty());
         assert!(!inner.audio.recorder.recording());
         assert_eq!(inner.audio.recorder.report.as_deref(), Some(error.as_str()));
-        assert!(inner.undo.undo.is_empty());
+        assert!(inner.undo.undo_entries().is_empty());
     }
 }
 

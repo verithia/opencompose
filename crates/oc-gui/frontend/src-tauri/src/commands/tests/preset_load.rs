@@ -69,7 +69,7 @@ fn malformed_parameter_keys_cannot_corrupt_a_saved_project() {
         let inner = state.lock_inner();
         assert_eq!(inner.dsl_source, before);
         assert_eq!(inner.revision, 0);
-        assert!(inner.undo.undo.is_empty());
+        assert!(inner.undo.undo_entries().is_empty());
         assert!(oc_dsl::parse(&inner.dsl_source).is_ok());
         assert!(dir.path().is_dir());
     }
@@ -116,7 +116,7 @@ fn unknown_synth_parameters_are_refused_by_batches_and_dsl_edits_atomically() {
     assert!(error.contains("env.3.decay"), "{error}");
     assert_eq!(inner.dsl_source, before);
     assert_eq!(inner.revision, 0);
-    assert!(inner.undo.undo.is_empty());
+    assert!(inner.undo.undo_entries().is_empty());
     assert_eq!(oc_dsl::serialize(&inner.project), before);
 }
 
@@ -134,7 +134,7 @@ fn restoring_a_saved_state_preserves_its_legacy_keys_and_stays_undoable() {
     )
     .unwrap();
     assert_eq!(inner.dsl_source, source);
-    assert_eq!(inner.undo.undo.len(), 1);
+    assert_eq!(inner.undo.undo_entries().len(), 1);
     let mut current = inner.project.clone();
     inner.undo.undo(&mut current).unwrap();
     assert_eq!(oc_dsl::serialize(&current), before);

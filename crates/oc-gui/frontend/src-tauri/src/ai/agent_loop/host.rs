@@ -1847,7 +1847,11 @@ mod tests {
             let inner = state.lock_inner();
             assert_eq!(inner.project.properties.tempo, 120.0);
             assert_eq!(inner.undo.applied_level(), 0);
-            assert_eq!(inner.undo.redo.len(), 1, "the edit is one redo away");
+            assert_eq!(
+                inner.undo.redo_entries().len(),
+                1,
+                "the edit is one redo away"
+            );
         }
         assert!(store.view(&id).unwrap().is_empty());
         state.lock_inner().redo_step().unwrap();
@@ -1990,7 +1994,7 @@ mod tests {
             (
                 inner.dsl_source.clone(),
                 serde_json::to_value(inner.undo.history(&inner.project.properties)).unwrap(),
-                inner.undo.redo.len(),
+                inner.undo.redo_entries().len(),
                 inner.revision,
             )
         };
@@ -2020,7 +2024,11 @@ mod tests {
             history,
             "the cursor is back where it was"
         );
-        assert_eq!(inner.undo.redo.len(), redo, "and no redo entry appears");
+        assert_eq!(
+            inner.undo.redo_entries().len(),
+            redo,
+            "and no redo entry appears"
+        );
         drop(inner);
         assert_eq!(
             store.view(&id).unwrap().len(),
@@ -2074,7 +2082,7 @@ mod tests {
             (
                 inner.dsl_source.clone(),
                 serde_json::to_value(inner.undo.history(&inner.project.properties)).unwrap(),
-                inner.undo.redo.len(),
+                inner.undo.redo_entries().len(),
                 inner.project.properties.tempo,
             )
         };
@@ -2101,7 +2109,7 @@ mod tests {
             undo,
             "no entry was evicted"
         );
-        assert_eq!(inner.undo.redo.len(), redo, "redo is kept");
+        assert_eq!(inner.undo.redo_entries().len(), redo, "redo is kept");
         // The kept redo still works.
         let mut project = inner.project.clone();
         inner.undo.redo(&mut project).unwrap();

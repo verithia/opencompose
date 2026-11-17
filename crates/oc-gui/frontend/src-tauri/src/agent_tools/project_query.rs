@@ -163,8 +163,8 @@ mod tests {
         let state = AppState::new();
         let before = serde_json::to_value(commands::snapshot(&state.lock_inner())).unwrap();
         let epoch = state.lock_inner().content_epoch;
-        let undo = state.lock_inner().undo.undo.len();
-        let redo = state.lock_inner().undo.redo.len();
+        let undo = state.lock_inner().undo.undo_entries().len();
+        let redo = state.lock_inner().undo.redo_entries().len();
         assert_eq!(query(&state, ToolId::ProjectGet, Value::Null), before);
         assert_eq!(
             query(&state, ToolId::ProjectDsl, json!({"ignored":true}))["dsl"],
@@ -216,8 +216,8 @@ mod tests {
         );
         let inner = state.lock_inner();
         assert_eq!(inner.content_epoch, epoch);
-        assert_eq!(inner.undo.undo.len(), undo);
-        assert_eq!(inner.undo.redo.len(), redo);
+        assert_eq!(inner.undo.undo_entries().len(), undo);
+        assert_eq!(inner.undo.redo_entries().len(), redo);
     }
 
     #[test]

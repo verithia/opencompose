@@ -29,7 +29,7 @@ fn observed(app: &tauri::App<MockRuntime>) -> serde_json::Value {
     let state = app.state::<AppState>();
     let inner = state.lock_inner();
     serde_json::json!({"snapshot":commands::snapshot(&inner),"epoch":inner.content_epoch,
-        "render":inner.render_generation,"undo":inner.undo.undo.len(),"redo":inner.undo.redo.len(),
+        "render":inner.render_generation,"undo":inner.undo.undo_entries().len(),"redo":inner.undo.redo_entries().len(),
         "gesture":inner.undo.is_in_gesture(),"pluginSessions":inner.plugin_automation_gestures.len(),
         "effectSessions":inner.effect_write_gestures.len()})
 }

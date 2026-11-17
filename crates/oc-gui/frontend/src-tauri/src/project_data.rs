@@ -20,7 +20,8 @@ use sha2::{Digest, Sha256};
 pub mod relocate;
 pub mod stale;
 
-pub use relocate::{Relocation, relocate};
+pub(crate) use relocate::PendingRelocation;
+pub use relocate::{Relocation, RelocationReport, StoreOutcome, relocate};
 
 /// The folder under the app's data folder that holds the resource locks.
 pub const LOCKS_DIR: &str = "locks";

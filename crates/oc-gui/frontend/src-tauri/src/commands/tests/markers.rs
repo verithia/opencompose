@@ -106,7 +106,7 @@ fn marker_add_move_rename_and_delete_are_undoable() {
         UndoEdit::new("add marker", UndoScope::Project),
     )
     .expect("resync");
-    assert_eq!(inner.undo.undo.len(), 1);
+    assert_eq!(inner.undo.undo_entries().len(), 1);
     assert!(inner.dsl_source.contains("@marker verse at 1:1"));
     inner.undo.undo(&mut inner.project).unwrap();
     assert!(inner.project.markers.is_empty(), "undo removes the marker");
@@ -180,7 +180,11 @@ fn two_marker_moves_in_one_gesture_are_one_undo_entry() {
     }
     inner.undo.end_gesture();
 
-    assert_eq!(inner.undo.undo.len(), 1, "a drag is one history entry");
+    assert_eq!(
+        inner.undo.undo_entries().len(),
+        1,
+        "a drag is one history entry"
+    );
     assert_eq!(
         inner.project.markers[0].position,
         ast::BarBeat::new(9, 1, 0)

@@ -104,7 +104,7 @@ fn velocities(state: &AppState) -> Vec<Option<u8>> {
 }
 
 fn undo_len(state: &AppState) -> usize {
-    state.lock_inner().undo.undo.len()
+    state.lock_inner().undo.undo_entries().len()
 }
 
 /// Index plus target start, the shape the roll sends for a nudge.
@@ -278,7 +278,7 @@ fn batch_remove_covers_notes_from_two_phrases_in_one_entry() {
     let inner = state.lock_inner();
     assert_eq!(inner.project.tracks[0].phrases[0].events.len(), 1);
     assert_eq!(inner.project.tracks[0].phrases[1].events.len(), 0);
-    assert_eq!(inner.undo.undo.len(), 1);
+    assert_eq!(inner.undo.undo_entries().len(), 1);
 }
 
 #[test]
@@ -304,7 +304,7 @@ fn batch_move_covers_notes_from_two_phrases() {
     let inner = state.lock_inner();
     assert_eq!(inner.project.tracks[0].phrases[0].events[1].start_beat, 2.0);
     assert_eq!(inner.project.tracks[0].phrases[1].events[0].start_beat, 1.0);
-    assert_eq!(inner.undo.undo.len(), 1);
+    assert_eq!(inner.undo.undo_entries().len(), 1);
 }
 
 #[test]
@@ -480,12 +480,12 @@ fn pattern_swing_distinguishes_explicit_zero_from_project_inheritance() {
     assert!(inner.dsl_source.contains("swing: 0%"));
     set_pattern_swing_inner(inner, "long", Some(101.0)).unwrap_err();
     assert_eq!(inner.project.patterns[0].swing, Some(0.0));
-    assert_eq!(inner.undo.undo.len(), 1);
+    assert_eq!(inner.undo.undo_entries().len(), 1);
 
     set_pattern_swing_inner(inner, "long", None).unwrap();
     assert_eq!(inner.project.patterns[0].swing, None);
     assert!(!inner.dsl_source.contains("swing:"));
-    assert_eq!(inner.undo.undo.len(), 2);
+    assert_eq!(inner.undo.undo_entries().len(), 2);
 }
 
 #[test]
@@ -506,7 +506,7 @@ fn project_swing_subdivision_switches_grid_and_is_undoable() {
         SwingSubdivision::Sixteenth
     );
     assert!(inner.dsl_source.contains("swing_subdivision: 16th"));
-    assert_eq!(inner.undo.undo.len(), 1);
+    assert_eq!(inner.undo.undo_entries().len(), 1);
 
     // A value the DSL cannot write is refused without touching the document.
     set_project_swing_subdivision_inner(inner, "32nd").unwrap_err();
@@ -514,11 +514,11 @@ fn project_swing_subdivision_switches_grid_and_is_undoable() {
         inner.project.properties.swing_subdivision,
         SwingSubdivision::Sixteenth
     );
-    assert_eq!(inner.undo.undo.len(), 1);
+    assert_eq!(inner.undo.undo_entries().len(), 1);
 
     // Writing the value it already holds records nothing.
     set_project_swing_subdivision_inner(inner, "16th").unwrap();
-    assert_eq!(inner.undo.undo.len(), 1);
+    assert_eq!(inner.undo.undo_entries().len(), 1);
 
     set_project_swing_subdivision_inner(inner, "8th").unwrap();
     assert_eq!(
@@ -526,7 +526,7 @@ fn project_swing_subdivision_switches_grid_and_is_undoable() {
         SwingSubdivision::Eighth
     );
     assert!(!inner.dsl_source.contains("swing_subdivision"));
-    assert_eq!(inner.undo.undo.len(), 2);
+    assert_eq!(inner.undo.undo_entries().len(), 2);
 }
 
 #[test]

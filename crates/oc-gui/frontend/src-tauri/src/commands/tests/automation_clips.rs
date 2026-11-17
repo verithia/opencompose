@@ -63,7 +63,7 @@ fn moving_an_automation_clip_shifts_its_range_and_every_point_and_is_one_undo() 
         ast::BarBeat::new(2, 3, 0),
     )
     .unwrap();
-    assert_eq!(inner.undo.undo.len(), 1, "a move is one entry");
+    assert_eq!(inner.undo.undo_entries().len(), 1, "a move is one entry");
 
     // Bar 2 beat 3 is quarter 6 and the clip is two bars long, so it ends at
     // quarter 14: bar 4 beat 3.
@@ -113,7 +113,11 @@ fn a_move_that_would_overlap_another_lane_is_refused_and_changes_nothing() {
         "{error}"
     );
     assert_eq!(oc_dsl::serialize(&inner.project), before, "nothing moved");
-    assert_eq!(inner.undo.undo.len(), 0, "a refusal adds no history");
+    assert_eq!(
+        inner.undo.undo_entries().len(),
+        0,
+        "a refusal adds no history"
+    );
 
     // Adjacent edges are allowed: `[3:1 - 5:1]` touches `[5:1 - 7:1]`.
     move_automation_clip_inner(
@@ -146,7 +150,7 @@ fn a_resize_stops_at_the_other_edge_and_keeps_the_points_outside() {
         span(lanes(&inner)[0]),
         (ast::BarBeat::new(1, 1, 0), ast::BarBeat::new(3, 1, 0))
     );
-    assert_eq!(inner.undo.undo.len(), 0);
+    assert_eq!(inner.undo.undo_entries().len(), 0);
 
     // Moving the head in keeps the point that now sits before the span.
     resize_automation_clip_inner(
@@ -158,7 +162,7 @@ fn a_resize_stops_at_the_other_edge_and_keeps_the_points_outside() {
         ast::BarBeat::new(2, 1, 0),
     )
     .unwrap();
-    assert_eq!(inner.undo.undo.len(), 1);
+    assert_eq!(inner.undo.undo_entries().len(), 1);
     assert_eq!(
         span(lanes(&inner)[0]),
         (ast::BarBeat::new(2, 1, 0), ast::BarBeat::new(3, 1, 0))
@@ -211,7 +215,11 @@ fn duplicate_picks_a_free_slot_and_keeps_point_values() {
     )
     .unwrap();
     assert_eq!(index, 2, "the copy is appended to the owner's lanes");
-    assert_eq!(inner.undo.undo.len(), 1, "a duplicate is one entry");
+    assert_eq!(
+        inner.undo.undo_entries().len(),
+        1,
+        "a duplicate is one entry"
+    );
     let copy = &lanes(&inner)[2];
     assert_eq!(copy.param, LANE);
     assert_eq!(
@@ -257,7 +265,7 @@ fn duplicate_refuses_when_the_window_has_no_room() {
     assert!(error.contains("No free position"), "{error}");
     assert!(error.contains("whole timeline"), "{error}");
     assert_eq!(lanes(&inner).len(), 2, "no lane was added");
-    assert_eq!(inner.undo.undo.len(), 0);
+    assert_eq!(inner.undo.undo_entries().len(), 0);
 }
 
 #[test]
@@ -277,7 +285,7 @@ fn duplicate_gives_up_when_the_window_has_no_room() {
     .unwrap_err();
     assert!(error.contains("within 64 bars after 1:1"), "{error}");
     assert_eq!(lanes(&inner).len(), 2, "no lane was added");
-    assert_eq!(inner.undo.undo.len(), 0);
+    assert_eq!(inner.undo.undo_entries().len(), 0);
 }
 
 #[test]
@@ -298,7 +306,7 @@ fn splitting_a_clip_keeps_the_value_at_the_seam() {
     )
     .unwrap();
     assert_eq!(index, 1, "the right lane follows the left one");
-    assert_eq!(inner.undo.undo.len(), 1, "a split is one entry");
+    assert_eq!(inner.undo.undo_entries().len(), 1, "a split is one entry");
     assert_eq!(lanes(&inner).len(), 2);
 
     let left = &lanes(&inner)[0];
@@ -356,7 +364,7 @@ fn a_split_outside_the_clip_or_on_its_edge_is_refused() {
         assert!(error.contains("must be strictly inside"), "{error}");
     }
     assert_eq!(lanes(&inner).len(), 1, "nothing was split");
-    assert_eq!(inner.undo.undo.len(), 0);
+    assert_eq!(inner.undo.undo_entries().len(), 0);
 
     // Exactly one block step inside the head is the closest seam that fits, so
     // it is the last accepted position.
@@ -388,14 +396,14 @@ fn a_split_closer_than_one_grid_step_is_refused() {
     .unwrap_err();
     assert!(error.contains("one block grid step"), "{error}");
     assert_eq!(lanes(&inner).len(), 1, "nothing was split");
-    assert_eq!(inner.undo.undo.len(), 0);
+    assert_eq!(inner.undo.undo_entries().len(), 0);
 }
 
 #[test]
 fn deleting_removes_only_a_ranged_lane() {
     let mut inner = state(TWO_CLIPS);
     delete_automation_clip_inner(&mut inner, "track:0", LANE, Some(0)).unwrap();
-    assert_eq!(inner.undo.undo.len(), 1, "a delete is one entry");
+    assert_eq!(inner.undo.undo_entries().len(), 1, "a delete is one entry");
     assert_eq!(lanes(&inner).len(), 1);
     assert_eq!(span(lanes(&inner)[0]).0, ast::BarBeat::new(5, 1, 0));
 
@@ -407,7 +415,7 @@ fn deleting_removes_only_a_ranged_lane() {
     let error = delete_automation_clip_inner(&mut whole, "track:0", LANE, Some(0)).unwrap_err();
     assert!(error.contains("whole timeline"), "{error}");
     assert_eq!(lanes(&whole).len(), 1);
-    assert_eq!(whole.undo.undo.len(), 0);
+    assert_eq!(whole.undo.undo_entries().len(), 0);
 }
 
 #[test]
@@ -450,7 +458,7 @@ fn every_clip_gesture_refuses_a_whole_timeline_lane() {
     )
     .unwrap_err();
     assert!(error.contains("a clip gesture needs a span"), "{error}");
-    assert_eq!(inner.undo.undo.len(), 0);
+    assert_eq!(inner.undo.undo_entries().len(), 0);
 }
 
 #[test]
@@ -468,7 +476,7 @@ fn a_tick_grid_lane_refuses_clip_gestures() {
     )
     .unwrap_err();
     assert!(error.contains("[ppq=960]"), "{error}");
-    assert_eq!(inner.undo.undo.len(), 0);
+    assert_eq!(inner.undo.undo_entries().len(), 0);
 }
 
 #[test]
@@ -513,7 +521,7 @@ fn removing_a_playing_whole_timeline_lane_is_one_undo_and_stops_driving() {
 
     remove_automation_lane_inner(&mut inner, "track:0", LANE, Some(0)).unwrap();
     assert!(lanes(&inner).is_empty(), "the lane is gone");
-    assert_eq!(inner.undo.undo.len(), 1, "a removal is one entry");
+    assert_eq!(inner.undo.undo_entries().len(), 1, "a removal is one entry");
     let answer = driving(&inner).unwrap();
     assert!(
         matches!(answer, AutomationReadout::NotDriven { .. }),
@@ -539,5 +547,5 @@ fn removing_a_clip_lane_also_leaves_the_other_lane_alone() {
         ast::BarBeat::new(5, 1, 0),
         "the wrong lane was removed"
     );
-    assert_eq!(inner.undo.undo.len(), 1);
+    assert_eq!(inner.undo.undo_entries().len(), 1);
 }

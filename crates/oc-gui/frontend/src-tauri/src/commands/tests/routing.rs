@@ -125,7 +125,7 @@ fn add_bus_is_one_undo_entry_and_round_trips_through_ocp() {
     .expect("resync");
 
     assert_eq!(
-        inner.undo.undo.len(),
+        inner.undo.undo_entries().len(),
         1,
         "one node addition, one undo entry"
     );
@@ -283,7 +283,7 @@ fn set_send_target_is_one_undo_entry_and_round_trips() {
     .expect("resync");
 
     assert_eq!(
-        inner.undo.undo.len(),
+        inner.undo.undo_entries().len(),
         1,
         "one edge re-point, one undo entry"
     );

@@ -200,7 +200,11 @@ fn a_preview_swaps_sides_and_a_decline_restores_the_base_byte_for_byte() {
     assert!(inner.preview.is_none(), "decline closes the preview");
     assert_eq!(inner.dsl_source, base_dsl);
     assert_eq!(oc_dsl::serialize(&inner.project), base_dsl);
-    assert_eq!(inner.undo.undo.len(), 0, "a swap records no undo entry");
+    assert_eq!(
+        inner.undo.undo_entries().len(),
+        0,
+        "a swap records no undo entry"
+    );
 }
 
 #[test]
@@ -221,7 +225,7 @@ fn a_preview_accept_leaves_exactly_one_undo_entry() {
         // Auditioning both sides records nothing.
         show_inner(&mut inner, PreviewSide::Base).unwrap();
         show_inner(&mut inner, PreviewSide::Proposal).unwrap();
-        assert_eq!(inner.undo.undo.len(), 0);
+        assert_eq!(inner.undo.undo_entries().len(), 0);
     }
 
     let accepted = {
@@ -231,8 +235,8 @@ fn a_preview_accept_leaves_exactly_one_undo_entry() {
     assert!(accepted.dsl_source.contains("A4"));
     {
         let inner = state.lock_inner();
-        assert_eq!(inner.undo.undo.len(), 1, "accept is one edit");
-        assert_eq!(inner.undo.undo[0].tag, "Preview edit");
+        assert_eq!(inner.undo.undo_entries().len(), 1, "accept is one edit");
+        assert_eq!(inner.undo.undo_entries()[0].tag, "Preview edit");
         assert!(inner.preview.is_none());
         assert!(inner.dirty);
     }
@@ -243,7 +247,7 @@ fn a_preview_accept_leaves_exactly_one_undo_entry() {
         accept_inner(&mut inner).expect("a second accept is a no-op")
     };
     assert_eq!(again.dsl_source, accepted.dsl_source);
-    assert_eq!(state.lock_inner().undo.undo.len(), 1);
+    assert_eq!(state.lock_inner().undo.undo_entries().len(), 1);
 
     // The entry undoes the proposal back to the base document.
     let undone = {
@@ -296,7 +300,7 @@ fn a_mutation_is_refused_by_the_command_layer_while_a_preview_is_open() {
         assert_eq!(inner.undo_step().unwrap_err(), READ_ONLY);
         // The refused commands left the shown document alone.
         assert!(inner.dsl_source.contains("A4"));
-        assert_eq!(inner.undo.undo.len(), 0);
+        assert_eq!(inner.undo.undo_entries().len(), 0);
     }
 }
 
@@ -333,7 +337,11 @@ fn a_direct_document_mutation_is_refused_and_leaves_the_shown_side_alone() {
         !inner.project.tracks[0].mix.mute,
         "the refused edit was rolled back"
     );
-    assert_eq!(inner.undo.undo.len(), 0, "no undo entry was recorded");
+    assert_eq!(
+        inner.undo.undo_entries().len(),
+        0,
+        "no undo entry was recorded"
+    );
 }
 
 #[test]
@@ -379,7 +387,7 @@ fn an_accept_is_refused_when_the_base_moved_under_the_preview() {
         "{error}"
     );
     assert!(inner.preview.is_some(), "the preview stays open to decline");
-    assert_eq!(inner.undo.undo.len(), 0);
+    assert_eq!(inner.undo.undo_entries().len(), 0);
 }
 
 #[test]
@@ -428,7 +436,7 @@ fn preview_commands_are_idempotent() {
         cancel_inner(&mut inner).expect("a repeated decline is a no-op")
     };
     assert_eq!(twice.dsl_source, base_dsl);
-    assert_eq!(state.lock_inner().undo.undo.len(), 0);
+    assert_eq!(state.lock_inner().undo.undo_entries().len(), 0);
 }
 
 #[test]

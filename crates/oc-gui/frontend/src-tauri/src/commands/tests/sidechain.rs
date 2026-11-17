@@ -62,7 +62,10 @@ fn a_bus_key_on_a_track_chain_returns_the_validator_sentence() {
     );
     assert_eq!(inner.project, before, "a refusal changes nothing");
     assert_eq!(inner.revision, revision, "a refusal publishes no revision");
-    assert!(inner.undo.undo.is_empty(), "a refusal adds no undo entry");
+    assert!(
+        inner.undo.undo_entries().is_empty(),
+        "a refusal adds no undo entry"
+    );
     assert!(!inner.dirty, "a refusal keeps the document clean");
 }
 
@@ -76,7 +79,7 @@ fn a_track_key_on_a_track_chain_is_accepted() {
         inner.project.tracks[0].effects[0].sidechain_source,
         Some("drum".to_string())
     );
-    assert_eq!(inner.undo.undo[0].tag, "effect sidechain");
+    assert_eq!(inner.undo.undo_entries()[0].tag, "effect sidechain");
     assert!(
         document(&inner).contains("sidechain=drum"),
         "the key reaches the saved document:\n{}",
@@ -148,18 +151,18 @@ fn an_unknown_key_returns_the_validator_sentence() {
         "{error}"
     );
     assert_eq!(inner.project, before);
-    assert!(inner.undo.undo.is_empty());
+    assert!(inner.undo.undo_entries().is_empty());
 }
 
 #[test]
 fn setting_the_same_key_again_adds_no_undo_entry() {
     let mut inner = chain_state();
     set_effect_sidechain_inner(&mut inner, "track:0", 0, Some("drum".to_string())).unwrap();
-    let entries = inner.undo.undo.len();
+    let entries = inner.undo.undo_entries().len();
 
     set_effect_sidechain_inner(&mut inner, "track:0", 0, Some("drum".to_string())).unwrap();
 
-    assert_eq!(inner.undo.undo.len(), entries);
+    assert_eq!(inner.undo.undo_entries().len(), entries);
 }
 
 /// Every accepted combination must survive a save and re-open: the documents
