@@ -483,6 +483,47 @@ mod tests {
     }
 
     #[test]
+    fn a_page_carries_the_current_state_from_older_turns_and_explicit_clears() {
+        use crate::ai::session_state::{SessionState, StateAuthor, state_row};
+        let (_root, store, id) = fixture();
+        let goal = SessionState::GoalSet {
+            text: "finish the bridge".into(),
+            author: StateAuthor::Person,
+        };
+        let plan = SessionState::PlanSet {
+            items: vec![crate::ai::session_state::PlanItem {
+                text: "mix the bridge".into(),
+                status: crate::ai::session_state::PlanStatus::InProgress,
+            }],
+        };
+        store
+            .append_turn(&id, &[state_row(&goal), state_row(&plan)], None)
+            .unwrap();
+        for index in 0..4 {
+            store.append_turn(&id, &turn(index), None).unwrap();
+        }
+        let page = store.open_page(&id, 1).unwrap();
+        assert!(page.start > 2);
+        assert!(
+            page.loaded
+                .messages
+                .iter()
+                .all(|row| super::super::saved_session_state(row).is_none())
+        );
+        assert_eq!(page.state, vec![goal, plan]);
+        let cleared = SessionState::GoalCleared {
+            author: StateAuthor::Person,
+        };
+        store
+            .append_turn(&id, &[state_row(&cleared)], None)
+            .unwrap();
+        store.append_turn(&id, &turn(5), None).unwrap();
+        let page = store.open_page(&id, 1).unwrap();
+        assert!(page.state.contains(&cleared));
+        assert_eq!(page.state.len(), 2);
+    }
+
+    #[test]
     fn a_page_asked_for_after_the_view_changed_shape_is_stale() {
         let (_root, store, id) = fixture();
         for index in 0..5 {

@@ -13,6 +13,7 @@ import { ContextMenuLayer } from "../components/ContextMenu";
 import { i18n } from "../stores/i18n";
 import { aiSession } from "../stores/aiSession";
 import { resetContextMeter } from "../stores/aiContext";
+import type { SessionState } from "../ai/messageProtocol";
 
 if (!window.localStorage) {
   Object.defineProperty(window, "localStorage", {
@@ -54,6 +55,8 @@ const stateRow = (state: unknown, content: string) => ({
 const backend = {
   messages: [] as unknown[],
   goals: [] as { id: string; text: string | null }[],
+  state: undefined as SessionState[] | undefined,
+  start: 0,
 };
 
 function installBackend() {
@@ -76,11 +79,20 @@ function installBackend() {
           meta: META,
           messages: backend.messages,
           skipped: 0,
-          start: 0,
-          total: backend.messages.length,
+          start: backend.start,
+          total: backend.start + backend.messages.length,
+          state: backend.state,
           revision: "rev-1",
           older_tokens: 0,
         };
+      case "sessions_page": return {
+        status: "page", start: 0, total: backend.start + backend.messages.length,
+        revision: "rev-1", older_tokens: 0,
+        messages: [
+          stateRow({ kind: "goal_set", text: "obsolete goal", author: "person" }, "Goal: obsolete goal"),
+          { role: "user", content: "an old question" },
+        ],
+      };
       case "sessions_binding":
         return { bound: null, open: null, matches: true };
       case "sessions_set_goal":
@@ -124,6 +136,8 @@ beforeEach(() => {
     { role: "user", content: "earlier question" },
   ];
   backend.goals = [];
+  backend.state = undefined;
+  backend.start = 0;
   i18n.setLocale("en");
   aiSession.reset();
   resetContextMeter();
@@ -137,6 +151,35 @@ afterEach(() => {
 });
 
 describe("goal and plan are saved session rows", () => {
+  it("keeps the goal and plan when their rows are outside the loaded page", async () => {
+    backend.messages = [{ role: "user", content: "earlier question" }];
+    backend.start = 100;
+    backend.state = [
+      { kind: "goal_set", text: "finish the bridge", author: "person" },
+      { kind: "plan_set", items: [{ text: "mix the bridge", status: "in_progress" }] },
+    ];
+    await mountWithConversation();
+    expect(document.querySelector(".ai-goal-text")?.textContent).toBe("finish the bridge");
+    expect(document.querySelector(".ai-plan-strip")?.textContent).toContain("mix the bridge");
+    fireEvent.click(document.querySelector(".ai-transcript-earlier") as HTMLButtonElement);
+    await waitFor(() => expect(document.body.textContent).toContain("an old question"));
+    expect(document.querySelector(".ai-goal-text")?.textContent).toBe("finish the bridge");
+    fireEvent.click(document.querySelector(".ai-goal-clear") as HTMLElement);
+    await waitFor(() => expect(backend.goals).toEqual([{ id: "s1", text: null }]));
+    expect(document.querySelector(".ai-goal-chip")).toBeNull();
+  });
+
+  it("does not resurrect a cleared goal from an old page", async () => {
+    backend.messages = [{ role: "user", content: "earlier question" }];
+    backend.start = 100;
+    backend.state = [{ kind: "goal_cleared", author: "person" }];
+    await mountWithConversation();
+    fireEvent.click(document.querySelector(".ai-transcript-earlier") as HTMLButtonElement);
+    await waitFor(() => expect(document.body.textContent).toContain("an old question"));
+    expect(document.querySelector(".ai-goal-chip")).toBeNull();
+    expect(backend.goals).toEqual([]);
+  });
+
   it("paints the derived goal, plan strip and state rows", async () => {
     await mountWithConversation();
     await waitFor(() => expect(document.querySelector(".ai-plan-strip")).toBeTruthy());

@@ -207,6 +207,33 @@ pub fn current_state(view: &[Value]) -> (Option<Goal>, Option<Vec<PlanItem>>) {
     (goal, plan)
 }
 
+/// The latest goal and plan changes, including explicit clears, independent
+/// of which transcript page a window loads.
+pub fn latest_states(view: &[Value]) -> Vec<SessionState> {
+    let mut states = Vec::new();
+    let mut goal = false;
+    let mut plan = false;
+    for state in view
+        .iter()
+        .rev()
+        .filter_map(crate::ai::sessions::saved_session_state)
+    {
+        let seen = match &state {
+            SessionState::GoalSet { .. } | SessionState::GoalCleared { .. } => &mut goal,
+            SessionState::PlanSet { .. } => &mut plan,
+        };
+        if !*seen {
+            *seen = true;
+            states.push(state);
+        }
+        if goal && plan {
+            break;
+        }
+    }
+    states.reverse();
+    states
+}
+
 /// The one short context row a request carries before its conversation. The
 /// row is derived, never saved, and refreshed after `plan_update`.
 pub fn context_row(goal: Option<&Goal>, plan: Option<&[PlanItem]>) -> Option<Value> {

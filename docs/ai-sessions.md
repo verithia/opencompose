@@ -473,6 +473,10 @@ workspace directory on one truncated line. The list shows the recorded
 `meta.updated` time of each conversation; the transcript never invents a time for
 a row, because the saved wire has none.
 
+The newest transcript page also carries the current goal and plan from the
+whole saved view, including explicit clears. Loading older transcript pages
+does not replace that current state with an older goal or plan.
+
 Each row offers, for that conversation:
 
 | action | command | behaviour |

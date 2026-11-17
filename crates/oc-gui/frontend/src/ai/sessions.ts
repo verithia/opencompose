@@ -8,6 +8,7 @@ import type { TurnStats } from "../stores/aiStats";
 import type { WireMessage } from "./wire";
 import type { PermissionMode } from "./permission";
 import { i18n } from "../stores/i18n";
+import { sessionState as sessionStateOf, type SessionState } from "./messageProtocol";
 
 /** What a compaction dropped and kept, from `ai_session` or `sessions_compact`. */
 export interface CompactionReport {
@@ -104,6 +105,8 @@ export interface LoadedSession {
 
 /** `sessions_open`: the newest page of a saved conversation and its span. */
 export interface LoadedPage extends LoadedSession {
+  /** Latest state from the entire view, including explicit clears. */
+  state?: SessionState[];
   /** Index in the whole view where `messages` begins. */
   start: number;
   /** Length of the whole view. */
@@ -267,7 +270,13 @@ export function loadedPage(payload: unknown): LoadedPage | null {
   const session = loadedSession(payload);
   if (!session) return null;
   const value = payload as Partial<LoadedPage>;
-  return pageSpan(value) ? value as LoadedPage : null;
+  if (!pageSpan(value)) return null;
+  const savedState = (payload as Partial<LoadedPage>).state;
+  if (savedState === undefined) return value as LoadedPage;
+  if (!Array.isArray(savedState) || savedState.length > 2) return null;
+  const state = savedState.map(sessionStateOf);
+  if (state.some(item => item === null)) return null;
+  return { ...value, state: state as SessionState[] } as LoadedPage;
 }
 
 /** An older page, or `null` when the payload names neither status. */

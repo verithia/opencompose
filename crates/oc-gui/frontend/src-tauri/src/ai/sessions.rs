@@ -329,6 +329,8 @@ pub struct LoadedPage {
     pub revision: String,
     /// The panel's estimate of the messages before `start`.
     pub older_tokens: u64,
+    /// Current goal and plan changes from the whole view, including clears.
+    pub state: Vec<SessionState>,
 }
 
 /// Older turns of a conversation, in view order.
@@ -1263,6 +1265,7 @@ impl Store {
         let (dir, meta) = self.find(id)?;
         let mut current = read_current(&dir)?;
         let total = current.messages.len();
+        let state = session_state::latest_states(&current.messages);
         let start = view::page_start(&current.messages, total, turns);
         let page = current.messages.split_off(start);
         let older_tokens = view::panel_tokens(&current.messages);
@@ -1272,6 +1275,7 @@ impl Store {
             total,
             revision: current.revision,
             older_tokens,
+            state,
         })
     }
 

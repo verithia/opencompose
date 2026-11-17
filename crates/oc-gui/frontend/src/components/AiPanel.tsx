@@ -153,7 +153,16 @@ const TURN_SETTLE_MS = 10_000;
 
 export function AiPanel(props: { onClose?: () => void }) {
   const [messages, setMessages] = createSignal<ChatMessage[]>([]);
-  const sessionStateView = createMemo(() => currentSessionState(messages()));
+  const [sessionStates, setSessionStates] = createSignal<SessionState[]>([]);
+  const sessionStateView = createMemo(() => currentSessionState(
+    sessionStates().map(state => ({ role: "context" as const, content: "", state })),
+  ));
+  const rememberState = (state: SessionState): void => {
+    const goal = state.kind !== "plan_set";
+    setSessionStates(previous => [
+      ...previous.filter(saved => (saved.kind !== "plan_set") !== goal), state,
+    ]);
+  };
   let transcriptElement: HTMLDivElement | undefined;
   let transcriptFollow: ReturnType<typeof followTranscript> | undefined;
   onMount(() => {
@@ -254,6 +263,7 @@ export function AiPanel(props: { onClose?: () => void }) {
    * conversation: no older page of the previous one remains to load. */
   const clearTranscript = () => {
     setMessages([]);
+    setSessionStates([]);
     setPageStart(0);
     setPageRevision("");
     setOlderTokens(0);
@@ -745,6 +755,7 @@ export function AiPanel(props: { onClose?: () => void }) {
       }
       const restored = restoredTranscript(loaded.messages, loaded.start);
       setMessages(restored);
+      setSessionStates(loaded.state ?? restored.flatMap(row => row.state ? [row.state] : []));
       setPageStart(loaded.start);
       setPageRevision(loaded.revision);
       setOlderTokens(loaded.older_tokens);
@@ -767,7 +778,7 @@ export function AiPanel(props: { onClose?: () => void }) {
       // once as a typed row, then dropped from the window's own store.
       const storedGoal = aiSession.goal();
       if (storedGoal) {
-        const hasSavedGoal = currentSessionState(restored).goal !== null;
+        const hasSavedGoal = sessionStates().some(state => state.kind !== "plan_set");
         try {
           if (!hasSavedGoal) {
             await aiApi.setSessionGoal(loaded.meta.id, storedGoal);
@@ -778,6 +789,7 @@ export function AiPanel(props: { onClose?: () => void }) {
               state: { kind: "goal_set", text: storedGoal, author: "person" },
               timestamp: Date.now(),
             }]);
+            rememberState({ kind: "goal_set", text: storedGoal, author: "person" });
           }
           aiSession.setGoal("");
         } catch {
@@ -881,6 +893,7 @@ export function AiPanel(props: { onClose?: () => void }) {
 
   /** Shows a state change at once; the saved row paints it again on reload. */
   const applySessionState = (state: SessionState): void => {
+    rememberState(state);
     setMessages(previous => [...previous, { role: "context", content: "", state, timestamp: Date.now() }]);
   };
 
@@ -1783,6 +1796,7 @@ export function AiPanel(props: { onClose?: () => void }) {
     const at = anchor ? current.indexOf(anchor) : -1;
     if (anchor && at < 0) return;
     late.last = rows[rows.length - 1];
+    rows.forEach(row => { if (row.state) rememberState(row.state); });
     setMessages([...current.slice(0, at + 1), ...rows, ...current.slice(at + 1)]);
   };
   /** One message the running turn saved, painted as its rows. */
@@ -1801,6 +1815,7 @@ export function AiPanel(props: { onClose?: () => void }) {
     if (message.role === "tool") setCurrentTool(null);
     if (!rows.length) return;
     turn.last = rows[rows.length - 1];
+    rows.forEach(row => { if (row.state) rememberState(row.state); });
     setMessages(prev => [...prev, ...rows]);
   };
 
