@@ -1503,7 +1503,7 @@ pub fn ai_turn_reply(
     request_id: String,
     call_id: String,
     reply: ai::agent_loop::Reply,
-) -> Result<(), String> {
+) -> Result<(), ai::agent_loop::host::ReplyError> {
     ai::agent_loop::host::reply(&request_id, &call_id, reply)
 }
 

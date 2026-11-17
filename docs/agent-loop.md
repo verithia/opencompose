@@ -765,7 +765,11 @@ too. Neither is the nobody-attends answer, so neither lets an `edit_subtree`
 apply. `ask_user` carries no project change: it asks the person one question,
 with at most six short options or free text, when the decision is theirs. A
 headless turn has nobody to ask and answers `{"answered": false, "reason":
-"no_user"}` immediately; an expired question answers `"expired"`. `ai_cancel`
+"no_user"}` immediately; an expired question answers `"expired"`. An answer is
+checked against the question before it is delivered: a choice must name an
+offered option, free text is refused when the question offers none and is
+bounded to 4,000 characters, and a refused answer leaves the question open
+with a typed error. `ai_cancel`
 stops a turn; the slot a recall or a recovery holds is the
 host's own, so `ai_cancel` cannot release it and `ai_active_turn` does not
 report it. `ai_tool_result` returns the full text behind a truncated result

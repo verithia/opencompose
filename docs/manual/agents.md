@@ -170,8 +170,10 @@ would escape the panel.
   before a goal or plan change restores the earlier one, and a fork keeps the
   state it copied.
 - `ask_user` asks you one question when a decision is yours, with at most six
-  short options or free text. A headless turn has nobody to answer and carries
-  on with `answered: false`.
+  short options or free text. An answer must name an offered option, and free
+  text is accepted only when the question offers it and stays within 4,000
+  characters. A headless turn has nobody to answer and carries on with
+  `answered: false`.
 - Before guessing a name, the assistant searches the project with
   `project_search` (tracks, presets, patterns, buses, sections, markers,
   effects and phrases) and gets back addressable paths.

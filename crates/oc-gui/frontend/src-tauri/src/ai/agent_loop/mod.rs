@@ -120,6 +120,9 @@ pub struct UserQuestion {
     pub free_text: bool,
 }
 
+/// Longest free-text answer a question accepts, in characters.
+pub const MAX_ANSWER_CHARS: usize = 4_000;
+
 /// A person's answer to [`UserQuestion`]. `option` indexes `options`; `text` is
 /// the free-text answer when one was typed.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]

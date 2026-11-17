@@ -1163,22 +1163,75 @@ pub fn answer(request_id: &str, call_id: &str, decision: Decision) -> Result<(),
         .map_err(|_| "The turn stopped before the answer arrived".to_string())
 }
 
-/// Answers a question a running turn asked. A stale answer changes nothing.
-pub fn reply(request_id: &str, call_id: &str, reply: Reply) -> Result<(), String> {
+/// Why a model question's answer was refused. The answer is not delivered and
+/// the question stays open, so a view can correct it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReplyError {
+    /// No question waits under this turn and call id.
+    NotWaiting,
+    /// The option index names no offered choice.
+    OptionOutOfRange,
+    /// The question offers no free text.
+    TextNotAccepted,
+    /// The text is over the answer bound.
+    TextTooLong,
+    /// The waiting turn ended before the answer arrived.
+    TurnStopped,
+}
+
+impl std::fmt::Display for ReplyError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::NotWaiting => "Nothing is waiting for an answer to this question",
+            Self::OptionOutOfRange => "The chosen option is not offered by this question",
+            Self::TextNotAccepted => "This question accepts no free-text answer",
+            Self::TextTooLong => "The answer is too long",
+            Self::TurnStopped => "The turn stopped before the answer arrived",
+        })
+    }
+}
+
+/// Answers a question a running turn asked. An answer outside the question's
+/// bounds is refused before anything is removed, so the card can try again.
+pub fn reply(request_id: &str, call_id: &str, reply: Reply) -> Result<(), ReplyError> {
     let key = (request_id.to_owned(), call_id.to_owned());
-    let question = {
-        let mut pending = lock(&PENDING);
-        if !matches!(pending.get(&key), Some(Waiting::UserQuestion { .. })) {
-            return Err("Nothing is waiting for an answer to this question".into());
+    let request = {
+        let pending = lock(&PENDING);
+        match pending.get(&key) {
+            Some(Waiting::UserQuestion { request, .. }) => request.clone(),
+            _ => return Err(ReplyError::NotWaiting),
         }
-        pending.remove(&key)
     };
-    let Some(Waiting::UserQuestion { answer, .. }) = question else {
-        return Err("Nothing is waiting for an answer to this question".into());
+    validate_reply(&reply, &request)?;
+    let answer = {
+        let mut pending = lock(&PENDING);
+        match pending.remove(&key) {
+            Some(Waiting::UserQuestion { answer, .. }) => answer,
+            _ => return Err(ReplyError::NotWaiting),
+        }
     };
-    answer
-        .send(reply)
-        .map_err(|_| "The turn stopped before the answer arrived".to_string())
+    answer.send(reply).map_err(|_| ReplyError::TurnStopped)
+}
+
+/// Checks an answer against the question it answers: a choice must be one of
+/// the offered options, and text must be allowed and within the bound.
+fn validate_reply(reply: &Reply, request: &UserQuestion) -> Result<(), ReplyError> {
+    if reply
+        .option
+        .is_some_and(|index| index >= request.options.len())
+    {
+        return Err(ReplyError::OptionOutOfRange);
+    }
+    if let Some(text) = reply.text.as_deref().filter(|text| !text.trim().is_empty()) {
+        if !request.free_text {
+            return Err(ReplyError::TextNotAccepted);
+        }
+        if text.chars().count() > super::MAX_ANSWER_CHARS {
+            return Err(ReplyError::TextTooLong);
+        }
+    }
+    Ok(())
 }
 
 /// Whether a backend turn is running in this conversation. A compaction,
@@ -2428,7 +2481,92 @@ mod tests {
         };
         reply("ask-turn", "q1", reply_value.clone()).unwrap();
         assert_eq!(receiver.blocking_recv().unwrap(), reply_value);
-        assert!(reply("ask-turn", "q1", Reply::default()).is_err());
+        assert_eq!(
+            reply("ask-turn", "q1", Reply::default()),
+            Err(ReplyError::NotWaiting)
+        );
+    }
+
+    #[test]
+    fn a_question_answer_outside_its_bounds_is_refused_and_stays_pending() {
+        let key: QuestionKey = ("ask-bounds".into(), "q1".into());
+        let (sender, _receiver) = oneshot::channel();
+        lock(&PENDING).insert(
+            key.clone(),
+            Waiting::UserQuestion {
+                answer: sender,
+                request: UserQuestion {
+                    call_id: "q1".into(),
+                    question: "Which mood?".into(),
+                    options: vec!["Warm".into(), "Bright".into()],
+                    free_text: false,
+                },
+            },
+        );
+        assert_eq!(
+            reply(
+                "ask-bounds",
+                "q1",
+                Reply {
+                    option: Some(2),
+                    text: None,
+                    ..Reply::default()
+                }
+            ),
+            Err(ReplyError::OptionOutOfRange)
+        );
+        assert_eq!(
+            reply(
+                "ask-bounds",
+                "q1",
+                Reply {
+                    option: None,
+                    text: Some("warm".into()),
+                    ..Reply::default()
+                }
+            ),
+            Err(ReplyError::TextNotAccepted)
+        );
+        assert_eq!(
+            pending_questions("ask-bounds").len(),
+            1,
+            "a refused answer leaves the question open"
+        );
+
+        // A question that accepts text still bounds it.
+        lock(&PENDING).remove(&key);
+        let (sender, receiver) = oneshot::channel();
+        lock(&PENDING).insert(
+            key.clone(),
+            Waiting::UserQuestion {
+                answer: sender,
+                request: UserQuestion {
+                    call_id: "q1".into(),
+                    question: "Which mood?".into(),
+                    options: Vec::new(),
+                    free_text: true,
+                },
+            },
+        );
+        assert_eq!(
+            reply(
+                "ask-bounds",
+                "q1",
+                Reply {
+                    option: None,
+                    text: Some("x".repeat(super::super::MAX_ANSWER_CHARS + 1)),
+                    ..Reply::default()
+                },
+            ),
+            Err(ReplyError::TextTooLong)
+        );
+        let accepted = Reply {
+            option: None,
+            text: Some("warm".into()),
+            ..Reply::default()
+        };
+        reply("ask-bounds", "q1", accepted.clone()).unwrap();
+        assert_eq!(receiver.blocking_recv().unwrap(), accepted);
     }
 
     #[test]
