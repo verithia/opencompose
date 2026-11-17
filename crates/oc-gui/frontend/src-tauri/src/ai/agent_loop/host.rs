@@ -555,8 +555,10 @@ impl Host for AppHost {
         if cancel.is_cancelled() {
             return Err(CompactionFailure::Cancelled);
         }
-        let crate::ai::sessions::CompactionResolution { compaction, failure } =
-            Store::config().finish_compaction(plan, summary.as_deref());
+        let crate::ai::sessions::CompactionResolution {
+            compaction,
+            failure,
+        } = Store::config().finish_compaction(plan, summary.as_deref());
         let failure = provider_failure.or(failure);
         let outcome = compaction.ok_or(failure.unwrap_or(CompactionFailure::Store))?;
         match failure.and_then(CompactionFailure::notice_reason) {

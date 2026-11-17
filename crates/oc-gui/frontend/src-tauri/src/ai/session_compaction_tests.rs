@@ -896,7 +896,12 @@ fn a_conflict_retries_the_mechanical_summary_and_reports_the_replaced_text() {
     let resolution = store.finish_compaction(plan, Some("late summary"));
     assert_eq!(resolution.failure, Some(CompactionFailure::Conflict));
     let compaction = resolution.compaction.expect("the retry compacts");
-    assert!(compaction.messages.iter().any(|row| row["content"] == "a newer ask"));
+    assert!(
+        compaction
+            .messages
+            .iter()
+            .any(|row| row["content"] == "a newer ask")
+    );
     assert!(
         !compaction.messages[0]["content"]
             .as_str()

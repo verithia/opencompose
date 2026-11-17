@@ -17,9 +17,7 @@
 //! both protocols keep the same guarantee.
 
 use super::message_protocol::{self, MessageKind, MessageMeta};
-use super::{
-    Store, VERSION, now, read_view, saved_message, write_meta,
-};
+use super::{Store, VERSION, now, read_view, saved_message, write_meta};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashSet;

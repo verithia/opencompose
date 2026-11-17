@@ -44,16 +44,21 @@ use summary::{
 };
 #[cfg(test)]
 use summary::{retained_comparison_pair, retained_media_row, summary_metadata, summary_text};
+mod audition_archive;
+mod binding;
 #[cfg(test)]
 #[path = "../session_binding_tests.rs"]
 mod binding_tests;
 #[cfg(test)]
 #[path = "../session_compaction_tests.rs"]
 mod compaction_tests;
+mod journal;
 #[path = "../session_lookup.rs"]
 pub(super) mod lookup;
 #[path = "../session_message.rs"]
 pub(crate) mod message_protocol;
+#[cfg(test)]
+mod test_support;
 #[path = "../session_results.rs"]
 pub mod tool_results;
 #[path = "../session_turns.rs"]
@@ -61,59 +66,53 @@ pub mod turns;
 #[path = "../session_versions.rs"]
 pub(crate) mod versions;
 mod view;
-mod audition_archive;
-mod binding;
-mod journal;
 mod workspace;
-#[cfg(test)]
-mod test_support;
 #[cfg(test)]
 pub(crate) use test_support::{TestRootGuard, test_root};
 mod row;
 mod tokens;
-use audition_archive::{
-    AUDITION_RENDER_STAGE, clip_dir, persist_auditions, render_dir, session_references, sweep,
-};
-use audition_archive::{ArchiveSweep, archived_bytes, mp3_bitrate};
-#[cfg(test)]
-use journal::newest_that_fit;
-pub use binding::{BindingMismatch, BindingStatus, SavedHistoryMark, binding_status};
-pub use workspace::Scope;
-use workspace::{canonical_dir, hashed_key, is_valid_key};
-use binding::same_project;
-pub use audition_archive::{
-    AUDITION_ARCHIVE_BUDGET, AuditionArchive, EvictedAudition, audition_archive,
-    bound_media_replay,
-};
-use journal::{
-    AppendOutcome, Dropped, Record, RecordKind, VERSION, append_records_under, compaction_indices,
-    read_current, read_meta, read_records, read_view, write_meta, write_records,
-};
-#[cfg(test)]
-use journal::append_records;
-pub use journal::{read_meta_for_storage, read_original};
-use row::{
-    CONTEXT_AUDITION, CONTEXT_SUMMARY, MAX_PROJECT_PATH, canonical_media, canonicalize_media,
-    mark_missing_media, plain_message, saved_message, same_turn, strips_replay_state,
-};
-#[cfg(test)]
-pub use tokens::IMAGE_TOKENS;
-pub use tokens::{estimate_text_tokens, estimate_tokens, media_tokens, value_tokens};
 use super::host_notice::{BindCause, HostNotice, PendingBinding, ToolSurface};
 use super::session_state::{self, SessionState, StateAuthor};
 #[cfg(test)]
 use crate::edit_history::HistoryMark;
 use crate::private_fs;
+pub use audition_archive::{
+    AUDITION_ARCHIVE_BUDGET, AuditionArchive, EvictedAudition, audition_archive, bound_media_replay,
+};
+use audition_archive::{
+    AUDITION_RENDER_STAGE, clip_dir, persist_auditions, render_dir, session_references, sweep,
+};
+use audition_archive::{ArchiveSweep, archived_bytes, mp3_bitrate};
+use binding::same_project;
+pub use binding::{BindingMismatch, BindingStatus, SavedHistoryMark, binding_status};
+#[cfg(test)]
+use journal::append_records;
+#[cfg(test)]
+use journal::newest_that_fit;
+use journal::{
+    AppendOutcome, Dropped, Record, RecordKind, VERSION, append_records_under, compaction_indices,
+    read_current, read_meta, read_records, read_view, write_meta, write_records,
+};
+pub use journal::{read_meta_for_storage, read_original};
 pub use message_protocol::MessageKind;
 use message_protocol::MessageMeta;
+use row::{
+    CONTEXT_AUDITION, CONTEXT_SUMMARY, MAX_PROJECT_PATH, canonical_media, canonicalize_media,
+    mark_missing_media, plain_message, same_turn, saved_message, strips_replay_state,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
+#[cfg(test)]
+pub use tokens::IMAGE_TOKENS;
+pub use tokens::{estimate_text_tokens, estimate_tokens, media_tokens, value_tokens};
 pub(crate) use versions::HistoryAt;
 pub use view::MAX_PAGE_TURNS;
+pub use workspace::Scope;
+use workspace::{canonical_dir, hashed_key, is_valid_key};
 
 /// Session store directory name.
 pub const DIR_NAME: &str = "sessions";
@@ -545,8 +544,6 @@ impl Store {
         }
     }
 
-
-
     /// The operator's store: `~/.opencompose/ai/sessions`.
     pub fn config() -> Self {
         if let Ok(root) = TEST_ROOT.lock()
@@ -605,7 +602,6 @@ impl Store {
     /// The key a workspace's conversations live under, following a recorded
     /// directory when the hash of this path has no directory yet.
 
-
     /// Re-associates a moved workspace: the directory follows the new path and
     /// the record keeps both. The record itself is written by every save, so this
     /// is the move, not the bookkeeping.
@@ -634,13 +630,9 @@ impl Store {
         append_records_under(dir, records, self.session_cap)
     }
 
-
-
     // ---- sessions -------------------------------------------------------
 
     /// Sessions newest first, scoped to one workspace or to every workspace.
-
-
 
     pub fn find(&self, id: &str) -> Result<(PathBuf, SessionMeta), String> {
         lookup::find(self.lookup.as_ref(), &self.root, id).map_err(|error| error.to_string())
@@ -908,7 +900,6 @@ impl Store {
         write_meta(&dir, &meta)?;
         Ok(meta)
     }
-
 
     /// [`Self::delete`] after `guard` admits it under the store lock.
     pub fn delete_guarded(&self, id: &str, guard: Guard<'_>) -> Result<(), SessionError> {
@@ -1881,7 +1872,6 @@ fn planned_request(pending: &[Value], incoming: &[Value], plan: &PlanInputs<'_>)
     view
 }
 
-
 /// A compaction that may ask a model for its summary.
 ///
 /// It plans exactly what the mechanical path would write, then keeps the
@@ -1897,7 +1887,6 @@ fn planned_request(pending: &[Value], incoming: &[Value], plan: &PlanInputs<'_>)
 
 /// Every attachment a retained round references, deduplicated within the round.
 
-
 /// One audio row for a retained round: the round's clips, the label it
 /// carried, and the marker that keeps the row out of user prose.
 
@@ -1906,14 +1895,10 @@ fn planned_request(pending: &[Value], incoming: &[Value], plan: &PlanInputs<'_>)
 /// Auditions this compaction discards: rows outside the retained rounds, plus
 /// the count a previous summary already folded so repeated compaction keeps it.
 
-
 /// The viewable summary and the prose a later compaction carries, both built
 /// from one reading of the previous summary and this compaction's decisions.
 
-
 #[cfg(test)]
-
-
 
 /// The deterministic header a summary starts with: the project it was written
 /// against and the intent a later compaction must keep.
@@ -1922,15 +1907,11 @@ fn planned_request(pending: &[Value], incoming: &[Value], plan: &PlanInputs<'_>)
 
 /// The newest tool calls as text, the audio kept, and the artifact inventory.
 
-
 /// A tool result that proposed something and was not applied. A rejected
 /// proposal is history like any other turn: the summary says so in text and no
 /// tool-call turn is replayed.
 
 /// The subtree a proposal named, from the arguments of the call that made it.
-
-
-
 
 /// Versioned metadata for a host message of `kind`, as saved on the wire.
 pub fn message_meta(kind: MessageKind) -> Value {
@@ -2055,7 +2036,6 @@ fn newest_pinned_rows(view: &[Value]) -> Vec<(usize, Value)> {
         .collect()
 }
 
-
 /// The digest a summary names instead of carrying the project's DSL.
 pub fn dsl_digest(dsl: &str) -> String {
     let digest = Sha256::digest(dsl.as_bytes());
@@ -2083,7 +2063,6 @@ fn is_valid_id(id: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
-
 fn clean_title(text: &str) -> String {
     let text = clip(&collapse(text), MAX_TITLE_CHARS);
     if text.is_empty() {
@@ -2104,10 +2083,6 @@ fn clip(text: &str, limit: usize) -> String {
     }
     clipped
 }
-
-
-
-
 
 #[cfg(test)]
 impl Drop for TestRootGuard {

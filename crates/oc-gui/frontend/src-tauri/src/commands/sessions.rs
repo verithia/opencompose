@@ -896,10 +896,7 @@ pub fn compaction_recorded_event(session_id: &str, compaction: &Compaction) -> V
 /// The payload of [`AUTO_SESSION_EVENT`] when the summary call for a
 /// compaction failed: the mechanical summary replaced it, and the panel says
 /// why the model text is missing.
-pub fn compaction_failed_event(
-    session_id: &str,
-    reason: sessions::CompactionFailure,
-) -> Value {
+pub fn compaction_failed_event(session_id: &str, reason: sessions::CompactionFailure) -> Value {
     json!({
         "session_id": session_id,
         "notice": "compaction_failed",

@@ -154,7 +154,6 @@ impl Store {
         }
         Ok(moved)
     }
-
 }
 
 pub fn binding_status(meta: &SessionMeta, open: Option<&Path>) -> BindingStatus {

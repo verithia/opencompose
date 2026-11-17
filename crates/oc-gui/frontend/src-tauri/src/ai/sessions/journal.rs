@@ -5,9 +5,9 @@
 
 use super::view;
 use super::{
-    MESSAGES_FILE, MessageKind, MessageMeta, SessionMeta, artifacts,
-    canonicalize_media, estimate_tokens, is_compaction_summary, message_protocol,
-    newest_pinned_rows, now, tool_results,
+    MESSAGES_FILE, MessageKind, MessageMeta, SessionMeta, artifacts, canonicalize_media,
+    estimate_tokens, is_compaction_summary, message_protocol, newest_pinned_rows, now,
+    tool_results,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};

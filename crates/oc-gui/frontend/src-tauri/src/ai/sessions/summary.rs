@@ -556,7 +556,11 @@ fn dropped_audition_count(view: &[Value], retained: &[(usize, usize)]) -> usize 
     rows + previous
 }
 
-pub(super) fn summary_metadata(view: &[Value], split: usize, retained: &[(usize, usize)]) -> MessageMeta {
+pub(super) fn summary_metadata(
+    view: &[Value],
+    split: usize,
+    retained: &[(usize, usize)],
+) -> MessageMeta {
     let old = &view[..split];
     let mut metadata = MessageMeta::new(MessageKind::Summary);
     metadata.standing_intent = old

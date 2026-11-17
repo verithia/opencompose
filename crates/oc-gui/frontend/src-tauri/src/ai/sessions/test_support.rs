@@ -5,7 +5,10 @@
 use super::*;
 
 impl Store {
-        pub(in crate::ai) fn with_lookup(root: impl Into<PathBuf>, lookup: Arc<dyn lookup::Io>) -> Self {
+    pub(in crate::ai) fn with_lookup(
+        root: impl Into<PathBuf>,
+        lookup: Arc<dyn lookup::Io>,
+    ) -> Self {
         Self {
             root: root.into(),
             lookup,
@@ -13,12 +16,12 @@ impl Store {
         }
     }
 
-        pub(in crate::ai) fn with_session_cap(mut self, cap: u64) -> Self {
+    pub(in crate::ai) fn with_session_cap(mut self, cap: u64) -> Self {
         self.session_cap = cap;
         self
     }
 
-        pub fn reassociate(&self, from: &Path, to: &Path) -> Result<String, String> {
+    pub fn reassociate(&self, from: &Path, to: &Path) -> Result<String, String> {
         let _lock = self.mutation_lock()?;
         let from_key = hashed_key(from);
         let source = self.root.join(&from_key);
@@ -36,7 +39,7 @@ impl Store {
         Ok(to_key)
     }
 
-        pub fn record_history_mark(
+    pub fn record_history_mark(
         &self,
         id: &str,
         project: &Path,
@@ -60,17 +63,17 @@ impl Store {
         write_meta(&dir, &meta)
     }
 
-        pub fn delete(&self, id: &str) -> Result<(), String> {
+    pub fn delete(&self, id: &str) -> Result<(), String> {
         self.delete_guarded(id, &|| Ok(()))
             .map_err(|error| error.message)
     }
 
-        pub fn drop_history(&self, id: &str, keep: u64) -> Result<Value, String> {
+    pub fn drop_history(&self, id: &str, keep: u64) -> Result<Value, String> {
         self.drop_history_guarded(id, keep, &|| Ok(()))
             .map_err(|error| error.message)
     }
 
-        pub fn drop_history_guarded(
+    pub fn drop_history_guarded(
         &self,
         id: &str,
         keep: u64,
@@ -86,10 +89,9 @@ impl Store {
         let count = compaction_indices(&records).len();
         let keep = keep as usize;
         let Some((from, kept)) = keep_from_compaction(&records, keep) else {
-            return Err(format!(
-                "drop_history {keep}: this session has {count} compaction(s)"
-            )
-            .into());
+            return Err(
+                format!("drop_history {keep}: this session has {count} compaction(s)").into(),
+            );
         };
         let dropped = records.len() - from;
         write_records(&dir, &kept)?;
@@ -103,12 +105,12 @@ impl Store {
         }))
     }
 
-        pub fn collect_unreferenced(&self) -> Result<u64, String> {
+    pub fn collect_unreferenced(&self) -> Result<u64, String> {
         let _lock = self.mutation_lock()?;
         Ok(self.collect_unreferenced_locked())
     }
 
-        pub fn prepare(
+    pub fn prepare(
         &self,
         id: &str,
         incoming: &[Value],
@@ -118,7 +120,7 @@ impl Store {
         self.prepare_owned(id, incoming, project, context, None)
     }
 
-        pub fn prepare_owned(
+    pub fn prepare_owned(
         &self,
         id: &str,
         incoming: &[Value],
@@ -147,7 +149,7 @@ impl Store {
         Ok(prepared)
     }
 
-        pub fn record_reply(
+    pub fn record_reply(
         &self,
         id: &str,
         reply: &Value,
@@ -158,7 +160,7 @@ impl Store {
         self.record_reply_owned(id, reply, facts, (provider, model), None)
     }
 
-        pub fn compact(
+    pub fn compact(
         &self,
         id: &str,
         target_tokens: Option<u64>,
