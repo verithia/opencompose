@@ -746,8 +746,6 @@ export const zhHant = {
   "change.ownerTrack": "軌道「{name}」",
   "change.ownerBus": "匯流排「{name}」",
   "change.ownerMaster": "主控",
-  "change.cause.conversationRevert": "還原對話",
-  "change.cause.withFacts": "還原對話 · {facts}",
   "change.projectRenamed": "將專案從「{from}」重新命名為「{to}」",
   "change.projectNamed": "將專案命名為「{to}」",
   "change.projectNameCleared": "清除專案名稱",

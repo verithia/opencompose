@@ -305,8 +305,6 @@ export const jaCompletionCore = {
   "change.ownerTrack": "トラック「{name}」",
   "change.ownerBus": "バス「{name}」",
   "change.ownerMaster": "マスター",
-  "change.cause.conversationRevert": "会話を元に戻す",
-  "change.cause.withFacts": "会話を元に戻す · {facts}",
   "change.projectRenamed": "プロジェクト名を「{from}」から「{to}」に変更",
   "change.projectNamed": "プロジェクト名を「{to}」に設定",
   "change.projectNameCleared": "プロジェクト名を消去",

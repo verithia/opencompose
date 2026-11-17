@@ -746,8 +746,6 @@ export const zhHans = {
   "change.ownerTrack": "轨道“{name}”",
   "change.ownerBus": "总线“{name}”",
   "change.ownerMaster": "主控",
-  "change.cause.conversationRevert": "还原对话",
-  "change.cause.withFacts": "还原对话 · {facts}",
   "change.projectRenamed": "将项目从“{from}”重命名为“{to}”",
   "change.projectNamed": "将项目命名为“{to}”",
   "change.projectNameCleared": "清除项目名称",

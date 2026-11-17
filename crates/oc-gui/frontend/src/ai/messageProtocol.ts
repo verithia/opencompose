@@ -200,7 +200,7 @@ function outsideChange(value: unknown): OutsideChange | null {
   const author = noticeAuthor(value.author);
   if (!author) return null;
   const cause = value.cause;
-  if (cause !== undefined && cause !== "edit" && cause !== "conversation_revert") return null;
+  if (cause !== undefined && cause !== "edit") return null;
   return { author, ...(cause === undefined ? {} : { cause }), changes: value.changes };
 }
 

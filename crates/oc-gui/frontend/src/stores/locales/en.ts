@@ -725,8 +725,6 @@ export const en = {
   "change.ownerTrack": "track “{name}”",
   "change.ownerBus": "bus “{name}”",
   "change.ownerMaster": "the master",
-  "change.cause.conversationRevert": "Revert conversation",
-  "change.cause.withFacts": "Revert conversation · {facts}",
   "change.projectRenamed": "Rename project “{from}” to “{to}”",
   "change.projectNamed": "Name the project “{to}”",
   "change.projectNameCleared": "Clear the project name",

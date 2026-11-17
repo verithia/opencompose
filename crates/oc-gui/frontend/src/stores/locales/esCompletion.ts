@@ -445,8 +445,6 @@ export const esCompletion = {
   "change.ownerTrack": "la pista «{name}»",
   "change.ownerBus": "el bus «{name}»",
   "change.ownerMaster": "el máster",
-  "change.cause.conversationRevert": "Revertir la conversación",
-  "change.cause.withFacts": "Revertir la conversación · {facts}",
   "change.projectRenamed": "Cambiar el nombre del proyecto de «{from}» a «{to}»",
   "change.projectNamed": "Poner al proyecto el nombre «{to}»",
   "change.projectNameCleared": "Borrar el nombre del proyecto",

@@ -54,11 +54,6 @@ describe("history text", () => {
       cause: "edit",
       author: { kind: "outside" },
     })).toBe("Edit (Outside OpenCompose)");
-    expect(briefText({
-      changes: { changes: [{ kind: "sections_edited", span: null }], more: 0 },
-      cause: "conversation_revert",
-      author: { kind: "client", owner: "http" },
-    })).toBe("Revert conversation · Edit sections (Client http)");
   });
 
   it("sizes bytes in the largest unit that keeps a whole number", () => {

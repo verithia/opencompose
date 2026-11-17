@@ -103,7 +103,7 @@ export interface ChangeSet {
 }
 
 /** Why a history step exists. */
-export type EditCause = "edit" | "conversation_revert";
+export type EditCause = "edit";
 
 /** The largest fact list a wire change set may carry before the guard cuts it. */
 export const MAX_WIRE_CHANGE_FACTS = 64;
@@ -142,5 +142,5 @@ export function isChangeSet(value: unknown): value is ChangeSet {
 
 /** The cause of an edit, defaulting a malformed value to a plain edit. */
 export function isEditCause(value: unknown): value is EditCause {
-  return value === "edit" || value === "conversation_revert";
+  return value === "edit";
 }

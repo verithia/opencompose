@@ -100,18 +100,17 @@ describe("HistoryPanel", () => {
     await waitFor(() => expect(container.querySelector(".history-size")?.textContent).toBe("2.0 KB on disk"));
   });
 
-  it("names a span in bars and marks a conversation revert", async () => {
+  it("names a span in bars", async () => {
     history = [entry(
       1,
       set({ kind: "clips_edited", track: "lead", span: { start: 0, end: 16 } }),
       ["project"],
       true,
-      { cause: "conversation_revert" },
     )];
     const { container } = render(() => <HistoryPanel />);
     await waitFor(() => expect(container.querySelectorAll(".undo-history-entry[data-level]").length).toBe(2));
     expect(container.querySelector(".undo-history-name")?.textContent)
-      .toBe("Revert conversation · Edit clips on “lead” in bars 1–4 (You)");
+      .toBe("Edit clips on “lead” in bars 1–4 (You)");
   });
 
   it("jumps to a level through the backend command", async () => {
