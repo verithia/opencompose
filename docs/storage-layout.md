@@ -27,6 +27,7 @@ Storage page can show what an item belongs to.
 
 ```text
 <config>/
+  locks/                        the open-project and open-conversation locks
   history/<path key>/
     project.json                marker: version, canonical path, content SHA-256
     entries.jsonl               one stored entry per line
@@ -52,6 +53,7 @@ Storage page can show what an item belongs to.
       audition-media/           clip a listening request replays
       audition-renders/         full-rate render kept for listening
       detached/<session id>/    a conversation with no workspace
+      locks/session-<id>.lock   the process that has one conversation open
   cache/
     media/                      decoded, resampled and derived audio; vocal analyses
     preset-trims/               measured loudness trims of presets
@@ -62,6 +64,25 @@ Storage page can show what an item belongs to.
   sample-providers/             sample provider plugins
   logs/                         app and diagnostic logs, in a selected profile
 ```
+
+## Open locks
+
+`<config>/locks/project-<path key>.lock` is held by the process that has that
+project open. A project stays open in one process at a time: a second desktop or
+headless process that opens the same project is refused before its document,
+history or file changes, and the current document stays. The lock is released
+when another project replaces it or the process exits. The lock file lives here,
+not in the project folder, and it is not project data; listings and sweeps
+ignore it.
+
+The edit history needs no lock of its own because only the project's holder
+opens its history. A sweep or a manual removal of another project's history,
+note or recovery copies takes that project's lock first and skips the data while
+another process holds it. Save As, **Move Project** and opening a project at a
+new path take the destination lock before moving anything there.
+
+A saved conversation has its own lock, `ai/sessions/locks/session-<id>.lock`,
+described in [Saved AI conversations](ai-sessions.md).
 
 ## Edit history
 

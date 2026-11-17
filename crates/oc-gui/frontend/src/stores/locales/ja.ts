@@ -1221,6 +1221,8 @@ export const ja = {
   "ai.sessions.newBlocked": "実行中のターンまたは会話の操作が終わると使えます",
   "ai.sessions.workspace": "作業ディレクトリ",
   "ai.sessions.detached": "作業ディレクトリなし",
+  "ai.sessions.inUse": "別の OpenCompose プロセスがこの会話を開いています。",
+  "project.inUse": "別の OpenCompose プロセスがこのプロジェクトを開いています。現在のプロジェクトは開いたままです。",
   "ai.sessions.empty": "この作業ディレクトリには保存された会話がありません。",
   "ai.sessions.rename": "名前を変更",
   "ai.sessions.renameOf": "{title} の名前を変更",

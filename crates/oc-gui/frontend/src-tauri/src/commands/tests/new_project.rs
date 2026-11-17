@@ -155,7 +155,10 @@ fn new_project_refuses_while_an_agent_batch_is_open() {
             .begin_transaction("agent batch".into(), "agent".into())
             .unwrap();
         let error = create_project_in(&mut inner, None).unwrap_err();
-        assert_eq!(error, crate::state::TRANSACTION_BLOCKS_REPLACEMENT);
+        assert_eq!(
+            error.message(),
+            crate::state::TRANSACTION_BLOCKS_REPLACEMENT
+        );
         assert!(inner.transaction.is_some());
     }
     assert!(state.lock_inner().audio.render_thread.is_none());

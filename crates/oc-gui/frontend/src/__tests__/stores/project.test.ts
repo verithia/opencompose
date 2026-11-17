@@ -3,6 +3,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { store } from "../../stores/project";
+import { i18n } from "../../stores/i18n";
 import { log } from "../../stores/log";
 import type { Project } from "../../types/project";
 import {
@@ -191,6 +192,17 @@ describe("track preview lifecycle", () => {
 });
 
 describe("saveFile", () => {
+  it("localizes a destination another process holds", async () => {
+    await store.initProject();
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "get_transport_state") return TRANSPORT_STOPPED();
+      if (cmd === "save_file") throw { kind: "project_in_use", message: "Another OpenCompose process has this project open." };
+      return makeSnapshot();
+    });
+    expect(await store.saveFile("/held.ocp")).toBe(false);
+    expect(store.error()).toBe(i18n.t("project.inUse"));
+  });
+
   it("reports failure without clearing dirty state or changing the resource root", async () => {
     const snap = { ...makeSnapshot(), file_path: "/old/project.ocp", dirty: true };
     invokeMock.mockResolvedValueOnce(snap);

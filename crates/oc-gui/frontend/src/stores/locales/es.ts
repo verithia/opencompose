@@ -1215,6 +1215,8 @@ export const es = {
   "ai.sessions.newBlocked": "Disponible cuando termine el turno en curso o la acción sobre la conversación",
   "ai.sessions.workspace": "Carpeta de trabajo",
   "ai.sessions.detached": "Sin carpeta de trabajo",
+  "ai.sessions.inUse": "Otro proceso de OpenCompose tiene abierta esta conversación.",
+  "project.inUse": "Otro proceso de OpenCompose tiene abierto este proyecto. El proyecto actual permanece abierto.",
   "ai.sessions.empty": "Esta carpeta de trabajo aún no tiene conversaciones guardadas.",
   "ai.sessions.rename": "Renombrar",
   "ai.sessions.renameOf": "Renombrar {title}",

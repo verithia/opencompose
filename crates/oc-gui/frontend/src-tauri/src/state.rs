@@ -1205,6 +1205,10 @@ pub struct AppStateInner {
     pub project: Project,
     pub dsl_source: String,
     pub file_path: Option<PathBuf>,
+    /// The lock held while this project is the open document.
+    pub project_lock: Option<crate::process_lock::ProcessLock>,
+    /// The lock held while a conversation is the panel's open one.
+    pub session_lock: Option<OpenSessionLock>,
     /// Identifies this app session. Recovery copies of a never-saved document
     /// are keyed by it, so two open windows never share a directory.
     pub session_id: String,
@@ -1279,6 +1283,13 @@ pub struct AppStateInner {
     pub midi_live: MidiLive,
     /// Shared with the audition cache; every revision bump invalidates it.
     audition_epoch: Arc<AtomicU64>,
+}
+
+/// The conversation the panel has open, and the lock that keeps another
+/// process from opening it.
+pub struct OpenSessionLock {
+    pub id: String,
+    pub _guard: crate::process_lock::ProcessLock,
 }
 
 pub struct EffectWriteGesture {
@@ -1383,6 +1394,8 @@ impl AppState {
                 project,
                 dsl_source,
                 file_path: None,
+                project_lock: None,
+                session_lock: None,
                 session_id: crate::autosave::new_session_id(),
                 workspace: None,
                 dirty: false,

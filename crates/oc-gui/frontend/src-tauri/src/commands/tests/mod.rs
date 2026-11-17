@@ -19,6 +19,7 @@ mod groups;
 mod hit_velocity;
 mod host;
 mod latency;
+mod locks;
 mod markers;
 mod meters;
 mod midi_import;

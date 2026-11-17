@@ -43,6 +43,7 @@ mod preview;
 mod preview_focus;
 mod private_fs;
 pub mod probe;
+mod process_lock;
 mod project_data;
 mod project_extent;
 mod project_persist;

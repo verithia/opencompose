@@ -116,7 +116,7 @@ fn save_as_adopts_library_patch_paths_and_keeps_them_on_the_next_save() {
     let target = moved.join("song.ocp");
     let mut request = snapshot_for_save(Some(target.display().to_string()), &state).unwrap();
     write_save_with_library(&mut request, library.path()).unwrap();
-    assert_eq!(publish_save(&state, &request), Some(true));
+    assert_eq!(publish_save(&state, &mut request), Some(true));
     drop(library);
     let save_again = save_document(None, &state).unwrap();
     assert_eq!(save_again.path, target.display().to_string());
@@ -300,7 +300,7 @@ fn an_edit_during_the_write_keeps_the_newer_document_dirty() {
     // because the document it describes is no longer the live one.
     write_save(&mut request).unwrap();
     assert!(
-        publish_save(&state, &request).is_none(),
+        publish_save(&state, &mut request).is_none(),
         "a save that raced an edit must not publish"
     );
 
@@ -370,7 +370,7 @@ fn an_agent_batch_opened_during_the_write_keeps_the_document_dirty() {
 
     write_save(&mut request).unwrap();
     assert!(
-        publish_save(&state, &request).is_none(),
+        publish_save(&state, &mut request).is_none(),
         "a save that raced a batch must not publish"
     );
 

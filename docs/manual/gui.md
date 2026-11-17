@@ -58,6 +58,12 @@ the start surface offers to open or create one. **Move Project** gives the open
 project another file and takes its edit history and backup along; nothing stays
 at the old place.
 
+A project is open in one process at a time. Opening a project that another
+OpenCompose process already has open is refused, the current project stays
+open, and the window says another process has it open. The same rule keeps a saved
+conversation to one process: opening one elsewhere keeps the conversation the
+panel already shows.
+
 ## Edit history
 
 Each project keeps its edit history in the app data folder, under

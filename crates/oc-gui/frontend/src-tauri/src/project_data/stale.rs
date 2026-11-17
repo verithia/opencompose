@@ -186,7 +186,28 @@ pub fn remove(kind: DataKind, key: &str, open: Option<&Path>) -> Result<u64, Str
     Ok(found.bytes)
 }
 
+/// Take the lock of the project an item belongs to, so a sweep never deletes
+/// data another process is using. Data without a project path is guarded by
+/// its own store.
+fn project_guard(item: &DataItem) -> Result<Option<crate::process_lock::ProcessLock>, String> {
+    let path = match item.kind {
+        DataKind::History | DataKind::Note | DataKind::Recovery => item.path.as_deref(),
+        DataKind::Conversations => None,
+    };
+    let Some(path) = path else {
+        return Ok(None);
+    };
+    match crate::process_lock::ProcessLock::acquire(super::project_lock_path(Path::new(path))) {
+        Ok(lock) => Ok(Some(lock)),
+        Err(error) if error.is_in_use() => {
+            Err("Another OpenCompose process is using this project's data.".into())
+        }
+        Err(error) => Err(format!("Cannot lock the project's data: {error}")),
+    }
+}
+
 fn remove_item(item: &DataItem) -> Result<(), String> {
+    let _lock = project_guard(item)?;
     match item.kind {
         DataKind::History => {
             if !super::is_path_key(&item.key) {
@@ -394,5 +415,32 @@ mod tests {
         );
         assert!(remove(DataKind::History, &key, None).is_ok());
         assert!(!journal::dir_for(&project).exists());
+    }
+
+    #[test]
+    fn data_another_process_holds_is_skipped_by_the_sweep() {
+        let roots = roots();
+        let gone = roots.folder.join("held.ocp");
+        std::fs::write(&gone, "x").unwrap();
+        history_for(&gone);
+        std::fs::remove_file(&gone).unwrap();
+        let lock_path = crate::project_data::project_lock_path(&gone);
+        std::fs::create_dir_all(lock_path.parent().unwrap()).unwrap();
+        let foreign = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)
+            .unwrap();
+        <std::fs::File as fs4::FileExt>::try_lock(&foreign).unwrap();
+
+        let later = SystemTime::now() + STALE_AFTER + DAY;
+        assert!(sweep(later, None).is_empty());
+        assert!(journal::dir_for(&gone).exists());
+
+        drop(foreign);
+        assert_eq!(sweep(later, None).len(), 1);
+        assert!(!journal::dir_for(&gone).exists());
     }
 }

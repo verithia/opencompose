@@ -2271,6 +2271,8 @@ export const zhHant = {
   "ai.toolSurface.permission": "權限：{mode}",
   "ai.sessions.workspace": "工作目錄",
   "ai.sessions.detached": "無工作目錄",
+  "ai.sessions.inUse": "另一個 OpenCompose 程序已開啟此對話。",
+  "project.inUse": "另一個 OpenCompose 程序已開啟此專案。目前專案保持不變。",
   "ai.sessions.empty": "此工作目錄尚無儲存的工作階段。",
   "ai.sessions.rename": "重新命名",
   "ai.sessions.rowHint": "右鍵查看更多操作",

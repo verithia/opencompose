@@ -22,6 +22,9 @@ pub mod stale;
 
 pub use relocate::{Relocation, relocate};
 
+/// The folder under the app's data folder that holds the resource locks.
+pub const LOCKS_DIR: &str = "locks";
+
 /// Largest file [`content_sha256`] reads; a larger file is not a project the
 /// parser accepts.
 pub const MAX_FINGERPRINT_BYTES: u64 = 256 * 1024 * 1024;
@@ -49,6 +52,17 @@ pub fn path_key(path: &Path) -> String {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()
+}
+
+/// The folder every resource lock lives under, outside the user's project
+/// folders and outside the data a sweep removes.
+pub fn locks_root() -> PathBuf {
+    crate::private_fs::config_dir().join(LOCKS_DIR)
+}
+
+/// The lock file that keeps one project open in one process.
+pub fn project_lock_path(project: &Path) -> PathBuf {
+    locks_root().join(format!("project-{}.lock", path_key(project)))
 }
 
 /// Whether `name` has the shape of a path key.

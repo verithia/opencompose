@@ -63,6 +63,7 @@ keyring = { version = "3.6", features = ["apple-native", "windows-native", "sync
 sha2 = "0.10"
 base64 = "0.22"
 flate2.workspace = true
+fs4.workspace = true
 tar = { version = "0.4", default-features = false }
 ring = "0.17"
 zstd = "0.13"

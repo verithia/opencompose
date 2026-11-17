@@ -23,6 +23,21 @@ pub fn relocate(from: &Path, to: &Path, how: Relocation) {
     if !crate::edit_history::persistence_enabled() {
         return;
     }
+    // The destination belongs to the project being opened; another process
+    // holding it keeps the data where it is instead of mixing the two.
+    let _to_lock =
+        match crate::process_lock::ProcessLock::acquire(crate::project_data::project_lock_path(to))
+        {
+            Ok(lock) => lock,
+            Err(error) => {
+                log::warn!(
+                    "[project data] {} stays at {}: {error}",
+                    to.display(),
+                    from.display()
+                );
+                return;
+            }
+        };
     let copy = how == Relocation::Copy;
     if let Err(error) = crate::ai::project_instructions::Store::config().relocate(from, to, copy) {
         log::warn!(

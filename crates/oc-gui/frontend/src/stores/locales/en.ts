@@ -2247,6 +2247,8 @@ export const en = {
     "ai.toolSurface.permission": "Permission: {mode}",
     "ai.sessions.workspace": "Workspace",
     "ai.sessions.detached": "No workspace",
+    "ai.sessions.inUse": "Another OpenCompose process has this conversation open.",
+    "project.inUse": "Another OpenCompose process has this project open. The current project stays open.",
     "ai.sessions.empty": "No saved conversations in this workspace yet.",
     "ai.sessions.rename": "Rename",
   "ai.sessions.rowHint": "Right-click for actions",

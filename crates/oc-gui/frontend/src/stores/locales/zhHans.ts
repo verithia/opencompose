@@ -2271,6 +2271,8 @@ export const zhHans = {
   "ai.toolSurface.permission": "权限：{mode}",
   "ai.sessions.workspace": "工作区",
   "ai.sessions.detached": "无工作区",
+  "ai.sessions.inUse": "另一个 OpenCompose 进程已打开此对话。",
+  "project.inUse": "另一个 OpenCompose 进程已打开此项目。当前项目保持不变。",
   "ai.sessions.empty": "此工作区还没有保存的对话。",
   "ai.sessions.rename": "重命名",
   "ai.sessions.rowHint": "右键查看更多操作",

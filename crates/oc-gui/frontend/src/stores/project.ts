@@ -52,6 +52,16 @@ const [filePath, setFilePath] = createSignal<string | null>(null);
 const [dirty, setDirty] = createSignal(false);
 const [loading, setLoading] = createSignal(false);
 const [error, setError] = createSignal<string | null>(null);
+
+/** A lock refusal is typed; every other failure keeps the backend's text. */
+function projectError(value: unknown): string {
+  if (value && typeof value === "object") {
+    if ((value as { kind?: unknown }).kind === "project_in_use") return i18n.t("project.inUse");
+    const message = (value as { message?: unknown }).message;
+    if (typeof message === "string") return message;
+  }
+  return String(value);
+}
 const {
   undoState,
   historyView,
@@ -479,7 +489,7 @@ async function initProject() {
     // No snapshot arrived, so the previous document is still open and the next
     // edit must count as an edit.
     cancelDocumentLoad(loadEpoch);
-    if (loadEpoch === projectLoadEpoch) setError(String(e));
+    if (loadEpoch === projectLoadEpoch) setError(projectError(e));
   }
   finally { if (loadEpoch === projectLoadEpoch) setLoading(false); }
 }
@@ -494,7 +504,7 @@ async function moveProject(to: string): Promise<boolean> {
     void refreshUndoState();
     return true;
   } catch (e) {
-    setError(String(e));
+    setError(projectError(e));
     return false;
   }
 }
@@ -530,7 +540,7 @@ async function installNewProject(create: () => Promise<ProjectSnapshot>): Promis
   } catch (e) {
     // No snapshot arrived, so the previous document is still open.
     cancelDocumentLoad(loadEpoch);
-    if (loadEpoch === projectLoadEpoch) setError(String(e));
+    if (loadEpoch === projectLoadEpoch) setError(projectError(e));
     return false;
   }
   finally { if (loadEpoch === projectLoadEpoch) setLoading(false); }
@@ -570,7 +580,7 @@ async function openFile(path: string) {
     // A refused open leaves the current document in place, so the next edit is
     // an edit and not a load.
     cancelDocumentLoad(loadEpoch);
-    if (loadEpoch === projectLoadEpoch) setError(String(e));
+    if (loadEpoch === projectLoadEpoch) setError(projectError(e));
   }
   finally { if (loadEpoch === projectLoadEpoch) setLoading(false); }
 }
@@ -598,7 +608,7 @@ async function saveFile(path?: string): Promise<boolean> {
     // The save retires this project's recovery copies.
     void recoveryStore.refresh();
     return true;
-  } catch (e) { setError(String(e)); return false; }
+  } catch (e) { setError(projectError(e)); return false; }
 }
 
 /**

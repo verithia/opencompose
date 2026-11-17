@@ -970,7 +970,7 @@ fn an_exclusive_new_refuses_a_file_that_appeared() {
     let before = state.lock_inner().project.clone();
     let error = crate::commands::create_project_in(&mut state.lock_inner(), Some(target.clone()))
         .unwrap_err();
-    assert!(error.contains("already exists"), "{error}");
+    assert!(error.to_string().contains("already exists"), "{error}");
     assert_eq!(std::fs::read_to_string(&target).unwrap(), "keep me");
     assert_eq!(state.lock_inner().project, before);
     assert_eq!(state.lock_inner().file_path, None);
