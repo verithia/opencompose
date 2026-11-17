@@ -36,6 +36,8 @@ export interface WireMessage {
   context?: "audition" | "summary";
   tool_calls?: ToolCall[];
   tool_call_id?: string;
+  /** The hash of this row's full result in the session's results folder. */
+  result_sha?: string;
   provider_state?: unknown;
   thinking?: WireThinking[];
   /** Plain reasoning fields saved by older Chat Completions adapters. */

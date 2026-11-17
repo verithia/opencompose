@@ -97,6 +97,11 @@ memory, and it checks that the text hashes to its name: a file whose bytes
 changed reads as missing, never as the result the row recorded. Saving the
 same result again, or a fork copying it, replaces such a file.
 
+A transcript row opens its full result by the `result_sha` it saved, so the
+original view still reads the copy of a turn a later compaction or recall
+removed from the current view. The model's paged read instead answers from the
+current view by call id, because that is the row the model just saw.
+
 A conversation belongs to a **workspace**, which is the directory holding the
 project files. Projects in one directory share one set of conversations;
 opening a file in another directory shows another set. Within that workspace a

@@ -66,6 +66,8 @@ export interface ChatMessage {
    * wire instead, because the loop appends envelopes no row stands for.
    */
   wireIndex?: number;
+  /** The hash of this row's full result, when the store kept one. */
+  resultSha?: string;
   role: "user" | "assistant" | "system" | "tool" | "context";
   content: string;
   /** Host context the model needed, which the person never typed. */
@@ -222,7 +224,12 @@ export function restoredTranscript(messages: WireMessage[] | null | undefined, s
       continue;
     }
     if (message.role === "tool") {
-      rows.push({ ...toolRowOf(byId.get(message.tool_call_id ?? ""), content, message.changes), wireIndex, ...snapshot });
+      rows.push({
+        ...toolRowOf(byId.get(message.tool_call_id ?? ""), content, message.changes),
+        wireIndex,
+        ...(message.result_sha ? { resultSha: message.result_sha } : {}),
+        ...snapshot,
+      });
       continue;
     }
     if (message.role === "user") {

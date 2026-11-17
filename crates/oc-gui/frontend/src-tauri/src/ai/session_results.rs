@@ -9,7 +9,7 @@
 //! names it, so a reload, a compaction and a restart keep every result a
 //! message still refers to, and nothing else.
 
-use super::{MESSAGES_FILE, Record, sweep};
+use super::{MESSAGES_FILE, sweep};
 use crate::ai::agent_loop::results::MAX_STORED_CHARS;
 use crate::private_fs;
 use serde_json::{Value, json};
@@ -36,11 +36,20 @@ fn digest(text: &str) -> String {
     format!("{:x}", Sha256::digest(text.as_bytes()))
 }
 
-/// Whether the file at `file` holds exactly the text `hash` names. A file
-/// whose bytes changed under its name is not reused: the next write replaces
-/// it.
+/// Whether the file at `file` holds exactly the text `hash` names. The read is
+/// bounded like [`read`]: a damaged file cannot grow memory, and one over the
+/// stored bound is not reused. A file whose bytes changed under its name is not
+/// reused either: the next write replaces it.
 fn holds(file: &Path, hash: &str) -> bool {
-    std::fs::read(file).is_ok_and(|bytes| format!("{:x}", Sha256::digest(&bytes)) == hash)
+    let Ok(file) = std::fs::File::open(file) else {
+        return false;
+    };
+    let cap = (MAX_STORED_CHARS * 4) as u64;
+    let mut bytes = Vec::new();
+    if file.take(cap + 1).read_to_end(&mut bytes).is_err() || bytes.len() as u64 > cap {
+        return false;
+    }
+    format!("{:x}", Sha256::digest(&bytes)) == hash
 }
 
 /// Writes the full result each message carries and swaps it for its hash. A
@@ -104,31 +113,20 @@ fn answered(row: &Value) -> Option<&str> {
         .or_else(|| row["message_meta"]["text_call"]["id"].as_str())
 }
 
-/// The hash of the newest saved result for `call`, read one record at a time
-/// from every turn the file holds, so a result a compaction replaced in the
-/// view is still found. A provider may reuse a call id across rounds; the
-/// newest row is the one the model just saw.
+/// The hash of the newest result for `call` in the current view. A provider may
+/// reuse a call id across rounds; the newest row is the one the model just saw.
+/// A matching row without a stored hash answers "not stored" instead of falling
+/// back to an older result, and turns a compaction or recall cut off the view
+/// no longer answer at all.
 pub(super) fn newest_for(dir: &Path, call: &str) -> Result<Option<String>, String> {
-    let file = match std::fs::File::open(dir.join(MESSAGES_FILE)) {
-        Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(format!("sessions: {error}")),
-    };
+    let (view, _) = super::read_view(dir)?;
     let mut found = None;
-    for line in std::io::BufReader::new(file).lines() {
-        let line = line.map_err(|error| format!("sessions: {error}"))?;
-        if !line.contains(call) {
-            continue;
-        }
-        let Ok(record) = serde_json::from_str::<Record>(&line) else {
-            continue;
-        };
-        for row in &record.messages {
-            if answered(row) == Some(call)
-                && let Some(hash) = row[RESULT_SHA].as_str().filter(|hash| is_hash(hash))
-            {
-                found = Some(hash.to_ascii_lowercase());
-            }
+    for row in &view {
+        if answered(row) == Some(call) {
+            found = row[RESULT_SHA]
+                .as_str()
+                .filter(|hash| is_hash(hash))
+                .map(str::to_ascii_lowercase);
         }
     }
     Ok(found)
@@ -254,6 +252,48 @@ mod tests {
             .unwrap();
         assert_eq!(store.tool_result(&id, "c").unwrap().as_deref(), Some("NEW"));
         assert_eq!(files(&store, &id), 2);
+    }
+
+    #[test]
+    fn a_reused_call_id_with_an_unstored_newer_result_reads_as_not_stored() {
+        let (_root, store, id) = fixture();
+        store
+            .append_turn(&id, &[user("go"), round("c"), truncated("c", "OLD")], None)
+            .unwrap();
+        let huge = "y".repeat(MAX_STORED_CHARS + 1);
+        store
+            .append_turn(&id, &[round("c"), truncated("c", &huge)], None)
+            .unwrap();
+        assert_eq!(
+            store.tool_result(&id, "c").unwrap(),
+            None,
+            "the newest row answers, and it kept no file"
+        );
+        assert_eq!(files(&store, &id), 1, "the older result file stays owned");
+    }
+
+    #[test]
+    fn a_recall_cut_removes_a_result_the_file_still_holds() {
+        let (_root, store, id) = fixture();
+        let saved = store
+            .append_turn(&id, &[user("go"), round("c"), truncated("c", "CUT")], None)
+            .unwrap();
+        assert!(saved[2][RESULT_SHA].as_str().is_some());
+        let point = store.recall_point(&id, 0).unwrap();
+        store.cut_before_user(&id, &point).unwrap();
+        assert_eq!(files(&store, &id), 1, "the turn's line and its file remain");
+        assert_eq!(store.tool_result(&id, "c").unwrap(), None);
+    }
+
+    #[test]
+    fn a_file_over_the_stored_bound_is_not_held() {
+        let (_root, store, id) = fixture();
+        let (dir, _) = store.find(&id).unwrap();
+        private_fs::ensure_dir(&dir.join(DIR)).unwrap();
+        let text = "y".repeat(MAX_STORED_CHARS * 4 + 1);
+        let hash = digest(&text);
+        private_fs::write_atomic(&path(&dir, &hash), text.as_bytes()).unwrap();
+        assert!(!holds(&path(&dir, &hash), &hash));
     }
 
     #[test]

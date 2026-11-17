@@ -1437,7 +1437,8 @@ impl Store {
     }
 
     /// The full result behind the newest saved preview of `call` in this
-    /// session, read from disk; `None` when no saved row keeps one.
+    /// session's current view, read from disk; `None` when no saved row keeps
+    /// one.
     pub fn tool_result(&self, id: &str, call: &str) -> Result<Option<String>, String> {
         if call.is_empty() || call.len() > 256 {
             return Ok(None);
@@ -1447,6 +1448,14 @@ impl Store {
             Some(hash) => tool_results::read(&dir, &hash),
             None => Ok(None),
         }
+    }
+
+    /// The full result a row saved with `result_sha`, whether or not the row is
+    /// still in the current view. The hash names a file in this session's own
+    /// results directory, and the read verifies the bytes against it.
+    pub fn stored_result(&self, id: &str, sha: &str) -> Result<Option<String>, String> {
+        let (dir, _) = self.find(id)?;
+        tool_results::read(&dir, sha)
     }
 
     pub fn view(&self, id: &str) -> Result<Vec<Value>, String> {

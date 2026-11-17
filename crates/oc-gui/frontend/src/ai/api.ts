@@ -197,8 +197,8 @@ export function recall(sessionId: string, index: number, undoEdits: boolean, con
 }
 
 /** The full result behind a truncated preview, while the backend keeps it. */
-export function toolResult(sessionId: string, callId: string) {
-  return invoke<string | null>("ai_tool_result", { sessionId, callId });
+export function toolResult(sessionId: string, callId?: string, resultSha?: string) {
+  return invoke<string | null>("ai_tool_result", { sessionId, callId, resultSha });
 }
 
 /**

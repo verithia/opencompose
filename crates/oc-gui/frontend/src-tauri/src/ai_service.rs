@@ -1515,16 +1515,31 @@ pub fn ai_turn_questions(request_id: String) -> Vec<ai::agent_loop::PendingQuest
     ai::agent_loop::host::pending_questions(&request_id)
 }
 
-/// The full result behind a truncated preview: the in-memory cache first, else
-/// the copy saved beside the conversation.
+/// The full result behind a truncated preview: the in-memory cache for the
+/// running call first, else the copy the row's own `result_sha` names. A call
+/// id alone never reaches disk, because another round may have reused it.
 #[tauri::command]
-pub fn ai_tool_result(session_id: String, call_id: String) -> Option<String> {
-    full_tool_result(&ai::sessions::Store::config(), &session_id, &call_id)
+pub fn ai_tool_result(
+    session_id: String,
+    call_id: Option<String>,
+    result_sha: Option<String>,
+) -> Option<String> {
+    full_tool_result(
+        &ai::sessions::Store::config(),
+        &session_id,
+        call_id.as_deref(),
+        result_sha.as_deref(),
+    )
 }
 
-fn full_tool_result(sessions: &ai::sessions::Store, session: &str, call: &str) -> Option<String> {
-    ai::agent_loop::results::with_results(|store| store.full(session, call))
-        .or_else(|| sessions.tool_result(session, call).ok().flatten())
+fn full_tool_result(
+    sessions: &ai::sessions::Store,
+    session: &str,
+    call: Option<&str>,
+    result_sha: Option<&str>,
+) -> Option<String> {
+    call.and_then(|call| ai::agent_loop::results::with_results(|store| store.full(session, call)))
+        .or_else(|| result_sha.and_then(|sha| sessions.stored_result(session, sha).ok().flatten()))
 }
 
 #[tauri::command]
@@ -3387,7 +3402,7 @@ mod tool_result_tests {
     use crate::ai::sessions::Store;
 
     #[test]
-    fn a_full_result_the_cache_lost_is_read_from_the_saved_conversation() {
+    fn a_row_reads_its_own_saved_result_after_the_current_view_dropped_it() {
         let root = tempfile::tempdir().unwrap();
         let store = Store::new(root.path().join("sessions"));
         let id = store.create(None, None, Some("Fixture"), None).unwrap().id;
@@ -3404,16 +3419,37 @@ mod tool_result_tests {
                 crate::ai::sessions::tool_results::FULL_RESULT: "THE-FULL-TEXT",
             }),
         ];
-        store.append_turn(&id, &rows, None).unwrap();
+        let saved = store.append_turn(&id, &rows, None).unwrap();
+        let sha = saved[2][crate::ai::sessions::tool_results::RESULT_SHA]
+            .as_str()
+            .unwrap()
+            .to_string();
         // A fresh process: the in-memory cache has nothing for this session.
         assert_eq!(
             ai::agent_loop::results::with_results(|cache| cache.full(&id, call)),
             None
         );
         assert_eq!(
-            full_tool_result(&store, &id, call).as_deref(),
+            full_tool_result(&store, &id, Some(call), None),
+            None,
+            "a call id alone never reaches disk"
+        );
+        assert_eq!(
+            full_tool_result(&store, &id, None, Some(&sha)).as_deref(),
             Some("THE-FULL-TEXT")
         );
-        assert_eq!(full_tool_result(&store, &id, "call-missing"), None);
+
+        // The original view keeps a row a recall removed from the current view.
+        let point = store.recall_point(&id, 0).unwrap();
+        store.cut_before_user(&id, &point).unwrap();
+        assert_eq!(store.tool_result(&id, call).unwrap(), None);
+        assert_eq!(
+            full_tool_result(&store, &id, None, Some(&sha)).as_deref(),
+            Some("THE-FULL-TEXT")
+        );
+        assert_eq!(
+            full_tool_result(&store, &id, Some("call-missing"), Some(&"a".repeat(64))),
+            None
+        );
     }
 }

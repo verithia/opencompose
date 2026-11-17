@@ -2776,7 +2776,7 @@ export function AiPanel(props: { onClose?: () => void }) {
                         </Show>
                       </div>
                       <Show when={msg.tool!.args}><div>{i18n.t("ai.activity.arguments")}</div><AiToolArguments content={msg.tool!.args!} /></Show>
-                      <div>{i18n.t("ai.activity.result")}</div><AiToolResult tool={msg.tool!.name} content={msg.content} args={msg.tool!.args} sessionId={openId() ?? undefined} />
+                      <div>{i18n.t("ai.activity.result")}</div><AiToolResult tool={msg.tool!.name} content={msg.content} args={msg.tool!.args} sessionId={openId() ?? undefined} resultSha={msg.resultSha} />
                     </div>
                   </LazyDetails>
                 </Show>
