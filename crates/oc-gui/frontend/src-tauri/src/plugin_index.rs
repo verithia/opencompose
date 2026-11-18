@@ -211,6 +211,7 @@ pub struct RefreshOutcome {
 pub struct CatalogView {
     pub entries: Arc<Vec<CatalogEntry>>,
     pub packs: Arc<Vec<PackEntry>>,
+    pub sound_packs: Arc<Vec<oc_market::catalog_wire::SoundArchivePack>>,
     pub source: IndexSource,
     pub(crate) authority: CatalogAuthority,
 }
@@ -248,6 +249,7 @@ struct ActiveCatalog {
     verified: VerifiedIndex,
     entries: Arc<Vec<CatalogEntry>>,
     packs: Arc<Vec<PackEntry>>,
+    sound_packs: Arc<Vec<oc_market::catalog_wire::SoundArchivePack>>,
     source: IndexSource,
     generated_at: String,
     catalog_version: String,
@@ -257,7 +259,7 @@ struct ActiveCatalog {
     manifest_sha256: String,
 }
 
-type BundledCatalog = Arc<Vec<CatalogEntry>>;
+type BundledCatalog = Arc<plugin_store::Catalog>;
 
 // ============================================================================
 // Client
@@ -382,6 +384,7 @@ impl IndexClient {
             return Ok(CatalogView {
                 entries: active.entries,
                 packs: active.packs,
+                sound_packs: active.sound_packs,
                 source: active.source,
                 authority: CatalogAuthority::Signed {
                     store: Arc::new(self.index_store().map_err(|e| e.to_string())?),
@@ -389,9 +392,11 @@ impl IndexClient {
                 },
             });
         }
+        let bundled = self.bundled()?;
         Ok(CatalogView {
-            entries: self.bundled()?,
-            packs: Arc::new(Vec::new()),
+            entries: Arc::new(bundled.plugins.clone()),
+            packs: Arc::new(bundled.packs.clone()),
+            sound_packs: Arc::new(bundled.sound_packs.clone()),
             source: IndexSource::Bundled,
             authority: CatalogAuthority::Bundled,
         })
@@ -455,8 +460,8 @@ impl IndexClient {
         if let Some(bundled) = guard.as_ref() {
             return Ok(bundled.clone());
         }
-        let (entries, _) = plugin_store::bundled_catalog()?;
-        let bundled = Arc::new(entries);
+        let (catalog, _) = plugin_store::bundled_catalog()?;
+        let bundled = Arc::new(catalog);
         *guard = Some(bundled.clone());
         Ok(bundled)
     }
@@ -611,6 +616,7 @@ fn active_catalog(stored: StoredIndex, source: IndexSource) -> Result<ActiveCata
     Ok(ActiveCatalog {
         entries: Arc::new(catalog.plugins),
         packs: Arc::new(catalog.packs),
+        sound_packs: Arc::new(catalog.sound_packs),
         source,
         generated_at: index.manifest.generated_at.clone(),
         catalog_version: index.manifest.catalog_version.clone(),
@@ -892,7 +898,16 @@ mod tests {
                 .unwrap()
                 .contains("trust is not configured")
         );
-        assert_eq!(client.view().unwrap().source, IndexSource::Bundled);
+        let view = client.view().unwrap();
+        assert_eq!(view.source, IndexSource::Bundled);
+        assert!(
+            !view.sound_packs.is_empty(),
+            "unconfigured trust still offers the compiled starter packs"
+        );
+        let listing =
+            crate::sound_pack_store::listing(&dir.0.join("sounds"), view.sound_packs.as_slice())
+                .expect("the bundled packs list without remote trust");
+        assert!(!listing.items.is_empty());
         let fetch = FakeFetch::new(Vec::new());
         let error = tauri::async_runtime::block_on(client.refresh(&fetch, true)).unwrap_err();
         assert_eq!(error.stage, "trust");
@@ -1343,6 +1358,10 @@ mod tests {
         let view = client.view().unwrap();
         assert_eq!(view.source, IndexSource::Bundled);
         assert!(!view.entries.is_empty());
+        assert!(
+            !view.sound_packs.is_empty(),
+            "the compiled catalog carries its starter packs"
+        );
         let status = client.status();
         assert_eq!(status.source, "bundled");
         assert!(status.fetched_at.is_none());

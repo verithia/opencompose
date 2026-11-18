@@ -277,6 +277,64 @@ pub fn validate_pack(pack: &PackEntry, path: &str) -> Result<(), CatalogError> {
     Ok(())
 }
 
+/// Validate a sound archive pack entry.
+pub fn validate_sound_archive_pack(
+    pack: &SoundArchivePack,
+    path: &str,
+) -> Result<(), CatalogError> {
+    let fail = |field: &str, message: &str| {
+        CatalogError::new(CatalogErrorCode::Pack, format!("{path}.{field}"), message)
+    };
+    if pack.kind != SOUND_ARCHIVE_PACK_KIND || !is_valid_id(&pack.id) {
+        return Err(fail("id", "Invalid sound archive pack id or kind"));
+    }
+    for (field, value, limit) in [
+        ("name", pack.name.as_str(), 128),
+        ("publisher", pack.publisher.as_str(), 128),
+        ("version", pack.version.as_str(), 64),
+        ("license.name", pack.license.name.as_str(), 64),
+        ("license.text", pack.license.text.as_str(), 16 * 1024),
+    ] {
+        if value.trim().is_empty() || value.len() > limit {
+            return Err(fail(
+                field,
+                "Sound archive pack text is empty or exceeds its limit",
+            ));
+        }
+    }
+    if pack.description.trim().is_empty() || pack.description.chars().count() > 280 {
+        return Err(fail(
+            "description",
+            "Sound archive pack description is empty or exceeds 280 characters",
+        ));
+    }
+    for (field, url) in [
+        ("homepage", &pack.homepage),
+        ("url", &pack.url),
+        ("license.url", &pack.license.url),
+    ] {
+        if !is_https_url(url) {
+            return Err(fail(field, "Sound archive pack URL must use https://"));
+        }
+    }
+    if !is_lowercase_sha256(&pack.sha256) {
+        return Err(fail("sha256", "Sound archive pack has an invalid sha256"));
+    }
+    if pack.bytes == 0 || pack.bytes > MAX_PACK_DOWNLOAD_BYTES {
+        return Err(fail(
+            "bytes",
+            "Sound archive pack download size is outside its bound",
+        ));
+    }
+    if pack.unpacked_bytes == 0 || pack.unpacked_bytes > MAX_PACK_UNPACKED_BYTES {
+        return Err(fail(
+            "unpacked_bytes",
+            "Sound archive pack unpacked size is outside its bound",
+        ));
+    }
+    Ok(())
+}
+
 /// Validate a whole catalog and report the first error.
 pub fn validate(catalog: &Catalog) -> Result<(), CatalogError> {
     use CatalogErrorCode as Code;
@@ -462,6 +520,9 @@ pub fn validate(catalog: &Catalog) -> Result<(), CatalogError> {
         }
         if let Some(pack) = pack.soundfont() {
             validate_pack(pack, &path)?;
+        }
+        if let Some(pack) = pack.sound_archive() {
+            validate_sound_archive_pack(pack, &path)?;
         }
     }
     Ok(())

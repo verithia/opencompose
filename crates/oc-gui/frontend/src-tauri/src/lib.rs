@@ -54,6 +54,7 @@ mod record;
 mod render_grid;
 mod render_thread;
 mod samples;
+mod sound_pack_store;
 mod soundfont_store;
 mod startup;
 mod state;
@@ -590,6 +591,10 @@ pub fn run_with_options(path: Option<String>, diag: DiagOptions) {
             commands::soundfonts_list,
             commands::soundfont_install,
             commands::soundfonts_remove,
+            commands::sound_packs_list,
+            commands::sound_pack_install,
+            commands::sound_pack_cancel,
+            commands::sound_pack_remove,
             commands::list_sampler_assets,
             content_library::list_content_libraries,
             local_content::local_content_summary,

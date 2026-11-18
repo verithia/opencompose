@@ -12,6 +12,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use oc_market::dmg::{DmgExtraction, DmgRequest, extract_dmg_bundles};
 use oc_market::install::{
     HostDirs, InstallArchive, InstallFormat, InstallKind, InstallOutcome, bundle_format, host_os,
     host_platform, path_is_writable, platform_os, select_install_target,
@@ -251,18 +252,95 @@ fn install_loaded_at(
     let target = target.ok_or_else(|| "this build has no install directory".to_string())?;
     match plan.mode {
         Mode::Extract => {
+            if matches!(
+                plan.kind,
+                InstallKind::DmgVst3
+                    | InstallKind::DmgVst2
+                    | InstallKind::DmgClap
+                    | InstallKind::DmgLv2
+            ) {
+                let bundle = bundle_format(plan.kind)
+                    .ok_or_else(|| format!("{} has no bundle directory", entry.name))?;
+                let extracted = extract_dmg_bundles(DmgRequest {
+                    image: &bytes,
+                    format: bundle,
+                    target_dir: &target,
+                    overwrite: options.overwrite,
+                })?;
+                match extracted {
+                    DmgExtraction::Bundles(InstallOutcome::Installed { path, message }) => {
+                        report.installed = true;
+                        report.path = Some(path);
+                        report.note = Some(message);
+                    }
+                    DmgExtraction::Bundles(InstallOutcome::NeedsConfirmation { path, .. }) => {
+                        return Err(format!(
+                            "'{path}' already exists; pass --overwrite to replace it"
+                        ));
+                    }
+                    DmgExtraction::Bundles(InstallOutcome::WrappedInstaller { name, bytes }) => {
+                        if !options.open {
+                            return Err(format!(
+                                "{} ships a vendor installer inside the disk image; run `ocp plugin install {} --open`",
+                                entry.name, entry.id
+                            ));
+                        }
+                        let path = write_named_installer(&bytes, &name)?.handoff(open_external)?;
+                        report.opened = true;
+                        report.path = Some(path.display().to_string());
+                        report.note =
+                            Some("Installer opened; finish the installation in its window.".into());
+                    }
+                    DmgExtraction::Bundles(InstallOutcome::OpenedInstaller { .. }) => {
+                        return Err("the resolver planned an unpack, not an installer".into());
+                    }
+                    DmgExtraction::InstallerOnly => {
+                        if !options.open {
+                            return Err(format!(
+                                "{} ships a vendor installer inside the disk image; run `ocp plugin install {} --open`",
+                                entry.name, entry.id
+                            ));
+                        }
+                        let path = write_installer(&bytes, &plan.url)?.handoff(open_external)?;
+                        report.opened = true;
+                        report.path = Some(path.display().to_string());
+                        report.note =
+                            Some("Installer opened; finish the installation in its window.".into());
+                    }
+                }
+                return Ok(report);
+            }
             let bundle = bundle_format(plan.kind)
                 .ok_or_else(|| format!("{} has no bundle directory", entry.name))?;
-            let outcome = if plan.archive == Some(InstallArchive::TarGz) {
-                oc_market::extract_tar_bundles(
+            let outcome = match plan.archive {
+                Some(InstallArchive::TarGz) => oc_market::extract_tar_bundles(
                     &bytes,
                     bundle,
                     host_os(),
                     &target,
                     options.overwrite,
-                )?
-            } else {
-                oc_market::extract_bundles(&bytes, bundle, host_os(), &target, options.overwrite)?
+                )?,
+                Some(InstallArchive::TarXz) => oc_market::extract_tar_xz_bundles(
+                    &bytes,
+                    bundle,
+                    host_os(),
+                    &target,
+                    options.overwrite,
+                )?,
+                Some(InstallArchive::SevenZ) => oc_market::extract_seven_z_bundles(
+                    &bytes,
+                    bundle,
+                    host_os(),
+                    &target,
+                    options.overwrite,
+                )?,
+                _ => oc_market::extract_bundles(
+                    &bytes,
+                    bundle,
+                    host_os(),
+                    &target,
+                    options.overwrite,
+                )?,
             };
             match outcome {
                 InstallOutcome::Installed { path, message } => {

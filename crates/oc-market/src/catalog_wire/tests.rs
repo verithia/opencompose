@@ -70,13 +70,34 @@ fn all_platforms_formats_and_legacy_defaults_keep_their_wire_spelling() {
 }
 
 #[test]
+fn plugin_archive_wire_spellings_include_tar_xz_and_7z() {
+    for (spelling, archive) in [
+        ("zip", Archive::Zip),
+        ("tar-gz", Archive::TarGz),
+        ("tar-xz", Archive::TarXz),
+        ("7z", Archive::SevenZ),
+        ("installer", Archive::Installer),
+    ] {
+        let parsed: Archive = serde_json::from_value(json!(spelling)).unwrap();
+        assert_eq!(parsed, archive);
+        assert_eq!(serde_json::to_value(archive).unwrap(), json!(spelling));
+    }
+}
+
+#[test]
 fn typed_descriptors_and_unknown_pack_payloads_survive_round_trip() {
     let source = fixtures()["complete"].clone();
     let catalog = parse(&serde_json::to_vec(&source).unwrap()).unwrap();
     assert!(catalog.entries[0].installs[0].companion_content.is_some());
     assert!(catalog.entries[0].installs[1].runtime.is_some());
     assert_eq!(catalog.packs[0].soundfont().unwrap().license.name, "MIT");
-    assert!(matches!(&catalog.packs[1], Pack::Unknown(_)));
+    let archive = catalog.packs[1]
+        .sound_archive()
+        .expect("the sound archive pack is typed");
+    assert_eq!(archive.id, "freepats.upright-piano-kw-small");
+    assert_eq!(archive.content, SoundContent::Soundfont);
+    assert_eq!(archive.archive, SoundArchive::SevenZ);
+    assert!(matches!(&catalog.packs[2], Pack::Unknown(_)));
     let encoded = serde_json::to_value(&catalog).unwrap();
     for field in ["aliases", "known_issues", "installs"] {
         // Omitted default fields may appear during serialization; signed descriptor values remain exact.
@@ -93,6 +114,17 @@ fn typed_descriptors_and_unknown_pack_payloads_survive_round_trip() {
         source["entries"][0]["installs"][1]["runtime"]
     );
     assert_eq!(encoded["packs"], source["packs"]);
+}
+
+#[test]
+fn unknown_sound_archive_values_stay_opaque_for_newer_clients() {
+    for field in ["content", "archive"] {
+        let mut value = fixtures()["complete"].clone();
+        value["packs"][1][field] = "future".into();
+        let catalog = parse(&serde_json::to_vec(&value).unwrap()).unwrap();
+        assert!(matches!(&catalog.packs[1], Pack::Unknown(_)));
+        assert_eq!(catalog.packs[1].id(), "freepats.upright-piano-kw-small");
+    }
 }
 
 #[test]

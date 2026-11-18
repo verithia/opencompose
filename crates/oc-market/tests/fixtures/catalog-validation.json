@@ -133,6 +133,26 @@
         }
       },
       {
+        "kind": "sound_archive",
+        "id": "freepats.upright-piano-kw-small",
+        "name": "Upright Piano KW",
+        "publisher": "FreePats",
+        "homepage": "https://freepats.example.test/piano",
+        "version": "2019-07-03",
+        "description": "Compact upright piano.",
+        "content": "soundfont",
+        "archive": "7z",
+        "url": "https://freepats.example.test/piano.7z",
+        "bytes": 6093984,
+        "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "unpacked_bytes": 12345678,
+        "license": {
+          "name": "CC0-1.0",
+          "url": "https://freepats.example.test/license",
+          "text": "CC0 public domain dedication."
+        }
+      },
+      {
         "kind": "future-impulse",
         "id": "future-hall",
         "extra": {
@@ -1089,6 +1109,198 @@
                 "plugin_id": "vst3:example_synth"
               }
             ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "sound archive plain http url",
+      "code": "pack",
+      "path": "packs[0].url",
+      "document": {
+        "schema": 2,
+        "generated_at": "2026-11-01T00:00:00Z",
+        "entries": [],
+        "packs": [
+          {
+            "kind": "sound_archive",
+            "id": "pack",
+            "name": "Pack",
+            "publisher": "Publisher",
+            "homepage": "https://example.test/pack",
+            "version": "1.0.0",
+            "description": "One archive.",
+            "content": "samples",
+            "archive": "zip",
+            "url": "http://example.test/pack.zip",
+            "bytes": 1024,
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "unpacked_bytes": 2048,
+            "license": {
+              "name": "CC0-1.0",
+              "url": "https://example.test/license",
+              "text": "CC0."
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "sound archive download over two gibibytes",
+      "code": "pack",
+      "path": "packs[0].bytes",
+      "document": {
+        "schema": 2,
+        "generated_at": "2026-11-01T00:00:00Z",
+        "entries": [],
+        "packs": [
+          {
+            "kind": "sound_archive",
+            "id": "pack",
+            "name": "Pack",
+            "publisher": "Publisher",
+            "homepage": "https://example.test/pack",
+            "version": "1.0.0",
+            "description": "One archive.",
+            "content": "samples",
+            "archive": "zip",
+            "url": "https://example.test/pack.zip",
+            "bytes": 2147483649,
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "unpacked_bytes": 2048,
+            "license": {
+              "name": "CC0-1.0",
+              "url": "https://example.test/license",
+              "text": "CC0."
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "sound archive zero expanded bytes",
+      "code": "pack",
+      "path": "packs[0].unpacked_bytes",
+      "document": {
+        "schema": 2,
+        "generated_at": "2026-11-01T00:00:00Z",
+        "entries": [],
+        "packs": [
+          {
+            "kind": "sound_archive",
+            "id": "pack",
+            "name": "Pack",
+            "publisher": "Publisher",
+            "homepage": "https://example.test/pack",
+            "version": "1.0.0",
+            "description": "One archive.",
+            "content": "samples",
+            "archive": "zip",
+            "url": "https://example.test/pack.zip",
+            "bytes": 1024,
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "unpacked_bytes": 0,
+            "license": {
+              "name": "CC0-1.0",
+              "url": "https://example.test/license",
+              "text": "CC0."
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "sound archive expanded bytes over eight gibibytes",
+      "code": "pack",
+      "path": "packs[0].unpacked_bytes",
+      "document": {
+        "schema": 2,
+        "generated_at": "2026-11-01T00:00:00Z",
+        "entries": [],
+        "packs": [
+          {
+            "kind": "sound_archive",
+            "id": "pack",
+            "name": "Pack",
+            "publisher": "Publisher",
+            "homepage": "https://example.test/pack",
+            "version": "1.0.0",
+            "description": "One archive.",
+            "content": "samples",
+            "archive": "zip",
+            "url": "https://example.test/pack.zip",
+            "bytes": 1024,
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "unpacked_bytes": 8589934593,
+            "license": {
+              "name": "CC0-1.0",
+              "url": "https://example.test/license",
+              "text": "CC0."
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "sound archive long description",
+      "code": "pack",
+      "path": "packs[0].description",
+      "document": {
+        "schema": 2,
+        "generated_at": "2026-11-01T00:00:00Z",
+        "entries": [],
+        "packs": [
+          {
+            "kind": "sound_archive",
+            "id": "pack",
+            "name": "Pack",
+            "publisher": "Publisher",
+            "homepage": "https://example.test/pack",
+            "version": "1.0.0",
+            "description": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+            "content": "samples",
+            "archive": "zip",
+            "url": "https://example.test/pack.zip",
+            "bytes": 1024,
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "unpacked_bytes": 2048,
+            "license": {
+              "name": "CC0-1.0",
+              "url": "https://example.test/license",
+              "text": "CC0."
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "sound archive plain http homepage",
+      "code": "pack",
+      "path": "packs[0].homepage",
+      "document": {
+        "schema": 2,
+        "generated_at": "2026-11-01T00:00:00Z",
+        "entries": [],
+        "packs": [
+          {
+            "kind": "sound_archive",
+            "id": "pack",
+            "name": "Pack",
+            "publisher": "Publisher",
+            "homepage": "http://example.test/pack",
+            "version": "1.0.0",
+            "description": "One archive.",
+            "content": "samples",
+            "archive": "zip",
+            "url": "https://example.test/pack.zip",
+            "bytes": 1024,
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "unpacked_bytes": 2048,
+            "license": {
+              "name": "CC0-1.0",
+              "url": "https://example.test/license",
+              "text": "CC0."
+            }
           }
         ]
       }

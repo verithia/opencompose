@@ -37,6 +37,8 @@ pub enum FolderOrigin {
     Environment,
     HostSettings,
     User,
+    /// The managed sounds folder that installed sound packs fill.
+    Managed,
 }
 
 impl From<oc_host::FolderOrigin> for FolderOrigin {
@@ -311,6 +313,11 @@ fn sound_roots(instrument_roots: Vec<SearchRoot>, samples: Vec<PathBuf>) -> Vec<
             RootOrigin::Standard => Some(SoundRoot {
                 path: root.path,
                 origin: FolderOrigin::Standard,
+                library_id: None,
+            }),
+            RootOrigin::Managed => Some(SoundRoot {
+                path: root.path,
+                origin: FolderOrigin::Managed,
                 library_id: None,
             }),
             RootOrigin::Library(id) => Some(SoundRoot {
@@ -831,6 +838,26 @@ mod tests {
         assert_eq!(
             heard.into_inner().unwrap(),
             vec![(0, 3), (1, 3), (2, 3), (3, 3)]
+        );
+    }
+
+    #[test]
+    fn the_managed_sounds_folder_is_a_managed_search_root() {
+        let scratch = Scratch::new("managed");
+        let managed = scratch.dir("Sounds");
+        let roots = sound_roots(
+            vec![SearchRoot {
+                path: managed.clone(),
+                origin: RootOrigin::Managed,
+            }],
+            Vec::new(),
+        );
+        assert_eq!(roots.len(), 1);
+        assert_eq!(roots[0].path, managed);
+        assert_eq!(roots[0].origin, FolderOrigin::Managed);
+        assert_eq!(
+            serde_json::to_value(FolderOrigin::Managed).unwrap(),
+            serde_json::json!("managed")
         );
     }
 

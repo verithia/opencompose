@@ -383,6 +383,8 @@ static DISCOVERY_CACHE: std::sync::Mutex<DiscoveryCache> = std::sync::Mutex::new
 pub enum RootOrigin {
     /// The pack folder, `OCP_SOUNDFONT`, or a conventional instrument folder.
     Standard,
+    /// The managed sounds folder that installed sound packs fill.
+    Managed,
     /// A content library the user registered, by its id.
     Library(String),
     /// A bank that ships with the application rather than with the machine.
@@ -468,6 +470,10 @@ pub fn search_roots(dir: &Path) -> Vec<SearchRoot> {
         origin: RootOrigin::Standard,
     };
     let mut roots = vec![standard(dir.to_path_buf())];
+    roots.push(SearchRoot {
+        path: crate::sound_pack_store::dir(),
+        origin: RootOrigin::Managed,
+    });
     if let Some(file) = std::env::var_os("OCP_SOUNDFONT") {
         roots.push(standard(PathBuf::from(file)));
     }
@@ -943,6 +949,15 @@ mod tests {
                 .find(|program| program.bank == 0 && program.program == 0)
                 .map(|program| &program.name)
         );
+    }
+
+    #[test]
+    fn search_roots_include_the_managed_sounds_folder() {
+        let temp = TempDir::new("managed-root");
+        let roots = search_roots(&temp.0);
+        assert!(roots.iter().any(|root| {
+            root.origin == RootOrigin::Managed && root.path == crate::sound_pack_store::dir()
+        }));
     }
 
     #[test]

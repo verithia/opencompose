@@ -19,8 +19,14 @@ pub const MAX_RUNTIME_FILES: usize = 256;
 pub const MAX_DOWNLOAD_BYTES: u64 = 256 * 1024 * 1024;
 /// Largest runtime download.
 pub const MAX_RUNTIME_DOWNLOAD_BYTES: u64 = 1024 * 1024 * 1024;
+/// Largest single sound-pack download.
+pub const MAX_PACK_DOWNLOAD_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+/// Largest expanded sound pack.
+pub const MAX_PACK_UNPACKED_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 /// Pack kind for a SoundFont instrument.
 pub const SOUNDFONT_PACK_KIND: &str = "soundfont";
+/// Pack kind for an instrument archive.
+pub const SOUND_ARCHIVE_PACK_KIND: &str = "sound_archive";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -277,6 +283,73 @@ pub struct CompanionContent {
     #[serde(default)]
     pub strip_prefix: String,
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+/// What a sound archive holds once unpacked.
+pub enum SoundContent {
+    Soundfont,
+    Sfz,
+    Samples,
+}
+
+impl SoundContent {
+    /// Wire spelling used by the catalog and by the installer.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Soundfont => "soundfont",
+            Self::Sfz => "sfz",
+            Self::Samples => "samples",
+        }
+    }
+
+    /// Parse a wire spelling; `None` for a content this build does not know.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "soundfont" => Some(Self::Soundfont),
+            "sfz" => Some(Self::Sfz),
+            "samples" => Some(Self::Samples),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+/// How a sound archive is packed.
+pub enum SoundArchive {
+    File,
+    Zip,
+    TarGz,
+    TarXz,
+    #[serde(rename = "7z")]
+    SevenZ,
+}
+
+impl SoundArchive {
+    /// Wire spelling used by the catalog and by the installer.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::File => "file",
+            Self::Zip => "zip",
+            Self::TarGz => "tar_gz",
+            Self::TarXz => "tar_xz",
+            Self::SevenZ => "7z",
+        }
+    }
+
+    /// Parse a wire spelling; `None` for an archive this build cannot unpack.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "file" => Some(Self::File),
+            "zip" => Some(Self::Zip),
+            "tar_gz" => Some(Self::TarGz),
+            "tar_xz" => Some(Self::TarXz),
+            "7z" => Some(Self::SevenZ),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 /// The licence text and URL for an instrument pack.
 pub struct PackLicense {
@@ -299,10 +372,30 @@ pub struct PackEntry {
     pub license: PackLicense,
 }
 
+/// A downloadable archive from the catalog's `packs` array.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SoundArchivePack {
+    pub kind: String,
+    pub id: String,
+    pub name: String,
+    pub publisher: String,
+    pub homepage: String,
+    pub version: String,
+    pub description: String,
+    pub content: SoundContent,
+    pub archive: SoundArchive,
+    pub url: String,
+    pub bytes: u64,
+    pub sha256: String,
+    pub unpacked_bytes: u64,
+    pub license: PackLicense,
+}
+
 /// Unknown kinds stay opaque and bounded so a publisher can forward newer pack formats.
 #[derive(Debug, Clone)]
 pub enum Pack {
     Soundfont(PackEntry),
+    SoundArchive(SoundArchivePack),
     Unknown(UnknownPack),
 }
 #[derive(Debug, Clone)]
@@ -317,6 +410,7 @@ impl Pack {
     pub fn id(&self) -> &str {
         match self {
             Self::Soundfont(pack) => &pack.id,
+            Self::SoundArchive(pack) => &pack.id,
             Self::Unknown(pack) => &pack.id,
         }
     }
@@ -324,6 +418,7 @@ impl Pack {
     pub fn kind(&self) -> &str {
         match self {
             Self::Soundfont(pack) => &pack.kind,
+            Self::SoundArchive(pack) => &pack.kind,
             Self::Unknown(pack) => &pack.kind,
         }
     }
@@ -334,11 +429,19 @@ impl Pack {
             _ => None,
         }
     }
+    /// The archive pack when this is one.
+    pub fn sound_archive(&self) -> Option<&SoundArchivePack> {
+        match self {
+            Self::SoundArchive(pack) => Some(pack),
+            _ => None,
+        }
+    }
 }
 impl Serialize for Pack {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match self {
             Self::Soundfont(pack) => pack.serialize(serializer),
+            Self::SoundArchive(pack) => pack.serialize(serializer),
             Self::Unknown(pack) => pack.raw.serialize(serializer),
         }
     }
@@ -355,20 +458,52 @@ impl<'de> Deserialize<'de> for Pack {
         struct Header {
             kind: String,
             id: String,
+            #[serde(default)]
+            content: Option<String>,
+            #[serde(default)]
+            archive: Option<String>,
         }
         let header: Header = serde_json::from_str(raw.get()).map_err(serde::de::Error::custom)?;
-        if header.kind == SOUNDFONT_PACK_KIND {
-            serde_json::from_str(raw.get())
+        match header.kind.as_str() {
+            SOUNDFONT_PACK_KIND => serde_json::from_str(raw.get())
                 .map(Self::Soundfont)
-                .map_err(serde::de::Error::custom)
-        } else {
-            let _: serde_json::Value =
-                serde_json::from_str(raw.get()).map_err(serde::de::Error::custom)?;
-            Ok(Self::Unknown(UnknownPack {
-                kind: header.kind,
-                id: header.id,
-                raw,
-            }))
+                .map_err(serde::de::Error::custom),
+            SOUND_ARCHIVE_PACK_KIND => {
+                let known = header
+                    .content
+                    .as_deref()
+                    .and_then(SoundContent::parse)
+                    .zip(header.archive.as_deref().and_then(SoundArchive::parse))
+                    .is_some();
+                if known {
+                    return serde_json::from_str(raw.get())
+                        .map(Self::SoundArchive)
+                        .map_err(serde::de::Error::custom);
+                }
+                // Missing fields are malformed; an unknown content or archive
+                // value belongs to a newer client and stays opaque.
+                if header.content.is_none() || header.archive.is_none() {
+                    return serde_json::from_str::<SoundArchivePack>(raw.get())
+                        .map(Self::SoundArchive)
+                        .map_err(serde::de::Error::custom);
+                }
+                let _: serde_json::Value =
+                    serde_json::from_str(raw.get()).map_err(serde::de::Error::custom)?;
+                Ok(Self::Unknown(UnknownPack {
+                    kind: header.kind,
+                    id: header.id,
+                    raw,
+                }))
+            }
+            _ => {
+                let _: serde_json::Value =
+                    serde_json::from_str(raw.get()).map_err(serde::de::Error::custom)?;
+                Ok(Self::Unknown(UnknownPack {
+                    kind: header.kind,
+                    id: header.id,
+                    raw,
+                }))
+            }
         }
     }
 }

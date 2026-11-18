@@ -117,13 +117,48 @@ pub fn visit_tar_gz(
     compressed: impl Read,
     limits: TarLimits,
     metadata: TarMetadata,
-    mut visit: impl FnMut(&TarEntry, &mut dyn Read) -> Result<(), String>,
+    visit: impl FnMut(&TarEntry, &mut dyn Read) -> Result<(), String>,
 ) -> Result<(), String> {
-    let mut input = Expanded {
-        input: MultiGzDecoder::new(Expanded {
+    visit_tar_stream(
+        MultiGzDecoder::new(Expanded {
             input: compressed,
             remaining: limits.compressed_bytes,
         }),
+        limits,
+        metadata,
+        visit,
+    )
+}
+
+/// Visit files and directories of an xz-compressed tar stream under the same bounds.
+pub fn visit_tar_xz(
+    compressed: impl Read,
+    limits: TarLimits,
+    metadata: TarMetadata,
+    visit: impl FnMut(&TarEntry, &mut dyn Read) -> Result<(), String>,
+) -> Result<(), String> {
+    visit_tar_stream(
+        lzma_rust2::XzReader::new(
+            Expanded {
+                input: compressed,
+                remaining: limits.compressed_bytes,
+            },
+            false,
+        ),
+        limits,
+        metadata,
+        visit,
+    )
+}
+
+fn visit_tar_stream(
+    source: impl Read,
+    limits: TarLimits,
+    metadata: TarMetadata,
+    mut visit: impl FnMut(&TarEntry, &mut dyn Read) -> Result<(), String>,
+) -> Result<(), String> {
+    let mut input = Expanded {
+        input: source,
         remaining: limits.expanded_bytes,
     };
     let mut entries = 0usize;

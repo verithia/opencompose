@@ -217,16 +217,18 @@ Enumerations:
   exactly `github.com`), `vendor_page` (landing page; the app opens a browser).
 - `platform`: `macos-aarch64`, `macos-x86_64`, `windows-x86_64`, `linux-x86_64`.
 - `format`: `vst3`, `vst2`, `clap`, `au`, `lv2`, `standalone`.
-- `archive`: `zip`, `dmg`, `pkg`, `tar-gz`, `installer`. `.tar.xz`, `.7z` and
-  `.deb` downloads are recorded as `installer`: the client downloads them and
-  hands the file to the system instead of unpacking it itself.
+- `archive`: `zip`, `dmg`, `pkg`, `tar-gz`, `tar-xz`, `7z`, `installer`. The
+  client unpacks the zip, tar and 7z containers into bundle directories. A
+  `.deb` or `.rpm` download is recorded as `installer`, so the client downloads
+  it and hands the file to the system instead of unpacking it itself.
 
 ### Instrument packs
 
 A catalog may also offer downloadable instruments in a top-level `packs` array.
 The array is optional and additive: a catalog written before packs existed still
 parses, and a kind a client does not know is skipped instead of failing the whole
-catalog. One kind exists today:
+catalog. Two kinds exist: `soundfont` for a single bank and `sound_archive` for
+an archive of instruments and samples.
 
 ```json
 {
@@ -245,20 +247,60 @@ catalog. One kind exists today:
         "url": "https://plugins.example.com/packs/MS%20Basic_License.md",
         "text": "MuseScore_General is MIT; derived from FluidR3Mono and FluidR3."
       }
+    },
+    {
+      "kind": "sound_archive",
+      "id": "freepats.upright-piano-kw-small",
+      "name": "Upright Piano KW",
+      "publisher": "FreePats",
+      "homepage": "https://freepats.example.com/piano",
+      "version": "2019-07-03",
+      "description": "Compact upright piano.",
+      "content": "soundfont",
+      "archive": "7z",
+      "url": "https://freepats.example.com/packs/piano.7z",
+      "bytes": 6093984,
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000002",
+      "unpacked_bytes": 12345678,
+      "license": {
+        "name": "CC0-1.0",
+        "url": "https://freepats.example.com/packs/license",
+        "text": "CC0 public domain dedication."
+      }
     }
   ]
 }
 ```
 
-Required per pack: `kind`, `id`, `name`, `version`, `description` (at most 280
-characters), `url`, `bytes`, `sha256`, and `license` with `name`, `url` and
-`text`. `id` uses the catalog id charset and names the installed file; installed
-packs live in the user's soundfont folder as `<id>.sf3` and a preset plays one
-through `source: soundfont` and `file: "<folder>/<id>.sf3"`. The signed catalog
-pins `bytes` and `sha256`, so an install is refused unless both match; `url` must
-be absolute and may be plain `http` because integrity comes from the hash, not
-the transport. The publisher validates the soundfont fields before signing, and
-`license.text` must carry the acknowledgement the pack's own license requires.
+Required per `soundfont` pack: `kind`, `id`, `name`, `version`, `description` (at
+most 280 characters), `url`, `bytes`, `sha256`, and `license` with `name`, `url`
+and `text`. Installed packs live in the user's soundfont folder as `<id>.sf3` and
+a preset plays one through `source: soundfont` and
+`file: "<folder>/<id>.sf3"`.
+
+A `sound_archive` pack adds `publisher`, `homepage`, `content`, `archive` and
+`unpacked_bytes`. `content` is `soundfont`, `sfz` or `samples`. `archive` is
+`file`, `zip`, `tar_gz`, `tar_xz` or `7z`. The bundled catalog carries its
+starter `sound_archive` packs, so they list and install without remote trust. An
+installed archive lives in the managed sounds folder as `<id>/`, and its files
+enter the instrument search as they are laid out in the archive. `file` stores the single download as the last
+path segment of `url`. A `soundfont` archive must contain at least one `.sf2` or
+`.sf3` file with a `RIFF....sfbk` header, `sfz` at least one `.sfz`, and
+`samples` at least one `.wav`, `.aif`, `.aiff`, `.flac`, `.ogg` or `.mp3`.
+`tar_bz2` and other packed forms are not read.
+
+Every pack URL and homepage must be absolute `https://` with a dotted host. The
+signed catalog pins `bytes`, `sha256` and `unpacked_bytes`, so an install is
+refused unless the downloaded size and hash match. `bytes` is greater than zero
+and at most 2 GiB; `unpacked_bytes` is at least one and at most 8 GiB. Extraction
+streams under the declared expansion budget plus one percent, never trusts a
+header's size, and refuses absolute paths, `..`, drive prefixes, NUL names,
+links, devices and case-insensitive duplicate paths. Entry count, path length and
+path depth are bounded as well. The publisher validates these fields before
+signing, and `license.text` must carry the acknowledgement the pack's own
+license requires. A `content` or `archive` value this build does not know keeps
+the whole pack opaque, so a newer catalog stays loadable; an older GUI skips
+that pack instead of failing the catalog.
 
 ### Formats and scanner ids
 
@@ -344,6 +386,10 @@ publishes one, and `sha256` is recorded only when the vendor publishes a digest.
 The VST2 and LV2 additions record how the format was verified: archives were
 listed (or, for macOS packages, expanded) to confirm the bundle names, and the
 release asset URLs were fetched. That check is manual — see section 10.
+
+A macOS `.dmg` install is recorded with `archive: "dmg"` and no `wrapped` flag
+when its volume carries the declared bundle directories. An image that carries
+only a vendor `.pkg` sets `wrapped: true` and stays an installer hand-off.
 
 ## 3. Compression and bandwidth
 
@@ -770,8 +816,9 @@ An entry installs in one call when the signed catalog answers all four of these:
 
 1. the entry has a build for the host platform;
 2. that build is a direct artifact (`direct` or `github_release`) that the
-   installer can use: a `.zip`/`.tar.gz` bundle, an AppImage, or a vendor
-   installer it can open;
+   installer can use: a `.zip`/`.tar.gz`/`.tar.xz`/`.7z` bundle, a macOS `.dmg`
+   whose volume carries the declared bundles, an AppImage, or a vendor installer
+   it can open;
 3. the build declares `sha256` (and, when present, `bytes`);
 4. for an executed install, the requested platform is the host platform.
 
@@ -830,6 +877,14 @@ Two modes come out of the resolver, and `plugin_search`, `plugin_pull` and
 | `extract` | download, verify, unpack into the plugin directory. Runs headlessly. |
 | `installer` | download, verify, write the vendor installer, then open it. A person finishes it. |
 
+`extract` covers zip, tar and 7z bundles, AppImages and macOS disk images. A disk
+image is attached read-only without Finder or auto-open, its
+`.vst3`/`.vst`/`.clap`/`.lv2` bundles at the volume root or one folder below are
+copied into staging, and the volume is detached on every path. A vendor
+installer inside the image is never run: an image that holds only a `.pkg` falls
+back to the `installer` hand-off. A catalog entry whose image wraps an installer
+sets `wrapped: true`, so the resolver reports the hand-off before a download.
+
 ### One policy, four surfaces
 
 `crates/oc-market` owns the decision:
@@ -837,7 +892,9 @@ Two modes come out of the resolver, and `plugin_search`, `plugin_pull` and
 - `oc_market::plan` resolves an entry to a `Plan` (pinned artifact, format, mode)
   or a `Refusal`;
 - `oc_market::verify_artifact` is the single size-and-sha256 rule;
-- `oc_market::extract_bundles` / `extract_tar_bundles` unpack a verified archive;
+- `oc_market::extract_bundles` / `extract_tar_bundles` / `extract_tar_xz_bundles` /
+  `extract_seven_z_bundles` unpack a verified archive;
+- `oc_market::extract_dmg_bundles` copies verified disk image bundles on macOS;
 - `oc_market::index` holds the pinned index key and the manifest signature check.
 
 The GUI Store, the agent tools (`plugin_search`, `plugin_pull`), and the CLI
@@ -973,12 +1030,14 @@ recheck the signed snapshot before downloading and again before publishing files
 opening a vendor installer. The publication check holds a shared catalog lock only
 through local publication; network requests hold no catalog lock. A snapshot that has
 become older is refused, while an exact replay remains valid. This also applies to
-managed separator runtimes, companion content and SoundFont packs.
+managed separator runtimes, companion content and instrument packs.
 
 ### TAR archive compatibility
 
-TAR extraction accepts regular files and directories with valid header checksums,
-UTF-8 relative paths, and complete payload and zero-padding blocks. Plugin bundles
+TAR extraction accepts gzip and xz streams with regular files and directories
+with valid header checksums, UTF-8 relative paths, and complete payload and
+zero-padding blocks. The 7z reader counts bytes as they arrive under the same
+entry and expansion budgets. Plugin bundles
 and companion factory content also accept bounded GNU long-name records. Managed
 runtimes and preset bundles reject those records; preset bundles additionally accept
 only their documented record and asset filenames.
@@ -992,8 +1051,8 @@ supported.
 
 Each consumer enforces compressed and expanded byte budgets, entry count,
 per-entry and total payload limits. Paths are limited to 4,096 bytes and 64
-components. The reader requires two zero end blocks, checks the gzip trailer, and
-rejects nonzero trailing data or an appended archive. Extraction happens in private
+components. The reader requires two zero end blocks, checks the decompressor
+trailer, and rejects nonzero trailing data or an appended archive. Extraction happens in private
 staging before publication; an archive-validation failure leaves installed content
 in place.
 
@@ -1048,18 +1107,19 @@ Audit of the committed catalog, by host platform, counting each entry once:
 
 | platform | one-click (`extract`) | installer hand-off | unpinned | page-only | no build |
 | --- | --- | --- | --- | --- | --- |
-| `macos-aarch64` | 2 | 10 | 2 | 23 | 5 |
-| `macos-x86_64` | 2 | 10 | 2 | 23 | 5 |
-| `windows-x86_64` | 4 | 10 | 1 | 24 | 3 |
-| `linux-x86_64` | 4 | 6 | 0 | 17 | 15 |
+| `macos-aarch64` | 7 | 8 | 1 | 22 | 5 |
+| `macos-x86_64` | 7 | 8 | 1 | 22 | 5 |
+| `windows-x86_64` | 7 | 10 | 0 | 23 | 3 |
+| `linux-x86_64` | 8 | 4 | 0 | 15 | 16 |
 
 A one-click build downloads and unpacks without a person. A hand-off build also
 installs in one call, but ends by opening the vendor installer, and
 `plugin_search` reports which one an entry is before an agent promises anything.
 
-Two macOS installs stay unpinned because the vendor's only artifact is a single
-installer of 974 MB (DISTRHO Cardinal) and 417 MB (Surge XT); pinning an artifact
-that large would only turn a clear refusal into a failed download. Fifteen
+One macOS install stays unpinned because the vendor's only artifact is a single
+installer of 974 MB (DISTRHO Cardinal); pinning an artifact that large would only
+turn a clear refusal into a failed download. Surge XT is pinned to its
+installerless plugin-only archives instead of the 397 MB disk image. Sixteen
 entries have no Linux build at all. The remaining page-only entries either ship
 installers our unwrap step cannot use (several `.pkg`/`.exe` files in one
 archive), need an account, or expose only a JavaScript download flow; each entry
@@ -1082,7 +1142,9 @@ records the exact reason.
   mode, and the refusal vocabulary shared by every surface.
 - `crates/oc-market/src/verify.rs` — the size-and-sha256 rule for downloads.
 - `crates/oc-market/src/install.rs` — install-target selection and path-safe
-  zip/tar extraction.
+  zip, tar and 7z extraction.
+- `crates/oc-market/src/dmg.rs` — read-only disk image attach, bundle discovery
+  and headless copy on macOS.
 - `crates/oc-market/src/index.rs` — the trusted key list, the manifest
   signature check, and the test that verifies the committed `plugin-index/`.
 - `crates/oc-market/src/loopback.rs` — the HTTP fixture server the install tests
