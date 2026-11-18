@@ -52,6 +52,13 @@ pub fn install_plugin_inventory(plugins: Vec<PluginInfo>) -> &'static [PluginInf
     snapshot
 }
 
+/// The published inventory, without waiting for a first scan.
+pub fn published_plugins() -> Option<&'static [PluginInfo]> {
+    *inventory_slot()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+}
+
 /// Get all plugins: the published inventory, or the first scan when nothing has
 /// been published yet.
 pub fn cached_plugins() -> &'static [PluginInfo] {
@@ -99,6 +106,7 @@ pub mod editor_monitor;
 mod ffi_guard;
 pub mod host_app;
 pub mod host_message;
+pub mod known_folders;
 /// LV2 plugin support.
 pub mod lv2;
 mod native_callback;
@@ -290,6 +298,12 @@ pub fn plugin_search_paths() -> Vec<String> {
 pub enum FolderOrigin {
     /// A platform convention every host searches.
     Standard,
+    /// A conventional location outside the formats' standard lists.
+    Convention,
+    /// Named by an environment variable such as `CLAP_PATH`.
+    Environment,
+    /// Configured in another audio host's settings.
+    HostSettings,
     /// Added by the user through [`plugin_folders`].
     User,
 }
@@ -301,8 +315,9 @@ pub struct PluginFolder {
     pub origin: FolderOrigin,
 }
 
-/// [`plugin_search_paths`] with each folder's origin. A user folder that is
-/// also a standard one is listed once, as standard.
+/// [`plugin_search_paths`] with each folder's origin. A folder reached more
+/// than one way is listed once, under its first origin: standard, then the
+/// extra locations of [`known_folders`], then the user's own.
 pub fn plugin_search_folders() -> Vec<PluginFolder> {
     let mut folders: Vec<PluginFolder> = standard_plugin_search_paths()
         .into_iter()
@@ -311,13 +326,21 @@ pub fn plugin_search_folders() -> Vec<PluginFolder> {
             origin: FolderOrigin::Standard,
         })
         .collect();
-    for folder in plugin_folders::folders() {
-        let path = display_path(&folder);
-        if !folders.iter().any(|known| known.path == path) {
-            folders.push(PluginFolder {
-                path,
-                origin: FolderOrigin::User,
-            });
+    let known = known_folders::plugin_folders().into_iter().map(|folder| {
+        let origin = match folder.source {
+            known_folders::KnownSource::Convention => FolderOrigin::Convention,
+            known_folders::KnownSource::Environment => FolderOrigin::Environment,
+            known_folders::KnownSource::HostSettings => FolderOrigin::HostSettings,
+        };
+        (folder.path, origin)
+    });
+    let user = plugin_folders::folders()
+        .into_iter()
+        .map(|path| (path, FolderOrigin::User));
+    for (path, origin) in known.chain(user) {
+        let path = display_path(&path);
+        if !folders.iter().any(|listed| listed.path == path) {
+            folders.push(PluginFolder { path, origin });
         }
     }
     folders
