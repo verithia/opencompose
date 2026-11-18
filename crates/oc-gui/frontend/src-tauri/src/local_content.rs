@@ -324,8 +324,11 @@ fn sound_roots(instrument_roots: Vec<SearchRoot>, samples: Vec<PathBuf>) -> Vec<
         origin: FolderOrigin::Convention,
         library_id: None,
     });
+    // `SoundFonts` and `soundfonts` are one folder on a case-insensitive
+    // disk, so existing folders are compared by their canonical path.
+    let mut seen = HashSet::new();
     for root in instrument.chain(samples) {
-        if !roots.iter().any(|listed| listed.path == root.path) {
+        if seen.insert(canonical(root.path.clone())) {
             roots.push(root);
         }
     }

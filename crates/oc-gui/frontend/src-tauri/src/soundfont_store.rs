@@ -438,8 +438,13 @@ pub fn instrument_folders() -> Vec<PathBuf> {
     #[cfg(target_os = "windows")]
     {
         // The synthesizer library's documented default bank folder.
+        // `SystemDrive` is a bare `C:`; joining onto it would make a
+        // drive-relative path, so the root separator is written out.
         if let Some(drive) = std::env::var_os("SystemDrive") {
-            folders.push(PathBuf::from(drive).join("\\soundfonts"));
+            folders.push(PathBuf::from(format!(
+                "{}\\soundfonts",
+                drive.to_string_lossy()
+            )));
         }
     }
     folders.dedup();
