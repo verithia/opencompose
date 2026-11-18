@@ -32,6 +32,8 @@ tauri = { version = "2.11.0", features = ["protocol-asset"] }
 tauri-plugin-log = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-single-instance = "2"
+# Per-user folders (documents, music) as the platform defines them
+dirs.workspace = true
 
 # Serialization
 schemars.workspace = true

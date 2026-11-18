@@ -593,6 +593,7 @@ pub fn run_with_options(path: Option<String>, diag: DiagOptions) {
             commands::list_sampler_assets,
             content_library::list_content_libraries,
             local_content::local_content_summary,
+            local_content::local_content_scan,
             local_content::plugin_folder_add,
             local_content::plugin_folder_remove,
             local_content::sound_folder_add,
