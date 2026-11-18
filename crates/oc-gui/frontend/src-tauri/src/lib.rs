@@ -27,6 +27,7 @@ mod first_block_tests;
 mod gui_settings;
 mod input;
 mod live_synth;
+mod local_content;
 mod meters;
 mod midi_bridge;
 mod midi_commands;
@@ -591,6 +592,11 @@ pub fn run_with_options(path: Option<String>, diag: DiagOptions) {
             commands::soundfonts_remove,
             commands::list_sampler_assets,
             content_library::list_content_libraries,
+            local_content::local_content_summary,
+            local_content::plugin_folder_add,
+            local_content::plugin_folder_remove,
+            local_content::sound_folder_add,
+            local_content::sound_folder_remove,
             content_library::register_content_library,
             content_library::remove_content_library,
             content_library::rescan_content_libraries,

@@ -164,6 +164,9 @@ pub fn search_paths() -> Vec<PathBuf> {
     for path in super::extra_search_paths() {
         push(path);
     }
+    for path in crate::plugin_folders::folders() {
+        push(path);
+    }
     if let Some(home) = std::env::var_os("HOME") {
         let home = PathBuf::from(home);
         #[cfg(target_os = "macos")]

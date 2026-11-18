@@ -561,7 +561,9 @@ fn scan_receipts(path: &Path) -> Vec<InstalledPlugin> {
 /// Walk the plugin folders, the scan receipts and the managed runtimes.
 pub(crate) fn installed_plugins() -> Vec<InstalledPlugin> {
     let dirs = HostDirs::from_env();
-    let mut found = scan_plugin_bundles(&plugin_scan_dirs(host_os(), &dirs));
+    let mut directories = plugin_scan_dirs(host_os(), &dirs);
+    directories.extend(oc_host::plugin_folders::folders());
+    let mut found = scan_plugin_bundles(&directories);
     if let Some(path) = receipts_path() {
         found.extend(scan_receipts(&path));
     }

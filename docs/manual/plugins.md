@@ -19,10 +19,36 @@ A **standalone** application can appear in the free-plugin catalog as a download
 but the host does not load it; it is listed because the catalog describes
 downloads, not only plugins.
 
-Bundles are discovered in the platform's standard directories (for example
-`~/Library/Audio/Plug-Ins/VST3` on macOS and `~/.vst3` on Linux). VST2 has its own
-search paths and an `OCP_VST2_PATH` override; LV2 uses `LV2_PATH` and the usual
-system directories. After installing anything new, rescan from the plugin browser.
+## Where plugins are found
+
+Bundles are discovered in the platform's standard folders, plus any folder you
+add:
+
+| Platform | Standard folders |
+|---|---|
+| macOS | `~/Library/Audio/Plug-Ins/` and `/Library/Audio/Plug-Ins/`, each with `VST3`, `CLAP`, `Components` (AU), `LV2` and `VST` |
+| Windows | `%COMMONPROGRAMFILES%\VST3`, `\CLAP` and `\LV2`; `%LOCALAPPDATA%\Programs\Common\VST3` and `\CLAP`; `%LOCALAPPDATA%\LV2`; the usual `VstPlugins` and `Steinberg\VstPlugins` folders for VST2 |
+| Linux | `~/.vst3`, `~/.clap`, `~/.lv2`, `~/.vst`, and the same names under `/usr/lib` and `/usr/local/lib` (plus `lxvst`) |
+
+A bundle may sit up to three folders below a search folder, so a
+`<VST3>/<vendor>/<plugin>.vst3` layout is found. A `.vst3`, `.clap`,
+`.component` or `.lv2` bundle counts as one plugin file, and so does a `.vst`
+(macOS), `.dll` (Windows) or `.so` (Linux) in a VST2 folder. A bundle can hold
+several plugins; the plugin browser lists each one.
+
+To search another folder, choose **Add plugin folder…** on the last page of the
+first-run guide. The list is kept in `~/.opencompose/plugin-folders.json` (at
+most 32 folders; `OCP_PLUGIN_FOLDERS` points at another file) and is read by the
+scan, the LV2 loader and the Store's installed check alike. VST2 also honours
+`OCP_VST2_PATH`, and LV2 honours `LV2_PATH`.
+
+The same page counts what is already on the computer, without loading any
+plugin: plugin files by format, and SoundFont (`.sf2`, `.sf3`), SFZ and
+sampler-asset files in the instrument folders and your content libraries.
+**Add sound folder…** registers a content library. The bank that ships with
+OpenCompose is not counted.
+
+After installing anything new, rescan from the plugin browser.
 
 ## Addressing a plugin in a project
 

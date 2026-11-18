@@ -378,11 +378,43 @@ const DISCOVERY_DEPTH: usize = 6;
 type DiscoveryCache = Option<(Vec<PathBuf>, std::time::Instant, Vec<DiscoveredSoundfont>)>;
 static DISCOVERY_CACHE: std::sync::Mutex<DiscoveryCache> = std::sync::Mutex::new(None);
 
+/// Why a folder is searched for SoundFonts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RootOrigin {
+    /// The pack folder, `OCP_SOUNDFONT`, or a conventional instrument folder.
+    Standard,
+    /// A content library the user registered, by its id.
+    Library(String),
+    /// A bank that ships with the application rather than with the machine.
+    Bundled,
+}
+
+/// One searched SoundFont location.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchRoot {
+    pub path: PathBuf,
+    pub origin: RootOrigin,
+}
+
 /// Small, known instrument locations only; never recurse through the whole home directory.
 fn discovery_roots(dir: &Path) -> Vec<PathBuf> {
-    let mut roots = vec![dir.to_path_buf()];
+    let mut roots: Vec<PathBuf> = search_roots(dir)
+        .into_iter()
+        .map(|root| root.path)
+        .collect();
+    roots.dedup();
+    roots
+}
+
+/// Every SoundFont location with its origin, in search order.
+pub fn search_roots(dir: &Path) -> Vec<SearchRoot> {
+    let standard = |path: PathBuf| SearchRoot {
+        path,
+        origin: RootOrigin::Standard,
+    };
+    let mut roots = vec![standard(dir.to_path_buf())];
     if let Some(file) = std::env::var_os("OCP_SOUNDFONT") {
-        roots.push(PathBuf::from(file));
+        roots.push(standard(PathBuf::from(file)));
     }
     if let Some(home) = std::env::var_os("HOME") {
         let home = PathBuf::from(home);
@@ -392,7 +424,7 @@ fn discovery_roots(dir: &Path) -> Vec<PathBuf> {
             "Music/SoundFonts",
             "Library/Audio/Sounds/Banks",
         ] {
-            roots.push(home.join(relative));
+            roots.push(standard(home.join(relative)));
         }
     }
     for path in [
@@ -401,29 +433,39 @@ fn discovery_roots(dir: &Path) -> Vec<PathBuf> {
         "/usr/share/sounds/sf2",
         "/usr/local/share/soundfonts",
     ] {
-        roots.push(PathBuf::from(path));
+        roots.push(standard(PathBuf::from(path)));
     }
     if let Ok(catalogue) =
         crate::content_library::load(&crate::content_library::default_catalogue_path())
     {
-        roots.extend(
-            catalogue
-                .libraries
-                .into_iter()
-                .map(|library| PathBuf::from(library.path)),
-        );
+        roots.extend(catalogue.libraries.into_iter().map(|library| SearchRoot {
+            path: PathBuf::from(library.path),
+            origin: RootOrigin::Library(library.id),
+        }));
     }
+    let bundled = |path: PathBuf| SearchRoot {
+        path,
+        origin: RootOrigin::Bundled,
+    };
     if let Ok(exe) = std::env::current_exe()
         && let Some(parent) = exe.parent()
     {
-        roots.push(parent.join("soundfonts"));
-        roots.push(parent.join("../Resources/soundfonts"));
+        roots.push(bundled(parent.join("soundfonts")));
+        roots.push(bundled(parent.join("../Resources/soundfonts")));
     }
     if let Ok(cwd) = std::env::current_dir() {
-        roots.push(cwd.join("soundfonts"));
+        roots.push(bundled(cwd.join("soundfonts")));
     }
-    roots.dedup();
     roots
+}
+
+/// The SoundFonts under one root, with the bounds discovery uses.
+pub fn discover_in(root: &Path) -> Vec<DiscoveredSoundfont> {
+    discover_roots(
+        std::slice::from_ref(&root.to_path_buf()),
+        DISCOVERY_ENTRIES,
+        DISCOVERY_DEPTH,
+    )
 }
 
 /// Cached for 15 seconds to avoid rescanning on every agent context request.
