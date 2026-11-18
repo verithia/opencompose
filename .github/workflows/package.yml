@@ -114,22 +114,22 @@ jobs:
         working-directory: crates/oc-gui/frontend
         run: npm run tauri build -- --ci --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} -- --locked
 
-      - name: Check the 100 MiB download budget
+      - name: Check the bundle size budgets
         shell: bash
         run: |
           set -euo pipefail
           shopt -s nullglob
           bundle="target/${{ matrix.target }}/release/bundle"
-          # The budget covers what a user downloads and installs from. The
-          # universal .app carries two architectures and the AppImage carries
-          # its own GTK and WebKit, so their sizes are reported, not enforced.
+          # Compressed downloads and installers get 100 MiB. The universal
+          # .app carries two architectures and the AppImage carries its own
+          # GTK and WebKit, so they get 150 MiB.
           downloads=(
             "$bundle"/dmg/*.dmg
             "$bundle"/deb/*.deb
             "$bundle"/msi/*.msi
             "$bundle"/nsis/*.exe
           )
-          reported=(
+          self_contained=(
             "$bundle"/macos/*.app
             "$bundle"/appimage/*.AppImage
           )
@@ -137,10 +137,12 @@ jobs:
             echo "::error::No downloadable bundle found under $bundle."
             exit 1
           fi
-          scripts/check-bundle-size.sh "${downloads[@]}"
-          if [ "${#reported[@]}" -gt 0 ]; then
-            scripts/check-bundle-size.sh --report "${reported[@]}"
+          status=0
+          scripts/check-bundle-size.sh --limit-mib 100 "${downloads[@]}" || status=1
+          if [ "${#self_contained[@]}" -gt 0 ]; then
+            scripts/check-bundle-size.sh --limit-mib 150 "${self_contained[@]}" || status=1
           fi
+          exit "$status"
 
       - name: Collect artifacts
         shell: bash

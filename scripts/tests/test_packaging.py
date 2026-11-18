@@ -35,33 +35,40 @@ class WindowsPackagingTests(unittest.TestCase):
 class BundleBudgetTests(unittest.TestCase):
     def budget_step(self):
         workflow = (ROOT / ".github/workflows/package.yml").read_text()
-        return workflow.split("      - name: Check the 100 MiB download budget\n", 1)[1].split("\n      - name:", 1)[0]
+        return workflow.split("      - name: Check the bundle size budgets\n", 1)[1].split("\n      - name:", 1)[0]
 
-    def test_every_downloadable_format_is_enforced(self):
-        enforced = self.budget_step().split("downloads=(", 1)[1].split(")", 1)[0]
-        for pattern in ("dmg/*.dmg", "deb/*.deb", "msi/*.msi", "nsis/*.exe"):
-            self.assertIn(pattern, enforced)
-
-    def test_self_contained_bundles_are_reported_not_enforced(self):
+    def test_every_downloadable_format_is_held_to_100_mib(self):
         step = self.budget_step()
-        reported = step.split("reported=(", 1)[1].split(")", 1)[0]
-        self.assertIn("macos/*.app", reported)
-        self.assertIn("appimage/*.AppImage", reported)
-        self.assertIn('check-bundle-size.sh --report "${reported[@]}"', step)
+        downloads = step.split("downloads=(", 1)[1].split(")", 1)[0]
+        for pattern in ("dmg/*.dmg", "deb/*.deb", "msi/*.msi", "nsis/*.exe"):
+            self.assertIn(pattern, downloads)
+        self.assertIn('check-bundle-size.sh --limit-mib 100 "${downloads[@]}"', step)
 
-    def test_report_mode_never_fails_on_size(self):
+    def test_self_contained_bundles_are_held_to_150_mib(self):
+        step = self.budget_step()
+        self_contained = step.split("self_contained=(", 1)[1].split(")", 1)[0]
+        self.assertIn("macos/*.app", self_contained)
+        self.assertIn("appimage/*.AppImage", self_contained)
+        self.assertIn('check-bundle-size.sh --limit-mib 150 "${self_contained[@]}"', step)
+
+    def run_check(self, *args):
         import subprocess
         import tempfile
 
         script = ROOT / "scripts/check-bundle-size.sh"
         with tempfile.TemporaryDirectory() as folder:
             artifact = Path(folder) / "artifact.bin"
-            artifact.write_bytes(b"\0" * 4096 * 4)
-            env = {"BUNDLE_SIZE_LIMIT_KIB": "1", "PATH": "/usr/bin:/bin"}
-            enforced = subprocess.run(["bash", str(script), str(artifact)], env=env, capture_output=True)
-            reported = subprocess.run(["bash", str(script), "--report", str(artifact)], env=env, capture_output=True)
-        self.assertEqual(enforced.returncode, 1)
-        self.assertEqual(reported.returncode, 0)
+            artifact.write_bytes(b"\1" * 1024 * 1024 * 2)
+            env = {"PATH": "/usr/bin:/bin"}
+            return subprocess.run(["bash", str(script), *args, str(artifact)], env=env, capture_output=True)
+
+    def test_the_limit_flag_sets_the_enforced_size(self):
+        self.assertEqual(self.run_check("--limit-mib", "1").returncode, 1)
+        self.assertEqual(self.run_check("--limit-mib", "3").returncode, 0)
+
+    def test_a_malformed_limit_is_a_usage_error(self):
+        self.assertEqual(self.run_check("--limit-mib", "0").returncode, 2)
+        self.assertEqual(self.run_check("--limit-mib", "x").returncode, 2)
 
 
 if __name__ == "__main__":
