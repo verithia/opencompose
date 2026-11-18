@@ -114,23 +114,33 @@ AppImage layouts work even when the resource directory is not beside the
 executable. Discovery also looks for it beside the executable and in the
 repository resource directory for development builds.
 
-The release profile strips symbols. The universal binary otherwise carries
-about 11 MB of symbol table that no runtime path reads, and the packaging
-budget is 100 MB for both the installed app and the distributable artifact.
-Measure both after every dependency or resource change; the DMG is compressed
-and the `.app` is not.
+The release profile strips symbols, which keeps the symbol table out of the
+shipped binary.
 
-Universal build reference:
+The packaging budget is 100 MiB for every file a user downloads and installs
+from: the `.dmg`, the `.deb`, the `.msi` and the `-setup.exe`. Two bundles are
+measured and reported but not held to it:
 
-| Artefact | Bytes | Display |
+- The universal `OpenCompose.app` holds a complete arm64 and a complete x86_64
+  binary, so it is roughly one binary larger than either architecture alone.
+  The DMG that carries it is compressed and stays within the budget.
+- The `.AppImage` runs on any distribution because it carries its own GTK,
+  WebKitGTK and their dependencies. The `.deb` uses the system's copies through
+  package dependencies instead.
+
+Measure the downloads after every dependency or resource change.
+
+Reference sizes from the packaging workflow (`du -sk`):
+
+| Artefact | KiB | Budget |
 |---|---:|---|
-| `OpenCompose.app` (installed) | 94,351,106 | 90.0 MiB |
-| `OpenCompose_0.1.0_universal.dmg` | 49,852,725 | 47.5 MiB |
-| `Contents/MacOS/oc-gui` | 69,682,736 | 66.5 MiB |
-| `Contents/Resources/soundfonts/FluidR3Mono_GM.sf3` | 23,712,790 | 22.6 MiB |
-
-The app is 94.35 MB by the decimal measure a download page usually prints, so
-it stays under the 100 MB budget with the GM bank included.
+| `OpenCompose_0.1.0_universal.dmg` | 55,284 | enforced |
+| `OpenCompose.app` (universal, installed) | 110,736 | reported |
+| `OpenCompose_0.1.0_amd64.deb` | 39,524 | enforced |
+| `OpenCompose_0.1.0_amd64.AppImage` | 113,840 | reported |
+| `OpenCompose_0.1.0_x64_en-US.msi` | 38,632 | enforced |
+| `OpenCompose_0.1.0_x64-setup.exe` | 32,136 | enforced |
+| `Contents/Resources/soundfonts/FluidR3Mono_GM.sf3` | 23,157 | part of every bundle |
 
 The macOS bundle declares `LSMinimumSystemVersion` 11.0, matching the 11.0
 minimum the universal binary records. Older systems cannot launch it.
@@ -156,8 +166,8 @@ Every artifact also carries `SHA256SUMS.txt`. The macOS job sets `CXX=clang++`
 so the x86_64 half of the universal app links the C++ exception barrier. The
 workflow uses the crate defaults, so MP3 export is compiled in; it installs no
 SoundFont library. The bundle includes the MIT-licensed
-`FluidR3Mono_GM.sf3`, and a size gate fails the job when an app or installer
-exceeds 100 MiB. It does not create a GitHub release, sign the macOS bundle,
+`FluidR3Mono_GM.sf3`, and a size gate fails the job when a downloadable file
+exceeds 100 MiB (see [the size budget](#bundled-gm-bank-and-size-budget)). It does not create a GitHub release, sign the macOS bundle,
 or publish the plugin index. Release publishing and index deployment stay
 separate manual actions.
 

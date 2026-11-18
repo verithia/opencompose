@@ -114,15 +114,20 @@ if [[ -d "$BUNDLE_DIR" ]]; then
     echo "  image $image ($(du -h "$image" | cut -f1))"
     if command -v shasum >/dev/null; then
       echo "        sha256 $(shasum -a 256 "$image" | cut -d' ' -f1)"
+    elif command -v sha256sum >/dev/null; then
+      echo "        sha256 $(sha256sum "$image" | cut -d' ' -f1)"
     fi
     FOUND=1
   done < <(find "$BUNDLE_DIR" -maxdepth 3 -type f \
-      \( -name "*.dmg" -o -name "*.msi" -o -name "*.deb" -o -name "*.AppImage" \) \
+      \( -name "*.dmg" -o -name "*.msi" -o -name "*-setup.exe" -o -name "*.deb" \
+         -o -name "*.AppImage" \) \
       -print0 2>/dev/null)
 fi
 
 [[ "$FOUND" -eq 1 ]] || warn "No bundle artefacts under $BUNDLE_DIR"
 
 echo ""
-log "Smoke test the app bundle: cd crates/oc-gui/frontend && npm run smoke:macos"
+if [[ "$(uname -s)" == Darwin ]]; then
+  log "Smoke test the app bundle: cd crates/oc-gui/frontend && npm run smoke:macos"
+fi
 log "Signed/notarised release: docs/release.md"
