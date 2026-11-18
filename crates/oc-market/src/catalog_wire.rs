@@ -15,6 +15,12 @@ pub const MAX_PACK_BYTES: usize = 64 * 1024;
 pub const MAX_INSTALLS: usize = 64;
 /// Most runtime files per descriptor.
 pub const MAX_RUNTIME_FILES: usize = 256;
+/// Most archive paths one install script may select.
+pub const MAX_TAKE_PATHS: usize = 32;
+/// Longest archive-relative path an install script may select.
+pub const MAX_TAKE_PATH_BYTES: usize = 4096;
+/// Deepest archive-relative path an install script may select.
+pub const MAX_TAKE_PATH_DEPTH: usize = 64;
 /// Largest install download.
 pub const MAX_DOWNLOAD_BYTES: u64 = 256 * 1024 * 1024;
 /// Largest runtime download.
@@ -50,6 +56,7 @@ pub enum CatalogErrorCode {
     Runtime,
     Companion,
     Pack,
+    InvalidTake,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 /// One validation failure with its JSON path and message.
@@ -252,6 +259,11 @@ pub struct Install {
     pub bytes: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub archive: Option<Archive>,
+    /// Archive-relative paths of the bundle directories or plugin files this
+    /// install places into the format's destination folder. Absent on older
+    /// entries, where bundle discovery follows the archive layout.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub take: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

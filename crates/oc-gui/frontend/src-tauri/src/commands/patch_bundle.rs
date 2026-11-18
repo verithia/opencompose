@@ -180,6 +180,9 @@ fn unpack(input: impl Read, root: &Path) -> Result<(), String> {
         path_depth: 64,
     };
     visit_tar_gz(input, limits, TarMetadata::None, |entry, payload| {
+        if !matches!(entry.kind, TarKind::File | TarKind::Directory) {
+            return Err("TAR contains links, devices or unsupported metadata".into());
+        }
         let name = entry.name.as_str();
         let limit = match name {
             RECORD => MAX_RECORD,

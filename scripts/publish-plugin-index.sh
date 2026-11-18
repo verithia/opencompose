@@ -19,7 +19,7 @@ Required:
   --key FILE            Ed25519 PKCS#8 private key (or OCP_PLUGIN_INDEX_KEY)
 
 Options:
-  --catalog FILE        catalog JSON (default: crates/oc-gui/frontend/src/data/plugin-catalog.json)
+  --catalog FILE        catalog JSON (default: catalog/plugin-catalog.json)
   --dest DIR            index directory (default: plugin-index/)
   --min-app-version V   default: 0.1.0
   --catalog-version V   opaque version (default: derived from generated_at)
@@ -33,7 +33,7 @@ EOF
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 key="${OCP_PLUGIN_INDEX_KEY:-}"
-catalog="$root/crates/oc-gui/frontend/src/data/plugin-catalog.json"
+catalog="$root/catalog/plugin-catalog.json"
 public_key="$root/crates/oc-market/plugin-index.pub"
 dest="$root/plugin-index"
 min_app_version="0.1.0"

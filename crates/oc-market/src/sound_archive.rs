@@ -246,6 +246,9 @@ fn extract_tar(archive: &Path, sink: &mut Sink<'_>, xz: bool) -> Result<(), Stri
         let result = match entry.kind {
             TarKind::Directory => sink.add_dir(&entry.name),
             TarKind::File => sink.write_file(&entry.name, payload),
+            TarKind::Link | TarKind::Other => {
+                Err("TAR contains links, devices or unsupported metadata".to_string())
+            }
         };
         match result {
             Ok(()) => Ok(()),
@@ -413,6 +416,31 @@ mod tests {
         sevenz_rust2::compress_to_path(source, archive).unwrap();
     }
 
+    /// Publishers commonly compress 7z packs with BZip2 rather than LZMA.
+    #[test]
+    fn a_bzip2_compressed_7z_archive_extracts() {
+        let dir = TempDir::new("seven-bzip2");
+        let archive = dir.0.join("pack.7z");
+        let mut writer = sevenz_rust2::ArchiveWriter::create(&archive).unwrap();
+        writer.set_content_methods(vec![
+            sevenz_rust2::encoder_options::Bzip2Options::default().into(),
+        ]);
+        writer
+            .push_archive_entry(
+                sevenz_rust2::ArchiveEntry::new_file("Kit/kit.sf2"),
+                Some(&b"RIFF\0\0\0\0sfbk"[..]),
+            )
+            .unwrap();
+        writer.finish().unwrap();
+        let target = dir.0.join("out");
+        fs::create_dir(&target).unwrap();
+        extract_path(&archive, SoundArchive::SevenZ, &target).unwrap();
+        assert_eq!(
+            fs::read(target.join("Kit/kit.sf2")).unwrap(),
+            b"RIFF\0\0\0\0sfbk"
+        );
+    }
+
     #[test]
     fn every_supported_archive_extracts_its_layout() {
         let dir = TempDir::new("formats");
@@ -514,12 +542,15 @@ mod tests {
         fs::create_dir(&target).unwrap();
         assert!(extract_path(&archive, SoundArchive::Zip, &target).is_err());
 
-        let mut raw = tar_bytes(&[("link.sf2", b"", b'2')]);
-        raw.truncate(1024 + 512);
-        fs::write(dir.0.join("link.tar.gz"), gzip(&raw)).unwrap();
-        let target = dir.0.join("tar-link-out");
-        fs::create_dir(&target).unwrap();
-        assert!(extract_path(&dir.0.join("link.tar.gz"), SoundArchive::TarGz, &target).is_err());
+        for kind in [b'1', b'2'] {
+            let mut raw = tar_bytes(&[("link.sf2", b"", kind)]);
+            raw.truncate(1024 + 512);
+            let archive = dir.0.join(format!("link-{}.tar.gz", kind as char));
+            fs::write(&archive, gzip(&raw)).unwrap();
+            let target = dir.0.join(format!("tar-link-{}-out", kind as char));
+            fs::create_dir(&target).unwrap();
+            assert!(extract_path(&archive, SoundArchive::TarGz, &target).is_err());
+        }
     }
 
     #[test]

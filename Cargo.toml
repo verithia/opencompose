@@ -52,7 +52,7 @@ fs4 = { version = "1.1", default-features = false, features = ["sync"] }
 zstd = "0.13"
 # Sound-pack archive readers; every one is a pure-Rust decoder.
 zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
-sevenz-rust2 = { version = "0.25", default-features = false }
+sevenz-rust2 = { version = "0.25", default-features = false, features = ["bzip2"] }
 lzma-rust2 = { version = "0.25", default-features = false, features = ["std", "xz"] }
 
 # Line tables keep file:line in a panic backtrace without the full DWARF that

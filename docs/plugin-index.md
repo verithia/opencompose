@@ -169,6 +169,9 @@ a semantic version; pre-release precedence is honored and build metadata does no
           "kind": "github_release",
           "platform": "macos-aarch64",
           "sha256": "0000000000000000000000000000000000000000000000000000000000000001",
+          "take": [
+            "Plugin-1.2.3/VST3/Example Reverb.vst3"
+          ],
           "url": "https://github.com/example/plugin/releases/download/v1.2.3/plugin-mac.zip"
         },
         {
@@ -202,7 +205,7 @@ Required: `schema`, `generated_at`, `entries`; per entry `id`, `name`, `vendor`,
 `installs`; per install `kind`, `platform`, `format`, `url`. Optional: entry
 `version`, `description`, `homepage`, `license`, `aliases`,
 `known_issues`; install `plugin_id`, `sha256`, `bytes`, `archive`, `wrapped`,
-`runtime`, `companion_content`. Empty optional arrays/objects are omitted.
+`runtime`, `companion_content`, `take`. Empty optional arrays/objects are omitted.
 
 `wrapped: true` says the archive holds a vendor installer rather than bundle
 directories (u-he ships a `.pkg` inside its macOS zip, for example). The client
@@ -280,8 +283,9 @@ a preset plays one through `source: soundfont` and
 
 A `sound_archive` pack adds `publisher`, `homepage`, `content`, `archive` and
 `unpacked_bytes`. `content` is `soundfont`, `sfz` or `samples`. `archive` is
-`file`, `zip`, `tar_gz`, `tar_xz` or `7z`. The bundled catalog carries its
-starter `sound_archive` packs, so they list and install without remote trust. An
+`file`, `zip`, `tar_gz`, `tar_xz` or `7z`. The signed catalog carries the starter
+`sound_archive` packs, so they list and install once the signed index or its
+verified cache is available. An
 installed archive lives in the managed sounds folder as `<id>/`, and its files
 enter the instrument search as they are laid out in the archive. `file` stores the single download as the last
 path segment of `url`. A `soundfont` archive must contain at least one `.sf2` or
@@ -376,9 +380,9 @@ file (section 1), so neither file is ever transfer-compressed.
 
 ### Catalog content
 
-The catalog (`crates/oc-gui/frontend/src/data/plugin-catalog.json`, also compiled
-into the app as the bundled fallback) carries entries for `vst3`, `vst2`, `clap`,
-`au`, `lv2` and `standalone` downloads, all `https://`. Every install is a link to
+The catalog (`catalog/plugin-catalog.json`) carries entries for `vst3`, `vst2`,
+`clap`, `au`, `lv2` and `standalone` downloads, all `https://`. It is the source
+the publisher signs; the app and `ocp` binaries do not embed it. Every install is a link to
 the vendor's own download or release asset; **no plugin binary is stored in the
 repository or served by us**. `bytes` is the release asset size where the host
 publishes one, and `sha256` is recorded only when the vendor publishes a digest.
@@ -477,8 +481,8 @@ Failure contract:
   catalog-validation failure rejects the downloaded set.
 - Keep the last known-good manifest + catalog on disk; keep serving it with a visible
   "catalog refresh failed" indicator.
-- If no cached copy exists, fall back to the catalog bundled with the app (also
-  signed and verified at app build time).
+- If no cached copy exists, the catalog view is empty with source `none`; the
+  first run needs the network once to fetch and verify the signed index.
 - Never use partially verified data, and never downgrade to "unsigned mode".
 - Surface the stage that failed (signature / key_id / rollback / hash / schema /
   network) and retry with exponential backoff, capped at the normal polling interval.
@@ -520,9 +524,9 @@ verification and freshness policy.
 A matching, fully verified legacy `last-good/` cache can migrate into its scope;
 legacy files remain intact. If an older app changes those files during migration,
 verification fails without publishing a mixed snapshot; the GUI reports the
-failure and uses its bundled fallback. Unscoped or foreign-authority/origin caches are not
+failure and leaves the catalog view empty. Unscoped or foreign-authority/origin caches are not
 adopted. `OCP_PLUGIN_INDEX_DIR` overrides the cache root without changing trust.
-The app's bundled catalog remains the final fallback.
+Without a verified cache the app serves no catalog until the next successful refresh.
 
 Offline UX contract:
 
@@ -531,7 +535,8 @@ Offline UX contract:
   with a retry action.
 - Cache older than 14 days: add a stale-catalog warning; do not block installs, since
   vendor URLs are external and may still work.
-- No cache and no network: use the bundled catalog and label it as bundled.
+- No cache and no network: the catalog view is empty with source `none`; no
+  install is offered until a signed index is available.
 - A remote manifest requiring a newer app leaves a compatible last-good catalog
   intact. An older app also refuses to load an incompatible catalog from disk.
 
@@ -544,7 +549,7 @@ catalog.
 
 ### Client API and policy
 
-`plugin_index_status` returns `source` (`bundled` / `cache` / `remote`),
+`plugin_index_status` returns `source` (`none` / `cache` / `remote`),
 `generated_at`, `fetched_at` (Unix seconds), `stale_days`, `stale_warning`
 (true at 14 days), `last_error`, `catalog_version`, `min_app_version`, and
 `next_refresh_in_seconds` (the manual-floor countdown). `plugin_index_refresh`
@@ -592,10 +597,13 @@ so conversational AI can search the catalog but cannot trigger network refreshes
 - An **older schema** is accepted for backward compatibility (`1..=2`); the
   client's parser ignores fields it does not know.
 - Unknown fields are ignored at every level. This is tested for catalog, entry, and
-  install; consumers must not reject a document because of extra keys.
+  install; consumers must not reject a document because of extra keys. `take` is
+  optional and additive, so an older client ignores it and keeps its layout-based
+  bundle discovery. No schema bump is needed because the field is not required to
+  read or install the entry.
 - `min_app_version` is compared as `MAJOR.MINOR.PATCH`. If the running app is older,
-  the client does not apply the new catalog; it keeps the last-good/bundled catalog
-  and prompts for an update. Pre-release suffixes are treated as their numeric core.
+  the client does not apply the new catalog; it keeps the last-good catalog (or an
+  empty view when none is cached) and prompts for an update. Pre-release suffixes are treated as their numeric core.
 - `catalog_version` is an opaque string for display, logs, and rollback bookkeeping.
   Clients must not parse or order it.
 - `generated_at` is used **only** for anti-rollback ordering: a validly signed
@@ -617,7 +625,7 @@ so conversational AI can search the catalog but cannot trigger network refreshes
   `generated_at`, and every client that saw the newer one refuses it. Roll back
   by publishing again.
 - **Rollback:** restore the older catalog JSON (for example with
-  `git checkout <commit> -- crates/oc-gui/frontend/src/data/plugin-catalog.json`)
+  `git checkout <commit> -- catalog/plugin-catalog.json`)
   and publish it. The build is deterministic, so the catalog gets its old hash
   and file name back, and the manifest gets a fresh `generated_at`. Propagation
   is the ten-minute origin cache.
@@ -683,7 +691,7 @@ users accept. Anti-rollback limits the damage to manifests newer than the last
 legitimate publish, which is why publishing promptly with the spare matters.
 
 Losing both private keys requires a release with a new list; installed apps keep
-their last-good catalog and bundled catalog until they update.
+their last-good catalog, or an empty view when none is cached, until they update.
 
 ## 8. CLI
 
@@ -752,7 +760,7 @@ into `plugin-index/` (section 7):
 
 `crates/oc-market/plugin-index.pub` is the single release trust configuration,
 shared by the GUI and the CLI. An empty list disables remote refresh: the app
-starts with its bundled catalog and reports remote trust as unconfigured. The
+starts with an empty catalog view and reports remote trust as unconfigured. The
 retired development authority is rejected as a release key.
 
 For local debugging, pass `--index URL --public-key FILE` to the CLI.
@@ -779,14 +787,14 @@ Editing the catalog is a normal source change; there is no generated step.
 
 ```sh
 # 1. validate the committed catalog end to end (no network, throwaway key)
-cargo test -p oc-cli bundled_catalog_builds_and_verifies
+cargo test -p oc-cli repository_catalog_builds_and_verifies
 
 # 2. sign it into plugin-index/, then commit and push (section 7)
 scripts/publish-plugin-index.sh --key ~/.config/opencompose/plugin-index-release/plugin-index.key
 ```
 
 A catalog edit is not live until it is published: the app keeps using the last
-signed index (or its bundled copy) until then.
+signed index or its verified cache, or an empty view when neither exists, until then.
 
 Remote link checking is manual and deliberately outside `cargo test`, which never
 touches the network:
@@ -794,7 +802,7 @@ touches the network:
 ```sh
 python3 - <<'EOF'
 import json, subprocess
-catalog = json.load(open("crates/oc-gui/frontend/src/data/plugin-catalog.json"))
+catalog = json.load(open("catalog/plugin-catalog.json"))
 urls = {u for e in catalog["entries"] for i in e["installs"] for u in [i["url"]]}
 urls |= {e["homepage"] for e in catalog["entries"] if e.get("homepage")}
 for url in sorted(urls):
@@ -877,13 +885,18 @@ Two modes come out of the resolver, and `plugin_search`, `plugin_pull` and
 | `extract` | download, verify, unpack into the plugin directory. Runs headlessly. |
 | `installer` | download, verify, write the vendor installer, then open it. A person finishes it. |
 
-`extract` covers zip, tar and 7z bundles, AppImages and macOS disk images. A disk
-image is attached read-only without Finder or auto-open, its
-`.vst3`/`.vst`/`.clap`/`.lv2` bundles at the volume root or one folder below are
-copied into staging, and the volume is detached on every path. A vendor
-installer inside the image is never run: an image that holds only a `.pkg` falls
-back to the `installer` hand-off. A catalog entry whose image wraps an installer
-sets `wrapped: true`, so the resolver reports the hand-off before a download.
+`extract` covers zip, tar and 7z bundles, AppImages and macOS disk images. When
+an install carries `take`, the extractor reads only those archive-relative (or
+volume-relative, for a disk image) paths, rebases each onto its final component
+in the format's destination folder, and ignores everything else. A link or
+device entry inside a selected path is refused; one outside every selected path
+is ignored. A missing selected path fails before anything is published, so the
+install is atomic. Without `take`, the older layout-based bundle discovery runs
+unchanged. A disk image is attached read-only without Finder or auto-open, and
+the volume is detached on every path. A vendor installer inside the image is
+never run: an image that holds only a `.pkg` falls back to the `installer`
+hand-off. A catalog entry whose image wraps an installer sets `wrapped: true`,
+so the resolver reports the hand-off before a download.
 
 ### One policy, four surfaces
 
@@ -1009,9 +1022,10 @@ ocp plugin install asb2m10.dexed
 scripts/install-plugin.sh asb2m10.dexed --into /tmp/plugins
 ```
 
-- The catalog comes from the bundled JSON, from `--catalog FILE`, or from a
-  signed index (`--index URL`, verified with `--public-key FILE` or the compiled
-  key). An unsigned or tampered index is refused before anything is downloaded.
+- The catalog comes from the default signed index (`PRIMARY_BASE_URL` with the
+  compiled trusted keys), from `--index URL` (verified with `--public-key FILE`
+  or the compiled key), or from `--catalog FILE` for local testing. An unsigned
+  or tampered index is refused before anything is downloaded.
 - `--into DIR` installs somewhere other than the host plugin directory.
 - A build with mode `installer` needs `--open`; without it the command refuses and
   names the flag rather than silently downloading an installer nobody launches.
@@ -1045,9 +1059,10 @@ only their documented record and asset filenames.
 POSIX PAX extended headers are currently unsupported, including headers that carry
 only timestamps, ownership, or other benign metadata. Such archives fail with an
 explicit unsupported-metadata error. Symlinks, hard links, device entries, and GNU
-long-link records are also refused. A vendor archive may therefore require a
-supported archive layout or manual installation even when its plugin format is
-supported.
+long-link records are reported to the consumer, which ignores one outside the
+selected bundle paths and refuses one inside them. A vendor archive may therefore
+require a supported archive layout or manual installation even when its plugin
+format is supported.
 
 Each consumer enforces compressed and expanded byte budgets, entry count,
 per-entry and total payload limits. Paths are limited to 4,096 bytes and 64
@@ -1091,7 +1106,7 @@ wc -c < /tmp/plugin.zip            # byte size
 ```
 
 Add both fields to that install's object in
-`crates/oc-gui/frontend/src/data/plugin-catalog.json`, then rebuild and republish
+`catalog/plugin-catalog.json`, then rebuild and republish
 the index (section 7). Pin the file you actually downloaded, from the URL in the
 catalog: a hash computed from a different build, or copied from a release page,
 is a false guarantee.
@@ -1161,7 +1176,7 @@ records the exact reason.
 CLI tests (run with `CARGO_TARGET_DIR=... cargo test -p oc-cli`):
 
 - `build_verify_round_trip`
-- `bundled_catalog_builds_and_verifies` — builds and verifies the committed
+- `repository_catalog_builds_and_verifies` — builds and verifies the committed
   catalog with a throwaway key; fails on any malformed entry, missing license, or
   bad `plugin_id`
 - `unknown_format_rejected`
@@ -1194,7 +1209,7 @@ Client tests (run with `cargo test -p oc-gui`):
 - `oversized_decompression_rejected`
 - `newer_min_app_version_refused_and_cache_kept`
 - `newer_manifest_schema_refused`
-- `bundled_fallback_when_cache_empty`
+- `an_empty_cache_serves_no_catalog_until_the_first_fetch`
 - `manual_refresh_floor_honoured`
 - `startup_asks_for_nothing_and_opening_the_browser_asks_once`
 - `a_second_open_inside_the_interval_makes_no_request`

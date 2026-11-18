@@ -26,6 +26,9 @@ pub struct DmgRequest<'a> {
     pub format: BundleFormat,
     pub target_dir: &'a Path,
     pub overwrite: bool,
+    /// Volume-relative bundle paths an install script selects. Absent means
+    /// follow the image layout.
+    pub take: Option<&'a [String]>,
 }
 
 /// The result of a disk-image install.
@@ -70,10 +73,10 @@ mod macos {
     const DITTO: &str = "/usr/bin/ditto";
     /// Attaching verifies the image checksums, which reads the whole image.
     const ATTACH_TIMEOUT: Duration = Duration::from_secs(180);
-    const ATTACH_ATTEMPTS: u32 = 3;
-    const ATTACH_RETRY_DELAY: Duration = Duration::from_millis(500);
+    const ATTACH_ATTEMPTS: u32 = 5;
+    const ATTACH_RETRY_DELAY: Duration = Duration::from_secs(1);
     /// Serializes this process's `hdiutil attach` and `detach` calls.
-    static HDIUTIL_TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    pub(super) static HDIUTIL_TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
     const DETACH_TIMEOUT: Duration = Duration::from_secs(60);
     const COPY_TIMEOUT: Duration = Duration::from_secs(300);
     const MAX_STDERR_BYTES: usize = 16 * 1024;
@@ -463,8 +466,52 @@ mod macos {
         Ok(())
     }
 
+    /// Resolve one install-script path against the mounted volumes.
+    fn resolve_take(volumes: &[PathBuf], take: &str) -> Result<(String, PathBuf), String> {
+        let relative = crate::sanitize_zip_path(take)?;
+        for volume in volumes {
+            let candidate = volume.join(&relative);
+            let metadata = match fs::symlink_metadata(&candidate) {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => {
+                    return Err(format!("Failed to inspect the disk image: {error}"));
+                }
+            };
+            if metadata.file_type().is_symlink() {
+                return Err(format!("Disk image selected path '{take}' is a link"));
+            }
+            if !metadata.is_dir() && !metadata.is_file() {
+                return Err(format!(
+                    "Disk image selected path '{take}' is not a file or directory"
+                ));
+            }
+            let name = candidate
+                .file_name()
+                .map(|name| name.to_string_lossy().to_string())
+                .ok_or_else(|| "Disk image selected path has no final component".to_string())?;
+            return Ok((name, candidate));
+        }
+        Err(format!(
+            "Disk image does not contain the selected path '{take}'"
+        ))
+    }
+
     /// Size of one bundle, refusing special files and symlinks that leave it.
     fn bundle_bytes(root: &Path, budget: &mut BundleBudget) -> Result<(), String> {
+        let root_metadata = fs::symlink_metadata(root)
+            .map_err(|error| format!("Failed to inspect a disk image bundle: {error}"))?;
+        if root_metadata.file_type().is_symlink() {
+            return Err("Disk image bundle is a link".into());
+        }
+        if root_metadata.is_file() {
+            budget.bytes = budget
+                .bytes
+                .checked_add(root_metadata.len())
+                .filter(|total| *total <= MAX_ZIP_TOTAL_BYTES)
+                .ok_or_else(|| "Disk image bundles exceed the install size limit".to_string())?;
+            return Ok(());
+        }
         let mut stack = vec![(root.to_path_buf(), 0usize)];
         while let Some((directory, depth)) = stack.pop() {
             if depth > MAX_BUNDLE_DEPTH {
@@ -548,7 +595,7 @@ mod macos {
                 output.stderr.trim()
             ));
         }
-        if !fs::symlink_metadata(destination).is_ok_and(|meta| meta.is_dir()) {
+        if !fs::symlink_metadata(destination).is_ok_and(|meta| meta.is_file() || meta.is_dir()) {
             return Err("Copied bundle is missing from the staging directory".into());
         }
         Ok(())
@@ -558,7 +605,33 @@ mod macos {
         volumes: &[PathBuf],
         request: DmgRequest<'_>,
     ) -> Result<DmgExtraction, String> {
-        let found = discover(volumes, request.format)?;
+        let found = match request.take {
+            Some(takes) => {
+                let suffix = format!(".{}", request.format.extension(HostOs::Macos));
+                let mut found = Found::default();
+                for take in takes {
+                    let (name, source) = resolve_take(volumes, take)?;
+                    if !name.to_ascii_lowercase().ends_with(&suffix) {
+                        return Err(format!(
+                            "Disk image selected path '{take}' is not a {suffix} bundle"
+                        ));
+                    }
+                    if found
+                        .bundles
+                        .iter()
+                        .any(|(existing, _)| existing.eq_ignore_ascii_case(&name))
+                    {
+                        return Err("Disk image selects conflicting bundle names".into());
+                    }
+                    if found.bundles.len() >= MAX_DMG_BUNDLES {
+                        return Err("Disk image holds more bundles than the install limit".into());
+                    }
+                    found.bundles.push((name, source));
+                }
+                found
+            }
+            None => discover(volumes, request.format)?,
+        };
         if found.bundles.is_empty() {
             if found.installers > 0 {
                 return Ok(DmgExtraction::InstallerOnly);
@@ -630,6 +703,11 @@ mod tests {
 
     /// Build a compressed image from `source` with the system tool.
     fn build_image(source: &Path, output: &Path) -> Vec<u8> {
+        // Creating an image attaches it internally, so it takes the same turn
+        // as the installer's attach and detach calls.
+        let _turn = super::macos::HDIUTIL_TURN
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let status = Command::new("/usr/bin/hdiutil")
             .args(["create", "-quiet", "-format", "UDZO", "-volname", "Fixture"])
             .arg("-srcfolder")
@@ -642,6 +720,9 @@ mod tests {
     }
 
     fn image_is_attached(needle: &str) -> bool {
+        let _turn = super::macos::HDIUTIL_TURN
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let output = Command::new("/usr/bin/hdiutil")
             .args(["info"])
             .output()
@@ -665,6 +746,7 @@ mod tests {
             format: BundleFormat::Vst3,
             target_dir: &target,
             overwrite: false,
+            take: None,
         })
         .unwrap();
         assert!(matches!(
@@ -685,6 +767,7 @@ mod tests {
             format: BundleFormat::Vst3,
             target_dir: &target,
             overwrite: false,
+            take: None,
         })
         .unwrap();
         assert!(matches!(
@@ -697,9 +780,48 @@ mod tests {
             format: BundleFormat::Vst3,
             target_dir: &target,
             overwrite: true,
+            take: None,
         })
         .unwrap();
         assert!(!target.join("Foo.vst3/Contents/stale").exists());
+    }
+
+    #[test]
+    fn take_selects_only_the_named_volume_bundles() {
+        let work = scratch("take");
+        let source = work.path().join("source");
+        fake_bundle(&source, "Foo.vst3");
+        fake_bundle(&source.join("Extras"), "Bar.vst3");
+        let image = build_image(&source, &work.path().join("fixture.dmg"));
+        let target = work.path().join("Plug-Ins/VST3");
+        let take = ["Foo.vst3".to_string()];
+        let outcome = extract_dmg_bundles(DmgRequest {
+            image: &image,
+            format: BundleFormat::Vst3,
+            target_dir: &target,
+            overwrite: false,
+            take: Some(&take),
+        })
+        .unwrap();
+        assert!(matches!(
+            outcome,
+            DmgExtraction::Bundles(InstallOutcome::Installed { .. })
+        ));
+        assert!(target.join("Foo.vst3/Contents/Info.plist").is_file());
+        assert!(!target.join("Bar.vst3").exists());
+
+        let missing = work.path().join("missing-target");
+        let absent = ["Missing.vst3".to_string()];
+        let error = extract_dmg_bundles(DmgRequest {
+            image: &image,
+            format: BundleFormat::Vst3,
+            target_dir: &missing,
+            overwrite: false,
+            take: Some(&absent),
+        })
+        .unwrap_err();
+        assert!(error.contains("Missing.vst3"), "{error}");
+        assert!(!missing.exists());
     }
 
     #[test]
@@ -716,6 +838,7 @@ mod tests {
             format: BundleFormat::Vst3,
             target_dir: &target,
             overwrite: false,
+            take: None,
         })
         .unwrap();
         assert_eq!(outcome, DmgExtraction::InstallerOnly);
@@ -747,6 +870,7 @@ mod tests {
                 format: BundleFormat::Vst3,
                 target_dir: &blocker,
                 overwrite: false,
+                take: None,
             },
         )
         .unwrap_err();
@@ -765,6 +889,7 @@ mod tests {
             format: BundleFormat::Vst3,
             target_dir: &target,
             overwrite: false,
+            take: None,
         })
         .unwrap_err();
         assert!(error.contains("Failed to attach"), "{error}");

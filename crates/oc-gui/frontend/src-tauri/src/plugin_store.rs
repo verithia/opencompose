@@ -1,6 +1,7 @@
-//! Bundled free-plugin catalog and the generic installer used by the Store.
+//! Active free-plugin catalog and the generic installer used by the Store.
 //!
-//! The catalog is compiled into the binary. Every URL opened from the Store is
+//! The catalog comes from the verified signed index or its on-disk cache; no
+//! catalog is compiled into the binary. Every URL opened from the Store is
 //! checked against it. Resolution, download verification and archive extraction
 //! live in `oc-market`, so the Store, the agent tools and `ocp plugin install`
 //! install the same build and refuse in the same words.
@@ -35,7 +36,6 @@ pub use oc_market::{
     sanitize_zip_path, select_install_target,
 };
 
-const CATALOG_JSON: &str = include_str!("../../src/data/plugin-catalog.json");
 use oc_market::catalog_wire::{MAX_DOWNLOAD_BYTES, MAX_RUNTIME_DOWNLOAD_BYTES};
 
 pub use oc_market::catalog_wire::{Install as CatalogInstall, PackEntry, PackLicense};
@@ -115,14 +115,6 @@ pub struct PluginCatalog {
     pub last_error: Option<String>,
 }
 
-/// The compiled catalog and its timestamp; the final fallback for the Store.
-pub fn bundled_catalog() -> Result<(Catalog, String), String> {
-    let file = oc_market::catalog_wire::parse(CATALOG_JSON.as_bytes())
-        .map_err(|error| error.to_string())?;
-    let generated_at = file.generated_at.clone();
-    Ok((from_shared_catalog(file), generated_at))
-}
-
 pub(crate) fn from_shared_catalog(file: oc_market::catalog_wire::Catalog) -> Catalog {
     let mut packs = Vec::new();
     let mut sound_packs = Vec::new();
@@ -158,8 +150,8 @@ pub fn is_panel_install(
         platform.unwrap_or(&host),
         format.map(parse_install_format).transpose()?,
     )?;
-    // Remote/cache entries have passed the signed-index verifier. Bundled
-    // discovery entries may omit integrity pins and cannot authorize installs.
+    // Remote/cache entries have passed the signed-index verifier. An empty or
+    // unverified view cannot authorize installs.
     if !matches!(source, "remote" | "cache")
         || platform.is_some_and(|platform| platform != host)
         || !install.sha256.as_deref().is_some_and(is_lowercase_sha256)
@@ -217,7 +209,7 @@ pub fn catalog_response(entries: &[CatalogEntry]) -> PluginCatalog {
         platform,
         entries,
         installed,
-        source: "bundled".into(),
+        source: "none".into(),
         generated_at: None,
         fetched_at: None,
         stale_days: None,
@@ -783,7 +775,10 @@ pub async fn install(
                 entry,
                 host_os(),
                 format,
-                plan.archive,
+                BundleArchive {
+                    archive: plan.archive,
+                    take: install.take.as_deref(),
+                },
                 overwrite,
                 into,
             )?;
@@ -797,9 +792,15 @@ pub async fn install(
         InstallKind::DmgVst3
         | InstallKind::DmgVst2
         | InstallKind::DmgClap
-        | InstallKind::DmgLv2 => {
-            install_dmg_bytes(&bytes, entry, plan.kind, &plan.url, overwrite, into)
-        }
+        | InstallKind::DmgLv2 => install_dmg_bytes(
+            &bytes,
+            entry,
+            plan.kind,
+            &plan.url,
+            overwrite,
+            into,
+            install.take.as_deref(),
+        ),
         InstallKind::Appimage => install_appimage_bytes(&bytes, entry, overwrite, into),
         InstallKind::InstallerArchive => {
             let (name, inner) = oc_market::install::unwrap_installer(&bytes, plan.archive)
@@ -1076,6 +1077,7 @@ fn install_zip_bytes(
     format: BundleFormat,
     overwrite: bool,
     into: Option<&Path>,
+    take: Option<&[String]>,
 ) -> Result<InstallOutcome, String> {
     let kind = bundle_kind(format);
     let target = resolve_target(kind, format, into)?;
@@ -1085,7 +1087,7 @@ fn install_zip_bytes(
             target.dir.display()
         ));
     }
-    let mut outcome = extract_bundles(bytes, format, os, &target.dir, overwrite)?;
+    let mut outcome = extract_bundles(bytes, format, os, &target.dir, overwrite, take)?;
     if let InstallOutcome::Installed { path, message } = &mut outcome {
         *message = format!(
             "Installed {} into {}. Rescan the plugin browser to load it.",
@@ -1095,24 +1097,33 @@ fn install_zip_bytes(
     Ok(outcome)
 }
 
+#[derive(Clone, Copy)]
+struct BundleArchive<'a> {
+    archive: Option<InstallArchive>,
+    take: Option<&'a [String]>,
+}
+
 fn install_bundle_archive(
     bytes: &[u8],
     entry: &CatalogEntry,
     os: HostOs,
     format: BundleFormat,
-    archive: Option<InstallArchive>,
+    bundle: BundleArchive<'_>,
     overwrite: bool,
     into: Option<&Path>,
 ) -> Result<InstallOutcome, String> {
-    match archive {
-        Some(InstallArchive::TarGz) => install_tar_bytes(bytes, entry, os, format, overwrite, into),
+    let take = bundle.take;
+    match bundle.archive {
+        Some(InstallArchive::TarGz) => {
+            install_tar_bytes(bytes, entry, os, format, overwrite, into, take)
+        }
         Some(InstallArchive::TarXz) => {
-            install_tar_xz_bytes(bytes, entry, os, format, overwrite, into)
+            install_tar_xz_bytes(bytes, entry, os, format, overwrite, into, take)
         }
         Some(InstallArchive::SevenZ) => {
-            install_seven_z_bytes(bytes, entry, os, format, overwrite, into)
+            install_seven_z_bytes(bytes, entry, os, format, overwrite, into, take)
         }
-        _ => install_zip_bytes(bytes, entry, os, format, overwrite, into),
+        _ => install_zip_bytes(bytes, entry, os, format, overwrite, into, take),
     }
 }
 
@@ -1123,9 +1134,10 @@ fn install_tar_bytes(
     format: BundleFormat,
     overwrite: bool,
     into: Option<&Path>,
+    take: Option<&[String]>,
 ) -> Result<InstallOutcome, String> {
     install_with(bytes, entry, format, into, |bytes, format, dir| {
-        extract_tar_bundles(bytes, format, os, dir, overwrite)
+        extract_tar_bundles(bytes, format, os, dir, overwrite, take)
     })
 }
 
@@ -1136,9 +1148,10 @@ fn install_tar_xz_bytes(
     format: BundleFormat,
     overwrite: bool,
     into: Option<&Path>,
+    take: Option<&[String]>,
 ) -> Result<InstallOutcome, String> {
     install_with(bytes, entry, format, into, |bytes, format, dir| {
-        extract_tar_xz_bundles(bytes, format, os, dir, overwrite)
+        extract_tar_xz_bundles(bytes, format, os, dir, overwrite, take)
     })
 }
 
@@ -1149,9 +1162,10 @@ fn install_seven_z_bytes(
     format: BundleFormat,
     overwrite: bool,
     into: Option<&Path>,
+    take: Option<&[String]>,
 ) -> Result<InstallOutcome, String> {
     install_with(bytes, entry, format, into, |bytes, format, dir| {
-        extract_seven_z_bundles(bytes, format, os, dir, overwrite)
+        extract_seven_z_bundles(bytes, format, os, dir, overwrite, take)
     })
 }
 
@@ -1187,6 +1201,7 @@ fn install_dmg_bytes(
     url: &str,
     overwrite: bool,
     into: Option<&Path>,
+    take: Option<&[String]>,
 ) -> Result<InstallOutcome, String> {
     let format = bundle_format(kind)
         .ok_or_else(|| format!("{} has no supported bundle image", entry.name))?;
@@ -1202,6 +1217,7 @@ fn install_dmg_bytes(
         format,
         target_dir: &target.dir,
         overwrite,
+        take,
     })? {
         DmgExtraction::InstallerOnly => open_installer(bytes, entry, url),
         DmgExtraction::Bundles(mut outcome) => {
@@ -1696,7 +1712,10 @@ pub async fn pull(
                 entry,
                 host_os(),
                 bundle_format,
-                plan.archive,
+                BundleArchive {
+                    archive: plan.archive,
+                    take: install.take.as_deref(),
+                },
                 false,
                 into,
             )?;
@@ -1716,7 +1735,15 @@ pub async fn pull(
             let _publication = authority.publication_guard()?;
             apply_outcome(
                 &mut result,
-                install_dmg_bytes(&bytes, entry, plan.kind, &plan.url, false, into)?,
+                install_dmg_bytes(
+                    &bytes,
+                    entry,
+                    plan.kind,
+                    &plan.url,
+                    false,
+                    into,
+                    install.take.as_deref(),
+                )?,
             );
         }
         InstallKind::Appimage => {
@@ -1938,11 +1965,18 @@ mod tests {
         }
     }
 
+    const REPO_CATALOG: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../../catalog/plugin-catalog.json"
+    );
+
+    fn repository_catalog() -> oc_market::catalog_wire::Catalog {
+        let bytes = fs::read(REPO_CATALOG).expect("read the repository catalog");
+        oc_market::catalog_wire::parse(&bytes).expect("the repository catalog parses")
+    }
+
     fn catalog() -> Vec<CatalogEntry> {
-        bundled_catalog()
-            .expect("bundled catalog must parse")
-            .0
-            .plugins
+        from_shared_catalog(repository_catalog()).plugins
     }
 
     fn host_dirs() -> HostDirs {
@@ -2520,6 +2554,7 @@ mod tests {
             HostOs::Macos,
             &target.0,
             false,
+            None,
         )
         .unwrap();
         assert!(matches!(outcome, InstallOutcome::Installed { .. }));
@@ -2545,6 +2580,7 @@ mod tests {
             HostOs::Macos,
             &target.0,
             false,
+            None,
         )
         .unwrap();
         assert!(matches!(outcome, InstallOutcome::Installed { .. }));
@@ -2567,7 +2603,8 @@ mod tests {
                 BundleFormat::Vst3,
                 HostOs::Macos,
                 &target.0,
-                false
+                false,
+                None
             )
             .is_err()
         );
@@ -2583,6 +2620,7 @@ mod tests {
             HostOs::Macos,
             &target.0,
             false,
+            None,
         )
         .unwrap();
         assert!(matches!(outcome, InstallOutcome::Installed { .. }));
@@ -2602,14 +2640,22 @@ mod tests {
             HostOs::Macos,
             &target.0,
             false,
+            None,
         )
         .unwrap();
         assert!(matches!(outcome, InstallOutcome::Installed { .. }));
         assert!(target.0.join("Obxd.vst/Contents/MacOS/Obxd").is_file());
         assert!(!target.0.join("Calf.lv2").exists());
 
-        let outcome =
-            extract_bundles(&archive, BundleFormat::Lv2, HostOs::Macos, &target.0, false).unwrap();
+        let outcome = extract_bundles(
+            &archive,
+            BundleFormat::Lv2,
+            HostOs::Macos,
+            &target.0,
+            false,
+            None,
+        )
+        .unwrap();
         assert!(matches!(outcome, InstallOutcome::Installed { .. }));
         assert!(target.0.join("Calf.lv2/manifest.ttl").is_file());
 
@@ -2620,6 +2666,7 @@ mod tests {
             HostOs::Windows,
             &target.0,
             false,
+            None,
         )
         .unwrap();
         assert!(matches!(outcome, InstallOutcome::Installed { .. }));
@@ -2645,6 +2692,7 @@ mod tests {
             HostOs::Windows,
             &target.0,
             false,
+            None,
         )
         .unwrap();
         assert!(matches!(outcome, InstallOutcome::Installed { .. }));
@@ -2662,7 +2710,8 @@ mod tests {
                 BundleFormat::Vst3,
                 HostOs::Macos,
                 &target.0,
-                false
+                false,
+                None
             )
             .unwrap(),
             InstallOutcome::Installed { .. }
@@ -2673,13 +2722,22 @@ mod tests {
                 BundleFormat::Vst3,
                 HostOs::Macos,
                 &target.0,
-                false
+                false,
+                None
             )
             .unwrap(),
             InstallOutcome::NeedsConfirmation { .. }
         ));
         assert!(matches!(
-            extract_bundles(&archive, BundleFormat::Vst3, HostOs::Macos, &target.0, true).unwrap(),
+            extract_bundles(
+                &archive,
+                BundleFormat::Vst3,
+                HostOs::Macos,
+                &target.0,
+                true,
+                None
+            )
+            .unwrap(),
             InstallOutcome::Installed { .. }
         ));
     }
@@ -2752,7 +2810,7 @@ mod tests {
                 format: None,
                 installed_only: false,
                 limit: None,
-                source: "bundled",
+                source: "remote",
             },
             &installed,
         )
@@ -2774,7 +2832,7 @@ mod tests {
                 format: Some(InstallFormat::Vst3),
                 installed_only: false,
                 limit: None,
-                source: "bundled",
+                source: "remote",
             },
             &installed,
         )
@@ -2792,7 +2850,7 @@ mod tests {
                 format: None,
                 installed_only: true,
                 limit: None,
-                source: "bundled",
+                source: "remote",
             },
             &installed,
         )
@@ -2809,7 +2867,7 @@ mod tests {
                 format: None,
                 installed_only: false,
                 limit: Some(2),
-                source: "bundled",
+                source: "remote",
             },
             &installed,
         )
@@ -2830,7 +2888,7 @@ mod tests {
                     format: None,
                     installed_only: false,
                     limit: None,
-                    source: "bundled",
+                    source: "remote",
                 },
                 &installed,
             )
@@ -2987,7 +3045,7 @@ mod tests {
         let id = "asb2m10.dexed";
         assert!(is_panel_install(&entries, "remote", id, None, None).unwrap());
         assert!(is_panel_install(&entries, "cache", id, None, None).unwrap());
-        assert!(!is_panel_install(&entries, "bundled", id, None, None).unwrap());
+        assert!(!is_panel_install(&entries, "none", id, None, None).unwrap());
         for format in [
             InstallFormat::Vst3,
             InstallFormat::Vst2,
@@ -3137,11 +3195,7 @@ mod tests {
 
     #[test]
     fn remote_catalog_reuses_bundled_validation() {
-        let bundled = fs::read(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../src/data/plugin-catalog.json"
-        ))
-        .unwrap();
+        let bundled = fs::read(REPO_CATALOG).unwrap();
         let catalog = parse_remote_catalog(&bundled).expect("bundled bytes are a valid catalog");
         assert!(!catalog.plugins.is_empty());
         // Every bundled pack must validate, so adding packs to the catalog
@@ -3260,15 +3314,8 @@ mod tests {
         }
     }
 
-    fn bundled_catalog_value() -> serde_json::Value {
-        serde_json::from_slice(
-            &fs::read(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/../src/data/plugin-catalog.json"
-            ))
-            .unwrap(),
-        )
-        .unwrap()
+    fn repo_catalog_value() -> serde_json::Value {
+        serde_json::from_slice(&fs::read(REPO_CATALOG).unwrap()).unwrap()
     }
 
     fn soundfont_pack() -> serde_json::Value {
@@ -3290,8 +3337,8 @@ mod tests {
     }
 
     #[test]
-    fn the_bundled_catalog_carries_its_packs() {
-        let (catalog, _) = bundled_catalog().expect("bundled catalog must parse");
+    fn the_repository_catalog_carries_its_packs() {
+        let catalog = from_shared_catalog(repository_catalog());
         assert!(!catalog.plugins.is_empty());
         assert!(
             !catalog.sound_packs.is_empty(),
@@ -3302,7 +3349,7 @@ mod tests {
 
     #[test]
     fn a_catalog_without_packs_still_parses() {
-        let mut value = bundled_catalog_value();
+        let mut value = repo_catalog_value();
         value.as_object_mut().unwrap().remove("packs");
         let catalog = parse_remote_catalog(&serde_json::to_vec(&value).unwrap())
             .expect("a catalog written before packs existed stays readable");
@@ -3312,13 +3359,10 @@ mod tests {
 
     #[test]
     fn a_catalog_with_packs_parses_them_beside_the_plugins() {
-        let mut value = bundled_catalog_value();
+        let mut value = repo_catalog_value();
         value["packs"] = serde_json::json!([soundfont_pack()]);
         let catalog = parse_remote_catalog(&serde_json::to_vec(&value).unwrap()).unwrap();
-        assert_eq!(
-            catalog.plugins.len(),
-            bundled_catalog().unwrap().0.plugins.len()
-        );
+        assert_eq!(catalog.plugins.len(), repository_catalog().entries.len());
         assert_eq!(catalog.packs.len(), 1);
         let pack = &catalog.packs[0];
         assert_eq!(pack.id, "ms-basic");
@@ -3329,7 +3373,7 @@ mod tests {
 
     #[test]
     fn an_unknown_sound_archive_value_is_skipped_rather_than_failing_the_catalog() {
-        let mut value = bundled_catalog_value();
+        let mut value = repo_catalog_value();
         let mut pack = soundfont_pack();
         pack["kind"] = serde_json::json!("sound_archive");
         pack["publisher"] = serde_json::json!("Publisher");
@@ -3346,7 +3390,7 @@ mod tests {
 
     #[test]
     fn an_unknown_pack_kind_is_skipped_rather_than_failing_the_catalog() {
-        let mut value = bundled_catalog_value();
+        let mut value = repo_catalog_value();
         value["packs"] = serde_json::json!([
             { "kind": "impulse-response", "id": "hall", "url": "https://example.com/hall.wav" },
             soundfont_pack()
@@ -3367,14 +3411,14 @@ mod tests {
         ] {
             let mut pack = soundfont_pack();
             pack[key] = replacement;
-            let mut value = bundled_catalog_value();
+            let mut value = repo_catalog_value();
             value["packs"] = serde_json::json!([pack]);
             let error = parse_remote_catalog(&serde_json::to_vec(&value).unwrap()).unwrap_err();
             assert!(error.contains(needle), "{key}: {error}");
         }
         let mut pack = soundfont_pack();
         pack["license"]["text"] = serde_json::json!("");
-        let mut value = bundled_catalog_value();
+        let mut value = repo_catalog_value();
         value["packs"] = serde_json::json!([pack]);
         let error = parse_remote_catalog_checked(&serde_json::to_vec(&value).unwrap()).unwrap_err();
         assert_eq!(error.code, oc_market::catalog_wire::CatalogErrorCode::Pack);
@@ -3383,7 +3427,7 @@ mod tests {
 
     #[test]
     fn duplicate_pack_ids_are_refused() {
-        let mut value = bundled_catalog_value();
+        let mut value = repo_catalog_value();
         value["packs"] = serde_json::json!([soundfont_pack(), soundfont_pack()]);
         let error = parse_remote_catalog_checked(&serde_json::to_vec(&value).unwrap()).unwrap_err();
         assert_eq!(
@@ -3437,9 +3481,15 @@ mod tests {
         let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
         encoder.write_all(&raw).unwrap();
         let archive = encoder.finish().unwrap();
-        let error =
-            extract_tar_bundles(&archive, BundleFormat::Vst3, HostOs::Macos, &target.0, true)
-                .unwrap_err();
+        let error = extract_tar_bundles(
+            &archive,
+            BundleFormat::Vst3,
+            HostOs::Macos,
+            &target.0,
+            true,
+            None,
+        )
+        .unwrap_err();
         assert!(error.contains("checksum"), "{error}");
         assert_eq!(fs::read(old).unwrap(), b"keep");
         assert!(!target.0.join("Fixture.vst3/Contents/new").exists());
@@ -3459,6 +3509,7 @@ mod tests {
             HostOs::Macos,
             &target.0,
             false,
+            None,
         )
         .unwrap_err();
         assert!(error.contains("Conflicting archive destination"), "{error}");
@@ -3496,6 +3547,7 @@ mod tests {
                 HostOs::Macos,
                 &target.0,
                 false,
+                None,
             )
             .unwrap();
             assert!(matches!(outcome, InstallOutcome::Installed { .. }));
@@ -3526,6 +3578,7 @@ mod tests {
             HostOs::Macos,
             &target.0,
             false,
+            None,
         )
         .unwrap();
         assert!(matches!(outcome, InstallOutcome::Installed { .. }));
@@ -3539,7 +3592,8 @@ mod tests {
                 BundleFormat::Vst3,
                 HostOs::Macos,
                 &target.0,
-                false
+                false,
+                None
             )
             .is_err()
         );
@@ -3700,7 +3754,7 @@ mod tests {
     #[test]
     fn search_reports_installability_for_pinned_page_only_and_unpinned_entries() {
         let entries = catalog();
-        // The bundled catalog pins its archives for Apple silicon.
+        // The repository catalog pins its archives for Apple silicon.
         let platform = "macos-aarch64".to_string();
         let result = search_entries(
             &entries,
@@ -3711,7 +3765,7 @@ mod tests {
                 format: None,
                 installed_only: false,
                 limit: None,
-                source: "bundled",
+                source: "remote",
             },
             &[],
         )
@@ -3730,7 +3784,7 @@ mod tests {
                 format: None,
                 installed_only: false,
                 limit: None,
-                source: "bundled",
+                source: "remote",
             },
             &[],
         )

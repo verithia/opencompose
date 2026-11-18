@@ -165,6 +165,83 @@ pub fn validate_runtime(entry: &Entry, install: &Install, path: &str) -> Result<
         error
     })
 }
+/// Extensions an install script may select for a format. VST2 is a bundle on
+/// macOS and a bare library elsewhere, so all three spellings are accepted.
+fn take_suffixes(format: Format) -> &'static [&'static str] {
+    match format {
+        Format::Vst3 => &[".vst3"],
+        Format::Vst2 => &[".vst", ".dll", ".so"],
+        Format::Clap => &[".clap"],
+        Format::Au => &[".component"],
+        Format::Lv2 => &[".lv2"],
+        Format::Standalone => &[],
+    }
+}
+
+/// Validate the archive paths an install script selects.
+pub fn validate_take(install: &Install, path: &str) -> Result<(), CatalogError> {
+    let Some(takes) = &install.take else {
+        return Ok(());
+    };
+    let fail = |index: usize, message: &str| {
+        CatalogError::new(
+            CatalogErrorCode::InvalidTake,
+            format!("{path}.take[{index}]"),
+            message,
+        )
+    };
+    if takes.is_empty() || takes.len() > MAX_TAKE_PATHS {
+        return Err(CatalogError::new(
+            CatalogErrorCode::InvalidTake,
+            format!("{path}.take"),
+            "Install script must select between 1 and 32 archive paths",
+        ));
+    }
+    let suffixes = take_suffixes(install.format);
+    if suffixes.is_empty() {
+        return Err(CatalogError::new(
+            CatalogErrorCode::InvalidTake,
+            format!("{path}.take"),
+            "Install script cannot select paths for this format",
+        ));
+    }
+    let mut seen = HashSet::new();
+    for (index, take) in takes.iter().enumerate() {
+        if take.is_empty() || take.len() > MAX_TAKE_PATH_BYTES {
+            return Err(fail(index, "Install script path is empty or too long"));
+        }
+        if take.starts_with('/') || take.contains('\\') {
+            return Err(fail(index, "Install script path must be archive-relative"));
+        }
+        let components: Vec<&str> = take.split('/').collect();
+        if components.len() > MAX_TAKE_PATH_DEPTH {
+            return Err(fail(index, "Install script path is too deep"));
+        }
+        for component in &components {
+            if component.is_empty()
+                || matches!(*component, "." | "..")
+                || component.len() > 255
+                || component.contains(':')
+                || component.chars().any(char::is_control)
+            {
+                return Err(fail(index, "Install script path has an unsafe component"));
+            }
+        }
+        let final_name = components.last().copied().unwrap_or_default();
+        let lower = final_name.to_ascii_lowercase();
+        if !suffixes.iter().any(|suffix| lower.ends_with(suffix)) {
+            return Err(fail(
+                index,
+                "Install script path does not name a bundle of the install format",
+            ));
+        }
+        if !seen.insert(take.as_str()) {
+            return Err(fail(index, "Duplicate install script path"));
+        }
+    }
+    Ok(())
+}
+
 /// Validate companion archive metadata when present.
 pub fn validate_companion(install: &Install, path: &str) -> Result<(), CatalogError> {
     let Some(content) = &install.companion_content else {
@@ -499,6 +576,7 @@ pub fn validate(catalog: &Catalog) -> Result<(), CatalogError> {
             }
             validate_runtime(entry, install, &path)?;
             validate_companion(install, &path)?;
+            validate_take(install, &path)?;
         }
     }
     let mut pack_ids = HashSet::new();

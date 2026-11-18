@@ -29,6 +29,12 @@ pub enum TarMetadata {
 pub enum TarKind {
     File,
     Directory,
+    /// Symbolic or hard link. Consumers decide whether to follow, ignore or
+    /// refuse it; this reader never creates the link itself.
+    Link,
+    /// Device or FIFO record. Consumers only report it, so an archive can be
+    /// inspected without creating the special file.
+    Other,
 }
 
 #[derive(Debug)]
@@ -110,9 +116,9 @@ fn validate_name(name: &str, limits: TarLimits, kind: TarKind) -> Result<(), Str
     Ok(())
 }
 
-/// Visit files and directories without buffering their payloads. The callback
-/// reads at most the declared payload; any unconsumed bytes are drained and
-/// verified before the next header. Callers write only into private staging.
+/// Visit files, directories and links without buffering file payloads. The
+/// callback reads at most the declared payload; any unconsumed bytes are drained
+/// and verified before the next header. Callers write only into private staging.
 pub fn visit_tar_gz(
     compressed: impl Read,
     limits: TarLimits,
@@ -240,8 +246,16 @@ fn visit_tar_stream(
             let kind = match flag {
                 0 | b'0' => TarKind::File,
                 b'5' if size == 0 => TarKind::Directory,
-                _ => return Err("TAR contains links, devices or unsupported metadata".into()),
+                b'1' | b'2' if size == 0 => TarKind::Link,
+                b'3' | b'4' | b'6' if size == 0 => TarKind::Other,
+                _ => return Err("TAR contains unsupported metadata or malformed entries".into()),
             };
+            if kind == TarKind::Link {
+                let target = text(&header[157..257])?;
+                if target.len() > limits.path_bytes {
+                    return Err("TAR link target byte limit exceeded".into());
+                }
+            }
             let name = match pending.take() {
                 Some(name) => name,
                 None => {
@@ -334,6 +348,19 @@ mod tests {
         raw
     }
 
+    fn link_archive(name: &str, target: &str, kind: u8) -> Vec<u8> {
+        let mut header = [0; 512];
+        header[..name.len()].copy_from_slice(name.as_bytes());
+        header[100..108].copy_from_slice(b"0000755\0");
+        header[124..136].copy_from_slice(b"00000000000\0");
+        header[157..157 + target.len()].copy_from_slice(target.as_bytes());
+        header[156] = kind;
+        checksum(&mut header);
+        let mut raw = header.to_vec();
+        raw.resize(raw.len() + 1024, 0);
+        raw
+    }
+
     fn gzip(raw: &[u8]) -> Vec<u8> {
         let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
         encoder.write_all(raw).unwrap();
@@ -403,8 +430,22 @@ mod tests {
     }
 
     #[test]
-    fn tar_rejects_links_devices_and_unimplemented_metadata() {
-        for kind in [b'1', b'2', b'3', b'4', b'6', b'7', b'x', b'g', b'K'] {
+    fn tar_reports_devices_and_rejects_link_payloads_and_unimplemented_metadata() {
+        for kind in [b'3', b'4', b'6'] {
+            let mut kinds = Vec::new();
+            visit_tar_gz(
+                gzip(&archive(&[("file", b"", kind)])).as_slice(),
+                limits(),
+                TarMetadata::None,
+                |entry, _| {
+                    kinds.push(entry.kind);
+                    Ok(())
+                },
+            )
+            .unwrap();
+            assert_eq!(kinds, vec![TarKind::Other], "{kind}");
+        }
+        for kind in [b'7', b'x', b'g', b'K'] {
             assert!(
                 accept(
                     &archive(&[("file", b"", kind)]),
@@ -419,6 +460,61 @@ mod tests {
             accept(
                 &archive(&[("folder", b"not empty", b'5')]),
                 limits(),
+                TarMetadata::None
+            )
+            .is_err()
+        );
+        for kind in [b'1', b'2'] {
+            assert!(
+                accept(
+                    &archive(&[("file", b"payload", kind)]),
+                    limits(),
+                    TarMetadata::GnuLongName
+                )
+                .is_err(),
+                "link with a payload {kind}"
+            );
+        }
+    }
+
+    #[test]
+    fn tar_reports_links_within_the_entry_and_path_limits() {
+        for kind in [b'1', b'2'] {
+            let raw = link_archive("folder/link", "target", kind);
+            let mut kinds = Vec::new();
+            visit_tar_gz(
+                gzip(&raw).as_slice(),
+                limits(),
+                TarMetadata::None,
+                |entry, payload| {
+                    assert_eq!(payload.read_to_end(&mut Vec::new()).unwrap(), 0);
+                    assert_eq!(entry.mode, 0o755);
+                    kinds.push(entry.kind);
+                    Ok(())
+                },
+            )
+            .unwrap();
+            assert_eq!(kinds, vec![TarKind::Link], "{kind}");
+        }
+        let raw = link_archive("file", &"l".repeat(100), b'2');
+        assert!(
+            accept(
+                &raw,
+                TarLimits {
+                    path_bytes: 8,
+                    ..limits()
+                },
+                TarMetadata::None
+            )
+            .is_err()
+        );
+        assert!(
+            accept(
+                &link_archive("file", "target", b'2'),
+                TarLimits {
+                    entries: 0,
+                    ..limits()
+                },
                 TarMetadata::None
             )
             .is_err()

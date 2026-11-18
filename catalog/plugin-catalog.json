@@ -1,6 +1,6 @@
 {
   "schema": 2,
-  "generated_at": "2026-11-18T07:10:00Z",
+  "generated_at": "2026-11-18T08:46:00Z",
   "entries": [
     {
       "id": "vital-audio.vital",
@@ -98,7 +98,11 @@
           "archive": "zip",
           "url": "https://github.com/surge-synthesizer/releases-xt/releases/download/1.3.4/surge-xt-macos-1.3.4-pluginsonly.zip",
           "sha256": "37d8d809693adc86587b7bc75a2384fc4e905f259aa9b9a21777749d36fbf8aa",
-          "bytes": 186958216
+          "bytes": 186958216,
+          "take": [
+            "Surge XT.vst3",
+            "Surge XT Effects.vst3"
+          ]
         },
         {
           "kind": "vendor_page",
@@ -119,7 +123,11 @@
           "archive": "zip",
           "url": "https://github.com/surge-synthesizer/releases-xt/releases/download/1.3.4/surge-xt-macos-1.3.4-pluginsonly.zip",
           "sha256": "37d8d809693adc86587b7bc75a2384fc4e905f259aa9b9a21777749d36fbf8aa",
-          "bytes": 186958216
+          "bytes": 186958216,
+          "take": [
+            "Surge XT.vst3",
+            "Surge XT Effects.vst3"
+          ]
         },
         {
           "kind": "vendor_page",
@@ -140,7 +148,11 @@
           "archive": "zip",
           "url": "https://github.com/surge-synthesizer/releases-xt/releases/download/1.3.4/surge-xt-win64-1.3.4-pluginsonly.zip",
           "sha256": "564e162c560af07ad4ed47fe1bfcd827cf97a575de30d06c48249aad2e7c35e6",
-          "bytes": 49093875
+          "bytes": 49093875,
+          "take": [
+            "Surge XT.vst3",
+            "Surge XT Effects.vst3"
+          ]
         },
         {
           "kind": "vendor_page",
@@ -155,7 +167,11 @@
           "url": "https://github.com/surge-synthesizer/releases-xt/releases/download/1.3.4/surge-xt-linux-1.3.4-pluginsonly.tar.gz",
           "archive": "tar-gz",
           "sha256": "dd431b75f5fa197c4bffa6ca27ca46970f0a94c834119bb1db7decdeec4c28db",
-          "bytes": 97294804
+          "bytes": 97294804,
+          "take": [
+            "Surge XT.vst3",
+            "Surge XT Effects.vst3"
+          ]
         },
         {
           "kind": "vendor_page",
@@ -305,7 +321,10 @@
           "archive": "zip",
           "url": "https://github.com/baconpaul/airwin2rack/releases/download/DAWPlugin/AirwindowsConsolidated-2026-11-15-59a227e-Windows.zip",
           "sha256": "b2f0d0f02b8e129f56a6e6b25c62e2606105f77a283d4aa0d54766f44ec22f23",
-          "bytes": 13602840
+          "bytes": 13602840,
+          "take": [
+            "Airwindows Consolidated.vst3"
+          ]
         },
         {
           "kind": "vendor_page",
@@ -320,7 +339,10 @@
           "archive": "zip",
           "url": "https://github.com/baconpaul/airwin2rack/releases/download/DAWPlugin/AirwindowsConsolidated-2026-11-15-59a227e-Linux.zip",
           "sha256": "32cb5d1f6cc39128fee901d9e2add7d22a3c9fb2fa67963281aa3c13f0d2d158",
-          "bytes": 32759807
+          "bytes": 32759807,
+          "take": [
+            "awcons-products/Airwindows Consolidated.vst3"
+          ]
         },
         {
           "kind": "vendor_page",
@@ -412,7 +434,10 @@
           "archive": "tar-gz",
           "url": "https://github.com/sfztools/sfizz/releases/download/0.5.1/sfizz-0.5.1-osx-amd64.tar.gz",
           "sha256": "f15c270412a5b9ea414dd30b7cba623d90097d34154c5071e83f7072674c4ead",
-          "bytes": 7551897
+          "bytes": 7551897,
+          "take": [
+            "sfizz-0.5.1-osx-amd64/Library/Audio/Plug-Ins/VST3/sfizz.vst3"
+          ]
         },
         {
           "kind": "github_release",
@@ -421,7 +446,10 @@
           "archive": "tar-gz",
           "url": "https://github.com/sfztools/sfizz/releases/download/0.5.1/sfizz-0.5.1-osx-amd64.tar.gz",
           "sha256": "f15c270412a5b9ea414dd30b7cba623d90097d34154c5071e83f7072674c4ead",
-          "bytes": 7551897
+          "bytes": 7551897,
+          "take": [
+            "sfizz-0.5.1-osx-amd64/Library/Audio/Plug-Ins/VST3/sfizz.vst3"
+          ]
         },
         {
           "kind": "github_release",
@@ -430,7 +458,10 @@
           "archive": "zip",
           "url": "https://github.com/sfztools/sfizz/releases/download/0.5.1/sfizz-vst3-0.5.1-x64-msvc.zip",
           "sha256": "75dc196ce01d671a5f29d072af7ad8f4458cbf3bb2106d6d3b61d555c3022e29",
-          "bytes": 2543808
+          "bytes": 2543808,
+          "take": [
+            "sfizz.vst3"
+          ]
         },
         {
           "kind": "github_release",
@@ -439,7 +470,10 @@
           "archive": "tar-gz",
           "url": "https://github.com/sfztools/sfizz/releases/download/0.5.1/sfizz-plugins-0.5.1-linux-amd64.tar.gz",
           "sha256": "e76004f5825efa6548081f5fd3521e57d42aafe694f54e3825c7f5efa61f7f08",
-          "bytes": 6085362
+          "bytes": 6085362,
+          "take": [
+            "sfizz-plugins-0.5.1-linux-amd64/usr/local/lib/vst3/sfizz.vst3"
+          ]
         }
       ]
     },
@@ -1017,7 +1051,10 @@
           "archive": "dmg",
           "url": "https://www.voxengo.com/files/VoxengoSPAN_324_Mac_AU_AAX_VST_setup.dmg",
           "sha256": "82685deeac6060b72621516c7e524730345f06942ace2e32324cacd55f41c476",
-          "bytes": 36089508
+          "bytes": 36089508,
+          "take": [
+            "SPAN.vst3"
+          ]
         },
         {
           "kind": "vendor_page",
@@ -1032,7 +1069,10 @@
           "archive": "dmg",
           "url": "https://www.voxengo.com/files/VoxengoSPAN_324_Mac_AU_AAX_VST_setup.dmg",
           "sha256": "82685deeac6060b72621516c7e524730345f06942ace2e32324cacd55f41c476",
-          "bytes": 36089508
+          "bytes": 36089508,
+          "take": [
+            "SPAN.vst3"
+          ]
         },
         {
           "kind": "vendor_page",
@@ -1546,7 +1586,10 @@
           "archive": "zip",
           "url": "https://github.com/asb2m10/dexed/releases/download/v1.0.1/Dexed-1.0.1-macOS.zip",
           "sha256": "4269448bc1312424cafd29aff615d891bc5905ebfc54b42ce70c56b9b10dc401",
-          "bytes": 16939688
+          "bytes": 16939688,
+          "take": [
+            "Dexed.vst3"
+          ]
         },
         {
           "kind": "vendor_page",
@@ -1567,7 +1610,10 @@
           "archive": "zip",
           "url": "https://github.com/asb2m10/dexed/releases/download/v1.0.1/Dexed-1.0.1-macOS.zip",
           "sha256": "4269448bc1312424cafd29aff615d891bc5905ebfc54b42ce70c56b9b10dc401",
-          "bytes": 16939688
+          "bytes": 16939688,
+          "take": [
+            "Dexed.vst3"
+          ]
         },
         {
           "kind": "vendor_page",
@@ -1588,7 +1634,10 @@
           "archive": "zip",
           "url": "https://github.com/asb2m10/dexed/releases/download/v1.0.1/Dexed-1.0.1-win.zip",
           "sha256": "1f118445f2c5c411636bb41ddf8b456db09af74cd38f9ede8a93a01020505f05",
-          "bytes": 9742538
+          "bytes": 9742538,
+          "take": [
+            "Dexed.vst3"
+          ]
         },
         {
           "kind": "vendor_page",
@@ -1603,7 +1652,10 @@
           "archive": "zip",
           "url": "https://github.com/asb2m10/dexed/releases/download/v1.0.1/Dexed-1.0.1-lnx.zip",
           "sha256": "2bac3d0c4237e8c22c4274b6d5b59fe6329fcae72864f81b5830393eff354fc1",
-          "bytes": 7725160
+          "bytes": 7725160,
+          "take": [
+            "Dexed.vst3"
+          ]
         },
         {
           "kind": "vendor_page",
@@ -2517,7 +2569,10 @@
           "archive": "dmg",
           "url": "https://www.voxengo.com/files/VoxengoOldSkoolVerb_214_Mac_AU_AAX_VST_setup.dmg",
           "sha256": "f6ba1416e31d16d52becf8df7a602d9da22c5c015419fdada0ad8282f4ad2008",
-          "bytes": 29375793
+          "bytes": 29375793,
+          "take": [
+            "OldSkoolVerb.vst"
+          ]
         },
         {
           "kind": "direct",
@@ -2526,7 +2581,10 @@
           "archive": "dmg",
           "url": "https://www.voxengo.com/files/VoxengoOldSkoolVerb_214_Mac_AU_AAX_VST_setup.dmg",
           "sha256": "f6ba1416e31d16d52becf8df7a602d9da22c5c015419fdada0ad8282f4ad2008",
-          "bytes": 29375793
+          "bytes": 29375793,
+          "take": [
+            "OldSkoolVerb.vst"
+          ]
         },
         {
           "kind": "direct",
@@ -2561,7 +2619,10 @@
           "archive": "dmg",
           "url": "https://www.voxengo.com/files/VoxengoBoogex_38_Mac_AU_AAX_VST_setup.dmg",
           "sha256": "0a2e3d5e5230aae9f05a45d0c6d5494a0e181c4261c84e298016fd327a17072b",
-          "bytes": 48007700
+          "bytes": 48007700,
+          "take": [
+            "Boogex.vst3"
+          ]
         },
         {
           "kind": "direct",
@@ -2570,7 +2631,10 @@
           "archive": "dmg",
           "url": "https://www.voxengo.com/files/VoxengoBoogex_38_Mac_AU_AAX_VST_setup.dmg",
           "sha256": "0a2e3d5e5230aae9f05a45d0c6d5494a0e181c4261c84e298016fd327a17072b",
-          "bytes": 48007700
+          "bytes": 48007700,
+          "take": [
+            "Boogex.vst3"
+          ]
         },
         {
           "kind": "direct",
@@ -2602,7 +2666,13 @@
           "archive": "tar-xz",
           "url": "https://github.com/michaelwillis/dragonfly-reverb/releases/download/3.2.10/dragonfly-reverb-3.2.10-linux-x86_64.tar.xz",
           "bytes": 2267368,
-          "sha256": "59f1593120de82e31dd194e2ab1536af14fec2b3ec6ec45abf6d9c8ac02ef430"
+          "sha256": "59f1593120de82e31dd194e2ab1536af14fec2b3ec6ec45abf6d9c8ac02ef430",
+          "take": [
+            "dragonfly-reverb-3.2.10/DragonflyEarlyReflections-vst.so",
+            "dragonfly-reverb-3.2.10/DragonflyHallReverb-vst.so",
+            "dragonfly-reverb-3.2.10/DragonflyPlateReverb-vst.so",
+            "dragonfly-reverb-3.2.10/DragonflyRoomReverb-vst.so"
+          ]
         },
         {
           "kind": "github_release",
@@ -2620,7 +2690,13 @@
           "archive": "zip",
           "url": "https://github.com/michaelwillis/dragonfly-reverb/releases/download/3.2.10/dragonfly-reverb-3.2.10-win64.zip",
           "bytes": 22447365,
-          "sha256": "ca5f35f9dcd9a33f06490d3c92f04061a1a798cb81257d5ca5851bdda0824c66"
+          "sha256": "ca5f35f9dcd9a33f06490d3c92f04061a1a798cb81257d5ca5851bdda0824c66",
+          "take": [
+            "dragonfly-reverb-3.2.10/DragonflyEarlyReflections-vst.dll",
+            "dragonfly-reverb-3.2.10/DragonflyHallReverb-vst.dll",
+            "dragonfly-reverb-3.2.10/DragonflyPlateReverb-vst.dll",
+            "dragonfly-reverb-3.2.10/DragonflyRoomReverb-vst.dll"
+          ]
         },
         {
           "kind": "github_release",
@@ -2692,7 +2768,10 @@
           "archive": "zip",
           "url": "https://github.com/wolf-plugins/wolf-shaper/releases/download/v1.0.2/wolf-shaper-v1.0.2-linux-x64.zip",
           "bytes": 5089663,
-          "sha256": "8b844e9b535d2b8a8a07fc6cec207beae8161f7d6da36e4a856a766aa441b848"
+          "sha256": "8b844e9b535d2b8a8a07fc6cec207beae8161f7d6da36e4a856a766aa441b848",
+          "take": [
+            "wolf-shaper-vst.so"
+          ]
         },
         {
           "kind": "github_release",
@@ -2711,7 +2790,10 @@
           "archive": "zip",
           "url": "https://github.com/wolf-plugins/wolf-shaper/releases/download/v1.0.2/wolf-shaper-v1.0.2+20230515144200-windows-x64.zip",
           "bytes": 5481008,
-          "sha256": "42a703a5f71b19855d9213d57f2261d2182c73c73d39730775188df3e4c47da9"
+          "sha256": "42a703a5f71b19855d9213d57f2261d2182c73c73d39730775188df3e4c47da9",
+          "take": [
+            "bin/wolf-shaper-vst.dll"
+          ]
         },
         {
           "kind": "github_release",
@@ -2930,7 +3012,10 @@
           "archive": "7z",
           "url": "https://github.com/lsp-plugins/lsp-plugins/releases/download/1.2.35/lsp-plugins-1.2.35-Linux-x86_64.7z",
           "bytes": 38793460,
-          "sha256": "4ef3b2f63b29a522fdaf3a18f879c1c85c82f0bdd1e0b3c849a5f3c4b08d2550"
+          "sha256": "4ef3b2f63b29a522fdaf3a18f879c1c85c82f0bdd1e0b3c849a5f3c4b08d2550",
+          "take": [
+            "lsp-plugins-1.2.35-Linux-x86_64/VST3/lsp-plugins.vst3"
+          ]
         },
         {
           "kind": "github_release",

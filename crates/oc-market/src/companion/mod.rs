@@ -215,8 +215,15 @@ pub fn prepare(request: Prepare<'_>) -> Result<PreparedCompanion, Error> {
         .map_err(destination)?;
     let content_stage =
         crate::temporary::directory_in(parent, ".ocp-factory-").map_err(destination)?;
-    match crate::extract_bundles(plugin, format, HostOs::Macos, plugin_stage.path(), false)
-        .map_err(|e| Error::new(ErrorCode::Archive, e))?
+    match crate::extract_bundles(
+        plugin,
+        format,
+        HostOs::Macos,
+        plugin_stage.path(),
+        false,
+        install.take.as_deref(),
+    )
+    .map_err(|e| Error::new(ErrorCode::Archive, e))?
     {
         InstallOutcome::Installed { .. } => {}
         _ => {

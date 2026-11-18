@@ -1,7 +1,9 @@
 //! Install vocabulary, target selection, and archive extraction.
 //!
-//! Extraction is path-traversal safe: every entry is sanitised, symlinks are
-//! refused, and nothing is written outside the staging directory.
+//! Extraction is path-traversal safe: every entry is sanitised, links are never
+//! created, and nothing is written outside the staging directory. Bundle
+//! extraction ignores links that lie outside every bundle it installs and
+//! refuses links inside one.
 
 use std::fs;
 use std::io::{Read, Write};
@@ -726,7 +728,50 @@ fn inside_bundle_directory(ancestors: &[&std::ffi::OsStr]) -> bool {
     })
 }
 
-/// Extract only the requested bundle type from a zip archive.
+/// Resolve install-script paths into the bundle roots they select. The final
+/// component is the name the bundle takes in the destination folder.
+fn take_roots(takes: &[String]) -> Result<Vec<(PathBuf, String)>, String> {
+    let mut roots = Vec::with_capacity(takes.len());
+    for take in takes {
+        let path = sanitize_zip_path(take)?;
+        let name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .ok_or_else(|| "Install script path has no final component".to_string())?;
+        if roots
+            .iter()
+            .any(|(_, existing): &(PathBuf, String)| existing.eq_ignore_ascii_case(&name))
+        {
+            return Err(format!(
+                "Install script selects conflicting bundle name '{name}'"
+            ));
+        }
+        roots.push((path, name));
+    }
+    Ok(roots)
+}
+
+/// The install-script root an archive path belongs to, rebased onto the bundle
+/// name that will be published.
+fn take_relative(path: &Path, roots: &[(PathBuf, String)]) -> Option<(usize, PathBuf)> {
+    for (index, (root, name)) in roots.iter().enumerate() {
+        if let Ok(rest) = path.strip_prefix(root) {
+            let mut relative = PathBuf::from(name);
+            relative.extend(rest);
+            return Some((index, relative));
+        }
+    }
+    None
+}
+
+fn missing_take(roots: &[(PathBuf, String)], found: &[bool]) -> Option<String> {
+    roots
+        .iter()
+        .zip(found)
+        .find(|(_, found)| !**found)
+        .map(|((path, _), _)| path.display().to_string())
+}
+
 /// Scan an archive for exactly one vendor installer. `Au` and `Standalone`
 /// builds use this because they have no bundle directory to place.
 pub fn unwrap_installer(
@@ -791,8 +836,12 @@ pub fn extract_bundles(
     os: HostOs,
     target_dir: &Path,
     overwrite: bool,
+    take: Option<&[String]>,
 ) -> Result<InstallOutcome, String> {
     let entries = parse_zip(data)?;
+    if let Some(takes) = take {
+        return extract_selected_zip(&entries, data, takes, target_dir, overwrite);
+    }
     let mut bundles: Vec<String> = Vec::new();
     let mut grouped: Vec<Vec<usize>> = Vec::new();
     for (index, meta) in entries.iter().enumerate() {
@@ -870,6 +919,72 @@ pub fn extract_bundles(
     Ok(InstallOutcome::Installed {
         path: first.display().to_string(),
         message: format!("Installed {} bundle(s).", bundles.len()),
+    })
+}
+
+/// Extract only the paths an install script selects from a zip archive. Every
+/// entry outside them, including links and devices, is ignored; a link inside
+/// one is refused, and a missing path fails before anything is published.
+fn extract_selected_zip(
+    entries: &[ZipEntryMeta],
+    data: &[u8],
+    takes: &[String],
+    target_dir: &Path,
+    overwrite: bool,
+) -> Result<InstallOutcome, String> {
+    let roots = take_roots(takes)?;
+    let mut found = vec![false; roots.len()];
+    let mut grouped: Vec<Vec<usize>> = vec![Vec::new(); roots.len()];
+    for (index, meta) in entries.iter().enumerate() {
+        let path = sanitize_zip_path(&meta.name)?;
+        let Some((take_index, _)) = take_relative(&path, &roots) else {
+            continue;
+        };
+        found[take_index] = true;
+        grouped[take_index].push(index);
+    }
+    if let Some(path) = missing_take(&roots, &found) {
+        return Err(format!(
+            "Archive does not contain the selected path '{path}'"
+        ));
+    }
+    let names: Vec<String> = roots.iter().map(|(_, name)| name.clone()).collect();
+    if !overwrite && names.iter().any(|name| target_dir.join(name).exists()) {
+        let path = target_dir.join(&names[0]);
+        return Ok(InstallOutcome::NeedsConfirmation {
+            path: path.display().to_string(),
+            message: format!("{} already exists. Replace it?", path.display()),
+        });
+    }
+    fs::create_dir_all(target_dir)
+        .map_err(|error| format!("Failed to create '{}': {error}", target_dir.display()))?;
+    let cleanup = crate::temporary::directory_in(target_dir, ".ocp-staging-").map_err(|error| {
+        format!(
+            "Failed to create staging directory in '{}': {error}",
+            target_dir.display()
+        )
+    })?;
+    let staging = cleanup.path();
+    let mut extracted = 0u64;
+    for indexes in &grouped {
+        for index in indexes {
+            let meta = &entries[*index];
+            let path = sanitize_zip_path(&meta.name)?;
+            let (_, relative) = take_relative(&path, &roots)
+                .ok_or_else(|| "Install script path disappeared".to_string())?;
+            extracted = extracted
+                .checked_add(write_zip_entry(staging, &relative, meta, data)? as u64)
+                .ok_or_else(|| "Zip archive expands beyond the install limit".to_string())?;
+            if extracted > MAX_ZIP_TOTAL_BYTES {
+                return Err("Zip archive expands beyond the install limit".into());
+            }
+        }
+    }
+    publish_staged_bundles(staging, target_dir, &names)?;
+    drop(cleanup);
+    Ok(InstallOutcome::Installed {
+        path: target_dir.join(&names[0]).display().to_string(),
+        message: format!("Installed {} bundle(s).", names.len()),
     })
 }
 
@@ -1093,9 +1208,13 @@ fn seven_z_entries(data: &[u8]) -> Result<Vec<ExtractedTarEntry>, String> {
             return Ok(true);
         }
         if entry.windows_attributes() & 0x400 != 0 {
-            let message = "7z archive contains a link or device".to_string();
-            failure = Some(message.clone());
-            return Err(sevenz_error(message));
+            files.push(ExtractedTarEntry {
+                name: entry.name().to_string(),
+                payload: Vec::new(),
+                kind: TarKind::Link,
+                mode: 0o644,
+            });
+            return Ok(true);
         }
         let mut bytes = Vec::new();
         let mut buffer = [0u8; 64 * 1024];
@@ -1145,7 +1264,7 @@ fn seven_z_entries(data: &[u8]) -> Result<Vec<ExtractedTarEntry>, String> {
 fn installers_from_entries(files: &[ExtractedTarEntry]) -> Result<(String, Vec<u8>), String> {
     let mut installers = Vec::new();
     for file in files {
-        if file.kind == crate::tar::TarKind::Directory || !is_installer_file(&file.name) {
+        if file.kind != crate::tar::TarKind::File || !is_installer_file(&file.name) {
             continue;
         }
         let path = sanitize_zip_path(&file.name)?;
@@ -1159,6 +1278,110 @@ fn installers_from_entries(files: &[ExtractedTarEntry]) -> Result<(String, Vec<u
     one_installer(installers)
 }
 
+/// Extract only the paths an install script selects from a tar-style listing.
+/// Every entry outside them, including links and devices, is ignored; a link
+/// inside one is refused, and a missing path fails before anything is published.
+fn extract_selected_entries(
+    files: &[ExtractedTarEntry],
+    label: &str,
+    takes: &[String],
+    target_dir: &Path,
+    overwrite: bool,
+) -> Result<InstallOutcome, String> {
+    let roots = take_roots(takes)?;
+    let mut found = vec![false; roots.len()];
+    let mut grouped: Vec<Vec<usize>> = vec![Vec::new(); roots.len()];
+    for (index, file) in files.iter().enumerate() {
+        let path = sanitize_zip_path(&file.name)?;
+        let Some((take_index, _)) = take_relative(&path, &roots) else {
+            continue;
+        };
+        if !matches!(
+            file.kind,
+            crate::tar::TarKind::File | crate::tar::TarKind::Directory
+        ) {
+            return Err(format!(
+                "{label} archive contains a link inside a selected path"
+            ));
+        }
+        found[take_index] = true;
+        grouped[take_index].push(index);
+    }
+    if let Some(path) = missing_take(&roots, &found) {
+        return Err(format!(
+            "Archive does not contain the selected path '{path}'"
+        ));
+    }
+    let names: Vec<String> = roots.iter().map(|(_, name)| name.clone()).collect();
+    if !overwrite && names.iter().any(|name| target_dir.join(name).exists()) {
+        let path = target_dir.join(&names[0]);
+        return Ok(InstallOutcome::NeedsConfirmation {
+            path: path.display().to_string(),
+            message: format!("{} already exists. Replace it?", path.display()),
+        });
+    }
+    fs::create_dir_all(target_dir)
+        .map_err(|error| format!("Failed to create '{}': {error}", target_dir.display()))?;
+    let cleanup = crate::temporary::directory_in(target_dir, ".ocp-staging-").map_err(|error| {
+        format!(
+            "Failed to create staging directory in '{}': {error}",
+            target_dir.display()
+        )
+    })?;
+    let staging = cleanup.path();
+    for indexes in &grouped {
+        for index in indexes {
+            let file = &files[*index];
+            let path = sanitize_zip_path(&file.name)?;
+            let (_, relative) = take_relative(&path, &roots)
+                .ok_or_else(|| "Install script path disappeared".to_string())?;
+            let destination = staging.join(&relative);
+            if !destination.starts_with(staging) {
+                return Err("Archive entry escapes the staging directory".into());
+            }
+            match file.kind {
+                crate::tar::TarKind::Directory => {
+                    fs::create_dir_all(&destination).map_err(|error| {
+                        format!("Failed to create '{}': {error}", destination.display())
+                    })?
+                }
+                crate::tar::TarKind::File => {
+                    if let Some(parent) = destination.parent() {
+                        fs::create_dir_all(parent).map_err(|error| {
+                            format!("Failed to create '{}': {error}", parent.display())
+                        })?;
+                    }
+                    let mut output = fs::OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .open(&destination)
+                        .map_err(|error| {
+                            format!(
+                                "Conflicting archive destination '{}': {error}",
+                                destination.display()
+                            )
+                        })?;
+                    output.write_all(&file.payload).map_err(|error| {
+                        format!("Failed to write '{}': {error}", destination.display())
+                    })?;
+                    apply_mode(&destination, Some(file.mode))?;
+                }
+                crate::tar::TarKind::Link | crate::tar::TarKind::Other => {
+                    return Err(format!(
+                        "{label} archive contains a link inside a selected path"
+                    ));
+                }
+            }
+        }
+    }
+    publish_staged_bundles(staging, target_dir, &names)?;
+    drop(cleanup);
+    Ok(InstallOutcome::Installed {
+        path: target_dir.join(&names[0]).display().to_string(),
+        message: format!("Installed {} bundle(s).", names.len()),
+    })
+}
+
 /// Move bundles from a tar-style listing into `target_dir` under the same
 /// containment and replacement rules as zip extraction.
 fn extract_entry_bundles(
@@ -1168,12 +1391,23 @@ fn extract_entry_bundles(
     os: HostOs,
     target_dir: &Path,
     overwrite: bool,
+    take: Option<&[String]>,
 ) -> Result<InstallOutcome, String> {
+    if let Some(takes) = take {
+        return extract_selected_entries(files, label, takes, target_dir, overwrite);
+    }
     let mut bundles: Vec<String> = Vec::new();
     let mut grouped: Vec<Vec<usize>> = Vec::new();
     for (index, file) in files.iter().enumerate() {
         let path = sanitize_zip_path(&file.name)?;
-        if let Some((root, _)) = bundle_relative_path(&path, format, os) {
+        let bundle = bundle_relative_path(&path, format, os);
+        if file.kind == crate::tar::TarKind::Link {
+            if bundle.is_some() {
+                return Err(format!("{label} archive contains a link inside a bundle"));
+            }
+            continue;
+        }
+        if let Some((root, _)) = bundle {
             if let Some(bundle_index) = bundles
                 .iter()
                 .position(|existing| existing.eq_ignore_ascii_case(&root))
@@ -1222,30 +1456,36 @@ fn extract_entry_bundles(
             if !destination.starts_with(staging) {
                 return Err("Archive entry escapes the staging directory".into());
             }
-            if file.kind == crate::tar::TarKind::Directory {
-                fs::create_dir_all(&destination).map_err(|error| {
-                    format!("Failed to create '{}': {error}", destination.display())
-                })?;
-            } else {
-                if let Some(parent) = destination.parent() {
-                    fs::create_dir_all(parent).map_err(|error| {
-                        format!("Failed to create '{}': {error}", parent.display())
-                    })?;
+            match file.kind {
+                crate::tar::TarKind::Directory => {
+                    fs::create_dir_all(&destination).map_err(|error| {
+                        format!("Failed to create '{}': {error}", destination.display())
+                    })?
                 }
-                let mut output = fs::OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .open(&destination)
-                    .map_err(|error| {
-                        format!(
-                            "Conflicting archive destination '{}': {error}",
-                            destination.display()
-                        )
+                crate::tar::TarKind::Link | crate::tar::TarKind::Other => {
+                    return Err(format!("{label} archive contains a link inside a bundle"));
+                }
+                crate::tar::TarKind::File => {
+                    if let Some(parent) = destination.parent() {
+                        fs::create_dir_all(parent).map_err(|error| {
+                            format!("Failed to create '{}': {error}", parent.display())
+                        })?;
+                    }
+                    let mut output = fs::OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .open(&destination)
+                        .map_err(|error| {
+                            format!(
+                                "Conflicting archive destination '{}': {error}",
+                                destination.display()
+                            )
+                        })?;
+                    output.write_all(&file.payload).map_err(|error| {
+                        format!("Failed to write '{}': {error}", destination.display())
                     })?;
-                output.write_all(&file.payload).map_err(|error| {
-                    format!("Failed to write '{}': {error}", destination.display())
-                })?;
-                apply_mode(&destination, Some(file.mode))?;
+                    apply_mode(&destination, Some(file.mode))?;
+                }
             }
         }
     }
@@ -1285,6 +1525,7 @@ pub fn extract_tar_bundles(
     os: HostOs,
     target_dir: &Path,
     overwrite: bool,
+    take: Option<&[String]>,
 ) -> Result<InstallOutcome, String> {
     extract_entry_bundles(
         &tar_entries(data)?,
@@ -1293,6 +1534,7 @@ pub fn extract_tar_bundles(
         os,
         target_dir,
         overwrite,
+        take,
     )
 }
 
@@ -1303,6 +1545,7 @@ pub fn extract_tar_xz_bundles(
     os: HostOs,
     target_dir: &Path,
     overwrite: bool,
+    take: Option<&[String]>,
 ) -> Result<InstallOutcome, String> {
     extract_entry_bundles(
         &tar_xz_entries(data)?,
@@ -1311,6 +1554,7 @@ pub fn extract_tar_xz_bundles(
         os,
         target_dir,
         overwrite,
+        take,
     )
 }
 
@@ -1321,6 +1565,7 @@ pub fn extract_seven_z_bundles(
     os: HostOs,
     target_dir: &Path,
     overwrite: bool,
+    take: Option<&[String]>,
 ) -> Result<InstallOutcome, String> {
     extract_entry_bundles(
         &seven_z_entries(data)?,
@@ -1329,6 +1574,7 @@ pub fn extract_seven_z_bundles(
         os,
         target_dir,
         overwrite,
+        take,
     )
 }
 
@@ -1352,9 +1598,18 @@ mod tests {
 
     /// A stored (uncompressed) zip, which is all the extractor needs to read.
     fn stored_zip(files: &[(&str, &[u8])]) -> Vec<u8> {
+        let files: Vec<_> = files
+            .iter()
+            .map(|(name, data)| (*name, *data, None))
+            .collect();
+        stored_zip_modes(&files)
+    }
+
+    /// A stored zip whose entries may carry Unix modes, including link modes.
+    fn stored_zip_modes(files: &[(&str, &[u8], Option<u32>)]) -> Vec<u8> {
         let mut data = Vec::new();
         let mut directory = Vec::new();
-        for (name, contents) in files {
+        for (name, contents, mode) in files {
             let offset = data.len() as u32;
             data.extend_from_slice(&0x0403_4b50u32.to_le_bytes());
             data.extend_from_slice(&20u16.to_le_bytes());
@@ -1370,8 +1625,10 @@ mod tests {
             data.extend_from_slice(name.as_bytes());
             data.extend_from_slice(contents);
 
+            let made_by: u16 = if mode.is_some() { (3 << 8) | 20 } else { 20 };
+            let external_attributes = mode.map_or(0, |mode| mode << 16);
             directory.extend_from_slice(&0x0201_4b50u32.to_le_bytes());
-            directory.extend_from_slice(&20u16.to_le_bytes());
+            directory.extend_from_slice(&made_by.to_le_bytes());
             directory.extend_from_slice(&20u16.to_le_bytes());
             directory.extend_from_slice(&0u16.to_le_bytes());
             directory.extend_from_slice(&0u16.to_le_bytes());
@@ -1385,7 +1642,7 @@ mod tests {
             directory.extend_from_slice(&0u16.to_le_bytes());
             directory.extend_from_slice(&0u16.to_le_bytes());
             directory.extend_from_slice(&0u16.to_le_bytes());
-            directory.extend_from_slice(&0u32.to_le_bytes());
+            directory.extend_from_slice(&external_attributes.to_le_bytes());
             directory.extend_from_slice(&offset.to_le_bytes());
             directory.extend_from_slice(name.as_bytes());
         }
@@ -1407,23 +1664,45 @@ mod tests {
         crate::temporary::directory_in(&std::env::temp_dir(), &format!("oc-market-{tag}-")).unwrap()
     }
 
+    fn tar_push(raw: &mut Vec<u8>, name: &str, payload: &[u8], kind: u8, link: &str) {
+        let mut header = [0; 512];
+        header[..name.len()].copy_from_slice(name.as_bytes());
+        header[100..108].copy_from_slice(b"0000755\0");
+        header[124..136].copy_from_slice(format!("{:011o}\0", payload.len()).as_bytes());
+        header[157..157 + link.len()].copy_from_slice(link.as_bytes());
+        header[156] = kind;
+        header[148..156].fill(b' ');
+        let sum: u64 = header.iter().map(|byte| u64::from(*byte)).sum();
+        header[148..156].copy_from_slice(format!("{sum:06o}\0 ").as_bytes());
+        raw.extend_from_slice(&header);
+        raw.extend_from_slice(payload);
+        raw.resize(raw.len().div_ceil(512) * 512, 0);
+    }
+
     fn tar_raw(entries: &[(&str, &[u8], u8)]) -> Vec<u8> {
         let mut raw = Vec::new();
         for (name, payload, kind) in entries {
-            let mut header = [0; 512];
-            header[..name.len()].copy_from_slice(name.as_bytes());
-            header[100..108].copy_from_slice(b"0000755\0");
-            header[124..136].copy_from_slice(format!("{:011o}\0", payload.len()).as_bytes());
-            header[156] = *kind;
-            header[148..156].fill(b' ');
-            let sum: u64 = header.iter().map(|byte| u64::from(*byte)).sum();
-            header[148..156].copy_from_slice(format!("{sum:06o}\0 ").as_bytes());
-            raw.extend_from_slice(&header);
-            raw.extend_from_slice(payload);
-            raw.resize(raw.len().div_ceil(512) * 512, 0);
+            tar_push(&mut raw, name, payload, *kind, "");
         }
         raw.resize(raw.len() + 1024, 0);
         raw
+    }
+
+    fn tar_link_raw(files: &[(&str, &[u8])], link: (&str, &str, u8)) -> Vec<u8> {
+        let mut raw = Vec::new();
+        for (name, payload) in files {
+            tar_push(&mut raw, name, payload, b'0', "");
+        }
+        tar_push(&mut raw, link.0, b"", link.2, link.1);
+        raw.resize(raw.len() + 1024, 0);
+        raw
+    }
+
+    fn gzip(raw: &[u8]) -> Vec<u8> {
+        use std::io::Write as _;
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        encoder.write_all(raw).unwrap();
+        encoder.finish().unwrap()
     }
 
     fn xz(raw: &[u8]) -> Vec<u8> {
@@ -1461,6 +1740,7 @@ mod tests {
             HostOs::Linux,
             dir.path(),
             false,
+            None,
         )
         .expect("tar.xz install");
         assert!(matches!(outcome, InstallOutcome::Installed { .. }));
@@ -1477,6 +1757,7 @@ mod tests {
             HostOs::Linux,
             dir.path(),
             false,
+            None,
         )
         .expect("7z install");
         assert!(matches!(outcome, InstallOutcome::Installed { .. }));
@@ -1493,6 +1774,7 @@ mod tests {
             HostOs::Linux,
             dir.path(),
             false,
+            None,
         )
         .unwrap_err();
         assert!(error.contains("escapes the install directory"), "{error}");
@@ -1509,6 +1791,7 @@ mod tests {
             HostOs::Linux,
             dir.path(),
             false,
+            None,
         )
         .unwrap_err();
         assert!(error.contains("escapes the install directory"), "{error}");
@@ -1519,16 +1802,28 @@ mod tests {
     fn an_archive_without_the_bundle_is_refused() {
         let tar = xz(&tar_raw(&[("readme.txt", b"docs", b'0')]));
         let dir = scratch("missing-bundle-tar");
-        let error =
-            extract_tar_xz_bundles(&tar, BundleFormat::Vst3, HostOs::Linux, dir.path(), true)
-                .unwrap_err();
+        let error = extract_tar_xz_bundles(
+            &tar,
+            BundleFormat::Vst3,
+            HostOs::Linux,
+            dir.path(),
+            true,
+            None,
+        )
+        .unwrap_err();
         assert!(error.contains("does not contain a .vst3 bundle"), "{error}");
 
         let seven = seven_zip(&[("readme.txt", b"docs")]);
         let dir = scratch("missing-bundle-7z");
-        let error =
-            extract_seven_z_bundles(&seven, BundleFormat::Vst3, HostOs::Linux, dir.path(), true)
-                .unwrap_err();
+        let error = extract_seven_z_bundles(
+            &seven,
+            BundleFormat::Vst3,
+            HostOs::Linux,
+            dir.path(),
+            true,
+            None,
+        )
+        .unwrap_err();
         assert!(error.contains("does not contain a .vst3 bundle"), "{error}");
     }
 
@@ -1551,6 +1846,7 @@ mod tests {
             HostOs::Linux,
             dir.path(),
             false,
+            None,
         )
         .unwrap_err();
         assert!(error.contains("payload byte limit"), "{error}");
@@ -1569,6 +1865,7 @@ mod tests {
             HostOs::Macos,
             dir.path(),
             false,
+            None,
         )
         .expect("wrapped installer");
         match outcome {
@@ -1591,6 +1888,7 @@ mod tests {
             HostOs::Macos,
             dir.path(),
             false,
+            None,
         )
         .unwrap_err();
         assert!(error.contains("does not contain a .vst3 bundle"), "{error}");
@@ -1609,6 +1907,7 @@ mod tests {
             HostOs::Macos,
             dir.path(),
             false,
+            None,
         )
         .expect("bundle install");
         assert!(matches!(outcome, InstallOutcome::Installed { .. }));
@@ -1617,6 +1916,173 @@ mod tests {
                 .join("Fixture.vst3/Contents/Info.plist")
                 .is_file()
         );
+    }
+
+    #[test]
+    fn a_zip_link_outside_every_bundle_is_ignored_and_inside_is_refused() {
+        let archive = stored_zip_modes(&[
+            ("Pkg/Plugin.vst3/Contents/Info.plist", b"<plist/>", None),
+            (
+                "Pkg/usr/lib/libfoo.dylib",
+                b"libfoo.0.dylib",
+                Some(0o120777),
+            ),
+        ]);
+        let dir = scratch("zip-link-outside");
+        let outcome = extract_bundles(
+            &archive,
+            BundleFormat::Vst3,
+            HostOs::Macos,
+            dir.path(),
+            false,
+            None,
+        )
+        .expect("bundle install");
+        assert!(matches!(outcome, InstallOutcome::Installed { .. }));
+        assert!(dir.path().join("Plugin.vst3/Contents/Info.plist").is_file());
+        assert!(!dir.path().join("Pkg/usr").exists());
+
+        let archive = stored_zip_modes(&[
+            ("Pkg/Plugin.vst3/Contents/Info.plist", b"<plist/>", None),
+            (
+                "Pkg/Plugin.vst3/Contents/link",
+                b"../../../../etc/passwd",
+                Some(0o120777),
+            ),
+        ]);
+        let dir = scratch("zip-link-inside");
+        let error = extract_bundles(
+            &archive,
+            BundleFormat::Vst3,
+            HostOs::Macos,
+            dir.path(),
+            false,
+            None,
+        )
+        .unwrap_err();
+        assert!(error.contains("symlink"), "{error}");
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn a_tar_link_outside_every_bundle_is_ignored() {
+        for kind in [b'1', b'2'] {
+            let archive = gzip(&tar_link_raw(
+                &[("Pkg/Plugin.vst3/Contents/Info.plist", b"<plist/>")],
+                (
+                    "sfizz-0.5.1-osx-amd64/usr/local/lib/libsfizz.dylib",
+                    "libsfizz.0.dylib",
+                    kind,
+                ),
+            ));
+            let dir = scratch("tar-link-outside");
+            let outcome = extract_tar_bundles(
+                &archive,
+                BundleFormat::Vst3,
+                HostOs::Macos,
+                dir.path(),
+                false,
+                None,
+            )
+            .expect("bundle install");
+            assert!(matches!(outcome, InstallOutcome::Installed { .. }));
+            assert!(dir.path().join("Plugin.vst3/Contents/Info.plist").is_file());
+            assert!(!dir.path().join("sfizz-0.5.1-osx-amd64").exists());
+        }
+    }
+
+    #[test]
+    fn a_tar_link_inside_a_bundle_is_refused_before_anything_is_published() {
+        for kind in [b'1', b'2'] {
+            let archive = gzip(&tar_link_raw(
+                &[("Pkg/Plugin.vst3/Contents/Info.plist", b"<plist/>")],
+                (
+                    "Pkg/Plugin.vst3/Contents/link",
+                    "../../../../etc/passwd",
+                    kind,
+                ),
+            ));
+            let dir = scratch("tar-link-inside");
+            let old = dir.path().join("Plugin.vst3/Contents/old");
+            fs::create_dir_all(old.parent().unwrap()).unwrap();
+            fs::write(&old, b"keep").unwrap();
+            let error = extract_tar_bundles(
+                &archive,
+                BundleFormat::Vst3,
+                HostOs::Macos,
+                dir.path(),
+                true,
+                None,
+            )
+            .unwrap_err();
+            assert!(error.contains("link inside a bundle"), "{error}");
+            assert_eq!(fs::read(&old).unwrap(), b"keep");
+            assert!(!dir.path().join("Plugin.vst3/Contents/Info.plist").exists());
+            assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+        }
+    }
+
+    #[test]
+    fn a_seven_zip_link_outside_every_bundle_is_ignored() {
+        let mut link = sevenz_rust2::ArchiveEntry::new_file("Pkg/usr/lib/libfoo.so");
+        link.has_windows_attributes = true;
+        link.windows_attributes = 0x400;
+        let mut writer =
+            sevenz_rust2::ArchiveWriter::new(std::io::Cursor::new(Vec::new())).unwrap();
+        writer
+            .push_archive_entry(
+                sevenz_rust2::ArchiveEntry::new_file("Pkg/Plugin.vst3/Contents/Info.plist"),
+                Some(std::io::Cursor::new(b"<plist/>".to_vec())),
+            )
+            .unwrap();
+        writer
+            .push_archive_entry(link, Some(std::io::Cursor::new(Vec::new())))
+            .unwrap();
+        let archive = writer.finish().unwrap().into_inner();
+        let dir = scratch("seven-z-link-outside");
+        let outcome = extract_seven_z_bundles(
+            &archive,
+            BundleFormat::Vst3,
+            HostOs::Linux,
+            dir.path(),
+            false,
+            None,
+        )
+        .expect("7z install");
+        assert!(matches!(outcome, InstallOutcome::Installed { .. }));
+        assert!(dir.path().join("Plugin.vst3/Contents/Info.plist").is_file());
+        assert!(!dir.path().join("Pkg/usr").exists());
+    }
+
+    #[test]
+    fn a_seven_zip_link_inside_a_bundle_is_refused() {
+        let mut link = sevenz_rust2::ArchiveEntry::new_file("Pkg/Plugin.vst3/Contents/link");
+        link.has_windows_attributes = true;
+        link.windows_attributes = 0x400;
+        let mut writer =
+            sevenz_rust2::ArchiveWriter::new(std::io::Cursor::new(Vec::new())).unwrap();
+        writer
+            .push_archive_entry(
+                sevenz_rust2::ArchiveEntry::new_file("Pkg/Plugin.vst3/Contents/Info.plist"),
+                Some(std::io::Cursor::new(b"<plist/>".to_vec())),
+            )
+            .unwrap();
+        writer
+            .push_archive_entry(link, Some(std::io::Cursor::new(Vec::new())))
+            .unwrap();
+        let archive = writer.finish().unwrap().into_inner();
+        let dir = scratch("seven-z-link-inside");
+        let error = extract_seven_z_bundles(
+            &archive,
+            BundleFormat::Vst3,
+            HostOs::Linux,
+            dir.path(),
+            false,
+            None,
+        )
+        .unwrap_err();
+        assert!(error.contains("link inside a bundle"), "{error}");
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
     }
 
     #[test]
@@ -1635,10 +2101,119 @@ mod tests {
             HostOs::Macos,
             dir.path(),
             false,
+            None,
         )
         .expect("bundle install");
         assert!(matches!(outcome, InstallOutcome::Installed { .. }));
         assert!(dir.path().join("Sfizz.vst3/Contents/Info.plist").is_file());
         assert!(!dir.path().join("plugin.vst3").exists());
+    }
+    #[test]
+    fn take_selects_only_the_named_zip_bundles() {
+        let archive = stored_zip(&[
+            ("Pkg/One.vst3/Contents/Info.plist", b"<plist/>"),
+            ("Pkg/Two.vst3/Contents/Info.plist", b"<plist/>"),
+            ("Pkg/Three.vst3/Contents/Info.plist", b"<plist/>"),
+            ("readme.txt", b"docs"),
+        ]);
+        let take = ["Pkg/One.vst3".to_string(), "Pkg/Two.vst3".to_string()];
+        let dir = scratch("take-zip");
+        let outcome = extract_bundles(
+            &archive,
+            BundleFormat::Vst3,
+            HostOs::Macos,
+            dir.path(),
+            false,
+            Some(&take),
+        )
+        .expect("take install");
+        assert!(matches!(outcome, InstallOutcome::Installed { .. }));
+        assert!(dir.path().join("One.vst3/Contents/Info.plist").is_file());
+        assert!(dir.path().join("Two.vst3/Contents/Info.plist").is_file());
+        assert!(!dir.path().join("Three.vst3").exists());
+        assert!(!dir.path().join("Pkg").exists());
+        assert!(!dir.path().join("readme.txt").exists());
+    }
+
+    #[test]
+    fn take_fails_atomically_when_a_selected_path_is_missing() {
+        let archive = stored_zip(&[("Pkg/One.vst3/Contents/Info.plist", b"<plist/>")]);
+        let take = ["Pkg/One.vst3".to_string(), "Pkg/Missing.vst3".to_string()];
+        let dir = scratch("take-missing");
+        let error = extract_bundles(
+            &archive,
+            BundleFormat::Vst3,
+            HostOs::Macos,
+            dir.path(),
+            false,
+            Some(&take),
+        )
+        .unwrap_err();
+        assert!(error.contains("Missing.vst3"), "{error}");
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn take_ignores_links_outside_the_selected_paths_and_refuses_links_inside() {
+        let take = ["Pkg/Plugin.vst3".to_string()];
+        let outside = gzip(&tar_link_raw(
+            &[("Pkg/Plugin.vst3/Contents/Info.plist", b"<plist/>")],
+            ("Pkg/usr/lib/libfoo.dylib", "libfoo.0.dylib", b'2'),
+        ));
+        let dir = scratch("take-link-outside");
+        let outcome = extract_tar_bundles(
+            &outside,
+            BundleFormat::Vst3,
+            HostOs::Macos,
+            dir.path(),
+            false,
+            Some(&take),
+        )
+        .expect("take install ignores the outside link");
+        assert!(matches!(outcome, InstallOutcome::Installed { .. }));
+        assert!(!dir.path().join("Pkg").exists());
+
+        let inside = gzip(&tar_link_raw(
+            &[("Pkg/Plugin.vst3/Contents/Info.plist", b"<plist/>")],
+            (
+                "Pkg/Plugin.vst3/Contents/link",
+                "../../../../etc/passwd",
+                b'1',
+            ),
+        ));
+        let dir = scratch("take-link-inside");
+        let error = extract_tar_bundles(
+            &inside,
+            BundleFormat::Vst3,
+            HostOs::Macos,
+            dir.path(),
+            false,
+            Some(&take),
+        )
+        .unwrap_err();
+        assert!(error.contains("link inside a selected path"), "{error}");
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn take_selects_only_the_named_seven_zip_bundle() {
+        let archive = seven_zip(&[
+            ("Pkg/One.vst3/Contents/Info.plist", b"<plist/>"),
+            ("Pkg/Two.vst3/Contents/Info.plist", b"<plist/>"),
+        ]);
+        let take = ["Pkg/One.vst3".to_string()];
+        let dir = scratch("take-seven-z");
+        let outcome = extract_seven_z_bundles(
+            &archive,
+            BundleFormat::Vst3,
+            HostOs::Linux,
+            dir.path(),
+            false,
+            Some(&take),
+        )
+        .expect("7z take install");
+        assert!(matches!(outcome, InstallOutcome::Installed { .. }));
+        assert!(dir.path().join("One.vst3/Contents/Info.plist").is_file());
+        assert!(!dir.path().join("Two.vst3").exists());
     }
 }

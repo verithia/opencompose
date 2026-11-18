@@ -112,14 +112,14 @@ installed and licensed on each system that opens the project.
 
 ## The free-plugin catalog
 
-The GUI's Store section lists free plugins from two sources:
+The GUI's Store section lists free plugins from a **signed remote index** that
+the app refreshes over HTTPS from the project's documentation site, caches on
+disk and verifies with the Ed25519 keys pinned in the app. The app and `ocp`
+binaries carry no catalog, so the first run needs the network once to fetch it;
+without a downloaded index the Store lists nothing. See
+[the plugin index design](../plugin-index.md).
 
-1. a **bundled catalog** compiled into the app, and
-2. a **signed remote index** that the app refreshes over HTTPS from the
-   project's documentation site, caches on disk and verifies with the Ed25519
-   keys pinned in the app. See [the plugin index design](../plugin-index.md).
-
-Both carry the same document: an entry per plugin with a name, vendor, one-line
+The index carries a document with an entry per plugin with a name, vendor, one-line
 description, category tags, license, homepage and one or more installs. An install
 says which platform and format it provides and where to download it. The app
 shows the formats available for the current platform and the license, and either

@@ -139,3 +139,70 @@ fn unknown_pack_bytes_and_pack_counts_are_bounded() {
     assert_eq!(error.code, CatalogErrorCode::Parse);
     assert_eq!(error.path, "$");
 }
+
+#[test]
+fn install_take_paths_are_relative_and_match_the_install_format() {
+    let mut value = fixtures()["base"].clone();
+    value["entries"][0]["installs"][0]["take"] = json!(["Pkg/Plugin.vst3", "Extras/Helpers.vst3"]);
+    let catalog = parse(&serde_json::to_vec(&value).unwrap()).unwrap();
+    assert_eq!(
+        catalog.entries[0].installs[0].take.as_deref(),
+        Some(
+            &[
+                "Pkg/Plugin.vst3".to_string(),
+                "Extras/Helpers.vst3".to_string()
+            ][..]
+        )
+    );
+    let encoded = serde_json::to_value(&catalog).unwrap();
+    assert_eq!(
+        encoded["entries"][0]["installs"][0]["take"],
+        value["entries"][0]["installs"][0]["take"]
+    );
+}
+
+#[test]
+fn install_take_paths_reject_traversal_absolute_names_and_wrong_formats() {
+    let invalid = [
+        json!([]),
+        json!(["Pkg/Plugin.vst3", "../Plugin.vst3"]),
+        json!(["/Pkg/Plugin.vst3"]),
+        json!(["Pkg\\Plugin.vst3"]),
+        json!(["C:/Pkg/Plugin.vst3"]),
+        json!(["Pkg/../Plugin.vst3"]),
+        json!(["Pkg//Plugin.vst3"]),
+        json!(["Pkg/Plugin.clap"]),
+        json!(["Pkg/Plugin.vst3", "Pkg/Plugin.vst3"]),
+        json!([format!("Pkg/{}.vst3", "x".repeat(256))]),
+        json!(vec!["Pkg/Plugin.vst3"; MAX_TAKE_PATHS + 1]),
+    ];
+    for take in invalid {
+        let mut value = fixtures()["base"].clone();
+        value["entries"][0]["installs"][0]["take"] = take;
+        let error = parse(&serde_json::to_vec(&value).unwrap()).unwrap_err();
+        assert_eq!(error.code, CatalogErrorCode::InvalidTake, "{error}");
+        assert!(
+            error.path.starts_with("entries[0].installs[0].take"),
+            "{error}"
+        );
+    }
+}
+
+#[test]
+fn install_take_paths_accept_the_vst2_library_spellings() {
+    for take in ["Pkg/Plugin.vst", "Pkg/Plugin.dll", "Pkg/Plugin.so"] {
+        let mut value = fixtures()["base"].clone();
+        let install = &mut value["entries"][0]["installs"][0];
+        install["format"] = "vst2".into();
+        install["plugin_id"] = "vst2:plugin".into();
+        install["take"] = json!([take]);
+        parse(&serde_json::to_vec(&value).unwrap()).unwrap_or_else(|error| {
+            panic!("{take}: {error}");
+        });
+    }
+    let mut value = fixtures()["base"].clone();
+    value["entries"][0]["installs"][0]["format"] = "standalone".into();
+    value["entries"][0]["installs"][0]["take"] = json!(["Pkg/Plugin"]);
+    let error = parse(&serde_json::to_vec(&value).unwrap()).unwrap_err();
+    assert_eq!(error.code, CatalogErrorCode::InvalidTake);
+}

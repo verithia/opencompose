@@ -499,6 +499,7 @@ mod tests {
                             sha256: Some(format!("{:064x}", index + 1)),
                             bytes: Some(12_000_000 + index as u64 * 1_000),
                             archive: Some(Archive::Zip),
+                            take: None,
                         },
                         Install {
                             kind: InstallKind::Direct,
@@ -512,6 +513,7 @@ mod tests {
                             sha256: None,
                             bytes: None,
                             archive: Some(Archive::Installer),
+                            take: None,
                         },
                     ],
                 }
@@ -1180,14 +1182,14 @@ mod tests {
     }
 
     #[test]
-    fn bundled_catalog_builds_and_verifies() {
+    fn repository_catalog_builds_and_verifies() {
         let dir = TestDir::new("bundled");
         let key = keypair(dir.path());
-        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../oc-gui/frontend/src/data/plugin-catalog.json");
+        let fixture =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../catalog/plugin-catalog.json");
         let catalog: Catalog =
-            serde_json::from_slice(&fs::read(&fixture).expect("read bundled catalog"))
-                .expect("parse bundled catalog");
+            serde_json::from_slice(&fs::read(&fixture).expect("read the repository catalog"))
+                .expect("parse the repository catalog");
         assert_eq!(catalog.schema, CATALOG_SCHEMA);
         let mut formats = HashSet::new();
         for entry in &catalog.entries {
