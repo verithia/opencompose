@@ -191,6 +191,40 @@ export const soundfontInstall = (id: string) =>
 export const soundfontsRemove = (id: string) =>
   invoke<InstalledSoundfont>("soundfonts_remove", { id });
 
+/** One folder the app searches, and how many items it holds. */
+export interface SearchedFolder {
+  path: string;
+  origin: "standard" | "user";
+  exists: boolean;
+  count: number;
+  /** Removes a user sound folder through `sound_folder_remove`. */
+  library_id?: string | null;
+}
+
+export interface LocalContentKind {
+  total: number;
+  formats: { format: string; count: number }[];
+  folders: SearchedFolder[];
+}
+
+/** Plugin bundles and instrument files found on this machine. */
+export interface LocalContentSummary {
+  plugins: LocalContentKind;
+  sounds: LocalContentKind;
+  /** A background scan is reading plugin details now. */
+  scanning: boolean;
+}
+
+export const localContentSummary = () => invoke<LocalContentSummary>("local_content_summary");
+export const pluginFolderAdd = (path: string) =>
+  invoke<LocalContentSummary>("plugin_folder_add", { path });
+export const pluginFolderRemove = (path: string) =>
+  invoke<LocalContentSummary>("plugin_folder_remove", { path });
+export const soundFolderAdd = (path: string) =>
+  invoke<LocalContentSummary>("sound_folder_add", { path });
+export const soundFolderRemove = (id: string) =>
+  invoke<LocalContentSummary>("sound_folder_remove", { id });
+
 export const pluginCatalog = () => invoke<PluginCatalog>("plugin_catalog");
 export const pluginStoreOpen = (url: string) => invoke<void>("plugin_store_open", { url });
 export const pluginStoreInstall = (id: string, overwrite = false) =>

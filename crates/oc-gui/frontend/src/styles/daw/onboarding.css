@@ -784,3 +784,153 @@
   border: 1px solid var(--border);
   border-radius: 6px;
 }
+
+/* Last step: what this computer has, then one recommendation per role. */
+.onboarding-section-title {
+  margin: 0 0 8px;
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.onboarding-local { margin-bottom: 16px; }
+
+.onboarding-local-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.onboarding-local-card {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md, 10px);
+  background: var(--bg-secondary);
+}
+
+.onboarding-local-copy { min-width: 0; }
+
+.onboarding-local-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.onboarding-local-head h3 {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.onboarding-local-count {
+  color: var(--text-primary);
+  font-size: 20px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.onboarding-local-formats {
+  margin: 2px 0 0;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.onboarding-local-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.onboarding-local-add svg { width: 13px; height: 13px; }
+
+.onboarding-local-note {
+  margin: 8px 0 0;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.onboarding-folders {
+  margin-top: 8px;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.onboarding-folders summary {
+  cursor: pointer;
+  color: var(--text-muted);
+}
+
+.onboarding-folders summary:hover { color: var(--text-primary); }
+
+.onboarding-folder-list {
+  display: grid;
+  gap: 2px;
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.onboarding-folder-list li {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr) auto auto auto;
+  gap: 8px;
+  align-items: center;
+  min-height: 24px;
+}
+
+.onboarding-folder-list li.missing { opacity: 0.6; }
+
+.onboarding-folder-kind { color: var(--text-muted); }
+
+.onboarding-folder-path {
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.onboarding-folder-count {
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.onboarding-folder-remove { padding: 2px 8px; font-size: 11px; }
+
+.onboarding-picks .onboarding-tools {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.onboarding-picks .onboarding-tools > p { grid-column: 1 / -1; }
+
+.onboarding-tool-role {
+  color: var(--text-accent);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+@media (max-width: 760px) {
+  .onboarding-local-grid,
+  .onboarding-picks .onboarding-tools { grid-template-columns: 1fr; }
+  .onboarding-local-card { grid-template-columns: auto minmax(0, 1fr); }
+  .onboarding-local-add { grid-column: 2; justify-self: start; }
+}
+
+.onboarding-tool-license {
+  color: var(--text-muted);
+  font-size: 10px;
+}

@@ -279,6 +279,11 @@ vi.mock("@tauri-apps/api/core", () => {
     if (cmd === "release_web_audio") return undefined;
     if (cmd === "scan_plugins") return [];
     if (cmd === "plugin_catalog") return { platform: "macos-aarch64", entries: [], installed: [] };
+    if (cmd === "local_content_summary") {
+      const empty = { total: 0, formats: [], folders: [] };
+      return { plugins: empty, sounds: empty, scanning: false };
+    }
+    if (cmd === "soundfonts_list") return { dir: "", items: [] };
     if (cmd === "plugin_store_open") return undefined;
     if (cmd === "export_capabilities") return { mp3: true };
     if (cmd === "plugin_store_install") return { status: "installed", path: "", message: "" };
