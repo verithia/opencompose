@@ -90,6 +90,45 @@ pub struct ScanReport {
     pub failed: usize,
 }
 
+/// How far the scan pass running now has come. Bundles answered by a reusable
+/// receipt count as done from the start.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct ScanProgress {
+    pub done: usize,
+    pub total: usize,
+    /// File name of the bundle a helper started most recently.
+    pub current: Option<String>,
+}
+
+fn progress_slot() -> &'static std::sync::Mutex<Option<ScanProgress>> {
+    static PROGRESS: std::sync::Mutex<Option<ScanProgress>> = std::sync::Mutex::new(None);
+    &PROGRESS
+}
+
+/// Progress of the inventory scan running in this process, or `None` when no
+/// pass is running. Any caller can poll it, whoever started the scan.
+pub fn scan_progress() -> Option<ScanProgress> {
+    progress_slot()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone()
+}
+
+fn publish_progress(progress: Option<ScanProgress>) {
+    *progress_slot()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) = progress;
+}
+
+/// Clears the published progress when the pass ends, also by unwinding.
+struct ProgressPass;
+
+impl Drop for ProgressPass {
+    fn drop(&mut self) {
+        publish_progress(None);
+    }
+}
+
 /// Scan every discovered CLAP/VST2/VST3 bundle once.
 ///
 /// `force` is the explicit rescan: a quarantined bundle is retried instead of
@@ -101,12 +140,14 @@ pub fn scan_discovered_plugins_isolated(force: bool) -> (Vec<PluginInfo>, ScanRe
         .as_deref()
         .map(read_receipts)
         .unwrap_or_default();
+    let _pass = ProgressPass;
     scan_files_isolated(
         discover_plugin_files(),
         force || rescan_requested(),
         &receipts,
         receipt_file.as_deref(),
         &|path, format| scan_bundle_isolated(Path::new(path), format, scan_timeout()),
+        &|progress| publish_progress(Some(progress)),
     )
 }
 
@@ -256,12 +297,15 @@ fn select_plugin(
 /// passing receipts, retries a quarantined bundle once and records the new
 /// receipt, so a bundle that still fails is quarantined again instead of being
 /// retried in a loop.
+///
+/// `progress` hears the pass's size first, then each helper start and finish.
 fn scan_files_isolated(
     files: Vec<(PathBuf, PluginFormat)>,
     force: bool,
     receipts: &[PluginScanReceipt],
     receipt_file: Option<&Path>,
     scan: &(dyn Fn(&str, PluginFormat) -> PluginScanReceipt + Sync),
+    progress: &(dyn Fn(ScanProgress) + Sync),
 ) -> (Vec<PluginInfo>, ScanReport) {
     let now = now_unix();
     let mut report = ScanReport::default();
@@ -303,7 +347,16 @@ fn scan_files_isolated(
         slots.push(Vec::new());
     }
 
-    let scanned = run_pending(&pending, scan_workers(pending.len()), scan);
+    let tracker = ProgressTracker {
+        state: std::sync::Mutex::new(ScanProgress {
+            done: report.reused,
+            total: report.reused + pending.len(),
+            current: None,
+        }),
+        sink: progress,
+    };
+    tracker.publish(|_| {});
+    let scanned = run_pending(&pending, scan_workers(pending.len()), scan, &tracker);
     let mut fresh = Vec::with_capacity(scanned.len());
     for (slot, receipt) in scanned {
         report.scanned += 1;
@@ -357,12 +410,37 @@ fn scan_workers(pending: usize) -> usize {
         .max(1)
 }
 
+/// The running counts of one pass, shared by its helper threads.
+struct ProgressTracker<'a> {
+    state: std::sync::Mutex<ScanProgress>,
+    sink: &'a (dyn Fn(ScanProgress) + Sync),
+}
+
+impl ProgressTracker<'_> {
+    fn publish(&self, change: impl FnOnce(&mut ScanProgress)) {
+        let snapshot = {
+            let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+            change(&mut state);
+            state.clone()
+        };
+        (self.sink)(snapshot);
+    }
+}
+
+fn bundle_name(path: &str) -> String {
+    Path::new(path)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.to_string())
+}
+
 /// Run `scan` for every pending bundle on `workers` threads and return the
 /// receipts with their slots, in slot order.
 fn run_pending(
     pending: &[(usize, String, PluginFormat)],
     workers: usize,
     scan: &(dyn Fn(&str, PluginFormat) -> PluginScanReceipt + Sync),
+    tracker: &ProgressTracker<'_>,
 ) -> Vec<(usize, PluginScanReceipt)> {
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -377,7 +455,9 @@ fn run_pending(
                     let Some((slot, path, format)) = pending.get(index) else {
                         break;
                     };
+                    tracker.publish(|state| state.current = Some(bundle_name(path)));
                     let receipt = scan(path, *format);
+                    tracker.publish(|state| state.done += 1);
                     done.lock()
                         .unwrap_or_else(|error| error.into_inner())
                         .push((*slot, receipt));
@@ -1123,6 +1203,7 @@ mod tests {
                     Duration::from_secs(5),
                 )
             },
+            &|_| {},
         )
     }
 
@@ -1276,6 +1357,7 @@ mod tests {
             .collect();
         let active = std::sync::atomic::AtomicUsize::new(0);
         let peak = std::sync::atomic::AtomicUsize::new(0);
+        let heard = std::sync::Mutex::new(Vec::<ScanProgress>::new());
         let (plugins, report) = scan_files_isolated(
             files.clone(),
             false,
@@ -1296,8 +1378,29 @@ mod tests {
                 active.fetch_sub(1, Ordering::SeqCst);
                 passed_receipt(path, format, vec![descriptor(path, path, path)])
             },
+            &|progress| heard.lock().unwrap().push(progress),
         );
         assert_eq!(report.scanned, 9);
+        let heard = heard.into_inner().unwrap();
+        assert_eq!(
+            heard.first().map(|first| (first.done, first.total)),
+            Some((0, 9))
+        );
+        assert!(
+            heard
+                .iter()
+                .all(|progress| progress.total == 9 && progress.done <= 9)
+        );
+        assert!(
+            heard.windows(2).all(|pair| pair[0].done <= pair[1].done),
+            "done never moves backwards"
+        );
+        assert_eq!(heard.last().map(|last| last.done), Some(9));
+        assert!(
+            heard
+                .iter()
+                .any(|progress| progress.current.as_deref() == Some("p0.clap"))
+        );
         let expected: Vec<String> = files
             .iter()
             .map(|(path, _)| path.to_string_lossy().into_owned())
@@ -1925,6 +2028,7 @@ mod tests {
                 receipt.plugins.push(info);
                 receipt
             },
+            &|_| {},
         );
 
         assert_eq!(report.scanned, 1, "the bundle must reach the scanner");
