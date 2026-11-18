@@ -1,4 +1,6 @@
 /** One first-run recommendation per role, chosen from the host's catalog. */
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import recommendations from "../data/recommendations.json";
 import {
@@ -15,6 +17,17 @@ function entry(id: string, fields: Partial<PluginCatalogEntry> = {}): PluginCata
 
 const installed = (candidate: PluginCatalogEntry) => candidate.installed === true;
 const installable = (candidate: PluginCatalogEntry) => candidate.installable === true;
+
+interface PublishedCatalog {
+  entries: { id: string; installs: { platform: string }[] }[];
+  packs: { id: string }[];
+}
+
+const published = JSON.parse(
+  readFileSync(path.resolve(process.cwd(), "../../../catalog/plugin-catalog.json"), "utf8"),
+) as PublishedCatalog;
+
+const PLATFORMS = ["macos-aarch64", "macos-x86_64", "windows-x86_64", "linux-x86_64"];
 
 describe("first-run picks", () => {
   it("takes its roles, candidates and sounds from the embedded list", () => {
@@ -37,6 +50,23 @@ describe("first-run picks", () => {
       expect(row.ids.every((id) => typeof id === "string" && id.length > 0)).toBe(true);
     }
     expect(recommendations.sounds.every((id) => typeof id === "string" && id.length > 0)).toBe(true);
+  });
+
+  it("names only entries and packs the published catalog still offers", () => {
+    const byId = new Map(published.entries.map((entry) => [entry.id, entry]));
+    for (const { role, ids } of PICK_ROLES) {
+      for (const id of ids) {
+        expect(byId.has(id), `${role} names ${id}`).toBe(true);
+      }
+      const covered = PLATFORMS.filter((platform) =>
+        ids.some((id) => byId.get(id)?.installs.some((install) => install.platform === platform)),
+      );
+      expect(covered, `${role} covers every platform`).toEqual(PLATFORMS);
+    }
+    const packs = new Set(published.packs.map((pack) => pack.id));
+    for (const id of RECOMMENDED_SOUNDS) {
+      expect(packs.has(id), `sounds names ${id}`).toBe(true);
+    }
   });
 
   it("ignores unknown roles and malformed ids at load", () => {

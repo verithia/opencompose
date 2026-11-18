@@ -11,7 +11,13 @@
         "discodsp.ob-xd"
       ]
     },
-    { "role": "sampler", "ids": ["sfztools.sfizz", "decent-samples.decent-sampler"] },
+    {
+      "role": "sampler",
+      "ids": [
+        "sfztools.sfizz",
+        "decent-samples.decent-sampler"
+      ]
+    },
     {
       "role": "reverb",
       "ids": [
@@ -39,8 +45,7 @@
         "lsp-plugins.lsp-plugins",
         "airwindows.consolidated"
       ]
-    },
-    { "role": "tools", "ids": ["spleeter", "ffmpeg"] }
+    }
   ],
   "sounds": [
     "christian-collins.generaluser-gs",
