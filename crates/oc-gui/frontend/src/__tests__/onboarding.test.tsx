@@ -11,7 +11,14 @@ import { onboardingStore } from "../stores/onboarding";
 import { preferencesUi } from "../stores/preferencesUi";
 import { pluginStore } from "../stores/pluginStore";
 import { localScan } from "../stores/localScan";
-import type { LocalContentSummary, LocalScanProgress } from "../stores/api";
+import { soundPacks } from "../stores/soundPacks";
+import type {
+  FolderOrigin,
+  LocalContentSummary,
+  LocalScanProgress,
+  SoundPackItem,
+  SoundPackProgress,
+} from "../stores/api";
 import { aiConfigWire, invokeMock, listenMock, openDialogMock } from "./setup";
 
 const ENTRY = {
@@ -42,6 +49,55 @@ const item = (name: string, format: string, detail = "", readable = true) => ({
   path: `/plugins/${name}.${format}`,
   readable,
 });
+
+function pack(
+  id: string,
+  name: string,
+  content: SoundPackItem["content"],
+  overrides: Partial<SoundPackItem> = {},
+): SoundPackItem {
+  return {
+    id,
+    name,
+    publisher: "FreePats",
+    homepage: "https://example.test/publisher",
+    version: "1.0.0",
+    description: "A free starter pack.",
+    content,
+    archive: "zip",
+    bytes: 32_319_396,
+    unpacked_bytes: 120_000_000,
+    license: { name: "CC0-1.0", url: "https://example.test/license", text: "" },
+    installed: false,
+    installed_version: null,
+    path: null,
+    source: "index",
+    ...overrides,
+  };
+}
+
+const GENERAL_USER = pack("christian-collins.generaluser-gs", "GeneralUser GS", "soundfont", {
+  publisher: "S. Christian Collins",
+  archive: "file",
+  bytes: 32_319_396,
+  unpacked_bytes: 32_319_396,
+  license: { name: "GeneralUser GS License v2.0", url: "https://example.test/generaluser", text: "" },
+});
+
+const MULDJORD = pack("freepats.muldjordkit", "MuldjordKit", "soundfont", {
+  archive: "7z",
+  bytes: 54_877_940,
+  unpacked_bytes: 69_000_000,
+  license: { name: "CC-BY-4.0", url: "https://example.test/cc-by", text: "Drum samples by Mads Muldjord." },
+});
+
+const AKWF = pack("adventure-kid.akwf", "AKWF waveforms", "samples", {
+  publisher: "Adventure Kid",
+  bytes: 6_007_440,
+  unpacked_bytes: 6_007_440,
+});
+
+const PACKS: SoundPackItem[] = [GENERAL_USER, MULDJORD, AKWF];
 
 /** A machine with little on it: the guide suggests plugins and sounds. */
 const SUMMARY: LocalContentSummary = {
@@ -102,7 +158,8 @@ beforeEach(() => {
   onboardingStore.reset();
   preferencesUi.close();
   pluginStore.reset();
-  invokeMock.mockImplementation(async (command: string) => {
+  soundPacks.reset();
+  invokeMock.mockImplementation(async (command: string, args?: unknown) => {
     if (command === "plugin_catalog") {
       return {
         platform: "macos-aarch64",
@@ -114,6 +171,12 @@ beforeEach(() => {
     if (command === "plugin_index_status") return null;
     if (command === "local_content_scan" || command === "local_content_summary") return summary;
     if (command === "soundfonts_list") return { dir: "", items: [] };
+    if (command === "sound_packs_list") return { dir: "/sounds", items: PACKS };
+    if (command === "sound_pack_install") {
+      const id = (args as { id: string }).id;
+      return { id, name: id, version: "1.0.0", path: `/sounds/${id}`, bytes: 1, unpacked_bytes: 2, files: 1 };
+    }
+    if (command === "sound_pack_cancel") return undefined;
     if (command === "open_url") return undefined;
     if (command === "plugin_store_install") {
       installed = true;
@@ -131,6 +194,7 @@ afterEach(() => {
   preferencesUi.close();
   pluginStore.reset();
   localScan.reset();
+  soundPacks.reset();
 });
 
 describe("first-run onboarding", () => {
@@ -194,6 +258,30 @@ describe("first-run onboarding", () => {
     expect(screen.getByText("From another app")).toBeInTheDocument();
     expect(screen.getByText("Instruments 1 · Samples 12")).toBeInTheDocument();
     expect(screen.getByText(/Add the folder where your plugins or sounds are kept/)).toBeInTheDocument();
+  });
+
+  it("labels the folder OpenCompose installed and ignores an unknown origin", async () => {
+    summary = {
+      ...SUMMARY,
+      instruments: {
+        ...SUMMARY.instruments,
+        folders: [
+          ...SUMMARY.instruments.folders,
+          {
+            path: "/Users/me/Library/Application Support/OpenCompose/Sounds",
+            origin: "managed",
+            exists: true,
+            count: 2,
+          },
+          { path: "/future/place", origin: "future" as FolderOrigin, exists: true, count: 1 },
+        ],
+      },
+    };
+    render(() => <Onboarding onDone={() => {}} />);
+    await screen.findByText("Found on this computer");
+
+    expect(screen.getByText("Installed by OpenCompose")).toBeInTheDocument();
+    expect(screen.getByText("/future/place")).toBeInTheDocument();
   });
 
   it("adds a plugin folder the user picks, then scans again", async () => {
@@ -286,14 +374,148 @@ describe("first-run onboarding", () => {
     expect(screen.getByText("Starter sounds")).toBeInTheDocument();
     // Instruments are few (1) and samples are few (12): both kinds are offered.
     expect(screen.getByText("GeneralUser GS")).toBeInTheDocument();
-    expect(screen.getByText("99 Drum Samples I and II")).toBeInTheDocument();
+    expect(screen.getByText("AKWF waveforms")).toBeInTheDocument();
+    expect(screen.getByText("52 MB, 66 MB unpacked")).toBeInTheDocument();
+    expect(screen.getByText("Drum samples by Mads Muldjord.")).toBeInTheDocument();
 
     const card = screen.getByText("GeneralUser GS").closest("article")!;
-    fireEvent.click(within(card).getByRole("button", { name: "Open download page" }));
+    fireEvent.click(within(card).getByRole("button", { name: "Read the GeneralUser GS License v2.0 license" }));
     await waitFor(() =>
-      expect(invokeMock).toHaveBeenCalledWith("open_url", { url: "https://www.schristiancollins.com/generaluser" }),
+      expect(invokeMock).toHaveBeenCalledWith("open_url", { url: "https://example.test/generaluser" }),
     );
-    expect(await within(card).findByRole("status")).toHaveTextContent("Opened the GeneralUser GS page.");
+  });
+
+  it("installs a starter sound pack with one click and scans again", async () => {
+    render(() => <Onboarding onDone={() => {}} />);
+    await openPicksStep();
+    const card = (await screen.findByText("GeneralUser GS")).closest("article")!;
+
+    fireEvent.click(within(card).getByRole("button", { name: "Install" }));
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("sound_pack_install", {
+        id: "christian-collins.generaluser-gs",
+      }),
+    );
+    expect(await within(card).findByText("Installed")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(invokeMock.mock.calls.filter(([command]) => command === "local_content_scan").length).toBeGreaterThanOrEqual(2),
+    );
+  });
+
+  it("shows download, verify and unpack progress while a starter pack installs", async () => {
+    let emit!: (progress: SoundPackProgress) => void;
+    listenMock.mockImplementation(async (event: string, handler: (payload: { payload: SoundPackProgress }) => void) => {
+      if (event === "sound_pack_install_progress") {
+        emit = (progress) => handler({ payload: progress });
+      }
+      return () => {};
+    });
+    let finish!: (value: unknown) => void;
+    const original = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation((command: string, ...args: unknown[]) =>
+      command === "sound_pack_install"
+        ? new Promise((resolve) => { finish = resolve; })
+        : original(command, ...args));
+
+    render(() => <Onboarding onDone={() => {}} />);
+    await openPicksStep();
+    const card = (await screen.findByText("GeneralUser GS")).closest("article")!;
+    fireEvent.click(within(card).getByRole("button", { name: "Install" }));
+
+    const bar = await within(card).findByRole("progressbar");
+    await waitFor(() => expect(emit).toBeDefined());
+    emit({
+      id: "christian-collins.generaluser-gs",
+      phase: "download",
+      done: 25,
+      total: 100,
+    });
+    await waitFor(() => expect(bar).toHaveAttribute("aria-valuenow", "25"));
+    expect(within(card).getByText("Downloading…")).toBeInTheDocument();
+
+    emit({
+      id: "christian-collins.generaluser-gs",
+      phase: "verify",
+      done: 100,
+      total: 100,
+    });
+    await waitFor(() => expect(bar).toHaveAttribute("aria-valuenow", "100"));
+    expect(within(card).getByText("Verifying…")).toBeInTheDocument();
+
+    emit({
+      id: "christian-collins.generaluser-gs",
+      phase: "extract",
+      done: 0,
+      total: 0,
+    });
+    await waitFor(() => expect(within(card).getByText("Unpacking…")).toBeInTheDocument());
+    expect(bar).not.toHaveAttribute("aria-valuenow");
+
+    finish({ id: "christian-collins.generaluser-gs", name: "GeneralUser GS", version: "1.0.0", path: "/sounds/generaluser", bytes: 1, unpacked_bytes: 2, files: 1 });
+    expect(await within(card).findByText("Installed")).toBeInTheDocument();
+  });
+
+  it("reports a failed starter install and offers it again", async () => {
+    const original = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation(async (command: string, ...args: unknown[]) => {
+      if (command === "sound_pack_install") throw "Download failed";
+      return original(command, ...args);
+    });
+
+    render(() => <Onboarding onDone={() => {}} />);
+    await openPicksStep();
+    const card = (await screen.findByText("GeneralUser GS")).closest("article")!;
+    fireEvent.click(within(card).getByRole("button", { name: "Install" }));
+
+    expect(await within(card).findByRole("alert")).toHaveTextContent("Install failed: Download failed");
+    expect(within(card).getByRole("button", { name: "Install" })).toBeEnabled();
+  });
+
+  it("cancels a starter install and reports it", async () => {
+    let rejectInstall!: (reason: string) => void;
+    const original = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation((command: string, ...args: unknown[]) => {
+      if (command === "sound_pack_install") {
+        return new Promise((_, reject) => { rejectInstall = reject; });
+      }
+      return original(command, ...args);
+    });
+
+    render(() => <Onboarding onDone={() => {}} />);
+    await openPicksStep();
+    const card = (await screen.findByText("GeneralUser GS")).closest("article")!;
+    fireEvent.click(within(card).getByRole("button", { name: "Install" }));
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("sound_pack_install", {
+        id: "christian-collins.generaluser-gs",
+      }),
+    );
+    fireEvent.click(await within(card).findByRole("button", { name: "Cancel" }));
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("sound_pack_cancel", {
+        id: "christian-collins.generaluser-gs",
+      }),
+    );
+    rejectInstall("cancelled");
+    expect(await within(card).findByText("Install cancelled.")).toBeInTheDocument();
+    expect(within(card).getByRole("button", { name: "Install" })).toBeEnabled();
+  });
+
+  it("shows only the add-folder action when no starter packs are listed", async () => {
+    const original = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation(async (command: string, ...args: unknown[]) => {
+      if (command === "sound_packs_list") throw "The signed catalog is unavailable";
+      return original(command, ...args);
+    });
+
+    render(() => <Onboarding onDone={() => {}} />);
+    await openPicksStep();
+    const section = (await screen.findByText("Starter sounds")).closest("section")!;
+
+    expect(within(section).getByRole("button", { name: "Add sound folder…" })).toBeEnabled();
+    expect(within(section).queryByRole("article")).toBeNull();
   });
 
   it("skips the suggestions on a well-stocked computer", async () => {
@@ -334,9 +556,9 @@ describe("first-run onboarding", () => {
     render(() => <Onboarding onDone={() => {}} />);
     await openPicksStep();
 
-    await screen.findByText("Surge XT");
+    const card = (await screen.findByText("Surge XT")).closest("article")!;
     expect(screen.getByText("GPL-3.0")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Install" }));
+    fireEvent.click(within(card).getByRole("button", { name: "Install" }));
 
     await waitFor(() =>
       expect(invokeMock).toHaveBeenCalledWith("plugin_store_install", {
@@ -359,8 +581,8 @@ describe("first-run onboarding", () => {
     const done = vi.fn();
     render(() => <Onboarding onDone={done} />);
     await openPicksStep();
-    await screen.findByText("Surge XT");
-    fireEvent.click(screen.getByRole("button", { name: "Install" }));
+    const card = (await screen.findByText("Surge XT")).closest("article")!;
+    fireEvent.click(within(card).getByRole("button", { name: "Install" }));
     for (const name of ["Back", "Skip setup", "Install later"]) {
       expect(screen.getByRole("button", { name })).toBeDisabled();
       fireEvent.click(screen.getByRole("button", { name }));

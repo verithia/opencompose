@@ -11,7 +11,7 @@
  * `tmp/layout-check/shots/onboarding-<page>-<platform>-<locale>-<theme>.png`.
  */
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@solidjs/testing-library";
+import { cleanup, fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import { mkdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { chromium, type Browser } from "@playwright/test";
@@ -19,6 +19,7 @@ import { Onboarding } from "../../components/Onboarding";
 import { i18n } from "../../stores/i18n";
 import { localScan } from "../../stores/localScan";
 import { pluginStore } from "../../stores/pluginStore";
+import { soundPacks } from "../../stores/soundPacks";
 import type {
   FolderOrigin,
   FoundItem,
@@ -26,6 +27,8 @@ import type {
   LocalScanProgress,
   PluginCatalogEntry,
   PluginInstall,
+  SoundPackItem,
+  SoundPackProgress,
 } from "../../stores/pluginApi";
 import { invokeMock, listenMock } from "../setup";
 
@@ -37,7 +40,15 @@ const stylesheet = [...manifest.matchAll(/@import\s+"([^"]+)";/g)]
   + "\n" + readFileSync(path.join(STYLE_ROOT, "catppuccin.css"), "utf8");
 const catalog = JSON.parse(
   readFileSync(path.resolve(process.cwd(), "src/data/plugin-catalog.json"), "utf8"),
-) as { entries: PluginCatalogEntry[] };
+) as {
+  entries: PluginCatalogEntry[];
+  packs: (Omit<SoundPackItem, "installed" | "installed_version" | "path" | "source"> & { kind: string })[];
+};
+
+/** The bundled catalog's starter packs, as `sound_packs_list` reports them. */
+const STARTER_PACKS: SoundPackItem[] = catalog.packs
+  .filter((pack) => pack.kind === "sound_archive")
+  .map((pack) => ({ ...pack, installed: false, installed_version: null, path: null, source: "index" }));
 
 /** The backend's answer for one platform, in the resolver's terms: the
  *  best-ranked build installs when it is pinned, and only an unpacked bundle
@@ -51,9 +62,12 @@ function resolved(platform: string): PluginCatalogEntry[] {
       .sort((left, right) => rank(left) - rank(right))[0] as
       (PluginInstall & { sha256?: string; wrapped?: boolean }) | undefined;
     const pinned = chosen && chosen.kind !== "vendor_page" && Boolean(chosen.sha256) ? chosen : undefined;
+    // A disk image is unpacked headlessly on macOS unless it only wraps an
+    // installer package.
+    const archives = ["zip", "tar-gz", "tar-xz", "7z", ...(platform.startsWith("macos") ? ["dmg"] : [])];
     const unpacked = pinned?.archive
-      ? ["zip", "tar-gz"].includes(pinned.archive)
-      : /\.(zip|tar\.gz|tgz)$/i.test(pinned?.url ?? "");
+      ? archives.includes(pinned.archive)
+      : /\.(zip|tar\.gz|tgz|tar\.xz|7z)$/i.test(pinned?.url ?? "");
     const headless = unpacked && !pinned?.wrapped && ["vst3", "vst2", "clap", "lv2"].includes(pinned?.format ?? "");
     return {
       ...entry,
@@ -209,6 +223,7 @@ afterEach(() => {
   cleanup();
   pluginStore.reset();
   localScan.reset();
+  soundPacks.reset();
   listenMock.mockImplementation(async () => () => {});
   i18n.setLocale("en");
 });
@@ -220,6 +235,7 @@ function answer(platform: string, summary: LocalContentSummary | Promise<LocalCo
     }
     if (command === "local_content_scan" || command === "local_content_summary") return summary;
     if (command === "soundfonts_list") return { dir: "", items: [] };
+    if (command === "sound_packs_list") return { dir: "/sounds", items: STARTER_PACKS };
     return null;
   });
 }
@@ -305,5 +321,35 @@ describe("first-run scan page layout", () => {
         });
       }
     }
+  }
+
+  for (const locale of ["en", "zh-Hans"] as const) {
+    it(`${locale}: a starter pack install fits the card`, async () => {
+      i18n.setLocale(locale);
+      let emit!: (progress: SoundPackProgress) => void;
+      listenMock.mockImplementation(async (event: string, handler: (event: { payload: SoundPackProgress }) => void) => {
+        if (event === "sound_pack_install_progress") {
+          emit = (progress) => handler({ payload: progress });
+        }
+        return () => {};
+      });
+      answer("macos-aarch64", summaryFor("macos-aarch64", true));
+      const original = invokeMock.getMockImplementation()!;
+      invokeMock.mockImplementation((command: string, ...args: unknown[]) =>
+        command === "sound_pack_install" ? new Promise(() => {}) : original(command, ...args));
+      const fixture = render(() => <Onboarding onDone={() => {}} />);
+      await screen.findByText(i18n.t("onboarding.scan.titleDone"));
+      fireEvent.click(screen.getByRole("button", { name: i18n.t("onboarding.next") }));
+
+      const card = (await screen.findByText("GeneralUser GS")).closest("article")!;
+      fireEvent.click(card.querySelector(".onboarding-tool-action button")!);
+      await waitFor(() => expect(emit).toBeDefined());
+      emit({ id: "christian-collins.generaluser-gs", phase: "extract", done: 58, total: 100 });
+      await waitFor(() => expect(card.querySelector('[role="progressbar"]')).toHaveAttribute("aria-valuenow", "58"));
+      await screen.findByText(i18n.t("onboarding.starters.phase.extract"));
+
+      await shoot(fixture.container, "graphite", `install-${locale}`, (page) =>
+        fitsCard(page, ".onboarding-tool, .onboarding-progress, .onboarding-tool-attribution, .onboarding-tool-action"));
+    });
   }
 });

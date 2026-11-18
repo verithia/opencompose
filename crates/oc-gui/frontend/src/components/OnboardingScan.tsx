@@ -131,11 +131,13 @@ export function OnboardingScan(props: { busy: boolean; onBusy: (busy: boolean) =
   };
 
 
+  /** Origins this build does not know get no badge rather than failing the list. */
   const originBadge = (origin: SearchedFolder["origin"]): string | null => {
     switch (origin) {
       case "user": return i18n.t("onboarding.local.added");
       case "host_settings": return i18n.t("onboarding.scan.fromHost");
       case "environment": return i18n.t("onboarding.scan.fromEnvironment");
+      case "managed": return i18n.t("onboarding.scan.managed");
       default: return null;
     }
   };

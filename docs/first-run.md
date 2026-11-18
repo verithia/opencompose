@@ -29,7 +29,8 @@ When the scan ends, the page shows three counts:
 The plugins and the instruments each have a folded list that scrolls, and the
 folders searched have a third. A folder that does not exist on this computer
 is not listed; a line says how many such folders were skipped. Folders that came
-from another app's settings or from an environment variable are labelled.
+from another app's settings, from an environment variable or from a sound pack
+installed by OpenCompose are labelled.
 
 **Add plugin folder…** and **Add sound folder…** add a folder and scan again.
 **Scan again** reads every plugin again, including ones an earlier scan
@@ -41,19 +42,24 @@ folders that are searched.
 This page appears when the scan finds fewer than 10 readable plugins, fewer
 than 3 instruments, or fewer than 100 samples. It shows what is missing:
 
-- **Free plugins**: one entry per role (synth, sampler, reverb, saturation,
-  mixing, tools) from the plugin index the Store uses. The first choice is an
-  entry already installed, then one that installs without a vendor installer,
-  then any installable one. **Install** goes through the same verified
-  `plugin_store_install` path as the Store.
-- **Starter sounds**: free SoundFonts, SFZ libraries and sample packs with a
-  stated licence (`stores/starterSounds.ts`). Instrument sources appear when
-  instruments are few, and sample packs when samples are few. **Open download
-  page** opens the publisher's page in the browser. The app never downloads
-  these itself: their archives are not pinned by SHA-256 and several use
-  formats the installer does not unpack. After unpacking one, add its folder
-  with **Add sound folder…**. Sound packs that the signed index publishes appear
-  beside them and install directly.
+- **Free plugins**: one distinct entry per role (synth, sampler, reverb,
+  saturation, mixing, tools) from the plugin index the Store uses. The first
+  choice is an entry already installed, then one that installs without a vendor
+  installer, then any installable one. An entry shown for an earlier role is
+  skipped. **Install** goes through the same verified `plugin_store_install`
+  path as the Store.
+- **Starter sounds**: free SoundFonts, SFZ libraries and sample packs from the
+  signed catalog (`stores/starterSounds.ts`). The bundled catalog carries its
+  starter packs, so they are available before remote trust is configured.
+  Instrument packs appear when
+  instruments are few, and sample packs when samples are few. A card shows the
+  publisher, the content kind, the download and unpacked sizes, and the
+  licence; the licence name opens its text and the small print carries any
+  attribution the licence requires. **Install** downloads the archive from the
+  publisher, checks it against the signed catalog's size and SHA-256, and
+  unpacks it into OpenCompose's sounds folder, where the next scan finds it.
+  The card shows download, verify and unpack progress with a **Cancel** action.
+  **Add sound folder…** stays available for folders kept elsewhere.
 
 ## 3. The bottom panel
 

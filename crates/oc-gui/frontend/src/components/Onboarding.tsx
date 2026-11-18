@@ -9,7 +9,7 @@ import { aiConfig } from "../ai/config";
 import { preferencesUi } from "../stores/preferencesUi";
 import { useDialogFocus } from "./dialogFocus";
 import { useTopmostEscape } from "./modalEscape";
-import { For, Show, createMemo, createSignal, onMount } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal, onMount } from "solid-js";
 import { LOGO_MARK } from "../stores/branding";
 import { i18n } from "../stores/i18n";
 import {
@@ -20,10 +20,11 @@ import {
   pluginStore,
 } from "../stores/pluginStore";
 import * as api from "../stores/api";
-import type { PluginCatalogEntry, SoundfontItem } from "../stores/api";
+import type { PluginCatalogEntry, SoundPackItem, SoundPackPhase, SoundfontItem } from "../stores/api";
 import { pickRecommendations } from "../stores/onboardingPicks";
 import { localScan } from "../stores/localScan";
-import { needsPluginPicks, pickStarterSounds, type StarterSound } from "../stores/starterSounds";
+import { soundPacks } from "../stores/soundPacks";
+import { needsPluginPicks, needsSoundPicks, pickStarterSounds } from "../stores/starterSounds";
 import { FolderIcon, KeyboardIcon, PlugIcon, WaveIcon } from "./icons";
 import { OnboardingScan, chooseFolder } from "./OnboardingScan";
 
@@ -65,6 +66,22 @@ export function Splash() {
 /** Packs the guide offers at most; the Store lists the rest. */
 const MAX_PACK_PICKS = 2;
 
+const PHASES: readonly SoundPackPhase[] = ["download", "verify", "extract"];
+
+/** Sizes in binary units, with one decimal only where it carries information. */
+export function formatBytes(bytes: number | undefined): string {
+  if (!bytes || bytes <= 0) return "";
+  const KB = 1024;
+  const MB = KB * 1024;
+  const GB = MB * 1024;
+  if (bytes < MB) return `${Math.max(1, Math.round(bytes / KB))} KB`;
+  if (bytes < GB) {
+    const mb = bytes / MB;
+    return `${mb < 10 ? mb.toFixed(1) : Math.round(mb)} MB`;
+  }
+  return `${(bytes / GB).toFixed(1)} GB`;
+}
+
 export function Onboarding(props: { onDone: () => void }) {
   let dialog: HTMLDivElement | undefined;
   const [step, setStep] = createSignal<Step>("scan");
@@ -95,14 +112,30 @@ export function Onboarding(props: { onDone: () => void }) {
     const summary = localScan.summary();
     return !summary || needsPluginPicks(summary);
   };
-  const starters = createMemo<StarterSound[]>(() => {
+  const showSoundPicks = () => {
     const summary = localScan.summary();
-    return summary ? pickStarterSounds(summary) : [];
+    return !summary || needsSoundPicks(summary);
+  };
+  /**
+   * Catalog packs for this machine, plus every pack the user acted on here:
+   * an install's own rescan may raise the counts, and its card keeps showing
+   * the result instead of vanishing.
+   */
+  const starters = createMemo<SoundPackItem[]>(() => {
+    const all = soundPacks.items();
+    const picked = new Set(pickStarterSounds(localScan.summary(), all).map((item) => item.id));
+    return all.filter((item) => picked.has(item.id) || soundPacks.stateOf(item.id) !== undefined);
   });
-  const showSoundPicks = () => !localScan.summary() || starters().length > 0;
+  /** Index SoundFonts the sound-pack catalog does not already offer. */
+  const extraPacks = createMemo(() => {
+    const offered = new Set(soundPacks.items().map((item) => item.id));
+    return packs().filter((item) => !offered.has(item.id));
+  });
 
+  /** Once shown, the suggestions page stays, so a rescan never pulls it from under the user. */
+  const [picksSeen, setPicksSeen] = createSignal(false);
   const steps = createMemo<Step[]>(() =>
-    showPluginPicks() || showSoundPicks() ? ["scan", "picks", "basics", "ai"] : ["scan", "basics", "ai"],
+    picksSeen() || showPluginPicks() || showSoundPicks() ? ["scan", "picks", "basics", "ai"] : ["scan", "basics", "ai"],
   );
   /** A step that disappears while it is shown resolves to the next one. */
   const position = () => {
@@ -111,6 +144,9 @@ export function Onboarding(props: { onDone: () => void }) {
   };
   const current = () => steps()[position()];
   const isLast = () => position() === steps().length - 1;
+  createEffect(() => {
+    if (current() === "picks") setPicksSeen(true);
+  });
 
   const title = createMemo(() => {
     switch (current()) {
@@ -154,20 +190,21 @@ export function Onboarding(props: { onDone: () => void }) {
     }
   };
 
-  const openStarter = async (sound: StarterSound) => {
+  /** Opens a license or publisher page; a failure is reported on that card. */
+  const openLink = async (id: string, url: string) => {
+    setMessages((previous) => ({ ...previous, [`link:${id}`]: { text: "", error: false } }));
     try {
-      await api.openUrl(sound.url);
-      setMessages((previous) => ({
-        ...previous,
-        [sound.id]: { text: i18n.t("onboarding.starters.opened", { name: sound.name }), error: false },
-      }));
+      await api.openUrl(url);
     } catch (cause) {
       setMessages((previous) => ({
         ...previous,
-        [sound.id]: { text: i18n.t("onboarding.starters.failed", { error: String(cause) }), error: true },
+        [`link:${id}`]: { text: i18n.t("onboarding.starters.failed", { error: String(cause) }), error: true },
       }));
     }
   };
+
+  /** One install at a time, whether it is a plugin or a pack. */
+  const installLocked = () => busy() !== null || soundPacks.active() !== null;
 
   const bytesOf = (entry: PluginCatalogEntry): number | undefined =>
     hostInstall(entry, platform())?.bytes;
@@ -179,11 +216,12 @@ export function Onboarding(props: { onDone: () => void }) {
     // with no network. The Store's explicit refresh remains the network path.
     void pluginStore.load();
     void loadPacks();
+    void soundPacks.load();
     if (!localScan.running()) void localScan.start();
   });
 
   const installPack = async (item: SoundfontItem) => {
-    if (busy()) return;
+    if (installLocked()) return;
     setBusy(item.id);
     setMessages((previous) => ({ ...previous, [item.id]: { text: "", error: false } }));
     try {
@@ -200,7 +238,7 @@ export function Onboarding(props: { onDone: () => void }) {
   };
 
   const install = async (entry: PluginCatalogEntry) => {
-    if (busy()) return;
+    if (installLocked()) return;
     setBusy(entry.id);
     setMessages((previous) => ({ ...previous, [entry.id]: { text: "", error: false } }));
     try {
@@ -231,12 +269,6 @@ export function Onboarding(props: { onDone: () => void }) {
     }
   };
 
-  const formatBytes = (bytes: number | undefined): string => {
-    if (!bytes) return "";
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
-    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  };
-
   const next = () => {
     if (busy()) return;
     if (isLast()) props.onDone();
@@ -256,7 +288,18 @@ export function Onboarding(props: { onDone: () => void }) {
     }
   };
 
-  const starterKind = (sound: StarterSound) => i18n.t(`onboarding.starters.kind.${sound.kind}`);
+  /** Content labels for the kinds this build knows; anything else shows no label. */
+  const contentLabel = (item: SoundPackItem): string =>
+    item.content === "soundfont" || item.content === "sfz" || item.content === "samples"
+      ? i18n.t(`onboarding.starters.kind.${item.content}`)
+      : "";
+
+  const packSize = (item: SoundPackItem): string => {
+    const download = formatBytes(item.bytes);
+    return item.unpacked_bytes > item.bytes && download
+      ? i18n.t("onboarding.starters.size", { download, unpacked: formatBytes(item.unpacked_bytes) })
+      : download;
+  };
 
   return (
     <div ref={dialog} tabIndex={-1} class="onboarding-backdrop" role="dialog" aria-modal="true" aria-labelledby="onboarding-title">
@@ -428,8 +471,8 @@ export function Onboarding(props: { onDone: () => void }) {
                         >
                           <button
                             type="button"
-                            class="onboarding-secondary"
-                            disabled={busy() !== null}
+                            class="onboarding-secondary onboarding-install"
+                            disabled={installLocked()}
                             onClick={() => void install(entry)}
                           >
                             {running() ? i18n.t("onboarding.plugins.installing") : i18n.t("onboarding.plugins.install")}
@@ -444,7 +487,7 @@ export function Onboarding(props: { onDone: () => void }) {
           </section>
           </Show>
 
-          <Show when={showSoundPicks() || packs().length > 0}>
+          <Show when={showSoundPicks() || extraPacks().length > 0 || starters().length > 0}>
           <section class="onboarding-picks" aria-labelledby="onboarding-starters-title">
             <div class="onboarding-section-head">
               <h2 class="onboarding-section-title" id="onboarding-starters-title">{i18n.t("onboarding.starters.title")}</h2>
@@ -456,8 +499,155 @@ export function Onboarding(props: { onDone: () => void }) {
             <Show when={messageFor("folder")?.error}>
               <p class="onboarding-tools-error" role="alert">{messageFor("folder")!.text}</p>
             </Show>
+            <Show when={starters().length > 0 || extraPacks().length > 0}>
             <div class="onboarding-tools">
-              <For each={packs()}>
+              <For each={starters()}>
+                {(item) => {
+                  const state = () => soundPacks.stateOf(item.id);
+                  const installing = () => state()?.status === "installing";
+                  const installed = () => item.installed || state()?.status === "installed";
+                  const progress = () => {
+                    const current = state();
+                    return current?.status === "installing" ? current.progress : null;
+                  };
+                  const percent = () => {
+                    const current = progress();
+                    if (!current || current.total <= 0) return null;
+                    return Math.min(100, Math.round((current.done / current.total) * 100));
+                  };
+                  const phase = () => {
+                    const current = progress()?.phase;
+                    return current && PHASES.includes(current) ? current : "download";
+                  };
+                  const phaseLabel = () => i18n.t(`onboarding.starters.phase.${phase()}`);
+                  const linkMessage = () => messageFor(`link:${item.id}`);
+                  return (
+                    <article class="onboarding-tool onboarding-starter" classList={{ installed: installed() }} data-starter={item.id}>
+                      <span class="onboarding-tool-icon" aria-hidden="true">
+                        {item.content === "samples" ? <WaveIcon /> : <KeyboardIcon />}
+                      </span>
+                      <div class="onboarding-tool-copy">
+                        <div class="onboarding-tool-head">
+                          <Show when={contentLabel(item)}>
+                            {(label) => <span class="onboarding-tool-role">{label()}</span>}
+                          </Show>
+                          <h2>{item.name}</h2>
+                          <span class="onboarding-tool-size">{packSize(item)}</span>
+                          <Show
+                            when={item.license.url}
+                            fallback={<span class="onboarding-tool-license">{item.license.name}</span>}
+                          >
+                            {(url) => (
+                              <button
+                                type="button"
+                                class="onboarding-link onboarding-tool-license"
+                                title={i18n.t("onboarding.starters.licenseLink", { name: item.license.name })}
+                                aria-label={i18n.t("onboarding.starters.licenseLink", { name: item.license.name })}
+                                onClick={() => void openLink(item.id, url())}
+                              >
+                                {item.license.name}
+                              </button>
+                            )}
+                          </Show>
+                        </div>
+                        <p>
+                          <Show when={item.description}>{item.description} · </Show>
+                          <Show when={item.homepage} fallback={item.publisher}>
+                            {(homepage) => (
+                              <button
+                                type="button"
+                                class="onboarding-link"
+                                title={i18n.t("onboarding.starters.publisherLink", { publisher: item.publisher })}
+                                aria-label={i18n.t("onboarding.starters.publisherLink", { publisher: item.publisher })}
+                                onClick={() => void openLink(item.id, homepage())}
+                              >
+                                {item.publisher}
+                              </button>
+                            )}
+                          </Show>
+                        </p>
+                        <Show when={item.license.text}>
+                          {(text) => <p class="onboarding-tool-attribution">{text()}</p>}
+                        </Show>
+                        <Show when={installing()}>
+                          <div
+                            class="onboarding-progress"
+                            role="progressbar"
+                            aria-label={i18n.t("onboarding.starters.progress", { name: item.name, phase: phaseLabel() })}
+                            aria-valuemin={0}
+                            aria-valuemax={100}
+                            aria-valuenow={percent() ?? undefined}
+                          >
+                            <span
+                              class="onboarding-progress-bar"
+                              classList={{ indeterminate: percent() === null }}
+                              style={{ width: percent() === null ? undefined : `${percent()}%` }}
+                            />
+                          </div>
+                          <p class="onboarding-tool-message onboarding-starter-phase" role="status">
+                            <span>{phaseLabel()}</span>
+                            <Show when={percent() !== null}>
+                              <span class="onboarding-starter-percent">{percent()}%</span>
+                            </Show>
+                          </p>
+                        </Show>
+                        <Show when={(() => { const current = state(); return current?.status === "installing" ? current.cancelError : null; })()}>
+                          {(error) => (
+                            <p class="onboarding-tool-message error" role="alert">
+                              {i18n.t("onboarding.starters.cancelFailed", { error: error() })}
+                            </p>
+                          )}
+                        </Show>
+                        <Show when={state()?.status === "installed"}>
+                          <p class="onboarding-tool-message" role="status">{i18n.t("onboarding.starters.done")}</p>
+                        </Show>
+                        <Show when={state()?.status === "cancelled"}>
+                          <p class="onboarding-tool-message" role="status">{i18n.t("onboarding.starters.cancelled")}</p>
+                        </Show>
+                        <Show when={(() => { const current = state(); return current?.status === "failed" ? current.error : null; })()}>
+                          {(error) => (
+                            <p class="onboarding-tool-message error" role="alert">
+                              {i18n.t("onboarding.starters.installFailed", { error: error() })}
+                            </p>
+                          )}
+                        </Show>
+                        <Show when={linkMessage()?.error}>
+                          <p class="onboarding-tool-message error" role="alert">{linkMessage()!.text}</p>
+                        </Show>
+                      </div>
+                      <div class="onboarding-tool-action">
+                        <Show
+                          when={!installed()}
+                          fallback={<span class="onboarding-badge">{i18n.t("onboarding.plugins.installed")}</span>}
+                        >
+                          <Show
+                            when={installing()}
+                            fallback={
+                              <button
+                                type="button"
+                                class="onboarding-secondary onboarding-install"
+                                disabled={installLocked()}
+                                onClick={() => void soundPacks.install(item.id)}
+                              >
+                                {i18n.t("onboarding.plugins.install")}
+                              </button>
+                            }
+                          >
+                            <button
+                              type="button"
+                              class="onboarding-secondary"
+                              onClick={() => void soundPacks.cancel(item.id)}
+                            >
+                              {i18n.t("onboarding.starters.cancel")}
+                            </button>
+                          </Show>
+                        </Show>
+                      </div>
+                    </article>
+                  );
+                }}
+              </For>
+              <For each={extraPacks()}>
                 {(item) => {
                   const running = () => busy() === item.id;
                   return (
@@ -487,8 +677,8 @@ export function Onboarding(props: { onDone: () => void }) {
                       <div class="onboarding-tool-action">
                         <button
                           type="button"
-                          class="onboarding-secondary"
-                          disabled={busy() !== null}
+                          class="onboarding-secondary onboarding-install"
+                          disabled={installLocked()}
                           onClick={() => void installPack(item)}
                         >
                           {running() ? i18n.t("onboarding.plugins.installing") : i18n.t("onboarding.plugins.install")}
@@ -498,37 +688,8 @@ export function Onboarding(props: { onDone: () => void }) {
                   );
                 }}
               </For>
-              <For each={starters()}>
-                {(sound) => (
-                  <article class="onboarding-tool" data-starter={sound.id}>
-                    <span class="onboarding-tool-icon" aria-hidden="true">
-                      {sound.kind === "samples" ? <WaveIcon /> : <KeyboardIcon />}
-                    </span>
-                    <div class="onboarding-tool-copy">
-                      <div class="onboarding-tool-head">
-                        <span class="onboarding-tool-role">{starterKind(sound)}</span>
-                        <h2>{sound.name}</h2>
-                        <span class="onboarding-tool-size">{formatBytes(sound.bytes)}</span>
-                        <span class="onboarding-tool-license">{sound.license}</span>
-                      </div>
-                      <p>{sound.description} · {sound.publisher}</p>
-                      <Show when={messageFor(sound.id)}>
-                        {(message) => (
-                          <p class="onboarding-tool-message" classList={{ error: message().error }} role={message().error ? "alert" : "status"}>
-                            {message().text}
-                          </p>
-                        )}
-                      </Show>
-                    </div>
-                    <div class="onboarding-tool-action">
-                      <button type="button" class="onboarding-secondary" onClick={() => void openStarter(sound)}>
-                        {i18n.t("onboarding.starters.open")}
-                      </button>
-                    </div>
-                  </article>
-                )}
-              </For>
             </div>
+            </Show>
           </section>
           </Show>
         </Show>

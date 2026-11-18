@@ -44,4 +44,36 @@ describe("first-run picks", () => {
     expect(picks.map((pick) => pick.role)).toEqual(PICK_ROLES.map(({ role }) => role));
     expect(pickRecommendations([entry("unrelated", { installable: true })], installed, installable)).toEqual([]);
   });
+
+  it("does not show one entry for several roles", () => {
+    const picks = pickRecommendations(
+      [
+        entry("airwindows.consolidated", { installable: true, install_mode: "extract" }),
+        entry("voxengo.boogex", { installable: true, install_mode: "installer" }),
+        entry("lsp-plugins.lsp-plugins", { installable: true, install_mode: "extract" }),
+      ],
+      installed,
+      installable,
+    );
+    expect(picks.map((pick) => [pick.role, pick.entry.id])).toEqual([
+      ["reverb", "airwindows.consolidated"],
+      ["character", "voxengo.boogex"],
+      ["mixing", "lsp-plugins.lsp-plugins"],
+    ]);
+  });
+
+  it("skips an installed entry an earlier role already took", () => {
+    const picks = pickRecommendations(
+      [
+        entry("airwindows.consolidated", { installed: true, installable: true, install_mode: "extract" }),
+        entry("voxengo.boogex", { installable: true, install_mode: "extract" }),
+      ],
+      installed,
+      installable,
+    );
+    expect(picks.map((pick) => [pick.role, pick.entry.id])).toEqual([
+      ["reverb", "airwindows.consolidated"],
+      ["character", "voxengo.boogex"],
+    ]);
+  });
 });

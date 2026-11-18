@@ -27,15 +27,26 @@ export const PICK_ROLES: readonly { role: PickRole; ids: readonly string[] }[] =
       "dragonfly-reverb.dragonfly-reverb",
       "u-he.protoverb",
       "voxengo.oldskoolverb",
+      "airwindows.consolidated",
     ],
   },
   {
     role: "character",
-    ids: ["chowdsp.chowtape-model", "airwindows.consolidated", "wolf-plugins.wolf-shaper"],
+    ids: [
+      "chowdsp.chowtape-model",
+      "voxengo.boogex",
+      "wolf-plugins.wolf-shaper",
+      "airwindows.consolidated",
+    ],
   },
   {
     role: "mixing",
-    ids: ["tokyo-dawn.tdr-nova", "voxengo.span", "lsp-plugins.lsp-plugins"],
+    ids: [
+      "tokyo-dawn.tdr-nova",
+      "voxengo.span",
+      "lsp-plugins.lsp-plugins",
+      "airwindows.consolidated",
+    ],
   },
   // Optional index entries: they appear only when the signed catalog
   // publishes a managed runtime for them.
@@ -58,17 +69,22 @@ export function pickRecommendations(
   isInstallable: (entry: PluginCatalogEntry) => boolean,
 ): Pick[] {
   const byId = new Map(entries.map((entry) => [entry.id, entry]));
+  const picked = new Set<string>();
   const picks: Pick[] = [];
   for (const { role, ids } of PICK_ROLES) {
     const candidates = ids
       .map((id) => byId.get(id))
-      .filter((entry): entry is PluginCatalogEntry => entry !== undefined);
+      .filter((entry): entry is PluginCatalogEntry => entry !== undefined)
+      .filter((entry) => !picked.has(entry.id));
     const installable = candidates.filter(isInstallable);
     const entry =
       candidates.find(isInstalled) ??
       installable.find((candidate) => candidate.install_mode === "extract") ??
       installable[0];
-    if (entry) picks.push({ role, entry });
+    if (entry) {
+      picked.add(entry.id);
+      picks.push({ role, entry });
+    }
   }
   return picks;
 }

@@ -38,7 +38,7 @@ export interface SamplerAssetInfo {
 export const listSamplerAssets = () => invoke<SamplerAssetInfo[]>("list_sampler_assets");
 
 export type PluginInstallSource = "direct" | "github_release" | "vendor_page";
-export type PluginArchive = "zip" | "dmg" | "pkg" | "tar-gz" | "installer";
+export type PluginArchive = "zip" | "dmg" | "pkg" | "tar-gz" | "tar-xz" | "7z" | "installer";
 export type PluginFormat = "vst3" | "vst2" | "clap" | "au" | "lv2" | "standalone";
 
 export interface SeparatorRuntimeDescriptor {
@@ -191,8 +191,76 @@ export const soundfontInstall = (id: string) =>
 export const soundfontsRemove = (id: string) =>
   invoke<InstalledSoundfont>("soundfonts_remove", { id });
 
-/** Why a folder is searched. */
-export type FolderOrigin = "standard" | "convention" | "environment" | "host_settings" | "user";
+/** What a sound pack holds once unpacked. */
+export type SoundPackContent = "soundfont" | "sfz" | "samples";
+/** How the publisher ships a sound pack; `file` is a single unpacked file. */
+export type SoundPackArchive = "file" | "zip" | "tar_gz" | "tar_xz" | "7z";
+
+/** One sound pack from the signed catalog, or one installed pack the catalog no longer lists. */
+export interface SoundPackItem {
+  id: string;
+  name: string;
+  publisher: string;
+  homepage: string;
+  version: string;
+  description: string;
+  content: SoundPackContent;
+  archive: SoundPackArchive;
+  /** Download size, pinned by the catalog together with the SHA-256. */
+  bytes: number;
+  unpacked_bytes: number;
+  license: PackLicense;
+  installed: boolean;
+  installed_version: string | null;
+  path: string | null;
+  /** `index` when the signed catalog offers it, `local` when only the disk has it. */
+  source: "index" | "local";
+}
+
+export interface SoundPackListing {
+  /** OpenCompose's own sounds folder, where packs are unpacked. */
+  dir: string;
+  items: SoundPackItem[];
+}
+
+export interface InstalledSoundPack {
+  id: string;
+  name: string;
+  version: string;
+  path: string;
+  bytes: number;
+  unpacked_bytes: number;
+  files: number;
+}
+
+export type SoundPackPhase = "download" | "verify" | "extract";
+
+/** Payload of `sound_pack_install_progress`; `total` 0 means not known yet. */
+export interface SoundPackProgress {
+  id: string;
+  phase: SoundPackPhase;
+  done: number;
+  total: number;
+}
+
+export const SOUND_PACK_PROGRESS_EVENT = "sound_pack_install_progress";
+
+export const soundPacksList = () => invoke<SoundPackListing>("sound_packs_list");
+/** Download, verify and unpack one catalog pack; rejects with the reason it stopped. */
+export const soundPackInstall = (id: string) =>
+  invoke<InstalledSoundPack>("sound_pack_install", { id });
+/** Ask a running pack install to stop at its next checkpoint. */
+export const soundPackCancel = (id: string) => invoke<void>("sound_pack_cancel", { id });
+export const soundPackRemove = (id: string) => invoke<void>("sound_pack_remove", { id });
+
+/** Why a folder is searched; `managed` is the folder OpenCompose installs sound packs into. */
+export type FolderOrigin =
+  | "standard"
+  | "convention"
+  | "environment"
+  | "host_settings"
+  | "user"
+  | "managed";
 
 /** One folder the app searches, and how many items it holds. */
 export interface SearchedFolder {
