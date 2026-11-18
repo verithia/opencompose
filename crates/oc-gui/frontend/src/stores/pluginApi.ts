@@ -104,7 +104,7 @@ export interface InstalledPluginInfo {
   path: string;
 }
 
-export type PluginCatalogSource = "bundled" | "cache" | "remote";
+export type PluginCatalogSource = "none" | "cache" | "remote";
 
 export interface PluginCatalog {
   platform: string;

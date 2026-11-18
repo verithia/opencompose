@@ -84,14 +84,14 @@ const GENERAL_USER = pack("christian-collins.generaluser-gs", "GeneralUser GS", 
   license: { name: "GeneralUser GS License v2.0", url: "https://example.test/generaluser", text: "" },
 });
 
-const MULDJORD = pack("freepats.muldjordkit", "MuldjordKit", "soundfont", {
+const MULDJORD = pack("freepats.muldjordkit-sf2", "MuldjordKit", "soundfont", {
   archive: "7z",
   bytes: 54_877_940,
   unpacked_bytes: 69_000_000,
   license: { name: "CC-BY-4.0", url: "https://example.test/cc-by", text: "Drum samples by Mads Muldjord." },
 });
 
-const AKWF = pack("adventure-kid.akwf", "AKWF waveforms", "samples", {
+const AKWF = pack("adventurekid.akwf", "AKWF waveforms", "samples", {
   publisher: "Adventure Kid",
   bytes: 6_007_440,
   unpacked_bytes: 6_007_440,
@@ -165,7 +165,7 @@ beforeEach(() => {
         platform: "macos-aarch64",
         entries: [{ ...ENTRY, installed }],
         installed: installed ? [{ name: "Surge XT", format: "vst3", path: "/plugins/Surge XT.vst3" }] : [],
-        source: "bundled",
+        source: "cache",
       };
     }
     if (command === "plugin_index_status") return null;
@@ -383,6 +383,64 @@ describe("first-run onboarding", () => {
     await waitFor(() =>
       expect(invokeMock).toHaveBeenCalledWith("open_url", { url: "https://example.test/generaluser" }),
     );
+  });
+
+  it("shows the offline note and retries the index when no catalog is downloaded", async () => {
+    let catalogDownloaded = false;
+    let soundPackLoads = 0;
+    const original = invokeMock.getMockImplementation()!;
+    const status = (source: "none" | "cache") => ({
+      source,
+      generated_at: null,
+      fetched_at: null,
+      stale_days: null,
+      stale_warning: false,
+      last_error: null,
+      catalog_version: null,
+      min_app_version: null,
+      next_refresh_in_seconds: 0,
+    });
+    invokeMock.mockImplementation(async (command: string, ...args: unknown[]) => {
+      if (command === "plugin_catalog") {
+        return {
+          platform: "macos-aarch64",
+          entries: catalogDownloaded ? [{ ...ENTRY, installed }] : [],
+          installed: [],
+          source: catalogDownloaded ? "cache" : "none",
+        };
+      }
+      if (command === "plugin_index_status") return status(catalogDownloaded ? "cache" : "none");
+      if (command === "plugin_index_refresh") {
+        catalogDownloaded = true;
+        return { performed: true, changed: true, status: status("cache") };
+      }
+      if (command === "sound_packs_list") {
+        soundPackLoads += 1;
+        return { dir: "/sounds", items: catalogDownloaded ? PACKS : [] };
+      }
+      return original(command, ...args);
+    });
+
+    render(() => <Onboarding onDone={() => {}} />);
+    await openPicksStep();
+
+    expect(
+      await screen.findByText("Connect to the internet to see free plugin and sound suggestions."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Free plugins")).toBeNull();
+    expect(screen.queryByText("Starter sounds")).toBeNull();
+    expect(screen.getByRole("button", { name: "Add sound folder…" })).toBeEnabled();
+
+    const loadsBeforeRetry = soundPackLoads;
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("plugin_index_refresh", { force: true }));
+    expect(await screen.findByText("Surge XT")).toBeInTheDocument();
+    expect(await screen.findByText("GeneralUser GS")).toBeInTheDocument();
+    await waitFor(() => expect(soundPackLoads).toBeGreaterThan(loadsBeforeRetry));
+    expect(
+      screen.queryByText("Connect to the internet to see free plugin and sound suggestions."),
+    ).toBeNull();
   });
 
   it("installs a starter sound pack with one click and scans again", async () => {

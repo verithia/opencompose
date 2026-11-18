@@ -40,7 +40,14 @@ folders that are searched.
 ## 2. Recommended (only when little is found)
 
 This page appears when the scan finds fewer than 10 readable plugins, fewer
-than 3 instruments, or fewer than 100 samples. It shows what is missing:
+than 3 instruments, or fewer than 100 samples. It shows what is missing.
+
+The suggestions and their install steps come from the signed plugin index: the
+application carries only the ids of the recommendation list, and neither the app
+nor `ocp` embeds the catalog. The index supplies the names, builds, addresses,
+sizes, checksums and install scripts. A first run needs the internet once to
+fetch the index; afterwards the verified copy is cached and the suggestions work
+offline. Without a downloaded index the page says so and offers **Try again**.
 
 - **Free plugins**: one distinct entry per role (synth, sampler, reverb,
   saturation, mixing, tools) from the plugin index the Store uses. The first
@@ -48,18 +55,16 @@ than 3 instruments, or fewer than 100 samples. It shows what is missing:
   installer, then any installable one. An entry shown for an earlier role is
   skipped. **Install** goes through the same verified `plugin_store_install`
   path as the Store.
-- **Starter sounds**: free SoundFonts, SFZ libraries and sample packs from the
-  signed catalog (`stores/starterSounds.ts`). The bundled catalog carries its
-  starter packs, so they are available before remote trust is configured.
-  Instrument packs appear when
-  instruments are few, and sample packs when samples are few. A card shows the
-  publisher, the content kind, the download and unpacked sizes, and the
-  licence; the licence name opens its text and the small print carries any
-  attribution the licence requires. **Install** downloads the archive from the
-  publisher, checks it against the signed catalog's size and SHA-256, and
-  unpacks it into OpenCompose's sounds folder, where the next scan finds it.
-  The card shows download, verify and unpack progress with a **Cancel** action.
-  **Add sound folder…** stays available for folders kept elsewhere.
+- **Starter sounds**: free SoundFonts, SFZ libraries and sample packs that the
+  index recommends. Instrument packs appear when instruments are few, and
+  sample packs when samples are few. A card shows the publisher, the content
+  kind, the download and unpacked sizes, and the licence; the licence name
+  opens its text and the small print carries any attribution the licence
+  requires. **Install** downloads the archive from the publisher, checks it
+  against the signed catalog's size and SHA-256, and unpacks it into
+  OpenCompose's sounds folder, where the next scan finds it. The card shows
+  download, verify and unpack progress with a **Cancel** action. **Add sound
+  folder…** stays available for folders kept elsewhere.
 
 ## 3. The bottom panel
 

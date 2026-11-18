@@ -87,6 +87,7 @@ export function Onboarding(props: { onDone: () => void }) {
   const [step, setStep] = createSignal<Step>("scan");
   const [busy, setBusy] = createSignal<string | null>(null);
   const [folderBusy, setFolderBusy] = createSignal(false);
+  const [indexRetrying, setIndexRetrying] = createSignal(false);
   const [messages, setMessages] = createSignal<Record<string, { text: string; error: boolean }>>({});
 
   const isTopmost = useTopmostEscape(props.onDone, () => !busy());
@@ -190,6 +191,25 @@ export function Onboarding(props: { onDone: () => void }) {
     }
   };
 
+  /** No downloaded index: the guide has no versions, addresses or sizes to show. */
+  const catalogEmpty = () => {
+    const catalog = pluginStore.catalog();
+    return catalog !== null && catalog.entries.length === 0;
+  };
+
+  /** Fetch the index again, then read the catalog and sound packs the page draws from. */
+  const retryIndex = async () => {
+    if (indexRetrying() || pluginStore.refreshing()) return;
+    setIndexRetrying(true);
+    try {
+      const outcome = await pluginStore.refresh(true);
+      if (!outcome?.changed) await pluginStore.load(true);
+      await soundPacks.load();
+    } finally {
+      setIndexRetrying(false);
+    }
+  };
+
   /** Opens a license or publisher page; a failure is reported on that card. */
   const openLink = async (id: string, url: string) => {
     setMessages((previous) => ({ ...previous, [`link:${id}`]: { text: "", error: false } }));
@@ -212,8 +232,8 @@ export function Onboarding(props: { onDone: () => void }) {
   const messageFor = (id: string) => messages()[id];
 
   onMount(() => {
-    // Use the bundled or cached catalog: the guide must paint on a first run
-    // with no network. The Store's explicit refresh remains the network path.
+    // Paint the catalog the backend returns, cached or empty, so the guide
+    // opens without waiting on the network; an empty one offers Try again.
     void pluginStore.load();
     void loadPacks();
     void soundPacks.load();
@@ -413,6 +433,43 @@ export function Onboarding(props: { onDone: () => void }) {
           <p class="onboarding-body">
             {i18n.t(localScan.summary() ? "onboarding.picks.bodyFew" : "onboarding.picks.body")}
           </p>
+          <Show when={catalogEmpty()}>
+            <section class="onboarding-picks onboarding-picks-offline" aria-labelledby="onboarding-picks-offline">
+              <p class="onboarding-tools-loading" id="onboarding-picks-offline">
+                {i18n.t("onboarding.picks.offline")}
+              </p>
+              <Show when={messageFor("folder")?.error}>
+                <p class="onboarding-tools-error" role="alert">{messageFor("folder")!.text}</p>
+              </Show>
+              <Show when={pluginStore.error()}>
+                {(error) => (
+                  <p class="onboarding-tools-error" role="alert">
+                    {i18n.t("onboarding.plugins.error", { error: error() })}
+                  </p>
+                )}
+              </Show>
+              <div class="onboarding-scan-actions">
+                <button
+                  type="button"
+                  class="onboarding-secondary"
+                  disabled={indexRetrying() || pluginStore.refreshing() || folderBusy()}
+                  onClick={() => void retryIndex()}
+                >
+                  {i18n.t("onboarding.picks.tryAgain")}
+                </button>
+                <button
+                  type="button"
+                  class="onboarding-secondary"
+                  disabled={folderBusy()}
+                  onClick={() => void addSoundFolder()}
+                >
+                  <FolderIcon />
+                  {i18n.t("onboarding.local.add.sounds")}
+                </button>
+              </div>
+            </section>
+          </Show>
+          <Show when={!catalogEmpty()}>
           <Show when={showPluginPicks()}>
           <section class="onboarding-picks" aria-labelledby="onboarding-picks-title">
             <h2 class="onboarding-section-title" id="onboarding-picks-title">{i18n.t("onboarding.picks.plugins")}</h2>
@@ -691,6 +748,7 @@ export function Onboarding(props: { onDone: () => void }) {
             </div>
             </Show>
           </section>
+          </Show>
           </Show>
         </Show>
 

@@ -1,5 +1,6 @@
 /** Starter sounds appear only for the kinds of content this computer lacks. */
 import { describe, expect, it } from "vitest";
+import recommendations from "../data/recommendations.json";
 import {
   FEW_INSTRUMENTS,
   FEW_PLUGINS,
@@ -57,45 +58,59 @@ function pack(
   };
 }
 
-const INSTRUMENT = pack("bank", "soundfont");
-const SFZ = pack("sfz", "sfz");
-const SAMPLES = pack("samples", "samples");
+const GENERAL_USER = pack("christian-collins.generaluser-gs", "soundfont");
+const UPRIGHT = pack("freepats.upright-piano-kw-small", "soundfont");
+const MULDJORD = pack("freepats.muldjordkit-sf2", "soundfont");
+const NYLON = pack("meta.nylon-guitar-ogg", "sfz");
+const SALAMANDER = pack("freepats.salamander-grand-piano-sf2", "soundfont");
+const AKWF = pack("adventurekid.akwf", "samples");
+const OCULUS = pack("meta.oculus-audio-pack-ogg", "samples");
+
+const RECOMMENDED = [GENERAL_USER, UPRIGHT, MULDJORD, NYLON, SALAMANDER, AKWF, OCULUS];
 
 describe("starter suggestions", () => {
+  it("uses the embedded list as its only source of pack ids", () => {
+    expect(RECOMMENDED.map((item) => item.id)).toEqual(recommendations.sounds);
+  });
+
   it("offers instrument banks and sample packs separately", () => {
-    const items = [INSTRUMENT, SFZ, SAMPLES];
+    const fewInstruments = pickStarterSounds(summary(kind(0), 0, FEW_SAMPLES), RECOMMENDED);
+    expect(fewInstruments).toEqual([GENERAL_USER, UPRIGHT, MULDJORD, NYLON, SALAMANDER]);
 
-    const fewInstruments = pickStarterSounds(summary(kind(0), 0, FEW_SAMPLES), items);
-    expect(fewInstruments).toEqual([INSTRUMENT, SFZ]);
+    const fewSamples = pickStarterSounds(summary(kind(0), FEW_INSTRUMENTS, 0), RECOMMENDED);
+    expect(fewSamples).toEqual([AKWF, OCULUS]);
 
-    const fewSamples = pickStarterSounds(summary(kind(0), FEW_INSTRUMENTS, 0), items);
-    expect(fewSamples).toEqual([SAMPLES]);
-
-    expect(pickStarterSounds(summary(kind(0), FEW_INSTRUMENTS, FEW_SAMPLES), items)).toEqual([]);
+    expect(pickStarterSounds(summary(kind(0), FEW_INSTRUMENTS, FEW_SAMPLES), RECOMMENDED)).toEqual([]);
   });
 
-  it("offers every kind before the scan answers", () => {
-    expect(pickStarterSounds(null, [INSTRUMENT, SFZ, SAMPLES])).toEqual([INSTRUMENT, SFZ, SAMPLES]);
+  it("offers every recommended kind before the scan answers", () => {
+    expect(pickStarterSounds(null, RECOMMENDED)).toEqual(RECOMMENDED.slice(0, MAX_STARTER_SOUNDS));
   });
 
-  it("leaves out installed packs, local packs and unknown content", () => {
+  it("follows the embedded order, not the catalog order", () => {
+    const reversed = [...RECOMMENDED].reverse();
+    expect(pickStarterSounds(null, reversed)).toEqual(RECOMMENDED.slice(0, MAX_STARTER_SOUNDS));
+  });
+
+  it("leaves out installed, local, unknown and non-recommended packs", () => {
     const items = [
-      pack("installed", "soundfont", { installed: true }),
-      pack("local", "soundfont", { source: "local" }),
-      pack("unknown", "loops" as unknown as SoundPackContent),
-      INSTRUMENT,
+      pack("some.other.pack", "soundfont"),
+      { ...GENERAL_USER, installed: true },
+      { ...UPRIGHT, source: "local" as const },
+      { ...SALAMANDER, content: "loops" as unknown as SoundPackContent },
+      MULDJORD,
+      NYLON,
+      AKWF,
+      OCULUS,
     ];
-    expect(pickStarterSounds(summary(kind(0), 0, FEW_SAMPLES), items)).toEqual([INSTRUMENT]);
+    expect(pickStarterSounds(null, items)).toEqual([MULDJORD, NYLON, AKWF, OCULUS]);
   });
 
-  it("caps the list in catalog order", () => {
-    const items = Array.from({ length: MAX_STARTER_SOUNDS + 2 }, (_, index) =>
-      pack(`bank-${index}`, "soundfont"),
-    );
-    const picked = pickStarterSounds(summary(kind(0), 0, FEW_SAMPLES), items);
+  it("caps the list in recommendation order", () => {
+    const picked = pickStarterSounds(null, RECOMMENDED);
     expect(picked).toHaveLength(MAX_STARTER_SOUNDS);
     expect(picked.map((item) => item.id)).toEqual(
-      items.slice(0, MAX_STARTER_SOUNDS).map((item) => item.id),
+      RECOMMENDED.slice(0, MAX_STARTER_SOUNDS).map((item) => item.id),
     );
   });
 

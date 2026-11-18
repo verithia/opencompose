@@ -1,8 +1,8 @@
 /**
  * Plugin Store catalog state and pure matching/selection helpers.
  *
- * The catalog comes from the signed index cache or the bundled fallback; the
- * UI only exposes a rate-limited refresh action.
+ * The catalog comes from the signed index cache; an absent copy yields an empty
+ * catalog. The UI only exposes a rate-limited refresh action.
  */
 import { createSignal } from "solid-js";
 import * as api from "./api";

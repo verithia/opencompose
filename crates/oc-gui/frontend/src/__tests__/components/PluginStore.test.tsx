@@ -105,11 +105,11 @@ const catalog: PluginCatalog = {
   platform: "macos-aarch64",
   entries: [dexed, talReverb, cardinal, windowsOnly, intelOnly],
   installed: [{ name: "Dexed", format: "vst3", path: "/Users/test/VST3/Dexed.vst3" }],
-  source: "bundled",
+  source: "cache",
 };
 
 const bundledStatus = {
-  source: "bundled" as const,
+  source: "cache" as const,
   generated_at: null,
   fetched_at: null,
   stale_days: null,

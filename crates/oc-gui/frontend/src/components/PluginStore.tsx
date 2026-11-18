@@ -1,8 +1,8 @@
 /**
  * Compact free-plugin catalog list inside the Store surface.
  *
- * The catalog may come from the signed remote index cache or the bundled
- * fallback; every URL is resolved by the Rust backend from the active catalog.
+ * The catalog may come from the signed remote index cache; an absent copy leaves
+ * it empty. Every URL is resolved by the Rust backend from the active catalog.
  */
 import { For, Show, createMemo, createSignal, onMount } from "solid-js";
 import { ask } from "@tauri-apps/plugin-dialog";
@@ -64,8 +64,8 @@ export function PluginStore() {
 
   const sourceLabel = createMemo(() => {
     const status = indexStatus();
-    const source = status?.source ?? pluginStore.catalog()?.source ?? "bundled";
-    if (source === "bundled") return i18n.t("store.plugins.sourceBundled");
+    const source = status?.source ?? pluginStore.catalog()?.source ?? "none";
+    if (source === "none") return i18n.t("store.plugins.sourceNone");
     if (status?.fetched_at) {
       // Whole minutes: a fractional readout printed "0.98 min ago" right after
       // a fetch and made the label depend on which side of a second it ran.
@@ -80,7 +80,7 @@ export function PluginStore() {
         : "");
     return date
       ? i18n.t("store.plugins.sourceCache", { date })
-      : i18n.t("store.plugins.sourceBundled");
+      : i18n.t("store.plugins.sourceNone");
   });
 
   const cooldownMinutes = () => {

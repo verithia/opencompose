@@ -38,9 +38,9 @@ const manifest = readFileSync(path.join(STYLE_ROOT, "daw.css"), "utf8");
 const stylesheet = [...manifest.matchAll(/@import\s+"([^"]+)";/g)]
   .map((match) => readFileSync(path.resolve(STYLE_ROOT, match[1]), "utf8")).join("\n")
   + "\n" + readFileSync(path.join(STYLE_ROOT, "catppuccin.css"), "utf8");
-const catalog = JSON.parse(
-  readFileSync(path.resolve(process.cwd(), "src/data/plugin-catalog.json"), "utf8"),
-) as {
+// The signed index is published from this source catalog; the app never embeds it.
+const catalogPath = path.resolve(process.cwd(), "../../../catalog/plugin-catalog.json");
+const catalog = JSON.parse(readFileSync(catalogPath, "utf8")) as {
   entries: PluginCatalogEntry[];
   packs: (Omit<SoundPackItem, "installed" | "installed_version" | "path" | "source"> & { kind: string })[];
 };
@@ -231,7 +231,7 @@ afterEach(() => {
 function answer(platform: string, summary: LocalContentSummary | Promise<LocalContentSummary>) {
   invokeMock.mockImplementation(async (command: string) => {
     if (command === "plugin_catalog") {
-      return { platform, entries: resolved(platform), installed: [], source: "bundled" };
+      return { platform, entries: resolved(platform), installed: [], source: "cache" };
     }
     if (command === "local_content_scan" || command === "local_content_summary") return summary;
     if (command === "soundfonts_list") return { dir: "", items: [] };
@@ -321,6 +321,40 @@ describe("first-run scan page layout", () => {
         });
       }
     }
+  }
+
+  for (const locale of ["en", "zh-Hans"] as const) {
+    it(`${locale}: offline suggestions fit the card`, async () => {
+      i18n.setLocale(locale);
+      answer("macos-aarch64", summaryFor("macos-aarch64", true));
+      const original = invokeMock.getMockImplementation()!;
+      invokeMock.mockImplementation(async (command: string, ...args: unknown[]) => {
+        if (command === "plugin_catalog") {
+          return { platform: "macos-aarch64", entries: [], installed: [], source: "none" };
+        }
+        if (command === "plugin_index_status") {
+          return {
+            source: "none",
+            generated_at: null,
+            fetched_at: null,
+            stale_days: null,
+            stale_warning: false,
+            last_error: null,
+            catalog_version: null,
+            min_app_version: null,
+            next_refresh_in_seconds: 0,
+          };
+        }
+        if (command === "sound_packs_list") return { dir: "/sounds", items: [] };
+        return original(command, ...args);
+      });
+      const fixture = render(() => <Onboarding onDone={() => {}} />);
+      await screen.findByText(i18n.t("onboarding.scan.titleDone"));
+      fireEvent.click(screen.getByRole("button", { name: i18n.t("onboarding.next") }));
+      await screen.findByText(i18n.t("onboarding.picks.offline"));
+      await shoot(fixture.container, "graphite", `picks-offline-${locale}`, (page) =>
+        fitsCard(page, ".onboarding-picks-offline, .onboarding-picks-offline .onboarding-scan-actions"));
+    });
   }
 
   for (const locale of ["en", "zh-Hans"] as const) {

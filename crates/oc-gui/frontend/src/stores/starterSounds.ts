@@ -5,6 +5,7 @@
  * app downloads, verifies and unpacks them itself. This module holds only the
  * thresholds and the choice; `soundPacks.ts` runs the installs.
  */
+import { RECOMMENDED_SOUNDS } from "./onboardingPicks";
 import type { LocalContentSummary, SoundPackItem } from "./pluginApi";
 
 /** Below these counts the guide suggests more; above them it stays quiet. */
@@ -34,11 +35,11 @@ export function needsSoundPicks(summary: LocalContentSummary): boolean {
 }
 
 /**
- * Catalog packs to offer, in catalog order: instrument packs (SoundFont, SFZ)
- * when instruments are few, sample packs when samples are few. Installed
- * packs and packs the catalog no longer lists are left out, and so is any
- * content kind this build does not know. Before the scan answers (`null`)
- * both kinds are offered.
+ * Recommended packs to offer, in the embedded list's order: instrument packs
+ * (SoundFont, SFZ) when instruments are few, sample packs when samples are
+ * few. Installed packs, local packs, packs outside the recommendation list and
+ * any content kind this build does not know are left out. Before the scan
+ * answers (`null`) both kinds are offered.
  */
 export function pickStarterSounds(
   summary: LocalContentSummary | null,
@@ -46,14 +47,19 @@ export function pickStarterSounds(
 ): SoundPackItem[] {
   const instruments = summary === null || fewInstruments(summary);
   const samples = summary === null || fewSamples(summary);
-  return items
-    .filter((item) => item.source === "index" && !item.installed)
-    .filter((item) =>
+  const byId = new Map(items.map((item) => [item.id, item]));
+  const picked: SoundPackItem[] = [];
+  for (const id of RECOMMENDED_SOUNDS) {
+    if (picked.length === MAX_STARTER_SOUNDS) break;
+    const item = byId.get(id);
+    if (!item || item.source !== "index" || item.installed) continue;
+    const wanted =
       item.content === "samples"
         ? samples
         : item.content === "soundfont" || item.content === "sfz"
           ? instruments
-          : false,
-    )
-    .slice(0, MAX_STARTER_SOUNDS);
+          : false;
+    if (wanted) picked.push(item);
+  }
+  return picked;
 }
