@@ -1,15 +1,18 @@
 /**
- * First-run splash and guide: the three-step path, the AI handoff, a plugin
- * recommendation installed from the catalog, and the once-per-machine marker.
+ * First-run splash and guide: the scan page with its progress and results,
+ * the suggestions shown only when little is found, the AI handoff, and the
+ * once-per-machine marker.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@solidjs/testing-library";
 import { DEFAULT_PROVIDERS, aiConfig, loadConfig } from "../ai/config";
 import { Onboarding, Splash } from "../components/Onboarding";
 import { onboardingStore } from "../stores/onboarding";
 import { preferencesUi } from "../stores/preferencesUi";
 import { pluginStore } from "../stores/pluginStore";
-import { aiConfigWire, invokeMock, openDialogMock } from "./setup";
+import { localScan } from "../stores/localScan";
+import type { LocalContentSummary, LocalScanProgress } from "../stores/api";
+import { aiConfigWire, invokeMock, listenMock, openDialogMock } from "./setup";
 
 const ENTRY = {
   id: "surge-synth-team.surge-xt",
@@ -32,34 +35,70 @@ const ENTRY = {
   installed: false,
 };
 
-const SUMMARY = {
+const item = (name: string, format: string, detail = "", readable = true) => ({
+  name,
+  detail,
+  format,
+  path: `/plugins/${name}.${format}`,
+  readable,
+});
+
+/** A machine with little on it: the guide suggests plugins and sounds. */
+const SUMMARY: LocalContentSummary = {
   plugins: {
     total: 3,
     formats: [{ format: "vst3", count: 2 }, { format: "clap", count: 1 }],
     folders: [
       { path: "/Library/Audio/Plug-Ins/VST3", origin: "standard", exists: true, count: 2 },
-      { path: "/Library/Audio/Plug-Ins/CLAP", origin: "standard", exists: true, count: 1 },
+      { path: "/Users/me/Library/Application Support/REAPER/UserPlugins/FX", origin: "host_settings", exists: true, count: 1 },
       { path: "/Library/Audio/Plug-Ins/LV2", origin: "standard", exists: false, count: 0 },
     ],
+    items: [item("Broken", "vst3", "", false), item("Echo", "clap", "Acme"), item("Synth", "vst3", "Acme")],
+    truncated: false,
   },
-  sounds: {
+  instruments: {
     total: 1,
     formats: [{ format: "sf2", count: 1 }],
     folders: [{ path: "/Users/me/Music/SoundFonts", origin: "standard", exists: true, count: 1 }],
+    items: [{ name: "Piano", detail: "/Users/me/Music/SoundFonts", format: "sf2", path: "/Users/me/Music/SoundFonts/Piano.sf2", readable: true }],
+    truncated: false,
   },
-  scanning: true,
+  samples: {
+    total: 12,
+    formats: [],
+    folders: [{ path: "/Users/me/Music/SoundFonts", origin: "standard", exists: true, count: 12 }],
+    items: [],
+    truncated: false,
+  },
+  scanning: false,
+};
+
+/** A well-stocked machine: no suggestion page. */
+const PLENTY: LocalContentSummary = {
+  ...SUMMARY,
+  plugins: {
+    ...SUMMARY.plugins,
+    total: 40,
+    items: Array.from({ length: 40 }, (_, index) => item(`Plugin ${index}`, "vst3", "Acme")),
+  },
+  instruments: { ...SUMMARY.instruments, total: 20 },
+  samples: { ...SUMMARY.samples, total: 5_000 },
 };
 
 let installed = false;
+let summary: LocalContentSummary = SUMMARY;
 
-/** Walk to the last step. */
-function openPluginStep() {
+/** Leave the scan page once its result is shown. */
+async function openPicksStep() {
+  await screen.findByText("Found on this computer");
   fireEvent.click(screen.getByRole("button", { name: "Continue" }));
-  fireEvent.click(screen.getByRole("button", { name: "Fill this in later in Preferences" }));
+  await screen.findByText("Recommended");
 }
 
 beforeEach(() => {
   installed = false;
+  summary = SUMMARY;
+  localScan.reset();
   onboardingStore.reset();
   preferencesUi.close();
   pluginStore.reset();
@@ -73,8 +112,9 @@ beforeEach(() => {
       };
     }
     if (command === "plugin_index_status") return null;
-    if (command === "local_content_summary") return SUMMARY;
+    if (command === "local_content_scan" || command === "local_content_summary") return summary;
     if (command === "soundfonts_list") return { dir: "", items: [] };
+    if (command === "open_url") return undefined;
     if (command === "plugin_store_install") {
       installed = true;
       return { status: "installed", path: "/plugins/Surge XT.vst3", message: "Installed" };
@@ -87,8 +127,10 @@ afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
   invokeMock.mockReset();
+  listenMock.mockImplementation(async () => () => {});
   preferencesUi.close();
   pluginStore.reset();
+  localScan.reset();
 });
 
 describe("first-run onboarding", () => {
@@ -97,29 +139,200 @@ describe("first-run onboarding", () => {
     expect(screen.getByRole("status")).toHaveAttribute("aria-label", "Starting OpenCompose");
   });
 
-  it("starts on the three bottom-panel keys", () => {
+  it("opens on a scan that reports progress for plugins, then sounds", async () => {
+    let emit!: (payload: LocalScanProgress) => void;
+    listenMock.mockImplementation(async (_event: string, handler: (event: { payload: LocalScanProgress }) => void) => {
+      emit = (payload) => handler({ payload });
+      return () => {};
+    });
+    let finish!: (value: LocalContentSummary) => void;
+    const original = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation((command: string, ...args: unknown[]) =>
+      command === "local_content_scan" ? new Promise((resolve) => { finish = resolve; }) : original(command, ...args));
+
     render(() => <Onboarding onDone={() => {}} />);
-    expect(screen.getByText("Shortcuts open three workspaces")).toBeInTheDocument();
+    expect(screen.getByText("Looking for plugins and sounds")).toBeInTheDocument();
+    expect(screen.getByText("Step 1 of 4")).toBeInTheDocument();
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("local_content_scan", { rescan: false }));
+    await waitFor(() => expect(emit).toBeDefined());
+
+    emit({ phase: "plugins", done: 3, total: 12, current: "Kontakt.vst3" });
+    const plugins = screen.getByRole("progressbar", { name: "Plugins" });
+    await waitFor(() => expect(plugins).toHaveAttribute("aria-valuenow", "25"));
+    expect(screen.getByText("Reading Kontakt.vst3 · 3 of 12")).toBeInTheDocument();
+    expect(screen.getByText("Starts after plugins")).toBeInTheDocument();
+
+    emit({ phase: "sounds", done: 1, total: 4, current: "/Users/me/Music/SoundFonts" });
+    await screen.findByText("Searching /Users/me/Music/SoundFonts · 2 of 4");
+    expect(screen.getByRole("progressbar", { name: "Sounds" })).toHaveAttribute("aria-valuenow", "25");
+
+    finish(SUMMARY);
+    expect(await screen.findByText("Found on this computer")).toBeInTheDocument();
+    // The finished scan gives way to its result.
+    expect(screen.queryByRole("progressbar")).toBeNull();
+    expect(screen.getByText("Plugins (3)")).toBeInTheDocument();
+  });
+
+  it("shows counts and folded lists of what was found", async () => {
+    render(() => <Onboarding onDone={() => {}} />);
+    await screen.findByText("Found on this computer");
+
+    expect(screen.getByText("VST3 2 · CLAP 1")).toBeInTheDocument();
+    expect(screen.getByText("SF2 1")).toBeInTheDocument();
+    const pluginList = screen.getByText("Plugins (3)").closest("details")!;
+    expect(pluginList).not.toHaveAttribute("open");
+    expect(within(pluginList).getByText("Synth")).toBeInTheDocument();
+    const broken = within(pluginList).getByText("Broken").closest("li")!;
+    expect(broken).toHaveClass("unreadable");
+    expect(within(broken).getByText("Could not be read")).toBeInTheDocument();
+    expect(screen.getByText("Instruments (1)").closest("details")).toBeInTheDocument();
+
+    // A standard folder that does not exist is searched but not listed.
+    expect(screen.getByText("Folders searched (3)")).toBeInTheDocument();
+    expect(screen.queryByText("/Library/Audio/Plug-Ins/LV2")).toBeNull();
+    expect(screen.getByText("Usual locations not on this computer: 1")).toBeInTheDocument();
+    expect(screen.getByText("From another app")).toBeInTheDocument();
+    expect(screen.getByText("Instruments 1 · Samples 12")).toBeInTheDocument();
+    expect(screen.getByText(/Add the folder where your plugins or sounds are kept/)).toBeInTheDocument();
+  });
+
+  it("adds a plugin folder the user picks, then scans again", async () => {
+    openDialogMock.mockResolvedValueOnce("/Volumes/Studio/Plugins");
+    const added: LocalContentSummary = {
+      ...SUMMARY,
+      plugins: {
+        ...SUMMARY.plugins,
+        total: 5,
+        formats: [...SUMMARY.plugins.formats, { format: "lv2", count: 2 }],
+        folders: [
+          ...SUMMARY.plugins.folders,
+          { path: "/Volumes/Studio/Plugins", origin: "user", exists: true, count: 2 },
+        ],
+      },
+    };
+    const original = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation(async (command: string, ...args: unknown[]) => {
+      if (command === "plugin_folder_add") {
+        summary = added;
+        return added;
+      }
+      if (command === "plugin_folder_remove") {
+        summary = SUMMARY;
+        return SUMMARY;
+      }
+      return original(command, ...args);
+    });
+    render(() => <Onboarding onDone={() => {}} />);
+    await screen.findByText("Found on this computer");
+
+    fireEvent.click(screen.getByRole("button", { name: "Add plugin folder…" }));
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("plugin_folder_add", { path: "/Volumes/Studio/Plugins" }),
+    );
+    expect(await screen.findByText("VST3 2 · CLAP 1 · LV2 2")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(invokeMock.mock.calls.filter(([command]) => command === "local_content_scan")).toHaveLength(2),
+    );
+    expect(screen.getByText("Added")).toBeInTheDocument();
+
+    const remove = await screen.findByRole("button", { name: "Stop searching /Volumes/Studio/Plugins" });
+    await waitFor(() => expect(remove).toBeEnabled());
+    fireEvent.click(remove);
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("plugin_folder_remove", { path: "/Volumes/Studio/Plugins" }),
+    );
+    expect(await screen.findByText("VST3 2 · CLAP 1")).toBeInTheDocument();
+  });
+
+  it("reports a sound folder the backend refuses and keeps the counts", async () => {
+    openDialogMock.mockResolvedValueOnce("/Users/me/Empty");
+    const original = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation(async (command: string, ...args: unknown[]) => {
+      if (command === "sound_folder_add") throw "no instrument files found under '/Users/me/Empty'";
+      return original(command, ...args);
+    });
+    render(() => <Onboarding onDone={() => {}} />);
+    await screen.findByText("Found on this computer");
+
+    fireEvent.click(screen.getByRole("button", { name: "Add sound folder…" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Could not add the folder: no instrument files found",
+    );
+    expect(screen.getByText("SF2 1")).toBeInTheDocument();
+  });
+
+  it("does nothing when the folder picker is cancelled", async () => {
+    openDialogMock.mockResolvedValueOnce(null);
+    render(() => <Onboarding onDone={() => {}} />);
+    await screen.findByText("Found on this computer");
+    fireEvent.click(screen.getByRole("button", { name: "Add plugin folder…" }));
+    await waitFor(() => expect(openDialogMock).toHaveBeenCalled());
+    expect(invokeMock.mock.calls.some(([command]) => command === "plugin_folder_add")).toBe(false);
+  });
+
+  it("rescans every plugin on request", async () => {
+    render(() => <Onboarding onDone={() => {}} />);
+    await screen.findByText("Found on this computer");
+    fireEvent.click(screen.getByRole("button", { name: "Scan again" }));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("local_content_scan", { rescan: true }));
+  });
+
+  it("suggests free plugins and starter sounds when little is found", async () => {
+    render(() => <Onboarding onDone={() => {}} />);
+    await openPicksStep();
+
+    expect(screen.getByText("Only a few plugins or sounds were found on this computer. These free ones are a good start.")).toBeInTheDocument();
+    expect(await screen.findByText("Surge XT")).toBeInTheDocument();
+    expect(screen.getByText("Starter sounds")).toBeInTheDocument();
+    // Instruments are few (1) and samples are few (12): both kinds are offered.
+    expect(screen.getByText("GeneralUser GS")).toBeInTheDocument();
+    expect(screen.getByText("99 Drum Samples I and II")).toBeInTheDocument();
+
+    const card = screen.getByText("GeneralUser GS").closest("article")!;
+    fireEvent.click(within(card).getByRole("button", { name: "Open download page" }));
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("open_url", { url: "https://www.schristiancollins.com/generaluser" }),
+    );
+    expect(await within(card).findByRole("status")).toHaveTextContent("Opened the GeneralUser GS page.");
+  });
+
+  it("skips the suggestions on a well-stocked computer", async () => {
+    summary = PLENTY;
+    render(() => <Onboarding onDone={() => {}} />);
+    await screen.findByText("Found on this computer");
     expect(screen.getByText("Step 1 of 3")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    expect(screen.getByText("Shortcuts open three workspaces")).toBeInTheDocument();
+  });
+
+  it("explains the three bottom-panel keys after the suggestions", async () => {
+    render(() => <Onboarding onDone={() => {}} />);
+    await openPicksStep();
+    fireEvent.click(screen.getByRole("button", { name: "Install later" }));
+    expect(screen.getByText("Shortcuts open three workspaces")).toBeInTheDocument();
+    expect(screen.getByText("Step 3 of 4")).toBeInTheDocument();
     expect(screen.getByText("C")).toBeInTheDocument();
     expect(screen.getByText("P")).toBeInTheDocument();
     expect(screen.getByText("R")).toBeInTheDocument();
   });
 
-  it("hands the model step to Preferences and moves on", async () => {
-    render(() => <Onboarding onDone={() => {}} />);
+  it("hands the model step to Preferences and finishes", async () => {
+    const done = vi.fn();
+    summary = PLENTY;
+    render(() => <Onboarding onDone={done} />);
+    await screen.findByText("Found on this computer");
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
     expect(screen.getByText("Model settings")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Fill this in later in Preferences" }));
-    expect(screen.getByText("Plugins and sounds")).toBeInTheDocument();
+    expect(done).toHaveBeenCalledOnce();
     expect(preferencesUi.open()).toBe(false);
   });
 
   it("installs a recommended plugin from the catalog and reports it installed", async () => {
     render(() => <Onboarding onDone={() => {}} />);
-    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
-    fireEvent.click(screen.getByRole("button", { name: "Fill this in later in Preferences" }));
+    await openPicksStep();
 
     await screen.findByText("Surge XT");
     expect(screen.getByText("GPL-3.0")).toBeInTheDocument();
@@ -145,8 +358,7 @@ describe("first-run onboarding", () => {
     });
     const done = vi.fn();
     render(() => <Onboarding onDone={done} />);
-    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
-    fireEvent.click(screen.getByRole("button", { name: "Fill this in later in Preferences" }));
+    await openPicksStep();
     await screen.findByText("Surge XT");
     fireEvent.click(screen.getByRole("button", { name: "Install" }));
     for (const name of ["Back", "Skip setup", "Install later"]) {
@@ -155,9 +367,9 @@ describe("first-run onboarding", () => {
     }
     fireEvent.keyDown(document, { key: "Escape" });
     expect(done).not.toHaveBeenCalled();
-    expect(screen.getByText("Plugins and sounds")).toBeInTheDocument();
+    expect(screen.getByText("Recommended")).toBeInTheDocument();
     rejectInstall(new Error("Download failed"));
-    await screen.findByRole("alert");
+    await screen.findByText(/Install failed/);
     expect(screen.getByRole("button", { name: "Install later" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Back" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Skip setup" })).toBeEnabled();
@@ -165,13 +377,17 @@ describe("first-run onboarding", () => {
 
   it("lists the saved providers without testing credentials", async () => {
     // The guide lists what the user saved; the catalogue is not their list.
-    invokeMock.mockImplementation(async (command: string) =>
-      command === "load_ai_config" ? aiConfigWire([DEFAULT_PROVIDERS[0]]) : undefined);
+    const original = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation(async (command: string, ...args: unknown[]) =>
+      command === "load_ai_config" ? aiConfigWire([DEFAULT_PROVIDERS[0]]) : original(command, ...args));
     await loadConfig();
     const first = aiConfig.config.providers[0];
+    summary = PLENTY;
     // Count only what the guide asks for, not the load that seeded the store.
     invokeMock.mockClear();
     render(() => <Onboarding onDone={() => {}} />);
+    await screen.findByText("Found on this computer");
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
     expect(screen.getByText(first.name)).toBeVisible();
     expect(screen.getByText(first.model)).toBeVisible();
@@ -179,10 +395,14 @@ describe("first-run onboarding", () => {
   });
 
   it("asks for a provider instead of listing the catalogue when none is saved", async () => {
-    invokeMock.mockImplementation(async (command: string) =>
-      command === "load_ai_config" ? aiConfigWire([]) : undefined);
+    const original = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation(async (command: string, ...args: unknown[]) =>
+      command === "load_ai_config" ? aiConfigWire([]) : original(command, ...args));
     await loadConfig();
+    summary = PLENTY;
     render(() => <Onboarding onDone={() => {}} />);
+    await screen.findByText("Found on this computer");
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
     expect(screen.getByText("No provider yet — add one in AI settings.")).toBeVisible();
     expect(screen.queryByRole("option")).toBeNull();
@@ -197,92 +417,7 @@ describe("first-run onboarding", () => {
     expect(onboardingStore.pending()).toBe(false);
   });
 
-  it("counts what this computer has and lists the folders it searched", async () => {
-    render(() => <Onboarding onDone={() => {}} />);
-    openPluginStep();
-
-    expect(await screen.findByLabelText("Plugins found: 3")).toHaveTextContent("3");
-    expect(screen.getByText("VST3 2 · CLAP 1")).toBeInTheDocument();
-    expect(screen.getByLabelText("Sounds found: 1")).toHaveTextContent("1");
-    expect(screen.getByText("SF2 1")).toBeInTheDocument();
-    expect(screen.getByRole("status", { name: "" })).toHaveTextContent(
-      "Reading plugin details in the background",
-    );
-    // A standard folder that does not exist is searched but not listed.
-    expect(screen.getByText("Folders searched (3)")).toBeInTheDocument();
-    expect(screen.queryByText("/Library/Audio/Plug-Ins/LV2")).toBeNull();
-    expect(screen.getByText("/Users/me/Music/SoundFonts")).toBeInTheDocument();
-  });
-
-  it("adds a plugin folder the user picks and shows the new count", async () => {
-    openDialogMock.mockResolvedValueOnce("/Volumes/Studio/Plugins");
-    const original = invokeMock.getMockImplementation()!;
-    invokeMock.mockImplementation(async (command: string, ...args: unknown[]) => {
-      if (command === "plugin_folder_add") {
-        return {
-          ...SUMMARY,
-          plugins: {
-            ...SUMMARY.plugins,
-            total: 5,
-            formats: [...SUMMARY.plugins.formats, { format: "lv2", count: 2 }],
-            folders: [
-              ...SUMMARY.plugins.folders,
-              { path: "/Volumes/Studio/Plugins", origin: "user", exists: true, count: 2 },
-            ],
-          },
-        };
-      }
-      if (command === "plugin_folder_remove") return SUMMARY;
-      return original(command, ...args);
-    });
-    render(() => <Onboarding onDone={() => {}} />);
-    openPluginStep();
-    await screen.findByLabelText("Plugins found: 3");
-
-    fireEvent.click(screen.getByRole("button", { name: "Add plugin folder…" }));
-    await waitFor(() =>
-      expect(invokeMock).toHaveBeenCalledWith("plugin_folder_add", { path: "/Volumes/Studio/Plugins" }),
-    );
-    expect(await screen.findByLabelText("Plugins found: 5")).toBeInTheDocument();
-    expect(screen.getByText("VST3 2 · CLAP 1 · LV2 2")).toBeInTheDocument();
-    expect(screen.getByText("Added")).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("button", { name: "Stop searching /Volumes/Studio/Plugins" }));
-    await waitFor(() =>
-      expect(invokeMock).toHaveBeenCalledWith("plugin_folder_remove", { path: "/Volumes/Studio/Plugins" }),
-    );
-    expect(await screen.findByLabelText("Plugins found: 3")).toBeInTheDocument();
-  });
-
-  it("reports a sound folder the backend refuses and keeps the counts", async () => {
-    openDialogMock.mockResolvedValueOnce("/Users/me/Empty");
-    const original = invokeMock.getMockImplementation()!;
-    invokeMock.mockImplementation(async (command: string, ...args: unknown[]) => {
-      if (command === "sound_folder_add") throw "no instrument files found under '/Users/me/Empty'";
-      return original(command, ...args);
-    });
-    render(() => <Onboarding onDone={() => {}} />);
-    openPluginStep();
-    await screen.findByLabelText("Sounds found: 1");
-
-    fireEvent.click(screen.getByRole("button", { name: "Add sound folder…" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      "Could not add the folder: no instrument files found",
-    );
-    expect(screen.getByLabelText("Sounds found: 1")).toBeInTheDocument();
-  });
-
-  it("does nothing when the folder picker is cancelled", async () => {
-    openDialogMock.mockResolvedValueOnce(null);
-    render(() => <Onboarding onDone={() => {}} />);
-    openPluginStep();
-    await screen.findByLabelText("Plugins found: 3");
-    fireEvent.click(screen.getByRole("button", { name: "Add plugin folder…" }));
-    await waitFor(() => expect(openDialogMock).toHaveBeenCalled());
-    expect(invokeMock.mock.calls.some(([command]) => command === "plugin_folder_add")).toBe(false);
-  });
-
-  it("offers an index sound pack next to the plugin picks", async () => {
+  it("offers an index sound pack beside the starter sounds", async () => {
     const original = invokeMock.getMockImplementation()!;
     invokeMock.mockImplementation(async (command: string, ...args: unknown[]) => {
       if (command === "soundfonts_list") {
@@ -306,7 +441,7 @@ describe("first-run onboarding", () => {
       return original(command, ...args);
     });
     render(() => <Onboarding onDone={() => {}} />);
-    openPluginStep();
+    await openPicksStep();
 
     expect(await screen.findByText("Upright Piano")).toBeInTheDocument();
     expect(screen.getByText("Sound pack")).toBeInTheDocument();

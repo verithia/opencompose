@@ -21,8 +21,8 @@ downloads, not only plugins.
 
 ## Where plugins are found
 
-Bundles are discovered in the platform's standard folders, plus any folder you
-add:
+Bundles are discovered in the platform's standard folders, in the folders other
+audio software uses, and in any folder you add.
 
 | Platform | Standard folders |
 |---|---|
@@ -30,23 +30,42 @@ add:
 | Windows | `%COMMONPROGRAMFILES%\VST3`, `\CLAP` and `\LV2`; `%LOCALAPPDATA%\Programs\Common\VST3` and `\CLAP`; `%LOCALAPPDATA%\LV2`; the usual `VstPlugins` and `Steinberg\VstPlugins` folders for VST2 |
 | Linux | `~/.vst3`, `~/.clap`, `~/.lv2`, `~/.vst`, and the same names under `/usr/lib` and `/usr/local/lib` (plus `lxvst`) |
 
+These are searched as well when they exist:
+
+| Platform | Other folders |
+|---|---|
+| macOS | `/Network/Library/Audio/Plug-ins/VST3`; `~/.lv2`, `/usr/local/lib/lv2` and `/opt/homebrew/lib/lv2` |
+| Windows | `%APPDATA%\LV2`; `%ProgramFiles%\VST3`; `%ProgramFiles%\Cakewalk\Vstplugins`; `Documents\Plugins\VST`; the VST2 folder installers record as `VSTPluginsPath` under `HKEY_CURRENT_USER\Software\VST` and `HKEY_LOCAL_MACHINE\Software\VST` |
+| Linux | `lib64` variants (`/usr/lib64/{vst3,clap,lv2,vst,lxvst}` and `/usr/local/lib64/...`); `linux_vst` folders |
+| All | Folders in `CLAP_PATH`, `VST3_PATH`, `VST_PATH`, `LXVST_PATH` and `LV2_PATH`; REAPER's `UserPlugins/FX` folder and the VST and CLAP paths set in its `reaper.ini` |
+
+A host's settings file is read with a 1 MiB cap, and at most 64 absolute paths
+are taken from it. On Windows, folders under `%ProgramFiles(x86)%` are skipped
+because they hold 32-bit plugins, which OpenCompose cannot load.
+
 A bundle may sit up to three folders below a search folder, so a
 `<VST3>/<vendor>/<plugin>.vst3` layout is found. A `.vst3`, `.clap`,
 `.component` or `.lv2` bundle counts as one plugin file, and so does a `.vst`
 (macOS), `.dll` (Windows) or `.so` (Linux) in a VST2 folder. A bundle can hold
 several plugins; the plugin browser lists each one.
 
-To search another folder, choose **Add plugin folder…** on the last page of the
-first-run guide. The list is kept in `~/.opencompose/plugin-folders.json` (at
-most 32 folders; `OCP_PLUGIN_FOLDERS` points at another file) and is read by the
-scan, the LV2 loader and the Store's installed check alike. VST2 also honours
-`OCP_VST2_PATH`, and LV2 honours `LV2_PATH`.
+To search another folder, choose **Add plugin folder…** on the first page of
+the first-run guide. The list is kept in `~/.opencompose/plugin-folders.json`
+(at most 32 folders; `OCP_PLUGIN_FOLDERS` points at another file). The scan,
+the LV2 loader and the Store's installed check all read it. VST2 also honours
+`OCP_VST2_PATH`.
 
-The same page counts what is already on the computer, without loading any
-plugin: plugin files by format, and SoundFont (`.sf2`, `.sf3`), SFZ and
-sampler-asset files in the instrument folders and your content libraries.
-**Add sound folder…** registers a content library. The bank that ships with
-OpenCompose is not counted.
+The same page lists the sounds on the computer: SoundFont (`.sf2`, `.sf3`),
+SFZ and sampler-asset files, plus audio samples. It searches the instrument
+folders (`SoundFonts` under Documents and Music, the MuseScore and LMMS
+SoundFont folders, `~/Library/Audio/Sounds/Banks` on macOS,
+`/usr/share/sounds/sf2`, `/usr/share/sounds/sf3` and `/usr/share/soundfonts` on
+Linux, `C:\soundfonts` on Windows), the sample folders other music tools keep
+(the Ableton User Library and Factory Packs, the Image-Line user data folder,
+LMMS samples, Splice, `Samples` under Documents and Music), and your content
+libraries. Each folder costs at most 20,000 directory entries, eight levels
+deep. **Add sound folder…** registers a content library. The bank that ships
+with OpenCompose is not counted.
 
 After installing anything new, rescan from the plugin browser.
 

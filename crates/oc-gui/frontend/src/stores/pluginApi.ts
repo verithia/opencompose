@@ -191,30 +191,63 @@ export const soundfontInstall = (id: string) =>
 export const soundfontsRemove = (id: string) =>
   invoke<InstalledSoundfont>("soundfonts_remove", { id });
 
+/** Why a folder is searched. */
+export type FolderOrigin = "standard" | "convention" | "environment" | "host_settings" | "user";
+
 /** One folder the app searches, and how many items it holds. */
 export interface SearchedFolder {
   path: string;
-  origin: "standard" | "user";
+  origin: FolderOrigin;
   exists: boolean;
   count: number;
   /** Removes a user sound folder through `sound_folder_remove`. */
   library_id?: string | null;
 }
 
+/** One plugin or instrument file the scan found. */
+export interface FoundItem {
+  name: string;
+  /** A plugin's vendor, or the folder that holds an instrument file. */
+  detail: string;
+  format: string;
+  path: string;
+  /** False for a plugin bundle the scan could not read. */
+  readable: boolean;
+}
+
 export interface LocalContentKind {
   total: number;
   formats: { format: string; count: number }[];
   folders: SearchedFolder[];
+  /** At most a bounded number of items; `truncated` says more exist. */
+  items: FoundItem[];
+  truncated: boolean;
 }
 
-/** Plugin bundles and instrument files found on this machine. */
+/** Plugins, instrument files and samples found on this machine. */
 export interface LocalContentSummary {
   plugins: LocalContentKind;
-  sounds: LocalContentKind;
+  /** SoundFont, SFZ and sampler-asset files. */
+  instruments: LocalContentKind;
+  /** Audio files in sample folders: counted, not listed. */
+  samples: LocalContentKind;
   /** A background scan is reading plugin details now. */
   scanning: boolean;
 }
 
+/** Payload of `local_content_scan_progress`; `total` 0 means not known yet. */
+export interface LocalScanProgress {
+  phase: "plugins" | "sounds";
+  done: number;
+  total: number;
+  current: string | null;
+}
+
+export const LOCAL_SCAN_PROGRESS_EVENT = "local_content_scan_progress";
+
+/** Bring the plugin inventory up to date, then count every searched folder. */
+export const localContentScan = (rescan = false) =>
+  invoke<LocalContentSummary>("local_content_scan", { rescan });
 export const localContentSummary = () => invoke<LocalContentSummary>("local_content_summary");
 export const pluginFolderAdd = (path: string) =>
   invoke<LocalContentSummary>("plugin_folder_add", { path });

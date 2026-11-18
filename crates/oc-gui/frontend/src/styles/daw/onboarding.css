@@ -357,8 +357,9 @@
 
 .onboarding-tool-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
-  gap: 8px;
+  gap: 2px 8px;
 }
 
 .onboarding-tool-head h2 {
@@ -368,7 +369,7 @@
   font-weight: 600;
 }
 
-.onboarding-tool-size { color: var(--text-muted); font-size: 10px; }
+.onboarding-tool-size { color: var(--text-muted); font-size: 10px; white-space: nowrap; }
 
 .onboarding-tool-copy p {
   margin: 3px 0 0;
@@ -785,7 +786,7 @@
   border-radius: 6px;
 }
 
-/* Last step: what this computer has, then one recommendation per role. */
+/* Scan page: progress per phase, then counts, folded lists and folders. */
 .onboarding-section-title {
   margin: 0 0 8px;
   color: var(--text-muted);
@@ -795,17 +796,83 @@
   text-transform: uppercase;
 }
 
-.onboarding-local { margin-bottom: 16px; }
+.onboarding-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.onboarding-section-head .onboarding-section-title { margin: 0; }
+
+.onboarding-picks + .onboarding-picks { margin-top: 16px; }
+
+.onboarding-scan-phases {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0 0 12px;
+  padding: 0;
+  list-style: none;
+}
+
+.onboarding-scan-phase {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md, 10px);
+  background: var(--bg-secondary);
+}
+
+.onboarding-scan-phase-copy { min-width: 0; }
+
+.onboarding-scan-phase-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.onboarding-scan-phase-head h2 {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.onboarding-scan-percent {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.onboarding-scan-phase .onboarding-progress-bar { width: 0; }
+.onboarding-scan-phase.done .onboarding-progress-bar { background: var(--accent); }
+
+.onboarding-scan-status {
+  margin: 6px 0 0;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.onboarding-scan-phase.done .onboarding-scan-status { color: var(--text-secondary); }
 
 .onboarding-local-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
 }
 
 .onboarding-local-card {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr);
   gap: 12px;
   align-items: center;
   padding: 12px;
@@ -852,7 +919,8 @@
   white-space: nowrap;
 }
 
-.onboarding-local-add svg { width: 13px; height: 13px; }
+.onboarding-local-add svg,
+.onboarding-scan-actions svg { width: 13px; height: 13px; }
 
 .onboarding-local-note {
   margin: 8px 0 0;
@@ -860,33 +928,84 @@
   font-size: 11px;
 }
 
-.onboarding-folders {
-  margin-top: 8px;
+.onboarding-found {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.onboarding-fold {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md, 10px);
   color: var(--text-secondary);
   font-size: 11px;
 }
 
-.onboarding-folders summary {
+.onboarding-fold summary {
+  padding: 8px 12px;
   cursor: pointer;
-  color: var(--text-muted);
+  color: var(--text-secondary);
+  font-weight: 600;
 }
 
-.onboarding-folders summary:hover { color: var(--text-primary); }
+.onboarding-fold summary:hover { color: var(--text-primary); }
 
+.onboarding-fold[open] summary { border-bottom: 1px solid var(--border); }
+
+.onboarding-fold > .onboarding-local-note { margin: 0; padding: 6px 12px 8px; }
+
+.onboarding-found-list,
 .onboarding-folder-list {
   display: grid;
-  gap: 2px;
-  margin: 6px 0 0;
-  padding: 0;
+  gap: 0;
+  max-height: 188px;
+  margin: 0;
+  padding: 4px 0;
+  overflow-y: auto;
   list-style: none;
+}
+
+.onboarding-found-list li {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 12px;
+}
+
+.onboarding-found-list li:nth-child(even),
+.onboarding-folder-list li:nth-child(even) { background: var(--bg-secondary); }
+
+.onboarding-found-name {
+  overflow: hidden;
+  color: var(--text-primary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.onboarding-found-detail {
+  overflow: hidden;
+  color: var(--text-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.onboarding-found-list li.unreadable .onboarding-found-detail { color: var(--warning, #d97706); }
+
+.onboarding-found-format {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
 }
 
 .onboarding-folder-list li {
   display: grid;
-  grid-template-columns: 64px minmax(0, 1fr) auto auto auto;
+  grid-template-columns: 56px minmax(0, 1fr) auto auto auto;
   gap: 8px;
   align-items: center;
-  min-height: 24px;
+  min-height: 26px;
+  padding: 0 12px;
 }
 
 .onboarding-folder-list li.missing { opacity: 0.6; }
@@ -903,11 +1022,44 @@
 }
 
 .onboarding-folder-count {
-  color: var(--text-primary);
+  color: var(--text-secondary);
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .onboarding-folder-remove { padding: 2px 8px; font-size: 11px; }
+
+.onboarding-scan-add {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-md, 10px);
+}
+
+.onboarding-scan-add p {
+  flex: 1 1 260px;
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.onboarding-scan-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.onboarding-scan-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
 
 .onboarding-picks .onboarding-tools {
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -924,13 +1076,13 @@
 }
 
 @media (max-width: 760px) {
+  .onboarding-scan-phases,
   .onboarding-local-grid,
   .onboarding-picks .onboarding-tools { grid-template-columns: 1fr; }
-  .onboarding-local-card { grid-template-columns: auto minmax(0, 1fr); }
-  .onboarding-local-add { grid-column: 2; justify-self: start; }
 }
 
 .onboarding-tool-license {
   color: var(--text-muted);
   font-size: 10px;
+  white-space: nowrap;
 }
