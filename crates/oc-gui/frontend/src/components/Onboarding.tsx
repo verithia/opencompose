@@ -27,6 +27,7 @@ import { soundPacks } from "../stores/soundPacks";
 import { needsPluginPicks, needsSoundPicks, pickStarterSounds } from "../stores/starterSounds";
 import { FolderIcon, KeyboardIcon, PlugIcon, WaveIcon } from "./icons";
 import { OnboardingScan, chooseFolder } from "./OnboardingScan";
+import { ConnectionHelp } from "./ConnectionHelp";
 
 type Step = "scan" | "picks" | "basics" | "ai";
 
@@ -501,6 +502,9 @@ export function Onboarding(props: { onDone: () => void }) {
                     {i18n.t("store.plugins.refreshFailed", { error: error() })}
                   </p>
                 )}
+              </Show>
+              <Show when={pluginStore.refreshError() || pluginStore.error()}>
+                <ConnectionHelp onRetry={retryIndex} />
               </Show>
               <div class="onboarding-scan-actions">
                 <button

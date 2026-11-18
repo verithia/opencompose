@@ -18,6 +18,7 @@ import { chromium, type Browser } from "@playwright/test";
 import { Onboarding } from "../../components/Onboarding";
 import { i18n } from "../../stores/i18n";
 import { localScan } from "../../stores/localScan";
+import { networkStore } from "../../stores/network";
 import { pluginStore } from "../../stores/pluginStore";
 import { soundPacks } from "../../stores/soundPacks";
 import type {
@@ -223,6 +224,7 @@ afterEach(() => {
   cleanup();
   pluginStore.reset();
   localScan.reset();
+  networkStore.reset();
   soundPacks.reset();
   listenMock.mockImplementation(async () => () => {});
   i18n.setLocale("en");
@@ -361,6 +363,51 @@ describe("first-run scan page layout", () => {
       await screen.findByRole("alert");
       await shoot(fixture.container, "graphite", `picks-offline-${locale}`, (page) =>
         fitsCard(page, ".onboarding-picks-offline, .onboarding-picks-offline .onboarding-tools-error, .onboarding-picks-offline .onboarding-scan-actions"));
+    });
+
+    it(`${locale}: an offline proxy offer fits the card`, async () => {
+      i18n.setLocale(locale);
+      answer("macos-aarch64", summaryFor("macos-aarch64", true));
+      const original = invokeMock.getMockImplementation()!;
+      invokeMock.mockImplementation(async (command: string, ...args: unknown[]) => {
+        if (command === "plugin_catalog") {
+          return { platform: "macos-aarch64", entries: [], installed: [], source: "none" };
+        }
+        if (command === "plugin_index_status") {
+          return {
+            source: "none",
+            generated_at: null,
+            fetched_at: null,
+            stale_days: null,
+            stale_warning: false,
+            last_error: null,
+            catalog_version: null,
+            min_app_version: null,
+            next_refresh_in_seconds: 0,
+          };
+        }
+        if (command === "plugin_index_refresh") {
+          throw { stage: "network", message: "tls handshake eof" };
+        }
+        if (command === "network_diagnose") {
+          return {
+            current: { kind: "system", url: null, ok: false, ms: 5, error: "tls handshake eof" },
+            routes: [
+              { kind: "proxy", url: "http://127.0.0.1:7897", ok: true, ms: 30, error: null },
+              { kind: "direct", url: null, ok: false, ms: 2000, error: "timeout" },
+            ],
+          };
+        }
+        if (command === "sound_packs_list") return { dir: "/sounds", items: [] };
+        return original(command, ...args);
+      });
+      const fixture = render(() => <Onboarding onDone={() => {}} />);
+      await screen.findByText(i18n.t("onboarding.scan.titleDone"));
+      fireEvent.click(screen.getByRole("button", { name: i18n.t("onboarding.next") }));
+      await screen.findByText(i18n.t("network.proxyWorks", { url: "http://127.0.0.1:7897" }));
+      await screen.findByRole("button", { name: i18n.t("network.useThisProxy") });
+      await shoot(fixture.container, "graphite", `picks-offline-offer-${locale}`, (page) =>
+        fitsCard(page, ".onboarding-picks-offline, .connection-help, .connection-help-use, .connection-help-settings"));
     });
 
     it(`${locale}: a pending first index fetch fits the card`, async () => {

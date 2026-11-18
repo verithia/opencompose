@@ -1,58 +1,71 @@
 /**
- * The startup proxy offer: only in UTC+8, only once, and applying it writes the
- * manual proxy setting.
+ * The global proxy notice: it only appears for a route the diagnosis verified,
+ * and applying it writes the manual proxy setting.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { render, fireEvent } from "@solidjs/testing-library";
 import { invokeMock } from "./setup";
+import { i18n } from "../stores/i18n";
 import { networkStore } from "../stores/network";
 import { ProxySuggestion } from "../components/ProxySuggestion";
 
 beforeEach(() => {
   invokeMock.mockClear();
-  networkStore.resetDetection();
-  globalThis.localStorage?.clear?.();
-  invokeMock.mockImplementation(async (cmd: string, args?: Record<string, unknown>) => {
-    if (cmd === "network_settings") return { proxyMode: "system", proxyUrl: "" };
-    if (cmd === "detect_local_proxy") return "http://127.0.0.1:7890";
-    if (cmd === "network_save") return args?.settings;
+  networkStore.reset();
+  i18n.setLocale("en");
+  invokeMock.mockImplementation(async (cmd: string, args: Record<string, unknown>) => {
+    if (cmd === "network_save") return args.settings;
     return null;
   });
 });
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => invokeMock.mockReset());
 
 describe("proxy suggestion", () => {
-  it("appears in UTC+8 and applies the detected proxy", async () => {
-    vi.spyOn(Date.prototype, "getTimezoneOffset").mockReturnValue(-480);
-    await networkStore.load();
-    await networkStore.detect();
+  it("applies a verified proxy", async () => {
+    invokeMock.mockImplementation(async (cmd: string, args: Record<string, unknown>) => {
+      if (cmd === "network_diagnose") {
+        return {
+          current: { kind: "system", url: null, ok: false, ms: 5, error: "tls handshake eof" },
+          routes: [
+            { kind: "proxy", url: "http://127.0.0.1:7897", ok: true, ms: 30, error: null },
+            { kind: "direct", url: null, ok: false, ms: 20, error: "timeout" },
+          ],
+        };
+      }
+      if (cmd === "network_save") return args.settings;
+      return null;
+    });
+    await networkStore.diagnose();
 
     const view = render(() => <ProxySuggestion />);
     const notice = view.container.querySelector("[data-proxy-suggestion]");
-    expect(notice?.getAttribute("data-proxy-suggestion")).toBe("http://127.0.0.1:7890");
-    expect(view.container.textContent).toContain("http://127.0.0.1:7890");
+    expect(notice?.getAttribute("data-proxy-suggestion")).toBe("http://127.0.0.1:7897");
+    expect(view.container.textContent).toContain("http://127.0.0.1:7897");
 
-    fireEvent.click(view.getByText("Use it"));
+    fireEvent.click(view.getByText(i18n.t("network.useThisProxy")));
     await vi.waitFor(() =>
       expect(invokeMock.mock.calls.filter(([cmd]) => cmd === "network_save")).toEqual([
-        ["network_save", { settings: { proxyMode: "manual", proxyUrl: "http://127.0.0.1:7890" } }],
+        ["network_save", { settings: { proxyMode: "manual", proxyUrl: "http://127.0.0.1:7897" } }],
       ])
     );
-    await vi.waitFor(() => expect(networkStore.suggestion()).toBeNull());
+    await vi.waitFor(() => expect(networkStore.offer()).toBeNull());
   });
 
-  it("stays away outside UTC+8", async () => {
-    vi.spyOn(Date.prototype, "getTimezoneOffset").mockReturnValue(0);
-    const probe = vi.fn();
+  it("stays away when no route works", async () => {
     invokeMock.mockImplementation(async (cmd: string) => {
-      if (cmd === "network_settings") return { proxyMode: "system", proxyUrl: "" };
-      probe(cmd);
+      if (cmd === "network_diagnose") {
+        return {
+          current: { kind: "system", url: null, ok: false, ms: 5, error: "tls handshake eof" },
+          routes: [
+            { kind: "direct", url: null, ok: false, ms: 2000, error: "timeout" },
+          ],
+        };
+      }
       return null;
     });
-    await networkStore.load();
-    await networkStore.detect();
-    expect(probe).not.toHaveBeenCalledWith("detect_local_proxy");
-    expect(networkStore.suggestion()).toBeNull();
+    await networkStore.diagnose();
+    const view = render(() => <ProxySuggestion />);
+    expect(view.container.querySelector("[data-proxy-suggestion]")).toBeNull();
   });
 });

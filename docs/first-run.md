@@ -50,6 +50,12 @@ is cached, it fetches the index once on the same automatic path the Store uses;
 afterwards the cached copy makes the suggestions work offline. Without a
 downloadable index the page says so, shows the reason, and offers **Try again**.
 
+When an index fetch fails, the page also checks the saved route, a direct
+connection and the usual local proxy ports against the plugin index. It offers
+a route only after that route answers the index, applies it with one click and
+retries the fetch. A local proxy that is running but cannot reach the index is
+reported as such instead of being offered.
+
 - **Free plugins**: one distinct entry per role (synth, sampler, reverb,
   character, mixing) from the plugin index the Store uses. The first choice is
   an entry already installed, then one that installs without a vendor installer,

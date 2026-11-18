@@ -11,6 +11,7 @@ import { onboardingStore } from "../stores/onboarding";
 import { preferencesUi } from "../stores/preferencesUi";
 import { pluginStore } from "../stores/pluginStore";
 import { localScan } from "../stores/localScan";
+import { networkStore } from "../stores/network";
 import { soundPacks } from "../stores/soundPacks";
 import type {
   FolderOrigin,
@@ -155,6 +156,7 @@ beforeEach(() => {
   installed = false;
   summary = SUMMARY;
   localScan.reset();
+  networkStore.reset();
   onboardingStore.reset();
   preferencesUi.close();
   pluginStore.reset();
@@ -194,6 +196,7 @@ afterEach(() => {
   preferencesUi.close();
   pluginStore.reset();
   localScan.reset();
+  networkStore.reset();
   soundPacks.reset();
 });
 
@@ -542,6 +545,76 @@ describe("first-run onboarding", () => {
     expect(
       screen.queryByText("Connect to the internet to see free plugin and sound suggestions."),
     ).toBeNull();
+  });
+
+  it("offers a verified proxy after the index fetch fails and retries the index", async () => {
+    let catalogDownloaded = false;
+    const refreshes: boolean[] = [];
+    const original = invokeMock.getMockImplementation()!;
+    const status = {
+      source: "none",
+      generated_at: null,
+      fetched_at: null,
+      stale_days: null,
+      stale_warning: false,
+      last_error: null,
+      catalog_version: null,
+      min_app_version: null,
+      next_refresh_in_seconds: 0,
+    };
+    invokeMock.mockImplementation(async (command: string, ...args: unknown[]) => {
+      if (command === "plugin_catalog") {
+        return {
+          platform: "macos-aarch64",
+          entries: catalogDownloaded ? [{ ...ENTRY, installed }] : [],
+          installed: [],
+          source: catalogDownloaded ? "cache" : "none",
+        };
+      }
+      if (command === "plugin_index_status") return status;
+      if (command === "plugin_index_refresh") {
+        const force = (args[0] as { force?: boolean } | undefined)?.force ?? false;
+        refreshes.push(force);
+        if (!force) throw { stage: "network", message: "tls handshake eof" };
+        catalogDownloaded = true;
+        return { performed: true, changed: true, status: { ...status, source: "cache" } };
+      }
+      if (command === "network_diagnose") {
+        return {
+          current: { kind: "system", url: null, ok: false, ms: 5, error: "tls handshake eof" },
+          routes: [
+            { kind: "proxy", url: "http://127.0.0.1:7897", ok: true, ms: 30, error: null },
+            { kind: "direct", url: null, ok: false, ms: 2000, error: "timeout" },
+          ],
+        };
+      }
+      if (command === "network_save") {
+        return (args[0] as { settings: unknown }).settings;
+      }
+      if (command === "sound_packs_list") {
+        return { dir: "/sounds", items: catalogDownloaded ? PACKS : [] };
+      }
+      return original(command, ...args);
+    });
+
+    render(() => <Onboarding onDone={() => {}} />);
+    await openPicksStep();
+
+    expect(
+      await screen.findByText("Proxy http://127.0.0.1:7897 works."),
+    ).toBeInTheDocument();
+    expect(invokeMock).toHaveBeenCalledWith("network_diagnose");
+    expect(screen.getByRole("button", { name: "Use this proxy" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Use this proxy" }));
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("network_save", {
+        settings: { proxyMode: "manual", proxyUrl: "http://127.0.0.1:7897" },
+      }),
+    );
+    await waitFor(() => expect(refreshes).toEqual([false, true]));
+    expect(await screen.findByText("Surge XT")).toBeInTheDocument();
   });
 
   it("installs a starter sound pack with one click and scans again", async () => {

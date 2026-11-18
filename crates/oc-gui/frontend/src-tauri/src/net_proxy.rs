@@ -29,9 +29,18 @@ pub fn apply_blocking(
     builder: reqwest::blocking::ClientBuilder,
 ) -> reqwest::blocking::ClientBuilder {
     let network = crate::gui_settings::load().network;
-    match network.proxy_mode {
+    apply_blocking_choice(builder, network.proxy_mode, &network.proxy_url)
+}
+
+/// Apply one explicit choice, for a probe that tests several routes at once.
+pub fn apply_blocking_choice(
+    builder: reqwest::blocking::ClientBuilder,
+    mode: ProxyMode,
+    proxy_url: &str,
+) -> reqwest::blocking::ClientBuilder {
+    match mode {
         ProxyMode::Manual => {
-            let url = network.proxy_url.trim();
+            let url = proxy_url.trim();
             match reqwest::Proxy::all(url) {
                 Ok(proxy) => builder.proxy(proxy),
                 Err(_) => builder,

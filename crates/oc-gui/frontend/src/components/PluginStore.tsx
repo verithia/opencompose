@@ -26,6 +26,7 @@ import {
 } from "../stores/pluginStore";
 import { cancelInstall as cancelInstallRequest } from "../stores/api";
 import type { PluginCatalogEntry } from "../stores/api";
+import { ConnectionHelp } from "./ConnectionHelp";
 
 interface RowMessage {
   text: string;
@@ -260,6 +261,10 @@ export function PluginStore() {
             error: pluginStore.refreshError() ?? indexStatus()?.last_error ?? "",
           })}
         </div>
+      </Show>
+
+      <Show when={pluginStore.refreshError() ?? indexStatus()?.last_error}>
+        <ConnectionHelp onRetry={() => pluginStore.refresh(true)} />
       </Show>
 
       <div class="plugin-store-scroll">

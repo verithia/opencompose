@@ -35,6 +35,7 @@ mod midi_live;
 mod midi_record;
 mod native_jobs;
 mod net_proxy;
+mod network_probe;
 mod open_events;
 mod plugin_index;
 mod plugin_inventory;
@@ -312,7 +313,7 @@ pub fn run_with_options(path: Option<String>, diag: DiagOptions) {
             commands::session_audio_settings,
             commands::session_audio_save,
             commands::network_settings,
-            commands::detect_local_proxy,
+            commands::network_diagnose,
             commands::network_save,
             commands::network_test,
             commands::clear_sample_cache,

@@ -2,9 +2,9 @@
  * The Network page: which proxy outbound requests use, and a probe that proves
  * the choice against a real host.
  */
-import { Show, createSignal, onMount } from "solid-js";
+import { For, Show, createSignal, onMount } from "solid-js";
 import { i18n } from "../../stores/i18n";
-import { networkStore, type ProxyMode } from "../../stores/network";
+import { networkStore, type ProxyMode, type RouteProbe } from "../../stores/network";
 
 const MODES: { id: ProxyMode; key: "network.mode.system" | "network.mode.manual" | "network.mode.none" }[] = [
   { id: "system", key: "network.mode.system" },
@@ -26,6 +26,24 @@ export function NetworkPage() {
     setUrlDraft(networkStore.settings().proxyUrl);
     setReady(true);
   });
+
+  const routeLabel = (route: RouteProbe): string => {
+    if (route.kind === "proxy") return i18n.t("network.routeProxy", { url: route.url ?? "" });
+    if (route.kind === "direct") return i18n.t("network.routeDirect");
+    return i18n.t("network.routeSystem");
+  };
+
+  const useRoute = async (route: RouteProbe) => {
+    try {
+      await networkStore.applyRoute(route);
+      const stored = networkStore.settings();
+      setDraft(stored.proxyMode);
+      setUrlDraft(stored.proxyUrl);
+      setSaved(true);
+    } catch {
+      setSaved(false);
+    }
+  };
 
   const save = async (mode: ProxyMode, url: string) => {
     try {
@@ -104,6 +122,47 @@ export function NetworkPage() {
         </Show>
         <Show when={saved()}>
           <p class="preferences-hint preferences-network-saved">{i18n.t("network.saved")}</p>
+        </Show>
+      </div>
+
+      <div class="preferences-field">
+        <button
+          type="button"
+          class="toolbar-btn text-btn preferences-network-find"
+          disabled={networkStore.diagnosing()}
+          onClick={() => void networkStore.diagnose()}
+        >{networkStore.diagnosing() ? i18n.t("network.checkingConnections") : i18n.t("network.findProxy")}</button>
+        <Show when={networkStore.diagnosis()}>
+          {(result) => (
+            <ul class="preferences-network-routes">
+              <For each={result().routes}>
+                {(route) => (
+                  <li class="preferences-network-route" classList={{ ok: route.ok }}>
+                    <span class="preferences-network-route-label">{routeLabel(route)}</span>
+                    <span class="preferences-network-route-status">
+                      {route.ok
+                        ? i18n.t("network.routeOk", { ms: route.ms })
+                        : i18n.t("network.routeFailed", { ms: route.ms, error: route.error ?? "" })}
+                    </span>
+                    <Show when={route.ok}>
+                      <button
+                        type="button"
+                        class="toolbar-btn text-btn preferences-network-use"
+                        onClick={() => void useRoute(route)}
+                      >{i18n.t("network.use")}</button>
+                    </Show>
+                  </li>
+                )}
+              </For>
+            </ul>
+          )}
+        </Show>
+        <Show when={networkStore.diagnoseError()}>
+          {(error) => (
+            <p class="preferences-hint" role="alert">
+              {i18n.t("network.checkFailed", { error: error() })}
+            </p>
+          )}
         </Show>
       </div>
     </Show>
