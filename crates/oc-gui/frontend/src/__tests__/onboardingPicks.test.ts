@@ -18,8 +18,19 @@ function entry(id: string, fields: Partial<PluginCatalogEntry> = {}): PluginCata
 const installed = (candidate: PluginCatalogEntry) => candidate.installed === true;
 const installable = (candidate: PluginCatalogEntry) => candidate.installable === true;
 
+interface PublishedInstall {
+  kind: string;
+  platform: string;
+  format: string;
+  archive?: string;
+  url: string;
+  sha256?: string;
+  runtime?: unknown;
+  wrapped?: boolean;
+}
+
 interface PublishedCatalog {
-  entries: { id: string; installs: { platform: string }[] }[];
+  entries: { id: string; installs: PublishedInstall[] }[];
   packs: { id: string }[];
 }
 
@@ -28,6 +39,47 @@ const published = JSON.parse(
 ) as PublishedCatalog;
 
 const PLATFORMS = ["macos-aarch64", "macos-x86_64", "windows-x86_64", "linux-x86_64"];
+
+/** Archive spelling the backend infers from a download name. */
+function inferArchive(url: string): string | undefined {
+  const lower = url.toLowerCase();
+  const file = lower.split(/[?#]/, 1)[0];
+  if (file.endsWith(".tar.gz") || file.endsWith(".tgz")) return "tar-gz";
+  if (file.endsWith(".tar.xz")) return "tar-xz";
+  if (file.endsWith(".7z")) return "7z";
+  if (file.endsWith(".zip")) return "zip";
+  if (file.endsWith(".dmg")) return "dmg";
+  if (file.endsWith(".pkg")) return "pkg";
+  if ([".exe", ".msi", ".appimage", ".deb", ".rpm"].some((suffix) => file.endsWith(suffix))) {
+    return "installer";
+  }
+  return undefined;
+}
+
+const FORMAT_RANK: Record<string, number> = {
+  vst3: 0,
+  clap: 1,
+  vst2: 2,
+  lv2: 3,
+  au: 4,
+  standalone: 5,
+};
+
+/**
+ * Mirror `oc_market::plan` for a published catalog: the best-ranked build must
+ * be a pinned, non-page artifact with an archive the installer recognises.
+ */
+function backendInstallable(entry: PublishedCatalog["entries"][number], platform: string): boolean {
+  const candidates = entry.installs.filter((install) => install.platform === platform);
+  if (candidates.length === 0) return false;
+  const rank = (install: PublishedInstall) =>
+    (install.kind === "vendor_page" ? 10 : 0) + (FORMAT_RANK[install.format] ?? 6);
+  const chosen = [...candidates].sort((left, right) => rank(left) - rank(right))[0];
+  if (chosen.kind === "vendor_page") return false;
+  if (!chosen.sha256) return false;
+  if (chosen.runtime || chosen.wrapped) return true;
+  return (chosen.archive ?? inferArchive(chosen.url)) !== undefined;
+}
 
 describe("first-run picks", () => {
   it("takes its roles, candidates and sounds from the embedded list", () => {
@@ -58,14 +110,32 @@ describe("first-run picks", () => {
       for (const id of ids) {
         expect(byId.has(id), `${role} names ${id}`).toBe(true);
       }
-      const covered = PLATFORMS.filter((platform) =>
-        ids.some((id) => byId.get(id)?.installs.some((install) => install.platform === platform)),
-      );
-      expect(covered, `${role} covers every platform`).toEqual(PLATFORMS);
     }
     const packs = new Set(published.packs.map((pack) => pack.id));
     for (const id of RECOMMENDED_SOUNDS) {
       expect(packs.has(id), `sounds names ${id}`).toBe(true);
+    }
+  });
+
+  it("offers a pinned, non-page build for every role on every platform", () => {
+    const byId = new Map(published.entries.map((entry) => [entry.id, entry]));
+    for (const platform of PLATFORMS) {
+      const entries = published.entries.map(
+        (entry) =>
+          ({
+            ...entry,
+            installable: backendInstallable(entry, platform),
+          }) as unknown as PluginCatalogEntry,
+      );
+      const picks = pickRecommendations(entries, () => false, (candidate) => candidate.installable === true);
+      for (const { role } of PICK_ROLES) {
+        const pick = picks.find((candidate) => candidate.role === role);
+        expect(pick, `${role} has an installable pick on ${platform}`).toBeDefined();
+        expect(
+          backendInstallable(byId.get(pick!.entry.id)!, platform),
+          `${role} installs on ${platform} from ${pick!.entry.id}`,
+        ).toBe(true);
+      }
     }
   });
 

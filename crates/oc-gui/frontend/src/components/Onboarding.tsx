@@ -89,6 +89,8 @@ export function Onboarding(props: { onDone: () => void }) {
   const [folderBusy, setFolderBusy] = createSignal(false);
   const [indexRetrying, setIndexRetrying] = createSignal(false);
   const [messages, setMessages] = createSignal<Record<string, { text: string; error: boolean }>>({});
+  /** Plugin installs whose cancel the user asked for, so the rejection reads as a cancel. */
+  const cancelling = new Set<string>();
 
   const isTopmost = useTopmostEscape(props.onDone, () => !busy());
   useDialogFocus(() => dialog, isTopmost);
@@ -191,11 +193,20 @@ export function Onboarding(props: { onDone: () => void }) {
     }
   };
 
-  /** No downloaded index: the guide has no versions, addresses or sizes to show. */
-  const catalogEmpty = () => {
-    const catalog = pluginStore.catalog();
-    return catalog !== null && catalog.entries.length === 0;
-  };
+  const hasCatalogEntries = () => (pluginStore.catalog()?.entries.length ?? 0) > 0;
+
+  /** The catalog has not answered yet; an error is an answer, not a pending one. */
+  const catalogPending = () =>
+    pluginStore.catalog() === null && !pluginStore.error() && !pluginStore.refreshError();
+
+  const indexBusy = () =>
+    pluginStore.loading() || pluginStore.refreshing() || indexRetrying();
+
+  /** Nothing to show yet: the first load or the index fetch is still running. */
+  const showIndexLoading = () => !hasCatalogEntries() && (indexBusy() || catalogPending());
+
+  /** No catalog and no operation left to wait for: offer the reason and Try again. */
+  const showOffline = () => !showIndexLoading() && !hasCatalogEntries();
 
   /** Fetch the index again, then read the catalog and sound packs the page draws from. */
   const retryIndex = async () => {
@@ -208,6 +219,12 @@ export function Onboarding(props: { onDone: () => void }) {
     } finally {
       setIndexRetrying(false);
     }
+  };
+
+  /** A first run with no cached catalog asks the index once, on the automatic path. */
+  const openCatalog = async () => {
+    await pluginStore.load();
+    if (!hasCatalogEntries()) await pluginStore.refresh(false);
   };
 
   /** Opens a license or publisher page; a failure is reported on that card. */
@@ -232,9 +249,9 @@ export function Onboarding(props: { onDone: () => void }) {
   const messageFor = (id: string) => messages()[id];
 
   onMount(() => {
-    // Paint the catalog the backend returns, cached or empty, so the guide
-    // opens without waiting on the network; an empty one offers Try again.
-    void pluginStore.load();
+    // Paint a cached catalog at once, then fetch the index on a first run that
+    // has none; the automatic refresh path leaves the manual floor untouched.
+    void openCatalog();
     void loadPacks();
     void soundPacks.load();
     if (!localScan.running()) void localScan.start();
@@ -257,14 +274,34 @@ export function Onboarding(props: { onDone: () => void }) {
     }
   };
 
+  const cancelPlugin = async (id: string) => {
+    if (busy() !== id) return;
+    cancelling.add(id);
+    try {
+      await api.cancelInstall(id);
+    } catch (cause) {
+      cancelling.delete(id);
+      setMessages((previous) => ({
+        ...previous,
+        [id]: {
+          text: i18n.t("onboarding.starters.cancelFailed", { error: String(cause) }),
+          error: true,
+        },
+      }));
+    }
+  };
+
   const install = async (entry: PluginCatalogEntry) => {
     if (installLocked()) return;
+    cancelling.delete(entry.id);
     setBusy(entry.id);
     setMessages((previous) => ({ ...previous, [entry.id]: { text: "", error: false } }));
     try {
       const outcome = await pluginStore.install(entry);
       if (outcome.status === "installed") {
         await pluginStore.load(true);
+        // The installed bundle is searched from now on; a fresh count shows it.
+        void localScan.start();
       } else {
         setMessages((previous) => ({
           ...previous,
@@ -280,11 +317,18 @@ export function Onboarding(props: { onDone: () => void }) {
         }));
       }
     } catch (cause) {
+      const cancelled = cancelling.has(entry.id);
       setMessages((previous) => ({
         ...previous,
-        [entry.id]: { text: i18n.t("onboarding.plugins.failed", { error: String(cause) }), error: true },
+        [entry.id]: {
+          text: cancelled
+            ? i18n.t("onboarding.starters.cancelled")
+            : i18n.t("onboarding.plugins.failed", { error: String(cause) }),
+          error: !cancelled,
+        },
       }));
     } finally {
+      cancelling.delete(entry.id);
       setBusy(null);
     }
   };
@@ -337,7 +381,7 @@ export function Onboarding(props: { onDone: () => void }) {
             />
             <span class="onboarding-brand-name">OpenCompose</span>
           </div>
-          <button type="button" class="onboarding-skip" disabled={busy() !== null} onClick={() => { if (!busy()) props.onDone(); }}>
+          <button type="button" class="onboarding-skip" onClick={() => props.onDone()}>
             {i18n.t("onboarding.skip")}
           </button>
         </header>
@@ -433,7 +477,10 @@ export function Onboarding(props: { onDone: () => void }) {
           <p class="onboarding-body">
             {i18n.t(localScan.summary() ? "onboarding.picks.bodyFew" : "onboarding.picks.body")}
           </p>
-          <Show when={catalogEmpty()}>
+          <Show when={showIndexLoading()}>
+            <p class="onboarding-tools-loading" role="status">{i18n.t("onboarding.plugins.loading")}</p>
+          </Show>
+          <Show when={showOffline()}>
             <section class="onboarding-picks onboarding-picks-offline" aria-labelledby="onboarding-picks-offline">
               <p class="onboarding-tools-loading" id="onboarding-picks-offline">
                 {i18n.t("onboarding.picks.offline")}
@@ -445,6 +492,13 @@ export function Onboarding(props: { onDone: () => void }) {
                 {(error) => (
                   <p class="onboarding-tools-error" role="alert">
                     {i18n.t("onboarding.plugins.error", { error: error() })}
+                  </p>
+                )}
+              </Show>
+              <Show when={pluginStore.refreshError()}>
+                {(error) => (
+                  <p class="onboarding-tools-error" role="alert">
+                    {i18n.t("store.plugins.refreshFailed", { error: error() })}
                   </p>
                 )}
               </Show>
@@ -469,7 +523,7 @@ export function Onboarding(props: { onDone: () => void }) {
               </div>
             </section>
           </Show>
-          <Show when={!catalogEmpty()}>
+          <Show when={hasCatalogEntries()}>
           <Show when={showPluginPicks()}>
           <section class="onboarding-picks" aria-labelledby="onboarding-picks-title">
             <h2 class="onboarding-section-title" id="onboarding-picks-title">{i18n.t("onboarding.picks.plugins")}</h2>
@@ -526,14 +580,27 @@ export function Onboarding(props: { onDone: () => void }) {
                           when={!installed()}
                           fallback={<span class="onboarding-badge">{i18n.t("onboarding.plugins.installed")}</span>}
                         >
-                          <button
-                            type="button"
-                            class="onboarding-secondary onboarding-install"
-                            disabled={installLocked()}
-                            onClick={() => void install(entry)}
+                          <Show
+                            when={running()}
+                            fallback={
+                              <button
+                                type="button"
+                                class="onboarding-secondary onboarding-install"
+                                disabled={installLocked()}
+                                onClick={() => void install(entry)}
+                              >
+                                {i18n.t("onboarding.plugins.install")}
+                              </button>
+                            }
                           >
-                            {running() ? i18n.t("onboarding.plugins.installing") : i18n.t("onboarding.plugins.install")}
-                          </button>
+                            <button
+                              type="button"
+                              class="onboarding-secondary"
+                              onClick={() => void cancelPlugin(entry.id)}
+                            >
+                              {i18n.t("onboarding.starters.cancel")}
+                            </button>
+                          </Show>
                         </Show>
                       </div>
                     </article>

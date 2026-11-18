@@ -45,16 +45,17 @@ than 3 instruments, or fewer than 100 samples. It shows what is missing.
 The suggestions and their install steps come from the signed plugin index: the
 application carries only the ids of the recommendation list, and neither the app
 nor `ocp` embeds the catalog. The index supplies the names, builds, addresses,
-sizes, checksums and install scripts. A first run needs the internet once to
-fetch the index; afterwards the verified copy is cached and the suggestions work
-offline. Without a downloaded index the page says so and offers **Try again**.
+sizes, checksums and install scripts. When the guide opens and no verified copy
+is cached, it fetches the index once on the same automatic path the Store uses;
+afterwards the cached copy makes the suggestions work offline. Without a
+downloadable index the page says so, shows the reason, and offers **Try again**.
 
 - **Free plugins**: one distinct entry per role (synth, sampler, reverb,
-  saturation, mixing, tools) from the plugin index the Store uses. The first
-  choice is an entry already installed, then one that installs without a vendor
-  installer, then any installable one. An entry shown for an earlier role is
-  skipped. **Install** goes through the same verified `plugin_store_install`
-  path as the Store.
+  character, mixing) from the plugin index the Store uses. The first choice is
+  an entry already installed, then one that installs without a vendor installer,
+  then any installable one. An entry shown for an earlier role is skipped.
+  **Install** goes through the same verified `plugin_store_install` path as the
+  Store; **Cancel** stops it, and **Skip setup** leaves it running.
 - **Starter sounds**: free SoundFonts, SFZ libraries and sample packs that the
   index recommends. Instrument packs appear when instruments are few, and
   sample packs when samples are few. A card shows the publisher, the content
@@ -82,6 +83,6 @@ editor, GM instruments and effects need no AI provider.
 ## Dismissal
 
 **Skip setup** or finishing the last step records a marker in
-localStorage. The guide does not return unless that marker is removed. The
-splash is part of the same first-run marker, so a normal later launch goes
-straight to the workspace.
+localStorage. The guide does not return unless that marker is removed; to reopen
+it, choose **Preferences → Help → Getting started**. The splash is part of the
+same first-run marker, so a normal later launch goes straight to the workspace.

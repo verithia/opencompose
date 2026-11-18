@@ -9,7 +9,7 @@
 import embeddedRecommendations from "../data/recommendations.json";
 import type { PluginCatalogEntry } from "./pluginApi";
 
-export type PickRole = "synth" | "sampler" | "reverb" | "character" | "mixing" | "tools";
+export type PickRole = "synth" | "sampler" | "reverb" | "character" | "mixing";
 
 const ROLE_ORDER: readonly PickRole[] = [
   "synth",
@@ -17,7 +17,6 @@ const ROLE_ORDER: readonly PickRole[] = [
   "reverb",
   "character",
   "mixing",
-  "tools",
 ];
 
 export interface RecommendationRole {

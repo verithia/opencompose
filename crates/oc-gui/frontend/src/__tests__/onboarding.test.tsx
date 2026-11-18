@@ -385,9 +385,51 @@ describe("first-run onboarding", () => {
     );
   });
 
-  it("shows the offline note and retries the index when no catalog is downloaded", async () => {
+  it("shows loading, not an empty catalog, before the first answer", async () => {
+    let finishCatalog!: (catalog: unknown) => void;
+    let finishRefresh!: (outcome: unknown) => void;
+    const original = invokeMock.getMockImplementation()!;
+    const status = {
+      source: "none",
+      generated_at: null,
+      fetched_at: null,
+      stale_days: null,
+      stale_warning: false,
+      last_error: null,
+      catalog_version: null,
+      min_app_version: null,
+      next_refresh_in_seconds: 0,
+    };
+    invokeMock.mockImplementation((command: string, ...args: unknown[]) => {
+      if (command === "plugin_catalog") {
+        return new Promise((resolve) => { finishCatalog = resolve; });
+      }
+      if (command === "plugin_index_status") return Promise.resolve(status);
+      if (command === "plugin_index_refresh") {
+        return new Promise((resolve) => { finishRefresh = resolve; });
+      }
+      return original(command, ...args);
+    });
+
+    render(() => <Onboarding onDone={() => {}} />);
+    await screen.findByText("Found on this computer");
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+
+    expect(await screen.findByText("Reading the plugin index…")).toBeInTheDocument();
+    expect(screen.queryByText(/This index has no recommendations/)).toBeNull();
+    expect(
+      screen.queryByText("Connect to the internet to see free plugin and sound suggestions."),
+    ).toBeNull();
+
+    finishCatalog({ platform: "macos-aarch64", entries: [], installed: [], source: "none" });
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("plugin_index_refresh", { force: false }));
+    finishRefresh({ performed: false, changed: false, status });
+  });
+
+  it("fetches the index once on a fresh install and shows loading until it answers", async () => {
     let catalogDownloaded = false;
-    let soundPackLoads = 0;
+    let refreshes = 0;
+    let finishRefresh!: (outcome: unknown) => void;
     const original = invokeMock.getMockImplementation()!;
     const status = (source: "none" | "cache") => ({
       source,
@@ -400,6 +442,67 @@ describe("first-run onboarding", () => {
       min_app_version: null,
       next_refresh_in_seconds: 0,
     });
+    invokeMock.mockImplementation((command: string, ...args: unknown[]) => {
+      if (command === "plugin_catalog") {
+        return Promise.resolve({
+          platform: "macos-aarch64",
+          entries: catalogDownloaded ? [{ ...ENTRY, installed }] : [],
+          installed: [],
+          source: catalogDownloaded ? "cache" : "none",
+        });
+      }
+      if (command === "plugin_index_status") return Promise.resolve(status(catalogDownloaded ? "cache" : "none"));
+      if (command === "plugin_index_refresh") {
+        refreshes += 1;
+        return new Promise((resolve) => {
+          finishRefresh = (outcome) => {
+            catalogDownloaded = true;
+            resolve(outcome);
+          };
+        });
+      }
+      if (command === "sound_packs_list") {
+        return Promise.resolve({ dir: "/sounds", items: catalogDownloaded ? PACKS : [] });
+      }
+      return original(command, ...args);
+    });
+
+    render(() => <Onboarding onDone={() => {}} />);
+    await screen.findByText("Found on this computer");
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+
+    expect(await screen.findByText("Reading the plugin index…")).toBeInTheDocument();
+    expect(
+      screen.queryByText("Connect to the internet to see free plugin and sound suggestions."),
+    ).toBeNull();
+    expect(screen.queryByText(/This index has no recommendations/)).toBeNull();
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("plugin_index_refresh", { force: false }));
+    expect(refreshes).toBe(1);
+
+    finishRefresh({ performed: true, changed: true, status: status("cache") });
+    expect(await screen.findByText("Surge XT")).toBeInTheDocument();
+    expect(screen.queryByText("Reading the plugin index…")).toBeNull();
+  });
+
+  it("shows the automatic refresh error and retries on the manual path", async () => {
+    let catalogDownloaded = false;
+    const refreshes: boolean[] = [];
+    const original = invokeMock.getMockImplementation()!;
+    const status = (source: "none" | "cache") => ({
+      source,
+      generated_at: null,
+      fetched_at: null,
+      stale_days: null,
+      stale_warning: false,
+      last_error: null,
+      catalog_version: null,
+      min_app_version: null,
+      next_refresh_in_seconds: 0,
+    });
+    const rateLimit = {
+      stage: "policy",
+      message: "Plugin catalog refresh is limited to once every 5 minutes; try again in 120 seconds",
+    };
     invokeMock.mockImplementation(async (command: string, ...args: unknown[]) => {
       if (command === "plugin_catalog") {
         return {
@@ -411,11 +514,13 @@ describe("first-run onboarding", () => {
       }
       if (command === "plugin_index_status") return status(catalogDownloaded ? "cache" : "none");
       if (command === "plugin_index_refresh") {
+        const force = (args[0] as { force?: boolean } | undefined)?.force ?? false;
+        refreshes.push(force);
+        if (!force) throw rateLimit;
         catalogDownloaded = true;
         return { performed: true, changed: true, status: status("cache") };
       }
       if (command === "sound_packs_list") {
-        soundPackLoads += 1;
         return { dir: "/sounds", items: catalogDownloaded ? PACKS : [] };
       }
       return original(command, ...args);
@@ -427,17 +532,13 @@ describe("first-run onboarding", () => {
     expect(
       await screen.findByText("Connect to the internet to see free plugin and sound suggestions."),
     ).toBeInTheDocument();
+    expect(await screen.findByText(/Catalog refresh failed:/)).toHaveTextContent("5 minutes");
     expect(screen.queryByText("Free plugins")).toBeNull();
-    expect(screen.queryByText("Starter sounds")).toBeNull();
-    expect(screen.getByRole("button", { name: "Add sound folder…" })).toBeEnabled();
 
-    const loadsBeforeRetry = soundPackLoads;
     fireEvent.click(screen.getByRole("button", { name: "Try again" }));
 
-    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("plugin_index_refresh", { force: true }));
+    await waitFor(() => expect(refreshes).toEqual([false, true]));
     expect(await screen.findByText("Surge XT")).toBeInTheDocument();
-    expect(await screen.findByText("GeneralUser GS")).toBeInTheDocument();
-    await waitFor(() => expect(soundPackLoads).toBeGreaterThan(loadsBeforeRetry));
     expect(
       screen.queryByText("Connect to the internet to see free plugin and sound suggestions."),
     ).toBeNull();
@@ -625,9 +726,12 @@ describe("first-run onboarding", () => {
       }),
     );
     await waitFor(() => expect(screen.getByText("Installed")).toBeInTheDocument());
+    await waitFor(() =>
+      expect(invokeMock.mock.calls.filter(([command]) => command === "local_content_scan").length).toBeGreaterThanOrEqual(2),
+    );
   });
 
-  it("keeps installation feedback visible until the install settles", async () => {
+  it("keeps navigation locked while a plugin install runs but lets Skip pass", async () => {
     let rejectInstall!: (reason: Error) => void;
     const original = invokeMock.getMockImplementation()!;
     invokeMock.mockImplementation((command: string, ...args: unknown[]) => {
@@ -641,18 +745,52 @@ describe("first-run onboarding", () => {
     await openPicksStep();
     const card = (await screen.findByText("Surge XT")).closest("article")!;
     fireEvent.click(within(card).getByRole("button", { name: "Install" }));
-    for (const name of ["Back", "Skip setup", "Install later"]) {
+    for (const name of ["Back", "Install later"]) {
       expect(screen.getByRole("button", { name })).toBeDisabled();
       fireEvent.click(screen.getByRole("button", { name }));
     }
     fireEvent.keyDown(document, { key: "Escape" });
     expect(done).not.toHaveBeenCalled();
     expect(screen.getByText("Recommended")).toBeInTheDocument();
+    const skip = screen.getByRole("button", { name: "Skip setup" });
+    expect(skip).toBeEnabled();
+    fireEvent.click(skip);
+    expect(done).toHaveBeenCalledOnce();
+
     rejectInstall(new Error("Download failed"));
     await screen.findByText(/Install failed/);
     expect(screen.getByRole("button", { name: "Install later" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Back" })).toBeEnabled();
-    expect(screen.getByRole("button", { name: "Skip setup" })).toBeEnabled();
+  });
+
+  it("cancels a plugin install and reports it", async () => {
+    let rejectInstall!: (reason: string) => void;
+    const original = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation((command: string, ...args: unknown[]) => {
+      if (command === "plugin_store_install") {
+        return new Promise((_, reject) => { rejectInstall = reject; });
+      }
+      return original(command, ...args);
+    });
+
+    render(() => <Onboarding onDone={() => {}} />);
+    await openPicksStep();
+    const card = (await screen.findByText("Surge XT")).closest("article")!;
+    fireEvent.click(within(card).getByRole("button", { name: "Install" }));
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("plugin_store_install", {
+        id: "surge-synth-team.surge-xt",
+        overwrite: false,
+      }),
+    );
+    fireEvent.click(await within(card).findByRole("button", { name: "Cancel" }));
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("install_cancel", { id: "surge-synth-team.surge-xt" }),
+    );
+    rejectInstall("surge-synth-team.surge-xt was cancelled");
+    expect(await within(card).findByText("Install cancelled.")).toBeInTheDocument();
+    expect(within(card).getByRole("button", { name: "Install" })).toBeEnabled();
   });
 
   it("lists the saved providers without testing credentials", async () => {

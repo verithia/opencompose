@@ -345,6 +345,12 @@ describe("first-run scan page layout", () => {
             next_refresh_in_seconds: 0,
           };
         }
+        if (command === "plugin_index_refresh") {
+          throw {
+            stage: "policy",
+            message: "Plugin catalog refresh is limited to once every 5 minutes; try again in 300 seconds",
+          };
+        }
         if (command === "sound_packs_list") return { dir: "/sounds", items: [] };
         return original(command, ...args);
       });
@@ -352,8 +358,42 @@ describe("first-run scan page layout", () => {
       await screen.findByText(i18n.t("onboarding.scan.titleDone"));
       fireEvent.click(screen.getByRole("button", { name: i18n.t("onboarding.next") }));
       await screen.findByText(i18n.t("onboarding.picks.offline"));
+      await screen.findByRole("alert");
       await shoot(fixture.container, "graphite", `picks-offline-${locale}`, (page) =>
-        fitsCard(page, ".onboarding-picks-offline, .onboarding-picks-offline .onboarding-scan-actions"));
+        fitsCard(page, ".onboarding-picks-offline, .onboarding-picks-offline .onboarding-tools-error, .onboarding-picks-offline .onboarding-scan-actions"));
+    });
+
+    it(`${locale}: a pending first index fetch fits the card`, async () => {
+      i18n.setLocale(locale);
+      answer("macos-aarch64", summaryFor("macos-aarch64", true));
+      const original = invokeMock.getMockImplementation()!;
+      invokeMock.mockImplementation(async (command: string, ...args: unknown[]) => {
+        if (command === "plugin_catalog") {
+          return { platform: "macos-aarch64", entries: [], installed: [], source: "none" };
+        }
+        if (command === "plugin_index_status") {
+          return {
+            source: "none",
+            generated_at: null,
+            fetched_at: null,
+            stale_days: null,
+            stale_warning: false,
+            last_error: null,
+            catalog_version: null,
+            min_app_version: null,
+            next_refresh_in_seconds: 0,
+          };
+        }
+        if (command === "plugin_index_refresh") return new Promise(() => {});
+        if (command === "sound_packs_list") return { dir: "/sounds", items: [] };
+        return original(command, ...args);
+      });
+      const fixture = render(() => <Onboarding onDone={() => {}} />);
+      await screen.findByText(i18n.t("onboarding.scan.titleDone"));
+      fireEvent.click(screen.getByRole("button", { name: i18n.t("onboarding.next") }));
+      await screen.findByText(i18n.t("onboarding.plugins.loading"));
+      await shoot(fixture.container, "graphite", `picks-loading-${locale}`, (page) =>
+        fitsCard(page, ".onboarding-tools-loading"));
     });
   }
 
