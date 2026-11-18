@@ -1,14 +1,14 @@
 {
   "catalog": {
-    "bytes": 11099,
+    "bytes": 11370,
     "compression_level": 9,
     "encoding": "zstd",
-    "path": "catalog-e491dfbc56f77e834a8b0115568257b446ab8d0fb9608632d3c10467ac180988.json.zst",
-    "sha256": "e491dfbc56f77e834a8b0115568257b446ab8d0fb9608632d3c10467ac180988",
-    "uncompressed_bytes": 101373
+    "path": "catalog-0c8b3fb1f792ee00643956ccdba29bccbeae23eaa9a67ead4d221bbe766e3bd5.json.zst",
+    "sha256": "0c8b3fb1f792ee00643956ccdba29bccbeae23eaa9a67ead4d221bbe766e3bd5",
+    "uncompressed_bytes": 103756
   },
-  "catalog_version": "2026.11.18.071219",
-  "generated_at": "2026-11-18T07:12:19Z",
+  "catalog_version": "2026.11.18.084617",
+  "generated_at": "2026-11-18T08:46:17Z",
   "min_app_version": "0.1.0",
   "schema": 1,
   "signature": {
