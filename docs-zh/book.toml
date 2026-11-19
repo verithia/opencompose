@@ -1,0 +1,23 @@
+# The Simplified Chinese book. It is built after the English book into
+# book/zh/, so the published site serves it at /zh/ next to the English pages.
+#
+# It translates the user-facing pages listed in src/SUMMARY.md. Design and
+# measurement pages stay English-only; a translated page links to them in the
+# English book. scripts/check-docs.sh checks both halves of that contract.
+
+[book]
+title = "OpenCompose"
+authors = ["OpenCompose contributors"]
+description = "OpenCompose 数字音频工作站：.ocp 语言、桌面应用、命令行与插件。"
+language = "zh-CN"
+src = "src"
+
+[build]
+build-dir = "../book/zh"
+
+[output.html]
+git-repository-url = "https://github.com/verithia/opencompose"
+edit-url-template = "https://github.com/verithia/opencompose/edit/main/docs-zh/{path}"
+theme = "../docs/theme"
+additional-css = ["../docs/theme/brand.css"]
+additional-js = ["../docs/theme/lang-switch.js"]

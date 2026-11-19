@@ -12,6 +12,11 @@
 #      dsl-examples.json (crates/oc-dsl/examples/check_doc_snippets.rs).
 #   6. No page contains non-English text, and links into api/ name a crate that
 #      `cargo doc` produces.
+#   7. The Simplified Chinese book in docs-zh/src/ translates existing pages:
+#      every page is a chapter of its SUMMARY.md and has an English source at
+#      the same path, a relative link resolves either inside the zh book or,
+#      through `../`, to a published English page or file, and the language
+#      link's page list in docs/theme/lang-switch.js equals the zh chapters.
 #
 # What it does not catch: anchors inside a page, prose that is wrong about
 # behaviour (only a test or a reviewer catches that), external URLs, images
@@ -27,7 +32,7 @@ snippets=1
 for arg in "$@"; do
     case "$arg" in
         --list)
-            sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'
+            sed -n '2,37p' "$0" | sed 's/^# \{0,1\}//'
             exit 0
             ;;
         --no-snippets) snippets=0 ;;
@@ -256,12 +261,139 @@ print(
 sys.exit(1 if problems else 0)
 PY
 
+# Rule 7: the Simplified Chinese book.
+python3 - "$root" <<'PY' || status=1
+import os
+import re
+import sys
+
+root = sys.argv[1]
+docs = os.path.join(root, "docs")
+zh = os.path.join(root, "docs-zh", "src")
+problems = []
+# The one zh page with no English source: the index of English-only pages.
+ZH_ONLY = {"english-only.md"}
+
+
+def rel(path):
+    return os.path.relpath(path, root)
+
+
+def strip_code(text):
+    out = []
+    fence = False
+    for line in text.split("\n"):
+        if line.lstrip().startswith("```"):
+            fence = not fence
+            out.append("")
+            continue
+        out.append("" if fence else line)
+    return "\n".join(out)
+
+
+def chapters_of(summary):
+    names = []
+    for target in re.findall(r"\]\(([^)]+)\)", strip_code(open(summary, encoding="utf-8").read())):
+        target = target.split("#", 1)[0].strip()
+        if target and not target.startswith(("http://", "https://", "mailto:")):
+            names.append(target)
+    return names
+
+
+if not os.path.isdir(zh):
+    print("check-docs: docs-zh/src is missing", file=sys.stderr)
+    sys.exit(1)
+
+english = set(chapters_of(os.path.join(docs, "SUMMARY.md")))
+chapters = chapters_of(os.path.join(zh, "SUMMARY.md"))
+for name in sorted({name for name in chapters if chapters.count(name) > 1}):
+    problems.append(f"docs-zh/src/SUMMARY.md: '{name}' appears more than once")
+chapter_set = set(chapters)
+for name in sorted(chapter_set):
+    if not os.path.isfile(os.path.join(zh, name)):
+        problems.append(f"docs-zh/src/SUMMARY.md: '{name}' does not exist")
+    elif name not in ZH_ONLY and name not in english:
+        problems.append(f"docs-zh/src/{name}: no English chapter at docs/{name}")
+
+pages = []
+for dirpath, _dirs, files in os.walk(zh):
+    for file in sorted(files):
+        if file.endswith(".md"):
+            path = os.path.join(dirpath, file)
+            name = os.path.relpath(path, zh)
+            if name == "SUMMARY.md":
+                continue
+            pages.append((name, path))
+            if name not in chapter_set:
+                problems.append(f"{rel(path)}: not a chapter of docs-zh/src/SUMMARY.md")
+
+link_re = re.compile(r"!?\[[^\]]*\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
+for name, path in pages:
+    for raw in link_re.findall(strip_code(open(path, encoding="utf-8").read())):
+        if raw.startswith(("http://", "https://", "mailto:", "tel:", "#")):
+            continue
+        target = raw.split("#", 1)[0]
+        if not target:
+            continue
+        # Position of the target inside the published site, with zh/ as the
+        # zh book's root: a path that climbs out of zh/ lands in the English book.
+        site = os.path.normpath(os.path.join("zh", os.path.dirname(name), target))
+        if site.startswith("zh" + os.sep) or site == "zh":
+            inside = os.path.relpath(site, "zh")
+            if target.endswith(".html"):
+                problems.append(
+                    f"{rel(path)}: '{raw}' points into the zh book; link the .md file instead"
+                )
+            elif target.endswith(".md") and inside not in chapter_set:
+                problems.append(f"{rel(path)}: '{raw}' is not a chapter of the zh book")
+            elif not target.endswith(".md") and not os.path.exists(os.path.join(zh, inside)):
+                problems.append(f"{rel(path)}: '{raw}' does not exist in docs-zh/src")
+            continue
+        if site.startswith(".."):
+            problems.append(f"{rel(path)}: '{raw}' climbs above the site root")
+            continue
+        if site.startswith("api" + os.sep) or site == "api":
+            continue
+        if target.endswith(".md"):
+            problems.append(
+                f"{rel(path)}: '{raw}' leaves the zh book; link the English page as .html"
+            )
+            continue
+        source = site[: -len(".html")] + ".md" if site.endswith(".html") else site
+        if source.endswith(os.sep + "index.md") or source == "index.md":
+            source = source[: -len("index.md")] + "README.md"
+        if source.endswith(".md"):
+            if source not in english:
+                problems.append(f"{rel(path)}: '{raw}' is not a published English page")
+        elif not os.path.exists(os.path.join(docs, source)):
+            problems.append(f"{rel(path)}: '{raw}' does not exist in docs/")
+
+switch = open(os.path.join(docs, "theme", "lang-switch.js"), encoding="utf-8").read()
+listed = re.search(r"const TRANSLATED = \[(.*?)\];", switch, re.S)
+listed = set(re.findall(r'"([^"]+)"', listed.group(1))) if listed else set()
+expected = set()
+for name in chapter_set - ZH_ONLY:
+    page = name[: -len(".md")]
+    if os.path.basename(page) == "README":
+        page = page[: -len("README")] + "index"
+    expected.add(page + ".html")
+for page in sorted(expected - listed):
+    problems.append(f"docs/theme/lang-switch.js: TRANSLATED is missing '{page}'")
+for page in sorted(listed - expected):
+    problems.append(f"docs/theme/lang-switch.js: TRANSLATED lists '{page}', which the zh book lacks")
+
+for problem in problems:
+    print(f"check-docs: {problem}", file=sys.stderr)
+print(f"check-docs: {len(chapter_set)} zh chapters", file=sys.stderr)
+sys.exit(1 if problems else 0)
+PY
+
 # Rule 5: every ocp fence and every product example parses.
 if [ "$snippets" -eq 1 ]; then
     files=()
     while IFS= read -r file; do
         files+=("$file")
-    done < <(find docs -name '*.md' -not -name SUMMARY.md | sort)
+    done < <(find docs docs-zh/src -name '*.md' -not -name SUMMARY.md | sort)
     examples=crates/oc-gui/frontend/src/ai/dsl-examples.json
     args=()
     if [ -f "$examples" ]; then

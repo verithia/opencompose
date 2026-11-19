@@ -76,6 +76,11 @@ Follow [docs/compatibility.md](docs/compatibility.md).
 - `docs/` is the mdBook source. Every page is listed in `docs/SUMMARY.md` and
   follows [docs/style.md](docs/style.md): English, second person, present
   tense, no changelog voice.
+- `docs-zh/` is the Simplified Chinese book, published at `/zh/`. It
+  translates the chapters in `docs-zh/src/SUMMARY.md` at the same paths as
+  their English sources. When you change a translated English page, update its
+  Chinese page in the same change; `scripts/check-docs.sh` checks the page
+  list and the links but not the wording.
 - Examples run from the repository or a standard install. Use portable commands
   (`cargo`, `npm`, `npx`), never private wrappers or local paths.
 - Public docs hold design rationale and reproducible measurements. Work logs
