@@ -3,9 +3,10 @@ id: design-future-bass-wobble
 title: Design a future-bass wobble
 when: Create or refine rhythmic filter movement in a future-bass bassline or pulsing chord layer.
 category: production
-version: 2
+version: 3
 tools: [devices_catalog, presets_list, project_extract, presets_add, presets_duplicate, presets_set_params, tracks_list, render_range, audition_range, audio_analyze]
 ---
+Read translate-a-production-technique before borrowing another synth's knob values.
 Choose the part that needs movement. Keep chord polyphony for stabs and use mono
 or legato for bass only when the line calls for it. Treat brightness, amplitude,
 pitch movement and kick-triggered ducking as separate decisions.
@@ -39,6 +40,7 @@ If detuned bass loses weight on some notes, isolate the sub and mid layer. Try
 a centered single-voice sine sub and trim overlapping lows from the moving part.
 Audition a held note, repeated stabs and the full phrase at matched loudness.
 Listen with kick and vocal for accent timing, note gaps, sub weight and masking.
+If the pulse still feels wrong, read diagnose-a-sound; do not keep adding FX.
 Use `audio_analyze` on matching renders for headroom and low-band balance.
 Compare mono with stereo if the audio provider keeps both channels. Report
 which listening checks the available audio supports.

@@ -3,29 +3,46 @@ id: route-groups-and-returns
 title: Route groups and parallel returns
 when: You need drum or vocal groups, shared effects, separate processing, or a route that avoids doubled dry audio.
 category: mixing
-version: 1
-tools: [tracks_list, project_extract, buses_add, buses_routes, buses_mix, tracks_output, tracks_send_add, project_validate, audition_range]
+version: 2
+tools: [tracks_list, project_extract, buses_add, buses_routes, buses_mix, tracks_output, tracks_send_add, project_validate, audition_range, read_skill, edit_subtree]
 ---
-Draw the signal path from source to main output. Name a bus by its job,
-such as drum group, plate return or parallel compression. Inspect existing
-outputs and sends before changing them.
+Draw the audible path from source to main output, then the detector/control
+paths separately. Inspect outputs, sends, inserts and every downstream gain.
+An enabled strip can feed a silent parent; a named empty bus proves no processing.
 
-For a group, use an exclusive track output to the bus. Route the group to
-the intended downstream bus or master. The source should reach the master
-through this group once. Validate the graph after each layer of routing.
+## Separate a group from a parallel path
+For a group, set exclusive track output to that bus and route the bus onward.
+Keep one intended dry path to master. A retained direct path can double the
+source and bypass the group's processing. Validate downstream names and cycles.
+A group compressor responds to the sum, not as separate compressors per take.
+A monophonic pitch processor on several voices can mistrack the group.
 
-For a shared reverb, keep the track main route and add a send to a return.
-Set the return effect fully wet so the return adds ambience. A post-fader
-send follows source fader changes. Choose a pre-fader tap only if the wet
-balance needs to be independent of that fader.
+For a shared reverb/delay, keep the dry main route and send to a wet return.
+Set wet effects fully wet unless deliberate parallel dry gain is intended.
+A pre-fader send remains after source inserts/PDC/polarity but before fader
+and pan; a post-fader send follows both. Send pan is a separate route control.
+Do not infer a dedicated bus-return pan or bus-send amount from another host.
+A send from a source before its group does not inherit that group's inserts.
+Choose tap location for the desired processed excitation, not by label alone.
 
-Turn the send down to reduce what feeds the next tail. Move the return
-fader to change everything already in that return. Keep detector routing
-separate from audible routing when sidechaining an effect.
+## Separate feed, tail and detector
+Changing a send changes new signal feeding an effect. Closing it does not
+stop an existing reverb/delay tail. Return gain changes all wet audio already
+there; a dry-keyed compressor after the wet effect can reveal tails in gaps.
+Use choose-and-shape-reverb or place-rap-vocal-throws for phrase decisions.
+Keep detector input non-summing; inspect actual device ports before connecting it.
+For native compression, `route: vocal -> compression` keys from track vocal.
+`route: control env -> compression` uses the declared control source env.
+The native AUDIO key is post-insert, pre-fader and pre-mute; a muted source
+can still drive it. A normalized CONTROL follower is a different route and
+refreshes empty when muted. A pre-fader send is not either of these signals.
+If discovery output omits ports, do not invent a key connection from a name.
 
-Solo or mute groups methodically and listen for doubled attacks or a dry
-signal through an effects return. Check both verse and chorus if send level
-changes by section. Avoid cycles and verify downstream bus names.
-
-Leave a short route summary for the session, including the tap type and
-where each return feeds. Audition the full mix after restoring solo states.
+## Prove the routes you keep
+Hear the source, group and return methodically for doubled attacks, dry
+leakage or wrong processing ownership. Check missing/irregular keys, source
+mute/fader changes and both sparse/dense sections. Preserve intended key action.
+Avoid unsupported feedback cycles; a feed-forward return is not a recirculating
+loop. Restore temporary solos and hear the full mix after graph validation.
+Retain a concise route description with tap and detector ownership so later
+edits and reopening preserve the same musical behavior.

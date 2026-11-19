@@ -3,10 +3,10 @@ id: separated-vocal-mixing
 title: Mix a separated vocal
 when: A separated or already mixed vocal sounds wet, distant, masked or uneven; or you are adding vocal effects.
 category: mixing
-version: 9
+version: 10
 tools: [project_extract, effects_set_bypass, tracks_list, devices_catalog, audio_clips_list, audio_clip_set_playback, audition_clip_source, render_range, audition_range, audio_analyze, audio_compare, analyze_notes]
 ---
-Check alignment, inserts, sends and master with tracks_list and project_extract.
+Check alignment, inserts, sends and master with tracks_list and project_extract. Read hear-compression-and-recovery for uneven words; make-vocal-chop-phrases for resampling.
 Keep the raw stem. Compare the same words and gap in audition_clip_source,
 an isolated render with added effects bypassed, and one with effects on.
 In an approved working copy, record the bypass states, use effects_set_bypass

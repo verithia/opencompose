@@ -3,7 +3,7 @@ id: program-house-groove
 title: Program a house groove
 when: Build a four-on-the-floor house pocket with a kick, offbeat hats, syncopated bass, and room for chord stabs.
 category: production
-version: 1
+version: 2
 tools: [project_extract, edit_subtree, project_validate, audition_range, devices_catalog, audio_analyze]
 ---
 Start with a steady kick on all four quarter notes. Add a backbeat and one
@@ -20,8 +20,10 @@ gap. Shorten the stab's envelope or its sample before adding more filtering.
 Use a shared nonzero choke group if the closed hat should cut off the open
 hat. Check the reverse trigger order too, since either pad in the group can
 choke the other. Keep the kick and backbeat fixed while changing the timing
-or velocity of a lighter percussion layer. OpenCompose swing shifts offbeat
-eighths only, so use explicit positions when individual hits need a nudge.
+or velocity of a lighter percussion layer. Inspect the project's swing grid:
+the default is eighths; swing_subdivision: 16th moves alternate sixteenths.
+Patterns can override the swing amount, but share the project subdivision.
+Use explicit positions for independent timing; changing the grid affects other parts.
 
 ## Keep space behind the beat
 Try a dedicated wet return for selected claps or stabs, with the dry track
