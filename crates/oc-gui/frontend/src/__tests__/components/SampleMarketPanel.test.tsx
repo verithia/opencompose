@@ -322,12 +322,14 @@ describe("SampleMarketPanel", () => {
     const row = getByText("Night Drive").closest(".sample-market-row") as HTMLElement;
     const add = within(row).getByText("Add to project");
     expect(add).not.toBeDisabled();
-    invokeMock.mockRejectedValueOnce(
-      "licence_notice: Licence: CC BY-NC 4.0. The file keeps this licence.",
-    );
+    invokeMock.mockRejectedValueOnce({
+      code: "licence_notice",
+      message: "Licence: CC BY-NC 4.0. The file keeps this licence.",
+    });
     fireEvent.click(add);
 
     await waitFor(() => expect(getByText("Download anyway")).toBeInTheDocument());
+    expect(getByText("Licence: CC BY-NC 4.0. The file keeps this licence.")).toBeInTheDocument();
     fireEvent.click(getByText("Download anyway"));
     await waitFor(() =>
       expect(invokeMock).toHaveBeenLastCalledWith("sample_market_add", {
@@ -337,6 +339,24 @@ describe("SampleMarketPanel", () => {
         acceptLicence: true,
       }),
     );
+  });
+
+  it("shows a refusal's message when it is not a licence notice", async () => {
+    const { container, getByText, queryByText } = render(() => <SampleMarketPanel />);
+    await waitFor(() => expect(getByText("Openverse")).toBeInTheDocument());
+    await search(container);
+
+    const row = getByText("Snare hit 01").closest(".sample-market-row") as HTMLElement;
+    invokeMock.mockRejectedValueOnce({
+      code: "checksum_mismatch",
+      message: "The download does not match its declared checksum.",
+    });
+    fireEvent.click(within(row).getByText("Add to project"));
+
+    await waitFor(() =>
+      expect(getByText("The download does not match its declared checksum.")).toBeInTheDocument(),
+    );
+    expect(queryByText("Download anyway")).toBeNull();
   });
 
   it("asks for a keyed market's key inline", async () => {

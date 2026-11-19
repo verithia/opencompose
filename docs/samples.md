@@ -240,10 +240,43 @@ One result carries what a project needs to use and credit the file:
 | `quality` | `original` or `preview_mp3`. |
 | `license_ok` | Whether the licence is free to reuse; anything else also carries `license_notice`. |
 
-A page reports `offset`, `limit`, `total` when the source knows it, and
-`next_offset` when another page exists. Cross-market duplicate titles are kept:
-two markets may publish the same recording under different licences and
-credits, and only the licence decides whether one may enter a project.
+A search result carries `providers` (the availability map), `pages` (one entry
+per market asked), `items`, `count`, `duplicates`, `commercial_ok`, `cursor`
+and, for older callers, `next_offset`. Items interleave the markets
+round-robin in the order they were asked. Two items whose landing pages are the
+same address (ignoring the scheme, the host's case, a trailing slash, the
+fragment and tracking parameters such as `utm_*`) are one upload listed twice,
+for example by an aggregator and by the site it indexes; the first market asked
+keeps it and `duplicates` counts the rest. Different uploads with the same
+title are kept.
+
+Each market pages on its own, so a result carries an opaque `cursor`: pass it
+back as `cursor` with the same query to get the next page of every market that
+still has results. A market whose last page was reached is left out, and the
+cursor is `null` once every market is exhausted. A cursor that is malformed,
+from another version or longer than 2048 characters is refused with
+`invalid_cursor` before any market is asked. `offset` with `next_offset` still
+works and starts every market at the same offset; a search that sends a
+cursor returns `next_offset: null`.
+
+Every page entry has the same fields:
+
+| Field | Meaning |
+|---|---|
+| `provider`, `provider_name` | The market. |
+| `offset` | The provider offset it was asked at; `null` when it was not asked. |
+| `count`, `total`, `next_offset` | What it returned, its reported total and its own next offset. |
+| `error` | A sentence for people, or `null`. |
+| `error_kind` | `needs_key`, `provider_unavailable`, `skipped`, `rate_limited`, `not_found`, `unavailable`, `timeout`, `network`, `parse` or `other`; `null` on success. A rejected key (HTTP 401 or 403) is `needs_key`, like a missing one. |
+| `skip_reason` | `rate_limited` or `circuit_open` when the market was not asked; `skipped` is `true` then. |
+| `retry_after_secs` | Seconds until the market is asked again, when known. |
+| `http_status` | The status of a failed request, when there was one. |
+
+A market that times out, cannot be reached or answers 5xx twice in a row is
+skipped for ten minutes (`circuit_open`). A market that answers 429 is skipped
+for its `Retry-After`, 60 seconds when it sends none and at most ten minutes
+(`rate_limited`). A bad key, a missing record or an unreadable body leaves the
+market searchable.
 
 ## Refusals
 
@@ -364,7 +397,15 @@ palette entry `view.toggleSamples` opens it.
 * A result list with name, provider, kind, duration, licence badge and credit
   line. A refused licence is shown in red and its Add button is disabled.
 * Selecting a result previews it: the panel stops the previous audition and
-  plays the new file through the audition stream, never the transport.
+  plays the new file through the audition stream, never the transport. A
+  downloaded preview is kept for the session in the app cache directory
+  (`sample-previews/`, emptied at startup, at most 32 files and 256 MiB,
+  least recently used first out), so hearing it again needs no network, and
+  **Add to project** reuses the bytes when the resolved URL is the one
+  previewed. The add still resolves the item and verifies the declared size
+  and checksum.
+* A rejected command returns `{code, message}`: `code` is the refusal code
+  (`licence_notice`, `key_required`, `invalid_cursor`, ...) or `null`.
 * **Add to project** downloads the file, writes the sidecar and receipt, and
   places an `@audio_clip` at the playhead on the selected track, or on a new
   `audio/clip` track named `Samples` when no track is selected.
@@ -373,7 +414,8 @@ palette entry `view.toggleSamples` opens it.
 
 `sample_search` takes `query`, `kind`, `min_seconds`, `max_seconds`, `channels`,
 `tags`, `providers` (an array; omitted means every available market),
-`provider` (a deprecated single-market alias), `offset` and `limit`. It returns
+`provider` (a deprecated single-market alias), `offset`, `limit`,
+`commercial_ok` and `cursor`. It returns
 `providers` (the availability map), `pages` (what each searched market
 answered, or why it failed) and `items` with `provider`, `provider_name` and
 `license_ok` on every result.
