@@ -3,10 +3,10 @@ id: flip-boom-bap-chops
 title: Flip samples for boom bap
 when: Chopping a licensed loop into a boom bap phrase, resetting the bass and drums, and keeping sample seams clean.
 category: production
-version: 2
+version: 3
 tools: [sample_search, sample_pull, project_extract, edit_subtree, audio_clips_list, audition_clip_source, project_validate, audition_range]
 ---
-Start from an approved source file or use sample_search with kind "loop"
+Read select-samples-by-role when the source is undecided. Start from an approved file or sample_search with kind "loop"
 and a small limit. Check each provider's availability and reason. If a
 provider is unavailable, search an available one. Check the licence allows
 the intended edit and release, and keep the credit and any share-alike terms.
@@ -36,11 +36,13 @@ and duration_seconds up to 30 s. Hear the downbeat, candidate cuts and tail.
 ## Fit it to the beat
 
 Build a plain kick and snare around the chop accents. Use quieter ghost notes
-and listen to the pocket with hats before adding layers. Pattern swing moves
-the supported eighth offbeats. Use deliberate placement for the rest of the
-groove. Keep kick and bass from crowding a low note already present in the
+and listen to the pocket with hats before adding layers. Check the project
+swing_subdivision: 8th is the default; 16th moves alternate sixteenths.
+Pattern swing does not move audio clips: place the chops deliberately.
+Keep kick and bass from crowding a low note already present in the
 sample. Try a small filter or a different chop before removing all its body.
 
+Read fit-loops-with-pitch-and-time for source/processed clocks and stretch ratios.
 Test two consecutive phrase cycles, then the transition to a sparser B section.
 Check that repeats feel intentional, the sample's pitch supports the new bass,
 and any added noise stays below the rhythmic detail.
