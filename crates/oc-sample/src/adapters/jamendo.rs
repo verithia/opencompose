@@ -44,9 +44,8 @@ impl JamendoProvider {
                     .collect()
             })
             .unwrap_or_default();
-        let text = query.text.trim();
-        if !text.is_empty() {
-            terms.push(text.to_string());
+        if !query.text.is_empty() {
+            terms.push(query.text.clone());
         }
         format!(
             "{API}?client_id={key}&format=json&limit={page_size}&offset={offset}&search={search}&audioformat={AUDIO_FORMAT}&include={INCLUDE}",
@@ -79,15 +78,20 @@ impl SampleProvider for JamendoProvider {
         query: &SampleQuery,
         fetch: &dyn SampleFetch,
     ) -> Result<SamplePage, SampleError> {
+        let query = &query.normalized();
         let body = get_json(fetch, "Jamendo", &self.search_url(query))?;
         let response: TracksResponse = serde_json::from_value(body)
-            .map_err(|error| SampleError::Failed(format!("Jamendo: unreadable search: {error}")))?;
+            .map_err(|error| SampleError::failed(format!("Jamendo: unreadable search: {error}")))?;
         let results_count = response.headers.results_count;
         check_status(&response.headers)?;
-        let items: Vec<SampleItem> = response.results.iter().map(item_from_track).collect();
+        let mut items: Vec<SampleItem> = response.results.iter().map(item_from_track).collect();
         let page_size = query.page_size();
+        // The cursor counts what the source returned, so a filtered-out result
+        // is not fetched again on the next page.
         let next_offset =
             (items.len() >= page_size).then(|| query.offset.saturating_add(items.len()));
+        // The search sends text only; every bound is checked on the page.
+        query.retain_matching(&mut items);
         Ok(SamplePage {
             provider: PROVIDER_ID.to_string(),
             offset: query.offset,
@@ -120,7 +124,7 @@ impl SampleProvider for JamendoProvider {
         }
         let body = get_json(fetch, "Jamendo", &self.id_url(number.trim()))?;
         let response: TracksResponse = serde_json::from_value(body)
-            .map_err(|error| SampleError::Failed(format!("Jamendo: unreadable track: {error}")))?;
+            .map_err(|error| SampleError::failed(format!("Jamendo: unreadable track: {error}")))?;
         check_status(&response.headers)?;
         match response.results.first() {
             Some(track) => Ok(item_from_track(track)),
@@ -136,7 +140,7 @@ fn check_status(headers: &Headers) -> Result<(), SampleError> {
     if headers.status.eq_ignore_ascii_case("success") {
         return Ok(());
     }
-    Err(SampleError::Failed(format!(
+    Err(SampleError::failed(format!(
         "Jamendo refused the request: {}{}",
         headers.error_message,
         if headers.code == 0 {
@@ -269,7 +273,11 @@ mod tests {
     }
 
     impl SampleFetch for FixtureFetch {
-        fn get(&self, url: &str, _max_bytes: usize) -> Result<FetchResponse, String> {
+        fn get(
+            &self,
+            url: &str,
+            _max_bytes: usize,
+        ) -> Result<FetchResponse, crate::provider::FetchError> {
             self.urls.lock().unwrap().push(url.to_string());
             Ok(FetchResponse {
                 status: 200,
@@ -339,6 +347,22 @@ mod tests {
         // A track that does not allow downloads still streams.
         assert!(nc.download_url.is_empty());
         assert!(nc.preview_url.is_some());
+    }
+
+    #[test]
+    fn a_commercial_search_drops_the_non_commercial_track() {
+        let fetch = fetch(SEARCH);
+        let page = JamendoProvider::new("CLIENT")
+            .search(
+                &SampleQuery {
+                    commercial_ok: true,
+                    ..Default::default()
+                },
+                &fetch,
+            )
+            .unwrap();
+        let ids: Vec<&str> = page.items.iter().map(|item| item.id.as_str()).collect();
+        assert_eq!(ids, vec!["jamendo:123456"]);
     }
 
     #[test]

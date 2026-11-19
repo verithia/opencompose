@@ -7,7 +7,7 @@
 //! naming and licensing live in [`crate::store`], so a new source cannot
 //! invent its own verification or its own licence rule.
 
-use crate::model::{SampleError, SampleItem, SamplePage, SampleQuery};
+use crate::model::{FailureKind, SampleError, SampleItem, SamplePage, SampleQuery};
 
 /// A body the transport managed to fetch.
 #[derive(Debug, Clone)]
@@ -16,12 +16,48 @@ pub struct FetchResponse {
     pub body: Vec<u8>,
 }
 
+/// Why the transport returned no body. The kind and status are set where the
+/// transport saw them; the message is for people and is never parsed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FetchError {
+    pub kind: FailureKind,
+    pub status: Option<u16>,
+    pub retry_after_secs: Option<u64>,
+    pub message: String,
+}
+
+impl FetchError {
+    /// A transport failure of `kind` with no HTTP status.
+    pub fn new(kind: FailureKind, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            status: None,
+            retry_after_secs: None,
+            message: message.into(),
+        }
+    }
+}
+
+/// A plain message is a failure with no more specific kind, which keeps
+/// simple fetchers (fixtures, tests) terse.
+impl From<String> for FetchError {
+    fn from(message: String) -> Self {
+        Self::new(FailureKind::Other, message)
+    }
+}
+
+impl std::fmt::Display for FetchError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
 /// The only way a provider touches the network. Tests implement this over
 /// recorded bytes, so no parser test reaches the internet.
 pub trait SampleFetch: Sync {
     /// GET `url`, refusing a body larger than `max_bytes` and any non-2xx
-    /// status. The error text reaches the caller unchanged.
-    fn get(&self, url: &str, max_bytes: usize) -> Result<FetchResponse, String>;
+    /// status. The error message reaches the caller unchanged.
+    fn get(&self, url: &str, max_bytes: usize) -> Result<FetchResponse, FetchError>;
 
     /// Local helper processes use the same network configuration as the host.
     fn plugin_network(&self) -> crate::local_plugin::Network {
@@ -34,7 +70,7 @@ pub trait SampleFetch: Sync {
         url: &str,
         max_bytes: usize,
         _headers: &[(&str, &str)],
-    ) -> Result<FetchResponse, String> {
+    ) -> Result<FetchResponse, FetchError> {
         self.get(url, max_bytes)
     }
 }
@@ -84,14 +120,18 @@ pub fn get_json_with_headers(
 ) -> Result<serde_json::Value, SampleError> {
     let response = fetch
         .get_with(url, MAX_JSON_BYTES, headers)
-        .map_err(|error| SampleError::Failed(format!("{provider}: {error}")))?;
+        .map_err(|error| SampleError::from_fetch(provider, error))?;
     if response.body.len() > MAX_JSON_BYTES {
-        return Err(SampleError::Failed(format!(
+        return Err(SampleError::failed(format!(
             "{provider}: response is larger than {MAX_JSON_BYTES} bytes"
         )));
     }
-    serde_json::from_slice(&response.body)
-        .map_err(|error| SampleError::Failed(format!("{provider}: unreadable JSON: {error}")))
+    serde_json::from_slice(&response.body).map_err(|error| {
+        SampleError::failure(
+            FailureKind::Parse,
+            format!("{provider}: unreadable JSON: {error}"),
+        )
+    })
 }
 
 /// Percent-encode one query value. Only the unreserved set survives, which is
@@ -127,7 +167,7 @@ mod tests {
         struct BareFetch;
 
         impl SampleFetch for BareFetch {
-            fn get(&self, _url: &str, _max_bytes: usize) -> Result<FetchResponse, String> {
+            fn get(&self, _url: &str, _max_bytes: usize) -> Result<FetchResponse, FetchError> {
                 Ok(FetchResponse {
                     status: 200,
                     body: br#"{"ok":true}"#.to_vec(),

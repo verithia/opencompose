@@ -91,7 +91,8 @@ fn probe(proxy_mode: &str, proxy_url: &str) -> Result<Value, String> {
         Err(error) => Ok(json!({
             "ok": false,
             "ms": started.elapsed().as_millis() as u64,
-            "error": error,
+            "error": error.message,
+            "kind": error.kind,
         })),
     }
 }

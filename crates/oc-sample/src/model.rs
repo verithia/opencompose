@@ -147,7 +147,20 @@ pub struct SampleQuery {
     pub tags: Vec<String>,
     pub offset: usize,
     pub limit: usize,
+    /// Keep only results whose licence allows commercial use. Absent on the
+    /// wire means no licence filter, which is what an older caller meant.
+    #[serde(default)]
+    pub commercial_ok: bool,
 }
+
+/// Longest search text, in characters, a provider receives. Search boxes
+/// index words, so a pasted paragraph only makes the request URL huge.
+pub const MAX_QUERY_CHARS: usize = 200;
+/// Most tags one search sends. Each tag narrows the result set, so a longer
+/// list mostly produces empty pages while growing the URL.
+pub const MAX_QUERY_TAGS: usize = 8;
+/// Longest single tag, in characters.
+pub const MAX_TAG_CHARS: usize = 64;
 
 impl Default for SampleQuery {
     fn default() -> Self {
@@ -160,7 +173,27 @@ impl Default for SampleQuery {
             tags: Vec::new(),
             offset: 0,
             limit: 20,
+            commercial_ok: false,
         }
+    }
+}
+
+/// Collapse every whitespace run to one space, trim the ends and keep at most
+/// `max_chars` characters.
+fn squash(text: &str, max_chars: usize) -> String {
+    let mut out = String::new();
+    for word in text.split_whitespace() {
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(word);
+        if out.chars().count() >= max_chars {
+            break;
+        }
+    }
+    match out.char_indices().nth(max_chars) {
+        Some((end, _)) => out[..end].trim_end().to_string(),
+        None => out,
     }
 }
 
@@ -168,6 +201,32 @@ impl SampleQuery {
     /// Page size actually requested. The bound keeps one call's JSON small.
     pub fn page_size(&self) -> usize {
         self.limit.clamp(1, 50)
+    }
+
+    /// The query with its text and tags in the shape every provider expects:
+    /// whitespace collapsed, empty and repeated tags dropped, and the text and
+    /// tag list bounded. Providers build their URLs from this form only.
+    pub fn normalized(&self) -> SampleQuery {
+        let mut tags: Vec<String> = Vec::new();
+        for tag in &self.tags {
+            if tags.len() >= MAX_QUERY_TAGS {
+                break;
+            }
+            let tag = squash(tag, MAX_TAG_CHARS);
+            if !tag.is_empty() && !tags.iter().any(|seen| seen.eq_ignore_ascii_case(&tag)) {
+                tags.push(tag);
+            }
+        }
+        SampleQuery {
+            text: squash(&self.text, MAX_QUERY_CHARS),
+            tags,
+            ..self.clone()
+        }
+    }
+
+    /// Drop the items this query rejects, keeping the order of the rest.
+    pub fn retain_matching(&self, items: &mut Vec<SampleItem>) {
+        items.retain(|item| self.matches(item));
     }
 
     /// Whether one result satisfies the bounds the provider could not express
@@ -194,6 +253,9 @@ impl SampleQuery {
         if let Some(channels) = self.channels
             && item.channels != Some(channels)
         {
+            return false;
+        }
+        if self.commercial_ok && !item.license.allows_commercial_use() {
             return false;
         }
         true
@@ -266,6 +328,75 @@ pub struct SamplePage {
     pub items: Vec<SampleItem>,
 }
 
+/// Why a source could not be read. The kind decides what a caller does next
+/// (wait, ask for a key, retry later, give up), so it travels as a tag and
+/// never has to be read back out of the message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FailureKind {
+    /// HTTP 429: the source asks the caller to slow down.
+    RateLimited,
+    /// HTTP 401 or 403: the key or token is missing, wrong or expired.
+    Unauthorized,
+    /// HTTP 404 or 410: the record or file is gone.
+    NotFound,
+    /// HTTP 5xx: the source is up but not answering properly.
+    Unavailable,
+    /// The request did not finish inside the client's deadline.
+    Timeout,
+    /// The connection could not be made or broke mid-body.
+    Network,
+    /// The source answered with a body this crate cannot read.
+    Parse,
+    /// Anything else, including a kind a newer helper reports that this
+    /// build does not know.
+    #[serde(other)]
+    Other,
+}
+
+impl FailureKind {
+    /// The wire spelling of this kind.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FailureKind::RateLimited => "rate_limited",
+            FailureKind::Unauthorized => "unauthorized",
+            FailureKind::NotFound => "not_found",
+            FailureKind::Unavailable => "unavailable",
+            FailureKind::Timeout => "timeout",
+            FailureKind::Network => "network",
+            FailureKind::Parse => "parse",
+            FailureKind::Other => "other",
+        }
+    }
+}
+
+/// Longest `Retry-After` this crate repeats. A source asking for more than a
+/// day is treated as asking for a day; callers apply their own tighter cap.
+pub const MAX_RETRY_AFTER_SECS: u64 = 24 * 60 * 60;
+
+/// A failure with its kind, the HTTP status when there was one, and the wait
+/// the source asked for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Failure {
+    pub kind: FailureKind,
+    pub status: Option<u16>,
+    /// Seconds from `Retry-After`, bounded by [`MAX_RETRY_AFTER_SECS`].
+    pub retry_after_secs: Option<u64>,
+    pub message: String,
+}
+
+impl Failure {
+    /// A failure of `kind` with no status and no requested wait.
+    pub fn new(kind: FailureKind, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            status: None,
+            retry_after_secs: None,
+            message: message.into(),
+        }
+    }
+}
+
 /// A refusal the caller can act on, or a failure that changed nothing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SampleError {
@@ -276,7 +407,7 @@ pub enum SampleError {
         message: String,
     },
     /// The source could not be read; nothing was written.
-    Failed(String),
+    Failed(Failure),
 }
 
 impl SampleError {
@@ -288,6 +419,26 @@ impl SampleError {
         }
     }
 
+    /// A failure whose cause has no more specific kind.
+    pub fn failed(message: impl Into<String>) -> Self {
+        SampleError::Failed(Failure::new(FailureKind::Other, message))
+    }
+
+    /// A failure of a known kind.
+    pub fn failure(kind: FailureKind, message: impl Into<String>) -> Self {
+        SampleError::Failed(Failure::new(kind, message))
+    }
+
+    /// A transport failure, prefixed with the source that caused it.
+    pub fn from_fetch(source: &str, error: crate::provider::FetchError) -> Self {
+        SampleError::Failed(Failure {
+            kind: error.kind,
+            status: error.status,
+            retry_after_secs: error.retry_after_secs,
+            message: format!("{source}: {}", error.message),
+        })
+    }
+
     /// The refusal code, or `None` for an unexpected failure.
     pub fn code(&self) -> Option<&'static str> {
         match self {
@@ -296,11 +447,24 @@ impl SampleError {
         }
     }
 
+    /// The failure details, or `None` for a refusal.
+    pub fn failure_detail(&self) -> Option<&Failure> {
+        match self {
+            SampleError::Refused { .. } => None,
+            SampleError::Failed(failure) => Some(failure),
+        }
+    }
+
+    /// The failure kind, or `None` for a refusal.
+    pub fn failure_kind(&self) -> Option<FailureKind> {
+        self.failure_detail().map(|failure| failure.kind)
+    }
+
     /// The sentence shown for this failure.
     pub fn message(&self) -> &str {
         match self {
             SampleError::Refused { message, .. } => message,
-            SampleError::Failed(message) => message,
+            SampleError::Failed(failure) => &failure.message,
         }
     }
 
@@ -312,9 +476,12 @@ impl SampleError {
                 "code": code,
                 "message": message,
             }),
-            SampleError::Failed(message) => serde_json::json!({
+            SampleError::Failed(failure) => serde_json::json!({
                 "status": "failed",
-                "message": message,
+                "kind": failure.kind,
+                "http_status": failure.status,
+                "retry_after_secs": failure.retry_after_secs,
+                "message": failure.message,
             }),
         }
     }
@@ -452,9 +619,131 @@ mod tests {
         assert_eq!(value["status"], "refused");
         assert_eq!(value["code"], "key_required");
         assert_eq!(value["message"], "Set the key.");
-        assert_eq!(
-            SampleError::Failed("offline".into()).to_json()["status"],
-            "failed"
+        assert_eq!(SampleError::failed("offline").to_json()["status"], "failed");
+    }
+
+    #[test]
+    fn a_failure_serialises_its_kind_status_and_wait() {
+        let error = SampleError::Failed(Failure {
+            kind: FailureKind::RateLimited,
+            status: Some(429),
+            retry_after_secs: Some(30),
+            message: "slow down".into(),
+        });
+        let value = error.to_json();
+        assert_eq!(value["kind"], "rate_limited");
+        assert_eq!(value["http_status"], 429);
+        assert_eq!(value["retry_after_secs"], 30);
+        assert_eq!(error.failure_kind(), Some(FailureKind::RateLimited));
+        assert_eq!(error.code(), None);
+        assert_eq!(SampleError::refused("x", "y").failure_kind(), None);
+    }
+
+    #[test]
+    fn every_failure_kind_has_one_wire_spelling() {
+        for kind in [
+            FailureKind::RateLimited,
+            FailureKind::Unauthorized,
+            FailureKind::NotFound,
+            FailureKind::Unavailable,
+            FailureKind::Timeout,
+            FailureKind::Network,
+            FailureKind::Parse,
+            FailureKind::Other,
+        ] {
+            assert_eq!(serde_json::to_value(kind).unwrap(), kind.as_str());
+            let back: FailureKind = serde_json::from_value(kind.as_str().into()).unwrap();
+            assert_eq!(back, kind);
+        }
+        // A kind a newer helper invents reads as `other`, not as an error.
+        let future: FailureKind = serde_json::from_str("\"quota_exhausted\"").unwrap();
+        assert_eq!(future, FailureKind::Other);
+    }
+
+    #[test]
+    fn a_normalized_query_collapses_whitespace_and_bounds_text_and_tags() {
+        let query = SampleQuery {
+            text: "  snare \t\n  drum  ".into(),
+            tags: vec![
+                " acoustic  kit ".into(),
+                "".into(),
+                "ACOUSTIC KIT".into(),
+                "  ".into(),
+            ],
+            ..Default::default()
+        }
+        .normalized();
+        assert_eq!(query.text, "snare drum");
+        assert_eq!(query.tags, vec!["acoustic kit".to_string()]);
+
+        let long = SampleQuery {
+            text: "é".repeat(MAX_QUERY_CHARS * 3),
+            tags: (0..MAX_QUERY_TAGS * 2).map(|n| format!("t{n}")).collect(),
+            ..Default::default()
+        }
+        .normalized();
+        assert_eq!(long.text.chars().count(), MAX_QUERY_CHARS);
+        assert_eq!(long.tags.len(), MAX_QUERY_TAGS);
+        let tag = SampleQuery {
+            tags: vec!["x".repeat(MAX_TAG_CHARS + 10)],
+            ..Default::default()
+        }
+        .normalized();
+        assert_eq!(tag.tags[0].chars().count(), MAX_TAG_CHARS);
+    }
+
+    #[test]
+    fn a_commercial_filter_drops_non_commercial_and_unclassified_licences() {
+        let mut item = SampleItem {
+            id: "x".into(),
+            provider: "test".into(),
+            name: "Pad".into(),
+            kind: SampleKind::Unknown,
+            duration_seconds: None,
+            channels: None,
+            sample_rate: None,
+            license: crate::license::License::cc0(),
+            attribution: String::new(),
+            source_url: String::new(),
+            preview_url: None,
+            download_url: String::new(),
+            sha256: None,
+            bytes: None,
+            quality: Quality::Original,
+            tags: Vec::new(),
+        };
+        let query = SampleQuery {
+            commercial_ok: true,
+            ..Default::default()
+        };
+        assert!(query.matches(&item));
+        item.license.non_commercial = true;
+        assert!(!query.matches(&item));
+        assert!(
+            SampleQuery::default().matches(&item),
+            "no filter by default"
         );
+        item.license = crate::license::License::unknown("Some licence");
+        assert!(!query.matches(&item));
+
+        let mut items = vec![item.clone()];
+        query.retain_matching(&mut items);
+        assert!(items.is_empty());
+    }
+
+    #[test]
+    fn a_query_without_the_licence_field_reads_as_unfiltered() {
+        let query: SampleQuery = serde_json::from_value(serde_json::json!({
+            "text": "snare",
+            "kind": null,
+            "min_seconds": null,
+            "max_seconds": null,
+            "channels": null,
+            "tags": [],
+            "offset": 0,
+            "limit": 5
+        }))
+        .unwrap();
+        assert!(!query.commercial_ok);
     }
 }

@@ -222,16 +222,15 @@ fn build_fetch(timeout: std::time::Duration) -> Result<HttpFetch, String> {
     HttpFetch::with_proxy(timeout, choice).map_err(|error| format!("network: {error}"))
 }
 
+/// The client for a resolve and download, with the shared download deadline.
 pub(crate) fn http_fetch() -> Result<HttpFetch, String> {
-    build_fetch(std::time::Duration::from_secs(180))
+    build_fetch(oc_sample::http::DOWNLOAD_TIMEOUT)
 }
 
-/// One market's search must answer inside this. A market that is down would
-/// otherwise hold every other market's results for the client's long timeout.
-const SEARCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
-
+/// The client for a search, with the shared search deadline: a market that is
+/// down must not hold every other market's results for the long one.
 fn search_fetch() -> Result<HttpFetch, String> {
-    build_fetch(SEARCH_TIMEOUT)
+    build_fetch(oc_sample::http::SEARCH_TIMEOUT)
 }
 
 /// A market that just timed out twice is skipped for a while: one dead market
@@ -455,6 +454,7 @@ fn search_with_request(
         tags: args.tags.clone(),
         offset: args.offset,
         limit: args.limit,
+        commercial_ok: false,
     };
     let mut providers: Vec<Value> = registry::availability_with(keys_view, runtime)
         .into_iter()
@@ -687,7 +687,9 @@ fn freesound_original_url(id: &str) -> String {
 /// A 401 is the one refusal worth a refresh; every other status stays the
 /// reason the original was not used.
 fn is_unauthorized(error: &SampleError) -> bool {
-    error.message().contains("HTTP 401")
+    error
+        .failure_detail()
+        .is_some_and(|failure| failure.status == Some(401))
 }
 
 /// Resolve the market a pull names or the id implies. An unknown market is
@@ -1026,7 +1028,7 @@ mod tests {
             &self,
             url: &str,
             _max_bytes: usize,
-        ) -> Result<oc_sample::provider::FetchResponse, String> {
+        ) -> Result<oc_sample::provider::FetchResponse, oc_sample::provider::FetchError> {
             self.urls.lock().unwrap().push(url.to_string());
             let body = self
                 .routes
@@ -1284,7 +1286,7 @@ mod tests {
             &self,
             url: &str,
             max_bytes: usize,
-        ) -> Result<oc_sample::provider::FetchResponse, String> {
+        ) -> Result<oc_sample::provider::FetchResponse, oc_sample::provider::FetchError> {
             self.get_with(url, max_bytes, &[])
         }
 
@@ -1293,7 +1295,7 @@ mod tests {
             url: &str,
             _max_bytes: usize,
             headers: &[(&str, &str)],
-        ) -> Result<oc_sample::provider::FetchResponse, String> {
+        ) -> Result<oc_sample::provider::FetchResponse, oc_sample::provider::FetchError> {
             let bearer = headers
                 .iter()
                 .find(|(name, _)| name.eq_ignore_ascii_case("authorization"))
@@ -1305,18 +1307,28 @@ mod tests {
                 .push((url.to_string(), bearer.clone()));
             if url.contains("/download/") {
                 return match bearer.as_str() {
-                    "Bearer stale" => Err(format!("HTTP 401 from {url}")),
+                    "Bearer stale" => Err(status_error(401, url)),
                     "Bearer fresh" => Ok(oc_sample::provider::FetchResponse {
                         status: 200,
                         body: self.original.clone(),
                     }),
-                    _ => Err(format!("HTTP 403 from {url}")),
+                    _ => Err(status_error(403, url)),
                 };
             }
             Ok(oc_sample::provider::FetchResponse {
                 status: 200,
                 body: self.preview.clone(),
             })
+        }
+    }
+
+    /// The failure the HTTP client reports for a refused status.
+    fn status_error(status: u16, url: &str) -> oc_sample::provider::FetchError {
+        oc_sample::provider::FetchError {
+            kind: oc_sample::model::FailureKind::Unauthorized,
+            status: Some(status),
+            retry_after_secs: None,
+            message: format!("HTTP {status} from {url}"),
         }
     }
 
