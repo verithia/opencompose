@@ -1,28 +1,31 @@
 # Sample marketplaces
 
-The DAW is a **client** of other people's sample catalogues. It searches
-several external markets, pulls one file at a time into the project, and keeps
-the licence and credit beside the audio. It hosts no catalogue of its own and
-maintains none: every result comes from a provider that already published it.
+OpenCompose searches other people's sample catalogues and downloads one file at
+a time into your project. It keeps each file's licence and credit line beside
+the audio. It hosts no catalogue of its own: every result comes from a market
+that already publishes it.
 
-The same resolver, store and licence notice serve the agent tools, the bottom
-panel and the `ocp sample` command, so a search from the panel and a search from
-a tool answer with the same vocabulary.
+The bottom panel, the agent tools and `ocp sample` use the same library
+(`oc-sample`), the same licence rule and the same refusal codes. The panel and
+the agent tools also share one multi-market search with paging, duplicate
+removal and back-off; `ocp sample` searches one market at a time.
 
 ## Local provider plugins
 
-Sample search adapters are local debugging plugins. Release builds do not load
-local sample providers. The signed plugin index does not list these adapters.
+Each market's search runs through a local provider plugin: a separate program
+that the app starts for every request. Only debug builds load these plugins.
+In a release build every market reports `no local sample-search plugin is
+installed`. The signed plugin index does not list them.
 
-For a debug build, compile the optional adapter executable:
+To use them in a debug build, compile the adapter program:
 
 ```sh
 cargo build -p oc-sample --features local-provider-runner --bin oc-sample-provider
 ```
 
-Add one JSON manifest per provider to `~/.opencompose/sample-providers/`.
-`OPENCOMPOSE_SAMPLE_PLUGIN_DIR` can select a separate directory. For example,
-`wikimedia-commons.json` contains:
+Then add one JSON manifest per market to `~/.opencompose/sample-providers/`,
+named after the market id. `OPENCOMPOSE_SAMPLE_PLUGIN_DIR` points at another
+folder. For example, `wikimedia-commons.json`:
 
 ```json
 {
@@ -33,289 +36,323 @@ Add one JSON manifest per provider to `~/.opencompose/sample-providers/`.
 }
 ```
 
-The documented API adapters use the provider IDs `openverse`,
-`wikimedia-commons`, `internet-archive`, `freesound`, and `jamendo`.
-Each manifest can select its own executable and configuration. Only install
-executables you trust. A plugin runs with the local user's permissions.
+`protocol` must be `1` and `executable` must be an absolute path to an
+existing file; otherwise the market reports that no plugin is installed. The
+adapters use the market ids `openverse`, `wikimedia-commons`,
+`internet-archive`, `freesound` and `jamendo`. Each manifest can name its own
+program and configuration. Install only programs you trust: a plugin runs with
+your user's permissions.
 
-The host starts the executable for each request and sends a single JSON object
-on stdin. The request contains `protocol`, `configuration`, the current
-`network` settings, an optional `credential`, and an `operation`. The two
-entry points are `{"entrypoint":"search","query":{...}}` and
-`{"entrypoint":"resolve","id":"..."}`. Search returns a normalized
-`SamplePage`, and resolve returns a normalized `SampleItem`. The executable
-writes one JSON object on stdout, with `status: "ok"` and `value`, or
-`status: "error"` and `message`. An error may also carry `code` (only
-`unknown_id` and `no_download` stay refusals), `kind` (one of the failure kinds
-below), `http_status` and `retry_after_secs`; a reply without them, or with a
-kind the host does not know, reads as `other`. The Rust wire types and reference adapter
-are in `crates/oc-sample/src/local_plugin.rs`. The host keeps the provider ID
-and capability metadata in its registry.
+The app writes one JSON request to the program's standard input. The request
+holds `protocol`, `configuration`, the `network` settings (proxy and timeout),
+an optional `credential` and an `operation`, which is
+`{"entrypoint":"search","query":{...}}` or `{"entrypoint":"resolve","id":"..."}`.
+A search answers with a `SamplePage` and a resolve with a `SampleItem`. The
+program writes one JSON object to standard output: `status: "ok"` with `value`,
+or `status: "error"` with `message`. An error can also carry:
 
-The application always resolves providers through this local process protocol,
-including builds that enable adapter test fixtures. `test-providers` exposes an
-explicit fixture runtime for recorded adapter tests; it does not install
-providers or bypass manifests. Availability listings and search/open operations
-use the same runtime and credentials. Tests may supply an explicit plugin
-directory without reading or changing the user's process configuration.
+- `code`: only `unknown_id` and `no_download` are read as refusals; any other
+  code is a failure;
+- `kind`: one of the failure kinds listed under [Refusals](#refusals);
+- `http_status` and `retry_after_secs`.
 
-In the desktop app, use **Preferences → External Sources** to save or remove a
-Freesound API token or Jamendo client ID. The app reports whether a credential
-comes from the environment or the OS credential store. Freesound OAuth for
-original downloads is on the same page. The CLI reads the credential
-environment variables.
+An error without a `kind`, or with a kind the app does not know, reads as
+`other`. The wire types and the reference adapter are in
+`crates/oc-sample/src/local_plugin.rs`. The app keeps each market's id and
+capabilities in its own registry, not in the plugin.
+
+The app always reaches markets through this process protocol, including in
+builds with adapter test fixtures. The `test-providers` feature adds a fixture
+runtime that recorded tests pass in explicitly; it does not install markets or
+bypass manifests.
+
+Save or remove a Freesound API key or a Jamendo client ID in
+**Preferences > External Sources**. The page shows whether a credential comes
+from the environment or from the operating system's credential store. The CLI
+reads only the environment variables.
 
 ## The one rule
 
 If a market has no programmatic search, or its terms forbid programmatic
-download, this build does **not** scrape it. The provider is recorded as
-page-only with the reason, and every search result reports it as unavailable:
+download, OpenCompose does not scrape it. The market is recorded as page-only
+with the reason, and every search reports it as unavailable:
 
 ```json
 { "id": "soundbible", "label": "SoundBible", "available": false,
   "reason": "no public search API; the site is browsed page by page and its terms do not allow programmatic download" }
 ```
 
-A provider that is unavailable is never silently dropped, and an empty result
-is never invented for it.
+An unavailable market is never left out of the list, and an empty result is
+never invented for it.
 
-## Providers
+## Markets
 
-| Provider | Licence | Key | Search | Download |
+| Market | Licence | Key | Search | Download |
 |---|---|---|---|---|
-| Openverse | Per result, aggregated from the source (`license`, `license_url`) | none | yes | yes, direct audio URL |
-| Wikimedia Commons | Per file (`LicenseShortName`, `LicenseUrl`, `UsageTerms`) | none | yes | yes, original file |
-| Internet Archive | Per item (`metadata.licenseurl`) | none | yes | yes, file list read on pull |
-| Freesound | Per sound label (`Creative Commons 0`, `Attribution`, …) | `FREESOUND_API_KEY` or keyring `org.opencompose.samples`/`freesound`; OAuth2 token for originals | yes | original after the DAW connects Freesound, preview otherwise |
-| Jamendo | Per track (`license_ccurl`) | `JAMENDO_CLIENT_ID` or keyring `jamendo` | yes | transcoded MP3 (`preview_mp3`) |
-| Looperman | Website terms apply | — | no | no |
-| Splice | Website terms apply | — | no | no |
-| SampleSwap | Website terms apply | — | no | no |
+| Wikimedia Commons | Per file (`LicenseShortName`, `LicenseUrl`, `UsageTerms`) | none | yes | the original file |
+| Openverse | Per result, from the source (`license`, `license_url`) | none | yes, but only when selected | a direct audio URL |
+| Internet Archive | Per item (`metadata.licenseurl`) | none | yes | the original file, chosen from the item's file list |
+| Freesound | Per sound (`Creative Commons 0`, `Attribution`, …) | `FREESOUND_API_KEY` or the credential store; an OAuth2 token for originals | yes | the original after you connect Freesound, otherwise the 128 kbps preview |
+| Jamendo | Per track (`license_ccurl`) | `JAMENDO_CLIENT_ID` or the credential store | yes | the MP3 in `audiodownload`, only when the artist allows downloads |
+| Looperman | Website terms | none | no | no |
+| Splice | Website terms | none | no | no |
+| SampleSwap | Website terms | none | no | no |
 | SoundBible | Public-domain sound effects | none | no | no |
 | Mixkit | Mixkit licence | none | no | no |
-| Pixabay Audio | Pixabay Content License | — | no | no |
+| Pixabay Audio | Pixabay Content License | none | no | no |
+| Sample Focus | Website terms | none | no | no |
+| Bedroom Producers Blog | Per pack | none | no | no |
+| Cymatics | Per pack | none | no | no |
 
-Providers without a supported search API appear as website-only entries.
+A search that names no market asks every available market except Openverse,
+whose search often times out. Select its chip, or name it, to search it.
 
-| Site | Why not |
+Why the last nine markets are page-only:
+
+| Market | Reason |
 |---|---|
-| Sample Focus | Cloudflare answers a browser challenge to the search page and to every sample page: HTTP 403 to a plain client. Recorded as page-only; no challenge is solved and no page is scraped. |
-| Bedroom Producers Blog | A page request answers HTTP 403 to a plain client. The WordPress API does answer and lists the free packs, but each pack is one zip file, not a single sample this build can pull. |
-| Cymatics | Free packs are delivered behind an email gate, and no per-sample file is published. |
+| Looperman, SampleSwap | Website search only; no documented public search API. |
+| Splice | No documented public catalogue API for third-party search. |
+| SoundBible | No public search API, and its terms do not allow programmatic download. |
+| Mixkit | No search API, and its download control runs only in the page's JavaScript. |
+| Pixabay Audio | Its public API documents images and videos, not audio. |
+| Sample Focus | Every search and sample page answers a plain client with a browser challenge (HTTP 403). No challenge is solved and no page is scraped. |
+| Bedroom Producers Blog | Pages answer a plain client with HTTP 403. Its WordPress API lists the free packs, but each pack is one zip file, not a single sample. |
+| Cymatics | Free packs are delivered behind an email form, and no single sample file is published. |
 
-Each provider declares one spec in `oc_sample::registry`:
+Each market declares one spec in `oc_sample::registry`:
 
 | Field | Meaning |
 |---|---|
-| `id`, `label` | Stable id used in a tool argument and the name a chip shows. |
-| `id_prefix` | Prefix every id this provider issues carries, so a pull infers the market from the id alone. |
-| `requires_key` | Whether a key is needed; `key_env` and `key_account` name where it comes from. |
-| `kinds` | The kinds the catalogue can plausibly serve. |
-| `license` | One sentence about the licences the source publishes. |
+| `id`, `label` | The stable id used in tool arguments, and the name on a chip. |
+| `id_prefix` | The prefix of every id the market issues (`commons:`, `openverse:`, `ia:`, `freesound:`, `jamendo:`), so a pull can tell the market from the id alone. |
+| `requires_key` | Whether a key is needed; `key_env` and `key_account` say where it comes from. |
+| `kinds` | The kinds the catalogue can serve. |
+| `license` | One sentence about the licences the market publishes. |
 | `search`, `download` | Whether this build implements each half. |
-| `download_referer` | Optional source-page header required by a download host. |
-| `page_only` | Why a market is not wired, kept as data instead of a comment. |
-
-### Openverse
-
-An aggregator over Freesound, Jamendo, Wikimedia and others, and the widest
-market reachable without a key. It answers anonymous requests. Every result
-names its source `provider`, and carries that source's licence, duration
-(milliseconds in the API), file size, sample rate, channels, direct audio URL
-and `alt_files`. The licence travels per result, so one page can mix CC0, CC BY
-and non-commercial files; a non-free licence needs one acceptance at the pull.
+| `download_referer` | A source-page header that a download host requires, if any. |
+| `page_only` | Why a market is not wired, kept as data. |
+| `default_search` | Whether a search that names no market includes it. |
 
 ### Wikimedia Commons
 
-The MediaWiki search API, no key, a licence on every file. Search asks for
-`filetype:audio` plus the query, kind and tag words, and drops MIDI sequences
-and video that the same search returns under `filetype:audio`: the engine can
-decode `wav`, `flac`, `mp3`, `ogg`, `oga`, `aif` and `aiff` and nothing else.
-The index has no duration field, so duration and channel bounds are applied to
-the returned page.
+The MediaWiki search API: no key, and a licence on every file. The search sends
+`filetype:audio` with the query text, the kind's words and each tag as a quoted
+phrase. It drops MIDI files and video that the same search returns, and keeps
+only `wav`, `flac`, `mp3`, `ogg`, `oga`, `aif` and `aiff`, the formats the
+engine decodes. The index has no duration field, so duration and channel
+bounds are checked on the returned page.
 
 Commons is an archive, not a sample pack. A search for `snare drum` finds real
-snare recordings and the metadata is honest, but the recording quality is
-whatever an uploader contributed.
+snare recordings with accurate metadata, but the recording quality is whatever
+the uploader provided.
+
+### Openverse
+
+An aggregator over Freesound, Jamendo, Wikimedia and other sources. It needs no
+key. Every result names its source and carries that source's licence, duration
+(in milliseconds in the API), file size, sample rate, channels, direct audio
+URL and `alt_files`. Licences vary per result, so one page can mix CC0, CC BY
+and non-commercial files. The search sends only the text; every other filter is
+checked on the returned page.
 
 ### Internet Archive
 
 `advancedsearch.php` searches the index and returns each item's identifier,
-title, creator and `licenseurl`; `metadata/<id>` returns the file list. The
-search therefore names the item while the pull reads the file list and picks
-one audio file, which keeps one search to one request instead of one request
-per result. The pull prefers an original `wav`, then `flac`, `aiff`, `ogg` and
-`mp3`, and records the declared length and size. An item without a licence URL
-is visible, and the pull asks for acceptance before it downloads.
+title, creator and `licenseurl`. The query text is escaped, so characters such
+as `:` and `(` are searched as text, not read as query syntax. The search does
+not send tags. The pull reads `metadata/<id>` for the file list and picks one
+audio file, preferring an original `wav`, then `flac`, `aiff`, `ogg` and `mp3`.
+This keeps a search to one request instead of one per result.
+
+Search results have no duration or channel count, so any duration or channel
+filter removes every Internet Archive result. An item without a licence URL is
+listed, and the pull asks you to accept its licence first.
 
 ### Freesound
 
-The catalogue built for samples: duration, channels, sample rate, tags and a
-licence on every sound. It needs an API key, read from `FREESOUND_API_KEY`
-first and then the OS credential store under the service
-`org.opencompose.samples`, account `freesound`.
+A catalogue built for samples, with duration, channels, sample rate, tags and a
+licence on every sound. It needs an API key, read from `FREESOUND_API_KEY` and
+then from the operating system's credential store (service
+`org.opencompose.samples`, account `freesound`). The server filters duration
+and channels; the app checks them again on the page, along with kind and
+licence.
 
-Freesound serves a sound's original file only to an OAuth2 client. The DAW
-therefore runs an authorization-code flow: **Connect Freesound** in the Samples
-panel asks for the application's client id and secret, binds a listener on an
-ephemeral `127.0.0.1` port, opens
+Freesound serves original files only to an OAuth2 client.
+**Freesound original quality** in **Preferences > External Sources** connects
+your account: **Connect Freesound** asks for your Freesound application's
+client ID and secret, listens on a random `127.0.0.1` port, and opens
 `https://freesound.org/apiv2/oauth2/authorize/` with
-`redirect_uri=http://127.0.0.1:<port>/callback`, and exchanges the returned
-code at `https://freesound.org/apiv2/oauth2/access_token/`. The token set and
-the client credentials are stored in the same keyring service under
-`freesound-token`, `freesound-client-id` and `freesound-client-secret`, so a
-later refresh needs no browser. The token request follows the
-Preferences ▸ Network proxy.
+`redirect_uri=http://127.0.0.1:<port>/callback`. It waits up to two minutes for
+the browser, then exchanges the code at
+`https://freesound.org/apiv2/oauth2/access_token/`. The token and the client
+credentials are stored under the same service as `freesound-token`,
+`freesound-client-id` and `freesound-client-secret`, so a later refresh needs
+no browser. The token request uses the proxy set in **Preferences > Network**.
 
-With a token, a pull rewrites the URL to `/apiv2/sounds/<id>/download/` and
-sends `Authorization: Bearer …`; the receipt then says `quality: "original"`.
-A 401 refreshes the token once and retries. Any other refusal of the original
-— a client without the download scope, a removed file — falls back to the
-128 kbps preview the search returned, so the pull still lands a legal clip and
-the receipt says `quality: "preview_mp3"`. The licence and credit line apply on
-both paths. A headless GUI session can set `OPENCOMPOSE_FREESOUND_TOKEN`,
-`OPENCOMPOSE_FREESOUND_CLIENT_ID` and `OPENCOMPOSE_FREESOUND_CLIENT_SECRET`
-instead of using the keyring.
+With a token, a pull downloads `/apiv2/sounds/<id>/download/` with
+`Authorization: Bearer …`, and the receipt says `quality: "original"`. An HTTP
+401 refreshes the token once and retries. If the original is refused for any
+other reason, such as an application without download permission or a removed
+file, the pull downloads the 128 kbps preview from the search instead, and the
+receipt says `quality: "preview_mp3"`. Both paths keep the licence and credit
+line. A GUI session without a credential store can set
+`OPENCOMPOSE_FREESOUND_TOKEN`, `OPENCOMPOSE_FREESOUND_CLIENT_ID` and
+`OPENCOMPOSE_FREESOUND_CLIENT_SECRET` instead.
 
 ### Jamendo
 
-Creative Commons music behind a client id, with no OAuth step. The API takes
-`client_id` as a plain query parameter, so it is wired: the key comes from
-`JAMENDO_CLIENT_ID` or the keyring account `jamendo`. Every track carries
-`license_ccurl`, its duration, artist and a streaming MP3. Jamendo exposes a streaming preview separately from the artist-controlled
-download. A track can be previewed even when the artist disables downloads.
-The app imports only the file in `audiodownload` when
-`audiodownload_allowed` is true.
+Creative Commons music behind a client ID, with no OAuth step. The key comes
+from `JAMENDO_CLIENT_ID` or the credential store account `jamendo`. Every track
+carries `license_ccurl`, its duration, the artist and a streaming MP3. The
+stream is only a preview. The app downloads the file in `audiodownload`, and
+only when `audiodownload_allowed` is true. A track whose artist does not allow
+downloads can be previewed but not added; the panel shows **Preview only**.
 
-### SoundBible, Mixkit, Pixabay, Sample Focus, Bedroom Producers Blog and Cymatics
+## Searching
 
-SoundBible publishes public-domain effects and Mixkit publishes free effects
-and music, but neither exposes a search API; Mixkit's download control is
-JavaScript-only. Pixabay's public API documents images and videos, not audio,
-so its key does not open a documented audio endpoint. Sample Focus answers
-every page with a Cloudflare browser challenge, Bedroom Producers Blog serves
-free packs as one zip per article, and Cymatics delivers free packs behind an
-email gate. All six are recorded with their reason, reported in the
-availability map, and never scraped.
-
-## Results
-
-A search asks for text, a kind, a duration range, a channel count and tags:
+A search takes these fields:
 
 | Field | Meaning |
 |---|---|
 | `text` | Words to match. |
-| `kind` | `drum_one_shot`, `loop`, `vocal`, `fx`, `instrument_phrase` or `unknown`. |
-| `min_seconds`, `max_seconds` | Inclusive bounds on the sample's duration. |
-| `channels` | Channel count, usually 1 or 2. |
+| `kind` | `drum_one_shot`, `loop`, `vocal`, `fx`, `instrument_phrase` or `unknown`. Tools and `ocp` also accept `drum`, `instrument` and `any`. |
+| `min_seconds`, `max_seconds` | Inclusive bounds on the duration. |
+| `channels` | A channel count, usually 1 or 2. |
 | `tags` | Extra terms a result must relate to. |
-| `commercial_ok` | When `true`, keep only results whose licence allows commercial use. A non-commercial or unclassified licence is dropped. Default `false`. |
-| `providers` | Markets to search; omitted means every available one. |
-| `offset`, `limit` | Paging. `limit` is per market and clamped to 1..50. |
+| `commercial_ok` | When `true`, keep only results whose licence allows commercial use; non-commercial and unclassified licences are dropped. Default `false`. |
+| `providers` | The markets to ask. Without it, every available market in the default search. |
+| `offset`, `limit` | Paging. `limit` applies per market and is clamped to 1 to 50; the default is 20. |
+| `cursor` | The `cursor` of the previous result, to fetch the next page. |
 
-Text and tags are normalized before any market sees them: whitespace runs
-collapse to one space, empty and repeated tags are dropped, the text keeps at
-most 200 characters and the list at most 8 tags of 64 characters each. Text and
-tags are data, never query syntax: Internet Archive escapes the Lucene
-characters in the text, and a tag sent to Wikimedia Commons or Freesound is a
-quoted phrase with its quotes escaped. Every market checks kind, duration,
-channel count and licence on the page it returns, so a server-side filter is
-confirmed and an unsupported one still applies. A result with an unknown
-duration or channel count fails that bound.
+Text and tags are cleaned up before any market sees them. Runs of whitespace
+become one space, empty and repeated tags are dropped, the text is cut to 200
+characters, and at most 8 tags of up to 64 characters each are kept. Text and
+tags are always data, never query syntax: Internet Archive escapes query
+characters in the text, Wikimedia Commons sends each tag as a quoted phrase
+with its quotes escaped, and Freesound quotes any tag that is not one plain
+word.
 
-One result carries what a project needs to use and credit the file:
+Every market checks kind, duration, channel count and licence on the page it
+returns, so a filter the server applied is confirmed, and a filter it does not
+support still applies. A result whose duration or channel count is unknown
+fails that bound. A market's next offset counts what it returned before this
+check, so a filtered-out result is not fetched again.
+
+The markets are asked in parallel. One that is down does not delay the others
+beyond its own deadline.
+
+### One result
 
 | Field | Notes |
 |---|---|
 | `provider`, `provider_name` | The market the item came from. |
-| `id` | Provider-scoped and stable, so `pull` needs nothing else. |
-| `name`, `kind` | Human name and the kind the result looks like. |
-| `duration_seconds`, `channels`, `sample_rate` | `null` when the source does not report the value; the field is never guessed. |
+| `id` | Scoped to the market and stable, so a pull needs nothing else. |
+| `name`, `kind`, `tags` | The name, the kind the result appears to be, and its tags. |
+| `duration_seconds`, `channels`, `sample_rate` | `null` when the source does not report a value. Values are never guessed. |
 | `license` | Machine id, source name, URL, and the four terms that change what a project may do. |
-| `attribution` | The one-line credit a project repeats. |
+| `attribution` | The credit line a project repeats. |
 | `source_url` | The page a person opens. |
-| `preview_url` | An audition URL when the source has one. |
-| `download_url` | The file the pull fetches; always from the provider. |
-| `sha256`, `bytes` | Declared checksum and size, verified before the file lands. |
+| `preview_url` | An audition URL, when the source has one. |
+| `download_url` | The file the pull fetches, always from the market. |
+| `sha256`, `bytes` | The declared checksum and size, checked before the file is saved. |
 | `quality` | `original` or `preview_mp3`. |
-| `license_ok` | Whether the licence is free to reuse; anything else also carries `license_notice`. |
+| `license_ok` | Whether the licence is free to reuse. Otherwise `license_notice` holds the sentence a pull shows. |
 
-A search result carries `providers` (the availability map), `pages` (one entry
-per market asked), `items`, `count`, `duplicates`, `commercial_ok`, `cursor`
-and, for older callers, `next_offset`. Items interleave the markets
-round-robin in the order they were asked. Two items whose landing pages are the
-same address (ignoring the scheme, the host's case, a trailing slash, the
-fragment and tracking parameters such as `utm_*`) are one upload listed twice,
-for example by an aggregator and by the site it indexes; the first market asked
-keeps it and `duplicates` counts the rest. Different uploads with the same
-title are kept.
+In search results, the three URLs are shortened for display: the query string
+is removed and long URLs are cut to 160 characters. A pull resolves its own
+URL from the market and never reads these.
 
-Each market pages on its own, so a result carries an opaque `cursor`: pass it
+### The search result
+
+A search returns `providers` (the availability of every market), `pages` (one
+entry per market asked), `items`, `count`, `duplicates`, `commercial_ok`,
+`cursor` and `next_offset`.
+
+Items alternate between markets in the order they were asked, so the first
+rows show each market's best matches. Two items whose landing pages have the
+same address are one upload listed twice, for example by an aggregator and by
+the site it indexes. The comparison ignores the scheme, the case of the host,
+a trailing slash, the fragment, and tracking parameters such as `utm_*`. The
+first market asked keeps the item, and `duplicates` counts the rest. Different
+uploads with the same title are all kept.
+
+Each market pages on its own, so the result carries an opaque `cursor`. Send it
 back as `cursor` with the same query to get the next page of every market that
-still has results. A market whose last page was reached is left out, and the
-cursor is `null` once every market is exhausted. A cursor that is malformed,
-from another version or longer than 2048 characters is refused with
-`invalid_cursor` before any market is asked. `offset` with `next_offset` still
-works and starts every market at the same offset; a search that sends a
-cursor returns `next_offset: null`.
+still has results. A market that has returned its last page is left out, and
+`cursor` is `null` when no market has more. A cursor that is malformed, from
+another format version or longer than 2048 characters is refused with
+`invalid_cursor` before any market is asked. `offset` and `next_offset` still
+work for older callers: every market starts at the same offset. A search that
+sends a cursor returns `next_offset: null`.
 
-Every page entry has the same fields:
+### Page entries
+
+Every entry in `pages` has these fields:
 
 | Field | Meaning |
 |---|---|
 | `provider`, `provider_name` | The market. |
-| `offset` | The provider offset it was asked at; `null` when it was not asked. |
-| `count`, `total`, `next_offset` | What it returned, its reported total and its own next offset. |
+| `offset` | The offset the market was asked at; `null` when it was not asked. |
+| `count`, `total`, `next_offset` | What the market returned, its reported total and its own next offset. |
 | `error` | A sentence for people, or `null`. |
 | `error_kind` | `needs_key`, `provider_unavailable`, `skipped`, `rate_limited`, `not_found`, `unavailable`, `timeout`, `network`, `parse` or `other`; `null` on success. A rejected key (HTTP 401 or 403) is `needs_key`, like a missing one. |
-| `skip_reason` | `rate_limited` or `circuit_open` when the market was not asked; `skipped` is `true` then. |
+| `skipped`, `skip_reason` | `skipped` is `true` when the market was not asked, and `skip_reason` is `rate_limited` or `circuit_open`. |
 | `retry_after_secs` | Seconds until the market is asked again, when known. |
 | `http_status` | The status of a failed request, when there was one. |
 
-A market that times out, cannot be reached or answers 5xx twice in a row is
-skipped for ten minutes (`circuit_open`). A market that answers 429 is skipped
-for its `Retry-After`, 60 seconds when it sends none and at most ten minutes
-(`rate_limited`). A bad key, a missing record or an unreadable body leaves the
-market searchable.
+### Back-off
+
+A market that times out, cannot be reached or answers HTTP 5xx twice in a row
+is skipped for ten minutes (`circuit_open`). A market that answers HTTP 429 is
+skipped for as long as its `Retry-After` asks, at least one second and at most
+ten minutes, or 60 seconds when it gives no `Retry-After` (`rate_limited`). The
+app reads `Retry-After` only in seconds. A bad key, a missing record or an
+unreadable answer says nothing about the market's health, so the market stays
+searchable. The back-off state is shared by every search in the running app.
 
 ## Refusals
 
-A provider and the store refuse with `SampleError`, which
-has a stable `code` and a sentence a person can act on:
+A market or the store refuses with a `SampleError` that has a stable `code`
+and a sentence you can act on:
 
 | Code | Cause |
 |---|---|
-| `key_required` | The market needs an API key and none is configured. |
-| `provider_unknown` | The market id is not one this build knows, or an id has no known prefix and no provider was passed. |
-| `provider_unavailable` | The market is page-only, not wired, or has no direct download. |
-| `unknown_id` | The id is not this provider's, or the source no longer has the file. |
-| `licence_notice` | The licence is not free to reuse (non-commercial, no-derivatives, GFDL, a community licence or unknown); the message names the terms. Send `accept_licence: true` to pull it anyway. |
-| `size_mismatch` | The body is not the declared size. |
-| `checksum_mismatch` | The body is not the declared sha256. |
+| `key_required` | The market needs an API key and none is set. |
+| `provider_unknown` | The market id is not one this build knows, or an id has no known prefix and no market was named. |
+| `provider_unavailable` | The market is page-only, has no plugin installed, or has no direct download. |
+| `invalid_kind` | The kind is not one of the accepted words. |
+| `invalid_cursor` | The cursor is malformed, from another version or too long. |
+| `unknown_id` | The id is not this market's, or the source no longer has the file. |
+| `licence_notice` | The licence is not free to reuse (non-commercial, no derivatives, GFDL, a community licence or unknown). The message names the terms. Send `accept_licence: true` to download it anyway. |
 | `no_download` | The source offers no file for this result. |
-| `project_unsaved` | The project has no file, so a relative media folder has no root. |
+| `invalid_download` | The download did not answer with success, or exceeded the size limit. |
+| `size_mismatch` | The file is not the declared size. |
+| `checksum_mismatch` | The file does not match the declared SHA-256. |
+| `invalid_audio` | The file is not an audio container the app recognizes, or its header is incomplete. |
+| `project_unsaved` | The project has no file yet, so it has no media folder. |
 
 A failure that is not a refusal carries a `kind`, so a caller can decide what
 to do without reading the message:
 
 | Kind | Cause |
 |---|---|
-| `rate_limited` | HTTP 429. `retry_after_secs` repeats the source's `Retry-After` in seconds, capped at one day. |
+| `rate_limited` | HTTP 429. `retry_after_secs` repeats the source's `Retry-After`, capped at one day. |
 | `unauthorized` | HTTP 401 or 403: the key or token is missing, wrong or expired. |
 | `not_found` | HTTP 404 or 410. |
 | `unavailable` | HTTP 5xx. A `Retry-After` is repeated as for `rate_limited`. |
-| `timeout` | The request did not finish inside its deadline. |
+| `timeout` | The request did not finish in time. |
 | `network` | The connection failed or broke. |
-| `parse` | The body was not the JSON the market documents. |
+| `parse` | The answer was not the JSON the market documents. |
 | `other` | Anything else. |
 
-Searches use a 15-second deadline per request and downloads a 180-second one,
-in the panel, the agent tools and `ocp` alike.
+Each search request has a 15-second deadline and each download a 180-second
+one, in the panel, the agent tools and `ocp` alike.
 
-A search does not refuse an unavailable market: it reports it in `providers`
-with `available: false` and a `reason`, and records a failing market in `pages`
-with its error. A pull refuses with the codes above and returns the refusal as
-data, not as a transport error:
+A search does not refuse an unavailable market. It lists the market in
+`providers` with `available: false` and a `reason`, and lists a market that
+failed in `pages` with its error. A pull refuses with the codes above and
+returns the refusal as data, not as a transport error:
 
 ```json
 { "status": "refused", "code": "provider_unavailable", "message": "Mixkit is not available in this build: no search API; the catalogue is browsed in the page and the download flow is JavaScript-only." }
@@ -323,35 +360,36 @@ data, not as a transport error:
 
 ## The licence notice
 
-The licence travels with the file, and a licence the DAW cannot classify is
-**not** a refusal: the pull asks once, the user decides, and the file keeps its
-licence and credit in the project. Using a free-of-charge sample in a production
-is the user's call; the DAW's job is to say what the terms are.
+The licence travels with the file. A licence that OpenCompose does not treat as
+free to reuse is not refused: the pull asks once, you decide, and the file
+keeps its licence and credit line in the project. Whether you use a free sample
+in a production is your decision; the app's job is to show the terms.
 
-| Licence | At the pull | What the project carries |
+| Licence | At the pull | What the project keeps |
 |---|---|---|
-| CC0 1.0, public domain | downloads | The source is still recorded in the sidecar. |
-| CC BY, CC BY-SA | downloads | The author, the licence name and URL; `share_alike: true` on SA. |
-| CC BY-NC, CC BY-NC-SA | asks | The non-commercial term is named; the credit line is kept. |
-| CC BY-ND | asks | The no-derivatives term is named. |
-| GFDL | asks | The licence text requirement is named. |
-| A community licence (existing receipts) | asks | The terms sentence plus the credit line. |
-| Splice preview in an existing receipt | asks | The preview terms, the pack name and the pack page. |
-| SampleSwap community upload in an existing receipt | asks | The public-domain dedication with the site's caveat, and the folder page. |
-| Anything else | asks | The name as the source reported it. |
+| CC0 1.0, public domain | downloads | The source, in the sidecar. |
+| CC BY, CC BY-SA | downloads | The author, the licence name and URL; `share_alike: true` for SA. |
+| CC BY-NC, CC BY-NC-SA | asks | The non-commercial term and the credit line. |
+| CC BY-ND | asks | The no-derivatives term. |
+| GFDL | asks | The requirement to include the licence text. |
+| A community licence (in existing receipts) | asks | The terms sentence and the credit line. |
+| A Splice preview (in existing receipts) | asks | The preview terms, the pack name and the pack page. |
+| A SampleSwap upload (in existing receipts) | asks | The public-domain dedication with the site's caveat, and the folder page. |
+| Anything else | asks | The licence name as the source reported it. |
 
-`sample_pull` takes `accept_licence` (CLI `--accept-licence`); without it a
-non-free licence returns `{"status":"refused","code":"licence_notice"}` with the
-sentence the user reads. The panel shows that sentence and a **Download anyway**
-button. A receipt records `licence_accepted: true` when the user confirmed.
+`sample_pull` takes `accept_licence` (`--accept-licence` in the CLI). Without
+it, a licence that needs a notice returns
+`{"status":"refused","code":"licence_notice"}` with the sentence you read. The
+panel shows that sentence with **Download anyway** and **Cancel**. The receipt
+records `licence_accepted: true` when you accepted.
 
-The credit line travels in three places, so it survives a folder copy: the
-`.json` sidecar beside the audio, the store's `index.json` receipt, and the
-`attribution` field of every tool result.
+The credit line is kept in three places, so it survives copying the folder:
+the `.json` sidecar beside the audio, the receipt in the store's `index.json`,
+and the `attribution` field of every tool result.
 
 ## The local store
 
-Samples live in the project's media folder:
+Samples go into the project's media folder:
 
 ```text
 <project>/media/samples/
@@ -360,78 +398,107 @@ Samples live in the project's media folder:
   index.json
 ```
 
-* The file name is `<provider>-<slug>-<id hash>.<ext>`: stable for one id,
-  readable, and free of characters a project path cannot carry.
-* The sidecar is `opencompose.sample.v1`: the receipt plus the licence and the
-  credit line.
-* `index.json` is `opencompose.samples.v1`: one receipt per id. Pulling the same
-  id again replaces its receipt instead of adding a second row.
+- The file name is `<market>-<slug>-<id hash>.<ext>`: the same for one id,
+  readable, and free of characters a project path cannot hold. The extension
+  follows the audio container the app detects in the file. If the name is
+  taken, the pull adds part of the file's checksum and a number instead of
+  replacing the existing file.
+- The sidecar has the schema `opencompose.sample.v1`: the receipt, the licence
+  and the credit line.
+- `index.json` has the schema `opencompose.samples.v1`, with one receipt per
+  id. Pulling the same id again replaces its receipt instead of adding a row.
 
-A pull runs a fixed order, and a refusal leaves the folder untouched:
+A pull runs in this order, and a refusal or failure leaves the folder as it
+was:
 
-1. the licence notice (a non-free licence needs `accept_licence`),
-2. the download (bounded at 96 MiB),
-3. the declared size, then the declared sha256,
-4. write `<file>.part`, then rename it into place,
-5. write the sidecar, then the index, and remove the audio again if either
-   document cannot be written.
+1. the licence notice (a licence that needs a notice requires
+   `accept_licence`);
+2. the download, at most 96 MiB;
+3. the declared size, then the declared SHA-256;
+4. the audio container check;
+5. the audio, the sidecar and the updated index are written to a private
+   staging folder, then put in place. Replacing `index.json` is the last step;
+   if a step fails, the files this pull placed are removed again.
 
 ## The panel
 
-The bottom panel has a **Samples** mode beside Clips, Piano Roll, Presets,
-Mixer, Drum Kit and Detail. It has no default keyboard shortcut; the command
-palette entry `view.toggleSamples` opens it.
+**Samples** is a mode of the bottom panel, next to Clips, Piano Roll, Presets,
+Mixer, Drum Kit, History and Inspector. It has no default shortcut; the command
+**Show sample markets** (`view.toggleSamples`) opens it. The **Samples** tab of
+the **Browse** overlay shows the same panel.
 
-* A search field and a Search button; Enter submits.
-* Kind chips: All, One-shot, Loop, Vocal, FX.
-* Provider chips: every market the build knows, with an availability dot and
-  the reason in a tooltip. Pressing a chip includes or excludes that market.
-  The first search without a choice searches every available market.
-* A keyed market that is included without its key shows one inline key field;
-  saving writes the key to the OS keyring and re-reads the availability map.
-  There is no settings panel for sample keys.
-* When Freesound is included, a second row shows its OAuth2 state and a
-  **Connect Freesound** control. Connecting asks for the Freesound
-  application's client id and secret once, opens the browser, and stores the
-  token set; a connected row offers **Disconnect** instead.
-* A result list with name, provider, kind, duration, licence badge and credit
-  line. A refused licence is shown in red and its Add button is disabled.
-* Selecting a result previews it: the panel stops the previous audition and
-  plays the new file through the audition stream, never the transport. A
-  downloaded preview is kept for the session in the app cache directory
-  (`sample-previews/`, emptied at startup, at most 32 files and 256 MiB,
-  least recently used first out), so hearing it again needs no network, and
-  **Add to project** reuses the bytes when the resolved URL is the one
-  previewed. The add still resolves the item and verifies the declared size
-  and checksum.
-* A rejected command returns `{code, message}`: `code` is the refusal code
-  (`licence_notice`, `key_required`, `invalid_cursor`, ...) or `null`.
-* **Add to project** downloads the file, writes the sidecar and receipt, and
-  places an `@audio_clip` at the playhead on the selected track, or on a new
-  `audio/clip` track named `Samples` when no track is selected.
+- A search field and a **Search** button. Enter also searches.
+- Kind chips: **All**, **One-shot**, **Loop**, **Vocal**, **FX** and
+  **Instrument**.
+- **Duration**: **Any duration**, **Under 2 s**, **2–10 s** or **Over 10 s**.
+  The bounds are inclusive.
+- **Commercial use OK** keeps only results whose licence allows commercial
+  use.
+- Market chips: every market the build knows, with an availability dot. The
+  tooltip shows the licence sentence, or the reason the market is unavailable.
+  Click a chip to include or exclude that market. Until you change the chips,
+  every available market except Openverse is included.
+- **External Sources** opens that Preferences page. When an included market
+  needs a key it does not have, the panel also shows a key field; **Save key**
+  stores the key in the operating system's credential store and reads the
+  market list again.
+- A notice line for each market that could not answer, for example that it
+  needs an API key, is rate limited (with the wait), is temporarily skipped or
+  could not be reached.
+- The results: name, market, kind, duration, credit line and a licence badge,
+  green when the licence is free to reuse. Right-click a result to copy its
+  credit, source link or download link.
+- **Load more** fetches the next page of every market that has more, using the
+  cursor. Rows already shown are not added again.
+
+Changing the kind, duration, commercial filter or markets clears the results;
+press **Search** again.
+
+Clicking a result, or its play button, previews it. The panel stops the
+previous preview and plays the file through the audition stream, never through
+the transport, for at most 30 seconds. A preview download is limited to
+48 MiB. A downloaded preview is kept for the session in `sample-previews/` in
+the app's cache folder: at most 32 files and 256 MiB, removing the least
+recently used first, and emptied when the app first opens it. Hearing a result
+again needs no network, and **Add to project** reuses the file when the
+download URL is the one previewed. The add still resolves the item and checks
+the declared size and checksum.
+
+**Add to project** downloads the file, writes the sidecar and receipt, and
+places an `@audio_clip` on the selected track. With no track selected, it adds
+an `audio/clip` track named `Samples` (`Samples 2` and so on if that name is
+taken). The clip starts on the beat at or before the playhead and keeps the
+sample's real length. If the project changes while the file downloads (you
+edit it or open another project), the clip is not placed; the file stays in the
+media folder.
+A result with no downloadable file shows **Preview only** instead. A licence
+that needs a notice opens the notice first.
+
+When a command fails, the panel receives `{code, message}`, where `code` is a
+refusal code (`licence_notice`, `key_required`, `invalid_cursor`, …) or
+`null`. The panel shows its own sentence for the codes it knows and the
+message otherwise.
 
 ## Agent tools
 
-`sample_search` takes `query`, `kind`, `min_seconds`, `max_seconds`, `channels`,
-`tags`, `providers` (an array; omitted means every available market),
-`provider` (a deprecated single-market alias), `offset`, `limit`,
-`commercial_ok` and `cursor`. It returns
-`providers` (the availability map), `pages` (what each searched market
-answered, or why it failed) and `items` with `provider`, `provider_name` and
-`license_ok` on every result.
+`sample_search` takes `query`, `kind`, `min_seconds`, `max_seconds`,
+`channels`, `tags`, `providers` (an array; without it, the default search),
+`provider` (an older single-market form), `offset`, `limit`, `commercial_ok`
+and `cursor`. It returns the search result described above, with `provider`,
+`provider_name` and `license_ok` on every item.
 
-`sample_pull` takes `id`, an optional `provider` (inferred from the id prefix
-when omitted) and an optional `dest`. It writes into `<project>/media/samples`
-by default and returns `path`, the portable `media/samples/...` path, the
-licence, the credit line, the sha256, the `quality` and, for a preview, a
-warning. A Freesound pull uses the stored OAuth2 token when there is one, so
-the same call returns `quality: "original"`; without a token, or after a
-refused original, it returns `quality: "preview_mp3"`. Both tools are enabled in
-the panel: a search reads a catalogue, and a pull writes one file into a folder
-the project already owns.
+`sample_pull` takes `id`, an optional `provider` (taken from the id prefix when
+left out), an optional `dest` and `accept_licence`. It writes into
+`<project>/media/samples` by default and returns `path`, the portable
+`media/samples/...` path, the licence, the credit line, the SHA-256, the
+`quality` and, for a preview, a warning. A Freesound pull uses the stored
+OAuth2 token when there is one and returns `quality: "original"`; without a
+token, or when the original is refused, it returns `quality: "preview_mp3"`.
 
-A refused call returns `{"status": "refused", ...}`; a network or disk failure
-returns an error, because it changed nothing and is worth retrying.
+Both tools are available in the AI panel: a search only reads catalogues, and a
+pull writes one file into a folder the project already owns. A refused call
+returns `{"status": "refused", ...}`. A network or disk failure returns an
+error, because nothing changed and a retry may work.
 
 ## Command line
 
@@ -445,24 +512,32 @@ ocp sample pull "ia:prelinger-snare" --provider internet-archive
 FREESOUND_API_KEY=... ocp sample search "riser" --provider freesound --json
 ```
 
-`search` prints one block per result with its kind, duration, channels, sample
-rate, licence, credit line and, when the licence is refused, the reason.
-`pull` prints the absolute path, the credit line and the quality. `providers`
-lists every market with its availability and reason. `--json` prints the raw
-page, receipt or provider list for a script.
+`ocp sample search` asks one market: the one in `--provider`, or Wikimedia
+Commons. It pages with `--offset`; the last line prints the offset of the next
+page. Each result shows its id, kind, duration, channels, sample rate, licence
+and credit line, and says when its licence needs `--accept-licence`.
+`--tag` adds a tag and can be repeated.
 
-The command shares the library's refusal vocabulary: a missing key prints the
-same sentence the tool returns, and the process exits non-zero.
+`ocp sample pull` downloads into `--dest`, by default `media/samples` under the
+current folder. It prints the path, the kind, quality, size and file name, and
+the credit line, with a warning for a preview. `ocp sample providers` lists
+every market with its availability and reason. `--json` prints the raw page,
+receipt or market list for scripts.
+
+The CLI reads keys only from `FREESOUND_API_KEY` and `JAMENDO_CLIENT_ID`. It
+prints the same refusal sentences as the tools and exits with a non-zero
+status.
 
 ## Tests
 
-Provider parsers use offline fixtures in `crates/oc-sample/tests/fixtures/`.
-The transport is mocked for tests.
+The market parsers are tested against recorded answers in
+`crates/oc-sample/tests/fixtures/`, through a mocked transport; no test reaches
+the network.
 
 The store tests cover the refusals that matter: a size mismatch, a checksum
-mismatch and an unsupported licence each leave the directory empty, and a
+mismatch and a licence that needs a notice each leave the folder empty, and a
 successful pull writes the audio, the sidecar and the receipt with a checksum
 that matches the bytes. The registry tests cover availability with and without
-keys, the page-only reasons and the id prefixes. The panel test renders the
-panel, searches, shows the provider map and adds a result through a mocked
-`invoke`.
+keys, the page-only reasons and the id prefixes. The panel tests render the
+panel, search, show the market chips, page with **Load more** and add a result
+through a mocked `invoke`.
