@@ -201,13 +201,13 @@ export function SampleMarketPanel() {
       setLicencePrompt(null);
       setStatus(i18n.t("sample.added", { track: result.track }));
     } catch (error) {
-      const text = String(error);
+      const refusal = api.sampleMarketError(error);
       // The backend states the licence; the user decides, and the file keeps
       // its licence and credit either way.
-      if (text.includes("licence_notice")) {
-        setLicencePrompt({ item, message: text.replace(/^.*licence_notice:\s*/, "") });
+      if (refusal.code === "licence_notice") {
+        setLicencePrompt({ item, message: refusal.message });
       } else {
-        setStatus(text);
+        setStatus(refusal.message);
       }
     } finally {
       setAdding(null);

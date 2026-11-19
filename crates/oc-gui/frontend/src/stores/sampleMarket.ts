@@ -58,27 +58,95 @@ export interface SampleMarketItem {
   license_notice?: string | null;
 }
 
+/** Why a market returned no results; read this instead of `error`. */
+export type SampleMarketErrorKind =
+  | "needs_key"
+  | "provider_unavailable"
+  | "skipped"
+  | "rate_limited"
+  | "not_found"
+  | "unavailable"
+  | "timeout"
+  | "network"
+  | "parse"
+  | "other";
+
+/** Why a market was not asked this time. */
+export type SampleMarketSkipReason = "rate_limited" | "circuit_open";
+
 /** What one market answered, or why it could not. */
 export interface SampleMarketPage {
   provider: string;
   provider_name: string;
+  /** The provider offset this market was asked at; null when it was not. */
+  offset?: number | null;
   count: number;
   total?: number | null;
   next_offset?: number | null;
   error?: string | null;
+  error_kind?: SampleMarketErrorKind | null;
+  skipped?: boolean;
+  skip_reason?: SampleMarketSkipReason | null;
+  /** Seconds until the market is asked again, when known. */
+  retry_after_secs?: number | null;
+  http_status?: number | null;
 }
 
 export interface SampleMarketSearchResult {
   status: "ok";
   query: string;
   kind: string | null;
+  commercial_ok: boolean;
   offset: number;
   limit: number;
   providers: SampleProviderAvailability[];
   pages: SampleMarketPage[];
   count: number;
+  /** Results dropped because an earlier market listed the same sound. */
+  duplicates: number;
+  /** Shared offset for older callers; null for a cursor search. */
   next_offset: number | null;
+  /** Opaque continuation; pass it back as `cursor`. Null on the last page. */
+  cursor: string | null;
   items: SampleMarketItem[];
+}
+
+/**
+ * A rejected sample-market command. `code` is the backend's stable refusal
+ * code (`licence_notice`, `key_required`, `invalid_cursor`, ...) or null for a
+ * failure that is not a refusal. `String(error)` is the message, so existing
+ * status lines keep reading it.
+ */
+export class SampleMarketError extends Error {
+  readonly code: string | null;
+
+  constructor(code: string | null, message: string) {
+    super(message);
+    this.name = "SampleMarketError";
+    this.code = code;
+  }
+
+  override toString() {
+    return this.message;
+  }
+}
+
+/** Normalize what a sample-market command rejected with. */
+export function sampleMarketError(error: unknown): SampleMarketError {
+  if (error instanceof SampleMarketError) return error;
+  if (error && typeof error === "object" && "message" in error) {
+    const { code, message } = error as { code?: unknown; message?: unknown };
+    return new SampleMarketError(typeof code === "string" ? code : null, String(message));
+  }
+  return new SampleMarketError(null, String(error));
+}
+
+async function sampleCommand<T>(run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (error) {
+    throw sampleMarketError(error);
+  }
 }
 
 export interface SampleMarketAddResult {
@@ -122,18 +190,20 @@ export const sampleMarketSearch = (args: {
   providers?: string[];
   offset?: number;
   limit?: number;
-}) => invoke<SampleMarketSearchResult>("sample_market_search", { args });
+  commercial_ok?: boolean;
+  cursor?: string;
+}) => sampleCommand(() => invoke<SampleMarketSearchResult>("sample_market_search", { args }));
 
 /** Play one result through the audition stream; `cancelled` means a Stop or a
  * newer preview replaced it while it downloaded. */
 export const samplePreview = (provider: string, id: string, label: string, startPaused: boolean) =>
-  startNativeAudio(() => invoke<{
+  startNativeAudio(() => sampleCommand(() => invoke<{
     status: "ok" | "cancelled";
     provider: string;
     id: string;
     name: string;
     seconds: number;
-  }>("sample_preview", { provider, id, label, startPaused }));
+  }>("sample_preview", { provider, id, label, startPaused })));
 
 /** Download one result and place it at the playhead. */
 export const sampleMarketAdd = (
@@ -142,12 +212,12 @@ export const sampleMarketAdd = (
   track: string | null,
   acceptLicence = false,
 ) =>
-  invoke<SampleMarketAddResult>("sample_market_add", {
+  sampleCommand(() => invoke<SampleMarketAddResult>("sample_market_add", {
     provider,
     id,
     track,
     acceptLicence,
-  });
+  }));
 
 /** Save a market's API key in the OS keyring. */
 export const sampleMarketSaveKey = (provider: string, key: string) =>
