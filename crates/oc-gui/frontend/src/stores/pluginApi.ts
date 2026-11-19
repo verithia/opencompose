@@ -185,6 +185,8 @@ export interface SoundfontProgress {
   total: number;
 }
 
+export const SOUNDFONT_PROGRESS_EVENT = "soundfont_progress";
+
 export const soundfontsList = () => invoke<SoundfontListing>("soundfonts_list");
 export const soundfontInstall = (id: string) =>
   invoke<InstalledSoundfont>("soundfont_install", { id });

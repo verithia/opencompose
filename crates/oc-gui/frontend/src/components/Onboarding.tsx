@@ -9,7 +9,8 @@ import { aiConfig } from "../ai/config";
 import { preferencesUi } from "../stores/preferencesUi";
 import { useDialogFocus } from "./dialogFocus";
 import { useTopmostEscape } from "./modalEscape";
-import { For, Show, createEffect, createMemo, createSignal, onMount } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
+import { listen } from "@tauri-apps/api/event";
 import { LOGO_MARK } from "../stores/branding";
 import { i18n } from "../stores/i18n";
 import {
@@ -20,7 +21,7 @@ import {
   pluginStore,
 } from "../stores/pluginStore";
 import * as api from "../stores/api";
-import type { PluginCatalogEntry, SoundPackItem, SoundPackPhase, SoundfontItem } from "../stores/api";
+import type { PluginCatalogEntry, SoundPackItem, SoundPackPhase, SoundfontItem, SoundfontProgress } from "../stores/api";
 import { pickRecommendations } from "../stores/onboardingPicks";
 import { localScan } from "../stores/localScan";
 import { soundPacks } from "../stores/soundPacks";
@@ -110,6 +111,8 @@ export function Onboarding(props: { onDone: () => void }) {
   );
 
   const [packs, setPacks] = createSignal<SoundfontItem[]>([]);
+  /** Download progress per index SoundFont; the event carries bytes, not phases. */
+  const [packProgress, setPackProgress] = createSignal<Record<string, SoundfontProgress>>({});
 
   /** Until the scan answers, both suggestion lists stay available. */
   const showPluginPicks = () => {
@@ -249,6 +252,12 @@ export function Onboarding(props: { onDone: () => void }) {
 
   const messageFor = (id: string) => messages()[id];
 
+  let disposed = false;
+  const stops: (() => void)[] = [];
+  const keep = (stop: () => void) => {
+    if (disposed) stop();
+    else stops.push(stop);
+  };
   onMount(() => {
     // Paint a cached catalog at once, then fetch the index on a first run that
     // has none; the automatic refresh path leaves the manual floor untouched.
@@ -256,22 +265,66 @@ export function Onboarding(props: { onDone: () => void }) {
     void loadPacks();
     void soundPacks.load();
     if (!localScan.running()) void localScan.start();
+    void listen<SoundfontProgress>(api.SOUNDFONT_PROGRESS_EVENT, (event) => {
+      const progress = event.payload;
+      setPackProgress((previous) => ({ ...previous, [progress.id]: progress }));
+    }).then(keep).catch(() => {});
   });
+  onCleanup(() => {
+    disposed = true;
+    for (const stop of stops.splice(0)) stop();
+  });
+
+  const clearProgress = (id: string) =>
+    setPackProgress((previous) => {
+      const next = { ...previous };
+      delete next[id];
+      return next;
+    });
 
   const installPack = async (item: SoundfontItem) => {
     if (installLocked()) return;
+    cancelling.delete(item.id);
     setBusy(item.id);
+    clearProgress(item.id);
     setMessages((previous) => ({ ...previous, [item.id]: { text: "", error: false } }));
     try {
       await api.soundfontInstall(item.id);
       await loadPacks();
+      // The installed font is searched from now on; a fresh count shows it.
+      void localScan.start();
     } catch (cause) {
+      const cancelled = cancelling.has(item.id);
       setMessages((previous) => ({
         ...previous,
-        [item.id]: { text: i18n.t("onboarding.plugins.failed", { error: String(cause) }), error: true },
+        [item.id]: {
+          text: cancelled
+            ? i18n.t("onboarding.starters.cancelled")
+            : i18n.t("soundfont.installFailed", { error: String(cause) }),
+          error: !cancelled,
+        },
       }));
     } finally {
+      cancelling.delete(item.id);
+      clearProgress(item.id);
       setBusy(null);
+    }
+  };
+
+  const cancelPack = async (id: string) => {
+    if (busy() !== id) return;
+    cancelling.add(id);
+    try {
+      await api.cancelInstall(id);
+    } catch (cause) {
+      cancelling.delete(id);
+      setMessages((previous) => ({
+        ...previous,
+        [id]: {
+          text: i18n.t("onboarding.starters.cancelFailed", { error: String(cause) }),
+          error: true,
+        },
+      }));
     }
   };
 
@@ -778,6 +831,17 @@ export function Onboarding(props: { onDone: () => void }) {
               <For each={extraPacks()}>
                 {(item) => {
                   const running = () => busy() === item.id;
+                  const progress = () => packProgress()[item.id];
+                  const phase = (): "download" | "verify" => {
+                    const current = progress();
+                    return current && current.total > 0 && current.received >= current.total ? "verify" : "download";
+                  };
+                  const percent = () => {
+                    const current = progress();
+                    if (!current || current.total <= 0) return null;
+                    return Math.min(100, Math.round((current.received / current.total) * 100));
+                  };
+                  const phaseLabel = () => i18n.t(`onboarding.starters.phase.${phase()}`);
                   return (
                     <article class="onboarding-tool">
                       <span class="onboarding-tool-icon" aria-hidden="true"><WaveIcon /></span>
@@ -790,9 +854,26 @@ export function Onboarding(props: { onDone: () => void }) {
                         </div>
                         <p>{item.description}</p>
                         <Show when={running()}>
-                          <div class="onboarding-progress" role="status" aria-label={i18n.t("onboarding.plugins.installing")}>
-                            <span class="onboarding-progress-bar indeterminate" />
+                          <div
+                            class="onboarding-progress"
+                            role="progressbar"
+                            aria-label={i18n.t("onboarding.starters.progress", { name: item.name, phase: phaseLabel() })}
+                            aria-valuemin={0}
+                            aria-valuemax={100}
+                            aria-valuenow={percent() ?? undefined}
+                          >
+                            <span
+                              class="onboarding-progress-bar"
+                              classList={{ indeterminate: percent() === null }}
+                              style={{ width: percent() === null ? undefined : `${percent()}%` }}
+                            />
                           </div>
+                          <p class="onboarding-tool-message onboarding-starter-phase" role="status">
+                            <span>{phaseLabel()}</span>
+                            <Show when={percent() !== null}>
+                              <span class="onboarding-starter-percent">{percent()}%</span>
+                            </Show>
+                          </p>
                         </Show>
                         <Show when={messageFor(item.id)}>
                           {(message) => (
@@ -803,14 +884,27 @@ export function Onboarding(props: { onDone: () => void }) {
                         </Show>
                       </div>
                       <div class="onboarding-tool-action">
-                        <button
-                          type="button"
-                          class="onboarding-secondary onboarding-install"
-                          disabled={installLocked()}
-                          onClick={() => void installPack(item)}
+                        <Show
+                          when={running()}
+                          fallback={
+                            <button
+                              type="button"
+                              class="onboarding-secondary onboarding-install"
+                              disabled={installLocked()}
+                              onClick={() => void installPack(item)}
+                            >
+                              {i18n.t("onboarding.plugins.install")}
+                            </button>
+                          }
                         >
-                          {running() ? i18n.t("onboarding.plugins.installing") : i18n.t("onboarding.plugins.install")}
-                        </button>
+                          <button
+                            type="button"
+                            class="onboarding-secondary"
+                            onClick={() => void cancelPack(item.id)}
+                          >
+                            {i18n.t("onboarding.starters.cancel")}
+                          </button>
+                        </Show>
                       </div>
                     </article>
                   );

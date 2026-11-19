@@ -58,7 +58,7 @@ export function PluginBrowser() {
       if (disposed) unlisten();
       else stops.push(unlisten);
     };
-    void listen<api.SoundfontProgress>("soundfont_progress", (event) => {
+    void listen<api.SoundfontProgress>(api.SOUNDFONT_PROGRESS_EVENT, (event) => {
       setSoundfontProgress(event.payload);
     }).then(keep);
     // A background refresh replaces the inventory after this tab painted; show

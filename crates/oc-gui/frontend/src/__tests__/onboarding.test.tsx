@@ -17,6 +17,8 @@ import type {
   FolderOrigin,
   LocalContentSummary,
   LocalScanProgress,
+  SoundfontItem,
+  SoundfontProgress,
   SoundPackItem,
   SoundPackProgress,
 } from "../stores/api";
@@ -99,6 +101,20 @@ const AKWF = pack("adventurekid.akwf", "AKWF waveforms", "samples", {
 });
 
 const PACKS: SoundPackItem[] = [GENERAL_USER, MULDJORD, AKWF];
+
+const UPRIGHT: SoundfontItem = {
+  id: "upright-piano",
+  name: "Upright Piano",
+  version: "1.0.0",
+  description: "A small sampled upright piano.",
+  bytes: 12 * 1024 * 1024,
+  license: { name: "CC0-1.0", url: "", text: "" },
+  installed: false,
+  installed_version: null,
+  installed_bytes: null,
+  path: null,
+  source: "index",
+};
 
 /** A machine with little on it: the guide suggests plugins and sounds. */
 const SUMMARY: LocalContentSummary = {
@@ -208,8 +224,10 @@ describe("first-run onboarding", () => {
 
   it("opens on a scan that reports progress for plugins, then sounds", async () => {
     let emit!: (payload: LocalScanProgress) => void;
-    listenMock.mockImplementation(async (_event: string, handler: (event: { payload: LocalScanProgress }) => void) => {
-      emit = (payload) => handler({ payload });
+    listenMock.mockImplementation(async (event: string, handler: (event: { payload: LocalScanProgress }) => void) => {
+      if (event === "local_content_scan_progress") {
+        emit = (payload) => handler({ payload });
+      }
       return () => {};
     });
     let finish!: (value: LocalContentSummary) => void;
@@ -908,26 +926,10 @@ describe("first-run onboarding", () => {
     expect(onboardingStore.pending()).toBe(false);
   });
 
-  it("offers an index sound pack beside the starter sounds", async () => {
+  it("offers an index sound pack beside the starter sounds and scans again after it installs", async () => {
     const original = invokeMock.getMockImplementation()!;
     invokeMock.mockImplementation(async (command: string, ...args: unknown[]) => {
-      if (command === "soundfonts_list") {
-        return {
-          dir: "",
-          items: [
-            {
-              id: "upright-piano",
-              name: "Upright Piano",
-              version: "1.0.0",
-              description: "A small sampled upright piano.",
-              bytes: 12 * 1024 * 1024,
-              license: { name: "CC0-1.0", url: "", text: "" },
-              installed: false,
-              source: "index",
-            },
-          ],
-        };
-      }
+      if (command === "soundfonts_list") return { dir: "", items: [UPRIGHT] };
       if (command === "soundfont_install") return { id: "upright-piano" };
       return original(command, ...args);
     });
@@ -937,9 +939,92 @@ describe("first-run onboarding", () => {
     expect(await screen.findByText("Upright Piano")).toBeInTheDocument();
     expect(screen.getByText("Sound pack")).toBeInTheDocument();
     const card = screen.getByText("Upright Piano").closest("article")!;
-    fireEvent.click(card.querySelector("button")!);
+    fireEvent.click(within(card).getByRole("button", { name: "Install" }));
     await waitFor(() =>
       expect(invokeMock).toHaveBeenCalledWith("soundfont_install", { id: "upright-piano" }),
     );
+    await waitFor(() =>
+      expect(invokeMock.mock.calls.filter(([command]) => command === "local_content_scan").length).toBeGreaterThanOrEqual(2),
+    );
+  });
+
+  it("shows download progress and then verification for an index sound pack", async () => {
+    let emit!: (progress: SoundfontProgress) => void;
+    listenMock.mockImplementation(async (event: string, handler: (payload: { payload: SoundfontProgress }) => void) => {
+      if (event === "soundfont_progress") {
+        emit = (progress) => handler({ payload: progress });
+      }
+      return () => {};
+    });
+    let finish!: (value: unknown) => void;
+    const original = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation((command: string, ...args: unknown[]) => {
+      if (command === "soundfonts_list") return Promise.resolve({ dir: "", items: [UPRIGHT] });
+      if (command === "soundfont_install") return new Promise((resolve) => { finish = resolve; });
+      return original(command, ...args);
+    });
+
+    render(() => <Onboarding onDone={() => {}} />);
+    await openPicksStep();
+    const card = (await screen.findByText("Upright Piano")).closest("article")!;
+    fireEvent.click(within(card).getByRole("button", { name: "Install" }));
+
+    const bar = await within(card).findByRole("progressbar");
+    await waitFor(() => expect(emit).toBeDefined());
+    emit({ id: "upright-piano", received: 6 * 1024 * 1024, total: 12 * 1024 * 1024 });
+    await waitFor(() => expect(bar).toHaveAttribute("aria-valuenow", "50"));
+    expect(within(card).getByText("Downloading…")).toBeInTheDocument();
+
+    emit({ id: "upright-piano", received: 12 * 1024 * 1024, total: 12 * 1024 * 1024 });
+    await waitFor(() => expect(within(card).getByText("Verifying…")).toBeInTheDocument());
+    expect(bar).toHaveAttribute("aria-valuenow", "100");
+
+    finish({ id: "upright-piano" });
+  });
+
+  it("cancels an index sound pack install and reports it", async () => {
+    let rejectInstall!: (reason: string) => void;
+    const original = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation((command: string, ...args: unknown[]) => {
+      if (command === "soundfonts_list") return Promise.resolve({ dir: "", items: [UPRIGHT] });
+      if (command === "soundfont_install") {
+        return new Promise((_, reject) => { rejectInstall = reject; });
+      }
+      if (command === "install_cancel") return undefined;
+      return original(command, ...args);
+    });
+
+    render(() => <Onboarding onDone={() => {}} />);
+    await openPicksStep();
+    const card = (await screen.findByText("Upright Piano")).closest("article")!;
+    fireEvent.click(within(card).getByRole("button", { name: "Install" }));
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("soundfont_install", { id: "upright-piano" }),
+    );
+    fireEvent.click(await within(card).findByRole("button", { name: "Cancel" }));
+
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("install_cancel", { id: "upright-piano" }),
+    );
+    rejectInstall("upright-piano was cancelled");
+    expect(await within(card).findByText("Install cancelled.")).toBeInTheDocument();
+    expect(within(card).getByRole("button", { name: "Install" })).toBeEnabled();
+  });
+
+  it("reports a failed index sound pack install", async () => {
+    const original = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation(async (command: string, ...args: unknown[]) => {
+      if (command === "soundfonts_list") return { dir: "", items: [UPRIGHT] };
+      if (command === "soundfont_install") throw "Download failed";
+      return original(command, ...args);
+    });
+
+    render(() => <Onboarding onDone={() => {}} />);
+    await openPicksStep();
+    const card = (await screen.findByText("Upright Piano")).closest("article")!;
+    fireEvent.click(within(card).getByRole("button", { name: "Install" }));
+
+    expect(await within(card).findByRole("alert")).toHaveTextContent("Install failed: Download failed");
+    expect(within(card).getByRole("button", { name: "Install" })).toBeEnabled();
   });
 });

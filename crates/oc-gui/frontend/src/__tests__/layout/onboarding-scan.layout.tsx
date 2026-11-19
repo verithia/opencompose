@@ -279,8 +279,10 @@ describe("first-run scan page layout", () => {
     it(`${locale}: progress shows both phases`, async () => {
       i18n.setLocale(locale);
       let emit!: (payload: LocalScanProgress) => void;
-      listenMock.mockImplementation(async (_event: string, handler: (event: { payload: LocalScanProgress }) => void) => {
-        emit = (payload) => handler({ payload });
+      listenMock.mockImplementation(async (event: string, handler: (event: { payload: LocalScanProgress }) => void) => {
+        if (event === "local_content_scan_progress") {
+          emit = (payload) => handler({ payload });
+        }
         return () => {};
       });
       answer("macos-aarch64", new Promise<LocalContentSummary>(() => {}));
