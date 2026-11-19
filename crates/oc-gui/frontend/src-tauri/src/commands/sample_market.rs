@@ -11,9 +11,10 @@
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
+use serde::Serialize;
 use serde_json::{Value, json};
 use tauri::Manager;
 
@@ -22,6 +23,9 @@ use oc_sample::model::{SampleError, SampleItem};
 use oc_sample::provider::SampleFetch;
 use oc_sample::store::SampleReceipt;
 
+use crate::samples::preview_cache::{
+    CacheLimits, CachedFetch, PREVIEW_CACHE_DIR, PreviewCache, matches_declared, url_extension,
+};
 use crate::samples::{self, Keys};
 use crate::state::{AppState, AppStateInner, UndoEdit, UndoScope};
 
@@ -32,6 +36,58 @@ const PREVIEW_SECONDS: f64 = 30.0;
 const PREVIEW_MAX_BYTES: usize = 48 * 1024 * 1024;
 /// Shortest clip a placement may create, in quarter notes.
 const MIN_CLIP_QUARTERS: f64 = 0.25;
+
+/// The error a sample-market command rejects with. `code` is the stable
+/// refusal code (`licence_notice`, `key_required`, `invalid_cursor`, ...) or
+/// `null` for a failure that is not a refusal; the panel branches on it and
+/// shows `message`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SampleCommandError {
+    pub code: Option<&'static str>,
+    pub message: String,
+}
+
+impl From<String> for SampleCommandError {
+    fn from(message: String) -> Self {
+        Self {
+            code: None,
+            message,
+        }
+    }
+}
+
+impl From<SampleError> for SampleCommandError {
+    fn from(error: SampleError) -> Self {
+        Self {
+            code: error.code(),
+            message: error.message().to_string(),
+        }
+    }
+}
+
+/// Run sample-market work on the blocking pool and keep its typed error.
+async fn run_sample<F>(work: F) -> Result<Value, SampleCommandError>
+where
+    F: FnOnce() -> Result<Value, SampleCommandError> + Send + 'static,
+{
+    super::shared::run_blocking(move || Ok(work()))
+        .await
+        .map_err(SampleCommandError::from)?
+}
+
+/// The session's preview cache in the app cache directory, or `None` when
+/// that directory is unavailable, in which case every preview downloads.
+fn preview_cache(app: &tauri::AppHandle) -> Option<&'static PreviewCache> {
+    static CACHE: OnceLock<Option<PreviewCache>> = OnceLock::new();
+    CACHE
+        .get_or_init(|| {
+            let dir = app.path().app_cache_dir().ok()?.join(PREVIEW_CACHE_DIR);
+            PreviewCache::open(&dir, CacheLimits::default())
+                .map_err(|error| log::warn!("[samples] no preview cache: {error}"))
+                .ok()
+        })
+        .as_ref()
+}
 
 /// The markets and their state, for the panel's provider chips.
 #[tauri::command]
@@ -45,8 +101,14 @@ pub async fn sample_market_providers() -> Result<Vec<Value>, String> {
 
 /// `sample_market_search`: one page across the markets the panel names.
 #[tauri::command]
-pub async fn sample_market_search(args: Value) -> Result<Value, String> {
-    super::shared::run_blocking(move || samples::search(&args)).await
+pub async fn sample_market_search(args: Value) -> Result<Value, SampleCommandError> {
+    run_sample(move || {
+        let request =
+            <samples::SearchArgs as crate::tool_registry::arguments::ToolArguments>::decode(&args)
+                .map_err(|error| SampleCommandError::from(error.to_string()))?;
+        Ok(samples::search_request_typed(&request)?)
+    })
+    .await
 }
 
 /// Download and play one result through the audition stream.
@@ -57,7 +119,7 @@ pub async fn sample_preview(
     id: String,
     label: Option<String>,
     start_paused: Option<bool>,
-) -> Result<Value, String> {
+) -> Result<Value, SampleCommandError> {
     let started = Instant::now();
     let generation = {
         let state = app.state::<AppState>();
@@ -67,11 +129,19 @@ pub async fn sample_preview(
             .replace_private_audition(start_paused.unwrap_or(false))?;
         state.audition.begin(label.as_deref().unwrap_or(&id))
     };
-    super::shared::run_blocking(move || {
+    run_sample(move || {
         let state = app.state::<AppState>();
-        let result = preview_blocking(&state, &provider, &id, generation, started);
+        let cache = preview_cache(&app);
+        let request = PreviewRequest {
+            provider: &provider,
+            id: &id,
+            label: label.as_deref().unwrap_or_default(),
+            generation,
+            started,
+        };
+        let result = preview_blocking(&state, cache, &request);
         if let Err(error) = &result {
-            state.audition.fail(generation, error.clone());
+            state.audition.fail(generation, error.message.clone());
         }
         result
     })
@@ -88,11 +158,9 @@ pub async fn sample_market_add(
     id: String,
     track: Option<String>,
     accept_licence: Option<bool>,
-) -> Result<Value, String> {
-    super::shared::run_blocking(move || {
-        add_blocking(&app, &provider, &id, track, accept_licence.unwrap_or(false))
-    })
-    .await
+) -> Result<Value, SampleCommandError> {
+    run_sample(move || add_blocking(&app, &provider, &id, track, accept_licence.unwrap_or(false)))
+        .await
 }
 
 /// Save a market's API key in the OS keyring, from the panel's inline prompt.
@@ -117,53 +185,122 @@ pub async fn sample_market_remove_key(provider: String) -> Result<(), String> {
     super::shared::run_blocking(move || samples::remove_key(&provider)).await
 }
 
-fn preview_blocking(
-    state: &AppState,
-    provider: &str,
-    id: &str,
+/// One preview click: the result it names, the label the panel shows, and
+/// the audition generation that must still be current when it plays.
+#[derive(Clone, Copy)]
+struct PreviewRequest<'a> {
+    provider: &'a str,
+    id: &'a str,
+    label: &'a str,
     generation: u64,
     started: Instant,
-) -> Result<Value, String> {
+}
+
+fn preview_blocking(
+    state: &AppState,
+    cache: Option<&PreviewCache>,
+    request: &PreviewRequest<'_>,
+) -> Result<Value, SampleCommandError> {
+    let PreviewRequest {
+        provider,
+        id,
+        label,
+        generation,
+        started,
+    } = *request;
     if !state.audition.is_current(generation) {
         return Ok(json!({ "status": "cancelled" }));
     }
+    let rate = state.lock_inner().audio.audio_io.spec().sample_rate;
+    // A sample heard earlier in the session plays from its cached file
+    // without a resolve or a download.
+    let cached = cache.and_then(|cache| {
+        let path = cache.file_for(provider, id)?;
+        match decode_preview(&path, rate) {
+            Ok(samples) => Some(samples),
+            Err(error) => {
+                log::warn!("[samples] a cached preview is unreadable: {error}");
+                cache.forget(&path);
+                None
+            }
+        }
+    });
+    let (provider_id, name, samples) = match cached {
+        Some(samples) => (provider.to_string(), None, samples),
+        None => {
+            let (provider_id, item, samples) =
+                fetch_preview(state, cache, provider, id, generation, rate)?;
+            let Some(samples) = samples else {
+                return Ok(preview_reply(
+                    "cancelled",
+                    &provider_id,
+                    id,
+                    &item.name,
+                    0.0,
+                ));
+            };
+            (provider_id, Some(item.name), samples)
+        }
+    };
+    let name = name.unwrap_or_else(|| label.to_string());
+    let seconds = (samples.len() / 2) as f64 / f64::from(rate);
+    let mut inner = state.lock_inner();
+    if !play_preview(state, &mut inner, generation, rate, samples)? {
+        return Ok(preview_reply("cancelled", &provider_id, id, &name, 0.0));
+    }
+    state.audition.complete(generation, started);
+    Ok(preview_reply("ok", &provider_id, id, &name, seconds))
+}
+
+/// Resolve and download one preview, keep it in the cache, and decode it.
+/// The samples are `None` when a newer preview or a Stop replaced this one.
+fn fetch_preview(
+    state: &AppState,
+    cache: Option<&PreviewCache>,
+    provider: &str,
+    id: &str,
+    generation: u64,
+    rate: u32,
+) -> Result<(String, SampleItem, Option<Vec<f32>>), SampleCommandError> {
     let keys: Keys = samples::load_keys();
     let fetch = samples::http_fetch()?;
-    let (provider_id, item) =
-        samples::resolve_item(Some(provider), id, &keys, &fetch).map_err(refusal_text)?;
+    let (provider_id, item) = samples::resolve_item(Some(provider), id, &keys, &fetch)?;
     let url = item
         .preview_url
         .as_deref()
         .filter(|url| !url.trim().is_empty())
         .or_else(|| (!item.download_url.trim().is_empty()).then_some(item.download_url.as_str()))
-        .ok_or_else(|| format!("'{}' has no preview or download URL.", item.name))?;
+        .ok_or_else(|| format!("'{}' has no preview or download URL.", item.name))?
+        .to_string();
     if !state.audition.is_current(generation) {
-        return Ok(preview_reply("cancelled", &provider_id, &item, 0.0));
+        return Ok((provider_id, item, None));
     }
     let body = fetch
-        .get(url, PREVIEW_MAX_BYTES)
-        .map_err(|error| format!("{}: {error}", item.provider))?;
+        .get(&url, PREVIEW_MAX_BYTES)
+        .map_err(|error| SampleError::from_fetch(&item.provider, error))?;
     if !state.audition.is_current(generation) {
-        return Ok(preview_reply("cancelled", &provider_id, &item, 0.0));
+        return Ok((provider_id, item, None));
     }
-    let mut file = tempfile::Builder::new()
-        .prefix("opencompose-sample-preview-")
-        .suffix(&format!(".{}", preview_extension(url)))
-        .tempfile()
-        .map_err(|error| format!("Could not stage the preview: {error}"))?;
-    file.write_all(&body.body)
-        .map_err(|error| format!("Could not stage the preview: {error}"))?;
-    drop(body);
-    let rate = state.lock_inner().audio.audio_io.spec().sample_rate;
-    let samples = decode_preview(file.path(), rate)?;
-    drop(file);
-    let seconds = (samples.len() / 2) as f64 / f64::from(rate);
-    let mut inner = state.lock_inner();
-    if !play_preview(state, &mut inner, generation, rate, samples)? {
-        return Ok(preview_reply("cancelled", &provider_id, &item, 0.0));
-    }
-    state.audition.complete(generation, started);
-    Ok(preview_reply("ok", &provider_id, &item, seconds))
+    // The download URL's bytes are only cached when they match what the item
+    // declares, so a later add never starts from a file the store refuses.
+    let cacheable = url != item.download_url || matches_declared(&item, &body.body);
+    let stored = cache
+        .filter(|_| cacheable)
+        .and_then(|cache| cache.store(&provider_id, id, &url, url_extension(&url), &body.body));
+    let samples = match stored {
+        Some(path) => decode_preview(&path, rate)?,
+        None => {
+            let mut file = tempfile::Builder::new()
+                .prefix("opencompose-sample-preview-")
+                .suffix(&format!(".{}", url_extension(&url)))
+                .tempfile()
+                .map_err(|error| format!("Could not stage the preview: {error}"))?;
+            file.write_all(&body.body)
+                .map_err(|error| format!("Could not stage the preview: {error}"))?;
+            decode_preview(file.path(), rate)?
+        }
+    };
+    Ok((provider_id, item, Some(samples)))
 }
 
 fn decode_preview(path: &Path, rate: u32) -> Result<Vec<f32>, String> {
@@ -199,22 +336,14 @@ fn play_preview(
     Ok(true)
 }
 
-fn preview_reply(status: &str, provider: &str, item: &SampleItem, seconds: f64) -> Value {
+fn preview_reply(status: &str, provider: &str, id: &str, name: &str, seconds: f64) -> Value {
     json!({
         "status": status,
         "provider": provider,
-        "id": item.id,
-        "name": item.name,
+        "id": id,
+        "name": name,
         "seconds": seconds,
     })
-}
-
-fn preview_extension(url: &str) -> &str {
-    Path::new(url.split(['?', '#']).next().unwrap_or(url))
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .filter(|extension| !extension.is_empty() && extension.len() <= 5)
-        .unwrap_or("bin")
 }
 
 fn add_blocking(
@@ -223,28 +352,37 @@ fn add_blocking(
     id: &str,
     track: Option<String>,
     accept_licence: bool,
-) -> Result<Value, String> {
+) -> Result<Value, SampleCommandError> {
     let keys: Keys = samples::load_keys();
-    let fetch = samples::http_fetch()?;
-    let (provider_id, item) =
-        samples::resolve_item(Some(provider), id, &keys, &fetch).map_err(refusal_text)?;
+    let network = samples::http_fetch()?;
+    // The resolve always reaches the market: the licence and URL a pull uses
+    // are never taken from a cache or from the caller.
+    let (provider_id, item) = samples::resolve_item(Some(provider), id, &keys, &network)?;
     let state = app.state::<AppState>();
     // The pull takes seconds; the clip may only land in the document it started
     // in, because the media folder can be the same for two projects.
     let identity = DocumentIdentity::capture(&state);
-    let (store, root) = samples::store_for(&state).map_err(refusal_text)?;
+    let (store, root) = samples::store_for(&state)?;
     let root =
         root.ok_or_else(|| "Save the project first: a sample needs a media folder.".to_string())?;
+    // A file previewed from the same URL is read back from the cache; the
+    // store verifies its size and checksum exactly as for a download.
+    let cached;
+    let fetch: &dyn SampleFetch = match preview_cache(app) {
+        Some(cache) => {
+            cached = CachedFetch {
+                inner: &network,
+                cache,
+                provider: &provider_id,
+                id,
+            };
+            &cached
+        }
+        None => &network,
+    };
     // A Freesound token makes the pull try the original; a refused original
     // falls back to the preview with the same licence and credit.
-    let receipt = samples::pull_item(
-        &store,
-        &item,
-        &fetch,
-        accept_licence,
-        keys.freesound_token(),
-    )
-    .map_err(refusal_text)?;
+    let receipt = samples::pull_item(&store, &item, fetch, accept_licence, keys.freesound_token())?;
     let seconds = clip_seconds(&receipt)?;
     let mut inner = state.lock_inner();
     let (snapshot, track_name) =
@@ -485,14 +623,6 @@ pub(super) fn unique_clip_name(project: &Project, sample_name: &str) -> String {
     unreachable!("the clip counter always finds a free name")
 }
 
-/// A refusal is data the panel can show; a transport failure keeps its text.
-fn refusal_text(error: SampleError) -> String {
-    match error.code() {
-        Some(code) => format!("{code}: {}", error.message()),
-        None => error.message().to_string(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -500,12 +630,70 @@ mod tests {
     use oc_sample::model::{Quality, SampleKind};
 
     #[test]
-    fn a_preview_file_keeps_the_audio_extension() {
+    fn a_refusal_reaches_the_panel_as_its_code_and_message() {
+        let error = SampleCommandError::from(SampleError::refused(
+            "licence_notice",
+            "Licence: CC BY-NC 4.0.",
+        ));
         assert_eq!(
-            preview_extension("https://example.org/a/b.flac?x=1"),
-            "flac"
+            serde_json::to_value(&error).unwrap(),
+            json!({ "code": "licence_notice", "message": "Licence: CC BY-NC 4.0." })
         );
-        assert_eq!(preview_extension("https://example.org/stream"), "bin");
+        let failure = SampleCommandError::from(SampleError::failed("offline"));
+        assert_eq!(
+            serde_json::to_value(&failure).unwrap(),
+            json!({ "code": null, "message": "offline" })
+        );
+        let text = SampleCommandError::from("no media folder".to_string());
+        assert_eq!(text.code, None);
+    }
+
+    /// A cached preview plays without a resolve or a download: the test has no
+    /// network fixture, so reaching the market would fail the call.
+    #[test]
+    fn a_cached_preview_plays_without_reaching_the_market() {
+        let root = tempfile::tempdir().unwrap();
+        let cache = PreviewCache::open(root.path().join(PREVIEW_CACHE_DIR), CacheLimits::default())
+            .unwrap();
+        let state = AppState::new();
+        let rate = {
+            let mut inner = state.lock_inner();
+            inner.audio.enable_simulated_output();
+            inner.audio.replace_private_audition(true).unwrap();
+            inner.audio.audio_io.spec().sample_rate
+        };
+        let wav = oc_engine::wav::pcm_wav_bytes(&vec![0.1; rate as usize], rate, 2).unwrap();
+        cache
+            .store(
+                "openverse",
+                "openverse:cached",
+                "https://example.org/cached.wav",
+                "wav",
+                &wav,
+            )
+            .unwrap();
+        let generation = state.audition.begin("Cached");
+        let reply = preview_blocking(
+            &state,
+            Some(&cache),
+            &PreviewRequest {
+                provider: "openverse",
+                id: "openverse:cached",
+                label: "Cached",
+                generation,
+                started: Instant::now(),
+            },
+        )
+        .unwrap();
+        assert_eq!(reply["status"], "ok");
+        assert_eq!(reply["name"], "Cached");
+        assert!((reply["seconds"].as_f64().unwrap() - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_preview_file_keeps_the_audio_extension() {
+        assert_eq!(url_extension("https://example.org/a/b.flac?x=1"), "flac");
+        assert_eq!(url_extension("https://example.org/stream"), "bin");
     }
 
     #[test]
