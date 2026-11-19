@@ -464,7 +464,7 @@ pub fn catalog() -> Vec<ToolSpec> {
             "Delete an installed instrument pack from the user's soundfont folder. Refused when the pack is not installed.",
         ),
         arguments::tool::<crate::samples::SearchArgs>(
-            "Search several external sample markets at once for drum one-shots, loops, vocals, FX and instrument phrases. This build is a client: it hosts no catalogue. Markets with local debug plugins: openverse (an aggregator over Freesound, Jamendo, Wikimedia and others; no key), wikimedia-commons (no key), internet-archive (no key), freesound (needs FREESOUND_API_KEY or the org.opencompose.samples/freesound keyring item; a Freesound OAuth2 connection in External Sources preferences pulls the original, otherwise the 128 kbps preview), jamendo (needs JAMENDO_CLIENT_ID or the jamendo keyring item). Looperman, Splice, SampleSwap, SoundBible, Mixkit, Pixabay, Sample Focus, Bedroom Producers Blog and Cymatics are reported as unavailable with the reason and are never scraped. Each item carries its provider, id, kind, duration, licence, credit line and license_ok: CC0, public domain, CC BY and CC BY-SA need no confirmation; non-commercial, no-derivatives, GFDL and community licences are free to pull once the caller passes accept_licence to sample_pull. Every requested market appears in the providers array with available and reason, even when it could not answer, and a failing market is reported per page. Paged: pass next_offset back as offset. Read-only; downloads nothing. Name the markets with `providers` and keep `limit` small: a market that cannot be reached costs up to 15 seconds, so repeating the same broad query is the slowest thing this panel can do. Page with next_offset instead.",
+            "Search several external sample markets at once for drum one-shots, loops, vocals, FX and instrument phrases. This build is a client: it hosts no catalogue. Markets with local debug plugins: openverse (an aggregator over Freesound, Jamendo, Wikimedia and others; no key), wikimedia-commons (no key), internet-archive (no key), freesound (needs FREESOUND_API_KEY or the org.opencompose.samples/freesound keyring item; a Freesound OAuth2 connection in External Sources preferences pulls the original, otherwise the 128 kbps preview), jamendo (needs JAMENDO_CLIENT_ID or the jamendo keyring item). Looperman, Splice, SampleSwap, SoundBible, Mixkit, Pixabay, Sample Focus, Bedroom Producers Blog and Cymatics are reported as unavailable with the reason and are never scraped. Each item carries its provider, id, kind, duration, licence, credit line and license_ok: CC0, public domain, CC BY and CC BY-SA need no confirmation; non-commercial, no-derivatives, GFDL and community licences are free to pull once the caller passes accept_licence to sample_pull. Every requested market appears in the providers array with available and reason, even when it could not answer, and a failing market is reported per page. A failing market's page carries a typed error_kind and skip_reason beside its message. Page with the opaque cursor from the previous result: pass it back as cursor to continue each market at its own position; next_offset still works for older callers. commercial_ok keeps only licences that allow commercial use. Read-only; downloads nothing. Name the markets with `providers` and keep `limit` small: a market that cannot be reached costs up to 15 seconds, so repeating the same broad query is the slowest thing this panel can do.",
         ),
         arguments::tool::<crate::agent_tools::sample::SamplePullArgs>(
             "Download one sample by provider and id from sample_search into the project's media/samples folder and return its path, media path and credit line. The licence and attribution are written into a .json sidecar beside the audio and recorded in index.json, so they travel with the project. The id is resolved by the named provider or by its prefix (commons:, openverse:, ia:, freesound:, jamendo:); a file URL always comes from the provider, never from the caller. Pass accept_licence: true after telling the user the licence; a non-free licence (non-commercial, no-derivatives, GFDL, a community licence or an unknown one) is refused with licence_notice and its terms sentence until then, and the receipt records licence_accepted. Refused with provider_unknown for an id no market carries, provider_unavailable for a page-only market or a keyed one without its key, size_mismatch or checksum_mismatch when the declared size or checksum does not match, and project_unsaved when the project has no folder. A Freesound pull fetches the original when an OAuth2 token is stored, otherwise its preview, and quality reports which one landed. Nothing is written on a refusal.",
@@ -1341,6 +1341,22 @@ mod tests {
         assert_eq!(def.schema["properties"]["providers"]["default"], json!([]));
         assert_eq!(def.schema["properties"]["offset"]["default"], json!(0));
         assert_eq!(def.schema["properties"]["limit"]["default"], json!(20));
+        assert_eq!(
+            def.schema["properties"]["commercial_ok"],
+            json!({
+                "default": false,
+                "description": "Keep only results whose licence allows commercial use; non-commercial and unclassified licences are dropped. Default false: no licence filter",
+                "type": "boolean"
+            })
+        );
+        assert_eq!(
+            def.schema["properties"]["cursor"]["description"],
+            json!(
+                "Opaque cursor from the previous result's cursor field. Continues each market that still has results at its own position and overrides offset"
+            )
+        );
+        assert_eq!(def.schema["properties"]["min_seconds"]["type"], "number");
+        assert_eq!(def.schema["properties"]["max_seconds"]["type"], "number");
     }
 
     #[test]
