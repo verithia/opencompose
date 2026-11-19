@@ -1,7 +1,7 @@
 # The window
 
-The GUI is a Tauri 2 app with a SolidJS frontend. The frontend lives in
-`crates/oc-gui/frontend/`, the Rust backend in
+The desktop app is built with Tauri 2 and a SolidJS frontend. The frontend
+source is in `crates/oc-gui/frontend/`, and the Rust backend is in
 `crates/oc-gui/frontend/src-tauri/`.
 
 ## Layout
@@ -14,353 +14,432 @@ The GUI is a Tauri 2 app with a SolidJS frontend. The frontend lives in
 │  track headers + ruler + clips                │  DSL          │
 ├───────────────────────────────────────────────┤  Plugins      │
 │ Bottom panel: Clips | Piano Roll | Presets |   │  Store        │
-│ Mixer | Drum Kit | Detail                     │  AI           │
+│ Mixer | Drum Kit | Samples | History |         │  AI           │
+│ Inspector                                     │               │
 ├───────────────────────────────────────────────┴──────────────┤
 │ status bar: state, track/bus count, selection, project, time  │
 └──────────────────────────────────────────────────────────────┘
 ```
 
-The split between timeline and bottom panel is draggable, and the sidebar has a
-drag handle on its left edge (220–600 px).
+Drag the split between the timeline and the bottom panel to resize them. The
+sidebar has a drag handle on its left edge and can be 220 to 600 px wide. The
+**Inspector** tab appears in the bottom strip only while a clip is open in it.
 
 ## Transport
 
-The toolbar has stop and play/pause, a beat-position readout, a tempo field
-(20–999 BPM), and a meter menu. **Space** starts and stops playback. Clicking the
-timeline ruler scrubs and seeks; playback follows the cursor until you scroll the
-timeline by hand, then the next Play resumes following.
+The toolbar holds stop and play/pause, a beat-position readout, a tempo field
+(20–999 BPM) and a meter menu. Press **Space** to start and stop playback.
+Click the timeline ruler to scrub and seek. The timeline follows the cursor
+during playback until you scroll it by hand; the next play resumes following.
 
-Space follows the region of the last pointer-down. If that was inside the bottom
-panel, the Presets view is showing and a preset is selected, Space auditions the
-preset instead of touching the transport; otherwise it plays or pauses the
-timeline. The bottom tab strip gets an accent edge while it is the active region.
-Auditioning never moves the timeline cursor or changes whether the transport is
-playing.
+Space acts on the region where you last pressed the pointer. If that was the
+bottom panel, the Presets view is showing and a preset is selected, Space
+auditions that preset and leaves the transport alone. Anywhere else it plays or
+pauses the timeline. The bottom tab strip shows an accent edge while it is the
+active region. Auditioning never moves the timeline cursor and never starts or
+stops the transport.
 
-The transport bar also carries **Write automation** (`W`), one arm shared by
-every surface that writes a lane point. With it on, holding a knob records a
-curve: one point per grid cell while the transport rolls, and one point at the
-playhead while it is stopped. The whole gesture is one undo entry, and the status
-bar says what happened (`Recorded 12 points on filter.cutoff (1/16 grid).`).
-Without the arm a knob drag is an ordinary edit and creates no lane; a parameter
-that has no lane yet gets one on the first recorded point. The button stays
-enabled while the transport is stopped because writing at the playhead is
-useful — the tooltip states what a stopped gesture does.
+**Write automation** sits in the **Transport settings** popover. It is one arm
+for every surface that writes lane points. It has no default key; you can bind
+one in **Preferences > Keymap**. With the arm
+on, holding a knob records a curve. While the transport rolls, you get one point
+per grid cell. While it is stopped, the gesture writes one point at the
+playhead, which is why the button stays enabled when stopped (its tooltip says
+so). The whole gesture is one undo entry, and the status bar reports the result,
+for example `Recorded 12 points on filter.cutoff (1/16 grid).`. With the arm
+off, a knob drag is an ordinary edit and creates no lane. A parameter with no
+lane gets one on its first recorded point.
 
-The toolbar also holds the file actions (new, open, save, save as, move
-project), MIDI import and export, offline render to WAV, stems export, the theme
-family/variant pickers, and the preferences popover (output device, live MIDI
-input, diagnostics, shortcut list).
+The toolbar also has the file actions (new, open, save, save as, move
+project), MIDI import and export, offline render to WAV, stems export, the
+**AI** button and the **Preferences** button. **Preferences** opens a window
+with the pages **Display** (theme family and variant), **Audio** (output device
+and live MIDI input), **Keymap** (the shortcut list), **Performance**,
+**Storage**, **Network**, **External Sources**, **AI** and **Help & About**
+(diagnostics export).
 
-Every project has a file from the start: **New** asks where to put it, writes
-it there and refuses a path that already holds a file, and with no project open
-the start surface offers to open or create one. **Move Project** gives the open
-project another file and takes its edit history and backup along; nothing stays
-at the old place.
+A project has a file from the moment it exists. **New** asks where to put the
+project, writes the file there and refuses a path that already holds a file.
+With no project open, the start surface offers to open or create one. **Move
+Project** gives the open project a new file and takes its edit history and
+backup along, so nothing stays at the old place.
 
-A project is open in one process at a time. Opening a project that another
-OpenCompose process already has open is refused, the current project stays
-open, and the window says another process has it open. The same rule keeps a saved
-conversation to one process: opening one elsewhere keeps the conversation the
-panel already shows.
+Only one process can have a project open. If another OpenCompose process
+already has the project, opening it is refused, your current project stays
+open, and the window tells you which case it is. Saved conversations follow
+the same rule: opening one that another process holds keeps the conversation
+the panel already shows.
 
 ## Edit history
 
 Each project keeps its edit history in the app data folder, under
-`<config>/history/<path key>/`, so undo reaches edits from earlier sessions. The
-history does not sit beside the `.ocp` file. `<config>` is the app profile
-directory (`~/.opencompose`, or the directory named by
-`OPENCOMPOSE_CONFIG_DIR`). The key is the first 8 bytes of the SHA-256 of the
-project's canonical path, in hex.
+`<config>/history/<path key>/`, so undo reaches edits from earlier sessions.
+Nothing is written beside the `.ocp` file. `<config>` is the app profile
+directory: `~/.opencompose`, or the directory named by
+`OPENCOMPOSE_CONFIG_DIR`. The path key is the first 8 bytes of the SHA-256 of
+the project's canonical path, in hex.
 
-The folder holds `project.json` (the marker: version, canonical project path and
-the file's content SHA-256), `entries.jsonl` (one entry per line), `index.bin`
-(the live linear history) and `state.json` (the cursor, the applied entry's id
-and the document at it).
-Every entry records who made it (you, the agent of a named conversation, an
-external client, or a change made to the file outside OpenCompose), the typed
-changes its patches describe, and a cause that marks an entry written by an
-older conversation restore. Recall moves the cursor instead and writes no
-entry.
+The folder holds four files:
 
-- **Mod+Z** and **Mod+Shift+Z** step through the history. The status bar
-  describes what the step took back or reapplied from the entry's typed changes,
-  formatted in the app's language, and names the author.
-- While an agent turn is running or holds a batch, undo waits: the status bar
-  says `Agent is editing the project, cannot undo.`
-- The **History** tab in the bottom panel lists the entries newest first, 64 at a
-  time, with **Load older entries** for the rest. Clicking an entry moves the
-  project to the state after it; undone entries stay listed until a new edit
-  replaces them.
-- The tab shows the space the history uses. **Clear older history** keeps the
-  newest entries you choose and drops the rest after asking; undo then stops at
-  the oldest kept entry. Entries you undid are never cleared. When a history
-  passes the size set in **Preferences > Storage** (1 GB by default), the tab and
-  the status bar offer the clearing; nothing is cleared without you.
-- The history is matched by path. A file whose path has no history is matched by
-  content: its SHA-256 is compared with the marker of every history, and a
-  history whose project file is gone follows the file. This adopts the history of
-  a file moved or copied outside the app: the history is copied when the old file
-  still exists and moved when the old file is gone. A project created with
-  **New** starts a fresh history and never adopts another file's.
-- **Move Project** gives the history, the AI note, the conversations scoped to
-  the project folder and the recovery copies to the new path, and nothing stays
-  at the old path. **Save As** copies the history and the AI note and leaves the
-  conversations and recovery copies with the old file.
-- When the project file or workspace folder is gone, its data waits 30 days and
-  is then removed by a sweep that runs 60 seconds after start. A file on a
-  volume that is not mounted is not counted as gone, and the open project's data
-  and a running conversation are never removed.
-- **Preferences > Storage** lists the project data of each project and folder
-  (history, AI note, recovery copies and conversations) with its size and its
-  gone or due state. Only gone data offers **Remove**; the page also reports the
-  other app folders and the clip PCM cache. See
-  [On-disk storage](../storage-layout.md).
+- `project.json` is the marker: version, canonical project path and the SHA-256
+  of the file's content.
+- `entries.jsonl` has one entry per line.
+- `index.bin` is the live linear history.
+- `state.json` holds the cursor, the id of the applied entry and the document at
+  that entry.
+
+Every entry records its author: you, the agent of a named conversation, an
+external client, or a change made to the file outside OpenCompose. It also
+records the typed changes its patches describe, and a cause that marks an entry
+written by an older conversation restore. A recall moves the cursor and writes
+no entry.
+
+Press **Mod+Z** and **Mod+Shift+Z** to step through the history. The status bar
+describes what the step took back or reapplied, built from the entry's typed
+changes in the app's language, and names the author. While an agent turn is
+running or holds a batch, undo waits and the status bar says
+`Agent is editing the project, cannot undo.`
+
+The **History** tab in the bottom panel lists entries newest first, 64 at a
+time; **Load older entries** shows the rest. Click an entry to move the project
+to the state after it. Undone entries stay in the list until a new edit
+replaces them.
+
+The tab also shows how much space the history uses. **Clear older history**
+keeps the number of newest entries you choose and drops the rest after asking.
+Undo then stops at the oldest kept entry. Entries you undid are never cleared.
+When a history grows past the size set in **Preferences > Storage** (1 GB by
+default), the tab and the status bar offer to clear it. Nothing is cleared
+without your confirmation.
+
+The app finds a project's history by path. When a file's path has no history,
+the app compares the file's SHA-256 with the marker of every history, and a
+history whose project file is gone follows the file. This is how a file you
+moved or copied outside the app keeps its history: the history is copied if the
+old file still exists and moved if it is gone. A project created with **New**
+starts a fresh history and never adopts another file's.
+
+**Move Project** moves the history, the AI note, the conversations scoped to
+the project folder and the recovery copies to the new path, and leaves nothing
+at the old path. **Save As** copies the history and the AI note and leaves the
+conversations and recovery copies with the old file.
+
+When a project file or workspace folder is gone, its data is kept for 30 days
+and then removed by a sweep that runs 60 seconds after the app starts. A file
+on a volume that is not mounted does not count as gone. The open project's data
+and a running conversation are never removed.
+
+**Preferences > Storage** lists the data of each project and folder (history,
+AI note, recovery copies and conversations) with its size and whether it is gone
+or due for removal. Only gone data has a **Remove** button. The page also
+reports the other app folders and the clip PCM cache. See
+[On-disk storage](../storage-layout.md).
 
 ## Timeline
 
-- Track headers: colour bar, name (double-click to rename), instrument/preset
-  label, **▸ Preview**, **M** mute, **S** solo.
-- Clips are blocks on the lane; click one to select its pattern, double-click to
-  open the **Inspector** view (source and placement information, with a piano roll for note clips). Named
-  pattern clips, inline phrases and inline drum patterns all drag the same way:
-  the block follows the pointer on the shared grid, the move snaps on release,
-  and dropping on another lane moves the block across tracks. Drag a block's
-  right edge to change its end while the start stays put. Alt-drag copies a
-  named clip; Escape cancels without a project change.
-- Hover a block for its detail: kind and track under the name, the bar range and
-  length in bars, beats and time, its sound and note/hit count, then one state
-  row only when something differs from the default (transpose, swing, colour,
-  mute/solo, gain/pan, selection). Audio clips list offset, stretch, source file,
-  sample rate and channels. The card hides for the whole drag or resize gesture
-  and returns on the next hover with the block's new state.
-- Right-click a clip for its menu: open editor, rename, copy/cut/paste,
-  duplicate, split at the playhead, delete (**Mod+Z** restores it). Inline
-  phrases and inline drum patterns have their own menu (open editor, copy,
-  paste); audio clips offer split and delete. Right-click a track for rename,
-  add track, create a pattern at the playhead, open the mixer,
-  and MIDI actions. Every menu starts with the name of the object it acts on, and
-  opening it never selects that object or moves the playhead: the menu acts on
-  what you right-clicked, not on what was selected. Only the primary button
-  selects, drags or resizes; a secondary click (Ctrl-click on macOS included)
-  only opens the menu. **Open editor** is the exception that selects the clip,
-  because that is what the item asks for.
-- The clip menu and **Delete** act on any clip kind through one path: a pattern
-  clip, an audio clip and an automation block are all named by the same clip
-  pool, so a gesture the kind supports runs that kind's own command and a
-  gesture it does not support is disabled with the reason. An audio clip has no
-  duplicate, and a whole-timeline automation lane has no span to move, resize,
-  copy, split or delete. When the backend refuses a gesture, its sentence is
-  shown verbatim in the status line.
-- Selected clips support cut/copy/paste/duplicate and Delete (see shortcuts).
-- A compact info stripe above the ruler shows sections and key markers when the
-  project has them; overlapping clips on one track are flagged.
-- Zoom: buttons in the timeline footer, or **Mod+wheel** (6–120 px/beat).
-- Right-click an audio clip and choose **Preview clip** to hear its current
-  clip and mixer processing in isolation from other clips on the same track.
-  **Space** pauses and resumes the preview at its own position.
-- Double-click an audio clip or choose **Speed and pitch** from its context
-  menu. Set playback speed as a multiplier, transpose in fractional semitones,
-  or fit the source to the clip's timeline length. Choose Musical for sustained
-  material or Percussive for sharp attacks. The edit preserves the original
-  file and the clip's timeline boundaries. Use **Preserve formants** to
-  compensate for pitch shifts or set **Formant shift** to change vocal colour.
-  Use **Bypass processing** and **Apply** to hear the original media in the
-  same clip range while retaining the processing settings.
-  Add warp markers by entering source and target times measured from the
-  media origin. Use **Snap** next to a marker to move its source time to a
-  nearby attack while keeping its target fixed. Drag a visible marker to
-  move its target on the timeline.
-  Select the clip and drag its ↔ handle to stretch and resize together.
-  Alt/Option-dragging the right edge does the same thing.
-  A plain drag trims. Trimming or splitting a clip fitted to its range keeps
-  the previously fitted speed.
-- Audio clips show a waveform with trim handles, split at the playhead, and are
-  placed on their exact frame.
+A track header has a colour bar, the name (double-click to rename), the
+instrument or preset label, **▸ Preview**, **M** (mute) and **S** (solo).
+
+Clips are blocks on the track's lane. Click a block to select its pattern;
+double-click it to open the **Inspector** with the clip's source and placement,
+plus a piano roll for note clips.
+
+Named pattern clips, inline phrases and inline drum patterns all drag the same
+way. The block follows the pointer on the shared grid, the move snaps on
+release, and dropping the block on another lane moves it to that track. Drag the
+right edge to change the end while the start stays put. Alt-drag copies a named
+clip. Press Escape to cancel a drag without changing the project.
+
+Hover a block to see its details. Under the name you get the kind and track,
+then the bar range, the length in bars, beats and time, the sound and the note
+or hit count. A state row follows only when something differs from the
+default: transpose, swing, colour, mute or solo, gain or pan, selection. Audio
+clips also list offset, stretch, source file, sample rate and channels. The card
+hides during a drag or resize and comes back on the next hover with the block's
+new state.
+
+Right-click a clip for its menu: open editor, rename, copy, cut, paste,
+duplicate, split at the playhead and delete (**Mod+Z** restores a deleted
+clip). Inline phrases and inline drum patterns have a shorter menu (open
+editor, copy, paste), and audio clips offer split and delete. Right-click a
+track to rename it, add a track, create a pattern at the playhead, open the
+mixer or reach the MIDI actions.
+
+Every menu starts with the name of the object it acts on. Opening a menu never
+selects that object or moves the playhead, so the menu acts on what you
+right-clicked even when something else is selected. Only the primary button
+selects, drags or resizes; a secondary click, including Ctrl-click on macOS,
+only opens the menu. **Open editor** is the one item that also selects the
+clip.
+
+The clip menu and **Delete** reach every clip kind through one path. Pattern
+clips, audio clips and automation blocks are all named by the same clip pool.
+A gesture that the kind supports runs that kind's own command; a gesture it does
+not support is disabled and shows the reason. An audio clip cannot be
+duplicated, and a whole-timeline automation lane has no span to move, resize,
+copy, split or delete. When the backend refuses a gesture, the status line shows
+its message word for word.
+
+Selected clips support cut, copy, paste, duplicate and Delete (see
+[Keyboard shortcuts](#keyboard-shortcuts)). When the project has sections or
+key markers, a thin info stripe above the ruler shows them, and overlapping
+clips on one track are flagged.
+
+Zoom with the buttons in the timeline footer or with **Mod+wheel**, from 6 to
+120 px per beat.
+
+### Audio clips
+
+An audio clip shows its waveform with trim handles, can be split at the
+playhead, and sits on its exact frame.
+
+To hear one clip alone, right-click it and choose **Preview clip**. You hear
+its current clip and mixer processing without the other clips on the track.
+**Space** pauses and resumes the preview at its own position.
+
+To change speed or pitch, double-click the clip or choose **Speed and pitch…**
+from its menu:
+
+1. Set the playback speed as a multiplier, transpose in fractional semitones, or
+   fit the source to the clip's timeline length.
+2. Choose **Musical** for sustained material or **Percussive** for sharp
+   attacks.
+3. Turn on **Preserve formants** to compensate for a pitch shift, or set
+   **Formant shift** to change the vocal colour.
+4. Choose **Apply**.
+
+The edit keeps the original file and the clip's timeline boundaries. To compare,
+turn on **Bypass processing** and choose **Apply**: you hear the original media
+in the same clip range, and the processing settings are kept.
+
+Warp markers map source time to target time, both measured from the media
+origin. Enter the two times to add a marker. **Snap** next to a marker moves
+its source time to a nearby attack and keeps its target fixed. Drag a visible
+marker to move its target on the timeline.
+
+To stretch and resize together, select the clip and drag its ↔ handle, or
+Alt/Option-drag its right edge. A plain edge drag trims. Trimming or splitting
+a clip that is fitted to its range keeps the speed it was fitted to.
 
 ### Picture timecode
 
 Right-click the timeline ruler and choose **Picture timecode**. Set the
-picture's frame rate and the label at project start. **Read playhead**
-shows the closest picture frame. To go the other way, enter a label,
-choose **Convert**, then **Move playhead**. The playhead uses the frame's
-time through the current tempo map, including positions between grid lines.
-Choose **Save project clock** to keep the rate and start label when the
-project is saved and reopened. **Clear saved clock** removes the setting. Both
-actions can be undone. Enter frame labels from the picture edit.
+picture's frame rate and the timecode at project start, as `HH:MM:SS:FF`
+(`HH:MM:SS;FF` for drop-frame at 29.97 fps). Enter frame labels as the picture
+edit shows them.
+
+- **Read playhead** shows the picture frame closest to the playhead.
+- To go the other way, enter a label, choose **Convert**, then **Move
+  playhead**. The playhead goes to the frame's time through the current tempo
+  map, including positions between grid lines.
+- **Save project clock** keeps the rate and start label in the project when it
+  is saved and reopened. **Clear saved clock** removes them. Both can be undone.
 
 ### Automation rows
 
 Every track can show its automation under its lane. The **A** button in the
-track header (next to **M**/**S**) and **Show automation** in the track menu fold
-the area open and closed; it starts closed, and the state is per track for the
-session.
+track header (next to **M** and **S**) and **Show automation** in the track
+menu open and close the area. It starts closed, and the state is kept per track
+for the session.
 
-- Each lane gets one row. The row draws the lane's points as a polyline and its
-  name, and the header cell of the row carries the same name, the kind of target
-  (**Effect**, **Patch** or **Control**) and a per-lane **M** button. A
-  `pluginparam_…` lane shows the parameter name it encodes, so a synth or plugin
-  lane reads like the knob it drives.
-- A lane with a span (`automation: … [3:1 - 5:1]`) draws that span as a block,
-  so you can see where it writes. A lane without a span is a whole-timeline lane:
-  its row is striped and it has no block, because it writes from its first point
-  to the end of the project.
-- **A block behaves like a clip.** Drag it to move the whole clip, points
-  included: a ghost follows the pointer, the position snaps to the shared grid
-  on the 1/16 floor, and the move is written on release as one undo entry. Drag
-  either edge to resize it — the start edge or the end edge — and the opposite
-  edge stays put. **Alt-drag copies** the clip under the pointer instead of
-  moving it, the same copy modifier the clip lanes use. Escape cancels a drag
-  without a project change.
-- **Right-click a block**, or its row, for **Copy to playhead**, **Duplicate**,
+Each lane gets one row. The row draws the lane's points as a polyline with the
+lane name. The row's header cell repeats the name, shows the kind of target
+(**Effect**, **Patch** or **Control**) and has a per-lane **M** button. A
+`pluginparam_…` lane shows the parameter name it encodes, so a synth or plugin
+lane reads like the knob it drives.
+
+A lane with a span (`automation: … [3:1 - 5:1]`) draws that span as a block,
+so you can see where it writes. A lane without a span is a whole-timeline lane.
+Its row is striped and has no block, because the lane writes from its first
+point to the end of the project.
+
+You handle an automation block the way you handle a clip:
+
+- Drag the block to move it, points included. A ghost follows the pointer, the
+  position snaps to the shared grid with a 1/16 floor, and the move is written
+  on release as one undo entry.
+- Drag the start or end edge to resize the block; the opposite edge stays put.
+- Alt-drag copies the block under the pointer, the same copy modifier the clip
+  lanes use.
+- Press Escape to cancel a drag without changing the project.
+- Right-click the block, or its row, for **Copy to playhead**, **Duplicate**,
   **Split at playhead** and **Delete**. **Duplicate** puts the copy right after
-  the clip; **Copy** puts it at the playhead. **Split** needs the playhead
-  strictly inside the clip and at least a 16th note from either edge, and the
-  two halves meet on the value the clip wrote at the seam. **Delete** removes
-  the clip lane. Pressing **Delete** with a block selected does the same.
-- A move, resize, duplicate or split that would overlap another lane on the same
-  target is refused: the status bar names both spans, and the block stays where
-  it was. A whole-timeline lane has no block, so the four menu items are
-  disabled there and say **This lane drives the whole timeline; a clip gesture
-  needs a span.**
-- Effect, patch and control lanes all take the same gestures; a lane on its own
-  tick grid (`automation: … [ppq=N]`) does not, because those gestures address
-  the project's notated grid.
-- **Double-click** the row to add a point at the pointer. The value comes from
-  the vertical position and the position snaps to the shared grid on the 1/16
-  floor that clip positions use (the footer states the floor when the grid is
-  finer).
-- **Drag** a point to move it in both axes: a ghost follows the pointer, the
-  horizontal position snaps to the grid, and the move is written on release, as
-  one undo entry.
-- **Delete**/**Backspace** removes the selected point; pressing a point selects
-  it. The point menu also has **Delete point**.
-- **Right-click** a point for the four segment curves (**Linear**, **Stairs**,
-  **Half sine**, **Smooth**) and **Tension…**, which asks for the 0–1 blend that
-  only applies to a smooth segment.
-- A muted lane says **This lane is muted.** and refuses every edit: adding,
-  moving and deleting a point report that reason instead of writing. The lane's
-  **M** button clears the mute.
-- A track with no lanes shows **No automation on this track. Right-click a knob
-  and choose Create automation lane.**
-- Bus and master lanes have no track row, so their rows are drawn after the last
-  track, under a strip that names the owner. They are always visible while they
-  have lanes.
+  the block; **Copy to playhead** puts it at the playhead. **Split at
+  playhead** needs the playhead inside the block and at least a 16th note from
+  either edge, and the two halves meet at the value the block wrote at the
+  seam. **Delete** removes the clip lane, as does pressing **Delete** with the
+  block selected.
 
-The same lane also appears in the device rack's **Automation** list, where its
-mode, smoothing, curve and LFO controls live; the timeline row owns the point
-positions and values.
+A move, resize, duplicate or split that would overlap another lane on the same
+target is refused. The status bar names both spans, and the block stays where it
+was. A whole-timeline lane has no block, so those four menu items are disabled
+there with the hint **This lane drives the whole timeline; a clip gesture needs
+a span.**
+
+Effect, patch and control lanes all accept these gestures. A lane on its own
+tick grid (`automation: … [ppq=N]`) does not, because the gestures work on the
+project's notated grid.
+
+To edit points:
+
+- Double-click the row to add a point at the pointer. The vertical position sets
+  the value, and the time snaps to the shared grid with the same 1/16 floor that
+  clip positions use. The footer states the floor when the grid is finer.
+- Drag a point to move it in both directions. A ghost follows the pointer, the
+  horizontal position snaps to the grid, and the move is written on release as
+  one undo entry.
+- Click a point to select it. **Delete** or **Backspace** removes the selected
+  point, and the point menu has **Delete point**.
+- Right-click a point to choose one of the four segment curves (**Linear**,
+  **Stairs**, **Half sine**, **Smooth**) or **Tension…**, which asks for the
+  0–1 blend used by a smooth segment.
+
+A muted lane shows **This lane is muted.** and refuses every edit; adding,
+moving or deleting a point reports that reason and writes nothing. The lane's
+**M** button clears the mute. A track with no lanes shows **No automation on
+this track. Right-click a knob and choose Create automation lane.**
+
+Bus and master lanes have no track row, so their rows come after the last
+track, under a strip that names the owner. They stay visible while they have
+lanes.
+
+The same lane also appears in the device rack's **Automation** list, which
+holds its mode, smoothing, curve and LFO controls. Point positions and values
+are edited on the timeline row.
 
 ## Tempo and meter lane
 
-The **Tempo** chip in the ruler header opens a two-row lane above the tracks:
-tempo points on the upper row, meter changes on the lower. It starts open when
-the project already carries maps, opens on the first added point, and folds away
-when both maps are cleared; collapsed it takes no timeline height. The sticky
-header shows the tempo and meter under the playhead.
+The **Tempo** chip in the ruler header opens a two-row lane above the tracks,
+with tempo points on the upper row and meter changes on the lower one. The lane
+starts open when the project already has maps, opens when you add the first
+point, and folds away when both maps are cleared. Folded, it takes no timeline
+height. The sticky header shows the tempo and meter at the playhead.
 
-- Double-click a row to add a point at the snapped position; right-click a row
-  for **Add … here** and **Clear …**. A new point starts with the effective
-  value at that position, so adding it changes nothing until you edit it.
-- Drag a point horizontally. Tempo points follow the shared grid; meter changes
-  snap to bar starts. Alt is the timeline's copy modifier, so there is no
-  modifier that bypasses snapping here. Bar numbers come from the meter map, so
-  the ruler relabels exactly as the engine counts bars.
-- Double-click a point (or right-click → **Set value…**) for numeric entry.
-  Tempo accepts 20–400 BPM. A meter numerator is 1–32 and the denominator is 1,
-  2, 4, 8, 16 or 32. Invalid values and duplicate positions are refused without
-  touching the project.
-- Delete removes the focused point; the context menu also deletes or clears the
-  whole map. Clearing every tempo point returns to the project BPM, and clearing
-  meter points returns to the project meter.
-- Keyboard: **Tab** to the lane or a point, **←/→** nudges the selected point by
-  one grid step (a meter change moves one bar), **↑/↓** changes tempo by 1 BPM
-  (Shift: 10) or the meter numerator by 1, **Enter** edits the value,
-  **Delete/Backspace** removes the point, and **Esc** clears the selection.
-- Every edit is one undo entry and one dirty change. Maps persist in `.ocp` as
-  `tempo_map` and `time_sig_map`, and the transport, grid and clip placement all
-  resolve positions through those maps.
+- Double-click a row to add a point at the snapped position, or right-click it
+  for **Add tempo point here**, **Add meter change here** and the clear items.
+  A new point starts with the value already in effect at that position, so
+  adding it changes nothing until you edit it.
+- Drag a point horizontally. Tempo points follow the shared grid, and meter
+  changes snap to bar starts. Alt is the timeline's copy modifier, so no
+  modifier turns snapping off here. Bar numbers come from the meter map, so the
+  ruler numbers bars the same way the engine counts them.
+- Double-click a point, or right-click it and choose **Set value…**, to type a
+  value. Tempo accepts 20–400 BPM. A meter numerator is 1–32, and the
+  denominator is 1, 2, 4, 8, 16 or 32. Invalid values and duplicate positions
+  are refused and the project is left untouched.
+- Delete removes the focused point, and the context menu can also clear a whole
+  map. Clearing every tempo point returns to the project BPM; clearing the meter
+  changes returns to the project meter.
+- From the keyboard, **Tab** to the lane or a point. **←/→** nudges the selected
+  point by one grid step (a meter change moves by one bar). **↑/↓** changes a
+  tempo point by 1 BPM (10 with Shift) or a meter numerator by 1. **Enter**
+  edits the value, **Delete/Backspace** removes the point, and **Esc** clears
+  the selection.
+
+Every edit is one undo entry and one dirty change. The maps are saved in `.ocp`
+as `tempo_map` and `time_sig_map`, and the transport, the grid and clip
+placement all resolve positions through them.
 
 ## Piano roll
 
-The piano roll edits the selected pattern, or the track view opened from a
-phrase/clip. The toolbar has the two tools and a zoom control (10–200 px/beat,
-also **Mod+wheel**).
+The piano roll edits the selected pattern, or the clip you opened from a phrase
+or the timeline. Its toolbar has the two tools and a zoom control (10–200 px per
+beat, also **Mod+wheel**).
 
-- The roll edits the opened clip. Its left edge is the clip's first beat and
-  the clip boundary marks its exclusive end. The drum grid can show authored
-  hits beyond that boundary so they remain editable.
-- Bar numbers stay absolute for orientation: a clip starting at bar 9 puts the
-  label "9" on the left edge. A clip that starts mid-bar shows its partial bar
-  at the left edge and its first full bar line where the next bar really begins.
-- Drawing, dragging, resizing, nudging and duplicating keep note starts inside
-  the clip. A one-beat clip is exactly one beat wide; only a zero-length range
-  falls back to one grid step so the canvas never collapses.
-- **Select**: drag notes to move, drag their edges to resize, drag empty space to
-  box-select, Shift-click to toggle one note in or out of the selection.
-- **Draw**: click to add a note. Delete/Backspace removes the selection.
-- A drum pattern whose preset is a kit (`builtin.drumkit`) gets a **drum lane**:
-  one row per pad, in the kit's own order, labelled with the pad name and the
-  kit name beside the instrument in the toolbar. A note the kit does not declare
-  gets an `Other <n>` row, where `<n>` is its MIDI note. A semitone the kit does
-  not name and no hit uses is not a row, so the lane carries the kit's pads
-  rather than 72 lines; a plain drum track keeps the General MIDI rows. A hit is
-  placed on the current grid, including triplets and 1/32 notes. The DSL keeps
-  a sixteenth anchor and stores the exact grid displacement as
-  `grid_offset_beats` in quarter notes, up to ±0.125. The written position
-  determines whether the hit fits the clip. Swing and an optional
-  `timing_offset_beats` then shift the playback onset.
-  A hit placed on an `Other` row writes that row's MIDI note in `midi_note`, so
-  the kit plays the pad that holds the note.
-  Markers and velocity bars show each authored hit once, including its
-  explicit timing offset. An outlined hit has no played onset in this placement
-  after applying the clip's slip, repeat, swing and timing bounds. Select or
-  edit the velocity of an outlined hit just like any other authored hit.
-- Right-click (or Ctrl-click on macOS) opens a menu for whatever is under the
-  cursor and changes nothing else: the note menu (copy, paste at the playhead,
-  duplicate, delete, velocity, mute, grace) on a note, the drum-hit menu on a
-  hit, and the grid menu (draw a note here, paste here, grid 1/4–1/32) on empty
-  grid. Only the primary button selects, draws or scrubs; a secondary click
-  never selects a note, starts a marquee or moves the playhead. The menu's first
-  row names the note (pitch and velocity) or the position (pitch, bar and beat;
-  the pad name on a drum lane). The hit menu names the hit under the pointer and
-  deletes that hit, and a right-click also picks it, so Delete acts on the hit
-  the menu showed.
-- Delete/Backspace removes the selection, **Mod+D** duplicates it, **Mod+A**
-  selects every note, **Esc** clears the selection.
-- Left/Right nudges by one grid step; Shift+Left/Right by one beat.
+The roll shows the opened clip. Its left edge is the clip's first beat, and the
+clip boundary marks the clip's exclusive end. The drum grid can show authored
+hits beyond that boundary so you can still edit them.
+
+Bar numbers stay absolute: in a clip that starts at bar 9, the left edge is
+labelled "9". A clip that starts mid-bar shows its partial bar at the left edge
+and draws its first full bar line where the next bar really begins.
+
+Drawing, dragging, resizing, nudging and duplicating keep note starts inside the
+clip. A one-beat clip is exactly one beat wide. Only a zero-length range falls
+back to one grid step, so the canvas never collapses.
+
+With the **Select** tool, drag notes to move them, drag their edges to resize,
+drag empty space to box-select, and Shift-click to add or remove one note from
+the selection. With the **Draw** tool, click to add a note. Delete or Backspace
+removes the selection with either tool.
+
+### Drum lane
+
+A drum pattern whose preset is a kit (`builtin.drumkit`) gets a drum lane with
+one row per pad, in the kit's own order. Each row carries the pad name, and the
+toolbar shows the kit name beside the instrument. A note that the kit does not
+declare gets an `Other <n>` row, where `<n>` is its MIDI note. A semitone that
+the kit does not name and no hit uses gets no row, so the lane shows the kit's
+pads instead of 72 lines. A plain drum track keeps the General MIDI rows.
+
+Hits are placed on the current grid, including triplets and 1/32 notes. The DSL
+stores a sixteenth anchor and the exact grid displacement as
+`grid_offset_beats`, in quarter notes, up to ±0.125. The written position
+decides whether the hit fits the clip; swing and an optional
+`timing_offset_beats` then shift the onset you hear. A hit placed on an `Other`
+row writes that row's MIDI note in `midi_note`, so the kit plays the pad that
+holds the note.
+
+Markers and velocity bars show each authored hit once, including its explicit
+timing offset. An outlined hit has no onset that plays in this placement once
+the clip's slip, repeat, swing and timing bounds are applied. You can still
+select an outlined hit and edit its velocity.
+
+### Menus and keys
+
+Right-click (Ctrl-click on macOS) opens a menu for whatever is under the
+pointer and changes nothing else. A note gets the note menu (copy, paste at the
+playhead, duplicate, delete, velocity, mute, grace), a drum hit gets the hit
+menu, and empty grid gets the grid menu (draw a note here, paste here, grid
+1/4–1/32). The first row names the note (pitch and velocity) or the position
+(pitch, bar and beat, or the pad name on a drum lane). The hit menu names and
+deletes the hit under the pointer, and the right-click also picks that hit, so
+Delete acts on the hit the menu showed.
+
+Only the primary button selects, draws or scrubs. A secondary click never
+selects a note, starts a marquee or moves the playhead.
+
+Delete or Backspace removes the selection, **Mod+D** duplicates it, **Mod+A**
+selects every note and **Esc** clears the selection. Left/Right nudges by one
+grid step, and Shift+Left/Right by one beat.
 
 ## Mixer
 
-The Mixer panel shows the selected node's detail inspector on the left and the
-routing view on the right: a project-level routing toolbar above the bus graph.
-The graph is the topology; the toolbar creates buses, and the inspector edits
-the selected node and connection.
+The Mixer panel has the selected node's inspector on the left and the routing
+view on the right, with a project-level routing toolbar above the bus graph.
+The graph shows the topology, the toolbar creates buses, and the inspector
+edits the selected node and connection.
 
-- **Graph**: tracks in the left column, buses in the middle, master on the right,
-  with one curve per connection (solid = main output or bus route, dashed =
-  send). Click a node to inspect it; click a connection to edit it. Pressing a
-  connection is keyboard accessible (`Enter` / `Space`), and a click on the
-  background clears the selection. Dragging the background pans the view.
-- **Add a node**: the toolbar's bus field creates a bus routed to master. Type a
-  name, or leave it empty for the first free `Bus N`; the new node is selected.
-  A track is still added by dropping a preset on the mixer.
-- **Edit a connection**: selecting a connection opens a card in the inspector
-  under the source node's controls. `To` re-points it (a track's exclusive main
-  output, a send, or one bus route). A send connection also exposes its dB
-  level, `PRE`/`POST` tap, input pan and a remove button; `Escape` leaves the
-  card, `Delete` removes the connection and focus returns to the source node.
-- **Connect**: next to the channel controls, a track adds a send to a bus and a
-  bus adds a route to master or another bus.
-- **Delete a bus**: the delete button is in the bus actions card under the
-  channel detail. An unused bus is removed immediately. A bus that is still
-  used by a track output, a send or a bus route is rejected with an error naming
-  those references; the confirmation card then offers an explicit re-route —
-  track outputs return to master, sends into the bus are dropped, and buses that
-  routed into it return to master — before deleting it.
-- **Inspector**: the node detail below the channel selector shows the fader,
-  pan, `M` / `S` / `SAFE` / `Ø`, the effect chain, the send list (including the
-  auxiliary source picker for CLAP/VST3 instruments) and the bus route list.
+The graph puts tracks in the left column, buses in the middle and master on the
+right. Each connection is one curve: solid for a main output or bus route,
+dashed for a send. Click a node to inspect it, or a connection to edit it. A
+connection can also be pressed from the keyboard with `Enter` or `Space`.
+Clicking the background clears the selection, and dragging the background pans
+the view.
+
+To add a bus, type a name in the toolbar's bus field, or leave it empty to get
+the first free `Bus N`. The new bus is routed to master and selected. To add a
+track, drop a preset on the mixer.
+
+Selecting a connection opens a card in the inspector under the source node's
+controls. Use `To` to re-point the connection: a track's exclusive main output,
+a send, or one bus route. A send also shows its dB level, `PRE`/`POST` tap,
+input pan and a remove button. `Escape` leaves the card; `Delete` removes the
+connection and returns focus to the source node.
+
+Next to the channel controls, a track can add a send to a bus, and a bus can add
+a route to master or to another bus.
+
+The delete button for a bus is in the bus actions card under the channel
+detail. An unused bus is removed at once. A bus that a track output, a send or a
+bus route still uses is refused with an error that lists those references. The
+confirmation card then offers to re-route before deleting: track outputs return
+to master, sends into the bus are dropped, and buses that routed into it return
+to master.
+
+Below the channel selector, the node detail shows the fader, pan, `M` / `S` /
+`SAFE` / `Ø`, the effect chain, the send list (with the auxiliary source picker
+for CLAP and VST3 instruments) and the bus route list.
 
 Every control commits once per gesture, so one fader move, one send edit or one
 connection re-point is one undo entry. See [Mixer routing](../mixer-routing.md).
@@ -368,100 +447,115 @@ connection re-point is one undo entry. See [Mixer routing](../mixer-routing.md).
 ## Device rack
 
 Each track, bus and master has an effect chain. `+` opens the built-in device
-picker; a slot expands into the device panel for that device. The slot's context
-menu offers **Bypass** (devices that define it) and **Remove**.
+picker, and a slot expands into the panel for its device. The slot's context
+menu has **Bypass** (for devices that define it) and **Remove effect**.
 
-- The dynamic EQ opens the full curve editor: drag a node for frequency/gain,
-  wheel over it for Q, Alt-drag a dynamic band for its range, double-click to
-  reset, arrow keys for fine moves, per-band solo and a channel view
-  (`All`, `L`, `R`, `M`, `S`).
-- The fixed EQ and the passive EQ have their own curve views.
-- Device panels can show gain reduction while audio plays, and the parametric
-  EQ can draw a live spectrum analyser.
-- Plugin effects keep their raw parameter list.
+The dynamic EQ opens the full curve editor. Drag a node to set frequency and
+gain, scroll over it for Q, Alt-drag a dynamic band to set its range, and
+double-click to reset. Arrow keys make fine moves. Each band has a solo, and a
+channel view switches between `All`, `L`, `R`, `M` and `S`.
+
+The fixed EQ and the passive EQ have their own curve views. Device panels can
+show gain reduction while audio plays, and the parametric EQ can draw a live
+spectrum analyser. Plugin effects show their raw parameter list.
 
 ## Patch editor
 
-Selecting an OpenSynth preset opens the synth workbench, with **SOUND**
-(OSC / FILTER / AMP pages), **MOD**, **FX** and **VOICE** views, a preset field
-that opens the factory + user-library browser, a **LOAD** button that imports an
-external preset file, a `⋯` patch menu, a COMPACT/EXPAND toggle, and an audition
-keyboard. The patch editor writes the preset's `params`, so every edit is an
-undoable project change. Details in [OpenSynth](synth.md).
+Selecting an OpenSynth preset opens the synth workbench. It has the views
+**SOUND** (with OSC, FILTER and AMP pages), **MOD**, **FX** and **VOICE**; a
+preset field that opens the factory and user-library browser; a **LOAD** button
+that imports an external preset file; a `⋯` patch menu; a **COMPACT**/**EXPAND**
+toggle; and an audition keyboard. The editor writes the preset's `params`, so
+every edit is an undoable project change. Details are in [OpenSynth](synth.md).
 
-Hover or focus a rotary control to read its value. Press the knob and move the
-pointer vertically to adjust it: upward increases the value, downward decreases
-it, and Shift makes the movement finer. The side indicator follows the gesture;
-you do not need to move the pointer onto it. Releasing commits the edit. The
-mouse wheel also adjusts a knob. For keyboard editing, focus it and use the arrow
-keys, Home or End; Enter or Space opens a vertical editor, and Escape closes it.
-Double-click restores the parameter's default value.
+Hover over or focus a rotary control to read its value. Press the knob and move
+the pointer up to increase the value or down to decrease it; hold Shift for
+finer steps. The side indicator follows the gesture, so you do not have to move
+the pointer onto it. Releasing commits the edit. The mouse wheel also turns a
+knob. From the keyboard, focus the knob and use the arrow keys, Home or End.
+Enter or Space opens a vertical editor, and Escape closes it. Double-click
+restores the parameter's default.
 
-The patch field shows the **project preset's name**. A smaller label after it is
-the patch it was loaded from — the factory patch, user-library entry or imported
-file name — and survives save/load in the `.ocp` file. The `⋯` menu holds the patch lifecycle:
+The patch field shows the name of the project preset. The smaller label after it
+names the patch it was loaded from (a factory patch, a user-library entry or an
+imported file name), and that label is saved in the `.ocp` file. The `⋯` menu
+manages the patch:
 
 - **Rename…** renames the project preset and rewrites every track, pattern and
   `extends:` reference in the same undo step.
-- **Duplicate** and **Save as…** create an independent copy and point the players
-  at it, so editing the copy never moves the original.
+- **Duplicate** and **Save as…** create an independent copy and point the
+  players at it, so editing the copy leaves the original alone.
 - **Save to library…** stores the whole patch (parameters, effect chain and
-  provenance) under `~/.opencompose/presets` for use in other projects.
-  OpenSynth wavetables and sample dependencies are collected into the library
-  so the source project can move independently.
+  provenance) under `~/.opencompose/presets` for use in other projects. The
+  OpenSynth wavetables and samples it depends on are copied into the library,
+  so the source project can move on its own.
 
 The browser lists the factory bank and a **User library** section with the same
-search and audition affordances; the search also matches library tags. Loading a
-row replaces the whole patch — parameters, effect chain and source label — and
+search and audition controls; the search also matches library tags. Loading a
+row replaces the whole patch (parameters, effect chain and source label) and
 resets every key the row does not declare, in one undo entry. See
 [Factory patches](synth.md#factory-patches) for the audition and reset rules.
 
 ## Plugin browser
 
 The **Plugins** sidebar tab lists scanned CLAP, VST3, VST2, AU and LV2 plugins
-and built-in assets, with search, format and type filters, a **Rescan** button,
-and a **Check project** action that reports plugins a project references but
-cannot find. LV2 and VST2 plugins have no in-app editor: LV2 control ports are
-edited as preset `params` in the DSL or preset editor, and VST2 parameters are
-edited in the preset editor. **Add preset** creates a project preset from the
-selected source. The **Store** tab opens external plugin, sample, soundfont and
-preset sites in a separate window and lists the bundled free-plugin catalog.
+and the built-in assets. It has search, format and type filters, a **Rescan**
+button, and **Check project**, which reports plugins the project references but
+the app cannot find. **Add preset** creates a project preset from the selected
+source.
+
+LV2 and VST2 plugins have no in-app editor. Edit LV2 control ports as preset
+`params` in the DSL or the preset editor, and VST2 parameters in the preset
+editor.
+
+The **Store** tab opens external plugin, sample, SoundFont and preset sites in
+a separate window and lists the bundled catalog of free plugins.
 
 ## DSL editor
 
-**D** opens the DSL sidebar: the project as text, with syntax highlighting.
-**Mod+Enter** parses and applies the text; a parse error is shown inline and
-nothing is applied. The editor is one undo entry per apply.
+Press **D** to open the DSL sidebar, which shows the project as highlighted
+text. **Mod+Enter** parses and applies the text. A parse error is shown inline
+and nothing is applied. Each apply is one undo entry.
 
 ## AI panel
 
-The **AI** sidebar tab is a chat over the open project. It has a provider
-setting (endpoint, model, key or sign-in), quick prompts such as "Describe
-arrangement", "Add reverb bus", "Add drum beat" and "Improve mix", a tool log,
-and a diff view. Proposed edits are shown as a diff and applied only when you
-press **Accept**; **Reject** discards them. One pending edit exists per turn.
-Limits are listed in [Drawing from an agent](agents.md).
+The **AI** sidebar tab is a chat about the open project. It has provider
+settings (endpoint, model, key or sign-in), quick prompts such as **Describe
+arrangement**, **Add reverb bus**, **Add drum beat** and **Improve mix**, a tool
+log and a diff view.
+
+**Project edit permission** decides how the agent's edits land. With **Ask**,
+each change to the project DSL waits on a card with **Approve**, **Always
+allow** and **Reject**, one change at a time. **Review** validates each change,
+records its diff in the conversation and applies it in the same turn. **Auto**
+applies changes directly, though a destructive call still asks first. When a
+proposed edit is open for preview, the preview bar offers **Accept** and
+**Decline**. Limits are listed in [Drawing from an agent](agents.md).
 
 ## Diagnostics
 
-**Mod+Shift+D**, or the Diagnostics button in the preferences popover, writes
-`opencompose-diagnostics-<stamp>.tar.gz` and reveals it in the file manager. The
-archive contains `manifest.json`, `logs/recent.log`, `project/project.ocp`,
-`environment.json`, `plugins/scan-summary.json` and `errors/last-error.txt`; each
-missing section is recorded as `missing` with a reason in the manifest.
+Press **Mod+Shift+D**, or choose **Export diagnostics…** on the **Help &
+About** page of Preferences, and pick where to save
+`opencompose-diagnostics-<stamp>.tar.gz`. The app writes the archive and reveals
+it in the file manager. The archive contains `manifest.json`,
+`logs/recent.log`, `project/project.ocp`, `environment.json`,
+`plugins/scan-summary.json` and `errors/last-error.txt`. A section that could
+not be collected is recorded in the manifest as `missing`, with a reason.
 
 ## Keyboard shortcuts
 
-Every shortcut is a command in the frontend registry, so the key a surface
-shows is the key that runs it (see [Remapping shortcuts](#remapping-shortcuts)).
-**Mod** is Cmd on macOS, Ctrl elsewhere; letter shortcuts do nothing while a
+Every shortcut is a command in the frontend registry, so the key a surface shows
+is the key that runs it (see [Remapping shortcuts](#remapping-shortcuts)).
+**Mod** is Cmd on macOS and Ctrl elsewhere. Letter shortcuts do nothing while a
 text field has focus.
 
 | Shortcut | Action |
 |---|---|
 | Space | Play/pause; auditions the selected preset when the last click was inside the Presets panel |
+| L | Toggle the loop |
 | Mod+N / Mod+O | New project / open project |
 | Mod+S / Mod+Shift+S | Save / Save As |
+| Mod+E | Export audio |
 | Mod+Z / Mod+Shift+Z | Undo / redo |
 | C | Toggle the Clips panel |
 | R | Toggle the Piano Roll |
@@ -477,6 +571,9 @@ text field has focus.
 | ↑ / ↓ | Change the selected tempo point by 1 BPM (Shift: 10) or the meter numerator by 1 |
 | Enter | Edit the selected tempo/meter point value |
 | Mod+C / Mod+X / Mod+V | Copy / cut / paste the selected timeline clip |
+| Mod+G / Mod+Shift+G | Group / ungroup clips |
+| Alt+T | Add a marker at the playhead |
+| F2 | Rename the selection |
 | Mod+wheel | Zoom the timeline or the piano roll |
 | Mod++ / Mod+- / Mod+0 | Interface scale up / down / reset |
 | Mod+Enter | Parse and apply DSL edits in the DSL sidebar |
@@ -485,94 +582,98 @@ text field has focus.
 
 ### Remapping shortcuts
 
-Open **Keyboard shortcuts…** in the preferences popover to search the command
-table, pick a command and press a new combination. The command palette
-(Mod+Shift+P) reads the same table, so a rebinding shows up there and in the
-preferences list immediately.
+Open **Preferences > Keymap** to search the command table, pick a command and
+press a new combination. The command palette (Mod+Shift+P) reads the same
+table, so a new binding shows up there and in the Keymap list at once.
 
-- The registry lives in `crates/oc-gui/frontend/src/stores/commands.ts`. A
-  command carries an id, a label key, a category, a default binding and its
-  handler; components that own local state register their handler while they
-  are mounted.
-- Overrides are stored in `localStorage` under `opencompose.keymap` as
-  `{ version: 1, bindings: { "<commandId>": "<binding>" } }`. A binding string
-  uses `Mod`, `Shift`, `Alt` and the key name, for example `Mod+Shift+Z`.
-- Binding a key another command already uses is refused, the message names that
-  command, and the old binding stays. **Reset** drops one override; **Restore
-  defaults** clears them all after a confirmation.
-- Escape, Tab, modifier-only presses and the palette's own Mod+Shift+P are
-  reserved and cannot be assigned.
+The registry is in `crates/oc-gui/frontend/src/stores/commands.ts`. A command
+has an id, a label key, a category, a default binding and a handler. Components
+that own local state register their handler while they are mounted.
+
+Overrides are stored in `localStorage` under `opencompose.keymap` as
+`{ version: 1, bindings: { "<commandId>": "<binding>" } }`. A binding string
+uses `Mod`, `Shift`, `Alt` and the key name, for example `Mod+Shift+Z`.
+
+If you bind a key that another command already uses, the binding is refused,
+the message names that command, and the old binding stays. **Reset** drops one
+override; **Restore defaults** clears them all after you confirm. Escape, Tab,
+modifier-only presses and the palette's own Mod+Shift+P are reserved and cannot
+be assigned.
 
 ## Files on disk
 
-- Projects are `.ocp` text. Saving is the same document the CLI reads.
+Projects are `.ocp` text, and a saved project is the same document the CLI
+reads. The other files the app uses:
+
 - Media cache: `<config>/cache/media` when a profile is selected, otherwise the
-  platform cache directory (`~/Library/Caches/OpenCompose/media` on macOS).
-  Decoded audio, stretch variants and vocal analyses are recomputable.
-- The history, recovery copies, AI conversations and caches are described in
+  platform cache directory (`~/Library/Caches/OpenCompose/media` on macOS). It
+  holds decoded audio, stretch variants and vocal analyses, all of which can be
+  recomputed.
+- Edit history, recovery copies, AI conversations and caches: see
   [On-disk storage](../storage-layout.md).
-- Preferences for live MIDI: `~/.opencompose/midi.json`.
+- Live MIDI preferences: `~/.opencompose/midi.json`.
 - Audio devices, sample rate, buffer, capture layout and monitoring:
   `~/.opencompose/audio.json`. See [Audio devices](../audio-devices.md).
 - Agent endpoint and token: `~/.opencompose/agent.json`.
-- AI provider settings: `~/.opencompose/ai-providers.yaml`; keys live in the
-  OS credential store, never in the project.
+- AI provider settings: `~/.opencompose/ai-providers.yaml`. Keys are kept in the
+  OS credential store and never in the project.
 
 ## Opening project files from the desktop
 
-OpenCompose registers `.ocp` project files with the operating system. Opening a
-project in Finder, Explorer or a desktop file manager brings the document window
-to the front. A second launch forwards its project to the running app rather
-than creating an independent editing session. File paths and local `file:` URLs
-are accepted; network URLs are not project-open commands.
+OpenCompose registers `.ocp` files with the operating system. Opening a project
+in Finder, Explorer or a desktop file manager brings the document window to the
+front. A second launch hands its project to the running app instead of starting
+a separate editing session. File paths and local `file:` URLs are accepted; a
+network URL does not open a project.
 
-If a project is already open with unsaved edits, choose **Save**, **Don't Save**
-or **Cancel** before the requested file replaces it. A failed or cancelled save
-keeps the current project and prompt. Cancel dismisses that open request. Opening
-the current file again only brings its window forward; it does not discard edits.
-Requests received while the app starts or another dialog is active wait until
-the document can safely answer them.
+If the open project has unsaved edits, choose **Save**, **Don’t Save** or
+**Cancel** before the requested file replaces it. If the save fails or you
+cancel it, the current project and the prompt stay. **Cancel** dismisses that
+open request. Opening the current file again only brings its window forward and
+keeps your edits. Requests that arrive while the app is starting or another
+dialog is open wait until the document can answer them safely.
 
-Closing the last document window exits the app after the same unsaved-work
-choice. **Hide** or minimize keeps the current project and playback session in
-the running app; on macOS, clicking its Dock icon restores the existing window.
-**Quit** uses the application-wide unsaved-work prompt.
-
+Closing the last document window quits the app after the same unsaved-work
+choice. Hiding or minimizing the window keeps the project and the playback
+session in the running app; on macOS, clicking the Dock icon brings the window
+back. **Quit OpenCompose** uses the app-wide unsaved-work prompt.
 
 ## Inspecting a clip
 
 Right-click a clip to read its properties without changing the selection or
-moving playback. The menu shows the placement and duration, track, effective
-preset/plugin/patch or source sample file, and relevant offsets, looping and
-processing settings. Source paths are selectable text: select a path and use
-Copy to copy the text rather than the clip. Relative media paths are displayed
-against the project file location; an unsaved project keeps its relative path.
-This display does not establish that a file exists on disk.
+moving playback. The menu shows the placement and duration, the track, the
+effective preset, plugin, patch or source sample file, and any relevant offsets,
+looping and processing settings. Source paths are selectable text: select a
+path and use Copy to copy the text, which leaves the clip clipboard alone.
+Relative media paths are shown against the project file's location, and an
+unsaved project shows the relative path as written. The menu does not check
+that the file exists on disk.
 
-Choose **Inspect clip** for a persistent view. The **Inspector** replaces the
-old Detail clip list: a note clip retains a piano roll beside its source facts,
-while audio inspection shows the file, trim, gain, fades, stretch and pitch
-without an unrelated note editor.
+Choose **Inspect clip** to keep the view open in the **Inspector**. A note clip
+shows a piano roll beside its source details. An audio clip shows the file,
+trim, gain, fades, stretch and pitch, without a note editor.
 
 ## First launch and appearance
 
-With no saved override, OpenCompose follows the system light/dark appearance
-and negotiates its interface language from the system browser-language list.
-Unsupported languages fall back to English. Setup shows these choices, with
-System/Light/Dark and explicit language controls. Choosing System follows later
-system changes; an explicit theme or language remains your choice. Settings
-remain available in Preferences, and **Help & About → Getting started** reopens
-setup without replacing the project.
+Until you choose otherwise, OpenCompose follows the system light or dark
+appearance and picks its interface language from the system's preferred browser
+languages. A language the app does not support falls back to English. The setup
+screen shows these choices, with **Follow system**, **Light** and **Dark** and
+an explicit language control. **Follow system** keeps following later system
+changes; an explicit theme or language stays as you set it. The same settings
+are in Preferences, and **Help & About > Getting started** reopens setup without
+replacing the project.
 
-Use **Play test sound** to hear the quiet built-in phrase, **Stop test sound**
-to cancel it, or **Audio settings** to choose the output. No API key or plugin
-installation is required. From the workspace chooser, **Create starter sketch**
-asks for a new filename and writes a complete built-in example; it refuses to
-overwrite an existing file.
+Choose **Play test sound** to hear a quiet built-in phrase, **Stop test sound**
+to end it, or **Audio settings** to choose the output. You need no API key and
+no plugins. In the workspace chooser, **Create starter sketch** asks for a new
+file name and writes a complete built-in example; it refuses to overwrite an
+existing file.
 
 ## Help and support
 
-Help & About contains the bundled English manual, current build/source/platform
-identity, a link to the public repository, offline license and soundfont notices,
-and diagnostics export. Export saves locally and includes project source, paths,
-logs, plugin information and system details; inspect it before sharing.
+The **Help & About** page holds the bundled English manual, the build, source
+and platform identity, a link to the public repository, the license and
+SoundFont notices (available offline) and diagnostics export. The diagnostics
+file is saved locally and contains the project source, paths, logs, plugin
+information and system details, so read through it before you share it.
