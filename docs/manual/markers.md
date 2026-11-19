@@ -1,9 +1,8 @@
 # Markers and the loop region
 
 A marker names a point on the timeline. The loop region is a rehearsal window
-the transport repeats. The two are stored in different places on purpose: a
-marker is part of the project, and a loop region is part of the playback
-session.
+that the transport repeats. They are stored in different places: a marker
+belongs to the project, and the loop region belongs to the playback session.
 
 ## Markers
 
@@ -18,111 +17,120 @@ the same `bar:beat:subdivision` form as every other timeline position.
 
 Markers are project data. They survive save and load, they appear in the DSL
 text, and `ocp fmt` keeps them in timeline order. A project without markers
-serialises exactly as it did before markers existed.
+writes no marker lines.
 
-A marker is an annotation, not arrangement data:
+A marker annotates the timeline and has no effect on the arrangement:
 
-- It may sit past the last audio. The ruler shows it there, and the arrangement
-  is unaffected.
+- It may sit after the last audio. The ruler shows it there, and the
+  arrangement does not change.
 - It never changes what `ocp render` or an export produces.
-- Two markers cannot share a name. The validator and the marker commands refuse
-  a duplicate and name the marker that already holds it.
+- Two markers cannot have the same name. The validator and the marker commands
+  refuse a duplicate and name the marker that already uses it.
 - A position with bar or beat `0` is refused, because bars and beats start at
-  `1`. A subdivision of `4` or more is refused, because a beat holds `0` to `3`.
+  `1`. A subdivision of `4` or more is refused, because a beat holds
+  subdivisions `0` to `3`.
 
 ## Marker controls on the ruler
 
 Each marker is a flag on the ruler with its name beside it.
 
-| Control | Enabled when | Disabled reason | Pending | Failure |
-| --- | --- | --- | --- | --- |
-| Add marker at playhead (`Alt+T`, or the ruler context menu) | A project is loaded | — | The ruler reads `Saving marker…` | `Marker not saved: {reason}` |
-| Marker flag, single click | Always | — | — | `Marker not saved: {reason}` |
-| Marker flag, drag | Always | — | The flag follows the pointer | `Marker not saved: {reason}` |
-| Marker flag, double click | Always | — | The rename dialog keeps `Add` inactive until the name is non-empty | `Marker not saved: {reason}` |
-| Marker flag, right click | Always | — | The confirmation reads `Delete marker?` | `Marker not saved: {reason}` |
+To add a marker at the playhead, press `Alt+T` or choose
+**Add marker at playhead** in the ruler's context menu. The command is
+available while a project is loaded. The new marker is named `Marker 1`,
+`Marker 2` and so on; rename it if the name should say more.
 
-A click moves the playhead to the marker. A drag moves the marker and writes one
-undo entry when the pointer is released, so a whole gesture is one step in the
-history. A double click opens the in-app rename dialog; the webview has no
-`window.prompt`, so the application owns that dialog. A right click asks for
-confirmation before it deletes.
+To work with an existing flag:
 
-`Alt+T` adds a marker named `Marker 1`, `Marker 2`, and so on at the playhead.
-Rename it afterwards if the name should say more.
+- Click it to move the playhead to the marker.
+- Drag it to move the marker. The flag follows the pointer, and the move is
+  written as one undo entry when you release the pointer, so the whole gesture
+  is one step in the history.
+- Double-click it to open the **Rename marker** dialog. **OK** stays inactive
+  until the name is not empty. The webview has no `window.prompt`, so the app
+  draws this dialog itself.
+- Right-click it for a menu with **Rename marker…** and **Delete marker**.
+  Delete asks **Delete marker?** before it removes the marker.
+
+While a change is being saved, the ruler reads `Saving marker…`. If it fails,
+the ruler reads `Marker not saved: {reason}`.
 
 ## The loop region
 
-Drag the strip along the bottom edge of the ruler to draw a region. The region
-is drawn as a tinted band over the ruler, and the transport gains a **Loop**
-button (`L`).
+To draw a region, drag in the strip along the bottom edge of the ruler. The
+region appears as a tinted band over the ruler, and the **Loop** button in the
+transport (`L`) becomes available.
 
-| Control | Enabled when | Disabled reason | Pending | Failure |
-| --- | --- | --- | --- | --- |
-| `Loop` button, `L`, or the ruler menu item | A region exists | `Drag in the ruler to set a loop region first.` | The button reads `Loop armed` (or `Loop off…` when disarming) until the transport confirms | `Loop did not change: {reason}` |
-| Loop strip drag | Always | — | The band follows the pointer | `Loop did not change: {reason}` |
-| Clear loop region (strip context menu) | A region exists | `Drag in the ruler to set a loop region first.` | The band disappears when the transport confirms | `Loop did not change: {reason}` |
+The **Loop** button, `L` and **Loop the region** in the ruler's context menu
+arm and disarm the loop. They work only when a region exists. Until then the
+button is disabled, and its tooltip reads
+`Drag in the ruler to set a loop region first.` While the transport applies the
+change, the ruler status reads `Applying loop…`.
+
+Dragging the strip again redraws the region, and the band follows the pointer.
+**Clear loop region**, in the context menu of the strip or the ruler, removes
+the region; the band disappears when the transport confirms. If any of these
+changes fails, the ruler status and the transport read
+`Loop did not change: {reason}`.
 
 The transport refuses a region shorter than one beat with
 `Loop region is shorter than one beat; drag a longer region or clear it.` It
-also refuses a region that starts past the project end, because no audio exists
-there. A region that starts inside the project and ends past it wraps at the
-project end. Clearing the region turns Loop off, so the button never claims a
-wrap that has nowhere to go.
+also refuses a region that starts after the project end, because no audio
+exists there. A region that starts inside the project and ends after it wraps
+at the project end, and the ruler status says
+`The loop end passes the project end; playback wraps at the end of the project.`
+Clearing the region turns Loop off, so the button never promises a wrap that
+has nowhere to go.
 
 ### Where the region lives
 
-The loop region is **session state**, not project data. The application stores it
-in the webview's local storage, keyed by the project path, together with the
-armed flag. It survives a reload and an application restart, and it never
-travels inside the `.ocp` file.
+The loop region is session state. The app stores it, together with the armed
+flag, in the webview's local storage under the project path. It survives a
+reload and a restart of the app, and it never travels inside the `.ocp` file.
 
-The rule is that a control must not lie about what will
-happen on reload:
+The design rule is that a control must show what will happen after a reload:
 
 - The region is a rehearsal aid. It changes playback and nothing else, so it
-  does not belong in a file that another person can open.
-- Because it is restored from local storage, a reload brings back both the band
-  and the armed state. The picture after a reload is the behaviour after a
-  reload; Loop is not silently off while the band is still drawn.
-- A region that no longer applies (for example, the project got shorter) is
-  dropped with the backend's sentence, rather than left on screen. Read
-  `Loop did not change: {reason}` in the ruler status.
-- Because the region is not in the project, it cannot reach the offline
-  renderer or an export. That is a property of where the data lives, not a
-  convention: the renderer only ever receives the project.
+  stays out of a file that another person can open.
+- Local storage restores both the band and the armed state. What you see after
+  a reload is how playback behaves after it; Loop is never off while the band
+  is still drawn.
+- A region that no longer applies, for example because the project got
+  shorter, is removed from the screen, and the ruler status shows the
+  backend's reason as `Loop did not change: {reason}`.
+- The region is not part of the project, and the offline renderer and export
+  receive only the project. The region cannot reach them.
 
 ### Playback
 
 With Loop armed, streaming playback wraps at the region end. The wrap uses the
-existing seek path: the remaining lookahead is drained, the stream seeks back to
-the region start, and rendering resumes. A wrap therefore pays the same cost as
-a backward seek, and there can be a short gap at the loop point on projects
-whose instruments must be rebuilt. Without Loop, playback plays through the
-region and continues to the project end.
+ordinary seek path: the remaining lookahead is drained, the stream seeks back to
+the region start, and rendering resumes. A wrap therefore costs the same as a
+backward seek. On projects whose instruments must be rebuilt, there can be a
+short gap at the loop point. Without Loop, playback plays through the region
+and continues to the project end.
 
-The region is drawn in the written timeline that the streaming transport plays.
-It is bounded by the project end and by nothing else. When the playhead is
-already past the region end, pressing Play jumps back to the region start,
-because Loop is armed and that is the window it repeats.
+The region is drawn on the written timeline that the streaming transport plays.
+Only the project end bounds it. When the playhead is already past the region end
+and Loop is armed, pressing Play jumps back to the region start.
 
 ## Sections, repeats and the loop
 
-`@section` repeats expand only when the project is rendered offline; the
+`@section` repeats are expanded only when the project is rendered offline. The
 streaming transport plays the written timeline. A loop region wraps the same
-written positions the transport plays, so a repeat does not move it, duplicate
-it, or shorten it. Arming a loop never changes the arrangement or its rendered
+written positions the transport plays, so a repeat never moves, duplicates or
+shortens it. Arming a loop never changes the arrangement or its rendered
 length.
 
-The case that could bite is a project that combines a repeated section with a
-loop near the section's end: the rendered arrangement is longer than the written
-one, and a region mapped against the rendered end would wrap on different music.
-The loop is mapped against written quarters instead, and the arrangement stays
-untouched. `section_repeats_do_not_move_a_loop_region` pins that mapping.
+Take a project with a repeated section and a loop near the end of that section.
+The rendered arrangement is longer than the written one, so a region placed
+against the rendered end would wrap on different music. The loop is therefore
+mapped against written quarter notes, and the arrangement stays untouched. The
+test `section_repeats_do_not_move_a_loop_region` pins that mapping.
 
 ## What the loop does not affect
 
 Rendering and exporting ignore the loop region. The offline renderer receives a
-project, and the region is never part of a project, so both gate fixtures stay
-byte-identical with a loop armed. `a_loop_region_does_not_change_the_offline_render`
-pins this, together with the byte-identity test for a project without markers.
+project, and the region is never part of one, so both gate fixtures stay
+byte-identical with a loop armed. The test
+`a_loop_region_does_not_change_the_offline_render` pins this, together with the
+byte-identity test for a project without markers.

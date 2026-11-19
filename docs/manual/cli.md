@@ -1,28 +1,33 @@
 # Command line
 
-`ocp` is the command-line face of OpenCompose. It parses, checks, formats,
-exports, renders and converts `.ocp` projects, and it inspects the plugin and
-device registries the engine actually uses.
+`ocp` is the command-line tool for OpenCompose. It parses, checks, formats,
+exports, renders and converts `.ocp` projects. It also inspects the plugin and
+device registries that the engine uses.
 
 ```sh
 cargo build --release -p oc-cli
 ./target/release/ocp --help
 ```
 
-Every subcommand exits non-zero on failure and prints the reason on stderr.
+Every subcommand exits with a non-zero status on failure and prints the reason
+on stderr. Two global flags work with any subcommand: `--debug` writes a
+diagnostics log with debug detail, and `--perf` adds render and stage timings to
+that log. `ocp` prints the log path on stderr.
 
-## At a glance
+## Subcommands
 
 | Command | Purpose |
 |---|---|
-| `parse` | Parse one file and report (or dump) its AST. |
-| `validate` | Parse plus semantic validation; decodes audio-clip media. |
-| `fmt` | Canonical formatting. |
+| `parse` | Parse one file and print a summary or its AST. |
+| `validate` | Parse, run semantic validation and decode audio-clip media. |
+| `fmt` | Print or write the canonical formatting. |
 | `export` | Export the project as JSON or a Standard MIDI File. |
-| `render` | Offline mixdown to WAV, optionally stems. |
+| `render` | Offline mixdown to an audio file, optionally with stems. |
 | `bounce` | Render one track's post-FX signal over a beat range. |
-| `clip align` | Align take clips to a reference take and write offset/stretch. |
+| `clip align` | Align take clips to a reference take and write offset and stretch. |
+| `vocal analyze`, `vocal apply` | Analyse one audio clip's pitch, or bake its stored note decisions. |
 | `level` | Bake a track leveler's gain decision into its gain automation. |
+| `randomize` | Write seeded variations of a project's OpenSynth patch. |
 | `play` | Stream a project through the audio device, with optional live MIDI. |
 | `midi` | MIDI import, export, port listing and monitoring. |
 | `midi2ocp` | Convert one SMF to `.ocp` (data-side converter). |
@@ -31,9 +36,11 @@ Every subcommand exits non-zero on failure and prints the reason on stderr.
 | `generate-midi` | Generate synthetic MIDI files. |
 | `devices list` | List built-in devices and their parameter schemas. |
 | `validate-builtin-effects` | Build the mixer graph without rendering audio. |
-| `resolve-plugin` | Resolve a plugin id/name/path with the renderer's registry. |
+| `scan` | Scan installed plugin bundles; `--rescan` retries quarantined ones. |
+| `resolve-plugin` | Resolve a plugin id, name or path with the renderer's registry. |
 | `plugin-params` | Dump a VST3 or VST2 plugin's parameter inventory. |
 | `plugin-preset import` | Import a `.ffp` preset into a VST3 plugin instance. |
+| `plugin install` | Resolve, download, verify and install one catalog entry. |
 | `plugin conformance` | Run the VST3 conformance battery over every installed bundle. |
 | `compile-project` | Compile a complete project AST JSON to canonical OCP. |
 | `plugin-index` | Build, verify or key-sign the remote plugin index. |
@@ -49,10 +56,14 @@ ocp fmt examples/demo_ballad.ocp
 ocp fmt -w song.ocp
 ```
 
-`parse` prints a track-by-track summary, or the AST as JSON with `--json`.
-`validate` adds name/reference checks, range checks, bus-cycle detection and
-audio-clip decoding, and prints `Valid: "<name>" — N tracks`. `fmt` writes the
-canonical form to stdout unless `-w` is given.
+`parse` prints a track-by-track summary. With `--json` it prints the AST as
+JSON.
+
+`validate` adds name and reference checks, range checks, bus-cycle detection
+and audio-clip decoding, and refuses effect parameter values the renderer cannot
+use. On success it prints `Valid: "<name>" — N tracks`.
+
+`fmt` writes the canonical form to stdout. With `-w` it rewrites the file.
 
 ## Export
 
@@ -61,15 +72,21 @@ ocp export examples/demo_ballad.ocp --format json -o /tmp/ballad.json
 ocp export examples/demo_ballad.ocp --format midi -o /tmp/ballad.mid
 ```
 
-`--format` accepts `json` and `midi`. JSON prints the AST to stdout when `-o`
-is omitted. MIDI writes a Standard MIDI File through the same writer as
-`ocp midi export` (format 1, 480 PPQ, whole project) and requires `--output`.
-There is no MusicXML option: the command rejects `--format musicxml` while
-parsing its arguments instead of failing after startup.
+`--format` accepts `json` and `midi`.
 
-`compile-project` is the inverse of an AST dump: it accepts a complete,
-canonical project JSON (a file path or `-` for stdin), validates it, and prints
-OCP only if the serializer round-trips it byte-for-byte in state.
+- JSON is the render-ready state of the project, so a hairpin appears as the
+  gain clip it expands to. Use `parse --json` when you want the source AST.
+  Without `-o` the JSON goes to stdout.
+- MIDI requires `--output`. It writes a Standard MIDI File through the same
+  writer as `ocp midi export`: format 1, 480 PPQ, whole project.
+
+There is no MusicXML option. The command rejects `--format musicxml` while it
+parses its arguments, before any work starts.
+
+`compile-project` goes the other way. It reads a complete, canonical project
+JSON (a file path, or `-` for stdin), validates it, and prints OCP. It fails
+unless the serializer reproduces exactly the same project state when the OCP is
+parsed again.
 
 ```sh
 ocp parse --json song.ocp > song.json
@@ -78,12 +95,12 @@ ocp compile-project song.json > song2.ocp
 
 ## Render
 
-`render` (including `--stems`) and `bounce` accept DSL text or an existing
-OCPC project snapshot, detected by its header. Input must be a regular file,
-at most 128 MiB encoded and 256 MiB decoded. Malformed or oversized snapshots
-are rejected before rendering. Relative media paths remain relative to the
-input file's directory. This read-only support does not change the GUI's
-text project save format or the input formats of other CLI commands.
+`render` (including `--stems`) and `bounce` accept DSL text or an OCPC project
+snapshot; the header tells them apart. The input must be a regular file of at
+most 128 MiB encoded and 256 MiB decoded. A malformed or oversized snapshot is
+rejected before rendering starts. Relative media paths stay relative to the
+input file's directory. Reading snapshots here does not change the GUI's text
+save format or the input formats of other subcommands.
 
 ```sh
 ocp render examples/opensynth_showcase.ocp -o /tmp/showcase.wav --sample-rate 48000
@@ -94,32 +111,39 @@ ocp render song.ocp -o /tmp/song.wav --reruns 3 --require-identical
 
 | Option | Meaning |
 |---|---|
-| `-o, --output PATH` | Output WAV (default `output.wav`). |
-| `--sample-rate HZ` | Sample rate (default 44100). |
+| `-o, --output PATH` | Output file. Defaults to `output.` plus the container's extension, for example `output.wav`. |
+| `--format CONTAINER` | Container to write; defaults to the project's export setting, then WAV. |
+| `--sample-rate HZ` | Sample rate, 8000 to 192000. Defaults to the project's export rate, then 44100. |
 | `--soundfont PATH` | Fallback SoundFont for tracks with no project-owned instrument; also read from `OCP_SOUNDFONT`. |
 | `--per-track-mix` | Render tracks independently through the full mix graph. |
 | `--output-gain-db DB` | Fixed non-positive output headroom for per-track rendering. |
-| `--minimum-duration-seconds S` | Minimum export length (0–600 s); never trims events. |
-| `--reruns N` | Render in N isolated plugin instances and compare. |
+| `--minimum-duration-seconds S` | Minimum export length (0 to 600 s); events are never trimmed. |
+| `--reruns N` | Render in N isolated plugin instances and compare the outputs. |
 | `--require-identical` | Fail unless every rerun is byte-identical. |
-| `--pre-roll S` | Silent wall-clock warm-up per plugin instance (0–600 s, default 4). |
-| `--stems DIR` | Also write one pre-master WAV per track and bus plus `stems.json`. |
+| `--pre-roll S` | Silent wall-clock warm-up per plugin instance (0 to 600 s, default 4). |
+| `--stems DIR` | Also write one pre-master file per track and bus, plus `stems.json`. |
 | `--no-loudness-normalisation` | Ignore `loudness:` on the master. |
+| `--sample-format`, `--bit-depth` | WAV or FLAC sample depth. |
+| `--flac-level`, `--mp3-bitrate`, `--mp3-vbr` | FLAC compression and MP3 rate settings. |
+| `--dither`, `--no-dither` | Turn WAV dither on, or off even when the project enables it. |
+| `--resample-quality STEP` | Resampling quality step, 0 (fastest) to 7 (best). |
 | `--report` | Print peak, true peak, RMS, crest and integrated loudness of the rendered file. |
 
-`--stems` performs one export pass, so it cannot be combined with `--reruns`,
-`--require-identical`, `--per-track-mix` or `--output-gain-db`.
+`--stems` performs a single export pass. You cannot combine it with
+`--reruns`, `--require-identical`, `--per-track-mix` or `--output-gain-db`.
 
-`--report` measures the file after it is written, so it also works with
-`--stems` (it reports the mix) and with `--reruns` (it reports the kept run).
+`--report` measures the file after it is written. With `--stems` it reports the
+mix; with `--reruns` it reports the run that was kept.
 
-Containers, bit depths and the MP3 rate and bitrate tables are in
-[Export format](../export-format.md).
+Containers, bit depths, dither and the MP3 rate and bitrate tables are in
+[Export format](../export-format.md). The flags override the project's export
+settings.
 
-Plugins that load asynchronously may render silence if a note starts before their
-content is ready. `--pre-roll` waits in wall-clock time, not rendered silence;
-`--reruns N --require-identical` proves reproducibility but not that a load
-finished. See [Troubleshooting](troubleshooting.md).
+A plugin that loads its content asynchronously can render silence if a note
+starts before the content is ready. `--pre-roll` waits in wall-clock time; it
+does not add rendered silence. `--reruns N --require-identical` proves that the
+output is reproducible. It does not prove that a load finished. See
+[Troubleshooting](troubleshooting.md).
 
 ## Bounce
 
@@ -127,11 +151,11 @@ finished. See [Troubleshooting](troubleshooting.md).
 ocp bounce song.ocp --track lead --from 9:1 --to 17:1 --output /tmp/lead.wav
 ```
 
-`bounce` renders one track's post-insert, pre-fader signal over a beat range at
-the project rate and writes a 32-bit float stereo WAV. The range is a slice of
-the same timeline a full mix renders, so effect state and latency handling match
-the mix; sends, buses and the master chain are excluded. `--from` and `--to`
-take `bar:beat[:subdivision]`, the `--to` end is exclusive, and the file holds
+`bounce` renders one track's post-insert, pre-fader signal over a beat range
+and writes a 32-bit float stereo WAV. The range is a slice of the same timeline
+a full mix renders, so effect state and latency handling match the mix. Sends,
+buses and the master chain are left out. `--from` and `--to` take
+`bar:beat[:subdivision]`. The `--to` end is exclusive, and the file holds
 exactly that span.
 
 | Option | Meaning |
@@ -139,15 +163,15 @@ exactly that span.
 | `--track NAME` | Track whose signal is rendered (required). |
 | `--from POS` | First beat of the range, as `bar:beat[:subdivision]`. |
 | `--to POS` | End of the range (exclusive), same notation. |
-| `-o, --output PATH` | Output WAV, 32-bit float at the project rate (required). |
-| `--sample-rate HZ` | Rate to render at; defaults to the project's export rate. |
+| `-o, --output PATH` | Output WAV, 32-bit float (required). |
+| `--sample-rate HZ` | Rate to render at. Defaults to the project's export rate, then 44100. |
 | `--soundfont PATH` | Fallback SoundFont for tracks with no project-owned instrument; also read from `OCP_SOUNDFONT`. |
 
-The file is written exactly as rendered: no dither, no loudness normalisation and
-no clipping, so a hot track keeps its headroom. This is the alignment path the
-GUI bounce uses, which makes it the way to check a bounce without the app. See
-[Audio clips](../audio-clip.md) section 10 for the semantics and the FX-baking
-rule.
+The file is written exactly as rendered, with no dither, no loudness
+normalisation and no clipping, so a hot track keeps its headroom. The GUI bounce
+uses the same path, so you can check a bounce without opening the app. The
+semantics and the FX-baking rule are in
+[Audio clips, section 11](../audio-clip.md#11-bounce-and-consolidate).
 
 ## Comping
 
@@ -158,19 +182,23 @@ ocp clip align song.ocp lead-take take-a --dry-run
 ocp clip align song.ocp lead-take take-a --invert
 ```
 
-`clip align` analyses the named `@audio_clip` takes against a reference clip,
-then writes a head trim to `offset:` and a tempo correction to `stretch:` in the
-project. It reports the aligned correlation; `--invert` writes `invert: true`
-when that correlation is below `-0.25` and clears the flag otherwise.
-`--sample-rate` sets the analysis rate (default 48000); the written seconds and
-ratios are rate-independent. All takes are analysed before anything is written,
-so a failed take leaves the project untouched. The default target is the input
-file; `--output` writes elsewhere and `--dry-run` only reports.
+`clip align` analyses the named `@audio_clip` takes against a reference clip.
+It writes a head trim to `offset:` and a tempo correction to `stretch:` in the
+project, and reports the aligned correlation. With `--invert` it writes
+`invert: true` when that correlation is below `-0.25`, and clears the flag
+otherwise.
 
-The result is an affine correction (one offset plus one constant rate), not a
-non-linear warp. A ratio outside `0.25..=4.0` is refused, not clamped; tempo
-corrections beyond ±10 % are accepted with a warning. Design, measured numbers
-and the remaining limits: [Comping](../comping.md).
+`--sample-rate` sets the analysis rate (default 48000). The seconds and ratios
+it writes do not depend on that rate. Every take is analysed before anything is
+written, so one failed take leaves the project untouched. By default the
+command rewrites the input file. `--output` writes somewhere else, and
+`--dry-run` only reports.
+
+The correction is affine: one offset plus one constant rate. It does not warp
+the take non-linearly. A ratio outside `0.25..=4.0` is refused, and the command
+does not clamp it. A tempo correction beyond ±10 % is accepted with a warning.
+The design, the measured numbers and the remaining limits are in
+[Comping](../comping.md).
 
 ## Leveler bake
 
@@ -180,29 +208,30 @@ ocp level song.ocp --track lead --output baked.ocp
 ocp level song.ocp --track lead --json
 ```
 
-`level` renders one track dry, steps that track's leveler over the rendered
-signal with the device's own detector law, and writes the decision into the
-track's `gain_automation` lane. One point lands on each 10 ms control boundary;
-points a linear gain interpolation reproduces within 0.05 dB are dropped. The
-leveler is then removed from the track, so the project carries the decision
-instead of a realtime rider.
+`level` renders one track dry, then steps that track's leveler over the
+rendered signal with the device's own detector law. It writes the result into
+the track's `gain_automation` lane, one point on each 10 ms control boundary,
+and drops points that linear gain interpolation reproduces within 0.05 dB. It
+then removes the leveler from the track, so the project stores the gain
+decision and no longer rides the level in real time.
 
 | Option | Meaning |
 |---|---|
-| `--track NAME` | Track to bake; required. |
+| `--track NAME` | Track to bake (required). |
 | `-w, --write` | Replace the input project. |
 | `-o, --output FILE` | Write the baked project to `FILE`. |
 | `--json` | Emit the bake report as JSON. |
 | `--sample-rate HZ` | Rate of the dry pass (default 48000). |
 | `--soundfont PATH` | Fallback SoundFont for tracks with no project-owned instrument. |
 
-Without `--write` or `--output` the command reports and writes nothing. The dry
-pass runs the track's chain without the leveler, so effects before it are
-included; the leveler must be the track's last effect, and the track must own a
-clip. The bake replaces any gain clips already on that track, and a different
-leveler setting needs a re-bake because the lane encodes one law. The device
-itself is unchanged; see [Vocal compression](../vocal-comp.md) for the law and
-the measured match.
+Without `--write` or `--output` the command reports and writes nothing.
+
+The dry pass runs the track's chain without the leveler, so effects before it
+are included. The leveler must be the track's last effect, and the track must
+own a clip. The bake replaces any gain clips already on that track. The lane
+encodes one setting, so if you change the leveler's settings you bake again. The
+device itself does not change. The law and the measured match are in
+[Vocal compression](../vocal-comp.md).
 
 ## Play and MIDI
 
@@ -213,11 +242,14 @@ ocp play song.ocp
 ocp play song.ocp --midi-in "IAC Driver Bus 1" --midi-out "IAC Driver Bus 1" --midi-clock --midi-thru
 ```
 
-`midi list` prints input and output ports with indices; names or indices are
-accepted as selectors. `midi monitor` prints timestamped events.
-`play` renders the project offline and streams it through the default audio
-device. A hosted plugin *instrument* track is not part of live play, only
-built-in/OpenSynth and SoundFont tracks; see [Live MIDI](../midi-live.md).
+`midi list` prints the input and output ports with their indices. Wherever a
+port is expected you can give its name or its index. `midi monitor` prints
+timestamped events.
+
+`play` renders the project offline and streams the result through the audio
+device the desktop app has saved in its settings. Live play covers built-in,
+OpenSynth and SoundFont tracks. A track whose instrument is a hosted plugin is
+not part of it; see [Live MIDI](../midi-live.md).
 
 ```sh
 ocp midi import song.mid --out song.ocp --json-summary
@@ -229,10 +261,10 @@ ocp batch-data midi/ -o training_data/ --soundfont soundfonts/MS_Basic.sf2
 ocp generate-midi -o data/midi_raw -c 100 --seed 42
 ```
 
-`midi import` is the DAW-grade importer (mapping options, tempo/meter/key maps,
-CC lanes, summary). `midi2ocp` is the older bulk converter used by the data
-pipeline; it writes to stdout unless `-o` is given. `batch-data` requires a
-SoundFont and renders WAVs as well as OCP.
+`midi import` is the full importer, with mapping options, tempo, meter and key
+maps, CC lanes and a summary. `midi2ocp` is the older bulk converter that the
+data pipeline uses; it writes to stdout unless you pass `-o`. `batch-data`
+requires a SoundFont and renders a WAV for each `.ocp` it writes.
 
 ## Devices and plugins
 
@@ -249,26 +281,33 @@ ocp plugin conformance
 ocp plugin conformance --plugin "/Library/Audio/Plug-Ins/VST3/Example.vst3" --format json
 ```
 
-- `devices list` prints id, category, parameter count and display name from the
-  same schema the engine and GUI use; `--json` is the fixed contract.
-- `validate-builtin-effects` builds the audio graph (DSP preflight) without
-  rendering; it skips external plugin effects, so a project may mix built-in and
-  plugin devices. Legacy effect shorthand is expanded and reported as a warning
-  (see [DSL compatibility](../dsl-compat.md)).
-- `resolve-plugin` expects exactly one match across VST3, VST2, CLAP, LV2 and
-  built-in and prints its metadata as JSON. AudioUnit lookups are not part of
-  this command.
-- `plugin-params` loads a VST3 or VST2 plugin and prints every parameter with
-  id/name or index, unit/label, default and current value. VST2 values are
-  normalized 0..1; pass the `.vst` path to pick the VST2 build when a VST3 with
-  the same name is also installed.
-- `plugin-preset import` reads a `.ffp` preset, applies its parameter values to the named
-  VST3 plugin, and reports parsed, mapped and applied counts, plus unmapped,
-  rejected and read-back-mismatched parameters. `--json` emits the report.
-- `plugin conformance` runs one child process per VST3 bundle and prints the
-  per-step matrix as a table, JSON or Markdown. See
-  [VST3 conformance](../vst3-conformance.md) for the battery and the JSON
-  schema.
+`devices list` prints each device's id, category, parameter count and display
+name from the schema the engine and the GUI use. The `--json` output is the
+fixed contract.
+
+`validate-builtin-effects` builds the audio graph as a DSP preflight without
+rendering. It skips external plugin effects, so a project may mix built-in and
+plugin devices. Legacy effect shorthand is expanded and reported as a warning
+(see [DSL compatibility](../dsl-compat.md)).
+
+`resolve-plugin` expects exactly one match across VST3, VST2, CLAP, LV2 and the
+built-in devices, and prints the match's metadata as JSON. It does not look up
+AudioUnits.
+
+`plugin-params` loads a VST3 or VST2 plugin and prints every parameter. For a
+VST3 plugin the table shows id, name, unit, range, default, step count and
+flags. For a VST2 plugin it shows index, name, label, default and current
+value; VST2 values are normalized to 0..1. When a VST3 with the same name is
+also installed, pass the `.vst` path to select the VST2 build.
+
+`plugin-preset import` reads a `.ffp` preset and applies its parameter values
+to the named VST3 plugin. It reports how many parameters it parsed, mapped and
+applied, and lists the unmapped, rejected and read-back-mismatched ones.
+`--json` emits the report.
+
+`plugin conformance` runs one child process per VST3 bundle and prints the
+per-step results as a table, JSON or Markdown. The battery and the JSON schema
+are in [VST3 conformance](../vst3-conformance.md).
 
 ## Plugin index
 
@@ -278,8 +317,9 @@ ocp plugin-index build --catalog catalog.json --out dist/ --key /tmp/index-keys/
 ocp plugin-index verify dist/ --public-key /tmp/index-keys/plugin-index.pub
 ```
 
-`build` writes `index.json`, its signature and the compressed catalog; `verify`
-checks the signature and catalog hash; `keygen` creates an Ed25519 keypair.
+`keygen` creates an Ed25519 keypair. `build` writes `index.json`, its
+signature and the compressed catalog. `verify` checks the signature and the
+catalog hash.
 
 ## Samples
 
@@ -291,20 +331,23 @@ FREESOUND_API_KEY=... ocp sample search "riser" --provider freesound
 ```
 
 `search` lists each result with its kind, duration, channels, sample rate,
-licence and credit line, and says why a result's licence is refused when it is.
-`pull` resolves the id, downloads the file, verifies the declared size and
-sha256, and writes the audio, a `.json` sidecar with the licence and credit
-line, and a receipt. Wikimedia Commons is the default provider and needs no key;
-Freesound needs an API key and serves a 128 kbps preview; the GUI's Samples
-panel can connect Freesound through OAuth2 and pull the original instead. The
-store layout, the licence rule and the tool names are in
-[Samples](../samples.md).
+licence and credit line. When a result's licence is refused, it says why.
 
-## Range and analysis
+`pull` resolves the id and downloads the file, then verifies the declared size
+and sha256. It writes the audio, a `.json` sidecar with the licence and credit
+line, and a receipt.
+
+Wikimedia Commons is the default provider and needs no key. Freesound needs an
+API key and serves a 128 kbps preview. The GUI's Samples panel can connect to
+Freesound through OAuth2 and pull the original file. `ocp sample providers`
+lists the providers this build knows. The store layout, the licence rule and
+the tool names are in [Samples](../samples.md).
+
+## Range render and analysis
 
 The windowed render, audio analysis and A/B comparison tools (`render_range`,
-`audio_analyze`, `audio_compare`) are **not** CLI subcommands. They live on the
+`audio_analyze`, `audio_compare`) are not CLI subcommands. They belong to the
 agent surface of the running GUI; see [Drawing from an agent](agents.md).
 
-There is no `ocp serve` command. The agent HTTP surface is hosted by the running
-GUI, not by the CLI; the CLI has no server to start.
+There is no `ocp serve` command. The running GUI hosts the agent HTTP surface,
+and the CLI has no server to start.

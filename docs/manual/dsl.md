@@ -1,8 +1,8 @@
 # The .ocp file
 
 An OpenCompose project is a UTF-8 text file with the extension `.ocp`. The
-grammar is defined in `crates/oc-dsl/src/grammar.pest`; this chapter covers what
-you write, not how it is parsed.
+grammar lives in `crates/oc-dsl/src/grammar.pest`. This chapter describes what
+you write; the grammar file describes how it is parsed.
 
 ## File shape
 
@@ -17,29 +17,33 @@ you write, not how it is parsed.
 // then @preset, @pattern, @track, @bus, @section, @master in any order
 ```
 
-- `//` starts a comment that runs to the end of the line.
-- Indentation is cosmetic; structure comes from `@` keywords.
-- The order of the blocks is free: a `@pattern` or a `@section` may follow a
-  `@track`, and a `@bus` may precede the tracks that route into it.
-- A block is contiguous. The next `@` keyword at the project level ends the
-  block before it, so a track's content stays inside its own `@track` block; a
-  line that belongs to a track and appears after another block is refused by
-  name.
-- An inline drum pattern (`@pattern name [range] xN` with hit lines) is track
-  content and belongs inside a `@track`. A `@pattern` at the project level is a
-  named definition, placed on a track with `clip:`.
-- Names may be bare identifiers or quoted strings. Track, bus and preset names
-  are the routing identity.
-- The version line is optional. New projects use `0.6.0`. Files written
-  for `0.2.0` load unchanged. `0.3.0` added `@vocal_tune`; `0.4.0` added its
-  automatic `snap`, `reference`, `cap` and `window` fields; `0.5.0` added note
-  timing and `0.6.0` added `@vocal_harmony`.
+A comment starts with `//` and runs to the end of the line. Indentation is
+cosmetic: the `@` keywords give the file its structure.
+
+You can write the blocks in any order. A `@pattern` or a `@section` may follow
+a `@track`, and a `@bus` may come before the tracks that route into it. Each
+block is contiguous, though. The next project-level `@` keyword ends the block
+before it, so a track's content has to stay inside its own `@track` block. If a
+line that belongs to a track appears after another block, the parser refuses it
+and names it.
+
+An inline drum pattern (`@pattern name [range] xN` followed by hit lines) is
+track content and goes inside a `@track`. A `@pattern` at the project level is a
+named definition, which you place on a track with `clip:`.
+
+Names are bare identifiers or quoted strings. Track, bus and preset names are
+the routing identity.
+
+The version line is optional, and new projects write `0.6.0`. Files written for
+`0.2.0` load unchanged. Each later version introduces one construct: `0.3.0`
+brings `@vocal_tune`, `0.4.0` its automatic `snap`, `reference`, `cap` and
+`window` fields, `0.5.0` note timing, and `0.6.0` `@vocal_harmony`.
 
 ## Time and positions
 
-Positions are `bar:beat:subdivision`: bar and beat are 1-indexed, and
-subdivision `0` is on the beat. A range is `[start - end]` and the **end is
-exclusive**: `[1:1 - 5:1]` covers bars 1–4.
+A position is `bar:beat:subdivision`. Bars and beats count from 1, and
+subdivision `0` is on the beat. A range is `[start - end]` with an exclusive
+end, so `[1:1 - 5:1]` covers bars 1 to 4.
 
 ```
 [1:1]        bar 1, beat 1
@@ -48,12 +52,12 @@ exclusive**: `[1:1 - 5:1]` covers bars 1–4.
 [1:1:0]      explicit subdivision 0 (on the beat)
 ```
 
-Durations are written `w`, `h`, `q`, `8th`, `16th`, `32nd`, `64th`, optionally
-dotted (`q.`, `q..`), optionally tupleted (`qt`, `q5:4`, `q7:8`) and tied
-(`q~h`, `C4 q~h~q`). A rest takes the same durations: `rest q`, `rest 2w`.
+Durations are `w`, `h`, `q`, `8th`, `16th`, `32nd` and `64th`. You can dot them
+(`q.`, `q..`), make them tuplets (`qt`, `q5:4`, `q7:8`) and tie them (`q~h`,
+`C4 q~h~q`). A rest takes the same durations: `rest q`, `rest 2w`.
 
-A phrase or pattern range must cover all of its content, rests included: a
-four-bar phrase in 4/4 is `[1:1 - 5:1]`, not `[1:1 - 4:4]`.
+A phrase or pattern range must cover all of its content, rests included. A
+four-bar phrase in 4/4 is `[1:1 - 5:1]`; `[1:1 - 4:4]` stops one beat short.
 
 ## Project properties
 
@@ -74,17 +78,18 @@ four-bar phrase in 4/4 is `[1:1 - 5:1]`, not `[1:1 - 4:4]`.
 | `live_resample:` | `live_resample: 3` | resampling quality rung for the streaming preview: `0` fastest to `7` best |
 | `automation_normalization:` | `automation_normalization: 2` | stored synth automation table: supported values are 1 and 2; absent means version 1, and unsupported versions are refused before rendering |
 
-Map properties are followed by one entry per line in the same block. `export:`
-also takes `resample: 0…7`, the rung the offline render uses, and a
+The map properties take one entry per line in the same block. `export:` also
+accepts `resample: 0…7`, the rung the offline render uses, and one
 per-container block: `wav: {depth, dither}`, `flac: {depth, level}` or
 `mp3: {bitrate, vbr_quality}`.
 
 ## Sections
 
-`@section` names a span of the arrangement. When sections exist they define the
-rendered timeline: they play in written order and `repeat:` plays a span again.
-Content is assigned to the section that contains its **start**; gaps between
-sections are removed and content outside every section is not rendered.
+`@section` names a span of the arrangement. Once a project has sections, they
+define the rendered timeline: they play in written order, and `repeat:` plays a
+span again. Content belongs to the section that contains its start. Gaps
+between sections are removed, and content outside every section does not
+render.
 
 ```ocp
 @section verse [9:1 - 17:1]
@@ -93,13 +98,14 @@ sections are removed and content outside every section is not rendered.
   flags: pizzicato
 ```
 
-`repeat:` must be at least 1. Sections must be ordered and must not overlap.
-`flags:` selects one region technique (`pizzicato`/`pizz`, `arco`, `muted`/
-`con_sord`, `sul_ponticello`/`sul_pont`, or `sul_tasto`) for note onsets inside
-the section; a note's own `articulation=` wins. It drives the same articulation
-profile as a per-note mark, so the section's keyswitch, CC or parameter is sent
-before each note that starts in it.
-See [Sections and the rendered arrangement](../arrangement.md).
+`repeat:` is at least 1. Sections must be in order and must not overlap.
+
+`flags:` selects one region technique for the note onsets inside the section:
+`pizzicato`/`pizz`, `arco`, `muted`/`con_sord`, `sul_ponticello`/`sul_pont` or
+`sul_tasto`. A note's own `articulation=` takes precedence. The flag drives the
+same articulation profile as a per-note mark, so the section's keyswitch, CC or
+parameter is sent before each note that starts in it. See
+[Sections and the rendered arrangement](../arrangement.md).
 
 ## Markers
 
@@ -112,15 +118,16 @@ identifier, and the position uses the usual `bar:beat:subdivision` form.
 @marker outro at 41:1:2
 ```
 
-Markers are annotations. They are saved with the project and keep their written
-order, they may sit past the last audio, and they never change what renders. A
-project without markers writes the same bytes as before the construct existed.
-See [Markers and the loop region](markers.md).
+Markers are annotations and never change what renders. They are saved with the
+project in their written order, and they may sit past the last audio. A project
+with no markers writes no marker lines. See
+[Markers and the loop region](markers.md).
 
 ## Patterns and clips
 
-A top-level `@pattern` is a named, reusable block of content. A `clip:` places it
-on a track at a timeline position. One pattern can be placed many times.
+A top-level `@pattern` is a named, reusable block of content. A `clip:` line
+places it on a track at a timeline position, and you can place one pattern as
+many times as you like.
 
 ```ocp
 @pattern keys_verse | instrument: piano/acoustic_grand, preset: keys, color: "#4fc3f7"
@@ -133,53 +140,90 @@ on a track at a timeline position. One pattern can be placed many times.
   clip: keys_verse [1:1 - 9:1]
 ```
 
-Inline properties after `|`: `instrument:`, `preset:`, `transpose:` (semitones),
-`swing:` (per-pattern swing, overrides the project), `bars:` (the pattern's
-length in bars), `color:`.
+The inline properties after `|` are `instrument:`, `preset:`, `transpose:`
+(semitones), `swing:` (per-pattern swing, which overrides the project's),
+`bars:` (the pattern's length in bars) and `color:`.
 
-`bars:` bounds where the piano roll and the drum lane place new content: a draw
-past the last bar lands on the last editable step inside it instead of outside
-the pattern. Without `bars:`, the length is the end of the last bar the written
-content occupies. Shortening a pattern keeps or trims notes past the new end;
-kept notes stay in the document and the roll marks them out of range.
+`bars:` bounds where the piano roll and the drum lane place new content. If you
+draw past the last bar, the new content lands on the last editable step inside
+the pattern. Without `bars:`, the pattern ends at the end of the last bar its
+written content occupies. When you shorten a pattern you can keep or trim the
+notes past the new end. Kept notes stay in the document, and the roll marks
+them as out of range.
+
+### Transposition
 
 `transpose:` moves the pattern's pitched `events:` by whole semitones before the
-instrument plays them: with `-2`, a written C4 sounds as Bb3. The field accepts
-`-127` to `127` semitones; a value outside that range is refused with a
-message naming the range instead of being read as no transposition. Every path that
-plays the pattern carries the shift — offline render, streaming playback, MIDI
-export, analysis and range render — so the rendered audio and the exported MIDI
-agree with the panel's value and with the pattern preview.
+instrument plays them. With `-2`, a written C4 sounds as Bb3. The field accepts
+`-127` to `127`. A value outside that range is refused with a message that
+names the range; it is never read as zero.
+
+The shift applies on every path that plays the pattern: offline render,
+streaming playback, MIDI export, analysis and range render. The rendered audio
+and the exported MIDI therefore match the value in the panel and the pattern
+preview.
+
+The shift changes the note number, so it adds to whatever the instrument does
+to every note. On the built-in OpenSynth, a preset's `tuning.transpose` still
+applies on top: a pattern at `-2` on a preset at `+12` sounds ten semitones
+above the written pitch. The pattern's own `preset:` and `instrument:` choose
+what plays it (the track's preset when the pattern names none). They do not
+replace the transposition.
+
+`transpose:` does not move `hits:`. A hit addresses a sample or a `@kit` pad by
+name, so transposing it would play a different drum. A drum pattern sounds the
+same with or without the value, and the render reports that the value was
+ignored for the hits.
+
+### Pattern bodies and inline content
+
+A pattern body holds only `events:`, `hits:` or both. `automation:`, `mix:`,
+`effects:` and `engine:` are not pattern fields. A pattern that carries one of
+them fails to parse with a diagnostic, so the field is never silently dropped.
+A pattern is content placed on a track, and the effect chain, mixer state,
+automation and engine selection belong to that track.
+
+You can also write content directly in a track:
+
+- `@phrase name [range]` with a note list places notes inline.
+- `@pattern name [range] xN` with a hit list places a drum pattern inline.
+
+```ocp
+@track drums | instrument: drumkit, preset: basic
+  @pattern beat [1:1 - 3:1] x2
+    kick  1:0 ff
+    snare 2:0 f
+```
 
 ### Slip and loop
 
-Two optional properties choose which part of the pattern a clip plays and
-whether it repeats. Both leave the block where it is:
+Two optional clip properties choose which part of the pattern a clip plays and
+whether it repeats. Neither moves the clip:
 
 ```ocp
 @track keys | instrument: piano/acoustic_grand, preset: keys
   clip: keys_verse [1:1 - 5:1] offset: 1q loop: 2q
 ```
 
-`offset:` hides that many quarter notes of the pattern's head. The clip keeps its
-start, end and length, so the phrase moves against the beat without the block
-moving. The hidden head is silent: a note that starts inside it never plays, and
-the pedal marks there are dropped too. Slip is refused when the clip already
-shows the whole pattern.
+`offset:` hides that many quarter notes from the head of the pattern. The clip
+keeps its start, end and length, so the phrase shifts against the beat while
+the block stays put. The hidden head is silent: a note that starts inside it
+never plays, and pedal marks there are dropped. You cannot slip a clip that
+already shows the whole pattern.
 
 `loop:` repeats that many quarter notes of content, starting at the offset, for
-the clip's full length. It must be shorter than the clip and must end inside the
-pattern's content. The last repeat stops at the clip end, and a note that runs
-past the end is cut there. The timeline draws one dashed seam per repeat.
+the full length of the clip. The loop must be shorter than the clip and must end
+inside the pattern's content. The last repeat stops at the clip end, and a note
+that runs past the end is cut there. The timeline draws a dashed seam at each
+repeat.
 
-A project that uses neither property writes the same bytes as before the fields
-existed.
+A clip that uses neither property writes neither field.
 
 ### Clip groups
 
-`@group` binds clips so one drag moves the set and one click selects all of it.
-A group names its members by clip identifier, and a clip takes that identifier
-with `id:` on its own line:
+`@group` binds clips together: one drag moves the whole set and one click
+selects it. A group lists its members by clip identifier, and a clip takes an
+identifier with `id:` on its own line:
 
 ```ocp
 @track keys | instrument: piano/acoustic_grand
@@ -191,48 +235,19 @@ with `id:` on its own line:
 }
 ```
 
-A group holds at least two clips, every member must name a clip that carries its
-identifier, and identifiers are unique across the project. An identifier exists
-while a group names the clip: deleting the clip drops it from every group,
-splitting it drops it the same way, and a group left with fewer than two members
-is removed along with the identifiers it held. A project without groups writes
-the same bytes as before the construct existed.
+A group holds at least two clips. Every member must name a clip that carries
+that identifier, and identifiers are unique across the project. An identifier
+exists only while a group names its clip. Deleting or splitting a clip drops it
+from every group, and a group left with fewer than two members is removed
+together with the identifiers it held. A project without groups contains no
+group lines.
 
-Groups are editing-only. They never change what renders.
-
-The shift is applied to the note number, so it adds to whatever the hosting
-instrument does to every note it plays. On the built-in OpenSynth, a preset's
-`tuning.transpose` still applies on top: a pattern at `-2` on a preset at `+12`
-sounds ten semitones above the written pitch. The pattern's own `preset:` and
-`instrument:` choose the instrument that plays it (the track's preset when it
-names none) and never replace the transposition.
-
-`transpose:` does not move `hits:`. A hit addresses a sample or a `@kit` pad by
-name, so a transposed hit would play a different drum; a drum pattern sounds the
-same with or without the value, and a render reports that the value was ignored
-for the hits.
-
-A pattern body holds only `events:` and/or `hits:`. `automation:`, `mix:`,
-`effects:` and `engine:` are not pattern-level fields: a pattern carrying any of
-them fails to parse with a diagnostic instead of being ignored. A pattern is
-content placed on a track, so the effect chain, mixer state, automation and
-engine selection belong to that track.
-
-Content can also sit directly in a track instead of in a named pattern:
-
-- `@phrase name [range]` with a note list — the same notes, placed inline.
-- `@pattern name [range] xN` with a hit list — a drum pattern placed inline.
-
-```ocp
-@track drums | instrument: drumkit, preset: basic
-  @pattern beat [1:1 - 3:1] x2
-    kick  1:0 ff
-    snare 2:0 f
-```
+Groups affect editing only. They never change what renders.
 
 ## Notes
 
-A note line is `@N` followed by one or more events separated by commas:
+A note line is an optional `@N` followed by one or more events separated by
+commas:
 
 ```ocp
 C4 q mp
@@ -245,19 +260,21 @@ Bb3 w mf expression={dynamics: mp->mf}
 ```
 
 Every member of a comma list sounds at the line's position and keeps its own
-duration, dynamic and modifiers: `@0.0 G4 q mf, G5 h mp articulation=legato` is
-one short and one long note starting together. Without `@` the line shares the
-sequential position. The line advances the position once, by its longest member.
-A comma list has to stay on one physical line and cannot repeat a pitch. A
-leading comma, a trailing comma, a member without a duration, and a comma across
-a line break are refused with their own messages.
+duration, dynamic and modifiers. `@0.0 G4 q mf, G5 h mp articulation=legato` is
+one short note and one long note starting together. A line without `@` takes
+the current sequential position. The line advances that position once, by the
+length of its longest member.
 
-`[C4 E4 G4] q mf` is sugar for the comma line `C4 q mf, E4 q mf, G4 q mf`: the
-bracketed token shares one duration, dynamic and modifier set across its
-pitches. The serializer's canonical form is the comma form, so a chord token
-saves back as `@0 C4 q mf, E4 q mf, G4 q mf`, and rows of simultaneous notes
-that share every property except pitch collapse into one comma list. Rows that
-differ in duration, dynamics, velocity or articulation stay on separate lines.
+A comma list stays on one physical line and cannot repeat a pitch. The parser
+refuses a leading comma, a trailing comma, a member without a duration and a
+comma across a line break, each with its own message.
+
+`[C4 E4 G4] q mf` is shorthand for the comma line `C4 q mf, E4 q mf, G4 q mf`:
+the bracketed pitches share one duration, dynamic and modifier set. The
+serializer writes the comma form, so a chord token saves back as
+`@0 C4 q mf, E4 q mf, G4 q mf`. Simultaneous notes that share every property
+except pitch collapse into one comma list on save. Notes that differ in
+duration, dynamics, velocity or articulation stay on separate lines.
 
 | Part | Values |
 |---|---|
@@ -277,8 +294,8 @@ differ in duration, dynamics, velocity or articulation stay on separate lines.
 
 ## Sustain pedal
 
-A pedal mark is a phrase or pattern event with its own position, written
-`@<beat> pedal down` or `@<beat> pedal up`:
+A pedal mark is a phrase or pattern event with its own position:
+`@<beat> pedal down` or `@<beat> pedal up`.
 
 ```ocp
 @track piano | instrument: piano/acoustic_grand
@@ -289,18 +306,18 @@ A pedal mark is a phrase or pattern event with its own position, written
     @3.0 pedal up
 ```
 
-`pedal down` holds every note whose note-off lands while the pedal is down, and
-`pedal up` releases those notes. The position is always written, because a pedal
-spans notes and does not take part in the sequential line model: a mark without
-`@` is refused with a message that names the missing position. A pedal mark
-outside a phrase or pattern is refused the same way, and a `hits:` list does not
-accept one, because a drum hit has no note-off to hold.
+`pedal down` holds every note whose note-off falls while the pedal is down, and
+`pedal up` releases them. You always write the position, because a pedal spans
+notes and sits outside the sequential line model. A mark without `@` is refused
+with a message that names the missing position. A pedal mark outside a phrase
+or pattern is refused the same way. A `hits:` list does not accept pedal marks,
+because a drum hit has no note-off to hold.
 
 ## Dynamics and hairpins
 
-A dynamic on a note sets one level. A hairpin moves the level across the notes it
-spans: `@<beat> cresc` and `@<beat> dim` are phrase or pattern events with their
-own position, like a pedal mark.
+A dynamic on a note sets one level. A hairpin moves the level across the notes
+it spans. `@<beat> cresc` and `@<beat> dim` are phrase or pattern events with
+their own position, like pedal marks.
 
 ```ocp
 @track strings | instrument: strings/violin, preset: warm_strings
@@ -312,42 +329,42 @@ own position, like a pedal mark.
     @12 C4 w ff
 ```
 
-The mark swells to the next dynamic written on a note in the same phrase, or to
-the end of the phrase when no note carries one. A note that restates a dynamic
-ends the span, so a `cresc` over notes all marked `pp` is refused: the level
-would not move. Without a written target, `cresc` runs `pp` to `f` and `dim` runs
-`f` to `pp`.
+The mark ramps to the next dynamic written on a note in the same phrase, or to
+the end of the phrase when no later note carries one. A note that restates the
+same dynamic ends the span, so a `cresc` over notes that are all marked `pp` is
+refused: the level would not move. With no written target, `cresc` runs from
+`pp` to `f` and `dim` from `f` to `pp`.
 
-A phrase hairpin on a built-in synth compiles to a `gain_automation:` clip, so
-it moves level alone. A SoundFont or hosted instrument instead receives CC11
-expression points across the mark: the instrument's own dynamics law follows
-the swell, and a SoundFont also crossfades its velocity layers while a note in
-the span sounds. The layer amplitude is compensated, so CC11 remains the only
-level move. A built-in track keeps the gain clip because its synth has no CC11
+On a built-in synth, a phrase hairpin compiles to a `gain_automation:` clip and
+moves only the level. A SoundFont or hosted instrument receives CC11 expression
+points across the mark instead, so the instrument's own dynamics follow the
+swell. A SoundFont also crossfades its velocity layers while a note in the span
+sounds. The layer amplitude is compensated, so CC11 remains the only level
+change. A built-in track keeps the gain clip because its synth has no CC11
 receiver.
 
-Write `dynamic_layers: off` in the preset's `params:` or in the track's
-`engine_params:` to restore hard layer selection on a SoundFont track. The
-track value wins over the preset value.
+To restore hard layer selection on a SoundFont track, write
+`dynamic_layers: off` in the preset's `params:` or in the track's
+`engine_params:`. The track value overrides the preset value.
 
-Keep the span clear of other gain clips on a built-in track, because a track
-cannot hold two of them over the same span, and one hairpin cannot start before
-the previous one ends. `ocp fmt` keeps the mark and prints the clip a built-in
-track expands to as a comment.
+On a built-in track, keep the span clear of other gain clips: a track cannot
+hold two of them over the same span, and a hairpin cannot start before the
+previous one ends. `ocp fmt` keeps the mark and prints the clip a built-in track
+expands it to as a comment.
 
-A pattern mark is relative to the pattern's content: each placement expands the
-mark on the track that hosts it, once per loop repetition, so one pattern played
-twice writes two ramps. Pattern marks keep the gain-clip form even on a hosted
-track, because a pattern may name its own preset. A mark a slip hides is
-dropped, and a ramp stops at the clip's end.
+A mark in a pattern is relative to the pattern's content. Each placement
+expands the mark on the track that hosts it, once per loop repetition, so a
+pattern played twice writes two ramps. Pattern marks always use the gain-clip
+form, even on a hosted track, because a pattern may name its own preset. A mark
+hidden by a slip is dropped, and a ramp stops at the end of the clip.
 
 A hairpin is refused in a `hits:` list, outside a phrase or a pattern's
 `events:` block, and when no note follows it in its container.
 
 ## Glissando
 
-`gliss` on a note slides its pitch to the next note in the phrase, as a curve
-rather than as new samples:
+`gliss` on a note slides its pitch to the next note in the phrase as a pitch
+curve; it does not trigger new samples.
 
 ```ocp
 @track lead | instrument: synth/lead_saw, preset: slide_lead
@@ -356,28 +373,32 @@ rather than as new samples:
     E5 q mf
 ```
 
-Four spellings share one modifier: `gliss` slides to the next note's pitch,
-`gliss=G4` names the destination, `gliss=120ms` arrives that early, and
-`gliss=run` or `gliss=run_diatonic` writes short notes instead of a curve —
-chromatic, or in the project key. The run forms exist because a sampled source
-cannot slide: a SoundFont or sample-bank preset is a recording, so a plain
-`gliss` on it is refused and the message names the run form that plays. A plugin
-that takes pitch bend slides too; a hosted source that reports no bend support
-is refused the same way.
+The modifier has four spellings:
 
-A slide follows the project clock: under a tempo map the curve is measured in
+- `gliss` slides to the next note's pitch.
+- `gliss=G4` names the destination.
+- `gliss=120ms` reaches the next note's pitch after 120 ms and holds it.
+- `gliss=run` or `gliss=run_diatonic` writes short notes in place of a curve,
+  chromatic or in the project key.
+
+The run forms exist for sampled sources, which cannot slide. A SoundFont or
+sample-bank preset is a recording, so a plain `gliss` on it is refused and the
+message names the run form that plays. A plugin that accepts pitch bend slides
+too. A hosted source that reports no bend support is refused the same way.
+
+A slide follows the project clock. Under a tempo map the curve is measured in
 quarter notes, so it stretches and compresses with the tempo. A track that
-carries a curve identifies every ordinary note at a curve's pitch as its own
-voice, so the same track may also hold ordinary notes at that pitch; each keeps
-its own pitch and release. The engine still refuses a plain note it did not
-identify (a keyswitch, a control trigger, or a drum hit) at a curve's pitch,
-because pitch alone cannot say which voice that event addresses.
+carries a curve treats every ordinary note at the curve's pitch as a separate
+voice, so the same track can also hold ordinary notes at that pitch, each with
+its own pitch and release. The engine still refuses a plain event it cannot
+assign to a voice (a keyswitch, a control trigger or a drum hit) at a curve's
+pitch, because the pitch alone does not say which voice the event addresses.
 
 ## Ornaments
 
-`ornament=` turns one written note into the notes or the gate a performer would
-play. The mark stays in the score, so `ocp fmt` keeps it; playback and MIDI
-export expand it into ordinary notes.
+`ornament=` turns one written note into the notes, or the gate, a performer
+would play. The mark stays in the score and `ocp fmt` keeps it. Playback and
+MIDI export expand it into ordinary notes.
 
 ```ocp
 @project "Ornaments"
@@ -398,23 +419,24 @@ export expand it into ordinary notes.
 | `fermata` | Hold the written gate for 1.5 times its length. |
 | `arpeggio` | Delay each member of one onset by a thirty-second note in ascending pitch order. |
 
-A trill and a mordent use the project key; without a key the step is one
-semitone. They cannot share a note with an articulation, bend, vibrato,
-expression curve or glissando, because each would describe a second pitch or
-level path. A trill or mordent needs a note of its own; a note too short for its
-grid stays whole or shares its gate between the three mordent parts. `arpeggio`
-rolls every note that starts with the marked note and keeps each written
-duration.
+Trills and mordents take their step from the project key. Without a key the
+step is one semitone. They cannot share a note with an articulation, bend,
+vibrato, expression curve or glissando, because each of those describes a
+second pitch or level path. A trill or mordent needs a note to itself. A note
+too short for the grid either stays whole or divides its gate among the three
+mordent parts. `arpeggio` rolls every note that starts with the marked note and
+keeps each written duration.
 
-See [Ornaments](../ornaments.md) for the full timing rules and export behavior.
+[Ornaments](../ornaments.md) has the full timing rules and the export
+behavior.
 
 ## Drum hits
 
 A hit is `drum beat:subdivision dynamics modifiers`. Drum names are free
-identifiers (`kick`, `snare`, `hihat`, `ride`, `crash`, …); what they trigger
-depends on the kit or preset. An exact velocity is written `v=1` to `v=127` in
-the same position as a note's velocity, and it overrides the written dynamic:
-`kick 1:0 mp v=120` sounds at 120.
+identifiers (`kick`, `snare`, `hihat`, `ride`, `crash`, …), and what they
+trigger depends on the kit or preset. Write an exact velocity as `v=1` to
+`v=127` in the same place as a note's velocity. It overrides the written
+dynamic: `kick 1:0 mp v=120` plays at 120.
 
 ```ocp
 hits:
@@ -424,26 +446,26 @@ hits:
   hihat 2:2 mf articulation=open
 ```
 
-A hit position is `beat:subdivision` inside the pattern's own bar, not
-`bar:beat`: the beat is 1-indexed and the subdivision counts sixteenths of that
-beat, `0` to `3`. `1:0` is the downbeat, `1:2` the second sixteenth after it and
-`2:3` the last sixteenth of beat 2.
+A hit position is `beat:subdivision` inside the pattern's own bar; it has no
+bar number. The beat counts from 1, and the subdivision counts sixteenths of
+that beat, `0` to `3`. `1:0` is the downbeat, `1:2` the second sixteenth after
+it, and `2:3` the last sixteenth of beat 2.
 
-Use `grid_offset_beats` to write a position between sixteenths. For example,
-`kick 1:1 mf grid_offset_beats=-0.125` writes a hit one 32nd note after the
-downbeat. The signed offset is in quarter notes and can be at most 0.125 in
-either direction. This position determines clip and loop eligibility and is
-the input to swing. Use `timing_offset_beats` for a separate expressive
-adjustment after swing.
+To place a hit between sixteenths, use `grid_offset_beats`. For example,
+`kick 1:1 mf grid_offset_beats=-0.125` puts a hit one 32nd note after the
+downbeat. The offset is signed, in quarter notes, and at most 0.125 in either
+direction. The offset position decides clip and loop eligibility and is the
+input to swing. For an expressive adjustment applied after swing, use
+`timing_offset_beats`.
 
-A pattern holds one bar of hits. A named `@pattern` is placed by a `clip:`,
-which plays it once; a groove of several bars is an inline pattern in the track,
-where `xN` repeats the written bar. `@pattern groove [1:1 - 9:1] x8` in a track
-plays that bar eight times.
+A pattern holds one bar of hits. A `clip:` plays a named `@pattern` once. For a
+groove of several bars, write an inline pattern in the track, where `xN`
+repeats the written bar: `@pattern groove [1:1 - 9:1] x8` in a track plays that
+bar eight times.
 
-Hit articulations: `closed`, `open`, `half_open`, `cross_stick`, `ghost_note`,
-`flam`, `roll`, `rim_shot`. `rest 1:2` leaves that position silent, and `|`
-separates written bars for reading only.
+The hit articulations are `closed`, `open`, `half_open`, `cross_stick`,
+`ghost_note`, `flam`, `roll` and `rim_shot`. `rest 1:2` leaves that position
+silent. `|` separates written bars and only aids reading.
 
 ## Automation
 
@@ -455,50 +477,53 @@ automation: volume [ppq=480] {1:1=0dB, 3:1=-6dB}
 automation: pitch_bend {1:1=0ct, 2:1=50ct}
 ```
 
-The value is a percentage, dB, number, string or boolean. `[ppq=N]` switches the
-lane to tick positions at N ticks per quarter note; without it, points are
-bar:beat.
+A value is a percentage, dB, number, string or boolean. Points are written at
+`bar:beat` positions. `[ppq=N]` switches the lane to tick positions at N ticks
+per quarter note.
 
-A lane can carry a time span, which turns it into a clip:
+Give a lane a time span and it becomes a clip:
 
 ```ocp
 automation: filter.cutoff [3:1 - 5:1] {4:1=200Hz, 4:4=8000Hz}
 automation: filter.resonance [3:1 - 5:1] muted {3:1=20%, 5:1=60%}
 ```
 
-The span is `[start - end]` with the end exclusive, the same range the other
-positioned blocks use. `muted` is a flag with no value and silences the lane.
-A clip writes only inside its span: before the head the parameter keeps the
-value its `effects:` entry declares, the first point is held from the head, the
+The span is `[start - end]` with an exclusive end, like every other positioned
+block. `muted` is a flag without a value, and a muted lane writes nothing.
+
+A clip writes only inside its span. Before the head, the parameter keeps the
+value its `effects:` entry declares. The first point holds from the head, the
 last value holds to the exclusive end, and nothing is written after the end, so
-the value stays where the clip left it. A lane without a span keeps its old
-meaning and drives the whole timeline from its first point. A muted lane writes
-nothing at all. Two lanes on one owner and one target may not write at the same
-time: overlapping clips, or a clip together with a whole-timeline lane, are
-refused; adjacent edges such as `[1:1 - 3:1]` and `[3:1 - 5:1]` are allowed.
+the parameter stays where the clip left it. A lane without a span drives the
+whole timeline from its first point.
 
-The lane name selects what the track's instrument understands. `volume` and
-`pan` always map to MIDI CC, and the other General MIDI controls (`modulation`,
-`expression`, `sustain`, `resonance`, `brightness`, `pressure`) depend on the
-instrument's control profile; `pitch_bend` is in cents. On a built-in synth track
-validation refuses a name outside that vocabulary and lists the names that work;
-on another instrument a name it does not profile produces no events.
+Two lanes with the same owner and target cannot write at the same time.
+Overlapping clips are refused, and so is a clip together with a whole-timeline
+lane. Clips that meet at an edge, such as `[1:1 - 3:1]` and `[3:1 - 5:1]`, are
+allowed.
 
-A patch parameter of the built-in synth is a control lane only in the
-`pluginparam_<hex>` form, which holds the parameter name bytes in hex:
-`pluginparam_66696c7465722e6375746f6666` is `filter.cutoff`. Declaring
-`control_cutoff_param: "filter.cutoff"` in the preset gives that parameter the
-readable lane name `cutoff`.
+The lane name selects a control the track's instrument understands. `volume`
+and `pan` always map to MIDI CC. The other General MIDI controls
+(`modulation`, `expression`, `sustain`, `resonance`, `brightness`, `pressure`)
+depend on the instrument's control profile. `pitch_bend` is in cents. On a
+built-in synth track, validation refuses a name outside that vocabulary and
+lists the names that work. On other instruments, a name the profile does not
+cover produces no events.
 
-A patch-parameter point is read in the parameter's own unit, the unit the same
-parameter uses in `params:`: hertz for a cutoff, seconds for an envelope time,
-cents for a detune. A bare number inside 0..1 is a normalized position, the
-value the patch editor writes, and a percentage is a position too. A continuous
-parameter ramps from one point to the next, so a lane from `200Hz` to `8000Hz`
-sweeps the filter; a discrete parameter such as `filter.model` steps at each
-point.
+A built-in synth patch parameter is a control lane only in the
+`pluginparam_<hex>` form, which spells the parameter name's bytes in hex:
+`pluginparam_66696c7465722e6375746f6666` is `filter.cutoff`. Declare
+`control_cutoff_param: "filter.cutoff"` in the preset to give that parameter
+the readable lane name `cutoff`.
 
-An effect parameter is automated by naming the effect and the parameter. Tracks,
+A patch-parameter point is read in the parameter's own unit, the one it uses in
+`params:`: hertz for a cutoff, seconds for an envelope time, cents for a
+detune. A bare number from 0 to 1 is a normalized position (the value the patch
+editor writes), and so is a percentage. A continuous parameter ramps from one
+point to the next, so a lane from `200Hz` to `8000Hz` sweeps the filter. A
+discrete parameter such as `filter.model` steps at each point.
+
+To automate an effect parameter, name the effect and the parameter. Tracks,
 buses and the master all accept these lanes:
 
 ```ocp
@@ -506,44 +531,49 @@ automation: compression.threshold {1:1=-24dB, 3:1=-6dB}
 automation: fx2.Mix [ppq=480] {1:1=50%, 5:1=80%}
 ```
 
-The effect is addressed by its type name (`compression`, `eq`, `plugin`, …) when
-the chain has exactly one of that type, or by its one-based chain position
+Address the effect by its type name (`compression`, `eq`, `plugin`, …) when the
+chain has exactly one effect of that type, or by its one-based chain position
 (`fx2`). Values use the same unit as the parameter in the `effects:` entry.
-Built-in effects must name a parameter from the device schema; plugin parameters
-are the plugin's own names. A point carries an optional `curve=` (`linear`,
-`stairs`, `half_sine`, `smooth`) for the segment to the next point, plus
-`tension=` for `smooth`; `linear` is the default and `stairs` is a held step. A
-lane can add `smoothing=<time>` (0 ms default) for a one-pole low-pass on its
-value. A plugin receives each changed value as a parameter change at the
-sample inside the render block; a built-in device is split at the same
-positions. An effect lane takes the same `[start - end]` span and `muted` flag
-as a control lane; a span makes it a clip, and an LFO lane's cycle then starts
-at the clip head. See [`docs/automation.md`](../automation.md).
+Built-in effects take a parameter name from the device schema; plugin
+parameters use the plugin's own names.
 
-A track, a bus and the master also use a gain envelope:
+Each point can carry `curve=` (`linear`, `stairs`, `half_sine` or `smooth`) for
+the segment to the next point, plus `tension=` for `smooth`. `linear` is the
+default, and `stairs` holds a step. A lane can add `smoothing=<time>` (default
+0 ms) to run its value through a one-pole low-pass.
+
+A plugin receives each changed value as a parameter change at its sample within
+the render block. A built-in device is split at the same positions. Effect
+lanes accept the same `[start - end]` span and `muted` flag as control lanes. A
+span makes the lane a clip, and an LFO lane then starts its cycle at the clip
+head. See [`docs/automation.md`](../automation.md).
+
+Tracks, buses and the master also take gain envelopes:
 
 ```ocp
 gain_automation: linear [1:1 - 9:1] {1:1=1, 8:1=0.9}
 gain_automation: step ppq=480 [10:1 - 12:3] {10:1=0, 11:2=1}
 ```
 
-`linear` or `step`, an optional `ppq=`, a range, then points. Values are linear
-gain (1.0 = unity). An owner can hold several envelopes, but their ranges must be
-sorted and must not overlap. A hairpin is the notation form of one of these clips
-on a track; see [Dynamics and hairpins](#dynamics-and-hairpins).
+Write `linear` or `step`, an optional `ppq=`, a range and then the points.
+Values are linear gain, with 1.0 as unity. An owner can hold several
+envelopes, but their ranges must be sorted and must not overlap. A hairpin on a
+track is the notation form of one of these clips; see
+[Dynamics and hairpins](#dynamics-and-hairpins).
 
 ## Control sources
 
-An automation lane is authored by hand. A control source instead derives a
-control value from one track's audio, so a fader can follow the music:
+You draw an automation lane by hand. A control source derives a control value
+from one track's audio, so a fader can follow the music:
 
 ```ocp
 @control_source kick_env | from: track(kick), attack: 5ms, release: 120ms
 ```
 
-`from:` names the track whose post-insert, pre-fader audio feeds the detector
-(`sidechain(kick)` is the same tap). `attack:` and `release:` are one-pole time
-constants; a step reaches `1 - 1/e` in one constant. Optional properties:
+`from:` names the track whose post-insert, pre-fader audio feeds the detector.
+`sidechain(kick)` is the same tap. `attack:` and `release:` are one-pole time
+constants: a step input reaches `1 - 1/e` after one constant. The optional
+properties are:
 
 | Key | Values | Default |
 |---|---|---|
@@ -554,28 +584,39 @@ constants; a step reaches `1 - 1/e` in one constant. Optional properties:
 | `offset:` | number | 0 |
 | `curve:` | `linear`, `squared`, `sqrt`, `log` | `linear` |
 
-The value is built in this order: envelope from the attack/release follower,
-then `scale * envelope + offset` clamped to `0`…`1`, then `curve`, then
-`formula`, then `lfo * lfo_depth` added, clamped again to `0`…`1`. The detector
-is the larger absolute channel value, so the control tracks level, not loudness:
-`scale` is how a hot source is brought into range.
+The value is computed in this order:
 
-The formula is not a scripting language. It reads one variable `x` and supports
-`+ - * / ^`, parentheses, unary minus, numbers, and `sqrt(x)`, `abs(x)`,
-`clamp01(x)`. The result is clamped to `0`…`1`; a non-finite result reads as
-zero, so `1-x` and `x*x` are safe per sample.
+1. The attack/release follower produces an envelope.
+2. `scale * envelope + offset` is clamped to `0`…`1`.
+3. `curve` is applied.
+4. `formula` is applied.
+5. `lfo * lfo_depth` is added, and the result is clamped to `0`…`1` again.
 
-A track spends the value on its fader ride:
+The detector takes the larger absolute value of the channels, so the control
+follows sample level and does not measure loudness. Use `scale` to bring a hot
+source into range.
+
+The formula is a small expression and has no scripting features. It reads one
+variable, `x`, and supports `+ - * / ^`, parentheses, unary minus, numbers, and
+`sqrt(x)`, `abs(x)` and `clamp01(x)`. The result is clamped to `0`…`1`, and a
+non-finite result reads as zero, so `1-x` and `x*x` are safe on every sample.
+
+A track uses the value to ride its fader:
 
 ```ocp
 @track bass | instrument: synth/bass
   mix: control(kick_env=-12dB)
 ```
 
-A device control input is the other consumer. A device that declares a control
-port takes a second, silent input: the control signal shapes it and is never
-summed into the output. Write the edge with a `route:` line on the channel that
-owns the effect chain:
+The value in `control(...)` is the depth: the gain change at full control.
+Negative values duck and positive values boost. The ride is applied after the
+fader, per sample, so the gain can move on the same sample as the kick's
+transient. Pre-fader sends tap the signal before the ride.
+
+A device control input can also consume the value. A device that declares a
+control port takes a second, silent input: the control signal shapes the device
+and is never summed into its output. Write the connection as a `route:` line on
+the channel that owns the effect chain:
 
 ```ocp
 @track kick | instrument: drums/kick
@@ -586,22 +627,21 @@ owns the effect chain:
   route: control kick_env -> compression
 ```
 
-The target is an effect address, the same one automation lanes use: a type name
-when the chain has exactly one entry of that type, or `fx2` by one-based chain
-position. The kind is `control` here; omitting it means `audio`, which feeds the
-device's audio key input instead (the edge form of `sidechain=`). One control
-source may feed several channels; the graph evaluates it after its feed track's
-chain and before each consumer, so a duck starts on the onset sample, not one
-block later. An unknown source, a target the chain does not have, or a device
-without a control input is refused with a message instead of being ignored.
+The target is an effect address, the same form automation lanes use: a type
+name when the chain has exactly one entry of that type, or `fx2` for a one-based
+chain position. The kind here is `control`. Without a kind the route is
+`audio`, which feeds the device's audio key input instead (the route form of
+`sidechain=`).
 
-A channel's own track cannot feed its own control input: control is evaluated
-before its consumer, so that edge would be a loop. Bus and master chains take
-the same `route:` line.
+One control source can feed several channels. The graph evaluates it after the
+chain of the track it listens to and before each consumer, so a duck starts on
+the onset sample and does not lag by a block. An unknown source, a target the
+chain does not have and a device without a control input are all refused with a
+message.
 
-`depth` is the gain change at full control: negative ducks, positive boosts. The
-ride is applied post-fader and per sample, so the gain can move on the same
-sample as the kick's transient; pre-fader sends tap before it.
+A channel cannot feed its own control input. Control is evaluated before its
+consumer, so that route would form a loop. Bus and master chains take the same
+`route:` line.
 
 ## Control links
 
@@ -615,32 +655,34 @@ several parameters, each with its own mapping and smoothing:
   -> track: lead param: filter.cutoff formula: linear
 ```
 
-- `from:` is `cc(<channel>, <controller>)` with a 1-based channel, `macro(<n>)`
-  for one of the eight OpenSynth macros, or `lane(<track>, <param>)` for an
-  automation lane whose normalized value becomes the control.
-- Each `->` row names a `track:`, a `param:` and a `formula:`; `smoothing:` is
-  optional. The formulas are `linear`, `inverted`, `exponential`, `logarithmic`,
-  `midi_unit` and `midi_centered`.
-- Zero smoothing is a hard over, so a link without `smoothing:` behaves like
-  step automation.
+`from:` takes one of three sources:
 
-The control reading is normalized once per block, every target applies its own
-formula, and every target advances its own one-pole smoother. A formula that
-reads the raw 0…127 value is what `midi_unit` and `midi_centered` are for, so a
-CC gesture and a macro gesture can reach the same parameter over the same range.
+- `cc(<channel>, <controller>)`, with a 1-based channel.
+- `macro(<n>)`, one of the eight OpenSynth macros.
+- `lane(<track>, <param>)`, an automation lane whose normalized value becomes
+  the control.
+
+Each `->` row names a `track:`, a `param:` and a `formula:`, and may add
+`smoothing:`. The formulas are `linear`, `inverted`, `exponential`,
+`logarithmic`, `midi_unit` and `midi_centered`. Zero smoothing jumps straight to
+the new value, so a row without `smoothing:` behaves like step automation.
+
+The control is normalized once per block. Each target then applies its own
+formula and advances its own one-pole smoother. `midi_unit` and
+`midi_centered` read the raw 0…127 value, so a CC gesture and a macro gesture
+can drive the same parameter over the same range.
 
 ## Presets
 
 A preset describes an instrument and its effects. Tracks and patterns refer to
 it by name.
 
-A pattern's preset plays that pattern's clips. When a pattern names a preset,
-every clip that references it plays that preset instead of the hosting track's
-preset, so one track can host two patterns on two instruments. A pattern without
-a preset follows its track's preset. The track's effects, sends and fader apply
-once to the summed instrument output, not once per pattern. A pattern preset
-that the project does not declare is refused by name at render time; the
-renderer never falls back to the track's instrument.
+When a pattern names a preset, every clip of that pattern plays the pattern's
+preset in place of the hosting track's, so one track can host two patterns on
+two instruments. A pattern without a preset uses its track's preset. The
+track's effects, sends and fader apply once, to the summed instrument output.
+If a pattern names a preset the project does not declare, the render refuses it
+by name and does not fall back to the track's instrument.
 
 ```ocp
 @preset keys
@@ -663,15 +705,15 @@ renderer never falls back to the track's instrument.
   params: {gain: 0.5}
 ```
 
-LV2 effect plugins are addressed by the `lv2.` prefix in an effect chain:
+In an effect chain, address an LV2 effect plugin with the `lv2.` prefix:
 `- plugin:"lv2.http://example.org/lv2/gain": gain=0.5`. LV2 control inputs
-become preset parameters under their port symbol. Bundles are discovered from
-`LV2_PATH` and the platform LV2 directories; a plugin's binary is loaded only
+become preset parameters named by their port symbol. Bundles are found through
+`LV2_PATH` and the platform LV2 directories, and a plugin's binary loads only
 when a project uses it. The host supports stereo audio, control ports, MIDI
-atom input and `state:interface`, and rejects plugins that require worker,
+atom input and `state:interface`. It rejects plugins that require the worker,
 options, log or UI extensions.
 
-AudioUnit presets use `source: au` on macOS with a display name
+On macOS, an AudioUnit preset uses `source: au` with a display name
 (`Apple: DLSMusicDevice`), a four-character code (`aumu:dls:appl`) or a
 `.component` path.
 
@@ -687,27 +729,30 @@ AudioUnit presets use `source: au` on macOS with a display name
 | `effects:` | an effect chain applied to this preset |
 | `extends:` | inherit another preset, then override |
 
-Plugin state is passed as a parameter, not as a preset field: write
+Plugin state goes in `params:`; there is no preset field for it. Write
 `<format>_state_file` or `<format>_state_hex` with the format name, for example
-`vst3_state_file`, `au_state_file` or `clap_state_hex`, or the generic
-`plugin_state_file` / `plugin_state_hex` when the preset's format decides. State
-bytes are applied after the parameters, so a state file wins over an individual
-parameter that it also carries.
+`vst3_state_file`, `au_state_file` or `clap_state_hex`. The generic
+`plugin_state_file` and `plugin_state_hex` use the preset's own format. State
+bytes are applied after the parameters, so a state file overrides any
+individual parameter it also contains.
 
-A preset asset is resolved against the directory of the `.ocp` file. That rule
-covers `file:`, `wavetable.file`, `sampler.sample_file`, `sampler.sfz_file`,
+Preset assets resolve against the directory of the `.ocp` file. The rule covers
+`file:`, `wavetable.file`, `sampler.sample_file`, `sampler.sfz_file`,
 `<format>_state_file`, a kit's layer samples, and `serum_file` with its
-`serum_root`. It holds on the first load after the project opens, because the
-load request carries the project directory instead of reading it back from the
-GUI. An absolute path is used as written and needs no directory. A relative one
-with no directory is refused, and a file that is not on disk is refused with the
-resolved path it tried; the OpenSynth importer names the missing directory as
+`serum_root`. It also holds on the first load after the project opens, because
+the load request carries the project directory itself and does not read it
+back from the GUI.
+
+An absolute path is used as written and needs no directory. A relative path
+with no project directory is refused, and a file missing from disk is refused
+with the resolved path that was tried. The OpenSynth importer reports the
+missing directory as
 `Relative synth asset requires a saved project directory`.
 
 ## Drum kits
 
-`@kit` declares a pad-per-note drum instrument. It lowers to a builtin preset, so
-`preset: basic` on a track is all you need.
+`@kit` declares a drum instrument with one pad per note. It lowers to a builtin
+preset, so `preset: basic` on a track is all you need.
 
 ```ocp
 @kit basic
@@ -718,9 +763,9 @@ resolved path it tried; the OpenSynth importer names the missing directory as
   layer kick     | low: 1, high: 127, sample: "samples/kick_alt.wav"
 ```
 
-Pad fields: `note`, `gain`, `pan`, `tune`, `cents`, `decay`, `release`,
-`reverse`, `one_shot`, `choke`. Layer fields: `low`, `high`, `sample`, `gain`.
-Layers with overlapping velocity windows form a round-robin bank. See
+Pad fields are `note`, `gain`, `pan`, `tune`, `cents`, `decay`, `release`,
+`reverse`, `one_shot` and `choke`. Layer fields are `low`, `high`, `sample` and
+`gain`. Layers whose velocity windows overlap form a round-robin bank. See
 [Drum kit](../drum-kit.md).
 
 ## Tracks
@@ -736,14 +781,16 @@ Layers with overlapping velocity windows form a round-robin bank. See
 
 `instrument:` is `category/name` (`piano/acoustic_grand`, `drums/acoustic_kit`,
 `synth/lead_square`, `audio/clip`, …). A bare name is a drum-kit instrument.
-`channel:` (0–15) sets the MIDI channel for note-derived events. `port:` (0-based)
-selects a plugin's declared MIDI port, and `pair:` (0-based inside that port)
-selects the stereo output pair a track reads; see
-[multi-output routing](../multi-output-routing.md). `engine:` is not
-accepted: the instrument and preset select the engine, so the track header
-rejects it with a parse error instead of storing an unused override.
-`engine_params: {key: value}` passes per-track overrides to the instrument;
-`dynamic_layers: off` is the one the SoundFont player reads (see
+
+`channel:` (0–15) sets the MIDI channel for events derived from notes. `port:`
+(0-based) selects one of a plugin's declared MIDI ports, and `pair:` (0-based
+within that port) selects the stereo output pair the track reads; see
+[multi-output routing](../multi-output-routing.md).
+
+The track header does not accept `engine:`. The instrument and preset select
+the engine, so the header rejects the field with a parse error and never stores
+an unused override. `engine_params: {key: value}` passes per-track overrides to
+the instrument. The SoundFont player reads `dynamic_layers: off` from it (see
 [Dynamics and hairpins](#dynamics-and-hairpins)).
 
 `mix:` properties:
@@ -755,7 +802,7 @@ rejects it with a parse error instead of storing an unused override.
 | `send(bus=level)` | `%`, number or dB, up to +12 dB | none |
 | `send(bus=level, pre)` | `pre` or `post` | post-fader |
 | `send(bus=level, pan=x)` | `-1.0`…`1.0` | 0 |
-| `send(owner.outN->bus=level)` | plugin auxiliary output, N ≥ 2 | — |
+| `send(owner.outN->bus=level)` | plugin auxiliary output, N ≥ 2 | n/a |
 | `mute=` / `solo=` | boolean | false |
 | `output=` | bus name (exclusive main route) | master |
 | `polarity=` | `invert`, `normal`, `true`, `false` | normal |
@@ -763,12 +810,12 @@ rejects it with a parse error instead of storing an unused override.
 | `display_name=` | quoted string, 1–64 chars | track name |
 | `color=` | quoted CSS colour | palette |
 
-`display_name` and `color` are presentation only; the track name stays the
-routing identity. See [Mixer routing](../mixer-routing.md).
+`display_name` and `color` only change how the track looks. The track name
+remains the routing identity. See [Mixer routing](../mixer-routing.md).
 
-`pan` is a fraction of the stereo field, not a percentage or an angle: `-0.1`
-is 10 % left, `-1` is hard left, `0` is centre and `1` is hard right. Values
-outside `-1.0`…`1.0` fail validation; they are not clamped.
+`pan` is a fraction of the stereo field. `-0.1` is 10 % left, `-1` is hard
+left, `0` is centre and `1` is hard right. It is neither a percentage nor an
+angle. A value outside `-1.0`…`1.0` fails validation and is not clamped.
 
 ## Buses and master
 
@@ -789,17 +836,20 @@ outside `-1.0`…`1.0` fail validation; they are not clamped.
     - limiter: ceiling=-0.8dB
 ```
 
-- A bus has `mix:` (`vol`, `mute`, `solo`), `routes:` and `effects:`.
-- `routes:` names other buses or `master`. Cycles are rejected by the validator.
-- A track's send and its main route are parallel: sending does not remove the
-  channel from the master.
-- `@master` takes `volume:`, `loudness:` (LUFS target, −80…0), `effects:` and
-  `gain_automation:`.
+A bus takes `mix:` (`vol`, `mute`, `solo`), `routes:` and `effects:`.
+`routes:` names other buses or `master`, and the validator rejects cycles.
+
+A track's sends run in parallel with its main route. Sending to a bus does not
+take the track out of the master.
+
+`@master` takes `volume:`, `loudness:` (a LUFS target from −80 to 0),
+`effects:` and `gain_automation:`.
 
 ## Effects
 
-Effects are a list of `- device: key=value, …` entries. The device name is the
-DSL keyword; see [Built-in devices](devices.md) for the full list and controls.
+An effect chain is a list of `- device: key=value, …` entries. The device name
+is its DSL keyword; [Built-in devices](devices.md) lists every device and its
+controls.
 
 ```ocp
 effects:
@@ -809,28 +859,28 @@ effects:
   - limiter: ceiling=-0.8dB
 ```
 
-Values use the unit suffixes `dB`, `%`, `Hz`, `ct`, `ms`, `s`; ratios are written
-`3:1`; booleans are `true`/`false`. A name the device does not define is a render
-error, not silently ignored, so write the parameter names from
-[Built-in devices](devices.md). The retired `reverb: type=hall` and
-`eq: high_shelf=…` forms are accepted by the compatibility layer with a warning
-(see [DSL compatibility](../dsl-compat.md)); they are not current controls.
-External effects use `- plugin:"org.example.fx": mix=50%`.
+Values take the unit suffixes `dB`, `%`, `Hz`, `ct`, `ms` and `s`. Ratios are
+written `3:1`, and booleans are `true` or `false`. A parameter name the device
+does not define is a render error and is never silently ignored, so copy the
+names from [Built-in devices](devices.md). The retired forms `reverb: type=hall`
+and `eq: high_shelf=…` still load through the compatibility layer with a
+warning (see [DSL compatibility](../dsl-compat.md)). They are not current
+controls. External effects use `- plugin:"org.example.fx": mix=50%`.
 
-`bypass=true` on any entry takes that device out of the chain: it processes
-nothing, reports no latency and occupies no tail, so the render is bit-identical
-to the same project with the entry deleted. `bypass` is a field of the effect
-rather than a device control, so it works on every built-in device and on a
-hosted plugin, and no device parameter list may repeat the name. The serializer
-writes it after the device's own parameters, and `bypass=false` is the default
-and is never written; a project that does not bypass anything serialises
-unchanged. The legacy `dynamic_eq: bypass=…` parameter means the same field and
-is read that way.
+`bypass=true` on any entry takes that device out of the chain. A bypassed
+device processes nothing, reports no latency and adds no tail, so the render is
+bit-identical to the same project with the entry deleted. `bypass` is a field of
+the effect entry, outside the device's own controls. It therefore works on every
+built-in device and on hosted plugins, and no device may define a parameter
+with that name. The serializer writes it after the device's parameters.
+`bypass=false` is the default and is never written, so a project with nothing
+bypassed serializes without the field. The legacy `dynamic_eq: bypass=…`
+parameter is read as the same field.
 
 ## Audio clips
 
-`@audio_clip` places a decoded media file on a track. The track's mix, sends and
-effects apply exactly as for notes.
+`@audio_clip` places a decoded media file on a track. The track's mix, sends
+and effects apply to it exactly as they do to notes.
 
 ```ocp
 @audio_clip intro [1:1 - 5:1] | track: tape
@@ -875,25 +925,29 @@ effects apply exactly as for notes.
 | `take:` | one-based pass number inside `take_group` | absent |
 | `muted:` | keeps the clip and its media but contributes no audio; the engine skips it like an absent clip | false |
 
-`offset` is output-time when stretch is active. With `tempo_follow`, changing the
-tempo changes the ratio. Warp times are measured from the media origin before
-the offset. Anchors follow an implicit `0s -> 0s`, increase on both axes, and
-use the explicit stretch ratio after the last anchor. Warp requires tempo
-follow off. The effective formant correction is limited to ±12 semitones.
-Pitch, warp, and nonzero formant shift require processing on. `pitch:` is
-refused when
-`stretch × pitch` leaves the stretch range. Media that is longer than the clip is
-trimmed; shorter media holds silence. A loop session writes one clip per pass
-with the same `take_group:`; the newest pass is unmuted and the others are muted
-until a comp chooses another. Session solo is not a DSL attribute: it only
-changes the live audition. See [Audio clips](../audio-clip.md),
-[Comping](../comping.md) and [Time-stretch](../audio-clip-stretch.md).
+While stretch is active, `offset` is measured in output time. With
+`tempo_follow`, a tempo change changes the ratio.
+
+Warp times are measured from the media origin, before the offset. The anchors
+follow an implicit `0s -> 0s`, must increase on both axes, and the explicit
+stretch ratio applies after the last anchor. Warp requires `tempo_follow` off.
+
+The effective formant correction is limited to ±12 semitones. Pitch, warp and a
+nonzero formant shift all require processing on (`mode:` other than `off`).
+`pitch:` is refused when `stretch × pitch` leaves the stretch range.
+
+Media longer than the clip is trimmed, and shorter media is followed by
+silence. A loop-record session writes one clip per pass, all with the same
+`take_group:`. The newest pass is unmuted and the others are muted until a comp
+chooses another. Session solo is not a DSL attribute; it only changes the live
+audition. See [Audio clips](../audio-clip.md), [Comping](../comping.md) and
+[Time-stretch](../audio-clip-stretch.md).
 
 ## Vocal tuning
 
-`@vocal_tune` stores a human's per-note tuning decisions for one audio clip.
-Only decisions live in the project; the detected notes and f0 come from the
-derived `.ocn` analysis.
+`@vocal_tune` stores your per-note tuning decisions for one audio clip. Only the
+decisions live in the project. The detected notes and f0 come from the derived
+`.ocn` analysis.
 
 ```ocp
 @vocal_tune lead_tune | clip: lead
@@ -906,7 +960,7 @@ derived `.ocn` analysis.
     - at=5.470s tgt=5@4 bypass=true
 ```
 
-The block also carries the automatic policy for notes with no stored target:
+The block also sets the automatic policy for notes without a stored target:
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -914,20 +968,20 @@ The block also carries the automatic policy for notes with no stored target:
 | `reference:` | none | A clip whose detected pitch becomes the target under `snap: reference`. |
 | `cap:` | `100ct` | Largest scale-snap correction; a wider move is not proposed. |
 | `window:` | `35ct` | The search window around a note's pitch. |
-| `max_move:` | — | Upper bound on one note's correction. |
+| `max_move:` | none | Upper bound on one note's correction. |
 | `vibrato:` | `preserve` | `preserve` keeps the performer's vibrato, `flatten` holds a note at its measured median, `scale` keeps half its measured depth. A note can override it with `vibrato=preserve\|flatten\|scale`. |
 
-`at` is the detected onset a decision was authored against. `tgt` accepts a
-pitch name (`A3`), absolute cents (`5700ct`), a semitone or cent offset
-(`+2st`, `-25ct`) or a scale degree and octave (`5@4`). `ocp vocal apply`
-resolves the decisions and bakes the clip; with every amount at `0%` the bake
-is sample-exact. See [Vocal tuning](../vocal-tune.md).
+`at` is the detected onset the decision was made against. `tgt` accepts a pitch
+name (`A3`), absolute cents (`5700ct`), a semitone or cent offset (`+2st`,
+`-25ct`), or a scale degree and octave (`5@4`). `ocp vocal apply` resolves the
+decisions and bakes the clip. With every amount at `0%`, the bake is
+sample-exact. See [Vocal tuning](../vocal-tune.md).
 
 ## Vocal harmony
 
 `@vocal_harmony` derives a second voice from a tuned audio clip. The voice is a
 pitch-shifted copy of the clip at a diatonic interval, added to the clip's own
-track; the lead is unchanged.
+track. The lead stays as it is.
 
 ```ocp
 @vocal_harmony third | clip: lead
@@ -938,22 +992,23 @@ track; the lead is unchanged.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `clip:` / `track:` | — | The source clip, or a track that owns exactly one clip. Exactly one is required. |
+| `clip:` / `track:` | none | The source clip, or a track that owns exactly one clip. Exactly one is required. |
 | `interval:` | `2` | Diatonic steps above the lead note inside the clip's scale; negative puts the voice below. Without a scale it counts chromatic semitones. |
 | `level:` | `-6dB` | Voice level in dB relative to the lead's RMS over the same notes. |
 | `pan:` | `0` | Stereo balance of the voice, `-1` to `1`. |
 
-A third above C is E and a third above D is F: `interval` counts steps of the
-scale, not semitones. The scale comes from the clip's own `@vocal_tune` block,
-then the key map at the note, then the project key. A project with no scale
-anywhere gets chromatic semitones and a render warning. An interval that would
-move a note more than ±12 semitones is refused, naming the note. See
-[Vocal tuning](../vocal-tune.md).
+`interval` counts scale steps. A third above C is E, and a third above D is F.
+The scale comes from the clip's own `@vocal_tune` block, then from the key map
+at the note, then from the project key. A project with no scale anywhere uses
+chromatic semitones and the render warns about it. An interval that would move
+a note by more than ±12 semitones is refused, and the message names the note.
+See [Vocal tuning](../vocal-tune.md).
 
 ## Raw channel events
 
-A track can carry a raw MIDI-shaped performance instead of notes. Positions are
-absolute quarter notes, the channel is 0-based, and every event ends with `;`:
+A track can carry a raw, MIDI-shaped performance in place of notes. Positions
+are absolute quarter notes, channels count from 0, and every event ends with
+`;`:
 
 ```ocp
 @track out | preset: meridian_keys, instrument: keys/kontakt
@@ -965,12 +1020,11 @@ absolute quarter notes, the channel is 0-based, and every event ends with `;`:
   }
 ```
 
-Commands are `note_on <note> <velocity>`, `note_off <note> <velocity>`,
+The commands are `note_on <note> <velocity>`, `note_off <note> <velocity>`,
 `cc <controller> <value>`, `program <program>`, `bend <value>`,
 `pressure <value>` and `poly_pressure <note> <pressure>`. Events must be in
-non-decreasing position order, and a track that carries this block cannot also
-carry phrases, patterns or clips: the validator refuses the mix instead of
-playing both.
+non-decreasing position order. A track with this block cannot also carry
+phrases, patterns or clips; the validator refuses the combination.
 
 ## A complete example
 
@@ -1058,6 +1112,7 @@ playing both.
     - limiter: ceiling=-0.8dB
 ```
 
-Check it with `ocp validate` and listen with `ocp render`; both are in
-[Getting started](getting-started.md). Two of its presets are SoundFont
-programs, so render it with `--soundfont soundfonts/MS_Basic.sf2`.
+Check the file with `ocp validate` and listen to it with `ocp render`; both
+commands are described in [Getting started](getting-started.md). Two of the
+presets are SoundFont programs, so render with
+`--soundfont soundfonts/MS_Basic.sf2`.
