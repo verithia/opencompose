@@ -169,9 +169,22 @@ so the x86_64 half of the universal app links the C++ exception barrier. The
 workflow uses the crate defaults, so MP3 export is compiled in; it installs no
 SoundFont library. The bundle includes the MIT-licensed
 `FluidR3Mono_GM.sf3`, and a size gate fails the job when a bundle exceeds its
-budget (see [the size budget](#bundled-gm-bank-and-size-budget)). It does not create a GitHub release, sign the macOS bundle,
-or publish the plugin index. Release publishing and index deployment stay
-separate manual actions.
+budget (see [the size budget](#bundled-gm-bank-and-size-budget)). It does not
+create a GitHub release, sign the macOS bundle or publish the plugin index.
+
+### Draft release
+
+`.github/workflows/release.yml` turns a tag into a draft GitHub release. Run it
+from **Actions → Release → Run workflow** with the tag, for example `v0.1.0`:
+
+1. **Index check.** The served `plugin-index/index.json` and its signature must
+   equal the tagged copies. The app installs only what the signed index lists,
+   so merge the index to `main` and let the docs deployment finish first.
+2. **Package.** It calls `package.yml` for the tag, so the release carries the
+   same bundles, size budgets and tag/version gate as the packaging workflow.
+3. **Draft.** It checks every artifact's `SHA256SUMS.txt`, merges them into one
+   file and creates a draft release with all bundles. Review the draft, then
+   publish it by hand; signing and notarisation stay in §5.
 
 On Windows, your installer checks for the shared Microsoft WebView2 Runtime.
 When it is missing, the installer downloads Microsoft's bootstrapper and runs

@@ -71,5 +71,39 @@ class BundleBudgetTests(unittest.TestCase):
         self.assertEqual(self.run_check("--limit-mib", "x").returncode, 2)
 
 
+class ReleaseWorkflowTests(unittest.TestCase):
+    def workflow(self, name):
+        return (ROOT / ".github/workflows" / name).read_text()
+
+    def test_release_bundles_come_from_the_packaging_workflow(self):
+        release = self.workflow("release.yml")
+        package = self.workflow("package.yml")
+        self.assertIn("uses: ./.github/workflows/package.yml\n    with:\n      tag: ${{ inputs.tag }}", release)
+        self.assertIn("  workflow_call:\n", package)
+        self.assertIn("ref: ${{ inputs.tag || github.ref }}", package)
+
+    def test_the_draft_waits_for_the_served_index_and_the_bundles(self):
+        release = self.workflow("release.yml")
+        self.assertIn("permissions:\n  contents: read\n", release)
+        draft = release.split("\n  draft:\n", 1)[1]
+        self.assertIn("needs: [index, package]", draft)
+        self.assertIn("permissions:\n      contents: write", draft)
+        self.assertIn("--draft", draft)
+        self.assertIn("--verify-tag", draft)
+        index = release.split("\n  index:\n", 1)[1].split("\n  package:\n", 1)[0]
+        self.assertIn("for file in index.json index.json.sig; do", index)
+        self.assertIn('cmp -s "served-$file" "plugin-index/$file"', index)
+
+    def test_the_version_gate_covers_tag_pushes_and_release_calls(self):
+        package = self.workflow("package.yml")
+        tag_line = next(line for line in package.splitlines() if line.strip().startswith("RELEASE_TAG:"))
+        self.assertIn("inputs.tag", tag_line)
+        self.assertIn("refs/tags/", tag_line)
+        gate = package.split("      - name: Verify the tag matches the package version\n", 1)[1].split(
+            "\n      - name:", 1
+        )[0]
+        self.assertIn("if: env.RELEASE_TAG != ''", gate)
+
+
 if __name__ == "__main__":
     unittest.main()
