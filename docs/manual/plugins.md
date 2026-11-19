@@ -35,13 +35,16 @@ These are searched as well when they exist:
 | Platform | Other folders |
 |---|---|
 | macOS | `/Network/Library/Audio/Plug-ins/VST3`; `~/.lv2`, `/usr/local/lib/lv2` and `/opt/homebrew/lib/lv2` |
-| Windows | `%APPDATA%\LV2`; `%ProgramFiles%\VST3`; `%ProgramFiles%\Cakewalk\Vstplugins`; `Documents\Plugins\VST`; the VST2 folder installers record as `VSTPluginsPath` under `HKEY_CURRENT_USER\Software\VST` and `HKEY_LOCAL_MACHINE\Software\VST` |
+| Windows | `%APPDATA%\LV2`; `%ProgramFiles%\VST3`; `%ProgramFiles%\Cakewalk\Vstplugins`; `Documents\Plugins\VST`; the VST2 folder installers record as `VSTPluginsPath` under `HKEY_CURRENT_USER\Software\VST` and `HKEY_LOCAL_MACHINE\Software\VST`; the plugin search paths and the 64-bit VST2 folder FL Studio keeps under `HKEY_CURRENT_USER\Software\Image-Line\Shared` |
 | Linux | `lib64` variants (`/usr/lib64/{vst3,clap,lv2,vst,lxvst}` and `/usr/local/lib64/...`); `linux_vst` folders |
 | All | Folders in `CLAP_PATH`, `VST3_PATH`, `VST_PATH`, `LXVST_PATH` and `LV2_PATH`; REAPER's `UserPlugins/FX` folder and the VST and CLAP paths set in its `reaper.ini` |
 
 A host's settings file is read with a 1 MiB cap, and at most 64 absolute paths
-are taken from it. On Windows, folders under `%ProgramFiles(x86)%` are skipped
-because they hold 32-bit plugins, which OpenCompose cannot load.
+are taken from it. From FL Studio's registry list, at most 64 entries are read;
+an entry with a placeholder such as `%FLPath%` is skipped, because it names one
+of that host's own folders, which hold its native plugins and not VST or CLAP
+ones. On Windows, folders under `%ProgramFiles(x86)%` are skipped because they
+hold 32-bit plugins, which OpenCompose cannot load.
 
 A bundle may sit up to three folders below a search folder, so a
 `<VST3>/<vendor>/<plugin>.vst3` layout is found. A `.vst3`, `.clap`,
