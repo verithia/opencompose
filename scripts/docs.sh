@@ -4,6 +4,7 @@
 # Layout of the published artifact:
 #
 #   book/            the mdBook built from docs/
+#   book/zh/         the Simplified Chinese mdBook built from docs-zh/
 #   book/api/        rustdoc for every workspace crate (cargo doc --no-deps)
 #   book/plugin-index/  the committed signed plugin index, copied byte for byte
 #
@@ -51,7 +52,10 @@ write_api_index() {
 
 build_book() {
     mdbook build
-    echo "docs: book written to book/ (entry point book/index.html)"
+    # mdBook cleans its build directory, so the zh book, which lives inside
+    # book/, is built after the English one.
+    mdbook build docs-zh
+    echo "docs: book written to book/ (entry point book/index.html, zh at book/zh/)"
 }
 
 # The app verifies the exact signed bytes, so the index is copied, never
