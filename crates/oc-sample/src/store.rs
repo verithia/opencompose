@@ -120,20 +120,20 @@ impl SampleStore {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
             Err(error) => {
-                return Err(SampleError::Failed(format!(
+                return Err(SampleError::failed(format!(
                     "failed to read '{}': {error}",
                     path.display()
                 )));
             }
         };
         let index: Index = serde_json::from_slice(&bytes).map_err(|error| {
-            SampleError::Failed(format!(
+            SampleError::failed(format!(
                 "invalid sample index '{}': {error}",
                 path.display()
             ))
         })?;
         if index.schema != INDEX_SCHEMA {
-            return Err(SampleError::Failed(format!(
+            return Err(SampleError::failed(format!(
                 "unsupported sample index schema '{}' in '{}'",
                 index.schema,
                 path.display()
@@ -186,7 +186,7 @@ impl SampleStore {
         headers.extend_from_slice(extra);
         let response = fetch
             .get_with(&item.download_url, MAX_SAMPLE_BYTES, &headers)
-            .map_err(|error| SampleError::Failed(format!("{}: {error}", item.provider)))?;
+            .map_err(|error| SampleError::from_fetch(&item.provider, error))?;
         if !(200..300).contains(&response.status) || response.body.len() > MAX_SAMPLE_BYTES {
             return Err(SampleError::refused(
                 "invalid_download",
@@ -204,7 +204,7 @@ impl SampleStore {
         })?;
 
         fs::create_dir_all(&self.dir).map_err(|error| {
-            SampleError::Failed(format!(
+            SampleError::failed(format!(
                 "failed to create '{}': {error}",
                 self.dir.display()
             ))
@@ -216,7 +216,7 @@ impl SampleStore {
         let _lock = self.lock_index()?;
         let mut samples = self.receipts()?;
         let dir = fs::canonicalize(&self.dir).map_err(|error| {
-            SampleError::Failed(format!(
+            SampleError::failed(format!(
                 "failed to resolve '{}': {error}",
                 self.dir.display()
             ))
@@ -318,7 +318,7 @@ impl SampleStore {
     fn lock_index(&self) -> Result<fs::File, SampleError> {
         let path = self.dir.join(INDEX_LOCK_FILE);
         fs::create_dir_all(&self.dir).map_err(|error| {
-            SampleError::Failed(format!(
+            SampleError::failed(format!(
                 "failed to create '{}': {error}",
                 self.dir.display()
             ))
@@ -330,10 +330,10 @@ impl SampleStore {
             .truncate(false)
             .open(&path)
             .map_err(|error| {
-                SampleError::Failed(format!("failed to open '{}': {error}", path.display()))
+                SampleError::failed(format!("failed to open '{}': {error}", path.display()))
             })?;
         file.lock().map_err(|error| {
-            SampleError::Failed(format!("failed to lock '{}': {error}", path.display()))
+            SampleError::failed(format!("failed to lock '{}': {error}", path.display()))
         })?;
         Ok(file)
     }
@@ -381,12 +381,12 @@ fn write_part(path: &Path, bytes: &[u8]) -> io::Result<()> {
 }
 
 fn store_io(error: io::Error) -> SampleError {
-    SampleError::Failed(format!("sample publication failed: {error}"))
+    SampleError::failed(format!("sample publication failed: {error}"))
 }
 
 fn json_document(value: &impl Serialize) -> Result<Vec<u8>, SampleError> {
     let mut bytes = serde_json::to_vec_pretty(value).map_err(|error| {
-        SampleError::Failed(format!("failed to serialize sample metadata: {error}"))
+        SampleError::failed(format!("failed to serialize sample metadata: {error}"))
     })?;
     bytes.push(b'\n');
     Ok(bytes)
@@ -430,14 +430,14 @@ impl StagedPull {
 
     fn publish(&self, audio: &Path, sidecar: &Path, index: &Path) -> Result<(), SampleError> {
         fs::hard_link(self.dir.join("audio"), audio).map_err(|error| {
-            SampleError::Failed(format!(
+            SampleError::failed(format!(
                 "failed to publish sample audio without replacing '{}': {error}",
                 audio.display()
             ))
         })?;
         if let Err(error) = fs::hard_link(self.dir.join("sidecar"), sidecar) {
             let _ = fs::remove_file(audio);
-            return Err(SampleError::Failed(format!(
+            return Err(SampleError::failed(format!(
                 "failed to publish sample credit without replacing '{}': {error}",
                 sidecar.display()
             )));
@@ -529,7 +529,11 @@ mod tests {
     }
 
     impl SampleFetch for FixtureFetch {
-        fn get(&self, url: &str, _max_bytes: usize) -> Result<FetchResponse, String> {
+        fn get(
+            &self,
+            url: &str,
+            _max_bytes: usize,
+        ) -> Result<FetchResponse, crate::provider::FetchError> {
             self.urls.lock().unwrap().push(url.to_string());
             Ok(FetchResponse {
                 status: 200,
@@ -553,7 +557,11 @@ mod tests {
     }
 
     impl SampleFetch for HeaderFetch {
-        fn get(&self, url: &str, max_bytes: usize) -> Result<FetchResponse, String> {
+        fn get(
+            &self,
+            url: &str,
+            max_bytes: usize,
+        ) -> Result<FetchResponse, crate::provider::FetchError> {
             self.get_with(url, max_bytes, &[])
         }
 
@@ -562,7 +570,7 @@ mod tests {
             _url: &str,
             _max_bytes: usize,
             headers: &[(&str, &str)],
-        ) -> Result<FetchResponse, String> {
+        ) -> Result<FetchResponse, crate::provider::FetchError> {
             *self.headers.lock().unwrap() = headers
                 .iter()
                 .map(|(name, value)| (name.to_string(), value.to_string()))

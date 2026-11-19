@@ -52,16 +52,23 @@ impl SampleProvider for InternetArchiveProvider {
         query: &SampleQuery,
         fetch: &dyn SampleFetch,
     ) -> Result<SamplePage, SampleError> {
+        let query = &query.normalized();
         let body = get_json(fetch, "Internet Archive", &search_url(query))?;
         let response: SearchResponse = serde_json::from_value(body).map_err(|error| {
-            SampleError::Failed(format!("Internet Archive: unreadable search: {error}"))
+            SampleError::failed(format!("Internet Archive: unreadable search: {error}"))
         })?;
         let page_size = query.page_size();
         let docs = response.response.docs;
-        let items: Vec<SampleItem> = docs.iter().take(page_size).map(item_from_doc).collect();
-        let seen = response.response.start + items.len() as u64;
+        let mut items: Vec<SampleItem> = docs.iter().take(page_size).map(item_from_doc).collect();
+        // The cursor counts what the index returned, so a filtered-out result
+        // is not fetched again on the next page.
+        let raw = items.len();
+        let seen = response.response.start + raw as u64;
         let next_offset =
-            (response.response.num_found > seen).then(|| query.offset.saturating_add(items.len()));
+            (response.response.num_found > seen).then(|| query.offset.saturating_add(raw));
+        // The index has no duration or channel field, so those bounds and the
+        // kind and licence filters are applied to the returned page.
+        query.retain_matching(&mut items);
         Ok(SamplePage {
             provider: PROVIDER_ID.to_string(),
             offset: query.offset,
@@ -93,7 +100,7 @@ impl SampleProvider for InternetArchiveProvider {
             &format!("{METADATA_API}/{}", encode(identifier)),
         )?;
         let response: MetadataResponse = serde_json::from_value(body).map_err(|error| {
-            SampleError::Failed(format!("Internet Archive: unreadable metadata: {error}"))
+            SampleError::failed(format!("Internet Archive: unreadable metadata: {error}"))
         })?;
         let file = pick_audio(&response.files).ok_or_else(|| {
             SampleError::refused(
@@ -159,7 +166,9 @@ fn search_url(query: &SampleQuery) -> String {
     {
         clauses.push(format!("({})", kind.search_terms().join(" OR ")));
     }
-    let text = query.text.trim();
+    // User text is escaped term by term: a `:` or `(` in the search box is a
+    // character to find, not a field selector or a group.
+    let text = super::query::lucene_terms(&query.text);
     if !text.is_empty() {
         clauses.push(format!("({text})"));
     }
@@ -375,7 +384,11 @@ mod tests {
     }
 
     impl SampleFetch for FixtureFetch {
-        fn get(&self, url: &str, _max_bytes: usize) -> Result<FetchResponse, String> {
+        fn get(
+            &self,
+            url: &str,
+            _max_bytes: usize,
+        ) -> Result<FetchResponse, crate::provider::FetchError> {
             self.urls.lock().unwrap().push(url.to_string());
             Ok(FetchResponse {
                 status: 200,
@@ -471,6 +484,53 @@ mod tests {
         assert!(url.contains("rows=20"), "{url}");
         assert!(url.contains("loop"), "{url}");
         assert!(url.contains("fl%5B%5D=licenseurl"), "{url}");
+    }
+
+    #[test]
+    fn lucene_syntax_in_the_search_text_is_escaped() {
+        let url = search_url(
+            &SampleQuery {
+                text: " title:x  OR (y) ".into(),
+                ..Default::default()
+            }
+            .normalized(),
+        );
+        // `(title\:x or \(y\))`, percent-encoded once.
+        assert!(
+            url.contains("%28title%5C%3Ax%20or%20%5C%28y%5C%29%29"),
+            "{url}"
+        );
+    }
+
+    #[test]
+    fn a_bound_the_index_cannot_express_is_applied_to_the_page() {
+        let fetch = fetch(SEARCH);
+        let unbounded = InternetArchiveProvider::new()
+            .search(
+                &SampleQuery {
+                    text: "snare".into(),
+                    limit: 3,
+                    ..Default::default()
+                },
+                &fetch,
+            )
+            .unwrap();
+        assert_eq!(unbounded.items.len(), 3);
+        // A search result has no duration, so a duration bound cannot be met;
+        // the cursor still advances past the raw page.
+        let bounded = InternetArchiveProvider::new()
+            .search(
+                &SampleQuery {
+                    text: "snare".into(),
+                    limit: 3,
+                    max_seconds: Some(2.0),
+                    ..Default::default()
+                },
+                &fetch,
+            )
+            .unwrap();
+        assert!(bounded.items.is_empty());
+        assert_eq!(bounded.next_offset, unbounded.next_offset);
     }
 
     #[test]

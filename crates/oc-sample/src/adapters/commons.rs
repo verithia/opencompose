@@ -58,6 +58,7 @@ impl SampleProvider for CommonsProvider {
         query: &SampleQuery,
         fetch: &dyn SampleFetch,
     ) -> Result<SamplePage, SampleError> {
+        let query = &query.normalized();
         let body = get_json(fetch, "Wikimedia Commons", &search_url(query))?;
         let pages = body
             .pointer("/query/pages")
@@ -160,15 +161,13 @@ fn search_url(query: &SampleQuery) -> String {
             terms.push((*term).to_string());
         }
     }
-    let text = query.text.trim();
-    if !text.is_empty() {
-        terms.push(text.to_string());
+    if !query.text.is_empty() {
+        terms.push(query.text.clone());
     }
+    // A tag is one phrase: a quote inside it is escaped so it cannot end the
+    // phrase and turn the rest of the tag into search syntax.
     for tag in &query.tags {
-        let tag = tag.trim();
-        if !tag.is_empty() {
-            terms.push(format!("\"{tag}\""));
-        }
+        terms.push(super::query::quoted_phrase(tag));
     }
     format!(
         "{API}?action=query&format=json&formatversion=2&generator=search&gsrnamespace=6&gsrlimit={fetch_limit}&gsroffset={offset}&gsrsearch={search}&prop=imageinfo%7Ccategories&iiprop=url%7Csize%7Cmime%7Cmediatype%7Cextmetadata%7Cmetadata&iiextmetadatafilter=LicenseShortName%7CLicenseUrl%7CArtist%7CUsageTerms&cllimit={CATEGORY_LIMIT}&clshow=%21hidden",
@@ -394,7 +393,11 @@ mod tests {
     }
 
     impl SampleFetch for FixtureFetch {
-        fn get(&self, url: &str, _max_bytes: usize) -> Result<FetchResponse, String> {
+        fn get(
+            &self,
+            url: &str,
+            _max_bytes: usize,
+        ) -> Result<FetchResponse, crate::provider::FetchError> {
             self.urls.lock().unwrap().push(url.to_string());
             Ok(FetchResponse {
                 status: 200,
@@ -484,6 +487,21 @@ mod tests {
         assert!(url.contains("loop"), "{url}");
         assert!(url.contains("%22drums%22"), "{url}");
         assert!(url.contains("iiprop=url%7Csize"), "{url}");
+    }
+
+    #[test]
+    fn a_quote_in_a_tag_cannot_close_its_phrase() {
+        let query = SampleQuery {
+            text: "  snare \n kit ".into(),
+            tags: vec!["12\" vinyl".into(), "  ".into()],
+            ..Default::default()
+        }
+        .normalized();
+        let url = search_url(&query);
+        // `"12\" vinyl"` encoded once: the inner quote is escaped.
+        assert!(url.contains("%2212%5C%22%20vinyl%22"), "{url}");
+        assert!(url.contains("snare%20kit"), "{url}");
+        assert!(!url.contains("%20%20"), "whitespace is collapsed: {url}");
     }
 
     #[test]

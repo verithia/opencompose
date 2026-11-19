@@ -157,7 +157,7 @@ mod tests {
 
         struct NoNetwork;
         impl SampleFetch for NoNetwork {
-            fn get(&self, _: &str, _: usize) -> Result<FetchResponse, String> {
+            fn get(&self, _: &str, _: usize) -> Result<FetchResponse, crate::provider::FetchError> {
                 panic!("the process fixture must not reach the network")
             }
         }

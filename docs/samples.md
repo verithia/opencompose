@@ -45,7 +45,10 @@ entry points are `{"entrypoint":"search","query":{...}}` and
 `{"entrypoint":"resolve","id":"..."}`. Search returns a normalized
 `SamplePage`, and resolve returns a normalized `SampleItem`. The executable
 writes one JSON object on stdout, with `status: "ok"` and `value`, or
-`status: "error"` and `message`. The Rust wire types and reference adapter
+`status: "error"` and `message`. An error may also carry `code` (only
+`unknown_id` and `no_download` stay refusals), `kind` (one of the failure kinds
+below), `http_status` and `retry_after_secs`; a reply without them, or with a
+kind the host does not know, reads as `other`. The Rust wire types and reference adapter
 are in `crates/oc-sample/src/local_plugin.rs`. The host keeps the provider ID
 and capability metadata in its registry.
 
@@ -206,8 +209,19 @@ A search asks for text, a kind, a duration range, a channel count and tags:
 | `min_seconds`, `max_seconds` | Inclusive bounds on the sample's duration. |
 | `channels` | Channel count, usually 1 or 2. |
 | `tags` | Extra terms a result must relate to. |
+| `commercial_ok` | When `true`, keep only results whose licence allows commercial use. A non-commercial or unclassified licence is dropped. Default `false`. |
 | `providers` | Markets to search; omitted means every available one. |
 | `offset`, `limit` | Paging. `limit` is per market and clamped to 1..50. |
+
+Text and tags are normalized before any market sees them: whitespace runs
+collapse to one space, empty and repeated tags are dropped, the text keeps at
+most 200 characters and the list at most 8 tags of 64 characters each. Text and
+tags are data, never query syntax: Internet Archive escapes the Lucene
+characters in the text, and a tag sent to Wikimedia Commons or Freesound is a
+quoted phrase with its quotes escaped. Every market checks kind, duration,
+channel count and licence on the page it returns, so a server-side filter is
+confirmed and an unsupported one still applies. A result with an unknown
+duration or channel count fails that bound.
 
 One result carries what a project needs to use and credit the file:
 
@@ -247,6 +261,23 @@ has a stable `code` and a sentence a person can act on:
 | `checksum_mismatch` | The body is not the declared sha256. |
 | `no_download` | The source offers no file for this result. |
 | `project_unsaved` | The project has no file, so a relative media folder has no root. |
+
+A failure that is not a refusal carries a `kind`, so a caller can decide what
+to do without reading the message:
+
+| Kind | Cause |
+|---|---|
+| `rate_limited` | HTTP 429. `retry_after_secs` repeats the source's `Retry-After` in seconds, capped at one day. |
+| `unauthorized` | HTTP 401 or 403: the key or token is missing, wrong or expired. |
+| `not_found` | HTTP 404 or 410. |
+| `unavailable` | HTTP 5xx. A `Retry-After` is repeated as for `rate_limited`. |
+| `timeout` | The request did not finish inside its deadline. |
+| `network` | The connection failed or broke. |
+| `parse` | The body was not the JSON the market documents. |
+| `other` | Anything else. |
+
+Searches use a 15-second deadline per request and downloads a 180-second one,
+in the panel, the agent tools and `ocp` alike.
 
 A search does not refuse an unavailable market: it reports it in `providers`
 with `available: false` and a `reason`, and records a failing market in `pages`
@@ -366,6 +397,7 @@ returns an error, because it changed nothing and is worth retrying.
 ocp sample providers
 ocp sample search "snare drum" --kind drum --limit 5 --provider openverse
 ocp sample search "vinyl loop" --min-seconds 1 --max-seconds 4 --channels 2
+ocp sample search "pad" --commercial-ok
 ocp sample pull "commons:File:Snare drum unmuffled.ogg"
 ocp sample pull "ia:prelinger-snare" --provider internet-archive
 FREESOUND_API_KEY=... ocp sample search "riser" --provider freesound --json
