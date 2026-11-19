@@ -360,10 +360,13 @@ for name, path in pages:
             )
             continue
         source = site[: -len(".html")] + ".md" if site.endswith(".html") else site
+        # mdBook publishes both index.md and README.md as index.html, so either
+        # source page makes the .html target a valid English page.
+        candidates = [source]
         if source.endswith(os.sep + "index.md") or source == "index.md":
-            source = source[: -len("index.md")] + "README.md"
+            candidates.append(source[: -len("index.md")] + "README.md")
         if source.endswith(".md"):
-            if source not in english:
+            if not any(candidate in english for candidate in candidates):
                 problems.append(f"{rel(path)}: '{raw}' is not a published English page")
         elif not os.path.exists(os.path.join(docs, source)):
             problems.append(f"{rel(path)}: '{raw}' does not exist in docs/")
