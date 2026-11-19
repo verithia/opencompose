@@ -1,243 +1,291 @@
 # Preferences
 
-Preferences is one in-app window with a page per subject. Open it from the
-Preferences button on the right of the toolbar. Escape, the close button and a
-click on the backdrop all close it. Leaving with unsaved provider, model or key
-edits asks whether to discard them, whichever page is open; nothing here opens
-an operating-system window.
+Preferences is a dialog inside the main window, with one page per subject.
+Open it with the **Preferences** button at the right end of the toolbar. Press
+Escape, click the close button or click outside the dialog to close it.
 
-The left sidebar lists the pages:
+The sidebar lists the pages in this order:
 
 | Page | What it holds |
 |---|---|
-| Display | Theme family and variant, the interface scale, the language. |
-| Audio | Output device and format, capture device and layout, monitoring, MIDI input. |
-| Keymap | The shortcut editor: search, rebind, reset. |
-| Performance | Track rendering threads, parallel rendering, and the read-only render facts. |
-| AI | Provider connection and key, model and defaults, permission, edit target, project instructions, toolsets. |
-| Folders | The folders searched for plugins and sounds, adding and removing your own, and a rescan. |
-| Storage | SoundFont and plugin counts, the project's sample cache, the preferences file. |
-| Help & About | Version, supported DSL version, repository, licence, diagnostics archive. |
+| Display | Language, theme and variant, interface scale. |
+| Audio | Output device and format, input device and channels, input monitoring, MIDI input. |
+| Keymap | The shortcut editor: search a command, rebind it, reset it. |
+| Performance | Track rendering threads, parallel track rendering, engine diagnostics. |
+| Folders | The folders searched for plugins and sounds. You can add and remove your own and scan again. |
+| Storage | What the app keeps on disk, with sizes and clean-up actions, and the settings file. |
+| Network | The proxy for outbound requests, a connection test and a proxy finder. |
+| External Sources | Credentials for sample providers and links to their API documentation. |
+| AI | Provider, key, model and defaults, permission, edit target, project instructions, toolsets. |
+| Help & About | Getting started, the offline manual, version, licence, build, diagnostics archive. |
 
-Each page reads what it shows when you open it. Leaving a page stops its polling.
+A page reads what it shows each time you open it, and stops any polling when
+you leave it.
 
 ## Display
 
-The theme family and variant apply immediately, and each variant offers a
-preview card. The interface scale runs from 70% to 150% in 10% steps and shows
-its current value beside the slider; **Reset** returns it to 100%. The scale is
-a webview zoom, so it scales the whole interface, not the timeline's own zoom.
+- **Language** offers **Follow system** and each interface language.
+- **Theme** offers **Follow system** and each theme family. **Variant** picks a
+  variant of that family, and each variant has a preview card you can click.
+- **Interface scale** runs from 70% to 150% in 10% steps. Drag the slider, or
+  type a value in the number box and press **Apply** or Enter. **Reset**
+  returns to the starting scale: 100%, or less if the window first opened
+  smaller than 1024 × 640 pixels.
 
-## AI
+The interface scale zooms the whole webview. It does not change the timeline's
+own zoom.
 
-The AI page is the same surface the AI panel's **Settings** button opens; that
-button lands directly on this page instead of stacking a second dialog. The page
-edits the provider connection, its key, the active model and effort, the
-provider defaults, the per-model limits, the conversation's permission and edit
-target, the project's instructions, and the enabled toolsets.
+## Audio
 
-Provider, model and default edits are drafts until you press **Save settings**;
-the line above the form says so. Permission, edit target and toolsets apply at
-once. **Test Connection** uses the saved provider, so save first if the form
-still reports unsaved changes. Removing a provider or a saved key asks for
-confirmation first. Closing the dialog, or switching to another page, with
-unsaved provider edits asks whether to discard them; keeping them leaves the
-dialog open.
+The Audio page holds the output device, sample rate and buffer size, the input
+device, **Input channels**, **Monitor input** with **Monitor gain**, the input
+level, and the MIDI input with its live input monitor.
 
-The key itself never enters the preferences file: the OS credential store holds
-it, and the page only reports whether it is saved.
+Opening the page never asks for the microphone. The page reads the device list
+and the last measured state, and does not open a capture stream. Capture opens
+only when one of these happens:
 
-## The capture rule
-
-Viewing the Audio page never asks for the microphone. The page forwards a read
-of the device state and the last measured level; it does not open a capture
-stream. Capture opens on exactly three events:
-
-- you choose an input device or a capture channel layout;
-- you turn monitoring on;
+- you choose an input device or a channel layout;
+- you turn **Monitor input** on;
 - a take is armed.
 
-Until one of those happens the level readout says **Not capturing**. This is
-why the page can be opened on a laptop with a closed lid without a permission
-prompt.
+Until then the input level reads **Not capturing**.
 
-Capture defaults to stereo. A mono device is duplicated to two channels, and a
-stereo interface keeps its image. Choose **Mono** to downmix instead. Monitoring
-is off by default because a microphone through speakers feeds back; its gain
-slider applies only while monitoring is on.
+Input is stereo by default. A mono device is copied to both channels, and a
+stereo interface keeps its stereo image. Choose **Mono** to mix the input down
+to one channel instead. **Monitor input** is off by default, because a
+microphone played through speakers feeds back. **Monitor gain** runs from
+−24 dB to +12 dB and works only while monitoring is on.
 
-## The performance knob
+## Performance
 
-**Track rendering threads** sets how many workers an offline render uses. The
-setting is persisted and applied to the next render.
+**Track rendering threads** sets how many workers an offline render uses.
 
 | Value | Meaning |
 |---|---|
-| Auto | Use the machine's reported parallelism. This is the default. |
-| 1–64 | Use exactly that many workers, capped by the machine when it has fewer cores. |
+| Auto | One worker per reported core. This is the default. |
+| 1 to the core count | Exactly that many workers. The list stops at the core count, or at 64. |
 
-**Parallel track rendering** is the second half of the same setting: off renders
-every track on one worker, whatever the thread count says. Turning it off is the
-honest way to ask for serial rendering.
+**Parallel track rendering** turns parallel rendering on or off. When it is
+off, every track renders on one worker, whatever the thread count says. The
+line under the menu shows how many workers the next render uses.
 
-The page also reports facts it does not change: the core count, the lookahead
-window, the steady-state block size, the short first chunk, the sample rate the
-output device resolved to, the contract budget for the first block, and the last
-measured first block with the start path that produced it.
+The app saves the setting and passes it to the engine as `OCP_RENDER_THREADS`.
+The engine reads it when an offline render starts, so a change applies to the
+next render and not to one that is already running.
 
-The value is published to the engine as `OCP_RENDER_THREADS`. The engine reads
-that variable when it starts an offline render, so a change applies to the next
-render rather than to one already running.
+**Engine diagnostics** expands to read-only facts: the core count, the
+lookahead, the block size, the first chunk, the sample rate of the output
+device, the audio startup latency of the last start and the start path it took,
+and the first-block budget.
 
 ## Folders
 
-The Folders page lists every folder OpenCompose searches, in two blocks: plugin
-folders, and sound folders for SoundFont, SFZ and sampler files and samples.
-Within each block the folders are grouped by why they are searched:
+The Folders page lists every folder OpenCompose searches, in two blocks:
+**Plugin folders**, and **Sound folders** for SoundFont, SFZ and sampler files
+and samples. Each block groups its folders by where they come from:
 
-| Group | Where the folders come from | Editable here |
-|---|---|---|
-| Added by you | Folders you chose with **Add plugin folder…** or **Add sound folder…**. | Yes: **Remove** stops searching a folder and leaves its files on disk. |
-| Standard locations | The folders each plugin format or sound tool names. | No |
-| Common locations | Folders other music software often uses, searched when they exist. | No |
-| From environment variables | `CLAP_PATH`, `VST3_PATH`, `VST_PATH`, `LXVST_PATH` and `LV2_PATH`. | No; change the variable. |
-| From another app's settings | Plugin folders another audio host is set to search. | No; change them in that host. |
-| Installed by OpenCompose | The folder that sound packs install into. | No |
+| Group | Block | Where the folders come from | Can you change them here? |
+|---|---|---|---|
+| Added by you | Both | Folders you chose with **Add plugin folder…** or **Add sound folder…**. | Yes. **Remove** stops searching the folder and leaves its files on disk. |
+| Installed by OpenCompose | Sounds | The folder that sound packs install into. | No |
+| Standard locations | Both | The usual folders for each plugin format or sound format. | No |
+| Common locations | Both | Folders other music software often uses, searched when they exist. | No |
+| From environment variables | Plugins | `CLAP_PATH`, `VST3_PATH`, `VST_PATH`, `LXVST_PATH` and `LV2_PATH`. | No. Change the variable. |
+| From another app's settings | Plugins | Plugin folders that another music app is set to search. | No. Change them in that app. |
 
 Each row shows how many plugins, or how many instruments and samples, the
-folder holds. A usual location that does not exist on this computer is counted
-below the block instead of listed. [Plugins](manual/plugins.md) lists every
-location.
+folder holds. A standard or common location that does not exist on this
+computer is not listed; the line under the block counts them. A folder you
+added that no longer exists stays in the list and reads **Not found**.
+[Plugins](manual/plugins.md) lists every location.
 
-Adding a plugin folder searches it at once and then scans it, so its plugins
-appear in the plugin browser. A sound folder must hold at least one instrument
-file. When a change is refused, the page says why, for example that the folder
-is already searched or that the list of plugin folders is full, and the lists
-stay as they were.
+When you add a plugin folder, the page saves it, recounts the folders and
+starts a plugin scan in the background, so the folder's plugins appear in the
+plugin browser. A sound folder must hold at least one SoundFont or SFZ file.
+
+When the app refuses a change, it writes nothing and the page says why:
+
+- the folder does not exist;
+- the folder is already searched;
+- the folder is no longer in your list;
+- your list of plugin folders is full (it holds 32);
+- the saved folder list cannot be read, so it is left unchanged;
+- the folder has no SoundFont, SFZ or sampler files;
+- the change could not be saved.
 
 **Scan again** reads every plugin again, including ones that could not be read
-before, and then recounts the sound folders. The page shows the same progress
-for both steps as the first-run guide, and the totals update when the scan
-finishes.
+before, and then counts the sound folders. The page shows the progress of both
+steps, as the first-run guide does, and the totals for plugins, instruments and
+samples update when the scan ends.
 
 ## Storage
 
-Every count on this page is read from the filesystem, so it reports what is on
-disk rather than what a project claims to use.
+The Storage page reads every size and count from the disk, so it shows what is
+there and not what a project expects. Most blocks have their own **Scan**
+button, so you can recount one block without waiting for the others.
 
-| Row | Reads | Actions |
+| Block | What it shows | Actions |
 |---|---|---|
-| SoundFonts | The installed packs and their folder. | Open folder. |
-| Plugins | Bundles found in the search paths, counted per format. | Open folder for each path, and Manage folders, which opens the Folders page. |
-| Project data | Edit histories, AI notes, recovery copies and conversations of each project and workspace folder, with size and a gone or due state. | Scan, and Remove only for data whose file or folder is gone. |
-| Conversations | Each workspace's saved conversations and the shared audition audio archive. | Delete one conversation, Clear audition audio. |
-| Clip cache | Decoded and processed clip PCM, and the vocal analysis and bake cache against its 1 GiB budget. | Scan, Clear. |
-| Sample cache | Files and bytes under the open project's `media/samples`. | Open folder, Clear. |
-| App folders | Runtimes, the plugin index, presets, sample providers, audition scratch, preset trims and logs. | Scan, Open folder. |
-| Preferences file | The settings file this build writes. | Open folder, then Export or Import. |
+| Archived render format | The format of full audition renders: WAV, or MP3 at 128 to 320 kbps. | Choose the format. |
+| Edit history | The size of the open project's history. | Set the size at which the app shows a notice. |
+| Project data | Edit histories, AI notes, recovery copies and conversations of each project and workspace folder, with sizes and a gone or due state. | **Remove**, offered only for data whose file or folder is gone. |
+| Conversations | The saved conversations of each workspace, and the audition clips and renders they share. | **Delete** one conversation, **Clear old conversation history**, **Clear audition audio**, **Open folder**. |
+| SoundFonts | The installed packs and the files in their folder. | **Open folder**. |
+| Plugins | Plugin files in the search folders, counted per format, and the size of each folder. | **Open folder** for each folder, and **Manage folders…**, which opens the Folders page. |
+| Clip audio cache | Decoded audio, processed audio, and vocal analyses and bakes against their 1 GiB budget. | **Clear unused clip audio** clears all three. |
+| Sample cache | Files and bytes in the open project's `media/samples` folder. | **Open folder**, **Clear**. |
+| Other app data | Helper runtimes, the plugin catalog, the preset library, sample providers, audition scratch, loudness trims and diagnostic logs. | **Open folder**. |
+| Settings file | The path of the settings file. | **Open folder**, **Export preferences…**, **Import preferences…**. |
 
-Project data whose file or folder is gone waits 30 days and is then removed by
-the startup sweep. Removing one by hand is offered only while it is gone. See
+Project data whose file or folder is gone is removed by the startup sweep after
+30 days. You can remove it earlier with **Remove**. See
 [On-disk storage](storage-layout.md).
 
-**Clear** deletes every file inside `media/samples` of the open project and
-leaves the folder in place. It never touches the project file, an audio clip
-that points outside that folder, or any other project. A project that has never
-been saved has no media folder, so the row states that instead of offering the
-action.
+**Clear** in the Sample cache block deletes every file in the open project's
+`media/samples` folder and keeps the folder. It does not touch the project
+file, audio clips stored outside that folder, or other projects. Samples that
+presets refer to go missing from the project, so the app asks first. A project
+that has never been saved has no media folder; the block says to save the
+project first.
 
-The preferences file is `~/.opencompose/gui-settings.yaml`. The app can read
-older JSON preferences until the next save creates the YAML file. Desktop
-network requests use the `network.proxyMode` setting (`system`, `manual`,
-or `none`). Manual mode reads `network.proxyUrl`; enter the address of your
-proxy in Network preferences.
-
-**Find a proxy** checks the saved route, a direct connection and the usual
-local proxy ports against the plugin index. Each route is listed with its
-result and timing, and **Use** saves a working one. A local port counts as a
-proxy only when it accepts a CONNECT tunnel to the index host; a web server on
-the same port and a proxy whose upstream is unreachable are not offered. The
-same check runs when a first-run or Store index fetch fails, where a working
-route can be applied before the fetch is retried.
-
-The portable preferences bundle is a separate file you choose. See
+The settings file is `~/.opencompose/gui-settings.yaml`. If the YAML file does
+not exist yet, the app reads an older `gui-settings.json` and writes YAML at
+the next save. **Export preferences…** and **Import preferences…** write and
+read a separate file that you choose. See
 [Preferences bundle](preferences-bundle.md).
 
 ### Separate configuration profiles
 
-Set `OPENCOMPOSE_CONFIG_DIR` before launching the GUI or `ocp` to select a
-separate filesystem configuration root. Without it, the default remains
-`~/.opencompose`. GUI and audio preferences, saved AI sessions, presets and
-other files that use this root are stored directly in the selected directory.
-Existing settings are not copied automatically.
-Diagnostic logs requested with `--debug` or `--perf` use `logs/` inside an
-explicit profile. Without an explicit profile, diagnostics keep their normal
-platform log directory.
+Set `OPENCOMPOSE_CONFIG_DIR` before you start the app or `ocp` to use a
+separate configuration folder. Without it, the folder is `~/.opencompose`. GUI
+and audio preferences, saved AI conversations, presets and the other files
+under that folder go into the folder you name. The app does not copy existing
+settings into it. Diagnostic logs from `--debug` or `--perf` go to `logs/`
+inside the profile. Without a profile, they go to the platform's log folder.
 
-The value must be a nonempty absolute path. Its parent must already exist;
-leave the profile directory itself for OpenCompose to create. For example,
-in a macOS or Linux shell:
+The value must be a non-empty absolute path whose parent folder exists. Let
+OpenCompose create the profile folder itself. In a macOS or Linux shell:
 
 ```sh
 mkdir -p "$HOME/.opencompose-profiles"
 OPENCOMPOSE_CONFIG_DIR="$HOME/.opencompose-profiles/review" ocp validate song.ocp
 ```
 
-On Windows, choose a directory below `%LOCALAPPDATA%`, whose resolved location
-must itself be within `%USERPROFILE%`. OpenCompose resolves existing parents
-before checking containment and rejects unsupported locations. Windows profiles
-use the containing user profile's inherited permissions.
+On Windows, choose a folder under `%LOCALAPPDATA%`, which must itself resolve
+to a location under `%USERPROFILE%`. OpenCompose resolves existing parent
+folders before it checks this and refuses other locations. A Windows profile
+uses the permissions it inherits from the user profile.
 
-OpenCompose marks a newly created profile for later reuse. It refuses an
-unrelated existing directory, an invalid marker, a profile-directory symlink
-or an insecure Unix profile rather than changing that directory's permissions. On Unix, new profile
-directories use mode `0700` and their marker uses `0600`. Startup errors do not
-fall back to the default profile. The selection is immutable for that process;
-restart to switch profiles.
+OpenCompose marks a profile folder it creates so that it can reuse it later.
+It refuses an existing folder it did not create, a damaged marker, a profile
+folder that is a symbolic link, and a Unix profile with unsafe permissions; it
+never changes that folder's permissions. On Unix, a profile folder it creates gets
+mode `0700` and its marker `0600`. A profile error stops startup; the app does
+not fall back to the default folder. A process keeps its profile until it
+exits, so restart to switch.
 
-Quit any running instance before switching profiles: this option does not
-change the application's single-instance identity, WebView storage, operating
-system credential store, plugin installation folders or project locations.
-It does not change `HOME` or other applications' settings.
+Quit any running instance before you switch profiles. A profile does not
+change the app's single-instance identity, its WebView storage, the operating
+system's credential store, plugin install folders or project locations. It does
+not change `HOME` or the settings of other applications.
+
+## Network
+
+**Proxy** chooses how outbound requests to sample markets, the plugin index and
+AI providers connect:
+
+| Choice | Setting value | Meaning |
+|---|---|---|
+| Follow the system | `system` | Use the operating system's proxy. This is the default. |
+| Use this proxy | `manual` | Use the address in **Proxy URL**. |
+| Connect directly | `none` | Use no proxy. |
+
+The choice is saved as `network.proxyMode` in the settings file, and the
+address as `network.proxyUrl`. The app refuses **Use this proxy** without a
+usable address.
+
+**Test connection** requests `https://api.openverse.org/v1/` through the
+chosen route and shows the time and HTTP status, or the error.
+
+**Find a proxy** checks the saved route, a direct connection and the usual
+local proxy ports against the plugin index. It lists each route with its result
+and time, and **Use** saves a route that works. A local port counts as a proxy
+only if it accepts a CONNECT tunnel to the index host, so a web server on that
+port, or a proxy that cannot reach the index, is not offered. The same check
+runs when the first-run guide or the Store cannot fetch the index, and you can
+apply a working route there before the fetch is retried.
 
 ## External Sources
 
-Manage Freesound and Jamendo credentials in the operating system's credential
-store, connect Freesound for original downloads, and open provider API
-documentation. Sample searches run through [local provider plugins](samples.md)
-in debug builds.
+This page stores sample provider credentials in the operating system's
+credential store:
+
+- Freesound: an **API key**, plus **Freesound original quality**, which
+  connects your Freesound account so you can download original files;
+- Jamendo: a **Client ID**.
+
+Each provider has a link to its API documentation. **Public search APIs** links
+to the documentation of Openverse, Wikimedia Commons and Internet Archive,
+which need no credential. See [Samples](samples.md).
+
+## AI
+
+The AI panel's **Provider settings** button opens Preferences on this page.
+
+Provider, model and default edits stay drafts until you press
+**Save settings**; the line above the form says so. Permission, edit target and
+toolsets apply at once. **Test Connection** tests the saved provider and model,
+so save your edits first. The app asks before it removes a provider or a saved
+key.
+
+Drafts survive a switch to another page. When you close Preferences with
+unsaved AI edits, the app asks whether to discard them. If you keep them,
+Preferences stays open.
+
+The key never goes into the settings file. The operating system's credential
+store holds it, and the page only shows whether a key is saved.
 
 ## Help & About
 
-The version comes from the build, and the supported DSL version comes from the
-parser crate, so neither can drift from the binary that is running. The
-repository line links to `https://github.com/verithia/opencompose`. The licence
-is AGPL-3.0-or-later; the language components (`oc-dsl`, `oc-device-schema`,
-`oc-lsp` and the VS Code extension) are MIT OR Apache-2.0. **Export diagnostics…** writes the support archive
-described in [Diagnostics](diagnostics.md).
+- **Getting started** closes Preferences and opens the first-run guide again.
+  The **Audio** and **Keymap** buttons open those pages.
+- **User manual · offline · English** shows the user manual inside the app.
+- **Version** comes from the build, and **Supported DSL version** from the
+  parser crate, so both match the running program.
+- **Licence** is AGPL-3.0-or-later. **Git repository** opens
+  `https://github.com/verithia/opencompose`.
+- **Build** shows the source revision, build profile, operating system and
+  architecture.
+- **Credits and licenses** holds the AGPL text, the MIT and Apache-2.0 texts of
+  the language components, and the notices of third-party software and assets.
+- **Export diagnostics…** writes the support archive described in
+  [Diagnostics](diagnostics.md).
 
 ## The resource browser
 
-The Browse button next to Preferences opens a separate overlay with three tabs:
+The **Browse** button next to **Preferences** opens the **Resources** overlay,
+with three tabs:
 
-- **Plugins** lists the free-plugin catalogue, the same surface the Store shows.
-- **Samples** searches the sample markets, the same surface the bottom panel's
-  Samples mode shows.
-- **Effects** lists the built-in devices grouped by category, with a one-line
-  description each, and adds one to the selected track.
+- **Plugins** lists the free-plugin catalog, the same list the Store shows.
+- **Samples** searches the sample markets, the same panel as the bottom
+  panel's Samples mode.
+- **Effects** lists the built-in devices by category, and the effect plugins
+  found by the plugin scan. **Add to selected track** adds one to the selected
+  track.
 
-The browser is an overlay, not a window, and it does not change the bottom
-panel's mode: the Samples mode stays where it was.
+The overlay does not change the bottom panel's mode.
 
 ## Interface scale and the toolbar
 
-A large interface scale shrinks the CSS viewport, which can push right-hand
-buttons out of the window. The toolbar therefore keeps Preferences and
-Browse outside the strip that holds the transport and file controls, so those
-two buttons are never the ones that leave. Inside the strip the groups wrap onto
-another row when they run out of width, the toolbar row grows with them, button
-labels hide before any control does, and separators tighten at narrow widths.
-`npm run layout-check` measures every toolbar button at 150% and 200% and fails
-if one leaves the viewport or is covered by an open sidebar. The same check
-covers the toolbar's drag region, which spans the whole bar so the window can be
-moved from any empty part of it.
+A larger interface scale leaves fewer CSS pixels for the toolbar. The toolbar
+keeps **Preferences** and **Browse** outside the strip that holds the transport
+and file controls, so these two buttons always stay in the window. The strip
+stays one row high and scrolls sideways when it runs out of width. Below
+1180 CSS pixels the button labels hide and the gaps shrink, before any control
+is hidden.
+
+`npm run layout-check` renders the toolbar in headless Chrome in a 1400-pixel
+window at 150% and 200% and fails if a button leaves the window or its
+scrolling strip. The whole toolbar is a window drag region, so you can move the
+window from any empty part of it.
