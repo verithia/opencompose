@@ -45,7 +45,7 @@
 - [导出格式](export-format.md)
 - [速度、拍号与摇摆](timing.md)
 - [自动化](automation.md)
-- [混音台路由](mixer-routing.md)
+- [混音器路由](mixer-routing.md)
 - [MIDI 导入与导出](midi-import-export.md)
 - [实时 MIDI](midi-live.md)
 - [音频设备](audio-devices.md)
