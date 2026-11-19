@@ -15,6 +15,7 @@ The left sidebar lists the pages:
 | Keymap | The shortcut editor: search, rebind, reset. |
 | Performance | Track rendering threads, parallel rendering, and the read-only render facts. |
 | AI | Provider connection and key, model and defaults, permission, edit target, project instructions, toolsets. |
+| Folders | The folders searched for plugins and sounds, adding and removing your own, and a rescan. |
 | Storage | SoundFont and plugin counts, the project's sample cache, the preferences file. |
 | Help & About | Version, supported DSL version, repository, licence, diagnostics archive. |
 
@@ -88,6 +89,37 @@ The value is published to the engine as `OCP_RENDER_THREADS`. The engine reads
 that variable when it starts an offline render, so a change applies to the next
 render rather than to one already running.
 
+## Folders
+
+The Folders page lists every folder OpenCompose searches, in two blocks: plugin
+folders, and sound folders for SoundFont, SFZ and sampler files and samples.
+Within each block the folders are grouped by why they are searched:
+
+| Group | Where the folders come from | Editable here |
+|---|---|---|
+| Added by you | Folders you chose with **Add plugin folder…** or **Add sound folder…**. | Yes: **Remove** stops searching a folder and leaves its files on disk. |
+| Standard locations | The folders each plugin format or sound tool names. | No |
+| Common locations | Folders other music software often uses, searched when they exist. | No |
+| From environment variables | `CLAP_PATH`, `VST3_PATH`, `VST_PATH`, `LXVST_PATH` and `LV2_PATH`. | No; change the variable. |
+| From another app's settings | Plugin folders another audio host is set to search. | No; change them in that host. |
+| Installed by OpenCompose | The folder that sound packs install into. | No |
+
+Each row shows how many plugins, or how many instruments and samples, the
+folder holds. A usual location that does not exist on this computer is counted
+below the block instead of listed. [Plugins](manual/plugins.md) lists every
+location.
+
+Adding a plugin folder searches it at once and then scans it, so its plugins
+appear in the plugin browser. A sound folder must hold at least one instrument
+file. When a change is refused, the page says why, for example that the folder
+is already searched or that the list of plugin folders is full, and the lists
+stay as they were.
+
+**Scan again** reads every plugin again, including ones that could not be read
+before, and then recounts the sound folders. The page shows the same progress
+for both steps as the first-run guide, and the totals update when the scan
+finishes.
+
 ## Storage
 
 Every count on this page is read from the filesystem, so it reports what is on
@@ -96,7 +128,7 @@ disk rather than what a project claims to use.
 | Row | Reads | Actions |
 |---|---|---|
 | SoundFonts | The installed packs and their folder. | Open folder. |
-| Plugins | Bundles found in the search paths, counted per format. | Open folder for each path. |
+| Plugins | Bundles found in the search paths, counted per format. | Open folder for each path, and Manage folders, which opens the Folders page. |
 | Project data | Edit histories, AI notes, recovery copies and conversations of each project and workspace folder, with size and a gone or due state. | Scan, and Remove only for data whose file or folder is gone. |
 | Conversations | Each workspace's saved conversations and the shared audition audio archive. | Delete one conversation, Clear audition audio. |
 | Clip cache | Decoded and processed clip PCM, and the vocal analysis and bake cache against its 1 GiB budget. | Scan, Clear. |

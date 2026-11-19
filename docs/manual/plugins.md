@@ -52,8 +52,10 @@ A bundle may sit up to three folders below a search folder, so a
 (macOS), `.dll` (Windows) or `.so` (Linux) in a VST2 folder. A bundle can hold
 several plugins; the plugin browser lists each one.
 
-To search another folder, choose **Add plugin folder…** on the first page of
-the first-run guide. The list is kept in `~/.opencompose/plugin-folders.json`
+To search another folder, choose **Add plugin folder…** on the Folders page of
+Preferences, or on the first page of the first-run guide. The Folders page also
+lists every searched folder by where it comes from and removes the ones you
+added. The list is kept in `~/.opencompose/plugin-folders.json`
 (at most 32 folders; `OCP_PLUGIN_FOLDERS` points at another file). The scan,
 the LV2 loader and the Store's installed check all read it. VST2 also honours
 `OCP_VST2_PATH`.
@@ -67,7 +69,8 @@ Linux, `C:\soundfonts` on Windows), the sample folders other music tools keep
 (the Ableton User Library and Factory Packs, the Image-Line user data folder,
 LMMS samples, Splice, `Samples` under Documents and Music), and your content
 libraries. Each folder costs at most 20,000 directory entries, eight levels
-deep. **Add sound folder…** registers a content library. The bank that ships
+deep. **Add sound folder…** registers a content library; the Folders page lists
+and removes them too. The bank that ships
 with OpenCompose is not counted.
 
 After installing anything new, rescan from the plugin browser.

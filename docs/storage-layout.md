@@ -195,6 +195,19 @@ A log directory keeps at most 20 diagnostics logs per program. A new run
 removes the oldest beyond that bound, so diagnostics never grow without limit.
 The app log starts over once it passes 40 KB.
 
+## Folder lists
+
+Two small files hold the folders you add, and the Folders page in Preferences
+edits both.
+
+| Location | Contents |
+|---|---|
+| `<config>/plugin-folders.json` | The plugin folders you added, at most 32. `OCP_PLUGIN_FOLDERS` points at another file. |
+| `<config>/content-libraries.json` | The sound folders you added, each a content library with the instrument files its last scan found. `OPENCOMPOSE_CONTENT_CATALOGUE` points at another file. |
+
+A file this build cannot read is reported and never overwritten. Removing a
+folder from either list leaves its files on disk.
+
 ## Stale data
 
 The app removes data for projects and workspace folders that are gone, and only

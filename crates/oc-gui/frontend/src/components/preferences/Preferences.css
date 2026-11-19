@@ -442,3 +442,32 @@
 
 .preferences-engine-diagnostics summary { cursor: pointer; padding: 8px 0; color: var(--text-primary); }
 .preferences-engine-diagnostics .preferences-facts { margin-top: 8px; }
+
+/* Folders page: one block per kind, a group per origin, one row per folder. */
+.preferences-folder-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-top: 4px;
+}
+
+.preferences-folder-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.preferences-folder-row.missing .preferences-path { text-decoration: line-through; }
+
+.preferences-folder-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.preferences-folder-add svg { width: 13px; height: 13px; }
+
+.preferences-folders-scan .onboarding-scan-phases { margin: 0; padding: 0; }
