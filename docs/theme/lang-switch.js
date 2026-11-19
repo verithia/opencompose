@@ -59,6 +59,8 @@
     link.textContent = inChinese ? "English" : "简体中文";
     link.title = inChinese ? "Read this page in English" : "阅读简体中文版";
 
-    const buttons = document.querySelector("#menu-bar .right-buttons");
+    // scripts/docs.sh fails the build when the pinned mdBook stops emitting
+    // this menu bar, so a template change cannot hide the switch silently.
+    const buttons = document.querySelector("#mdbook-menu-bar .right-buttons");
     if (buttons) buttons.prepend(link);
 })();
