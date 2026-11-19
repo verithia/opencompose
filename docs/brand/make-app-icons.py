@@ -20,8 +20,8 @@ icon_svg = Path(ICON_DIR) / "logo.svg"
 icon_svg.write_text(
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" '
     'width="1024" height="1024">\n'
-    '  <rect width="120" height="120" fill="#102a25"/>\n'
-    '  <g transform="translate(7.2 7.2) scale(.88)" fill="#e5f6eb">\n'
+    '  <rect width="120" height="120" fill="#f6f4ef"/>\n'
+    '  <g transform="translate(7.2 7.2) scale(.88)" fill="#1b1c20">\n'
     f"    {art}\n"
     "  </g>\n"
     "</svg>\n"

@@ -22,3 +22,8 @@ git-repository-url = "https://github.com/verithia/opencompose"
 edit-url-template = "https://github.com/verithia/opencompose/edit/main/docs/{path}"
 # The book and the rustdoc for the same commit are deployed as one artifact:
 # the book at the site root, the API reference at /api/.
+# docs/theme/ holds only the files that differ from mdBook's default theme: the
+# favicon, the header mark and the language link shared with the zh book.
+theme = "docs/theme"
+additional-css = ["docs/theme/brand.css"]
+additional-js = ["docs/theme/lang-switch.js"]

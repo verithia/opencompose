@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="1024" height="1024">
-  <rect width="120" height="120" fill="#102a25"/>
-  <g transform="translate(7.2 7.2) scale(.88)" fill="#e5f6eb">
+  <rect width="120" height="120" fill="#f6f4ef"/>
+  <g transform="translate(7.2 7.2) scale(.88)" fill="#1b1c20">
     <!-- 1. 300-degree O/C Halo Ring -->
   <path d="
     M 68 18
