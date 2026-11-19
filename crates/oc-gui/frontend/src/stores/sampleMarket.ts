@@ -4,6 +4,7 @@
  * This module owns the marketplace wire types; `api.ts` re-exports them so
  * callers keep their existing import path.
  */
+import { createSignal, type Accessor } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
 import type { ProjectSnapshot } from "../types/project";
 import { startNativeAudio } from "./webAudioFocus";
@@ -193,6 +194,150 @@ export const sampleMarketSearch = (args: {
   commercial_ok?: boolean;
   cursor?: string;
 }) => sampleCommand(() => invoke<SampleMarketSearchResult>("sample_market_search", { args }));
+
+type SampleMarketSearchArgs = Parameters<typeof sampleMarketSearch>[0];
+
+/** The search the panel last submitted; load-more continues exactly this. */
+export interface SampleMarketSearchFilters {
+  query: string;
+  kind?: string;
+  min_seconds?: number;
+  max_seconds?: number;
+  commercial_ok?: boolean;
+  providers?: string[];
+}
+
+function searchArguments(
+  filters: SampleMarketSearchFilters,
+  cursor?: string,
+): SampleMarketSearchArgs {
+  const args: SampleMarketSearchArgs = { query: filters.query };
+  if (filters.kind) args.kind = filters.kind;
+  if (filters.commercial_ok) args.commercial_ok = true;
+  if (filters.min_seconds !== undefined) args.min_seconds = filters.min_seconds;
+  if (filters.max_seconds !== undefined) args.max_seconds = filters.max_seconds;
+  if (filters.providers) args.providers = filters.providers;
+  if (cursor) args.cursor = cursor;
+  return args;
+}
+
+function normalizedSourceUrl(value: string): string {
+  const text = value.trim();
+  if (!text) return "";
+  try {
+    const url = new URL(text);
+    url.hash = "";
+    const path = url.pathname.replace(/\/+$/, "");
+    return `${url.protocol}//${url.host.toLowerCase()}${path}${url.search}`;
+  } catch {
+    return text;
+  }
+}
+
+function itemKey(item: SampleMarketItem): string {
+  return `${item.provider}\u0000${item.id}`;
+}
+
+/**
+ * Append one page to the rows already shown. The backend removes duplicates
+ * within a page; across pages the panel keeps each provider id and each
+ * normalized source URL once.
+ */
+export function mergeSampleMarketItems(
+  existing: SampleMarketItem[],
+  incoming: SampleMarketItem[],
+): SampleMarketItem[] {
+  const ids = new Set(existing.map(itemKey));
+  const sources = new Set(
+    existing.map((item) => normalizedSourceUrl(item.source_url)).filter(Boolean),
+  );
+  const merged = [...existing];
+  for (const item of incoming) {
+    const id = itemKey(item);
+    const source = normalizedSourceUrl(item.source_url);
+    if (ids.has(id) || (source && sources.has(source))) continue;
+    ids.add(id);
+    if (source) sources.add(source);
+    merged.push(item);
+  }
+  return merged;
+}
+
+export interface SampleMarketSearchPager {
+  items: Accessor<SampleMarketItem[]>;
+  cursor: Accessor<string | null>;
+  loading: Accessor<boolean>;
+  loadingMore: Accessor<boolean>;
+  /** Start a new search; a stale answer is dropped. */
+  search: (filters: SampleMarketSearchFilters) => Promise<SampleMarketSearchResult | null>;
+  /** Continue the current search; a stale answer is dropped. */
+  loadMore: () => Promise<SampleMarketSearchResult | null>;
+  /** Drop the current search and every in-flight answer. */
+  reset: () => void;
+}
+
+/** A search that pages through cursors, with stale-result and duplicate guards. */
+export function createSampleMarketSearchPager(
+  run: (args: SampleMarketSearchArgs) => Promise<SampleMarketSearchResult> = sampleMarketSearch,
+): SampleMarketSearchPager {
+  const [items, setItems] = createSignal<SampleMarketItem[]>([]);
+  const [cursor, setCursor] = createSignal<string | null>(null);
+  const [loading, setLoading] = createSignal(false);
+  const [loadingMore, setLoadingMore] = createSignal(false);
+  let token = 0;
+  let filters: SampleMarketSearchFilters | null = null;
+
+  async function search(next: SampleMarketSearchFilters) {
+    const mine = ++token;
+    filters = next;
+    setItems([]);
+    setCursor(null);
+    setLoading(true);
+    setLoadingMore(false);
+    try {
+      const result = await run(searchArguments(next));
+      if (mine !== token) return null;
+      setItems(result.items);
+      setCursor(result.cursor ?? null);
+      return result;
+    } catch (error) {
+      if (mine !== token) return null;
+      throw error;
+    } finally {
+      if (mine === token) setLoading(false);
+    }
+  }
+
+  async function loadMore() {
+    const next = cursor();
+    if (!filters || next === null || loading() || loadingMore()) return null;
+    const mine = token;
+    setLoadingMore(true);
+    try {
+      const result = await run(searchArguments(filters, next));
+      if (mine !== token) return null;
+      setItems((previous) => mergeSampleMarketItems(previous, result.items));
+      setCursor(result.cursor ?? null);
+      return result;
+    } catch (error) {
+      if (mine !== token) return null;
+      throw error;
+    } finally {
+      if (mine === token) setLoadingMore(false);
+    }
+  }
+
+  function reset() {
+    token += 1;
+    filters = null;
+    setItems([]);
+    setCursor(null);
+    setLoading(false);
+    setLoadingMore(false);
+  }
+
+  return { items, cursor, loading, loadingMore, search, loadMore, reset };
+}
 
 /** Play one result through the audition stream; `cancelled` means a Stop or a
  * newer preview replaced it while it downloaded. */

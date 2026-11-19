@@ -130,6 +130,66 @@ const SEARCH_RESULT = {
   items: ITEMS,
 };
 
+const EXTRA_ITEM = {
+  ...ITEMS[0],
+  id: "openverse:extra",
+  name: "Extra clap",
+  source_url: "https://example.test/extra-clap",
+  download_url: "https://example.test/extra-clap.wav",
+};
+
+const PAGED_RESULT = { ...SEARCH_RESULT, cursor: "next-page" };
+const MORE_RESULT = {
+  ...SEARCH_RESULT,
+  cursor: null,
+  items: [EXTRA_ITEM, ITEMS[0]],
+};
+
+const NOTICE_RESULT = {
+  ...SEARCH_RESULT,
+  pages: [
+    {
+      provider: "openverse",
+      provider_name: "Openverse",
+      count: 0,
+      error: "openverse detail",
+      error_kind: "needs_key",
+    },
+    {
+      provider: "freesound",
+      provider_name: "Freesound",
+      count: 0,
+      error: "freesound detail",
+      error_kind: "rate_limited",
+      retry_after_secs: 7,
+    },
+    {
+      provider: "jamendo",
+      provider_name: "Jamendo",
+      count: 0,
+      skipped: true,
+      skip_reason: "circuit_open",
+      error: "jamendo detail",
+      error_kind: "skipped",
+    },
+    {
+      provider: "pixabay",
+      provider_name: "Pixabay",
+      count: 0,
+      error: "pixabay detail",
+      error_kind: "network",
+    },
+    {
+      provider: "internet-archive",
+      provider_name: "Internet Archive",
+      count: 0,
+      error: "archive detail",
+      error_kind: "other",
+    },
+  ],
+  items: [],
+};
+
 beforeEach(async () => {
   invokeMock.mockClear();
   invokeMock.mockImplementation(async (cmd: string) => {
@@ -169,7 +229,9 @@ async function search(container: HTMLElement) {
   fireEvent.input(input, { target: { value: "snare" } });
   fireEvent.submit(container.querySelector(".sample-market-header") as HTMLFormElement);
   await waitFor(() =>
-    expect(container.querySelector(".sample-market-row")).toBeTruthy(),
+    expect(
+      container.querySelector(".sample-market-row:not(.sample-market-row-skeleton)"),
+    ).toBeTruthy(),
   );
 }
 
@@ -201,7 +263,7 @@ describe("SampleMarketPanel", () => {
     expect(container.querySelector(".sample-market-search")).not.toBeNull();
     expect(
       container.querySelectorAll(".sample-market-chip:not(.sample-market-chip-loading)"),
-    ).toHaveLength(5);
+    ).toHaveLength(6);
     expect(container.querySelector(".sample-market-chip-loading")?.textContent).toContain(
       "Loading markets",
     );
@@ -214,7 +276,7 @@ describe("SampleMarketPanel", () => {
   });
 
   it("searches the included markets and shows licence and credit", async () => {
-    const { container, getByText } = render(() => <SampleMarketPanel />);
+    const { container, getByText, queryByText } = render(() => <SampleMarketPanel />);
     await waitFor(() => expect(getByText("Openverse")).toBeInTheDocument());
     await search(container);
 
@@ -228,6 +290,109 @@ describe("SampleMarketPanel", () => {
     expect(getByText("CC0 1.0")).toBeInTheDocument();
     expect(getByText("CC BY-NC 4.0").classList.contains("notice")).toBe(true);
     expect(getByText(/bassmosphere/)).toBeInTheDocument();
+    // A finished search has no cursor, so it offers no continuation.
+    expect(queryByText("Load more")).toBeNull();
+  });
+
+  it("maps kind, duration and commercial filters to the search arguments", async () => {
+    const { container, getByRole } = render(() => <SampleMarketPanel />);
+    await waitFor(() => expect(getByRole("button", { name: "Openverse" })).toBeInTheDocument());
+
+    fireEvent.click(getByRole("button", { name: "Instrument" }));
+    fireEvent.change(getByRole("combobox", { name: "Duration" }), {
+      target: { value: "medium" },
+    });
+    fireEvent.click(getByRole("checkbox", { name: "Commercial use OK" }));
+    const input = container.querySelector(".sample-market-search") as HTMLInputElement;
+    fireEvent.input(input, { target: { value: "snare" } });
+    fireEvent.submit(container.querySelector(".sample-market-header") as HTMLFormElement);
+
+    await waitFor(() => expect(container.querySelector(".sample-market-row")).toBeTruthy());
+    expect(invokeMock).toHaveBeenCalledWith("sample_market_search", {
+      args: expect.objectContaining({
+        query: "snare",
+        kind: "instrument",
+        min_seconds: 2,
+        max_seconds: 10,
+        commercial_ok: true,
+        providers: ["openverse", "wikimedia-commons"],
+      }),
+    });
+  });
+
+  it("shows Load more for a cursor and appends the next page without repeats", async () => {
+    const backend = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation(async (cmd, args) => {
+      if (cmd === "sample_market_search") {
+        const cursor = (args as { args?: { cursor?: string } } | undefined)?.args?.cursor;
+        return cursor ? MORE_RESULT : PAGED_RESULT;
+      }
+      return backend(cmd, args);
+    });
+    const { container, getByText } = render(() => <SampleMarketPanel />);
+    await waitFor(() => expect(getByText("Openverse")).toBeInTheDocument());
+    await search(container);
+
+    fireEvent.click(getByText("Load more"));
+    await waitFor(() => expect(getByText("Extra clap")).toBeInTheDocument());
+
+    expect(invokeMock).toHaveBeenCalledWith("sample_market_search", {
+      args: expect.objectContaining({
+        query: "snare",
+        providers: ["openverse", "wikimedia-commons"],
+        cursor: "next-page",
+      }),
+    });
+    expect(getByText("Snare hit 01")).toBeInTheDocument();
+    expect(container.querySelectorAll(".sample-market-row")).toHaveLength(3);
+    expect(container.textContent).not.toContain("Load more");
+  });
+
+  it("renders per-market notices from typed error kinds", async () => {
+    const backend = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation(async (cmd, args) => {
+      if (cmd === "sample_market_search") return NOTICE_RESULT;
+      return backend(cmd, args);
+    });
+    const { container, getByText, queryByText } = render(() => <SampleMarketPanel />);
+    await waitFor(() => expect(getByText("Openverse")).toBeInTheDocument());
+    const input = container.querySelector(".sample-market-search") as HTMLInputElement;
+    fireEvent.input(input, { target: { value: "snare" } });
+    fireEvent.submit(container.querySelector(".sample-market-header") as HTMLFormElement);
+
+    await waitFor(() =>
+      expect(getByText("Openverse needs an API key.")).toBeInTheDocument(),
+    );
+    expect(getByText("Freesound is rate limited. Retry in 7 s.")).toBeInTheDocument();
+    expect(getByText("Jamendo is temporarily skipped.")).toBeInTheDocument();
+    expect(getByText("Couldn't reach Pixabay.")).toBeInTheDocument();
+    expect(getByText("Internet Archive could not complete the search.")).toBeInTheDocument();
+    // The provider's sentence is a fallback detail, not the visible label.
+    expect(queryByText("pixabay detail")).toBeNull();
+    expect(getByText("Couldn't reach Pixabay.").getAttribute("title")).toBe("pixabay detail");
+  });
+
+  it("maps a search refusal code to a localized message", async () => {
+    const backend = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation(async (cmd, args) => {
+      if (cmd === "sample_market_search") {
+        throw { code: "invalid_cursor", message: "cursor expired" };
+      }
+      return backend(cmd, args);
+    });
+    const { container, getByText, queryByText } = render(() => <SampleMarketPanel />);
+    await waitFor(() => expect(getByText("Openverse")).toBeInTheDocument());
+
+    const input = container.querySelector(".sample-market-search") as HTMLInputElement;
+    fireEvent.input(input, { target: { value: "snare" } });
+    fireEvent.submit(container.querySelector(".sample-market-header") as HTMLFormElement);
+
+    await waitFor(() =>
+      expect(
+        getByText("Search failed: The search expired. Start it again."),
+      ).toBeInTheDocument(),
+    );
+    expect(queryByText("Search failed: cursor expired")).toBeNull();
   });
 
   it("starts a result as a private paused preview before resuming it", async () => {
@@ -354,8 +519,11 @@ describe("SampleMarketPanel", () => {
     fireEvent.click(within(row).getByText("Add to project"));
 
     await waitFor(() =>
-      expect(getByText("The download does not match its declared checksum.")).toBeInTheDocument(),
+      expect(
+        getByText("The download does not match its checksum. Nothing was added."),
+      ).toBeInTheDocument(),
     );
+    expect(queryByText("The download does not match its declared checksum.")).toBeNull();
     expect(queryByText("Download anyway")).toBeNull();
   });
 
