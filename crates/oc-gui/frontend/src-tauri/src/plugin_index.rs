@@ -163,7 +163,7 @@ impl IndexFetch for HttpFetch {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum IndexSource {
-    Bundled,
+    None,
     Cache,
     Remote,
 }
@@ -171,7 +171,7 @@ pub enum IndexSource {
 impl IndexSource {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Bundled => "bundled",
+            Self::None => "none",
             Self::Cache => "cache",
             Self::Remote => "remote",
         }
@@ -211,13 +211,18 @@ pub struct RefreshOutcome {
 pub struct CatalogView {
     pub entries: Arc<Vec<CatalogEntry>>,
     pub packs: Arc<Vec<PackEntry>>,
+    pub sound_packs: Arc<Vec<oc_market::catalog_wire::SoundArchivePack>>,
     pub source: IndexSource,
     pub(crate) authority: CatalogAuthority,
 }
 
 #[derive(Clone)]
 pub enum CatalogAuthority {
+    /// A test fixture that publishes without a signed index.
+    #[cfg(test)]
     Bundled,
+    /// No catalog is loaded, so nothing may be installed.
+    Unavailable,
     Signed {
         store: Arc<IndexStore>,
         index: Arc<VerifiedIndex>,
@@ -228,7 +233,11 @@ impl CatalogAuthority {
         &self,
     ) -> Result<Option<oc_market::index::PublicationGuard>, String> {
         match self {
+            #[cfg(test)]
             Self::Bundled => Ok(None),
+            Self::Unavailable => Err(
+                "Plugin installs require the signed plugin index; refresh it and try again".into(),
+            ),
             Self::Signed { store, index } => {
                 store.authorize(index).map(Some).map_err(|e| e.to_string())
             }
@@ -248,6 +257,7 @@ struct ActiveCatalog {
     verified: VerifiedIndex,
     entries: Arc<Vec<CatalogEntry>>,
     packs: Arc<Vec<PackEntry>>,
+    sound_packs: Arc<Vec<oc_market::catalog_wire::SoundArchivePack>>,
     source: IndexSource,
     generated_at: String,
     catalog_version: String,
@@ -256,8 +266,6 @@ struct ActiveCatalog {
     checked_at: u64,
     manifest_sha256: String,
 }
-
-type BundledCatalog = Arc<Vec<CatalogEntry>>;
 
 // ============================================================================
 // Client
@@ -271,7 +279,6 @@ pub struct IndexClient {
     active: Mutex<Option<ActiveCatalog>>,
     last_attempt: Mutex<Option<u64>>,
     last_error: Mutex<Option<String>>,
-    bundled: Mutex<Option<BundledCatalog>>,
 }
 
 /// A development index served locally. Both overrides are compiled in
@@ -353,7 +360,6 @@ impl IndexClient {
             active: Mutex::new(None),
             last_attempt: Mutex::new(None),
             last_error: Mutex::new(None),
-            bundled: Mutex::new(None),
         };
         if client.keys.is_some() {
             let loaded = client.index_store().and_then(|store| {
@@ -382,6 +388,7 @@ impl IndexClient {
             return Ok(CatalogView {
                 entries: active.entries,
                 packs: active.packs,
+                sound_packs: active.sound_packs,
                 source: active.source,
                 authority: CatalogAuthority::Signed {
                     store: Arc::new(self.index_store().map_err(|e| e.to_string())?),
@@ -390,10 +397,11 @@ impl IndexClient {
             });
         }
         Ok(CatalogView {
-            entries: self.bundled()?,
+            entries: Arc::new(Vec::new()),
             packs: Arc::new(Vec::new()),
-            source: IndexSource::Bundled,
-            authority: CatalogAuthority::Bundled,
+            sound_packs: Arc::new(Vec::new()),
+            source: IndexSource::None,
+            authority: CatalogAuthority::Unavailable,
         })
     }
 
@@ -414,8 +422,12 @@ impl IndexClient {
 
     fn status_at(&self, now: u64) -> PluginIndexStatus {
         let active = lock(&self.active).clone();
-        let last_error = lock(&self.last_error).clone().or_else(|| self.keys.is_none().then(||
-            "Remote plugin-index trust is not configured; the bundled catalog remains available".into()));
+        let last_error = lock(&self.last_error).clone().or_else(|| {
+            self.keys.is_none().then(|| {
+                "Remote plugin-index trust is not configured; the store is empty until a catalog is available"
+                    .into()
+            })
+        });
         let (source, generated_at, fetched_at, catalog_version, min_app_version, stale_days) =
             match &active {
                 Some(active) => (
@@ -426,7 +438,7 @@ impl IndexClient {
                     Some(active.min_app_version.clone()),
                     Some(now.saturating_sub(active.fetched_at) / 86_400),
                 ),
-                None => (IndexSource::Bundled.as_str(), None, None, None, None, None),
+                None => (IndexSource::None.as_str(), None, None, None, None, None),
             };
         let floor_at = lock(&self.last_attempt).or(active.as_ref().map(|active| active.checked_at));
         let next_refresh_in_seconds = floor_at
@@ -450,17 +462,6 @@ impl IndexClient {
         }
     }
 
-    fn bundled(&self) -> Result<BundledCatalog, String> {
-        let mut guard = lock(&self.bundled);
-        if let Some(bundled) = guard.as_ref() {
-            return Ok(bundled.clone());
-        }
-        let (entries, _) = plugin_store::bundled_catalog()?;
-        let bundled = Arc::new(entries);
-        *guard = Some(bundled.clone());
-        Ok(bundled)
-    }
-
     async fn refresh_at(
         &self,
         fetch: &dyn IndexFetch,
@@ -470,7 +471,7 @@ impl IndexClient {
         if self.keys.is_none() {
             return Err(IndexError::new(
                 "trust",
-                "Remote plugin-index trust is not configured; the bundled catalog remains available",
+                "Remote plugin-index trust is not configured; the store is empty until a catalog is available",
             ));
         }
         let active = lock(&self.active).clone();
@@ -611,6 +612,7 @@ fn active_catalog(stored: StoredIndex, source: IndexSource) -> Result<ActiveCata
     Ok(ActiveCatalog {
         entries: Arc::new(catalog.plugins),
         packs: Arc::new(catalog.packs),
+        sound_packs: Arc::new(catalog.sound_packs),
         source,
         generated_at: index.manifest.generated_at.clone(),
         catalog_version: index.manifest.catalog_version.clone(),
@@ -875,7 +877,7 @@ mod tests {
     }
 
     #[test]
-    fn unconfigured_trust_keeps_startup_bundled_and_never_fetches() {
+    fn unconfigured_trust_keeps_an_empty_store_and_never_fetches() {
         let dir = TempDir::new("unconfigured-trust");
         let client = IndexClient::with_optional_keys(
             dir.0.clone(),
@@ -885,14 +887,21 @@ mod tests {
         );
         let status = client.status();
         assert_eq!(status.trust, IndexTrust::Unconfigured);
-        assert_eq!(status.source, "bundled");
+        assert_eq!(status.source, "none");
         assert!(
             status
                 .last_error
                 .unwrap()
                 .contains("trust is not configured")
         );
-        assert_eq!(client.view().unwrap().source, IndexSource::Bundled);
+        let view = client.view().unwrap();
+        assert_eq!(view.source, IndexSource::None);
+        assert!(view.entries.is_empty());
+        assert!(view.sound_packs.is_empty());
+        let listing =
+            crate::sound_pack_store::listing(&dir.0.join("sounds"), view.sound_packs.as_slice())
+                .expect("an empty pack list still lists local installs");
+        assert!(listing.items.is_empty());
         let fetch = FakeFetch::new(Vec::new());
         let error = tauri::async_runtime::block_on(client.refresh(&fetch, true)).unwrap_err();
         assert_eq!(error.stage, "trust");
@@ -909,7 +918,7 @@ mod tests {
         assert_eq!(fixture.client(&dir.0).status().source, "cache");
         let (_, other_key) = keypair();
         let foreign_key = IndexClient::with_key(dir.0.clone(), other_key);
-        assert_eq!(foreign_key.status().source, "bundled");
+        assert_eq!(foreign_key.status().source, "none");
         assert!(foreign_key.status().last_error.is_none());
         let foreign_origin = IndexClient::with_bases(
             dir.0.clone(),
@@ -917,7 +926,7 @@ mod tests {
             "https://other.example.com/index/".into(),
             FALLBACK_BASE_URL.into(),
         );
-        assert_eq!(foreign_origin.status().source, "bundled");
+        assert_eq!(foreign_origin.status().source, "none");
         assert!(foreign_origin.status().last_error.is_none());
         let state_path = cache_path(&dir.0).join(STATE_FILE);
         let mut state: serde_json::Value =
@@ -925,7 +934,7 @@ mod tests {
         state.as_object_mut().unwrap().remove("trust_scope");
         fs::write(state_path, serde_json::to_vec(&state).unwrap()).unwrap();
         let unscoped = fixture.client(&dir.0);
-        assert_eq!(unscoped.status().source, "bundled");
+        assert_eq!(unscoped.status().source, "none");
         assert!(
             unscoped
                 .status()
@@ -1010,7 +1019,7 @@ mod tests {
         let dir = TempDir::new("refresh");
         let fixture = fixture("0.1.0");
         let client = fixture.client(&dir.0);
-        assert_eq!(client.status().source, "bundled");
+        assert_eq!(client.status().source, "none");
         let fetch = FakeFetch::new(fixture.responses());
         let outcome = tauri::async_runtime::block_on(client.refresh(&fetch, true)).unwrap();
         assert!(outcome.performed && outcome.changed);
@@ -1091,12 +1100,12 @@ mod tests {
         assert_eq!(error.stage, "network");
         assert!(error.message.contains("HTTP 404"));
         let status = client.status();
-        assert_eq!(status.source, "bundled");
+        assert_eq!(status.source, "none");
         assert_eq!(
             status.last_error.as_deref(),
             Some(error.to_string().as_str())
         );
-        assert_eq!(client.view().unwrap().source, IndexSource::Bundled);
+        assert_eq!(client.view().unwrap().source, IndexSource::None);
     }
 
     #[test]
@@ -1205,7 +1214,7 @@ mod tests {
             .expect_err("wrong pinned key");
         assert_eq!(error.stage, "key_id");
         assert!(error.message.contains("is not a trusted key"), "{error}");
-        assert_eq!(client.status().source, "bundled");
+        assert_eq!(client.status().source, "none");
     }
 
     #[test]
@@ -1336,15 +1345,21 @@ mod tests {
     }
 
     #[test]
-    fn bundled_fallback_when_cache_empty() {
-        let dir = TempDir::new("bundled");
+    fn an_empty_cache_serves_no_catalog_until_the_first_fetch() {
+        let dir = TempDir::new("empty-cache");
         let fixture = fixture("0.1.0");
         let client = fixture.client(&dir.0);
         let view = client.view().unwrap();
-        assert_eq!(view.source, IndexSource::Bundled);
-        assert!(!view.entries.is_empty());
+        assert_eq!(view.source, IndexSource::None);
+        assert!(view.entries.is_empty());
+        assert!(view.packs.is_empty());
+        assert!(view.sound_packs.is_empty());
+        assert!(matches!(
+            view.authority.publication_guard(),
+            Err(ref message) if message.contains("signed plugin index")
+        ));
         let status = client.status();
-        assert_eq!(status.source, "bundled");
+        assert_eq!(status.source, "none");
         assert!(status.fetched_at.is_none());
         assert!(status.stale_days.is_none());
     }
@@ -1860,7 +1875,7 @@ mod tests {
         let error = tauri::async_runtime::block_on(client.refresh(&fetch, true))
             .expect_err("tampered catalog");
         assert_eq!(error.stage, "catalog_hash");
-        assert_eq!(client.status().source, "bundled");
+        assert_eq!(client.status().source, "none");
         assert!(
             !cache_path(&dir.0.join("cache"))
                 .join(builder::MANIFEST_FILE)
@@ -1894,7 +1909,7 @@ mod tests {
         let error = tauri::async_runtime::block_on(client.refresh(&fetch, true))
             .expect_err("tampered manifest");
         assert_eq!(error.stage, "signature");
-        assert_eq!(client.status().source, "bundled");
+        assert_eq!(client.status().source, "none");
     }
 
     #[test]
@@ -1917,7 +1932,7 @@ mod tests {
         let error =
             tauri::async_runtime::block_on(client.refresh(&fetch, true)).expect_err("foreign key");
         assert_eq!(error.stage, "key_id");
-        assert_eq!(client.status().source, "bundled");
+        assert_eq!(client.status().source, "none");
     }
 
     #[test]
@@ -1941,7 +1956,7 @@ mod tests {
             tauri::async_runtime::block_on(client.refresh(&fetch, true)).expect_err("gzip refused");
         assert_eq!(error.stage, "network", "{error}");
         assert!(error.message.contains("Content-Encoding gzip"), "{error}");
-        assert_eq!(client.status().source, "bundled");
+        assert_eq!(client.status().source, "none");
         let requests = server.take_requests();
         assert_eq!(requests.len(), 1, "{requests:#?}");
     }
@@ -2006,7 +2021,7 @@ mod tests {
         let error = tauri::async_runtime::block_on(client.refresh(&fetch, true)).expect_err("404");
         assert_eq!(error.stage, "network");
         assert!(error.message.contains("404"), "message: {}", error.message);
-        assert_eq!(client.status().source, "bundled");
+        assert_eq!(client.status().source, "none");
         let requests = server.take_requests();
         assert!(!requests.is_empty(), "error: {error}");
         assert!(

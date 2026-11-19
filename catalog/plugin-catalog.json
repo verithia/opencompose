@@ -1,6 +1,6 @@
 {
   "schema": 2,
-  "generated_at": "2026-10-26T15:30:00Z",
+  "generated_at": "2026-11-18T08:46:00Z",
   "entries": [
     {
       "id": "vital-audio.vital",
@@ -95,8 +95,14 @@
           "kind": "github_release",
           "platform": "macos-aarch64",
           "format": "vst3",
-          "archive": "dmg",
-          "url": "https://github.com/surge-synthesizer/releases-xt/releases/download/1.3.4/surge-xt-macOS-1.3.4.dmg"
+          "archive": "zip",
+          "url": "https://github.com/surge-synthesizer/releases-xt/releases/download/1.3.4/surge-xt-macos-1.3.4-pluginsonly.zip",
+          "sha256": "37d8d809693adc86587b7bc75a2384fc4e905f259aa9b9a21777749d36fbf8aa",
+          "bytes": 186958216,
+          "take": [
+            "Surge XT.vst3",
+            "Surge XT Effects.vst3"
+          ]
         },
         {
           "kind": "vendor_page",
@@ -114,8 +120,14 @@
           "kind": "github_release",
           "platform": "macos-x86_64",
           "format": "vst3",
-          "archive": "dmg",
-          "url": "https://github.com/surge-synthesizer/releases-xt/releases/download/1.3.4/surge-xt-macOS-1.3.4.dmg"
+          "archive": "zip",
+          "url": "https://github.com/surge-synthesizer/releases-xt/releases/download/1.3.4/surge-xt-macos-1.3.4-pluginsonly.zip",
+          "sha256": "37d8d809693adc86587b7bc75a2384fc4e905f259aa9b9a21777749d36fbf8aa",
+          "bytes": 186958216,
+          "take": [
+            "Surge XT.vst3",
+            "Surge XT Effects.vst3"
+          ]
         },
         {
           "kind": "vendor_page",
@@ -133,8 +145,14 @@
           "kind": "github_release",
           "platform": "windows-x86_64",
           "format": "vst3",
-          "archive": "installer",
-          "url": "https://github.com/surge-synthesizer/releases-xt/releases/download/1.3.4/surge-xt-win64-1.3.4-setup.exe"
+          "archive": "zip",
+          "url": "https://github.com/surge-synthesizer/releases-xt/releases/download/1.3.4/surge-xt-win64-1.3.4-pluginsonly.zip",
+          "sha256": "564e162c560af07ad4ed47fe1bfcd827cf97a575de30d06c48249aad2e7c35e6",
+          "bytes": 49093875,
+          "take": [
+            "Surge XT.vst3",
+            "Surge XT Effects.vst3"
+          ]
         },
         {
           "kind": "vendor_page",
@@ -143,10 +161,17 @@
           "url": "https://surge-synthesizer.github.io/"
         },
         {
-          "kind": "vendor_page",
+          "kind": "github_release",
           "platform": "linux-x86_64",
           "format": "vst3",
-          "url": "https://surge-synthesizer.github.io/"
+          "url": "https://github.com/surge-synthesizer/releases-xt/releases/download/1.3.4/surge-xt-linux-1.3.4-pluginsonly.tar.gz",
+          "archive": "tar-gz",
+          "sha256": "dd431b75f5fa197c4bffa6ca27ca46970f0a94c834119bb1db7decdeec4c28db",
+          "bytes": 97294804,
+          "take": [
+            "Surge XT.vst3",
+            "Surge XT Effects.vst3"
+          ]
         },
         {
           "kind": "vendor_page",
@@ -250,9 +275,10 @@
           "platform": "macos-aarch64",
           "format": "vst3",
           "archive": "dmg",
-          "url": "https://github.com/baconpaul/airwin2rack/releases/download/DAWPlugin/airwindows-consolidated-macOS-2026-10-24-dcf98a3.dmg",
-          "sha256": "92538298316b0ea97a98729e12f96b26b027e60ebe65a39e6126440380f8b782",
-          "bytes": 49332978
+          "url": "https://github.com/baconpaul/airwin2rack/releases/download/DAWPlugin/airwindows-consolidated-macOS-2026-11-15-59a227e.dmg",
+          "sha256": "ca48c320070f1a05da5b2ff4c0549ded2de21af0f68123195780c94efac834d2",
+          "bytes": 49595181,
+          "wrapped": true
         },
         {
           "kind": "vendor_page",
@@ -271,9 +297,10 @@
           "platform": "macos-x86_64",
           "format": "vst3",
           "archive": "dmg",
-          "url": "https://github.com/baconpaul/airwin2rack/releases/download/DAWPlugin/airwindows-consolidated-macOS-2026-10-24-dcf98a3.dmg",
-          "sha256": "92538298316b0ea97a98729e12f96b26b027e60ebe65a39e6126440380f8b782",
-          "bytes": 49332978
+          "url": "https://github.com/baconpaul/airwin2rack/releases/download/DAWPlugin/airwindows-consolidated-macOS-2026-11-15-59a227e.dmg",
+          "sha256": "ca48c320070f1a05da5b2ff4c0549ded2de21af0f68123195780c94efac834d2",
+          "bytes": 49595181,
+          "wrapped": true
         },
         {
           "kind": "vendor_page",
@@ -291,10 +318,13 @@
           "kind": "github_release",
           "platform": "windows-x86_64",
           "format": "vst3",
-          "archive": "installer",
-          "url": "https://github.com/baconpaul/airwin2rack/releases/download/DAWPlugin/AirwindowsConsolidated-2026-10-24-dcf98a3-Windows-64bit-setup.exe",
-          "sha256": "ec5fb0cdf30a328e41b96e85a6dd6ffb1ef53798f54e7efd50b0ac75f64304da",
-          "bytes": 10925041
+          "archive": "zip",
+          "url": "https://github.com/baconpaul/airwin2rack/releases/download/DAWPlugin/AirwindowsConsolidated-2026-11-15-59a227e-Windows.zip",
+          "sha256": "b2f0d0f02b8e129f56a6e6b25c62e2606105f77a283d4aa0d54766f44ec22f23",
+          "bytes": 13602840,
+          "take": [
+            "Airwindows Consolidated.vst3"
+          ]
         },
         {
           "kind": "vendor_page",
@@ -307,9 +337,12 @@
           "platform": "linux-x86_64",
           "format": "vst3",
           "archive": "zip",
-          "url": "https://github.com/baconpaul/airwin2rack/releases/download/DAWPlugin/AirwindowsConsolidated-2026-10-24-dcf98a3-Linux.zip",
-          "sha256": "740297c0d34dc255d8780ad62509d054f3ff0480aac43f90071465fd23c53be4",
-          "bytes": 32627944
+          "url": "https://github.com/baconpaul/airwin2rack/releases/download/DAWPlugin/AirwindowsConsolidated-2026-11-15-59a227e-Linux.zip",
+          "sha256": "32cb5d1f6cc39128fee901d9e2add7d22a3c9fb2fa67963281aa3c13f0d2d158",
+          "bytes": 32759807,
+          "take": [
+            "awcons-products/Airwindows Consolidated.vst3"
+          ]
         },
         {
           "kind": "vendor_page",
@@ -393,6 +426,54 @@
           "platform": "linux-x86_64",
           "format": "standalone",
           "url": "https://sfz.tools/sfizz/"
+        },
+        {
+          "kind": "github_release",
+          "platform": "macos-aarch64",
+          "format": "vst3",
+          "archive": "tar-gz",
+          "url": "https://github.com/sfztools/sfizz/releases/download/0.5.1/sfizz-0.5.1-osx-amd64.tar.gz",
+          "sha256": "f15c270412a5b9ea414dd30b7cba623d90097d34154c5071e83f7072674c4ead",
+          "bytes": 7551897,
+          "take": [
+            "sfizz-0.5.1-osx-amd64/Library/Audio/Plug-Ins/VST3/sfizz.vst3"
+          ]
+        },
+        {
+          "kind": "github_release",
+          "platform": "macos-x86_64",
+          "format": "vst3",
+          "archive": "tar-gz",
+          "url": "https://github.com/sfztools/sfizz/releases/download/0.5.1/sfizz-0.5.1-osx-amd64.tar.gz",
+          "sha256": "f15c270412a5b9ea414dd30b7cba623d90097d34154c5071e83f7072674c4ead",
+          "bytes": 7551897,
+          "take": [
+            "sfizz-0.5.1-osx-amd64/Library/Audio/Plug-Ins/VST3/sfizz.vst3"
+          ]
+        },
+        {
+          "kind": "github_release",
+          "platform": "windows-x86_64",
+          "format": "vst3",
+          "archive": "zip",
+          "url": "https://github.com/sfztools/sfizz/releases/download/0.5.1/sfizz-vst3-0.5.1-x64-msvc.zip",
+          "sha256": "75dc196ce01d671a5f29d072af7ad8f4458cbf3bb2106d6d3b61d555c3022e29",
+          "bytes": 2543808,
+          "take": [
+            "sfizz.vst3"
+          ]
+        },
+        {
+          "kind": "github_release",
+          "platform": "linux-x86_64",
+          "format": "vst3",
+          "archive": "tar-gz",
+          "url": "https://github.com/sfztools/sfizz/releases/download/0.5.1/sfizz-plugins-0.5.1-linux-amd64.tar.gz",
+          "sha256": "e76004f5825efa6548081f5fd3521e57d42aafe694f54e3825c7f5efa61f7f08",
+          "bytes": 6085362,
+          "take": [
+            "sfizz-plugins-0.5.1-linux-amd64/usr/local/lib/vst3/sfizz.vst3"
+          ]
         }
       ]
     },
@@ -957,7 +1038,7 @@
         "metering",
         "freeware"
       ],
-      "description": "SPAN is a free real-time \u201cfast Fourier transform\u201d (FFT) audio frequency spectrum analyzer.",
+      "description": "SPAN is a free real-time “fast Fourier transform” (FFT) audio frequency spectrum analyzer.",
       "aliases": [
         "Voxengo SPAN",
         "SPAN"
@@ -970,7 +1051,10 @@
           "archive": "dmg",
           "url": "https://www.voxengo.com/files/VoxengoSPAN_324_Mac_AU_AAX_VST_setup.dmg",
           "sha256": "82685deeac6060b72621516c7e524730345f06942ace2e32324cacd55f41c476",
-          "bytes": 36089508
+          "bytes": 36089508,
+          "take": [
+            "SPAN.vst3"
+          ]
         },
         {
           "kind": "vendor_page",
@@ -985,7 +1069,10 @@
           "archive": "dmg",
           "url": "https://www.voxengo.com/files/VoxengoSPAN_324_Mac_AU_AAX_VST_setup.dmg",
           "sha256": "82685deeac6060b72621516c7e524730345f06942ace2e32324cacd55f41c476",
-          "bytes": 36089508
+          "bytes": 36089508,
+          "take": [
+            "SPAN.vst3"
+          ]
         },
         {
           "kind": "vendor_page",
@@ -1414,7 +1501,8 @@
           "archive": "dmg",
           "url": "https://github.com/jatinchowdhury18/AnalogTapeModel/releases/download/v2.11.4/ChowTapeModel-Mac-2.11.4.dmg",
           "sha256": "9b37e2b6cb6c0a839ee9c65e1a958834ca647b3edfc4bd144115c483b4d64f82",
-          "bytes": 28745196
+          "bytes": 28745196,
+          "wrapped": true
         },
         {
           "kind": "vendor_page",
@@ -1435,7 +1523,8 @@
           "archive": "dmg",
           "url": "https://github.com/jatinchowdhury18/AnalogTapeModel/releases/download/v2.11.4/ChowTapeModel-Mac-2.11.4.dmg",
           "sha256": "9b37e2b6cb6c0a839ee9c65e1a958834ca647b3edfc4bd144115c483b4d64f82",
-          "bytes": 28745196
+          "bytes": 28745196,
+          "wrapped": true
         },
         {
           "kind": "vendor_page",
@@ -1497,7 +1586,10 @@
           "archive": "zip",
           "url": "https://github.com/asb2m10/dexed/releases/download/v1.0.1/Dexed-1.0.1-macOS.zip",
           "sha256": "4269448bc1312424cafd29aff615d891bc5905ebfc54b42ce70c56b9b10dc401",
-          "bytes": 16939688
+          "bytes": 16939688,
+          "take": [
+            "Dexed.vst3"
+          ]
         },
         {
           "kind": "vendor_page",
@@ -1518,7 +1610,10 @@
           "archive": "zip",
           "url": "https://github.com/asb2m10/dexed/releases/download/v1.0.1/Dexed-1.0.1-macOS.zip",
           "sha256": "4269448bc1312424cafd29aff615d891bc5905ebfc54b42ce70c56b9b10dc401",
-          "bytes": 16939688
+          "bytes": 16939688,
+          "take": [
+            "Dexed.vst3"
+          ]
         },
         {
           "kind": "vendor_page",
@@ -1539,7 +1634,10 @@
           "archive": "zip",
           "url": "https://github.com/asb2m10/dexed/releases/download/v1.0.1/Dexed-1.0.1-win.zip",
           "sha256": "1f118445f2c5c411636bb41ddf8b456db09af74cd38f9ede8a93a01020505f05",
-          "bytes": 9742538
+          "bytes": 9742538,
+          "take": [
+            "Dexed.vst3"
+          ]
         },
         {
           "kind": "vendor_page",
@@ -1554,7 +1652,10 @@
           "archive": "zip",
           "url": "https://github.com/asb2m10/dexed/releases/download/v1.0.1/Dexed-1.0.1-lnx.zip",
           "sha256": "2bac3d0c4237e8c22c4274b6d5b59fe6329fcae72864f81b5830393eff354fc1",
-          "bytes": 7725160
+          "bytes": 7725160,
+          "take": [
+            "Dexed.vst3"
+          ]
         },
         {
           "kind": "vendor_page",
@@ -2468,7 +2569,10 @@
           "archive": "dmg",
           "url": "https://www.voxengo.com/files/VoxengoOldSkoolVerb_214_Mac_AU_AAX_VST_setup.dmg",
           "sha256": "f6ba1416e31d16d52becf8df7a602d9da22c5c015419fdada0ad8282f4ad2008",
-          "bytes": 29375793
+          "bytes": 29375793,
+          "take": [
+            "OldSkoolVerb.vst"
+          ]
         },
         {
           "kind": "direct",
@@ -2477,7 +2581,10 @@
           "archive": "dmg",
           "url": "https://www.voxengo.com/files/VoxengoOldSkoolVerb_214_Mac_AU_AAX_VST_setup.dmg",
           "sha256": "f6ba1416e31d16d52becf8df7a602d9da22c5c015419fdada0ad8282f4ad2008",
-          "bytes": 29375793
+          "bytes": 29375793,
+          "take": [
+            "OldSkoolVerb.vst"
+          ]
         },
         {
           "kind": "direct",
@@ -2487,6 +2594,56 @@
           "url": "https://www.voxengo.com/files/VoxengoOldSkoolVerb_214_Win32_64_VST_VST3_AAX_setup.exe",
           "sha256": "ff65291e30e2c38abc3b8bd89c47469f20905f6b50a7eed217f2c5c433915b30",
           "bytes": 7509256
+        }
+      ]
+    },
+    {
+      "id": "voxengo.boogex",
+      "name": "Voxengo Boogex",
+      "vendor": "Voxengo",
+      "homepage": "https://www.voxengo.com/product/boogex/",
+      "license": "Freeware",
+      "tags": [
+        "saturation",
+        "freeware"
+      ],
+      "description": "Free guitar amp, cabinet and convolution processor.",
+      "aliases": [
+        "Boogex"
+      ],
+      "installs": [
+        {
+          "kind": "direct",
+          "platform": "macos-aarch64",
+          "format": "vst3",
+          "archive": "dmg",
+          "url": "https://www.voxengo.com/files/VoxengoBoogex_38_Mac_AU_AAX_VST_setup.dmg",
+          "sha256": "0a2e3d5e5230aae9f05a45d0c6d5494a0e181c4261c84e298016fd327a17072b",
+          "bytes": 48007700,
+          "take": [
+            "Boogex.vst3"
+          ]
+        },
+        {
+          "kind": "direct",
+          "platform": "macos-x86_64",
+          "format": "vst3",
+          "archive": "dmg",
+          "url": "https://www.voxengo.com/files/VoxengoBoogex_38_Mac_AU_AAX_VST_setup.dmg",
+          "sha256": "0a2e3d5e5230aae9f05a45d0c6d5494a0e181c4261c84e298016fd327a17072b",
+          "bytes": 48007700,
+          "take": [
+            "Boogex.vst3"
+          ]
+        },
+        {
+          "kind": "direct",
+          "platform": "windows-x86_64",
+          "format": "vst3",
+          "archive": "installer",
+          "url": "https://www.voxengo.com/files/VoxengoBoogex_38_Win32_64_VST_VST3_AAX_setup.exe",
+          "sha256": "44048dbdc39bc7f19206925dbc81ba35e352225620f3adcfdbc588e6bab4003e",
+          "bytes": 10687176
         }
       ]
     },
@@ -2506,16 +2663,22 @@
           "kind": "github_release",
           "platform": "linux-x86_64",
           "format": "vst2",
-          "archive": "installer",
+          "archive": "tar-xz",
           "url": "https://github.com/michaelwillis/dragonfly-reverb/releases/download/3.2.10/dragonfly-reverb-3.2.10-linux-x86_64.tar.xz",
           "bytes": 2267368,
-          "sha256": "59f1593120de82e31dd194e2ab1536af14fec2b3ec6ec45abf6d9c8ac02ef430"
+          "sha256": "59f1593120de82e31dd194e2ab1536af14fec2b3ec6ec45abf6d9c8ac02ef430",
+          "take": [
+            "dragonfly-reverb-3.2.10/DragonflyEarlyReflections-vst.so",
+            "dragonfly-reverb-3.2.10/DragonflyHallReverb-vst.so",
+            "dragonfly-reverb-3.2.10/DragonflyPlateReverb-vst.so",
+            "dragonfly-reverb-3.2.10/DragonflyRoomReverb-vst.so"
+          ]
         },
         {
           "kind": "github_release",
           "platform": "linux-x86_64",
           "format": "lv2",
-          "archive": "installer",
+          "archive": "tar-xz",
           "url": "https://github.com/michaelwillis/dragonfly-reverb/releases/download/3.2.10/dragonfly-reverb-3.2.10-linux-x86_64.tar.xz",
           "bytes": 2267368,
           "sha256": "59f1593120de82e31dd194e2ab1536af14fec2b3ec6ec45abf6d9c8ac02ef430"
@@ -2527,7 +2690,13 @@
           "archive": "zip",
           "url": "https://github.com/michaelwillis/dragonfly-reverb/releases/download/3.2.10/dragonfly-reverb-3.2.10-win64.zip",
           "bytes": 22447365,
-          "sha256": "ca5f35f9dcd9a33f06490d3c92f04061a1a798cb81257d5ca5851bdda0824c66"
+          "sha256": "ca5f35f9dcd9a33f06490d3c92f04061a1a798cb81257d5ca5851bdda0824c66",
+          "take": [
+            "dragonfly-reverb-3.2.10/DragonflyEarlyReflections-vst.dll",
+            "dragonfly-reverb-3.2.10/DragonflyHallReverb-vst.dll",
+            "dragonfly-reverb-3.2.10/DragonflyPlateReverb-vst.dll",
+            "dragonfly-reverb-3.2.10/DragonflyRoomReverb-vst.dll"
+          ]
         },
         {
           "kind": "github_release",
@@ -2545,7 +2714,8 @@
           "archive": "dmg",
           "url": "https://github.com/michaelwillis/dragonfly-reverb/releases/download/3.2.10/dragonfly-reverb-3.2.10-macos-intel.dmg",
           "bytes": 12527433,
-          "sha256": "e6e2da2c962d41d46f8359bbd7ec8cff2be79b561539e18d3f73fdc29721bd93"
+          "sha256": "e6e2da2c962d41d46f8359bbd7ec8cff2be79b561539e18d3f73fdc29721bd93",
+          "wrapped": true
         },
         {
           "kind": "github_release",
@@ -2554,7 +2724,8 @@
           "archive": "dmg",
           "url": "https://github.com/michaelwillis/dragonfly-reverb/releases/download/3.2.10/dragonfly-reverb-3.2.10-macos-intel.dmg",
           "bytes": 12527433,
-          "sha256": "e6e2da2c962d41d46f8359bbd7ec8cff2be79b561539e18d3f73fdc29721bd93"
+          "sha256": "e6e2da2c962d41d46f8359bbd7ec8cff2be79b561539e18d3f73fdc29721bd93",
+          "wrapped": true
         },
         {
           "kind": "github_release",
@@ -2563,7 +2734,8 @@
           "archive": "dmg",
           "url": "https://github.com/michaelwillis/dragonfly-reverb/releases/download/3.2.10/dragonfly-reverb-3.2.10-macos-universal.dmg",
           "bytes": 24954281,
-          "sha256": "e0b854b92a4e51ce5851320fb1a9f91ab1a4309f997de070e175b3e5cab4adaf"
+          "sha256": "e0b854b92a4e51ce5851320fb1a9f91ab1a4309f997de070e175b3e5cab4adaf",
+          "wrapped": true
         },
         {
           "kind": "github_release",
@@ -2572,7 +2744,8 @@
           "archive": "dmg",
           "url": "https://github.com/michaelwillis/dragonfly-reverb/releases/download/3.2.10/dragonfly-reverb-3.2.10-macos-universal.dmg",
           "bytes": 24954281,
-          "sha256": "e0b854b92a4e51ce5851320fb1a9f91ab1a4309f997de070e175b3e5cab4adaf"
+          "sha256": "e0b854b92a4e51ce5851320fb1a9f91ab1a4309f997de070e175b3e5cab4adaf",
+          "wrapped": true
         }
       ]
     },
@@ -2595,7 +2768,10 @@
           "archive": "zip",
           "url": "https://github.com/wolf-plugins/wolf-shaper/releases/download/v1.0.2/wolf-shaper-v1.0.2-linux-x64.zip",
           "bytes": 5089663,
-          "sha256": "8b844e9b535d2b8a8a07fc6cec207beae8161f7d6da36e4a856a766aa441b848"
+          "sha256": "8b844e9b535d2b8a8a07fc6cec207beae8161f7d6da36e4a856a766aa441b848",
+          "take": [
+            "wolf-shaper-vst.so"
+          ]
         },
         {
           "kind": "github_release",
@@ -2614,7 +2790,10 @@
           "archive": "zip",
           "url": "https://github.com/wolf-plugins/wolf-shaper/releases/download/v1.0.2/wolf-shaper-v1.0.2+20230515144200-windows-x64.zip",
           "bytes": 5481008,
-          "sha256": "42a703a5f71b19855d9213d57f2261d2182c73c73d39730775188df3e4c47da9"
+          "sha256": "42a703a5f71b19855d9213d57f2261d2182c73c73d39730775188df3e4c47da9",
+          "take": [
+            "bin/wolf-shaper-vst.dll"
+          ]
         },
         {
           "kind": "github_release",
@@ -2829,8 +3008,20 @@
         {
           "kind": "github_release",
           "platform": "linux-x86_64",
+          "format": "vst3",
+          "archive": "7z",
+          "url": "https://github.com/lsp-plugins/lsp-plugins/releases/download/1.2.35/lsp-plugins-1.2.35-Linux-x86_64.7z",
+          "bytes": 38793460,
+          "sha256": "4ef3b2f63b29a522fdaf3a18f879c1c85c82f0bdd1e0b3c849a5f3c4b08d2550",
+          "take": [
+            "lsp-plugins-1.2.35-Linux-x86_64/VST3/lsp-plugins.vst3"
+          ]
+        },
+        {
+          "kind": "github_release",
+          "platform": "linux-x86_64",
           "format": "vst2",
-          "archive": "installer",
+          "archive": "7z",
           "url": "https://github.com/lsp-plugins/lsp-plugins/releases/download/1.2.35/lsp-plugins-1.2.35-Linux-x86_64.7z",
           "bytes": 38793460,
           "sha256": "4ef3b2f63b29a522fdaf3a18f879c1c85c82f0bdd1e0b3c849a5f3c4b08d2550"
@@ -2839,12 +3030,154 @@
           "kind": "github_release",
           "platform": "linux-x86_64",
           "format": "lv2",
-          "archive": "installer",
+          "archive": "7z",
           "url": "https://github.com/lsp-plugins/lsp-plugins/releases/download/1.2.35/lsp-plugins-1.2.35-Linux-x86_64.7z",
           "bytes": 38793460,
           "sha256": "4ef3b2f63b29a522fdaf3a18f879c1c85c82f0bdd1e0b3c849a5f3c4b08d2550"
         }
       ]
+    }
+  ],
+  "packs": [
+    {
+      "kind": "sound_archive",
+      "id": "christian-collins.generaluser-gs",
+      "name": "GeneralUser GS",
+      "publisher": "S. Christian Collins",
+      "homepage": "https://www.schristiancollins.com/generaluser",
+      "version": "2.0.3",
+      "description": "General MIDI / GS SoundFont with 261 melodic presets and 13 drum kits in one 32 MB bank.",
+      "content": "soundfont",
+      "archive": "file",
+      "url": "https://raw.githubusercontent.com/mrbumpy409/GeneralUser-GS/684543d5e5efaef08d02be50dcda8d552478fa60/GeneralUser-GS.sf2",
+      "bytes": 32319396,
+      "sha256": "9575028c7a1f589f5770fccc8cff2734566af40cd26ed836944e9a5152688cfe",
+      "unpacked_bytes": 32319396,
+      "license": {
+        "name": "GeneralUser GS License 2.0",
+        "url": "https://github.com/mrbumpy409/GeneralUser-GS/blob/684543d5e5efaef08d02be50dcda8d552478fa60/documentation/LICENSE.txt",
+        "text": "GeneralUser GS by S. Christian Collins."
+      }
+    },
+    {
+      "kind": "sound_archive",
+      "id": "freepats.upright-piano-kw-small",
+      "name": "Upright Piano KW (small)",
+      "publisher": "FreePats",
+      "homepage": "https://freepats.zenvoid.org/Piano/acoustic-grand-piano.html",
+      "version": "2019-07-03",
+      "description": "Compact stereo upright piano SoundFont recorded from a Kawai upright; small size edition.",
+      "content": "soundfont",
+      "archive": "7z",
+      "url": "https://freepats.zenvoid.org/Piano/UprightPianoKW/UprightPianoKW-small-SF2-20190703.7z",
+      "bytes": 6093984,
+      "sha256": "3bd025e7c2ffa9e6f3f99215ce383c9cebbac991cfbf9be1453cdb4328ec3492",
+      "unpacked_bytes": 10509943,
+      "license": {
+        "name": "CC0-1.0",
+        "url": "https://creativecommons.org/publicdomain/zero/1.0/",
+        "text": "Upright Piano KW by FreePats, CC0 1.0."
+      }
+    },
+    {
+      "kind": "sound_archive",
+      "id": "freepats.muldjordkit-sf2",
+      "name": "MuldjordKit (SF2)",
+      "publisher": "FreePats (original kit by Lars Muldjord)",
+      "homepage": "https://freepats.zenvoid.org/Percussion/acoustic-drum-kit.html",
+      "version": "2020-10-18",
+      "description": "Stereo acoustic rock drum kit (kicks, toms, snare, hi-hat, cymbals) with velocity layers in one SF2.",
+      "content": "soundfont",
+      "archive": "7z",
+      "url": "https://github.com/freepats/muldjordkit/releases/download/2020-10-18/MuldjordKit-SF2-20201018.7z",
+      "bytes": 54877940,
+      "sha256": "aef4c9e0a96f9a899a7838f65ff07565f6af247bbb4ff31e24dba3331a671a96",
+      "unpacked_bytes": 219384099,
+      "license": {
+        "name": "CC-BY-4.0",
+        "url": "https://creativecommons.org/licenses/by/4.0/",
+        "text": "MuldjordKit by Lars Muldjord, CC BY 4.0; SF2 edition by FreePats."
+      }
+    },
+    {
+      "kind": "sound_archive",
+      "id": "meta.nylon-guitar-ogg",
+      "name": "Meta Nylon Guitar (OGG)",
+      "publisher": "Meta Platforms, Inc.",
+      "homepage": "https://github.com/facebookincubator/Meta-open-sound/tree/main/systems/instruments/meta-nylon-guitar",
+      "version": "meta-nylon-guitar-v1.0.0",
+      "description": "Nylon-string classical guitar, E2 to B5, three dynamic layers; SFZ map with mono OGG Vorbis samples.",
+      "content": "sfz",
+      "archive": "zip",
+      "url": "https://github.com/facebookincubator/Meta-open-sound/releases/download/meta-nylon-guitar-v1.0.0/meta-open-sound-meta-nylon-guitar-ogg.zip",
+      "bytes": 16483193,
+      "sha256": "2ff8f6296cfdb1a98f67116c5091a4f9f01c0c46ac538dd1c5756acc8b76889b",
+      "unpacked_bytes": 16995956,
+      "license": {
+        "name": "CC0-1.0",
+        "url": "https://github.com/facebookincubator/Meta-open-sound/blob/main/LICENSE",
+        "text": "Nylon Guitar by Meta Platforms, Inc., CC0 1.0."
+      }
+    },
+    {
+      "kind": "sound_archive",
+      "id": "freepats.salamander-grand-piano-sf2",
+      "name": "Salamander Grand Piano (SF2)",
+      "publisher": "FreePats (original samples by Alexander Holm)",
+      "homepage": "https://freepats.zenvoid.org/Piano/acoustic-grand-piano.html",
+      "version": "V3+20200602",
+      "description": "Yamaha C5 grand piano with 16 velocity layers, as a single SF2.",
+      "content": "soundfont",
+      "archive": "tar_xz",
+      "url": "https://freepats.zenvoid.org/Piano/SalamanderGrandPiano/SalamanderGrandPiano-SF2-V3+20200602.tar.xz",
+      "bytes": 310397984,
+      "sha256": "15edb061d7ba60d58332f72dba8f8ce40988048cc703f935e6320f37d650e213",
+      "unpacked_bytes": 1266465136,
+      "license": {
+        "name": "CC-BY-3.0",
+        "url": "https://creativecommons.org/licenses/by/3.0/",
+        "text": "Salamander Grand Piano by Alexander Holm, CC BY 3.0; SF2 edition by FreePats."
+      }
+    },
+    {
+      "kind": "sound_archive",
+      "id": "adventurekid.akwf",
+      "name": "Adventure Kid Waveforms (AKWF)",
+      "publisher": "Kristoffer Ekstrand (Adventure Kid)",
+      "homepage": "https://www.adventurekid.se/akrt/waveforms/adventure-kid-waveforms/",
+      "version": "2010-09-28",
+      "description": "About 4,300 single-cycle oscillator waveforms as 600-sample WAV files, grouped by source.",
+      "content": "samples",
+      "archive": "zip",
+      "url": "https://www.adventurekid.se/AKRTfiles/AKWF/AKWF.zip",
+      "bytes": 6007440,
+      "sha256": "edd4afd71449980a2141b9756c1069d9cc4ebfed1e88f2cbbdc111d494f2d872",
+      "unpacked_bytes": 6181237,
+      "license": {
+        "name": "CC0-1.0",
+        "url": "https://github.com/KristofferKarlAxelEkstrand/AKWF-FREE/blob/main/LICENSE.md",
+        "text": "AKWF by Kristoffer Ekstrand (Adventure Kid), CC0 1.0."
+      }
+    },
+    {
+      "kind": "sound_archive",
+      "id": "meta.oculus-audio-pack-ogg",
+      "name": "Oculus Audio Pack 1 (OGG)",
+      "publisher": "Meta Platforms, Inc. (originally Oculus VR, LLC)",
+      "homepage": "https://github.com/facebookincubator/Meta-open-sound/tree/main/corpora/oculus-audio-pack",
+      "version": "oculus-audio-pack-v1.0.0",
+      "description": "289 sound effects (508 OGG files): footsteps, UI, voices, doors, ambiences, stings and foley.",
+      "content": "samples",
+      "archive": "zip",
+      "url": "https://github.com/facebookincubator/Meta-open-sound/releases/download/oculus-audio-pack-v1.0.0/meta-open-sound-oculus-audio-pack-ogg.zip",
+      "bytes": 44626986,
+      "sha256": "d807c8f4a09512f506f5a6170ef291b2ff4a9783b87dcddf2f458538d25afcb4",
+      "unpacked_bytes": 45736712,
+      "license": {
+        "name": "CC-BY-4.0",
+        "url": "https://github.com/facebookincubator/Meta-open-sound/blob/main/corpora/oculus-audio-pack/LICENSE",
+        "text": "\"Oculus Audio Pack 01\" by Oculus VR, LLC, licensed under CC BY 4.0. Files renamed; OGG versions transcoded from the original WAVs."
+      }
     }
   ]
 }

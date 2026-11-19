@@ -40,17 +40,27 @@ same data the device panel shows.
 
 ### Inventory cache
 
-Building the inventory is expensive: a cold scan walks every installed bundle
-and inspects each one in a helper process (2.5–4 s for 64 entries). The app
-therefore stores the result in
-`~/.opencompose/plugin-inventory.json` and treats a warm start as a cache read.
+Building the inventory is expensive: a cold scan inspects every CLAP, VST3 and
+VST2 bundle in its own helper process, and the helper loads the bundle's binary
+to read its plugin classes (up to 10 s per bundle before it times out, with one
+retry). The app therefore keeps two caches:
+
+- **Per-bundle receipts.** A scan reuses a bundle's passing receipt when its
+  binary has the same path, mtime and size and the receipt was written by the
+  same host version, so a rescan after one new install starts one helper, not
+  one per bundle. The bundles that do need a helper run up to four at a time;
+  each helper is its own process, so a slow plugin holds only its own slot.
+  The explicit **Rescan** ignores passing receipts and inspects every bundle
+  again.
+- **The inventory** in `~/.opencompose/plugin-inventory.json`, so a warm start
+  is a cache read.
 
 The file holds the host inventory, the Store's installed list, and the key both
 were taken from:
 
-- one stamp per plugin directory (the platform directories plus
-  `OCP_VST2_PATH`) and one for `~/.opencompose/runtimes`, each a path and an
-  mtime;
+- one stamp per plugin directory (the platform directories, the folders the
+  user added and `OCP_VST2_PATH`) and one for `~/.opencompose/runtimes`, each a
+  path and an mtime;
 - the scan-receipt file (`~/.opencompose/plugin-scan-receipts.json`), by mtime
   and length, because a rewrite changes both;
 - the app version and the built-in plugin count, so a new build never serves the

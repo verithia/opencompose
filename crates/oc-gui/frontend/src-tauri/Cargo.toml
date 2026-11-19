@@ -32,6 +32,8 @@ tauri = { version = "2.11.0", features = ["protocol-asset"] }
 tauri-plugin-log = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-single-instance = "2"
+# Per-user folders (documents, music) as the platform defines them
+dirs.workspace = true
 
 # Serialization
 schemars.workspace = true
@@ -80,6 +82,7 @@ libc = "0.2"
 windows-sys = { workspace = true, features = ["Win32_Security", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_JobObjects", "Win32_System_Pipes", "Win32_System_Threading"] }
 
 [dev-dependencies]
+zip.workspace = true
 oc-market = { path = "../../../oc-market", features = ["loopback"] }
 oc-host = { path = "../../../oc-host", features = ["test-support"] }
 oc-test-support = { path = "../../../oc-test-support" }

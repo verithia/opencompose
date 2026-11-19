@@ -38,7 +38,7 @@ export interface SamplerAssetInfo {
 export const listSamplerAssets = () => invoke<SamplerAssetInfo[]>("list_sampler_assets");
 
 export type PluginInstallSource = "direct" | "github_release" | "vendor_page";
-export type PluginArchive = "zip" | "dmg" | "pkg" | "tar-gz" | "installer";
+export type PluginArchive = "zip" | "dmg" | "pkg" | "tar-gz" | "tar-xz" | "7z" | "installer";
 export type PluginFormat = "vst3" | "vst2" | "clap" | "au" | "lv2" | "standalone";
 
 export interface SeparatorRuntimeDescriptor {
@@ -104,7 +104,7 @@ export interface InstalledPluginInfo {
   path: string;
 }
 
-export type PluginCatalogSource = "bundled" | "cache" | "remote";
+export type PluginCatalogSource = "none" | "cache" | "remote";
 
 export interface PluginCatalog {
   platform: string;
@@ -185,11 +185,148 @@ export interface SoundfontProgress {
   total: number;
 }
 
+export const SOUNDFONT_PROGRESS_EVENT = "soundfont_progress";
+
 export const soundfontsList = () => invoke<SoundfontListing>("soundfonts_list");
 export const soundfontInstall = (id: string) =>
   invoke<InstalledSoundfont>("soundfont_install", { id });
 export const soundfontsRemove = (id: string) =>
   invoke<InstalledSoundfont>("soundfonts_remove", { id });
+
+/** What a sound pack holds once unpacked. */
+export type SoundPackContent = "soundfont" | "sfz" | "samples";
+/** How the publisher ships a sound pack; `file` is a single unpacked file. */
+export type SoundPackArchive = "file" | "zip" | "tar_gz" | "tar_xz" | "7z";
+
+/** One sound pack from the signed catalog, or one installed pack the catalog no longer lists. */
+export interface SoundPackItem {
+  id: string;
+  name: string;
+  publisher: string;
+  homepage: string;
+  version: string;
+  description: string;
+  content: SoundPackContent;
+  archive: SoundPackArchive;
+  /** Download size, pinned by the catalog together with the SHA-256. */
+  bytes: number;
+  unpacked_bytes: number;
+  license: PackLicense;
+  installed: boolean;
+  installed_version: string | null;
+  path: string | null;
+  /** `index` when the signed catalog offers it, `local` when only the disk has it. */
+  source: "index" | "local";
+}
+
+export interface SoundPackListing {
+  /** OpenCompose's own sounds folder, where packs are unpacked. */
+  dir: string;
+  items: SoundPackItem[];
+}
+
+export interface InstalledSoundPack {
+  id: string;
+  name: string;
+  version: string;
+  path: string;
+  bytes: number;
+  unpacked_bytes: number;
+  files: number;
+}
+
+export type SoundPackPhase = "download" | "verify" | "extract";
+
+/** Payload of `sound_pack_install_progress`; `total` 0 means not known yet. */
+export interface SoundPackProgress {
+  id: string;
+  phase: SoundPackPhase;
+  done: number;
+  total: number;
+}
+
+export const SOUND_PACK_PROGRESS_EVENT = "sound_pack_install_progress";
+
+export const soundPacksList = () => invoke<SoundPackListing>("sound_packs_list");
+/** Download, verify and unpack one catalog pack; rejects with the reason it stopped. */
+export const soundPackInstall = (id: string) =>
+  invoke<InstalledSoundPack>("sound_pack_install", { id });
+/** Ask a running pack install to stop at its next checkpoint. */
+export const soundPackCancel = (id: string) => invoke<void>("sound_pack_cancel", { id });
+export const soundPackRemove = (id: string) => invoke<void>("sound_pack_remove", { id });
+
+/** Why a folder is searched; `managed` is the folder OpenCompose installs sound packs into. */
+export type FolderOrigin =
+  | "standard"
+  | "convention"
+  | "environment"
+  | "host_settings"
+  | "user"
+  | "managed";
+
+/** One folder the app searches, and how many items it holds. */
+export interface SearchedFolder {
+  path: string;
+  origin: FolderOrigin;
+  exists: boolean;
+  count: number;
+  /** Removes a user sound folder through `sound_folder_remove`. */
+  library_id?: string | null;
+}
+
+/** One plugin or instrument file the scan found. */
+export interface FoundItem {
+  name: string;
+  /** A plugin's vendor, or the folder that holds an instrument file. */
+  detail: string;
+  format: string;
+  path: string;
+  /** False for a plugin bundle the scan could not read. */
+  readable: boolean;
+}
+
+export interface LocalContentKind {
+  total: number;
+  formats: { format: string; count: number }[];
+  folders: SearchedFolder[];
+  /** At most a bounded number of items; `truncated` says more exist. */
+  items: FoundItem[];
+  truncated: boolean;
+}
+
+/** Plugins, instrument files and samples found on this machine. */
+export interface LocalContentSummary {
+  plugins: LocalContentKind;
+  /** SoundFont, SFZ and sampler-asset files. */
+  instruments: LocalContentKind;
+  /** Audio files in sample folders: counted, not listed. */
+  samples: LocalContentKind;
+  /** A background scan is reading plugin details now. */
+  scanning: boolean;
+}
+
+/** Payload of `local_content_scan_progress`; `total` 0 means not known yet. */
+export interface LocalScanProgress {
+  phase: "plugins" | "sounds";
+  done: number;
+  total: number;
+  current: string | null;
+}
+
+export const LOCAL_SCAN_PROGRESS_EVENT = "local_content_scan_progress";
+
+/** Bring the plugin inventory up to date, then count every searched folder. */
+export const localContentScan = (rescan = false) =>
+  invoke<LocalContentSummary>("local_content_scan", { rescan });
+export const localContentSummary = () => invoke<LocalContentSummary>("local_content_summary");
+export const pluginFolderAdd = (path: string) =>
+  invoke<LocalContentSummary>("plugin_folder_add", { path });
+export const pluginFolderRemove = (path: string) =>
+  invoke<LocalContentSummary>("plugin_folder_remove", { path });
+export const soundFolderAdd = (path: string) =>
+  invoke<LocalContentSummary>("sound_folder_add", { path });
+export const soundFolderRemove = (id: string) =>
+  invoke<LocalContentSummary>("sound_folder_remove", { id });
 
 export const pluginCatalog = () => invoke<PluginCatalog>("plugin_catalog");
 export const pluginStoreOpen = (url: string) => invoke<void>("plugin_store_open", { url });

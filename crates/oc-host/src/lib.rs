@@ -52,6 +52,13 @@ pub fn install_plugin_inventory(plugins: Vec<PluginInfo>) -> &'static [PluginInf
     snapshot
 }
 
+/// The published inventory, without waiting for a first scan.
+pub fn published_plugins() -> Option<&'static [PluginInfo]> {
+    *inventory_slot()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+}
+
 /// Get all plugins: the published inventory, or the first scan when nothing has
 /// been published yet.
 pub fn cached_plugins() -> &'static [PluginInfo] {
@@ -99,12 +106,14 @@ pub mod editor_monitor;
 mod ffi_guard;
 pub mod host_app;
 pub mod host_message;
+pub mod known_folders;
 /// LV2 plugin support.
 pub mod lv2;
 mod native_callback;
 pub mod native_fault;
 pub mod param_edit;
 pub mod params;
+pub mod plugin_folders;
 pub mod plugin_preset;
 pub mod plugin_state;
 pub mod plugin_state_io;
@@ -274,8 +283,71 @@ pub enum PluginCategory {
     Other,
 }
 
-/// Standard plugin search paths per platform.
+/// Every folder searched for plugins: the platform's standard locations, then
+/// the folders the user added.
 pub fn plugin_search_paths() -> Vec<String> {
+    plugin_search_folders()
+        .into_iter()
+        .map(|folder| folder.path)
+        .collect()
+}
+
+/// Where a searched plugin folder comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FolderOrigin {
+    /// A platform convention every host searches.
+    Standard,
+    /// A conventional location outside the formats' standard lists.
+    Convention,
+    /// Named by an environment variable such as `CLAP_PATH`.
+    Environment,
+    /// Configured in another audio host's settings.
+    HostSettings,
+    /// Added by the user through [`plugin_folders`].
+    User,
+}
+
+/// One searched plugin folder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PluginFolder {
+    pub path: String,
+    pub origin: FolderOrigin,
+}
+
+/// [`plugin_search_paths`] with each folder's origin. A folder reached more
+/// than one way is listed once, under its first origin: standard, then the
+/// extra locations of [`known_folders`], then the user's own.
+pub fn plugin_search_folders() -> Vec<PluginFolder> {
+    let mut folders: Vec<PluginFolder> = standard_plugin_search_paths()
+        .into_iter()
+        .map(|path| PluginFolder {
+            path,
+            origin: FolderOrigin::Standard,
+        })
+        .collect();
+    let known = known_folders::plugin_folders().into_iter().map(|folder| {
+        let origin = match folder.source {
+            known_folders::KnownSource::Convention => FolderOrigin::Convention,
+            known_folders::KnownSource::Environment => FolderOrigin::Environment,
+            known_folders::KnownSource::HostSettings => FolderOrigin::HostSettings,
+        };
+        (folder.path, origin)
+    });
+    let user = plugin_folders::folders()
+        .into_iter()
+        .map(|path| (path, FolderOrigin::User));
+    for (path, origin) in known.chain(user) {
+        let path = display_path(&path);
+        if !folders.iter().any(|listed| listed.path == path) {
+            folders.push(PluginFolder { path, origin });
+        }
+    }
+    folders
+}
+
+/// The platform's standard plugin folders.
+pub fn standard_plugin_search_paths() -> Vec<String> {
     let mut paths = Vec::new();
 
     #[cfg(target_os = "macos")]
@@ -302,10 +374,13 @@ pub fn plugin_search_paths() -> Vec<String> {
             .unwrap_or_else(|_| "C:\\Program Files\\Common Files".to_string());
         paths.push(format!("{common}\\VST3"));
         paths.push(format!("{common}\\CLAP"));
+        // The LV2 loader searches these as well, so they are counted here.
+        paths.push(format!("{common}\\LV2"));
         if let Some(home) = std::env::var_os("LOCALAPPDATA") {
             let home = home.to_string_lossy();
             paths.push(format!("{}\\Programs\\Common\\VST3", home));
             paths.push(format!("{}\\Programs\\Common\\CLAP", home));
+            paths.push(format!("{}\\LV2", home));
         }
     }
 
@@ -445,6 +520,13 @@ pub fn discover_plugin_files() -> Vec<(std::path::PathBuf, PluginFormat)> {
     for dir in plugin_search_paths() {
         collect_plugin_files(std::path::Path::new(&dir), MAX_BUNDLE_DEPTH, &mut results);
     }
+    results
+}
+
+/// [`discover_plugin_files`] for one folder, with the same depth bound.
+pub fn discover_plugin_files_in(dir: &std::path::Path) -> Vec<(std::path::PathBuf, PluginFormat)> {
+    let mut results = Vec::new();
+    collect_plugin_files(dir, MAX_BUNDLE_DEPTH, &mut results);
     results
 }
 

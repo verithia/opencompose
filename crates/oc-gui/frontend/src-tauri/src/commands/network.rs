@@ -4,6 +4,7 @@
 use serde_json::{Value, json};
 
 use crate::gui_settings::{self, NetworkSettings, ProxyMode};
+use crate::network_probe::{self, NetworkDiagnosis, ReqwestProbe};
 
 /// The saved network settings for the Preferences page.
 #[tauri::command]
@@ -37,44 +38,17 @@ pub fn network_save(settings: NetworkSettings) -> Result<Value, String> {
     }))
 }
 
-/// Ports a local proxy commonly listens on.
-fn local_proxy_ports() -> std::ops::RangeInclusive<u16> {
-    7890..=7897
-}
-
-/// A local HTTP proxy the app may offer when the page asks.
-///
-/// The scan runs only when the page asks; it probes the usual ports with a
-/// short timeout and answers with the first one that speaks HTTP.
+/// Check the saved route, a direct connection and every local proxy candidate
+/// against the plugin index, and report what answered.
 #[tauri::command]
-pub async fn detect_local_proxy() -> Option<String> {
-    tauri::async_runtime::spawn_blocking(|| local_proxy_ports().find_map(probe_local_proxy))
-        .await
-        .unwrap_or(None)
-}
-
-fn probe_local_proxy(port: u16) -> Option<String> {
-    use std::io::{Read, Write};
-    use std::net::{SocketAddr, TcpStream};
-    use std::time::Duration;
-
-    let address = SocketAddr::from(([127, 0, 0, 1], port));
-    let mut stream = TcpStream::connect_timeout(&address, Duration::from_millis(120)).ok()?;
-    stream
-        .set_read_timeout(Some(Duration::from_millis(250)))
-        .ok()?;
-    stream
-        .set_write_timeout(Some(Duration::from_millis(250)))
-        .ok()?;
-    stream
-        .write_all(
-            b"GET http://example.com/ HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n",
-        )
-        .ok()?;
-    let mut head = [0u8; 5];
-    stream.read_exact(&mut head).ok()?;
-    head.starts_with(b"HTTP/")
-        .then(|| format!("http://127.0.0.1:{port}"))
+pub async fn network_diagnose() -> Result<NetworkDiagnosis, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let settings = gui_settings::load().network;
+        let candidates = network_probe::local_proxy_candidates();
+        network_probe::diagnose(&ReqwestProbe, &settings, &candidates)
+    })
+    .await
+    .map_err(|error| format!("network diagnosis failed: {error}"))
 }
 
 /// Ask one URL through the chosen proxy. `https://api.openverse.org/v1/` is a
@@ -154,41 +128,5 @@ mod tests {
             proxy_url: "http://proxy.example.invalid:8080".into(),
         };
         assert!(settings.manual_url().is_none());
-    }
-}
-
-#[cfg(test)]
-mod local_proxy_tests {
-    use super::probe_local_proxy;
-    use std::io::{Read, Write};
-    use std::net::TcpListener;
-
-    #[test]
-    fn a_port_that_answers_http_is_reported_as_a_proxy() {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind a loopback port");
-        let port = listener.local_addr().expect("address").port();
-        std::thread::spawn(move || {
-            if let Ok((mut stream, _)) = listener.accept() {
-                let mut request = [0u8; 256];
-                let _ = stream.read(&mut request);
-                let _ = stream.write_all(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n");
-            }
-        });
-        assert_eq!(
-            probe_local_proxy(port).as_deref(),
-            Some(format!("http://127.0.0.1:{port}").as_str())
-        );
-    }
-
-    #[test]
-    fn a_port_that_does_not_speak_http_is_ignored() {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind a loopback port");
-        let port = listener.local_addr().expect("address").port();
-        std::thread::spawn(move || {
-            if let Ok((mut stream, _)) = listener.accept() {
-                let _ = stream.write_all(b"SSH-2.0-OpenSSH_9.0\r\n");
-            }
-        });
-        assert_eq!(probe_local_proxy(port), None);
     }
 }

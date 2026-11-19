@@ -1,0 +1,59 @@
+{
+  "schema": 1,
+  "plugins": [
+    {
+      "role": "synth",
+      "ids": [
+        "surge-synth-team.surge-xt",
+        "asb2m10.dexed",
+        "u-he.tyrelln6",
+        "u-he.podolski",
+        "discodsp.ob-xd"
+      ]
+    },
+    {
+      "role": "sampler",
+      "ids": [
+        "sfztools.sfizz",
+        "decent-samples.decent-sampler"
+      ]
+    },
+    {
+      "role": "reverb",
+      "ids": [
+        "valhalla-dsp.supermassive",
+        "dragonfly-reverb.dragonfly-reverb",
+        "u-he.protoverb",
+        "voxengo.oldskoolverb",
+        "airwindows.consolidated"
+      ]
+    },
+    {
+      "role": "character",
+      "ids": [
+        "chowdsp.chowtape-model",
+        "voxengo.boogex",
+        "wolf-plugins.wolf-shaper",
+        "airwindows.consolidated"
+      ]
+    },
+    {
+      "role": "mixing",
+      "ids": [
+        "tokyo-dawn.tdr-nova",
+        "voxengo.span",
+        "lsp-plugins.lsp-plugins",
+        "airwindows.consolidated"
+      ]
+    }
+  ],
+  "sounds": [
+    "christian-collins.generaluser-gs",
+    "freepats.upright-piano-kw-small",
+    "freepats.muldjordkit-sf2",
+    "meta.nylon-guitar-ogg",
+    "freepats.salamander-grand-piano-sf2",
+    "adventurekid.akwf",
+    "meta.oculus-audio-pack-ogg"
+  ]
+}

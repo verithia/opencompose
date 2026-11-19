@@ -12,6 +12,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use oc_market::dmg::{DmgExtraction, DmgRequest, extract_dmg_bundles};
 use oc_market::install::{
     HostDirs, InstallArchive, InstallFormat, InstallKind, InstallOutcome, bundle_format, host_os,
     host_platform, path_is_writable, platform_os, select_install_target,
@@ -23,8 +24,6 @@ use crate::plugin_index::{Catalog, Entry, Install, load_trusted_keys, validate_c
 
 /// Size cap for one artifact, matching the GUI store limit.
 const MAX_DOWNLOAD_BYTES: u64 = 256 * 1024 * 1024;
-/// The catalog compiled into the binary, used when no source is given.
-const BUNDLED_CATALOG: &str = include_str!("../../oc-gui/frontend/src/data/plugin-catalog.json");
 
 /// Everything `ocp plugin install` needs from the command line.
 #[derive(Debug, Clone)]
@@ -251,18 +250,100 @@ fn install_loaded_at(
     let target = target.ok_or_else(|| "this build has no install directory".to_string())?;
     match plan.mode {
         Mode::Extract => {
+            if matches!(
+                plan.kind,
+                InstallKind::DmgVst3
+                    | InstallKind::DmgVst2
+                    | InstallKind::DmgClap
+                    | InstallKind::DmgLv2
+            ) {
+                let bundle = bundle_format(plan.kind)
+                    .ok_or_else(|| format!("{} has no bundle directory", entry.name))?;
+                let extracted = extract_dmg_bundles(DmgRequest {
+                    image: &bytes,
+                    format: bundle,
+                    target_dir: &target,
+                    overwrite: options.overwrite,
+                    take: selected.take.as_deref(),
+                })?;
+                match extracted {
+                    DmgExtraction::Bundles(InstallOutcome::Installed { path, message }) => {
+                        report.installed = true;
+                        report.path = Some(path);
+                        report.note = Some(message);
+                    }
+                    DmgExtraction::Bundles(InstallOutcome::NeedsConfirmation { path, .. }) => {
+                        return Err(format!(
+                            "'{path}' already exists; pass --overwrite to replace it"
+                        ));
+                    }
+                    DmgExtraction::Bundles(InstallOutcome::WrappedInstaller { name, bytes }) => {
+                        if !options.open {
+                            return Err(format!(
+                                "{} ships a vendor installer inside the disk image; run `ocp plugin install {} --open`",
+                                entry.name, entry.id
+                            ));
+                        }
+                        let path = write_named_installer(&bytes, &name)?.handoff(open_external)?;
+                        report.opened = true;
+                        report.path = Some(path.display().to_string());
+                        report.note =
+                            Some("Installer opened; finish the installation in its window.".into());
+                    }
+                    DmgExtraction::Bundles(InstallOutcome::OpenedInstaller { .. }) => {
+                        return Err("the resolver planned an unpack, not an installer".into());
+                    }
+                    DmgExtraction::InstallerOnly => {
+                        if !options.open {
+                            return Err(format!(
+                                "{} ships a vendor installer inside the disk image; run `ocp plugin install {} --open`",
+                                entry.name, entry.id
+                            ));
+                        }
+                        let path = write_installer(&bytes, &plan.url)?.handoff(open_external)?;
+                        report.opened = true;
+                        report.path = Some(path.display().to_string());
+                        report.note =
+                            Some("Installer opened; finish the installation in its window.".into());
+                    }
+                }
+                return Ok(report);
+            }
             let bundle = bundle_format(plan.kind)
                 .ok_or_else(|| format!("{} has no bundle directory", entry.name))?;
-            let outcome = if plan.archive == Some(InstallArchive::TarGz) {
-                oc_market::extract_tar_bundles(
+            let outcome = match plan.archive {
+                Some(InstallArchive::TarGz) => oc_market::extract_tar_bundles(
                     &bytes,
                     bundle,
                     host_os(),
                     &target,
                     options.overwrite,
-                )?
-            } else {
-                oc_market::extract_bundles(&bytes, bundle, host_os(), &target, options.overwrite)?
+                    selected.take.as_deref(),
+                )?,
+                Some(InstallArchive::TarXz) => oc_market::extract_tar_xz_bundles(
+                    &bytes,
+                    bundle,
+                    host_os(),
+                    &target,
+                    options.overwrite,
+                    selected.take.as_deref(),
+                )?,
+                Some(InstallArchive::SevenZ) => oc_market::extract_seven_z_bundles(
+                    &bytes,
+                    bundle,
+                    host_os(),
+                    &target,
+                    options.overwrite,
+                    selected.take.as_deref(),
+                )?,
+                _ => oc_market::extract_bundles(
+                    &bytes,
+                    bundle,
+                    host_os(),
+                    &target,
+                    options.overwrite,
+                    selected.take.as_deref(),
+                )?,
             };
             match outcome {
                 InstallOutcome::Installed { path, message } => {
@@ -344,17 +425,18 @@ fn default_target(kind: InstallKind) -> Result<PathBuf, String> {
     .dir)
 }
 
-/// Load the catalog from a signed index, a local file, or the bundled copy.
+/// Load the catalog from a signed index, a local file, or the default signed
+/// index. The compiled binaries carry no catalog; the first run needs the
+/// network to fetch and verify it.
 fn load_catalog(options: &InstallOptions) -> Result<LoadedCatalog, String> {
     if let Some(base) = &options.index {
         return fetch_index(base, options.public_key.as_deref(), options.dry_run);
     }
-    let bytes = match &options.catalog {
-        Some(path) => {
-            fs::read(path).map_err(|error| format!("read catalog {}: {error}", path.display()))?
-        }
-        None => BUNDLED_CATALOG.as_bytes().to_vec(),
+    let Some(path) = &options.catalog else {
+        return fetch_index(oc_market::index::PRIMARY_BASE_URL, None, options.dry_run);
     };
+    let bytes =
+        fs::read(path).map_err(|error| format!("read catalog {}: {error}", path.display()))?;
     let catalog = oc_market::catalog_wire::parse(&bytes).map_err(|error| error.to_string())?;
     Ok(LoadedCatalog {
         catalog,
@@ -600,6 +682,10 @@ pub fn report_json(report: &InstallReport) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn repo_catalog() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../catalog/plugin-catalog.json")
+    }
     use crate::plugin_index::{BuildOptions, build, keygen};
     use oc_market::loopback::FixtureServer;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -1493,7 +1579,7 @@ mod tests {
         let target = TempDir::new("target");
         let error = install(&InstallOptions {
             id: "nope.nope".into(),
-            catalog: None,
+            catalog: Some(repo_catalog()),
             index: None,
             public_key: None,
             platform: None,
@@ -1512,7 +1598,7 @@ mod tests {
         let target = TempDir::new("target");
         let error = install(&InstallOptions {
             id: "u-he.zebralette".into(),
-            catalog: None,
+            catalog: Some(repo_catalog()),
             index: None,
             public_key: None,
             platform: Some("macos-aarch64".into()),
@@ -1580,7 +1666,7 @@ mod tests {
         let target = TempDir::new("target");
         let options = InstallOptions {
             id: "airwindows.consolidated".into(),
-            catalog: None,
+            catalog: Some(repo_catalog()),
             index: None,
             public_key: None,
             // The macOS build is the disk-image hand-off under test; a dry run

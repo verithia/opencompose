@@ -22,6 +22,9 @@ pub(super) fn extract_content(bytes: &[u8], dest: &Path, prefix: &str) -> Result
         path_depth: 64,
     };
     visit_tar_gz(bytes, limits, TarMetadata::GnuLongName, |entry, payload| {
+        if !matches!(entry.kind, TarKind::File | TarKind::Directory) {
+            return Err("TAR contains links, devices or unsupported metadata".into());
+        }
         if matches!(entry.name.as_str(), "." | "./") {
             return Ok(());
         }

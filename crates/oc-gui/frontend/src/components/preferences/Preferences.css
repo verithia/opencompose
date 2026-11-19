@@ -288,6 +288,28 @@
 .preferences-network-result:not(.ok) { color: var(--stop-red); }
 .preferences-network-saved { color: var(--play-green); }
 
+.preferences-network-routes {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.preferences-network-route {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: var(--font-size-xs);
+}
+.preferences-network-route-label { min-width: 0; overflow-wrap: anywhere; }
+.preferences-network-route-status { color: var(--stop-red); }
+.preferences-network-route.ok .preferences-network-route-status { color: var(--play-green); }
+.preferences-network-use { margin-inline-start: auto; }
+
 /* Storage: sizes and the per-block rescan. */
 .preferences-size {
   color: var(--text-muted);

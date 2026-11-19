@@ -268,9 +268,7 @@ pub fn start(app: tauri::AppHandle) {
 /// The inventory to show now. A moved key serves the stored list and refreshes
 /// in the background, so the caller never waits for a scan.
 pub fn plugins() -> Vec<oc_host::PluginInfo> {
-    if !served_key_is_current() {
-        start_refresh(Refresh::Stale);
-    }
+    refresh_if_stale();
     oc_host::cached_plugins().to_vec()
 }
 
@@ -310,6 +308,19 @@ fn served_key_is_current() -> bool {
     lock(served())
         .as_ref()
         .is_some_and(|served| served.key == key)
+}
+
+/// Start a background refresh when the folders or bundles moved since the
+/// served list, for example after the user adds a plugin folder.
+pub fn refresh_if_stale() {
+    if !served_key_is_current() {
+        start_refresh(Refresh::Stale);
+    }
+}
+
+/// Whether a background scan is running now.
+pub fn refreshing() -> bool {
+    REFRESHING.load(Ordering::Acquire)
 }
 
 fn publish(cache: &CachedInventory) {

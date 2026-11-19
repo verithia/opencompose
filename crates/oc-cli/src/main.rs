@@ -444,7 +444,7 @@ enum PluginCommand {
         #[arg(long, value_name = "URL")]
         index: Option<String>,
 
-        /// Install from a local catalog JSON file (default: the bundled catalog)
+        /// Install from a local catalog JSON file (default: the signed remote index)
         #[arg(long, value_name = "FILE")]
         catalog: Option<PathBuf>,
 

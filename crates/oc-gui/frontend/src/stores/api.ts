@@ -25,6 +25,7 @@ export * from "./automationApi";
 export * from "./effectsApi";
 export * from "./pluginApi";
 export * from "./transportApi";
+export * from "./networkApi";
 
 export * from "./appStatus";
 

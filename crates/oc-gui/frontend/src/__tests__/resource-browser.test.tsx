@@ -57,7 +57,7 @@ function mockCommands() {
     if (cmd === "plugin_catalog") {
       return {
         platform: "macos-aarch64",
-        source: "bundled",
+        source: "cache",
         entries: [
           {
             id: "surge",
@@ -73,7 +73,7 @@ function mockCommands() {
     }
     if (cmd === "plugin_index_status") {
       return {
-        source: "bundled",
+        source: "cache",
         generated_at: "2026-01-01",
         fetched_at: null,
         stale_days: null,

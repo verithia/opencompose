@@ -99,8 +99,6 @@ beforeAll(async () => {
         total_projects: 2,
       };
     }
-    // No local proxy: the shell under test carries no network notice.
-    if (cmd === "detect_local_proxy") return null;
     if (cmd === "workspaces_list") {
       return Array.from({ length: 6 }, (_, index) => ({
         name: `workspace-with-a-rather-long-name-${index + 1}`,

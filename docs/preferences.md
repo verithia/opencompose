@@ -120,6 +120,14 @@ network requests use the `network.proxyMode` setting (`system`, `manual`,
 or `none`). Manual mode reads `network.proxyUrl`; enter the address of your
 proxy in Network preferences.
 
+**Find a proxy** checks the saved route, a direct connection and the usual
+local proxy ports against the plugin index. Each route is listed with its
+result and timing, and **Use** saves a working one. A local port counts as a
+proxy only when it accepts a CONNECT tunnel to the index host; a web server on
+the same port and a proxy whose upstream is unreachable are not offered. The
+same check runs when a first-run or Store index fetch fails, where a working
+route can be applied before the fetch is retried.
+
 The portable preferences bundle is a separate file you choose. See
 [Preferences bundle](preferences-bundle.md).
 

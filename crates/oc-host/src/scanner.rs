@@ -24,6 +24,9 @@ use super::resolution::{self, PluginQuery};
 use super::{PluginCategory, PluginFormat, PluginInfo, discover_plugin_files, display_path};
 
 const DEFAULT_TIMEOUT_SECS: u64 = 10;
+/// Schema of every receipt this host writes.
+const RECEIPT_SCHEMA: &str = "opencompose_plugin_scan_receipt_v1";
+const HOST_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// A helper's JSON inventory is far smaller than this; the bound keeps a
 /// broken or malicious helper from allocating without limit.
 const MAX_HELPER_STDOUT_BYTES: usize = 8 * 1024 * 1024;
@@ -67,6 +70,10 @@ pub struct PluginScanReceipt {
     /// never matches a live bundle, so the bundle is retried once.
     #[serde(default)]
     pub binary: Option<BundleIdentity>,
+    /// The host version that wrote the receipt. Only a receipt from this
+    /// version is reused, because the helper's classification can change.
+    #[serde(default)]
+    pub host_version: Option<String>,
     pub plugins: Vec<PluginInfo>,
 }
 
@@ -75,10 +82,51 @@ pub struct PluginScanReceipt {
 pub struct ScanReport {
     /// Bundles inspected in a helper process.
     pub scanned: usize,
+    /// Unchanged bundles whose passing receipt answered without a helper run.
+    pub reused: usize,
     /// Quarantined bundles an explicit rescan retried.
     pub retried: usize,
     /// Bundles that failed or crashed during this pass.
     pub failed: usize,
+}
+
+/// How far the scan pass running now has come. Bundles answered by a reusable
+/// receipt count as done from the start.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct ScanProgress {
+    pub done: usize,
+    pub total: usize,
+    /// File name of the bundle a helper started most recently.
+    pub current: Option<String>,
+}
+
+fn progress_slot() -> &'static std::sync::Mutex<Option<ScanProgress>> {
+    static PROGRESS: std::sync::Mutex<Option<ScanProgress>> = std::sync::Mutex::new(None);
+    &PROGRESS
+}
+
+/// Progress of the inventory scan running in this process, or `None` when no
+/// pass is running. Any caller can poll it, whoever started the scan.
+pub fn scan_progress() -> Option<ScanProgress> {
+    progress_slot()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone()
+}
+
+fn publish_progress(progress: Option<ScanProgress>) {
+    *progress_slot()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) = progress;
+}
+
+/// Clears the published progress when the pass ends, also by unwinding.
+struct ProgressPass;
+
+impl Drop for ProgressPass {
+    fn drop(&mut self) {
+        publish_progress(None);
+    }
 }
 
 /// Scan every discovered CLAP/VST2/VST3 bundle once.
@@ -92,12 +140,14 @@ pub fn scan_discovered_plugins_isolated(force: bool) -> (Vec<PluginInfo>, ScanRe
         .as_deref()
         .map(read_receipts)
         .unwrap_or_default();
+    let _pass = ProgressPass;
     scan_files_isolated(
         discover_plugin_files(),
         force || rescan_requested(),
         &receipts,
         receipt_file.as_deref(),
-        &mut |path, format| scan_bundle_isolated(Path::new(path), format, scan_timeout()),
+        &|path, format| scan_bundle_isolated(Path::new(path), format, scan_timeout()),
+        &|progress| publish_progress(Some(progress)),
     )
 }
 
@@ -237,20 +287,33 @@ fn select_plugin(
 
 /// Scan `files` once each and record their receipts.
 ///
-/// A quarantined bundle is skipped unless `force`; a forced pass retries it
-/// once and records the new receipt, so a bundle that still fails is
-/// quarantined again instead of being retried in a loop.
+/// A bundle whose binary still matches a passing receipt from this host version
+/// reuses that receipt's plugins without a helper run, so a repeat scan only
+/// pays for new or rebuilt bundles. The rest run in up to [`scan_workers`]
+/// helpers at once; each helper is its own process, so a slow plugin delays
+/// only its own slot.
+///
+/// A quarantined bundle is skipped unless `force`; a forced pass also ignores
+/// passing receipts, retries a quarantined bundle once and records the new
+/// receipt, so a bundle that still fails is quarantined again instead of being
+/// retried in a loop.
+///
+/// `progress` hears the pass's size first, then each helper start and finish.
 fn scan_files_isolated(
     files: Vec<(PathBuf, PluginFormat)>,
     force: bool,
     receipts: &[PluginScanReceipt],
     receipt_file: Option<&Path>,
-    scan: &mut dyn FnMut(&str, PluginFormat) -> PluginScanReceipt,
+    scan: &(dyn Fn(&str, PluginFormat) -> PluginScanReceipt + Sync),
+    progress: &(dyn Fn(ScanProgress) + Sync),
 ) -> (Vec<PluginInfo>, ScanReport) {
     let now = now_unix();
-    let mut plugins = Vec::new();
     let mut report = ScanReport::default();
     let mut seen = std::collections::HashSet::new();
+    // One slot per bundle in discovery order, so the inventory order does not
+    // depend on which helper finishes first.
+    let mut slots: Vec<Vec<PluginInfo>> = Vec::new();
+    let mut pending: Vec<(usize, String, PluginFormat)> = Vec::new();
     for (path, format) in files {
         if !matches!(
             format,
@@ -275,24 +338,136 @@ fn scan_files_isolated(
         if quarantined {
             report.retried += 1;
         }
-        let receipt = scan(&path, format);
+        if !force && let Some(receipt) = reusable_receipt(receipts, &path, format) {
+            report.reused += 1;
+            slots.push(receipt.plugins.clone());
+            continue;
+        }
+        pending.push((slots.len(), path, format));
+        slots.push(Vec::new());
+    }
+
+    let tracker = ProgressTracker {
+        state: std::sync::Mutex::new(ScanProgress {
+            done: report.reused,
+            total: report.reused + pending.len(),
+            current: None,
+        }),
+        sink: progress,
+    };
+    tracker.publish(|_| {});
+    let scanned = run_pending(&pending, scan_workers(pending.len()), scan, &tracker);
+    let mut fresh = Vec::with_capacity(scanned.len());
+    for (slot, receipt) in scanned {
         report.scanned += 1;
         if matches!(receipt.status, ScanStatus::Crashed | ScanStatus::Failed) {
             report.failed += 1;
         }
-        if let Some(receipt_file) = receipt_file {
-            record_receipt(receipt_file, &receipt);
-        }
-        plugins.extend(receipt.plugins.clone());
+        slots[slot] = receipt.plugins.clone();
+        fresh.push(receipt);
+    }
+    if let Some(receipt_file) = receipt_file {
+        record_receipts(receipt_file, &fresh);
     }
     log::info!(
-        "plugin {}: {} scanned, {} quarantined retried, {} failed",
+        "plugin {}: {} scanned, {} reused, {} quarantined retried, {} failed",
         if force { "rescan" } else { "scan" },
         report.scanned,
+        report.reused,
         report.retried,
         report.failed
     );
-    (plugins, report)
+    (slots.into_iter().flatten().collect(), report)
+}
+
+/// A passing receipt that still describes the bundle on disk.
+fn reusable_receipt<'a>(
+    receipts: &'a [PluginScanReceipt],
+    path: &str,
+    format: PluginFormat,
+) -> Option<&'a PluginScanReceipt> {
+    let receipt = receipts
+        .iter()
+        .find(|receipt| receipt.path == path && receipt.format == format)?;
+    (receipt.status == ScanStatus::Passed
+        && receipt.schema == RECEIPT_SCHEMA
+        && receipt.host_version.as_deref() == Some(HOST_VERSION)
+        && receipt.binary.as_ref() == Some(&bundle_identity(Path::new(path))))
+    .then_some(receipt)
+}
+
+/// Helpers that run at once. Each one loads a plugin binary, which is mostly
+/// disk and dynamic-linker work, so a few overlap well; more would compete
+/// with the UI for the same cores and make a slow plugin time out.
+const MAX_SCAN_WORKERS: usize = 4;
+
+fn scan_workers(pending: usize) -> usize {
+    std::thread::available_parallelism()
+        .map(|cores| cores.get())
+        .unwrap_or(1)
+        .min(MAX_SCAN_WORKERS)
+        .min(pending)
+        .max(1)
+}
+
+/// The running counts of one pass, shared by its helper threads.
+struct ProgressTracker<'a> {
+    state: std::sync::Mutex<ScanProgress>,
+    sink: &'a (dyn Fn(ScanProgress) + Sync),
+}
+
+impl ProgressTracker<'_> {
+    fn publish(&self, change: impl FnOnce(&mut ScanProgress)) {
+        let snapshot = {
+            let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+            change(&mut state);
+            state.clone()
+        };
+        (self.sink)(snapshot);
+    }
+}
+
+fn bundle_name(path: &str) -> String {
+    Path::new(path)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.to_string())
+}
+
+/// Run `scan` for every pending bundle on `workers` threads and return the
+/// receipts with their slots, in slot order.
+fn run_pending(
+    pending: &[(usize, String, PluginFormat)],
+    workers: usize,
+    scan: &(dyn Fn(&str, PluginFormat) -> PluginScanReceipt + Sync),
+    tracker: &ProgressTracker<'_>,
+) -> Vec<(usize, PluginScanReceipt)> {
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let next = AtomicUsize::new(0);
+    let done = Mutex::new(Vec::with_capacity(pending.len()));
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            scope.spawn(|| {
+                loop {
+                    let index = next.fetch_add(1, Ordering::Relaxed);
+                    let Some((slot, path, format)) = pending.get(index) else {
+                        break;
+                    };
+                    tracker.publish(|state| state.current = Some(bundle_name(path)));
+                    let receipt = scan(path, *format);
+                    tracker.publish(|state| state.done += 1);
+                    done.lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .push((*slot, receipt));
+                }
+            });
+        }
+    });
+    let mut done = done.into_inner().unwrap_or_else(|error| error.into_inner());
+    done.sort_by_key(|(slot, _)| *slot);
+    done
 }
 
 /// Scan one candidate bundle unless it is quarantined.
@@ -408,7 +583,7 @@ fn scan_bundle_isolated_with_resolver(
 
 fn new_receipt(path: &Path, format: PluginFormat) -> PluginScanReceipt {
     PluginScanReceipt {
-        schema: "opencompose_plugin_scan_receipt_v1".into(),
+        schema: RECEIPT_SCHEMA.into(),
         path: path.to_string_lossy().into_owned(),
         format,
         status: ScanStatus::Failed,
@@ -420,6 +595,7 @@ fn new_receipt(path: &Path, format: PluginFormat) -> PluginScanReceipt {
         exit_code: None,
         error: None,
         binary: Some(bundle_identity(path)),
+        host_version: Some(HOST_VERSION.to_string()),
         plugins: Vec::new(),
     }
 }
@@ -874,12 +1050,25 @@ fn append_receipt(receipt: &PluginScanReceipt) {
 
 /// Replace the receipt for this path and format, keeping one row per bundle.
 fn record_receipt(path: &Path, receipt: &PluginScanReceipt) {
-    if !receipt_is_cacheable(receipt) {
+    record_receipts(path, std::slice::from_ref(receipt));
+}
+
+/// Replace the receipts for these bundles with one read and one write.
+fn record_receipts(path: &Path, fresh: &[PluginScanReceipt]) {
+    let fresh: Vec<&PluginScanReceipt> = fresh
+        .iter()
+        .filter(|receipt| receipt_is_cacheable(receipt))
+        .collect();
+    if fresh.is_empty() {
         return;
     }
     let mut receipts = read_receipts(path);
-    receipts.retain(|old| old.path != receipt.path || old.format != receipt.format);
-    receipts.push(receipt.clone());
+    receipts.retain(|old| {
+        !fresh
+            .iter()
+            .any(|receipt| old.path == receipt.path && old.format == receipt.format)
+    });
+    receipts.extend(fresh.into_iter().cloned());
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
     }
@@ -1005,7 +1194,7 @@ mod tests {
             force,
             &receipts,
             Some(receipt_file),
-            &mut |path, format| {
+            &|path, format| {
                 scan_bundle_with_helper(
                     new_receipt(Path::new(path), format),
                     helper,
@@ -1014,6 +1203,7 @@ mod tests {
                     Duration::from_secs(5),
                 )
             },
+            &|_| {},
         )
     }
 
@@ -1095,6 +1285,136 @@ mod tests {
         let receipts = read_receipts(&receipt_file);
         assert_eq!(receipts.len(), 1);
         assert_eq!(receipts[0].status, ScanStatus::Passed);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_unchanged_bundle_reuses_its_passing_receipt_until_a_forced_rescan() {
+        let fixture = QuarantineFixture::new("reuse");
+        let files = vec![(fixture.path(), PluginFormat::Vst3)];
+        let receipt_file = fixture.root.join("receipts.json");
+        let runs = fixture.root.join("runs.txt");
+        let helper = fixture.successful_helper(&runs);
+        let run_count = || fs::read_to_string(&runs).map_or(0, |text| text.lines().count());
+
+        let (first, report) = scan_with_helper(files.clone(), false, &receipt_file, &helper);
+        assert_eq!((report.scanned, report.reused, run_count()), (1, 0, 1));
+
+        let (second, report) = scan_with_helper(files.clone(), false, &receipt_file, &helper);
+        assert_eq!(
+            (report.scanned, report.reused, run_count()),
+            (0, 1, 1),
+            "an unchanged bundle must not start a helper"
+        );
+        assert_eq!(
+            second.iter().map(|info| &info.id).collect::<Vec<_>>(),
+            first.iter().map(|info| &info.id).collect::<Vec<_>>()
+        );
+
+        fixture.write_binary(b"a rebuilt binary of another size");
+        let (_, report) = scan_with_helper(files.clone(), false, &receipt_file, &helper);
+        assert_eq!(
+            (report.scanned, run_count()),
+            (1, 2),
+            "a rebuilt bundle is scanned"
+        );
+
+        let (_, report) = scan_with_helper(files, true, &receipt_file, &helper);
+        assert_eq!((report.scanned, report.reused, run_count()), (1, 0, 3));
+    }
+
+    #[test]
+    fn a_receipt_from_another_host_version_is_not_reused() {
+        let root = oc_audio::private_fs::test_root()
+            .join(format!("ocp-scan-version-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let bundle = root.join("Old.clap");
+        fs::write(&bundle, b"binary").unwrap();
+        let path = bundle.to_string_lossy().into_owned();
+        let mut receipt = passed_receipt(&path, PluginFormat::Clap, Vec::new());
+        assert!(
+            reusable_receipt(std::slice::from_ref(&receipt), &path, PluginFormat::Clap).is_some()
+        );
+        receipt.host_version = Some("0.0.0-older".into());
+        assert!(
+            reusable_receipt(std::slice::from_ref(&receipt), &path, PluginFormat::Clap).is_none()
+        );
+        receipt.host_version = None;
+        assert!(
+            reusable_receipt(std::slice::from_ref(&receipt), &path, PluginFormat::Clap).is_none()
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn parallel_helpers_keep_discovery_order_and_record_every_receipt() {
+        let root = oc_audio::private_fs::test_root()
+            .join(format!("ocp-scan-parallel-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let receipt_file = root.join("receipts.json");
+        let files: Vec<(PathBuf, PluginFormat)> = (0..9)
+            .map(|index| (root.join(format!("p{index}.clap")), PluginFormat::Clap))
+            .collect();
+        let active = std::sync::atomic::AtomicUsize::new(0);
+        let peak = std::sync::atomic::AtomicUsize::new(0);
+        let heard = std::sync::Mutex::new(Vec::<ScanProgress>::new());
+        let (plugins, report) = scan_files_isolated(
+            files.clone(),
+            false,
+            &[],
+            Some(&receipt_file),
+            &|path, format| {
+                use std::sync::atomic::Ordering;
+                let now = active.fetch_add(1, Ordering::SeqCst) + 1;
+                peak.fetch_max(now, Ordering::SeqCst);
+                // Later bundles finish first, so ordering cannot come from timing.
+                let index: u64 = Path::new(path)
+                    .file_stem()
+                    .and_then(|stem| stem.to_str())
+                    .and_then(|stem| stem.strip_prefix('p'))
+                    .and_then(|index| index.parse().ok())
+                    .unwrap();
+                std::thread::sleep(Duration::from_millis(30 - 3 * index));
+                active.fetch_sub(1, Ordering::SeqCst);
+                passed_receipt(path, format, vec![descriptor(path, path, path)])
+            },
+            &|progress| heard.lock().unwrap().push(progress),
+        );
+        assert_eq!(report.scanned, 9);
+        let heard = heard.into_inner().unwrap();
+        assert_eq!(
+            heard.first().map(|first| (first.done, first.total)),
+            Some((0, 9))
+        );
+        assert!(
+            heard
+                .iter()
+                .all(|progress| progress.total == 9 && progress.done <= 9)
+        );
+        assert!(
+            heard.windows(2).all(|pair| pair[0].done <= pair[1].done),
+            "done never moves backwards"
+        );
+        assert_eq!(heard.last().map(|last| last.done), Some(9));
+        assert!(
+            heard
+                .iter()
+                .any(|progress| progress.current.as_deref() == Some("p0.clap"))
+        );
+        let expected: Vec<String> = files
+            .iter()
+            .map(|(path, _)| path.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            plugins
+                .iter()
+                .map(|info| info.id.clone())
+                .collect::<Vec<_>>(),
+            expected
+        );
+        assert!(peak.load(std::sync::atomic::Ordering::SeqCst) <= MAX_SCAN_WORKERS);
+        assert_eq!(read_receipts(&receipt_file).len(), 9);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -1698,7 +2018,7 @@ mod tests {
             false,
             &[],
             None,
-            &mut |path, format| {
+            &|path, format| {
                 let mut receipt = new_receipt(Path::new(path), format);
                 receipt.status = ScanStatus::Passed;
                 let mut info = super::super::builtin::builtin_plugin_list().remove(0);
@@ -1708,6 +2028,7 @@ mod tests {
                 receipt.plugins.push(info);
                 receipt
             },
+            &|_| {},
         );
 
         assert_eq!(report.scanned, 1, "the bundle must reach the scanner");

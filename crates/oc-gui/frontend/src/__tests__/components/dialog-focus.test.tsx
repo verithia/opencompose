@@ -32,6 +32,9 @@ it("lets nested Preferences own Escape and returns focus to its setup opener", a
   });
   const done = vi.fn();
   render(() => <><Onboarding onDone={done} /><PreferencesHost /></>);
+  // Scan, suggestions and the panel tour come before the AI step.
+  fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+  fireEvent.click(screen.getByRole("button", { name: "Install later" }));
   fireEvent.click(screen.getByRole("button", { name: "Continue" }));
   // Help avoids credential/config initialization: this case tests modal ownership.
   const opener = screen.getByRole("button", { name: "Open AI settings" });

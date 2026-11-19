@@ -5,10 +5,12 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { fireEvent, render, waitFor } from "@solidjs/testing-library";
 import { PreferencesModal } from "../components/PreferencesModal";
+import { networkStore } from "../stores/network";
 import { invokeMock } from "./setup";
 
 beforeEach(() => {
   invokeMock.mockReset();
+  networkStore.reset();
   invokeMock.mockImplementation(async (cmd: string, args: any) => {
     if (cmd === "network_settings") return { proxyMode: "system", proxyUrl: "" };
     if (cmd === "network_save") return args.settings;
@@ -60,5 +62,37 @@ describe("the Network preferences page", () => {
     fireEvent.click(view.container.querySelector('[data-page="network"]')!);
     await waitFor(() => expect(view.container.querySelector(".preferences-proxy-url")).toBeTruthy());
     expect(view.container.querySelector<HTMLInputElement>(".preferences-proxy-url")!.disabled).toBe(true);
+  });
+
+  it("lists diagnosed routes and applies a working one", async () => {
+    const original = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation(async (cmd: string, args: any) => {
+      if (cmd === "network_diagnose") {
+        return {
+          current: { kind: "system", url: null, ok: false, ms: 5, error: "tls handshake eof" },
+          routes: [
+            { kind: "proxy", url: "http://127.0.0.1:7897", ok: true, ms: 30, error: null },
+            { kind: "direct", url: null, ok: false, ms: 2000, error: "timeout" },
+          ],
+        };
+      }
+      return original(cmd, args);
+    });
+    const view = render(() => <PreferencesModal open onClose={() => {}} />);
+    fireEvent.click(view.container.querySelector('[data-page="network"]')!);
+    await waitFor(() => expect(view.container.querySelector(".preferences-network-find")).toBeTruthy());
+    fireEvent.click(view.container.querySelector(".preferences-network-find")!);
+
+    await waitFor(() =>
+      expect(view.container.querySelectorAll(".preferences-network-route").length).toBe(2),
+    );
+    expect(view.container.textContent).toContain("http://127.0.0.1:7897");
+    expect(view.container.textContent).toContain("timeout");
+    fireEvent.click(view.container.querySelector(".preferences-network-use")!);
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("network_save", {
+        settings: { proxyMode: "manual", proxyUrl: "http://127.0.0.1:7897" },
+      }),
+    );
   });
 });

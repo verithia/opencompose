@@ -278,7 +278,21 @@ vi.mock("@tauri-apps/api/core", () => {
     if (cmd === "claim_web_audio") return true;
     if (cmd === "release_web_audio") return undefined;
     if (cmd === "scan_plugins") return [];
-    if (cmd === "plugin_catalog") return { platform: "macos-aarch64", entries: [], installed: [] };
+    if (cmd === "plugin_catalog") return { platform: "macos-aarch64", entries: [], installed: [], source: "none" };
+    if (cmd === "network_diagnose") {
+      return {
+        current: { kind: "system", url: null, ok: false, ms: 0, error: "offline" },
+        routes: [],
+      };
+    }
+    if (cmd === "local_content_summary" || cmd === "local_content_scan") {
+      const empty = () => ({ total: 0, formats: [], folders: [], items: [], truncated: false });
+      return { plugins: empty(), instruments: empty(), samples: empty(), scanning: false };
+    }
+    if (cmd === "soundfonts_list") return { dir: "", items: [] };
+    // No starter packs and no install unless a test supplies them.
+    if (cmd === "sound_packs_list") return { dir: "", items: [] };
+    if (cmd === "sound_pack_cancel") return undefined;
     if (cmd === "plugin_store_open") return undefined;
     if (cmd === "export_capabilities") return { mp3: true };
     if (cmd === "plugin_store_install") return { status: "installed", path: "", message: "" };

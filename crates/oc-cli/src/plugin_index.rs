@@ -499,6 +499,7 @@ mod tests {
                             sha256: Some(format!("{:064x}", index + 1)),
                             bytes: Some(12_000_000 + index as u64 * 1_000),
                             archive: Some(Archive::Zip),
+                            take: None,
                         },
                         Install {
                             kind: InstallKind::Direct,
@@ -512,6 +513,7 @@ mod tests {
                             sha256: None,
                             bytes: None,
                             archive: Some(Archive::Installer),
+                            take: None,
                         },
                     ],
                 }
@@ -728,6 +730,27 @@ mod tests {
                 }
             }))
             .unwrap(),
+            serde_json::from_value(serde_json::json!({
+                "kind": "sound_archive",
+                "id": "freepats.upright-piano-kw-small",
+                "name": "Upright Piano KW",
+                "publisher": "FreePats",
+                "homepage": "https://freepats.example.com/piano",
+                "version": "2019-07-03",
+                "description": "Compact upright piano.",
+                "content": "soundfont",
+                "archive": "7z",
+                "url": "https://freepats.example.com/packs/piano.7z",
+                "bytes": 6_093_984u64,
+                "sha256": "b".repeat(64),
+                "unpacked_bytes": 12_345_678u64,
+                "license": {
+                    "name": "CC0-1.0",
+                    "url": "https://freepats.example.com/packs/license",
+                    "text": "CC0 public domain dedication."
+                }
+            }))
+            .unwrap(),
         ];
         let report = build_fixture(dir.path(), &catalog, &key);
         let bytes = fs::read(dir.path().join("out").join(&report.catalog_path)).unwrap();
@@ -736,6 +759,10 @@ mod tests {
         assert_eq!(value["packs"][0]["id"], "ms-basic");
         assert_eq!(value["packs"][0]["bytes"], 49_999_999u64);
         assert_eq!(value["packs"][0]["license"]["name"], "MIT");
+        assert_eq!(value["packs"][1]["kind"], "sound_archive");
+        assert_eq!(value["packs"][1]["content"], "soundfont");
+        assert_eq!(value["packs"][1]["archive"], "7z");
+        assert_eq!(value["packs"][1]["unpacked_bytes"], 12_345_678u64);
         assert_eq!(value["entries"].as_array().unwrap().len(), 60);
 
         // The publisher refuses a pack the client would reject.
@@ -748,6 +775,16 @@ mod tests {
         broken.packs = vec![pack];
         let error = validate_catalog(&broken).unwrap_err();
         assert!(format!("{error:#}").contains("sha256"), "{error:#}");
+
+        let mut broken = sample_catalog();
+        let mut pack = catalog.packs[1].clone();
+        let oc_market::catalog_wire::Pack::SoundArchive(archive) = &mut pack else {
+            panic!("expected sound archive pack");
+        };
+        archive.unpacked_bytes = oc_market::catalog_wire::MAX_PACK_UNPACKED_BYTES + 1;
+        broken.packs = vec![pack];
+        let error = validate_catalog(&broken).unwrap_err();
+        assert!(format!("{error:#}").contains("unpacked_bytes"), "{error:#}");
     }
 
     #[test]
@@ -1145,14 +1182,14 @@ mod tests {
     }
 
     #[test]
-    fn bundled_catalog_builds_and_verifies() {
+    fn repository_catalog_builds_and_verifies() {
         let dir = TestDir::new("bundled");
         let key = keypair(dir.path());
-        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../oc-gui/frontend/src/data/plugin-catalog.json");
+        let fixture =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../catalog/plugin-catalog.json");
         let catalog: Catalog =
-            serde_json::from_slice(&fs::read(&fixture).expect("read bundled catalog"))
-                .expect("parse bundled catalog");
+            serde_json::from_slice(&fs::read(&fixture).expect("read the repository catalog"))
+                .expect("parse the repository catalog");
         assert_eq!(catalog.schema, CATALOG_SCHEMA);
         let mut formats = HashSet::new();
         for entry in &catalog.entries {

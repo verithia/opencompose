@@ -70,7 +70,6 @@ import { dialogOpen } from "./components/modalEscape";
 import { CommandPalette } from "./components/CommandPalette";
 import { ShortcutEditor } from "./components/ShortcutEditor";
 import { projectClock } from "./utils/projectClock";
-import { networkStore } from "./stores/network";
 import { beginPointerDrag } from "./utils/pointerDrag";
 import type { MidiImportResult } from "./stores/midi";
 
@@ -199,7 +198,6 @@ export default function App() {
     splitContainerRef?.addEventListener("pointerdown", handleRegionPointerDown, true);
     splitContainerRef?.addEventListener("focusin", handleRegionPointerDown, true);
     log.info("app", "OpenCompose DAW started");
-    void networkStore.detect();
 
     // Close ends the document window (and the app when it is the last one).
     // The OS must not destroy it before the asynchronous Save/Discard decision.

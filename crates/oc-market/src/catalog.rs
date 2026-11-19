@@ -11,7 +11,7 @@
 
 use std::fmt;
 
-use crate::install::{InstallArchive, InstallFormat, InstallKind, InstallSource};
+use crate::install::{HostOs, InstallArchive, InstallFormat, InstallKind, InstallSource};
 
 /// What an accepted plan does after the bytes are verified.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -246,6 +246,10 @@ pub fn infer_archive(url: &str) -> Option<InstallArchive> {
     let path = lower.split(['?', '#']).next().unwrap_or(&lower);
     if path.ends_with(".tar.gz") || path.ends_with(".tgz") {
         Some(InstallArchive::TarGz)
+    } else if path.ends_with(".tar.xz") {
+        Some(InstallArchive::TarXz)
+    } else if path.ends_with(".7z") {
+        Some(InstallArchive::SevenZ)
     } else if path.ends_with(".zip") {
         Some(InstallArchive::Zip)
     } else if path.ends_with(".dmg") {
@@ -257,8 +261,6 @@ pub fn infer_archive(url: &str) -> Option<InstallArchive> {
         || path.ends_with(".appimage")
         || path.ends_with(".deb")
         || path.ends_with(".rpm")
-        || path.ends_with(".7z")
-        || path.ends_with(".tar.xz")
     {
         Some(InstallArchive::Installer)
     } else {
@@ -279,21 +281,39 @@ pub fn install_kind(
     if runtime {
         return Some(InstallKind::SeparatorRuntime);
     }
+    let archive = archive.or_else(|| infer_archive(url));
     if wrapped {
-        return Some(InstallKind::InstallerArchive);
+        // A wrapped disk image is opened as it is; a wrapped zip or tar is
+        // unpacked to reach the one installer inside.
+        return Some(if archive == Some(InstallArchive::Dmg) {
+            InstallKind::Dmg
+        } else {
+            InstallKind::InstallerArchive
+        });
     }
     if source == InstallSource::VendorPage {
         return Some(InstallKind::Page);
     }
-    match archive.or_else(|| infer_archive(url))? {
-        InstallArchive::Zip | InstallArchive::TarGz => match format {
+    match archive? {
+        InstallArchive::Zip
+        | InstallArchive::TarGz
+        | InstallArchive::TarXz
+        | InstallArchive::SevenZ => match format {
             InstallFormat::Vst3 => Some(InstallKind::ZipVst3),
             InstallFormat::Vst2 => Some(InstallKind::ZipVst2),
             InstallFormat::Clap => Some(InstallKind::ZipClap),
             InstallFormat::Lv2 => Some(InstallKind::ZipLv2),
             InstallFormat::Au | InstallFormat::Standalone => Some(InstallKind::InstallerArchive),
         },
-        InstallArchive::Dmg => Some(InstallKind::Dmg),
+        // An image the catalog does not mark as wrapping an installer carries
+        // the bundles of its declared format.
+        InstallArchive::Dmg => match format {
+            InstallFormat::Vst3 => Some(InstallKind::DmgVst3),
+            InstallFormat::Vst2 => Some(InstallKind::DmgVst2),
+            InstallFormat::Clap => Some(InstallKind::DmgClap),
+            InstallFormat::Lv2 => Some(InstallKind::DmgLv2),
+            InstallFormat::Au | InstallFormat::Standalone => Some(InstallKind::Dmg),
+        },
         InstallArchive::Pkg => Some(InstallKind::Pkg),
         InstallArchive::Installer => {
             let lower = url.to_ascii_lowercase();
@@ -316,6 +336,10 @@ fn mode_of(kind: InstallKind) -> Mode {
         | InstallKind::ZipVst2
         | InstallKind::ZipClap
         | InstallKind::ZipLv2
+        | InstallKind::DmgVst3
+        | InstallKind::DmgVst2
+        | InstallKind::DmgClap
+        | InstallKind::DmgLv2
         | InstallKind::Appimage
         | InstallKind::SeparatorRuntime => Mode::Extract,
         InstallKind::Dmg
@@ -366,6 +390,19 @@ pub fn plan(
         name: name.to_string(),
         format: candidate.format,
     })?;
+    // Only a macOS host can attach a disk image; anywhere else the image is
+    // handed to a person like any other installer.
+    let kind = match kind {
+        InstallKind::DmgVst3
+        | InstallKind::DmgVst2
+        | InstallKind::DmgClap
+        | InstallKind::DmgLv2
+            if crate::install::platform_os(platform).ok() != Some(HostOs::Macos) =>
+        {
+            InstallKind::Dmg
+        }
+        other => other,
+    };
     let Some(sha256) = candidate.sha256.clone() else {
         return Err(Refusal::Unpinned {
             name: name.to_string(),
@@ -503,13 +540,55 @@ mod tests {
     }
 
     #[test]
-    fn a_disk_image_is_a_hand_off_plan() {
+    fn a_disk_image_with_bundles_is_an_extract_plan_on_macos() {
         let candidates = vec![candidate(
             InstallSource::Direct,
             InstallFormat::Vst3,
             "https://x.test/a.dmg",
         )];
         let plan = plan("a", "A", &candidates, "macos-aarch64", None).unwrap();
+        assert_eq!(plan.kind, InstallKind::DmgVst3);
+        assert_eq!(plan.kind.as_str(), "dmg-vst3");
+        assert_eq!(plan.mode, Mode::Extract);
+        let mut vst2 = candidates[0].clone();
+        vst2.format = InstallFormat::Vst2;
+        vst2.platform = "macos-x86_64".into();
+        let older = super::plan("a", "A", &[vst2], "macos-x86_64", None).unwrap();
+        assert_eq!(older.kind, InstallKind::DmgVst2);
+        assert_eq!(older.mode, Mode::Extract);
+    }
+
+    #[test]
+    fn a_disk_image_wrapping_an_installer_is_a_hand_off_plan() {
+        let mut wrapped = candidate(
+            InstallSource::GithubRelease,
+            InstallFormat::Vst3,
+            "https://x.test/a.dmg",
+        );
+        wrapped.archive = Some(InstallArchive::Dmg);
+        wrapped.wrapped = true;
+        let plan = plan("a", "A", &[wrapped], "macos-aarch64", None).unwrap();
+        assert_eq!(plan.kind, InstallKind::Dmg);
+        assert_eq!(plan.mode, Mode::HandOff);
+        let au = candidate(
+            InstallSource::Direct,
+            InstallFormat::Au,
+            "https://x.test/a.dmg",
+        );
+        let au_plan = super::plan("a", "A", &[au], "macos-aarch64", None).unwrap();
+        assert_eq!(au_plan.kind, InstallKind::Dmg);
+        assert_eq!(au_plan.mode, Mode::HandOff);
+    }
+
+    #[test]
+    fn a_disk_image_outside_macos_is_never_extracted() {
+        let mut misplaced = candidate(
+            InstallSource::Direct,
+            InstallFormat::Vst3,
+            "https://x.test/a.dmg",
+        );
+        misplaced.platform = "windows-x86_64".into();
+        let plan = plan("a", "A", &[misplaced], "windows-x86_64", None).unwrap();
         assert_eq!(plan.kind, InstallKind::Dmg);
         assert_eq!(plan.mode, Mode::HandOff);
     }
@@ -623,6 +702,29 @@ mod tests {
             infer_archive("https://x.test/a.tar.gz"),
             Some(InstallArchive::TarGz)
         );
+        assert_eq!(
+            infer_archive("https://x.test/a.tar.xz?v=2"),
+            Some(InstallArchive::TarXz)
+        );
+        assert_eq!(
+            infer_archive("https://x.test/a.7z"),
+            Some(InstallArchive::SevenZ)
+        );
         assert_eq!(infer_archive("https://x.test/download"), None);
+    }
+
+    #[test]
+    fn compressed_tar_and_seven_zip_bundles_are_extract_plans() {
+        for (url, archive) in [
+            ("https://x.test/a.tar.xz", InstallArchive::TarXz),
+            ("https://x.test/a.7z", InstallArchive::SevenZ),
+        ] {
+            let mut candidate = candidate(InstallSource::Direct, InstallFormat::Vst3, url);
+            candidate.archive = Some(archive);
+            let plan = plan("a", "A", &[candidate], "macos-aarch64", None).unwrap();
+            assert_eq!(plan.kind, InstallKind::ZipVst3, "{url}");
+            assert_eq!(plan.mode, Mode::Extract, "{url}");
+            assert_eq!(plan.archive, Some(archive), "{url}");
+        }
     }
 }

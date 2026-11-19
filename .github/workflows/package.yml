@@ -2,11 +2,17 @@ name: Package
 
 # Build the desktop bundles on macOS, Linux and Windows and upload them as
 # workflow artifacts. This workflow never creates a release or publishes an
-# index: those stay manual until the index URL is set.
+# index; release.yml calls it and publishes the artifacts as a draft.
 on:
   workflow_dispatch:
   push:
     tags: ["v*"]
+  workflow_call:
+    inputs:
+      tag:
+        description: "Tag to build, for example v0.1.0"
+        type: string
+        required: true
 
 permissions:
   contents: read
@@ -47,8 +53,13 @@ jobs:
             bundles: msi,nsis
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
+      # A release call names its tag; a tag push is its own tag; any other run
+      # builds the selected branch without a version gate.
+      RELEASE_TAG: ${{ inputs.tag || (startsWith(github.ref, 'refs/tags/') && github.ref_name) || '' }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@1.95.0
@@ -91,13 +102,13 @@ jobs:
             pkg-config
 
       - name: Verify the tag matches the package version
-        if: startsWith(github.ref, 'refs/tags/')
+        if: env.RELEASE_TAG != ''
         shell: bash
         working-directory: crates/oc-gui/frontend
         run: |
           version="$(node -p "require('./package.json').version")"
-          if [ "v$version" != "${GITHUB_REF_NAME}" ]; then
-            echo "::error::Tag ${GITHUB_REF_NAME} does not match package version ${version}."
+          if [ "v$version" != "${RELEASE_TAG}" ]; then
+            echo "::error::Tag ${RELEASE_TAG} does not match package version ${version}."
             exit 1
           fi
 
@@ -112,32 +123,37 @@ jobs:
 
       - name: Build the bundle
         working-directory: crates/oc-gui/frontend
-        run: |
-          npm run tauri build -- \
-            --ci \
-            --target ${{ matrix.target }} \
-            --bundles ${{ matrix.bundles }} \
-            -- --locked
+        run: npm run tauri build -- --ci --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} -- --locked
 
-      - name: Check the 100 MiB bundle budget
+      - name: Check the bundle size budgets
         shell: bash
         run: |
           set -euo pipefail
           shopt -s nullglob
           bundle="target/${{ matrix.target }}/release/bundle"
-          paths=(
-            "$bundle"/macos/*.app
+          # Compressed downloads and installers get 100 MiB. The universal
+          # .app carries two architectures and the AppImage carries its own
+          # GTK and WebKit, so they get 150 MiB.
+          downloads=(
             "$bundle"/dmg/*.dmg
             "$bundle"/deb/*.deb
-            "$bundle"/appimage/*.AppImage
             "$bundle"/msi/*.msi
             "$bundle"/nsis/*.exe
           )
-          if [ "${#paths[@]}" -eq 0 ]; then
-            echo "::error::No bundle found under $bundle."
+          self_contained=(
+            "$bundle"/macos/*.app
+            "$bundle"/appimage/*.AppImage
+          )
+          if [ "${#downloads[@]}" -eq 0 ]; then
+            echo "::error::No downloadable bundle found under $bundle."
             exit 1
           fi
-          scripts/check-bundle-size.sh "${paths[@]}"
+          status=0
+          scripts/check-bundle-size.sh --limit-mib 100 "${downloads[@]}" || status=1
+          if [ "${#self_contained[@]}" -gt 0 ]; then
+            scripts/check-bundle-size.sh --limit-mib 150 "${self_contained[@]}" || status=1
+          fi
+          exit "$status"
 
       - name: Collect artifacts
         shell: bash

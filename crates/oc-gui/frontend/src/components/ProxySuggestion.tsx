@@ -1,8 +1,8 @@
 /**
- * One-time notice for a proxy found on the usual local ports.
+ * A verified route found by the connection diagnosis.
  *
- * It only appears after the network store detects a candidate and the user has
- * not dismissed that URL; applying it writes the manual proxy setting.
+ * The notice only appears for a route that answered the plugin index, so it
+ * never offers a proxy whose upstream is dead.
  */
 import { Show } from "solid-js";
 import { i18n } from "../stores/i18n";
@@ -10,17 +10,22 @@ import { networkStore } from "../stores/network";
 
 export function ProxySuggestion() {
   return (
-    <Show when={networkStore.suggestion()}>
-      {(url) => (
-        <div class="proxy-suggestion" role="status" data-proxy-suggestion={url()}>
+    <Show when={networkStore.offer()}>
+      {(target) => (
+        <div
+          class="proxy-suggestion"
+          role="status"
+          data-proxy-suggestion={target().url ?? "direct"}
+        >
           <span class="proxy-suggestion-text">
-            {i18n.t("network.proxyDetected", { url: url() })}
+            {target().kind === "proxy"
+              ? i18n.t("network.proxyWorks", { url: target().url ?? "" })
+              : i18n.t("network.directWorks")}
           </span>
-          <button type="button" onClick={() => void networkStore.useSuggestion()}>
-            {i18n.t("network.useProxy")}
-          </button>
-          <button type="button" onClick={() => networkStore.dismiss()}>
-            {i18n.t("network.dismiss")}
+          <button type="button" onClick={() => void networkStore.applyOffer(target())}>
+            {target().kind === "proxy"
+              ? i18n.t("network.useThisProxy")
+              : i18n.t("network.connectDirectly")}
           </button>
         </div>
       )}

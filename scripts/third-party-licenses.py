@@ -47,6 +47,8 @@ PERMISSIVE = {
     "BSD-2-Clause",
     "BSD-3-Clause",
     "BSL-1.0",
+    # The bzip2 decoder used by the 7z reader is BSD-style permissive.
+    "bzip2-1.0.6",
     "CC0-1.0",
     "CDLA-Permissive-2.0",
     "ISC",

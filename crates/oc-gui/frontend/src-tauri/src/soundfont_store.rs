@@ -378,51 +378,127 @@ const DISCOVERY_DEPTH: usize = 6;
 type DiscoveryCache = Option<(Vec<PathBuf>, std::time::Instant, Vec<DiscoveredSoundfont>)>;
 static DISCOVERY_CACHE: std::sync::Mutex<DiscoveryCache> = std::sync::Mutex::new(None);
 
-/// Small, known instrument locations only; never recurse through the whole home directory.
-fn discovery_roots(dir: &Path) -> Vec<PathBuf> {
-    let mut roots = vec![dir.to_path_buf()];
-    if let Some(file) = std::env::var_os("OCP_SOUNDFONT") {
-        roots.push(PathBuf::from(file));
-    }
-    if let Some(home) = std::env::var_os("HOME") {
-        let home = PathBuf::from(home);
+/// Why a folder is searched for SoundFonts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RootOrigin {
+    /// The pack folder, `OCP_SOUNDFONT`, or a conventional instrument folder.
+    Standard,
+    /// The managed sounds folder that installed sound packs fill.
+    Managed,
+    /// A content library the user registered, by its id.
+    Library(String),
+    /// A bank that ships with the application rather than with the machine.
+    Bundled,
+}
+
+/// One searched SoundFont location.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchRoot {
+    pub path: PathBuf,
+    pub origin: RootOrigin,
+}
+
+/// Conventional SoundFont folders of this platform and of common notation and
+/// synthesis tools. Each is a dedicated instrument folder, never a whole
+/// documents or home directory, so walking them stays cheap.
+pub fn instrument_folders() -> Vec<PathBuf> {
+    let mut folders = Vec::new();
+    if let Some(documents) = dirs::document_dir() {
         for relative in [
-            "Documents/SoundFonts",
-            "Documents/soundfonts",
-            "Music/SoundFonts",
-            "Library/Audio/Sounds/Banks",
+            "SoundFonts",
+            "soundfonts",
+            "MuseScore4/SoundFonts",
+            "MuseScore3/Soundfonts",
+            "lmms/samples/soundfonts",
         ] {
-            roots.push(home.join(relative));
+            folders.push(documents.join(relative));
         }
     }
-    for path in [
-        "/Library/Audio/Sounds/Banks",
-        "/usr/share/soundfonts",
-        "/usr/share/sounds/sf2",
-        "/usr/local/share/soundfonts",
-    ] {
-        roots.push(PathBuf::from(path));
+    if let Some(music) = dirs::audio_dir() {
+        folders.push(music.join("SoundFonts"));
     }
+    #[cfg(target_os = "macos")]
+    if let Some(home) = dirs::home_dir() {
+        folders.push(home.join("Library/Audio/Sounds/Banks"));
+    }
+    #[cfg(target_os = "macos")]
+    folders.push(PathBuf::from("/Library/Audio/Sounds/Banks"));
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(data) = dirs::data_dir() {
+            folders.push(data.join("soundfonts"));
+        }
+        for path in [
+            "/usr/share/soundfonts",
+            "/usr/share/sounds/sf2",
+            "/usr/share/sounds/sf3",
+            "/usr/local/share/soundfonts",
+        ] {
+            folders.push(PathBuf::from(path));
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        // The synthesizer library's documented default bank folder.
+        // `SystemDrive` is a bare `C:`; joining onto it would make a
+        // drive-relative path, so the root separator is written out.
+        if let Some(drive) = std::env::var_os("SystemDrive") {
+            folders.push(PathBuf::from(format!(
+                "{}\\soundfonts",
+                drive.to_string_lossy()
+            )));
+        }
+    }
+    folders.dedup();
+    folders
+}
+
+/// Small, known instrument locations only; never recurse through the whole home directory.
+fn discovery_roots(dir: &Path) -> Vec<PathBuf> {
+    let mut roots: Vec<PathBuf> = search_roots(dir)
+        .into_iter()
+        .map(|root| root.path)
+        .collect();
+    roots.dedup();
+    roots
+}
+
+/// Every SoundFont location with its origin, in search order.
+pub fn search_roots(dir: &Path) -> Vec<SearchRoot> {
+    let standard = |path: PathBuf| SearchRoot {
+        path,
+        origin: RootOrigin::Standard,
+    };
+    let mut roots = vec![standard(dir.to_path_buf())];
+    roots.push(SearchRoot {
+        path: crate::sound_pack_store::dir(),
+        origin: RootOrigin::Managed,
+    });
+    if let Some(file) = std::env::var_os("OCP_SOUNDFONT") {
+        roots.push(standard(PathBuf::from(file)));
+    }
+    roots.extend(instrument_folders().into_iter().map(standard));
     if let Ok(catalogue) =
         crate::content_library::load(&crate::content_library::default_catalogue_path())
     {
-        roots.extend(
-            catalogue
-                .libraries
-                .into_iter()
-                .map(|library| PathBuf::from(library.path)),
-        );
+        roots.extend(catalogue.libraries.into_iter().map(|library| SearchRoot {
+            path: PathBuf::from(library.path),
+            origin: RootOrigin::Library(library.id),
+        }));
     }
+    let bundled = |path: PathBuf| SearchRoot {
+        path,
+        origin: RootOrigin::Bundled,
+    };
     if let Ok(exe) = std::env::current_exe()
         && let Some(parent) = exe.parent()
     {
-        roots.push(parent.join("soundfonts"));
-        roots.push(parent.join("../Resources/soundfonts"));
+        roots.push(bundled(parent.join("soundfonts")));
+        roots.push(bundled(parent.join("../Resources/soundfonts")));
     }
     if let Ok(cwd) = std::env::current_dir() {
-        roots.push(cwd.join("soundfonts"));
+        roots.push(bundled(cwd.join("soundfonts")));
     }
-    roots.dedup();
     roots
 }
 
@@ -444,12 +520,22 @@ pub fn discover(dir: &Path) -> Vec<DiscoveredSoundfont> {
     files
 }
 
+/// Extension alone is not evidence of a SoundFont; DLS is a different RIFF form.
+pub fn has_soundfont_header(path: &Path) -> bool {
+    use std::io::Read;
+    let mut header = [0_u8; 12];
+    fs::File::open(path)
+        .and_then(|mut file| file.read_exact(&mut header))
+        .is_ok()
+        && &header[..4] == b"RIFF"
+        && &header[8..] == b"sfbk"
+}
+
 fn discover_roots(
     roots: &[PathBuf],
     max_entries: usize,
     max_depth: usize,
 ) -> Vec<DiscoveredSoundfont> {
-    use std::io::Read;
     let mut remaining = max_entries;
     let mut pending: std::collections::VecDeque<_> =
         roots.iter().cloned().map(|root| (root, 0)).collect();
@@ -499,14 +585,7 @@ fn discover_roots(
         if !matches!(format.as_str(), "sf2" | "sf3") {
             continue;
         }
-        // Extension alone is not evidence of a SoundFont; DLS is a different RIFF form.
-        let mut header = [0_u8; 12];
-        if fs::File::open(&path)
-            .and_then(|mut file| file.read_exact(&mut header))
-            .is_err()
-            || &header[..4] != b"RIFF"
-            || &header[8..] != b"sfbk"
-        {
+        if !has_soundfont_header(&path) {
             continue;
         }
         let Ok(path) = path.canonicalize() else {
@@ -870,6 +949,15 @@ mod tests {
                 .find(|program| program.bank == 0 && program.program == 0)
                 .map(|program| &program.name)
         );
+    }
+
+    #[test]
+    fn search_roots_include_the_managed_sounds_folder() {
+        let temp = TempDir::new("managed-root");
+        let roots = search_roots(&temp.0);
+        assert!(roots.iter().any(|root| {
+            root.origin == RootOrigin::Managed && root.path == crate::sound_pack_store::dir()
+        }));
     }
 
     #[test]

@@ -19,10 +19,55 @@ A **standalone** application can appear in the free-plugin catalog as a download
 but the host does not load it; it is listed because the catalog describes
 downloads, not only plugins.
 
-Bundles are discovered in the platform's standard directories (for example
-`~/Library/Audio/Plug-Ins/VST3` on macOS and `~/.vst3` on Linux). VST2 has its own
-search paths and an `OCP_VST2_PATH` override; LV2 uses `LV2_PATH` and the usual
-system directories. After installing anything new, rescan from the plugin browser.
+## Where plugins are found
+
+Bundles are discovered in the platform's standard folders, in the folders other
+audio software uses, and in any folder you add.
+
+| Platform | Standard folders |
+|---|---|
+| macOS | `~/Library/Audio/Plug-Ins/` and `/Library/Audio/Plug-Ins/`, each with `VST3`, `CLAP`, `Components` (AU), `LV2` and `VST` |
+| Windows | `%COMMONPROGRAMFILES%\VST3`, `\CLAP` and `\LV2`; `%LOCALAPPDATA%\Programs\Common\VST3` and `\CLAP`; `%LOCALAPPDATA%\LV2`; the usual `VstPlugins` and `Steinberg\VstPlugins` folders for VST2 |
+| Linux | `~/.vst3`, `~/.clap`, `~/.lv2`, `~/.vst`, and the same names under `/usr/lib` and `/usr/local/lib` (plus `lxvst`) |
+
+These are searched as well when they exist:
+
+| Platform | Other folders |
+|---|---|
+| macOS | `/Network/Library/Audio/Plug-ins/VST3`; `~/.lv2`, `/usr/local/lib/lv2` and `/opt/homebrew/lib/lv2` |
+| Windows | `%APPDATA%\LV2`; `%ProgramFiles%\VST3`; `%ProgramFiles%\Cakewalk\Vstplugins`; `Documents\Plugins\VST`; the VST2 folder installers record as `VSTPluginsPath` under `HKEY_CURRENT_USER\Software\VST` and `HKEY_LOCAL_MACHINE\Software\VST` |
+| Linux | `lib64` variants (`/usr/lib64/{vst3,clap,lv2,vst,lxvst}` and `/usr/local/lib64/...`); `linux_vst` folders |
+| All | Folders in `CLAP_PATH`, `VST3_PATH`, `VST_PATH`, `LXVST_PATH` and `LV2_PATH`; REAPER's `UserPlugins/FX` folder and the VST and CLAP paths set in its `reaper.ini` |
+
+A host's settings file is read with a 1 MiB cap, and at most 64 absolute paths
+are taken from it. On Windows, folders under `%ProgramFiles(x86)%` are skipped
+because they hold 32-bit plugins, which OpenCompose cannot load.
+
+A bundle may sit up to three folders below a search folder, so a
+`<VST3>/<vendor>/<plugin>.vst3` layout is found. A `.vst3`, `.clap`,
+`.component` or `.lv2` bundle counts as one plugin file, and so does a `.vst`
+(macOS), `.dll` (Windows) or `.so` (Linux) in a VST2 folder. A bundle can hold
+several plugins; the plugin browser lists each one.
+
+To search another folder, choose **Add plugin folder…** on the first page of
+the first-run guide. The list is kept in `~/.opencompose/plugin-folders.json`
+(at most 32 folders; `OCP_PLUGIN_FOLDERS` points at another file). The scan,
+the LV2 loader and the Store's installed check all read it. VST2 also honours
+`OCP_VST2_PATH`.
+
+The same page lists the sounds on the computer: SoundFont (`.sf2`, `.sf3`),
+SFZ and sampler-asset files, plus audio samples. It searches the instrument
+folders (`SoundFonts` under Documents and Music, the MuseScore and LMMS
+SoundFont folders, `~/Library/Audio/Sounds/Banks` on macOS,
+`/usr/share/sounds/sf2`, `/usr/share/sounds/sf3` and `/usr/share/soundfonts` on
+Linux, `C:\soundfonts` on Windows), the sample folders other music tools keep
+(the Ableton User Library and Factory Packs, the Image-Line user data folder,
+LMMS samples, Splice, `Samples` under Documents and Music), and your content
+libraries. Each folder costs at most 20,000 directory entries, eight levels
+deep. **Add sound folder…** registers a content library. The bank that ships
+with OpenCompose is not counted.
+
+After installing anything new, rescan from the plugin browser.
 
 ## Addressing a plugin in a project
 
@@ -67,14 +112,14 @@ installed and licensed on each system that opens the project.
 
 ## The free-plugin catalog
 
-The GUI's Store section lists free plugins from two sources:
+The GUI's Store section lists free plugins from a **signed remote index** that
+the app refreshes over HTTPS from the project's documentation site, caches on
+disk and verifies with the Ed25519 keys pinned in the app. The app and `ocp`
+binaries carry no catalog, so the first run needs the network once to fetch it;
+without a downloaded index the Store lists nothing. See
+[the plugin index design](../plugin-index.md).
 
-1. a **bundled catalog** compiled into the app, and
-2. a **signed remote index** that the app refreshes over HTTPS from the
-   project's documentation site, caches on disk and verifies with the Ed25519
-   keys pinned in the app. See [the plugin index design](../plugin-index.md).
-
-Both carry the same document: an entry per plugin with a name, vendor, one-line
+The index carries a document with an entry per plugin with a name, vendor, one-line
 description, category tags, license, homepage and one or more installs. An install
 says which platform and format it provides and where to download it. The app
 shows the formats available for the current platform and the license, and either

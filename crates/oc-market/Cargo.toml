@@ -27,6 +27,14 @@ zstd.workspace = true
 chrono.workspace = true
 semver.workspace = true
 fs4.workspace = true
+zip.workspace = true
+sevenz-rust2.workspace = true
+lzma-rust2.workspace = true
+
+[dev-dependencies]
+# Tests generate their own archives; production decoders stay read-only.
+sevenz-rust2 = { workspace = true, features = ["compress", "util"] }
+lzma-rust2 = { workspace = true, features = ["encoder"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }

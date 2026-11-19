@@ -27,6 +27,7 @@ mod first_block_tests;
 mod gui_settings;
 mod input;
 mod live_synth;
+mod local_content;
 mod meters;
 mod midi_bridge;
 mod midi_commands;
@@ -34,6 +35,7 @@ mod midi_live;
 mod midi_record;
 mod native_jobs;
 mod net_proxy;
+mod network_probe;
 mod open_events;
 mod plugin_index;
 mod plugin_inventory;
@@ -53,6 +55,7 @@ mod record;
 mod render_grid;
 mod render_thread;
 mod samples;
+mod sound_pack_store;
 mod soundfont_store;
 mod startup;
 mod state;
@@ -310,7 +313,7 @@ pub fn run_with_options(path: Option<String>, diag: DiagOptions) {
             commands::session_audio_settings,
             commands::session_audio_save,
             commands::network_settings,
-            commands::detect_local_proxy,
+            commands::network_diagnose,
             commands::network_save,
             commands::network_test,
             commands::clear_sample_cache,
@@ -589,8 +592,18 @@ pub fn run_with_options(path: Option<String>, diag: DiagOptions) {
             commands::soundfonts_list,
             commands::soundfont_install,
             commands::soundfonts_remove,
+            commands::sound_packs_list,
+            commands::sound_pack_install,
+            commands::sound_pack_cancel,
+            commands::sound_pack_remove,
             commands::list_sampler_assets,
             content_library::list_content_libraries,
+            local_content::local_content_summary,
+            local_content::local_content_scan,
+            local_content::plugin_folder_add,
+            local_content::plugin_folder_remove,
+            local_content::sound_folder_add,
+            local_content::sound_folder_remove,
             content_library::register_content_library,
             content_library::remove_content_library,
             content_library::rescan_content_libraries,
