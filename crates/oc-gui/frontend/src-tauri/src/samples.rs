@@ -33,6 +33,7 @@ use crate::state::AppState;
 
 mod breaker;
 mod cursor;
+pub(crate) mod local;
 mod merge;
 pub(crate) mod preview_cache;
 
