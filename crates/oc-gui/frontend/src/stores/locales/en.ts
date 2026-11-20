@@ -538,7 +538,7 @@ export const en = {
   "command.view.toggleClips": "Toggle clips panel",
   "command.view.togglePresets": "Toggle presets panel",
   "command.view.toggleDrumKit": "Toggle drum kit",
-  "command.view.toggleSamples": "Show sample markets",
+  "command.view.toggleSamples": "Show samples",
   "command.view.toggleDsl": "Toggle DSL editor",
   "command.view.toggleAi": "Toggle AI panel",
   "command.view.toggleBrowser": "Toggle plugin browser",

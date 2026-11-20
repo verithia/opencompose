@@ -312,7 +312,7 @@ export const jaCompletionCore = {
   "toolbar.browse": "参照",
   "preferences.pickExportFailed": "環境設定ファイルの保存先を選択できませんでした。{error}",
   "preferences.pickImportFailed": "環境設定ファイルを選択できませんでした。{error}",
-  "command.view.toggleSamples": "サンプルライブラリを表示",
+  "command.view.toggleSamples": "サンプルを表示",
   "toolbar.diagnostics": "診断情報を書き出す…",
   "toolbar.diagnosticsBusy": "診断情報を収集中…",
   "toolbar.diagnosticsSaved": "診断情報を {path} に保存しました",

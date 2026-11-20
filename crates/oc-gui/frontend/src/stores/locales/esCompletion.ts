@@ -236,7 +236,7 @@ export const esCompletion = {
   "clip.slipReadout": "Desplazamiento del contenido: {value}",
   "clip.slipStart": "inicio del audio",
 
-  "command.view.toggleSamples": "Mostrar bibliotecas de muestras",
+  "command.view.toggleSamples": "Mostrar muestras",
 
   "controlLink.bindLast": "+ Último parámetro",
   "controlLink.bindLastHint": "Vincular este control al último parámetro ajustado",
