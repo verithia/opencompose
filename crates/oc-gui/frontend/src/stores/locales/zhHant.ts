@@ -521,7 +521,7 @@ export const zhHant = {
   "command.view.toggleClips": "開關片段面板",
   "command.view.togglePresets": "開關預設面板",
   "command.view.toggleDrumKit": "開關鼓組面板",
-  "command.view.toggleSamples": "開啟取樣市場",
+  "command.view.toggleSamples": "開啟取樣",
   "command.view.toggleDsl": "開關 DSL 編輯器",
   "command.view.toggleAi": "開關 AI 面板",
   "command.view.toggleBrowser": "開關外掛瀏覽器",

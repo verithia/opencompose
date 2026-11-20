@@ -427,7 +427,7 @@ was:
 
 **Samples** is a mode of the bottom panel, next to Clips, Piano Roll, Presets,
 Mixer, Drum Kit, History and Inspector. It has no default shortcut; the command
-**Show sample markets** (`view.toggleSamples`) opens it. The **Samples** tab of
+**Show samples** (`view.toggleSamples`) opens it. The **Samples** tab of
 the **Browse** overlay shows the same panel.
 
 - A search field and a **Search** button. Enter also searches. One search
