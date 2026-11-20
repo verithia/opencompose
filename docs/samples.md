@@ -472,11 +472,11 @@ the transport, for at most 30 seconds. A preview download is limited to
 48 MiB. A downloaded preview is kept for the session in `sample-previews/` in
 the app's cache folder: at most 32 files and 256 MiB, removing the least
 recently used first, and emptied when the app first opens it. Hearing a result
-again needs no network, and **Add to project** reuses the file when the
+again needs no network, and **Add** reuses the file when the
 download URL is the one previewed. The add still resolves the item and checks
 the declared size and checksum.
 
-**Add to project** downloads the file, writes the sidecar and receipt, and
+**Add** downloads the file, writes the sidecar and receipt, and
 places an `@audio_clip` on the selected track. With no track selected, it adds
 an `audio/clip` track named `Samples` (`Samples 2` and so on if that name is
 taken). The clip starts on the beat at or before the playhead and keeps the
@@ -516,7 +516,7 @@ is kept for 30 seconds, so several searches in a row walk the disk once.
 
 Each row shows the file name, its format, kind, the path below its sound folder
 and a **Local file** badge; hover it for the full path. A preview plays the file
-through the audition stream, like a market preview. **Add to project** copies
+through the audition stream, like a market preview. **Add** copies
 the file into `<project>/media/local-samples/` and places the clip as described
 above. The copy keeps the file's name with unsafe characters replaced; adding
 the same file again reuses its copy, and a different file with the same name

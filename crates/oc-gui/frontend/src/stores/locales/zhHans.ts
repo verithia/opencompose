@@ -957,6 +957,7 @@ export const zhHans = {
   "samples.copyDownload": "复制下载链接",
   "sample.previewFailed": "试听无法播放：{message}",
   "sample.add": "加入工程",
+  "sample.addShort": "添加",
   "sample.adding": "正在加入…",
   "sample.added": "已加入 {track}",
   "sample.loadingMarkets": "正在加载市场…",

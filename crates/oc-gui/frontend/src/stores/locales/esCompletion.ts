@@ -1041,6 +1041,7 @@ export const esCompletion = {
   "routing.trackSource": "Pista {index}",
 
   "sample.add": "Añadir al proyecto",
+  "sample.addShort": "Añadir",
   "sample.added": "Se añadió a {track}",
   "sample.adding": "Añadiendo…",
   "sample.available": "Disponible",

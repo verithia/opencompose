@@ -296,7 +296,7 @@
 }
 
 .sample-market-row {
-  --sample-columns: minmax(0, 1.2fr) minmax(0, 1.15fr) minmax(0, 0.9fr) auto auto;
+  --sample-columns: minmax(0, 1.1fr) 22px 2.9rem minmax(0, 1.1fr) minmax(0, 0.9fr) 5.5rem;
   display: grid;
   grid-template-columns: var(--sample-columns);
   align-items: center;
@@ -404,26 +404,30 @@
   color: var(--accent);
 }
 
-.sample-market-actions {
-  display: flex;
-  flex-shrink: 0;
-  align-items: center;
-  gap: 4px;
-}
-
-.sample-market-actions .toolbar-btn {
+/* Name, play, Add, details, credit, licence. The play glyph is the preview,
+   in the same green as the transport so it reads as playback. */
+.sample-market-row .toolbar-btn {
   height: 18px;
   min-height: 18px;
   padding: 0 6px;
   font-size: 10px;
 }
 
-.sample-market-actions .sample-market-play {
+.sample-market-row .sample-market-play {
   width: 20px;
   padding: 0;
+  color: var(--play-green);
 }
 
-.sample-market-actions .toolbar-btn:disabled {
+/* A fixed track keeps the details aligned down the list; a preview-only
+   market truncates its label here and explains itself in its tooltip. */
+.sample-market-row .sample-market-add {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sample-market-row .toolbar-btn:disabled {
   opacity: 0.45;
   cursor: not-allowed;
 }
@@ -481,7 +485,7 @@
 
 @container (max-width: 1080px) {
   .sample-market-row {
-    --sample-columns: minmax(0, 1.4fr) minmax(0, 1fr) auto auto;
+    --sample-columns: minmax(0, 1.2fr) 22px 2.9rem minmax(0, 1.3fr) 5.5rem;
   }
 
   .sample-market-credit {
@@ -495,7 +499,7 @@
   }
 
   .sample-market-row {
-    --sample-columns: minmax(0, 1.5fr) minmax(0, 1.1fr) minmax(0, 1.9fr) auto auto;
+    --sample-columns: minmax(0, 1.5fr) 22px 2.9rem minmax(0, 1.1fr) minmax(0, 1.9fr) 5.5rem;
   }
 
   .sample-market-credit {
@@ -509,7 +513,7 @@
   }
 
   .sample-market-row {
-    --sample-columns: minmax(0, 1.5fr) minmax(0, 1.3fr) minmax(0, 1.2fr) auto auto;
+    --sample-columns: minmax(0, 1.5fr) 22px 2.9rem minmax(0, 1.3fr) minmax(0, 1.2fr) 5.5rem;
   }
 
   /* The duration is the first detail to go: a half-width panel has no room
@@ -521,7 +525,7 @@
 
 @container (max-width: 460px) {
   .sample-market-row {
-    --sample-columns: minmax(0, 3fr) minmax(0, 2fr) auto auto;
+    --sample-columns: minmax(0, 3fr) 22px 2.9rem minmax(0, 2fr) 5.5rem;
   }
 
   .sample-market-credit {
@@ -531,7 +535,7 @@
 
 @container (max-width: 330px) {
   .sample-market-row {
-    --sample-columns: minmax(0, 1fr) auto auto;
+    --sample-columns: minmax(0, 1fr) 22px 2.9rem 5.5rem;
   }
 
   .sample-market-meta {

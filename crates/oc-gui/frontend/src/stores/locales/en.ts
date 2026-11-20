@@ -936,6 +936,7 @@ export const en = {
   "samples.copyDownload": "Copy download link",
   "sample.previewFailed": "The preview could not play: {message}",
   "sample.add": "Add to project",
+  "sample.addShort": "Add",
   "sample.adding": "Adding…",
   "sample.added": "Added to {track}",
   "sample.loadingMarkets": "Loading markets…",

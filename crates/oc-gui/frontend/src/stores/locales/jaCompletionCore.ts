@@ -485,6 +485,7 @@ export const jaCompletionCore = {
   "samples.copyDownload": "ダウンロードリンクをコピー",
   "sample.previewFailed": "試聴できませんでした。{message}",
   "sample.add": "プロジェクトに追加",
+  "sample.addShort": "追加",
   "sample.adding": "追加中…",
   "sample.added": "{track} に追加しました",
   "sample.loadingMarkets": "ライブラリを読み込み中…",
