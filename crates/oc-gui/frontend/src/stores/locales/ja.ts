@@ -33,7 +33,7 @@ export const ja = {
   "export.audio.phasePublishing": "ファイルに書き込んでいます…",
   "export.audio.phaseCancelled": "書き出しをキャンセルしました。新しいファイルは作成されませんでした。",
   "export.audio.cancelHint": "現在の音声ブロックを処理してから停止し、書き出しを保存しません。",
-  "sample.searchPlaceholder": "オンラインのサンプルライブラリを検索…",
+  "sample.searchPlaceholder": "手元のサンプルとオンラインのライブラリを検索…",
   "sample.licenseNotice": "「{name}」は {licence} ライセンスです。クレジットはプロジェクトに保存されます。",
   "clip.noDuplicate": "この音声を再利用するには、元のファイルをもう一度読み込んでください。",
   "pianoroll.humaniseHint": "選択したノートのタイミングやベロシティに微妙な変化を加えます。未選択なら表示中の全ノートに適用します。",

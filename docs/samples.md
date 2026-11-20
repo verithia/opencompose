@@ -5,6 +5,9 @@ a time into your project. It keeps each file's licence and credit line beside
 the audio. It hosts no catalogue of its own: every result comes from a market
 that already publishes it.
 
+The **Samples** panel lists matching files from your own sound folders first,
+and the market results below them; see [Samples on this computer](#samples-on-this-computer).
+
 The bottom panel, the agent tools and `ocp sample` use the same library
 (`oc-sample`), the same licence rule and the same refusal codes. The panel and
 the agent tools also share one multi-market search with paging, duplicate
@@ -427,7 +430,8 @@ Mixer, Drum Kit, History and Inspector. It has no default shortcut; the command
 **Show sample markets** (`view.toggleSamples`) opens it. The **Samples** tab of
 the **Browse** overlay shows the same panel.
 
-- A search field and a **Search** button. Enter also searches.
+- A search field and a **Search** button. Enter also searches. One search
+  asks your sound folders and the included markets.
 - Kind chips: **All**, **One-shot**, **Loop**, **Vocal**, **FX** and
   **Instrument**.
 - **Duration**: **Any duration**, **Under 2 s**, **2–10 s** or **Over 10 s**.
@@ -442,12 +446,13 @@ the **Browse** overlay shows the same panel.
   needs a key it does not have, the panel also shows a key field; **Save key**
   stores the key in the operating system's credential store and reads the
   market list again.
-- A notice line for each market that could not answer, for example that it
-  needs an API key, is rate limited (with the wait), is temporarily skipped or
-  could not be reached.
-- The results: name, market, kind, duration, credit line and a licence badge,
-  green when the licence is free to reuse. Right-click a result to copy its
-  credit, source link or download link.
+- **On this computer**: matching files from your sound folders, listed first.
+- **Online**: a notice line for each market that could not answer, for example
+  that it needs an API key, is rate limited (with the wait), is temporarily
+  skipped or could not be reached, then the market results.
+- Each market result shows its name, market, kind, duration, credit line and
+  a licence badge, green when the licence is free to reuse. Right-click a
+  result to copy its credit, source link or download link.
 - **Load more** fetches the next page of every market that has more, using the
   cursor. Rows already shown are not added again.
 
@@ -478,6 +483,41 @@ When a command fails, the panel receives `{code, message}`, where `code` is a
 refusal code (`licence_notice`, `key_required`, `invalid_cursor`, …) or
 `null`. The panel shows its own sentence for the codes it knows and the
 message otherwise.
+
+### Samples on this computer
+
+The local section searches the same sound folders that the first-run scan
+counts samples in: the folders you added, the managed sound-pack folder, the
+standard instrument folders, and the usual sample-library folders in your
+Documents, Music and home folders. It reads `wav`, `aif`, `aiff`, `flac`,
+`ogg` and `mp3` files, with the scan's limits of 20,000 entries and 8 folder
+levels per folder. Hidden folders and symbolic links are skipped. The file list
+is kept for 30 seconds, so several searches in a row walk the disk once.
+
+- Every word of the search must appear in the file's path below its sound
+  folder; case, `_`, `-` and folder separators do not matter. A file whose name
+  holds every word comes before one that matches only through its folders, and
+  shorter names come first.
+- **Kind** is read from the path the same way a market result's name is read,
+  so `Loops/snare roll.wav` is a loop.
+- **Duration** reads the length from each file's header. A file whose header
+  states no length fails a duration bound, as a market result does. At most
+  400 headers are read per search.
+- **Commercial use OK** and the market chips do not apply: these are your files.
+- At most 50 files are listed. When more match, the panel says so; add words to
+  narrow the search.
+
+Each row shows the file name, its format, kind, the path below its sound folder
+and a **Local file** badge; hover it for the full path. A preview plays the file
+through the audition stream, like a market preview. **Add to project** copies
+the file into `<project>/media/local-samples/` and places the clip as described
+above. The copy keeps the file's name with unsafe characters replaced; adding
+the same file again reuses its copy, and a different file with the same name
+gets a number. If the clip cannot be placed, the copy is removed.
+
+Preview and add accept only an audio file inside one of the searched sound
+folders. They refuse with `not_found` (the file is gone), `outside_folders`,
+`not_audio`, `too_large` (more than 512 MiB) or `project_unsaved`.
 
 ## Agent tools
 
@@ -540,4 +580,6 @@ successful pull writes the audio, the sidecar and the receipt with a checksum
 that matches the bytes. The registry tests cover availability with and without
 keys, the page-only reasons and the id prefixes. The panel tests render the
 panel, search, show the market chips, page with **Load more** and add a result
-through a mocked `invoke`.
+through a mocked `invoke`. The local search tests cover word matching and
+ranking, the kind and duration filters, nested folders, the path check that
+preview and add apply, and the copy that a refused placement removes.

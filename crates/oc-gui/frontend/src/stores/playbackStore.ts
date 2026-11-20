@@ -458,6 +458,25 @@ export function createPlaybackStore(
     if (marketSampleAction(owner, provider, id)) return stopAudition();
   }
 
+  function localSampleTarget(owner: string, path: string) {
+    return JSON.stringify(["local-sample", owner, path]);
+  }
+
+  function previewLocalSample(owner: string, path: string, label: string, onError: (error: unknown) => void) {
+    return startPrivatePreview("preset", localSampleTarget(owner, path), label, async () => {
+      const preview = await api.localSamplePreview(path, label, true);
+      if (preview.status === "cancelled") throw new Error("Preview was cancelled");
+    }, false, onError);
+  }
+
+  function localSampleAction(owner: string, path: string) {
+    return auditionAction(localSampleTarget(owner, path));
+  }
+
+  function stopLocalSample(owner: string, path: string) {
+    if (localSampleAction(owner, path)) return stopAudition();
+  }
+
   /** Audition a take. The DSL is never written; `null` clears the audition. */
   async function auditionTake(track: string | null, take: number | null) {
     try {
@@ -1184,6 +1203,9 @@ export function createPlaybackStore(
     previewMarketSample,
     stopMarketSample,
     marketSampleAction,
+    previewLocalSample,
+    stopLocalSample,
+    localSampleAction,
     auditionTake,
     previewPreset,
     auditionFactoryPatch,
