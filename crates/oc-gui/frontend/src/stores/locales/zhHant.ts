@@ -998,6 +998,7 @@ export const zhHant = {
   "samples.copyDownload": "複製下載連結",
   "sample.previewFailed": "試聽無法播放：{message}",
   "sample.add": "加入工程",
+  "sample.addShort": "新增",
   "sample.adding": "正在加入…",
   "sample.added": "已加入 {track}",
   "sample.loadingMarkets": "正在載入市場…",

@@ -394,6 +394,25 @@ describe("SampleMarketPanel", () => {
     expect(more!.parentElement?.classList.contains("sample-market-list")).toBe(true);
   });
 
+  it("orders a row: name, preview, Add, details, licence", async () => {
+    // The compact row reads left to right as name, what you can do with it,
+    // then what it is. The Add button is short on screen and named in full
+    // for assistive tech.
+    const { container, getByText } = render(() => <SampleMarketPanel />);
+    await waitFor(() => expect(getByText("Openverse")).toBeInTheDocument());
+    await search(container);
+
+    const row = getByText("Snare hit 01").closest(".sample-market-row") as HTMLElement;
+    const parts = ["sample-market-name", "sample-market-play", "sample-market-add",
+      "sample-market-meta", "sample-market-credit", "sample-market-license"];
+    expect(
+      [...row.children].map((child) => parts.find((part) => child.classList.contains(part))),
+    ).toEqual(parts);
+    const add = within(row).getByRole("button", { name: "Add to project" });
+    expect(add.textContent).toBe("Add");
+    expect(within(row).getByRole("button", { name: "Preview" })).toBeInTheDocument();
+  });
+
   it("lays the rows out in the shared result grid", async () => {
     // One grid per section, so local and market rows wrap two to a line on a
     // wide panel without a section's rows spilling into the other's.
@@ -557,7 +576,7 @@ describe("SampleMarketPanel", () => {
     await search(container);
 
     const row = getByText("Snare hit 01").closest(".sample-market-row") as HTMLElement;
-    fireEvent.click(within(row).getByText("Add to project"));
+    fireEvent.click(within(row).getByRole("button", { name: "Add to project" }));
     await waitFor(() =>
       expect(invokeMock).toHaveBeenCalledWith("sample_market_add", {
         provider: "openverse",
@@ -576,7 +595,7 @@ describe("SampleMarketPanel", () => {
     await search(container);
 
     const row = getByText("Night Drive").closest(".sample-market-row") as HTMLElement;
-    const add = within(row).getByText("Add to project");
+    const add = within(row).getByRole("button", { name: "Add to project" });
     expect(add).not.toBeDisabled();
     invokeMock.mockRejectedValueOnce({
       code: "licence_notice",
@@ -607,7 +626,7 @@ describe("SampleMarketPanel", () => {
       code: "checksum_mismatch",
       message: "The download does not match its declared checksum.",
     });
-    fireEvent.click(within(row).getByText("Add to project"));
+    fireEvent.click(within(row).getByRole("button", { name: "Add to project" }));
 
     await waitFor(() =>
       expect(
@@ -743,7 +762,7 @@ describe("local samples", () => {
     );
 
     const row = getByText("Snare Tight").closest(".sample-market-row") as HTMLElement;
-    fireEvent.click(within(row).getByText("Add to project"));
+    fireEvent.click(within(row).getByRole("button", { name: "Add to project" }));
     await waitFor(() =>
       expect(invokeMock).toHaveBeenCalledWith("local_sample_add", {
         path: LOCAL_ITEMS[0].path,
@@ -763,7 +782,7 @@ describe("local samples", () => {
 
     invokeMock.mockRejectedValueOnce({ code: "not_found", message: "'/x.wav' is gone" });
     const row = getByText("Snare Tight").closest(".sample-market-row") as HTMLElement;
-    fireEvent.click(within(row).getByText("Add to project"));
+    fireEvent.click(within(row).getByRole("button", { name: "Add to project" }));
     await waitFor(() =>
       expect(getByText("That file is no longer on this computer.")).toBeInTheDocument(),
     );

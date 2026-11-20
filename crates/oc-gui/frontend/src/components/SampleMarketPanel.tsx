@@ -573,6 +573,30 @@ export function SampleMarketPanel() {
                     onClick={() => selectLocal(item)}
                   >
                     <span class="sample-market-name">{item.name}</span>
+                    <button
+                      type="button"
+                      class="toolbar-btn sample-market-play"
+                      aria-label={localPreviewLabel(item)}
+                      {...useTooltip(() => localPreviewLabel(item))}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        selectLocal(item);
+                      }}
+                    >
+                      {localAction(item) === "pause" ? "Ⅱ" : "▶"}
+                    </button>
+                    <button
+                      type="button"
+                      class="toolbar-btn text-btn sample-market-add"
+                      aria-label={i18n.t("sample.add")}
+                      disabled={adding() === localKey(item)}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void addLocal(item);
+                      }}
+                    >
+                      {i18n.t(adding() === localKey(item) ? "sample.adding" : "sample.addShort")}
+                    </button>
                     <span class="sample-market-meta">
                       <span class="sample-market-tag">{item.format.toUpperCase()}</span>
                       <span>{kindLabel(item.kind)}</span>
@@ -589,31 +613,6 @@ export function SampleMarketPanel() {
                     >
                       {i18n.t("sample.local.badge")}
                     </span>
-                    <div class="sample-market-actions">
-                      <button
-                        type="button"
-                        class="toolbar-btn sample-market-play"
-                        aria-label={localPreviewLabel(item)}
-                        {...useTooltip(() => localPreviewLabel(item))}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          selectLocal(item);
-                        }}
-                      >
-                        {localAction(item) === "pause" ? "Ⅱ" : "▶"}
-                      </button>
-                      <button
-                        type="button"
-                        class="toolbar-btn text-btn sample-market-add"
-                        disabled={adding() === localKey(item)}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          void addLocal(item);
-                        }}
-                      >
-                        {i18n.t(adding() === localKey(item) ? "sample.adding" : "sample.add")}
-                      </button>
-                    </div>
                   </div>
                 )}
               </For>
@@ -696,6 +695,39 @@ export function SampleMarketPanel() {
                   }}
                 >
                   <span class="sample-market-name" title={item.name}>{item.name}</span>
+                  <button
+                    type="button"
+                    class="toolbar-btn sample-market-play"
+                    aria-label={previewLabel(item)}
+                    {...useTooltip(() => previewLabel(item))}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      void selectItem(item);
+                    }}
+                  >
+                    {action(item) === "pause" ? "Ⅱ" : "▶"}
+                  </button>
+                  <button
+                    type="button"
+                    class="toolbar-btn text-btn sample-market-add"
+                    aria-label={i18n.t("sample.add")}
+                    disabled={adding() === item.id || isPreviewOnly(item)}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      void addItem(item);
+                    }}
+                    {...useTooltip(() =>
+                      isPreviewOnly(item)
+                        ? i18n.t("sources.previewOnly")
+                        : item.license_ok
+                        ? i18n.t("sample.licenseOk")
+                        : i18n.t("sample.licenseNoticeHint"),
+                    )}
+                  >
+                    {isPreviewOnly(item)
+                      ? i18n.t("sources.previewOnly")
+                      : i18n.t(adding() === item.id ? "sample.adding" : "sample.addShort")}
+                  </button>
                   <span class="sample-market-meta">
                     <span class="sample-market-tag">{item.provider_name ?? item.provider}</span>
                     <span>{kindLabel(item.kind)}</span>
@@ -713,40 +745,6 @@ export function SampleMarketPanel() {
                   >
                     {item.license.name}
                   </span>
-                  <div class="sample-market-actions">
-                    <button
-                      type="button"
-                      class="toolbar-btn sample-market-play"
-                      aria-label={previewLabel(item)}
-                      {...useTooltip(() => previewLabel(item))}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        void selectItem(item);
-                      }}
-                    >
-                      {action(item) === "pause" ? "Ⅱ" : "▶"}
-                    </button>
-                    <button
-                      type="button"
-                      class="toolbar-btn text-btn sample-market-add"
-                      disabled={adding() === item.id || isPreviewOnly(item)}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        void addItem(item);
-                      }}
-                      {...useTooltip(() =>
-                        isPreviewOnly(item)
-                          ? i18n.t("sources.previewOnly")
-                          : item.license_ok
-                          ? i18n.t("sample.licenseOk")
-                          : i18n.t("sample.licenseNoticeHint"),
-                      )}
-                    >
-                      {isPreviewOnly(item)
-                        ? i18n.t("sources.previewOnly")
-                        : i18n.t(adding() === item.id ? "sample.adding" : "sample.add")}
-                    </button>
-                  </div>
                 </div>
               )}
             </For>
