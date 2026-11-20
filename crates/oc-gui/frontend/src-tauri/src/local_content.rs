@@ -527,6 +527,23 @@ pub fn summary() -> LocalContentSummary {
     summary_with(&|_| {})
 }
 
+/// The folders a local sample search walks: the sound folders the summary
+/// counts samples in, so both report the same files.
+pub(crate) fn sample_search_roots() -> Vec<PathBuf> {
+    sound_roots(
+        soundfont_store::search_roots(&soundfont_store::dir()),
+        sample_folders(),
+    )
+    .into_iter()
+    .map(|root| root.path)
+    .collect()
+}
+
+/// The audio files under one sound folder, with the summary's walk bounds.
+pub(crate) fn sample_files(root: &Path) -> Vec<PathBuf> {
+    walk_sounds(root).samples
+}
+
 fn plugin_progress(progress: Option<oc_host::scanner::ScanProgress>) -> ScanProgressEvent {
     let progress = progress.unwrap_or_default();
     ScanProgressEvent {

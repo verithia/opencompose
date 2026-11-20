@@ -117,6 +117,30 @@ pub fn decode_passage_with_lead(
     })
 }
 
+/// The length a file's header declares, read without decoding a packet.
+/// `None` when the file is unreadable or its container does not state a frame
+/// count and rate, as a stream-style MP3 often does not.
+pub fn probe_seconds(path: &Path) -> Option<f64> {
+    let file = std::fs::File::open(path).ok()?;
+    let stream = MediaSourceStream::new(Box::new(file), Default::default());
+    let mut hint = Hint::new();
+    if let Some(extension) = path.extension().and_then(|extension| extension.to_str()) {
+        hint.with_extension(extension);
+    }
+    let probed = symphonia::default::get_probe()
+        .format(
+            &hint,
+            stream,
+            &FormatOptions::default(),
+            &MetadataOptions::default(),
+        )
+        .ok()?;
+    let params = &probed.format.default_track()?.codec_params;
+    let frames = params.n_frames?;
+    let rate = params.sample_rate.filter(|rate| *rate > 0)?;
+    (frames > 0).then(|| frames as f64 / f64::from(rate))
+}
+
 /// The packet callback returns whether more PCM is needed.
 fn decode_until(
     path: &Path,

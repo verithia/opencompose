@@ -92,6 +92,21 @@ fn decode_mono_wav_duplicates_to_stereo() {
 }
 
 #[test]
+fn probe_reads_the_declared_length_and_refuses_what_is_not_audio() {
+    let root = temp_dir("probe");
+    let path = root.join("tone.wav");
+    sine(&path, 44_100, 1.5, 440.0, 0.5);
+    let seconds = audio_clip::probe_seconds(&path).unwrap();
+    assert!((seconds - 1.5).abs() < 1e-6, "{seconds}");
+
+    let text = root.join("notes.wav");
+    std::fs::write(&text, b"not a RIFF header").unwrap();
+    assert_eq!(audio_clip::probe_seconds(&text), None);
+    assert_eq!(audio_clip::probe_seconds(&root.join("missing.wav")), None);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn resampling_44k1_to_48k_preserves_length_and_rms() {
     let root = temp_dir("resample-sine");
     let path = root.join("sine.wav");

@@ -66,7 +66,7 @@ impl From<SampleError> for SampleCommandError {
 }
 
 /// Run sample-market work on the blocking pool and keep its typed error.
-async fn run_sample<F>(work: F) -> Result<Value, SampleCommandError>
+pub(super) async fn run_sample<F>(work: F) -> Result<Value, SampleCommandError>
 where
     F: FnOnce() -> Result<Value, SampleCommandError> + Send + 'static,
 {
@@ -303,7 +303,7 @@ fn fetch_preview(
     Ok((provider_id, item, Some(samples)))
 }
 
-fn decode_preview(path: &Path, rate: u32) -> Result<Vec<f32>, String> {
+pub(super) fn decode_preview(path: &Path, rate: u32) -> Result<Vec<f32>, String> {
     let audio = oc_engine::audio_clip::decode_passage(path, 0.0, PREVIEW_SECONDS)?.audio;
     if audio.sample_rate == rate {
         return Ok(Arc::unwrap_or_clone(audio.samples));
@@ -316,7 +316,7 @@ fn decode_preview(path: &Path, rate: u32) -> Result<Vec<f32>, String> {
     )
 }
 
-fn play_preview(
+pub(super) fn play_preview(
     state: &AppState,
     inner: &mut AppStateInner,
     generation: u64,
@@ -336,7 +336,13 @@ fn play_preview(
     Ok(true)
 }
 
-fn preview_reply(status: &str, provider: &str, id: &str, name: &str, seconds: f64) -> Value {
+pub(super) fn preview_reply(
+    status: &str,
+    provider: &str,
+    id: &str,
+    name: &str,
+    seconds: f64,
+) -> Value {
     json!({
         "status": status,
         "provider": provider,
@@ -402,21 +408,29 @@ fn add_blocking(
 /// The document a pending download belongs to: the file it is saved as and the
 /// undo revision it started from. Either moving means another document is open.
 #[derive(Clone, PartialEq, Eq)]
-struct DocumentIdentity {
+pub(super) struct DocumentIdentity {
     file_path: Option<PathBuf>,
     revision: u64,
 }
 
 impl DocumentIdentity {
-    fn capture(state: &AppState) -> Self {
+    pub(super) fn capture(state: &AppState) -> Self {
         Self::of(&state.lock_inner())
     }
 
-    fn of(inner: &AppStateInner) -> Self {
+    pub(super) fn of(inner: &AppStateInner) -> Self {
         Self {
             file_path: inner.file_path.clone(),
             revision: inner.revision,
         }
+    }
+
+    /// The folder a saved project keeps its media under.
+    pub(super) fn project_root(&self) -> Option<PathBuf> {
+        self.file_path
+            .as_deref()
+            .and_then(Path::parent)
+            .map(Path::to_path_buf)
     }
 }
 
@@ -435,7 +449,13 @@ fn place_pulled(
             receipt.path
         ));
     }
-    place_clip(inner, receipt, seconds, requested_track)
+    place_clip(
+        inner,
+        Path::new(&receipt.path),
+        &receipt.name,
+        seconds,
+        requested_track,
+    )
 }
 
 /// A receipt's declared duration, or the length of the file it wrote.
@@ -449,10 +469,12 @@ fn clip_seconds(receipt: &SampleReceipt) -> Result<f64, String> {
     Ok(decoded.frames() as f64 / f64::from(decoded.sample_rate))
 }
 
-/// Place the pulled file at the playhead and commit one undo entry.
-fn place_clip(
+/// Place a file inside the project folder at the playhead and commit one undo
+/// entry.
+pub(super) fn place_clip(
     inner: &mut AppStateInner,
-    receipt: &SampleReceipt,
+    path: &Path,
+    sample_name: &str,
     seconds: f64,
     requested_track: Option<&str>,
 ) -> Result<(super::shared::ProjectSnapshot, String), String> {
@@ -462,13 +484,13 @@ fn place_clip(
         .and_then(Path::parent)
         .map(Path::to_path_buf)
         .ok_or_else(|| "Save the project first: a sample needs a media folder.".to_string())?;
-    let file = Path::new(&receipt.path)
+    let file = path
         .strip_prefix(&root)
         .map(|path| path.to_string_lossy().replace('\\', "/"))
         .map_err(|_| {
             format!(
                 "'{}' is outside the project folder; a clip path must be relative to the project.",
-                receipt.path
+                path.display()
             )
         })?;
     let clock = oc_dsl::timing::ProjectClock::new(&inner.project.properties)?;
@@ -497,7 +519,7 @@ fn place_clip(
                 name
             }
         };
-    let name = unique_clip_name(&next, &receipt.name);
+    let name = unique_clip_name(&next, sample_name);
     next.add_audio_clip(plain_audio_clip(
         name,
         track.clone(),
@@ -792,7 +814,14 @@ mod tests {
         let mut inner = state.lock_inner();
         // Four seconds at 120 BPM alone would reach bar 3. The 60 BPM from bar 2
         // makes the sample cover only two more quarters, ending at bar 2 beat 3.
-        let (snapshot, _) = place_clip(&mut inner, &receipt, 4.0, None).unwrap();
+        let (snapshot, _) = place_clip(
+            &mut inner,
+            Path::new(&receipt.path),
+            &receipt.name,
+            4.0,
+            None,
+        )
+        .unwrap();
         let clip = snapshot.project.audio_clip(0).unwrap();
         assert_eq!(clip.time_range.start, BarBeat::new(1, 1, 0));
         assert_eq!(clip.time_range.end, BarBeat::new(2, 3, 0));
@@ -931,7 +960,14 @@ mod tests {
         let (state, dir) = saved_state("new-track");
         let receipt = receipt(&dir);
         let mut inner = state.lock_inner();
-        let (snapshot, track) = place_clip(&mut inner, &receipt, 0.42, None).unwrap();
+        let (snapshot, track) = place_clip(
+            &mut inner,
+            Path::new(&receipt.path),
+            &receipt.name,
+            0.42,
+            None,
+        )
+        .unwrap();
         assert_eq!(track, "Samples");
         assert_eq!(snapshot.project.tracks.len(), 1);
         assert_eq!(snapshot.project.tracks[0].instrument.category, "audio");
@@ -959,7 +995,14 @@ mod tests {
         inner.project.tracks.push(sample_track("Tape"));
         let clock = oc_dsl::timing::ProjectClock::new(&inner.project.properties).unwrap();
         inner.audio.seek(5.0, &clock).unwrap();
-        let (snapshot, track) = place_clip(&mut inner, &receipt, 1.0, Some("Tape")).unwrap();
+        let (snapshot, track) = place_clip(
+            &mut inner,
+            Path::new(&receipt.path),
+            &receipt.name,
+            1.0,
+            Some("Tape"),
+        )
+        .unwrap();
         assert_eq!(track, "Tape");
         assert_eq!(snapshot.project.tracks.len(), 1);
         let clip = snapshot.project.audio_clip(0).unwrap();
@@ -974,7 +1017,14 @@ mod tests {
         let state = crate::state::AppState::new();
         let mut inner = state.lock_inner();
         let receipt = receipt(Path::new("/tmp"));
-        let error = place_clip(&mut inner, &receipt, 1.0, None).unwrap_err();
+        let error = place_clip(
+            &mut inner,
+            Path::new(&receipt.path),
+            &receipt.name,
+            1.0,
+            None,
+        )
+        .unwrap_err();
         assert!(error.contains("Save the project first"), "{error}");
     }
 
