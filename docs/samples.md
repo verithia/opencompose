@@ -430,6 +430,12 @@ Mixer, Drum Kit, History and Inspector. It has no default shortcut; the command
 **Show samples** (`view.toggleSamples`) opens it. The **Samples** tab of
 the **Browse** overlay shows the same panel.
 
+The bottom panel is short, so the panel spends its height on results: the
+search, duration, commercial filter, kind chips and market chips share one
+toolbar strip that wraps to a second line only when it must, and every result
+is a single line. A narrow panel drops the duration and the commercial label
+before it lets the toolbar or a row scroll sideways.
+
 - A search field and a **Search** button. Enter also searches. One search
   asks your sound folders and the included markets.
 - Kind chips: **All**, **One-shot**, **Loop**, **Vocal**, **FX** and

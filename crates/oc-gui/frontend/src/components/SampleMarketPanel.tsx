@@ -396,49 +396,38 @@ export function SampleMarketPanel() {
 
   return (
     <div class="sample-market-panel">
-      <form
-        class="sample-market-header"
-        onSubmit={(event) => {
-          event.preventDefault();
-          void runSearch();
-        }}
-      >
-        <input
-          class="sample-market-search"
-          type="search"
-          value={query()}
-          placeholder={i18n.t("sample.searchPlaceholder")}
-          aria-label={i18n.t("sample.searchPlaceholder")}
-          onInput={(event) => setQuery(event.currentTarget.value)}
-        />
-        <button class="toolbar-btn text-btn" type="submit" disabled={loading()}>
-          {loading() ? i18n.t("sample.searching") : i18n.t("sample.search")}
-        </button>
-      </form>
+      {/* The bottom panel is short, so the search, the filters and the
+          markets share one strip: one line when the panel is wide, two when
+          it is not. */}
+      <div class="sample-market-toolbar">
+        <form
+          class="sample-market-header"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void runSearch();
+          }}
+        >
+          <input
+            class="sample-market-search"
+            type="search"
+            value={query()}
+            placeholder={i18n.t("sample.searchPlaceholder")}
+            aria-label={i18n.t("sample.searchPlaceholder")}
+            onInput={(event) => setQuery(event.currentTarget.value)}
+          />
+          <button class="toolbar-btn text-btn" type="submit" disabled={loading()}>
+            {loading() ? i18n.t("sample.searching") : i18n.t("sample.search")}
+          </button>
+        </form>
 
-      <div class="sample-market-chips" role="group" aria-label={i18n.t("sample.kinds")}>
-        <For each={KIND_CHIPS}>
-          {(chip) => (
-            <button
-              type="button"
-              class="sample-market-chip"
-              classList={{ on: kind() === chip.id }}
-              aria-pressed={kind() === chip.id}
-              onClick={() => changeKind(chip.id)}
-            >
-              {i18n.t(chip.key)}
-            </button>
-          )}
-        </For>
-      </div>
-
-      <div class="sample-market-filters">
-        <label class="sample-market-filter">
-          <span>{i18n.t("sample.duration")}</span>
+        <div class="sample-market-filters">
+          {/* The options name the duration themselves ("Any duration"), so
+              the select carries its label for assistive tech only. */}
           <select
             class="sample-market-select"
             value={duration()}
             aria-label={i18n.t("sample.duration")}
+            {...useTooltip(() => i18n.t("sample.duration"))}
             onChange={(event) =>
               changeDuration(event.currentTarget.value as DurationFilter)
             }
@@ -447,60 +436,94 @@ export function SampleMarketPanel() {
               {(option) => <option value={option.id}>{i18n.t(option.key)}</option>}
             </For>
           </select>
-        </label>
-        <label class="sample-market-check">
-          <input
-            type="checkbox"
-            checked={commercial()}
-            aria-label={i18n.t("sample.commercialOk")}
-            onChange={(event) => changeCommercial(event.currentTarget.checked)}
-          />
-          <span>{i18n.t("sample.commercialOk")}</span>
-        </label>
-      </div>
+          <label class="sample-market-check">
+            <input
+              type="checkbox"
+              checked={commercial()}
+              aria-label={i18n.t("sample.commercialOk")}
+              onChange={(event) => changeCommercial(event.currentTarget.checked)}
+            />
+            <span>{i18n.t("sample.commercialOk")}</span>
+          </label>
+        </div>
 
-      <div class="sample-market-chips" role="group" aria-label={i18n.t("sample.markets")}>
-        <Show when={providersLoading() && providers().length === 0}>
-          <span class="sample-market-chip sample-market-chip-loading" role="status">
-            {i18n.t("sample.loadingMarkets")}
-          </span>
-        </Show>
-        <For each={providers()}>
-          {(provider) => (
-            <button
-              type="button"
-              class="sample-market-chip sample-market-provider"
-              classList={{
-                on: selectedProviders().includes(provider.id),
-                unavailable: !provider.available,
-              }}
-              data-provider={provider.id}
-              aria-pressed={selectedProviders().includes(provider.id)}
-              onClick={() => toggleProvider(provider.id)}
-              {...useTooltip(() =>
-                provider.available
-                  ? provider.license
-                  : `${i18n.t("sample.unavailable")}: ${provider.reason ?? ""}`,
+        {/* Kinds and markets travel together; a group that does not fit
+            scrolls sideways rather than adding a line. */}
+        <div class="sample-market-markets">
+          <div
+            class="sample-market-chips sample-market-kinds"
+            role="group"
+            aria-label={i18n.t("sample.kinds")}
+          >
+            <For each={KIND_CHIPS}>
+              {(chip) => (
+                <button
+                  type="button"
+                  class="sample-market-chip"
+                  classList={{ on: kind() === chip.id }}
+                  aria-pressed={kind() === chip.id}
+                  onClick={() => changeKind(chip.id)}
+                >
+                  {i18n.t(chip.key)}
+                </button>
               )}
-            >
-              <span
-                class="sample-market-dot"
-                classList={{ off: !provider.available }}
-                aria-hidden="true"
-              />
-              {provider.label}
-            </button>
-          )}
-        </For>
-      </div>
+            </For>
+          </div>
 
-      <button
-        type="button"
-        class="toolbar-btn text-btn"
-        onClick={(event) => preferencesUi.openOn("sources", undefined, event.currentTarget)}
-      >
-        {i18n.t("preferences.page.sources")}
-      </button>
+          <div
+            class="sample-market-chips sample-market-providers"
+            role="group"
+            aria-label={i18n.t("sample.markets")}
+          >
+            <Show when={providersLoading() && providers().length === 0}>
+              <span class="sample-market-chip sample-market-chip-loading" role="status">
+                {i18n.t("sample.loadingMarkets")}
+              </span>
+            </Show>
+            <For each={providers()}>
+              {(provider) => (
+                <button
+                  type="button"
+                  class="sample-market-chip sample-market-provider"
+                  classList={{
+                    on: selectedProviders().includes(provider.id),
+                    unavailable: !provider.available,
+                  }}
+                  data-provider={provider.id}
+                  aria-pressed={selectedProviders().includes(provider.id)}
+                  onClick={() => toggleProvider(provider.id)}
+                  {...useTooltip(() =>
+                    provider.available
+                      ? provider.license
+                      : `${i18n.t("sample.unavailable")}: ${provider.reason ?? ""}`,
+                  )}
+                >
+                  <span
+                    class="sample-market-dot"
+                    classList={{ off: !provider.available }}
+                    aria-hidden="true"
+                  />
+                  {provider.label}
+                </button>
+              )}
+            </For>
+          </div>
+          <button
+            type="button"
+            class="toolbar-btn sample-market-sources"
+            aria-label={i18n.t("preferences.page.sources")}
+            {...useTooltip(() => i18n.t("preferences.page.sources"))}
+            onClick={(event) => preferencesUi.openOn("sources", undefined, event.currentTarget)}
+          >
+            <svg width="12" height="12" viewBox="0 0 16 16" aria-hidden="true">
+              <path
+                fill="currentColor"
+                d="M9.4 1l.3 1.9c.5.2 1 .5 1.4.8l1.8-.7 1.4 2.4-1.5 1.2a5 5 0 010 1.7l1.5 1.2-1.4 2.4-1.8-.7c-.4.3-.9.6-1.4.8L9.4 15H6.6l-.3-1.9c-.5-.2-1-.5-1.4-.8l-1.8.7-1.4-2.4 1.5-1.2a5 5 0 010-1.7L1.7 6.5l1.4-2.4 1.8.7c.4-.3.9-.6 1.4-.8L6.6 1h2.8zM8 5.5a2.5 2.5 0 100 5 2.5 2.5 0 000-5z"
+              />
+            </svg>
+          </button>
+        </div>
+      </div>
 
       <Show when={keyedProvider()}>
         {(provider) => (
@@ -546,17 +569,17 @@ export function SampleMarketPanel() {
                   title={item.path}
                   onClick={() => selectLocal(item)}
                 >
-                  <div class="sample-market-row-main">
-                    <span class="sample-market-name">{item.name}</span>
-                    <span class="sample-market-meta">
-                      <span class="sample-market-tag">{item.format.toUpperCase()}</span>
-                      <span>{kindLabel(item.kind)}</span>
-                      <Show when={item.duration_seconds !== null}>
-                        <span>{durationLabel(item.duration_seconds)}</span>
-                      </Show>
-                    </span>
-                    <span class="sample-market-credit">{item.relative}</span>
-                  </div>
+                  <span class="sample-market-name">{item.name}</span>
+                  <span class="sample-market-meta">
+                    <span class="sample-market-tag">{item.format.toUpperCase()}</span>
+                    <span>{kindLabel(item.kind)}</span>
+                    <Show when={item.duration_seconds !== null}>
+                      <span class="sample-market-duration">
+                        {durationLabel(item.duration_seconds)}
+                      </span>
+                    </Show>
+                  </span>
+                  <span class="sample-market-credit">{item.relative}</span>
                   <span
                     class="sample-market-license ok"
                     {...useTooltip(() => i18n.t("sample.local.badgeHint"))}
@@ -566,7 +589,7 @@ export function SampleMarketPanel() {
                   <div class="sample-market-actions">
                     <button
                       type="button"
-                      class="toolbar-btn"
+                      class="toolbar-btn sample-market-play"
                       aria-label={localPreviewLabel(item)}
                       {...useTooltip(() => localPreviewLabel(item))}
                       onClick={(event) => {
@@ -578,7 +601,7 @@ export function SampleMarketPanel() {
                     </button>
                     <button
                       type="button"
-                      class="toolbar-btn text-btn"
+                      class="toolbar-btn text-btn sample-market-add"
                       disabled={adding() === localKey(item)}
                       onClick={(event) => {
                         event.stopPropagation();
@@ -607,9 +630,9 @@ export function SampleMarketPanel() {
           <div class="sample-market-notices" role="status">
             <For each={notices()}>
               {(notice) => (
-                <div class="sample-market-notice" title={notice.detail ?? undefined}>
+                <span class="sample-market-notice" title={notice.detail ?? undefined}>
                   {notice.text}
-                </div>
+                </span>
               )}
             </For>
           </div>
@@ -665,17 +688,17 @@ export function SampleMarketPanel() {
                   });
                 }}
               >
-                <div class="sample-market-row-main">
-                  <span class="sample-market-name">{item.name}</span>
-                  <span class="sample-market-meta">
-                    <span class="sample-market-tag">{item.provider_name ?? item.provider}</span>
-                    <span>{kindLabel(item.kind)}</span>
-                    <span>{durationLabel(item.duration_seconds)}</span>
+                <span class="sample-market-name" title={item.name}>{item.name}</span>
+                <span class="sample-market-meta">
+                  <span class="sample-market-tag">{item.provider_name ?? item.provider}</span>
+                  <span>{kindLabel(item.kind)}</span>
+                  <span class="sample-market-duration">
+                    {durationLabel(item.duration_seconds)}
                   </span>
-                  <span class="sample-market-credit" title={item.attribution}>
-                    {item.attribution}
-                  </span>
-                </div>
+                </span>
+                <span class="sample-market-credit" title={item.attribution}>
+                  {item.attribution}
+                </span>
                 <span
                   class="sample-market-license"
                   classList={{ ok: item.license_ok, notice: !item.license_ok }}
@@ -686,7 +709,7 @@ export function SampleMarketPanel() {
                 <div class="sample-market-actions">
                   <button
                     type="button"
-                    class="toolbar-btn"
+                    class="toolbar-btn sample-market-play"
                     aria-label={previewLabel(item)}
                     {...useTooltip(() => previewLabel(item))}
                     onClick={(event) => {
@@ -698,7 +721,7 @@ export function SampleMarketPanel() {
                   </button>
                   <button
                     type="button"
-                    class="toolbar-btn text-btn"
+                    class="toolbar-btn text-btn sample-market-add"
                     disabled={adding() === item.id || isPreviewOnly(item)}
                     onClick={(event) => {
                       event.stopPropagation();
@@ -732,20 +755,22 @@ export function SampleMarketPanel() {
             </div>
           </Show>
         </Show>
-      </div>
 
-      <Show when={pager.cursor() !== null}>
-        <div class="sample-market-more">
-          <button
-            type="button"
-            class="toolbar-btn text-btn"
-            disabled={pager.loadingMore()}
-            onClick={() => void loadMore()}
-          >
-            {i18n.t(pager.loadingMore() ? "sample.loadingMore" : "sample.loadMore")}
-          </button>
-        </div>
-      </Show>
+        {/* The continuation is the list's last row, not a footer that takes
+            a line from the results whenever a cursor is open. */}
+        <Show when={pager.cursor() !== null}>
+          <div class="sample-market-more">
+            <button
+              type="button"
+              class="toolbar-btn text-btn"
+              disabled={pager.loadingMore()}
+              onClick={() => void loadMore()}
+            >
+              {i18n.t(pager.loadingMore() ? "sample.loadingMore" : "sample.loadMore")}
+            </button>
+          </div>
+        </Show>
+      </div>
 
       <Show when={licencePrompt()}>
         {(prompt) => (
