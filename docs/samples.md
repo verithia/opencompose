@@ -432,9 +432,10 @@ the **Browse** overlay shows the same panel.
 
 The bottom panel is short, so the panel spends its height on results: the
 search, duration, commercial filter, kind chips and market chips share one
-toolbar strip that wraps to a second line only when it must, and every result
-is a single line. A narrow panel drops the duration and the commercial label
-before it lets the toolbar or a row scroll sideways.
+toolbar strip that wraps to a second line only when it must, every result is
+a single line, and a wide panel puts two results on each line. A narrow panel
+returns to one column and drops the duration and the commercial label before
+it lets the toolbar or a row scroll sideways.
 
 - A search field and a **Search** button. Enter also searches. One search
   asks your sound folders and the included markets.
