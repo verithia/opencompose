@@ -9,6 +9,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, waitFor, within } from "@solidjs/testing-library";
 import { invokeMock, makeSnapshot, makeTrack, TRANSPORT_PLAYING, TRANSPORT_STOPPED } from "../setup";
 import { store } from "../../stores/project";
+import { preferencesUi } from "../../stores/preferencesUi";
 import { SampleMarketPanel } from "../../components/SampleMarketPanel";
 import { ContextMenuLayer } from "../../components/ContextMenu";
 
@@ -286,9 +287,12 @@ describe("SampleMarketPanel", () => {
     );
     const { container } = render(() => <SampleMarketPanel />);
     expect(container.querySelector(".sample-market-search")).not.toBeNull();
+    // The kinds are chips of their own; the market group still holds only the
+    // placeholder, so no market chip can be pressed yet.
+    expect(container.querySelectorAll(".sample-market-kinds .sample-market-chip")).toHaveLength(6);
     expect(
-      container.querySelectorAll(".sample-market-chip:not(.sample-market-chip-loading)"),
-    ).toHaveLength(6);
+      container.querySelectorAll(".sample-market-providers .sample-market-chip:not(.sample-market-chip-loading)"),
+    ).toHaveLength(0);
     expect(container.querySelector(".sample-market-chip-loading")?.textContent).toContain(
       "Loading markets",
     );
@@ -371,6 +375,54 @@ describe("SampleMarketPanel", () => {
     expect(getByText("Snare hit 01")).toBeInTheDocument();
     expect(container.querySelectorAll(".sample-market-row")).toHaveLength(3);
     expect(container.textContent).not.toContain("Load more");
+  });
+
+  it("keeps Load more inside the scrolling list instead of a footer row", async () => {
+    // The panel's height belongs to the results: a continuation is the last
+    // row of the list, so an open cursor never shortens the visible rows.
+    const backend = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation(async (cmd, args) => {
+      if (cmd === "sample_market_search") return PAGED_RESULT;
+      return backend(cmd, args);
+    });
+    const { container, getByText } = render(() => <SampleMarketPanel />);
+    await waitFor(() => expect(getByText("Openverse")).toBeInTheDocument());
+    await search(container);
+
+    const more = container.querySelector(".sample-market-more");
+    expect(more).not.toBeNull();
+    expect(more!.parentElement?.classList.contains("sample-market-list")).toBe(true);
+  });
+
+  it("keeps the toolbar to one strip of controls", async () => {
+    // Search, duration, licence, kinds and markets share one strip: the bottom
+    // panel is short, so each extra toolbar row costs a result.
+    const { container, getByRole } = render(() => <SampleMarketPanel />);
+    await waitFor(() => expect(getByRole("button", { name: "Openverse" })).toBeInTheDocument());
+
+    const toolbar = container.querySelector(".sample-market-toolbar");
+    expect(toolbar).not.toBeNull();
+    expect(toolbar!.querySelector(".sample-market-header")).not.toBeNull();
+    expect(toolbar!.querySelector(".sample-market-filters")).not.toBeNull();
+    // Kinds and markets wrap together, so a narrow panel loses no extra line.
+    const markets = toolbar!.querySelector(".sample-market-markets");
+    expect(markets?.querySelector(".sample-market-kinds")).not.toBeNull();
+    expect(markets?.querySelector(".sample-market-providers")).not.toBeNull();
+    expect(markets?.querySelector(".sample-market-sources")).not.toBeNull();
+  });
+
+  it("opens External Sources from the market strip", async () => {
+    preferencesUi.close();
+    const { getByRole } = render(() => <SampleMarketPanel />);
+    await waitFor(() => expect(getByRole("button", { name: "Openverse" })).toBeInTheDocument());
+
+    // An icon button beside the markets it configures, named for assistive tech.
+    const sources = getByRole("button", { name: "External Sources" });
+    expect(sources.textContent).toBe("");
+    fireEvent.click(sources);
+    expect(preferencesUi.open()).toBe(true);
+    expect(preferencesUi.page()).toBe("sources");
+    preferencesUi.close();
   });
 
   it("renders per-market notices from typed error kinds", async () => {
