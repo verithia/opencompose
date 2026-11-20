@@ -552,6 +552,8 @@ export function SampleMarketPanel() {
         )}
       </Show>
 
+      {/* The list is a two-column grid on a wide panel. The bottom panel is
+          wider than it is tall, so two results per line double what fits. */}
       <div class="sample-market-list">
         <Show when={searched()}>
           <section
@@ -560,68 +562,70 @@ export function SampleMarketPanel() {
             aria-busy={localLoading()}
           >
             <div class="sample-market-section-title">{i18n.t("sample.local.title")}</div>
-            <For each={localItems()}>
-              {(item) => (
-                <div
-                  class="sample-market-row sample-market-row-local"
-                  classList={{ selected: selectedId() === localKey(item) }}
-                  data-path={item.path}
-                  title={item.path}
-                  onClick={() => selectLocal(item)}
-                >
-                  <span class="sample-market-name">{item.name}</span>
-                  <span class="sample-market-meta">
-                    <span class="sample-market-tag">{item.format.toUpperCase()}</span>
-                    <span>{kindLabel(item.kind)}</span>
-                    <Show when={item.duration_seconds !== null}>
-                      <span class="sample-market-duration">
-                        {durationLabel(item.duration_seconds)}
-                      </span>
-                    </Show>
-                  </span>
-                  <span class="sample-market-credit">{item.relative}</span>
-                  <span
-                    class="sample-market-license ok"
-                    {...useTooltip(() => i18n.t("sample.local.badgeHint"))}
+            <div class="sample-market-grid">
+              <For each={localItems()}>
+                {(item) => (
+                  <div
+                    class="sample-market-row sample-market-row-local"
+                    classList={{ selected: selectedId() === localKey(item) }}
+                    data-path={item.path}
+                    title={item.path}
+                    onClick={() => selectLocal(item)}
                   >
-                    {i18n.t("sample.local.badge")}
-                  </span>
-                  <div class="sample-market-actions">
-                    <button
-                      type="button"
-                      class="toolbar-btn sample-market-play"
-                      aria-label={localPreviewLabel(item)}
-                      {...useTooltip(() => localPreviewLabel(item))}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        selectLocal(item);
-                      }}
+                    <span class="sample-market-name">{item.name}</span>
+                    <span class="sample-market-meta">
+                      <span class="sample-market-tag">{item.format.toUpperCase()}</span>
+                      <span>{kindLabel(item.kind)}</span>
+                      <Show when={item.duration_seconds !== null}>
+                        <span class="sample-market-duration">
+                          {durationLabel(item.duration_seconds)}
+                        </span>
+                      </Show>
+                    </span>
+                    <span class="sample-market-credit">{item.relative}</span>
+                    <span
+                      class="sample-market-license ok"
+                      {...useTooltip(() => i18n.t("sample.local.badgeHint"))}
                     >
-                      {localAction(item) === "pause" ? "Ⅱ" : "▶"}
-                    </button>
-                    <button
-                      type="button"
-                      class="toolbar-btn text-btn sample-market-add"
-                      disabled={adding() === localKey(item)}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        void addLocal(item);
-                      }}
-                    >
-                      {i18n.t(adding() === localKey(item) ? "sample.adding" : "sample.add")}
-                    </button>
+                      {i18n.t("sample.local.badge")}
+                    </span>
+                    <div class="sample-market-actions">
+                      <button
+                        type="button"
+                        class="toolbar-btn sample-market-play"
+                        aria-label={localPreviewLabel(item)}
+                        {...useTooltip(() => localPreviewLabel(item))}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          selectLocal(item);
+                        }}
+                      >
+                        {localAction(item) === "pause" ? "Ⅱ" : "▶"}
+                      </button>
+                      <button
+                        type="button"
+                        class="toolbar-btn text-btn sample-market-add"
+                        disabled={adding() === localKey(item)}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void addLocal(item);
+                        }}
+                      >
+                        {i18n.t(adding() === localKey(item) ? "sample.adding" : "sample.add")}
+                      </button>
+                    </div>
                   </div>
+                )}
+              </For>
+              <Show when={localItems().length === 0}>
+                <div class="sample-market-empty" role="status">{localEmptyText()}</div>
+              </Show>
+              <Show when={localTruncated()}>
+                <div class="sample-market-empty">
+                  {i18n.t("sample.local.truncated", { count: localItems().length })}
                 </div>
-              )}
-            </For>
-            <Show when={localItems().length === 0}>
-              <div class="sample-market-empty" role="status">{localEmptyText()}</div>
-            </Show>
-            <Show when={localTruncated()}>
-              <div class="sample-market-empty">
-                {i18n.t("sample.local.truncated", { count: localItems().length })}
-              </div>
-            </Show>
+              </Show>
+            </div>
           </section>
           <div class="sample-market-section-title">{i18n.t("sample.online.title")}</div>
         </Show>
@@ -643,117 +647,121 @@ export function SampleMarketPanel() {
             <div class="sample-market-empty">
               {i18n.t(loading() ? "sample.searching" : "sample.loadingMarkets")}
             </div>
-            <For each={SKELETON_ROWS}>
-              {() => (
-                <div class="sample-market-row sample-market-row-skeleton" aria-hidden="true">
-                  <span class="skeleton-line skeleton-line-title" />
-                  <span class="skeleton-line skeleton-line-meta" />
-                </div>
-              )}
-            </For>
+            <div class="sample-market-grid">
+              <For each={SKELETON_ROWS}>
+                {() => (
+                  <div class="sample-market-row sample-market-row-skeleton" aria-hidden="true">
+                    <span class="skeleton-line skeleton-line-title" />
+                    <span class="skeleton-line skeleton-line-meta" />
+                  </div>
+                )}
+              </For>
+            </div>
           </div>
         </Show>
         <Show when={!pending()}>
-          <For each={items()}>
-            {(item) => (
-              <div
-                class="sample-market-row"
-                classList={{ selected: selectedId() === itemKey(item) }}
-                data-provider={item.provider}
-                onClick={() => void selectItem(item)}
-                onContextMenu={(event) => {
-                  event.preventDefault();
-                  openContextMenu({
-                    x: event.clientX,
-                    y: event.clientY,
-                    items: [
-                      { type: "heading", label: item.name },
-                      {
-                        label: i18n.t("samples.copyCredit"),
-                        disabled: !item.attribution,
-                        onSelect: () => void copyText(item.attribution),
-                      },
-                      {
-                        label: i18n.t("samples.copyLink"),
-                        disabled: !item.source_url,
-                        onSelect: () => void copyText(item.source_url),
-                      },
-                      { type: "separator" },
-                      {
-                        label: i18n.t("samples.copyDownload"),
-                        disabled: !item.download_url || isPreviewOnly(item),
-                        onSelect: () => void copyText(item.download_url),
-                      },
-                    ],
-                  });
-                }}
-              >
-                <span class="sample-market-name" title={item.name}>{item.name}</span>
-                <span class="sample-market-meta">
-                  <span class="sample-market-tag">{item.provider_name ?? item.provider}</span>
-                  <span>{kindLabel(item.kind)}</span>
-                  <span class="sample-market-duration">
-                    {durationLabel(item.duration_seconds)}
-                  </span>
-                </span>
-                <span class="sample-market-credit" title={item.attribution}>
-                  {item.attribution}
-                </span>
-                <span
-                  class="sample-market-license"
-                  classList={{ ok: item.license_ok, notice: !item.license_ok }}
-                  title={item.license.url ?? item.license.name}
+          <div class="sample-market-grid">
+            <For each={items()}>
+              {(item) => (
+                <div
+                  class="sample-market-row"
+                  classList={{ selected: selectedId() === itemKey(item) }}
+                  data-provider={item.provider}
+                  onClick={() => void selectItem(item)}
+                  onContextMenu={(event) => {
+                    event.preventDefault();
+                    openContextMenu({
+                      x: event.clientX,
+                      y: event.clientY,
+                      items: [
+                        { type: "heading", label: item.name },
+                        {
+                          label: i18n.t("samples.copyCredit"),
+                          disabled: !item.attribution,
+                          onSelect: () => void copyText(item.attribution),
+                        },
+                        {
+                          label: i18n.t("samples.copyLink"),
+                          disabled: !item.source_url,
+                          onSelect: () => void copyText(item.source_url),
+                        },
+                        { type: "separator" },
+                        {
+                          label: i18n.t("samples.copyDownload"),
+                          disabled: !item.download_url || isPreviewOnly(item),
+                          onSelect: () => void copyText(item.download_url),
+                        },
+                      ],
+                    });
+                  }}
                 >
-                  {item.license.name}
-                </span>
-                <div class="sample-market-actions">
-                  <button
-                    type="button"
-                    class="toolbar-btn sample-market-play"
-                    aria-label={previewLabel(item)}
-                    {...useTooltip(() => previewLabel(item))}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      void selectItem(item);
-                    }}
+                  <span class="sample-market-name" title={item.name}>{item.name}</span>
+                  <span class="sample-market-meta">
+                    <span class="sample-market-tag">{item.provider_name ?? item.provider}</span>
+                    <span>{kindLabel(item.kind)}</span>
+                    <span class="sample-market-duration">
+                      {durationLabel(item.duration_seconds)}
+                    </span>
+                  </span>
+                  <span class="sample-market-credit" title={item.attribution}>
+                    {item.attribution}
+                  </span>
+                  <span
+                    class="sample-market-license"
+                    classList={{ ok: item.license_ok, notice: !item.license_ok }}
+                    title={item.license.url ?? item.license.name}
                   >
-                    {action(item) === "pause" ? "Ⅱ" : "▶"}
-                  </button>
-                  <button
-                    type="button"
-                    class="toolbar-btn text-btn sample-market-add"
-                    disabled={adding() === item.id || isPreviewOnly(item)}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      void addItem(item);
-                    }}
-                    {...useTooltip(() =>
-                      isPreviewOnly(item)
+                    {item.license.name}
+                  </span>
+                  <div class="sample-market-actions">
+                    <button
+                      type="button"
+                      class="toolbar-btn sample-market-play"
+                      aria-label={previewLabel(item)}
+                      {...useTooltip(() => previewLabel(item))}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void selectItem(item);
+                      }}
+                    >
+                      {action(item) === "pause" ? "Ⅱ" : "▶"}
+                    </button>
+                    <button
+                      type="button"
+                      class="toolbar-btn text-btn sample-market-add"
+                      disabled={adding() === item.id || isPreviewOnly(item)}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void addItem(item);
+                      }}
+                      {...useTooltip(() =>
+                        isPreviewOnly(item)
+                          ? i18n.t("sources.previewOnly")
+                          : item.license_ok
+                          ? i18n.t("sample.licenseOk")
+                          : i18n.t("sample.licenseNoticeHint"),
+                      )}
+                    >
+                      {isPreviewOnly(item)
                         ? i18n.t("sources.previewOnly")
-                        : item.license_ok
-                        ? i18n.t("sample.licenseOk")
-                        : i18n.t("sample.licenseNoticeHint"),
-                    )}
-                  >
-                    {isPreviewOnly(item)
-                      ? i18n.t("sources.previewOnly")
-                      : i18n.t(adding() === item.id ? "sample.adding" : "sample.add")}
-                  </button>
+                        : i18n.t(adding() === item.id ? "sample.adding" : "sample.add")}
+                    </button>
+                  </div>
                 </div>
-              </div>
-            )}
-          </For>
-          <Show when={items().length === 0}>
-            <div class="sample-market-empty">
-              {i18n.t(
-                !searched()
-                  ? "sample.empty"
-                  : selectedProviders().length === 0
-                  ? "sample.marketHint"
-                  : "sample.noResults",
               )}
-            </div>
-          </Show>
+            </For>
+            <Show when={items().length === 0}>
+              <div class="sample-market-empty">
+                {i18n.t(
+                  !searched()
+                    ? "sample.empty"
+                    : selectedProviders().length === 0
+                    ? "sample.marketHint"
+                    : "sample.noResults",
+                )}
+              </div>
+            </Show>
+          </div>
         </Show>
 
         {/* The continuation is the list's last row, not a footer that takes

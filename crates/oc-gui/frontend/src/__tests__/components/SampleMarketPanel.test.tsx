@@ -394,6 +394,20 @@ describe("SampleMarketPanel", () => {
     expect(more!.parentElement?.classList.contains("sample-market-list")).toBe(true);
   });
 
+  it("lays the rows out in the shared result grid", async () => {
+    // One grid per section, so local and market rows wrap two to a line on a
+    // wide panel without a section's rows spilling into the other's.
+    const { container, getByText } = render(() => <SampleMarketPanel />);
+    await waitFor(() => expect(getByText("Openverse")).toBeInTheDocument());
+    await search(container);
+
+    const grids = [...container.querySelectorAll(".sample-market-grid")];
+    expect(grids).toHaveLength(2);
+    for (const row of container.querySelectorAll(".sample-market-row")) {
+      expect(row.parentElement?.classList.contains("sample-market-grid")).toBe(true);
+    }
+  });
+
   it("keeps the toolbar to one strip of controls", async () => {
     // Search, duration, licence, kinds and markets share one strip: the bottom
     // panel is short, so each extra toolbar row costs a result.

@@ -92,6 +92,17 @@ const MARKET_ITEMS = [
   },
 ];
 
+const EXTRA_MARKET_ITEMS = Array.from({ length: 4 }, (_, index) => ({
+  ...MARKET_ITEMS[index % MARKET_ITEMS.length],
+  id: `archive:snare-${index}`,
+  provider: "internet-archive",
+  provider_name: "Internet Archive",
+  name: `Archive snare ${index + 1}`,
+  attribution: `Creator ${index + 1} — CC0 1.0 — https://example.test/a${index}`,
+}));
+
+const ROWS = [...MARKET_ITEMS, ...EXTRA_MARKET_ITEMS];
+
 async function fixtureHtml(width: number, height: number): Promise<string> {
   const { container, unmount } = render(() => <SampleMarketPanel />);
   // The search fans out to the markets the provider list enables, so wait for
@@ -105,7 +116,7 @@ async function fixtureHtml(width: number, height: number): Promise<string> {
   await waitFor(() =>
     expect(
       container.querySelectorAll(".sample-market-row:not(.sample-market-row-skeleton)").length,
-    ).toBeGreaterThanOrEqual(9),
+    ).toBeGreaterThanOrEqual(14),
   );
   const markup = container.innerHTML;
   unmount();
@@ -127,6 +138,8 @@ interface PanelReport {
   panelClientWidth: number;
   rowHeights: number[];
   visibleRows: number;
+  columns: number;
+  firstLineTops: number[];
   durationDisplay: string;
   commercialLabelDisplay: string;
 }
@@ -151,10 +164,10 @@ beforeAll(async () => {
         limit: 20,
         providers: PROVIDERS,
         pages: [],
-        count: MARKET_ITEMS.length,
+        count: ROWS.length,
         next_offset: null,
         cursor: "next-page",
-        items: MARKET_ITEMS,
+        items: ROWS,
       };
     }
     return makeSnapshot();
@@ -178,6 +191,7 @@ async function report(width: number, height: number): Promise<PanelReport> {
       const rows = [...list.querySelectorAll<HTMLElement>(
         ".sample-market-row:not(.sample-market-row-skeleton)",
       )];
+      const grid = document.querySelector(".sample-market-grid") as HTMLElement;
       const duration = document.querySelector(".sample-market-meta .sample-market-duration") as HTMLElement;
       const commercial = document.querySelector(".sample-market-check > span") as HTMLElement;
       return {
@@ -190,6 +204,8 @@ async function report(width: number, height: number): Promise<PanelReport> {
           const box = row.getBoundingClientRect();
           return box.top >= listBox.top - 1 && box.bottom <= listBox.bottom + 1;
         }).length,
+        columns: getComputedStyle(grid).gridTemplateColumns.split(" ").length,
+        firstLineTops: rows.slice(0, 2).map((row) => Math.round(row.getBoundingClientRect().top)),
         durationDisplay: getComputedStyle(duration).display,
         commercialLabelDisplay: getComputedStyle(commercial).display,
       };
@@ -205,9 +221,12 @@ describe("the samples panel in a short bottom panel", () => {
     // Search, duration, licence, kinds and markets share one toolbar line.
     expect(panel.toolbarHeight).toBeLessThanOrEqual(36);
     expect(panel.listHeight).toBeGreaterThanOrEqual(260);
-    // Every result is a single line, and most of them fit without scrolling.
+    // Two results share each line, every result is one line, and the short
+    // panel still shows more than a dozen of them.
+    expect(panel.columns).toBe(2);
+    expect(panel.firstLineTops[0]).toBe(panel.firstLineTops[1]);
     expect(Math.max(...panel.rowHeights)).toBeLessThanOrEqual(26);
-    expect(panel.visibleRows).toBeGreaterThanOrEqual(8);
+    expect(panel.visibleRows).toBeGreaterThanOrEqual(12);
     expect(panel.panelScrollWidth).toBeLessThanOrEqual(panel.panelClientWidth + 1);
     expect(panel.durationDisplay).not.toBe("none");
     expect(panel.commercialLabelDisplay).not.toBe("none");
@@ -219,6 +238,8 @@ describe("the samples panel in a short bottom panel", () => {
     expect(panel.toolbarHeight).toBeGreaterThan(36);
     expect(panel.toolbarHeight).toBeLessThanOrEqual(70);
     expect(panel.listHeight).toBeGreaterThanOrEqual(230);
+    // One column at this width: a 300 px cell cannot hold a result.
+    expect(panel.columns).toBe(1);
     expect(Math.max(...panel.rowHeights)).toBeLessThanOrEqual(26);
     expect(panel.visibleRows).toBeGreaterThanOrEqual(6);
     // A narrow panel drops detail text rather than scrolling sideways or

@@ -203,41 +203,11 @@
 
 /* Half-width panels (the resource browser, a narrow sidebar) keep only the
    controls whose meaning survives without a label. */
-@container (max-width: 760px) {
-  .sample-market-check > span {
-    display: none;
-  }
+/* A cell narrower than this cannot show the credit without starving the
+   name, so the credit goes, and the name and details split the width. */
 
-  .sample-market-row {
-    --sample-columns: minmax(0, 1.5fr) minmax(0, 1.3fr) minmax(0, 1.2fr) 5.5rem auto;
-  }
-
-  /* The duration is the first detail to go: a half-width panel has no room
-     for the whole detail group, and a clipped time reads as broken. */
-  .sample-market-meta .sample-market-duration {
-    display: none;
-  }
-}
-
-@container (max-width: 460px) {
-  .sample-market-row {
-    --sample-columns: minmax(0, 3fr) minmax(0, 2fr) 5rem auto;
-  }
-
-  .sample-market-credit {
-    display: none;
-  }
-}
-
-@container (max-width: 330px) {
-  .sample-market-row {
-    --sample-columns: minmax(0, 1fr) 4.5rem auto;
-  }
-
-  .sample-market-meta {
-    display: none;
-  }
-}
+/* Below a comfortable cell width one column is the tighter choice; the credit
+   comes back because the row is full width again. */
 
 .sample-market-notices {
   display: flex;
@@ -313,14 +283,24 @@
   padding: 4px 8px;
 }
 
-/* One line per result: name, details, credit, licence, actions. Every row
+/* The bottom panel is wider than it is tall, so results sit two to a line.
+   One line per result: name, details, credit, licence, actions. Every row
    uses the same column template, so the columns line up down the list. */
+.sample-market-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.sample-market-grid > .sample-market-empty {
+  grid-column: 1 / -1;
+}
+
 .sample-market-row {
-  --sample-columns: minmax(0, 1.5fr) minmax(0, 1.1fr) minmax(0, 1.9fr) 6rem auto;
+  --sample-columns: minmax(0, 1.2fr) minmax(0, 1.15fr) minmax(0, 0.9fr) auto auto;
   display: grid;
   grid-template-columns: var(--sample-columns);
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   min-height: 22px;
   padding: 1px 8px;
   border-bottom: 1px solid var(--border);
@@ -374,26 +354,23 @@
   white-space: nowrap;
 }
 
+/* One ellipsis for the whole detail line; a token-by-token split reads as
+   three separate abbreviations. */
 .sample-market-meta {
-  display: flex;
-  align-items: center;
-  gap: 5px;
   min-width: 0;
   overflow: hidden;
   color: var(--text-muted);
   font-size: var(--font-size-xs);
   white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .sample-market-tag {
   color: var(--text-secondary);
 }
 
-/* Each detail is its own flex item, so it needs its own ellipsis. */
 .sample-market-meta > span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  margin-right: 5px;
 }
 
 .sample-market-credit {
@@ -407,9 +384,6 @@
 
 .sample-market-license {
   justify-self: end;
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
   padding: 0 5px;
   border: 1px solid var(--border);
   border-radius: 7px;
@@ -503,4 +477,64 @@
   display: flex;
   gap: 6px;
   justify-content: flex-end;
+}
+
+@container (max-width: 1080px) {
+  .sample-market-row {
+    --sample-columns: minmax(0, 1.4fr) minmax(0, 1fr) auto auto;
+  }
+
+  .sample-market-credit {
+    display: none;
+  }
+}
+
+@container (max-width: 960px) {
+  .sample-market-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .sample-market-row {
+    --sample-columns: minmax(0, 1.5fr) minmax(0, 1.1fr) minmax(0, 1.9fr) auto auto;
+  }
+
+  .sample-market-credit {
+    display: block;
+  }
+}
+
+@container (max-width: 760px) {
+  .sample-market-check > span {
+    display: none;
+  }
+
+  .sample-market-row {
+    --sample-columns: minmax(0, 1.5fr) minmax(0, 1.3fr) minmax(0, 1.2fr) auto auto;
+  }
+
+  /* The duration is the first detail to go: a half-width panel has no room
+     for the whole detail group, and a clipped time reads as broken. */
+  .sample-market-meta .sample-market-duration {
+    display: none;
+  }
+}
+
+@container (max-width: 460px) {
+  .sample-market-row {
+    --sample-columns: minmax(0, 3fr) minmax(0, 2fr) auto auto;
+  }
+
+  .sample-market-credit {
+    display: none;
+  }
+}
+
+@container (max-width: 330px) {
+  .sample-market-row {
+    --sample-columns: minmax(0, 1fr) auto auto;
+  }
+
+  .sample-market-meta {
+    display: none;
+  }
 }
