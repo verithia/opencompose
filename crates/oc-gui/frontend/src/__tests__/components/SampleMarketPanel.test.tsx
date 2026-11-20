@@ -138,6 +138,30 @@ const EXTRA_ITEM = {
   download_url: "https://example.test/extra-clap.wav",
 };
 
+const LOCAL_ITEMS = [
+  {
+    path: "/Users/me/Music/Samples/Drums/Snare Tight.wav",
+    name: "Snare Tight",
+    folder: "/Users/me/Music/Samples",
+    relative: "Drums/Snare Tight.wav",
+    format: "wav",
+    kind: "drum_one_shot",
+    duration_seconds: null,
+  },
+  {
+    path: "/Users/me/Music/Samples/Loops/snare roll.aif",
+    name: "snare roll",
+    folder: "/Users/me/Music/Samples",
+    relative: "Loops/snare roll.aif",
+    format: "aif",
+    kind: "loop",
+    duration_seconds: 1.5,
+  },
+];
+
+const LOCAL_RESULT = { items: LOCAL_ITEMS, truncated: false, folders: 3 };
+const NO_LOCAL = { items: [], truncated: false, folders: 3 };
+
 const PAGED_RESULT = { ...SEARCH_RESULT, cursor: "next-page" };
 const MORE_RESULT = {
   ...SEARCH_RESULT,
@@ -195,6 +219,7 @@ beforeEach(async () => {
   invokeMock.mockImplementation(async (cmd: string) => {
     if (cmd === "sample_market_providers") return PROVIDERS;
     if (cmd === "sample_market_search") return SEARCH_RESULT;
+    if (cmd === "local_sample_search") return NO_LOCAL;
     if (cmd === "sample_preview") {
       return { status: "ok", provider: "openverse", id: "openverse:snare", name: "Snare hit 01", seconds: 0.42 };
     }
@@ -541,6 +566,165 @@ describe("SampleMarketPanel", () => {
         provider: "freesound",
         key: "KEY",
       }),
+    );
+  });
+});
+
+describe("local samples", () => {
+  function withLocal(result: unknown) {
+    const backend = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation(async (cmd, args) => {
+      if (cmd === "local_sample_search") return result;
+      if (cmd === "local_sample_preview") {
+        return { status: "ok", provider: "local", id: LOCAL_ITEMS[0].path, name: "Snare Tight", seconds: 0.4 };
+      }
+      if (cmd === "local_sample_add") {
+        return {
+          status: "ok",
+          track: "Samples",
+          file: "/tmp/project/media/local-samples/Snare-Tight.wav",
+          snapshot: makeSnapshot({ tracks: [makeTrack("Samples", 0)] }),
+        };
+      }
+      return backend(cmd, args);
+    });
+  }
+
+  it("lists files on this computer before the market results", async () => {
+    withLocal(LOCAL_RESULT);
+    const { container, getByText } = render(() => <SampleMarketPanel />);
+    await waitFor(() => expect(getByText("Openverse")).toBeInTheDocument());
+    await search(container);
+    await waitFor(() => expect(getByText("Snare Tight")).toBeInTheDocument());
+
+    const rows = [...container.querySelectorAll(".sample-market-row")].map(
+      (row) => row.querySelector(".sample-market-name")!.textContent,
+    );
+    expect(rows).toEqual(["Snare Tight", "snare roll", "Snare hit 01", "Night Drive"]);
+    const headings = [...container.querySelectorAll(".sample-market-section-title")].map(
+      (node) => node.textContent,
+    );
+    expect(headings).toEqual(["On this computer", "Online"]);
+    // A local file shows where it sits and that it is the user's own file.
+    const local = getByText("Snare Tight").closest(".sample-market-row") as HTMLElement;
+    expect(within(local).getByText("Drums/Snare Tight.wav")).toBeInTheDocument();
+    expect(within(local).getByText("Local file")).toBeInTheDocument();
+    expect(within(local).queryByText("unknown")).toBeNull();
+    const roll = getByText("snare roll").closest(".sample-market-row") as HTMLElement;
+    expect(within(roll).getByText("0:01.5")).toBeInTheDocument();
+  });
+
+  it("sends the kind and duration filters to the local search too", async () => {
+    withLocal(LOCAL_RESULT);
+    const { container, getByRole } = render(() => <SampleMarketPanel />);
+    await waitFor(() => expect(getByRole("button", { name: "Openverse" })).toBeInTheDocument());
+    fireEvent.click(getByRole("button", { name: "Loop" }));
+    fireEvent.change(getByRole("combobox", { name: "Duration" }), { target: { value: "short" } });
+    await search(container);
+    expect(invokeMock).toHaveBeenCalledWith("local_sample_search", {
+      args: { query: "snare", kind: "loop", min_seconds: undefined, max_seconds: 2 },
+    });
+  });
+
+  it("searches this computer even when no market is included", async () => {
+    withLocal(LOCAL_RESULT);
+    const { container, getByText } = render(() => <SampleMarketPanel />);
+    await waitFor(() => expect(getByText("Openverse")).toBeInTheDocument());
+    fireEvent.click(container.querySelector('[data-provider="openverse"]')!);
+    fireEvent.click(container.querySelector('[data-provider="wikimedia-commons"]')!);
+    await search(container);
+
+    await waitFor(() => expect(getByText("Snare Tight")).toBeInTheDocument());
+    expect(getByText("Press a market to include or exclude it.")).toBeInTheDocument();
+    expect(invokeMock.mock.calls.some(([cmd]) => cmd === "sample_market_search")).toBe(false);
+  });
+
+  it("says when no local file matches and when there are no sound folders", async () => {
+    withLocal(NO_LOCAL);
+    const first = render(() => <SampleMarketPanel />);
+    await waitFor(() => expect(first.getByText("Openverse")).toBeInTheDocument());
+    await search(first.container);
+    await waitFor(() =>
+      expect(first.getByText("No matching files in your sound folders.")).toBeInTheDocument(),
+    );
+    first.unmount();
+
+    withLocal({ items: [], truncated: false, folders: 0 });
+    const second = render(() => <SampleMarketPanel />);
+    await waitFor(() => expect(second.getByText("Openverse")).toBeInTheDocument());
+    await search(second.container);
+    await waitFor(() =>
+      expect(
+        second.getByText("No sound folders were found on this computer."),
+      ).toBeInTheDocument(),
+    );
+  });
+
+  it("previews a local file by its path and adds it to the project", async () => {
+    withLocal(LOCAL_RESULT);
+    const { container, getByText } = render(() => <SampleMarketPanel />);
+    await waitFor(() => expect(getByText("Openverse")).toBeInTheDocument());
+    await search(container);
+    await waitFor(() => expect(getByText("Snare Tight")).toBeInTheDocument());
+
+    fireEvent.click(getByText("Snare Tight"));
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("local_sample_preview", {
+        path: LOCAL_ITEMS[0].path,
+        label: "Snare Tight",
+        startPaused: true,
+      }),
+    );
+
+    const row = getByText("Snare Tight").closest(".sample-market-row") as HTMLElement;
+    fireEvent.click(within(row).getByText("Add to project"));
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("local_sample_add", {
+        path: LOCAL_ITEMS[0].path,
+        track: null,
+      }),
+    );
+    await waitFor(() => expect(getByText("Added to Samples")).toBeInTheDocument());
+    expect(store.project.tracks.length).toBe(1);
+  });
+
+  it("names a local refusal by its code", async () => {
+    withLocal(LOCAL_RESULT);
+    const { container, getByText, queryByText } = render(() => <SampleMarketPanel />);
+    await waitFor(() => expect(getByText("Openverse")).toBeInTheDocument());
+    await search(container);
+    await waitFor(() => expect(getByText("Snare Tight")).toBeInTheDocument());
+
+    invokeMock.mockRejectedValueOnce({ code: "not_found", message: "'/x.wav' is gone" });
+    const row = getByText("Snare Tight").closest(".sample-market-row") as HTMLElement;
+    fireEvent.click(within(row).getByText("Add to project"));
+    await waitFor(() =>
+      expect(getByText("That file is no longer on this computer.")).toBeInTheDocument(),
+    );
+    expect(queryByText("'/x.wav' is gone")).toBeNull();
+  });
+
+  it("drops a local answer that a newer search replaced", async () => {
+    const answers: ((value: unknown) => void)[] = [];
+    const backend = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation(async (cmd, args) => {
+      if (cmd === "local_sample_search") return new Promise((resolve) => { answers.push(resolve); });
+      return backend(cmd, args);
+    });
+    const { container, getByText, queryByText } = render(() => <SampleMarketPanel />);
+    await waitFor(() => expect(getByText("Openverse")).toBeInTheDocument());
+    await search(container);
+    await search(container);
+    await waitFor(() => expect(answers).toHaveLength(2));
+
+    answers[0](LOCAL_RESULT);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(queryByText("Snare Tight")).toBeNull();
+    expect(getByText("Searching your sound folders…")).toBeInTheDocument();
+
+    answers[1](NO_LOCAL);
+    await waitFor(() =>
+      expect(getByText("No matching files in your sound folders.")).toBeInTheDocument(),
     );
   });
 });

@@ -1,9 +1,12 @@
 /**
- * Sample markets — the bottom panel's client for other people's catalogues.
+ * Samples — the bottom panel's search over the user's own files and other
+ * people's catalogues.
  *
- * The panel never hosts a catalogue: it searches the markets the user includes,
- * shows each result's provider and licence, previews a selection through the
- * audition stream, and adds one file to the project at the playhead.
+ * One search lists matching files from this computer's sound folders first,
+ * then results from the markets the user includes, with each result's
+ * provider and licence. A selection previews through the audition stream, and
+ * an add places one file in the project at the playhead; a local file is
+ * copied into the project first.
  *
  * Provider chips are the availability map: an unavailable market stays visible
  * with its reason. Credentials are also available in External Sources.
@@ -12,7 +15,12 @@ import { For, Show, createEffect, createMemo, createSignal, createUniqueId, on, 
 import { i18n, type I18nKey } from "../stores/i18n";
 import { store } from "../stores/project";
 import * as api from "../stores/api";
-import type { SampleMarketItem, SampleMarketPage, SampleProviderAvailability } from "../stores/api";
+import type {
+  LocalSample,
+  SampleMarketItem,
+  SampleMarketPage,
+  SampleProviderAvailability,
+} from "../stores/api";
 import { preferencesUi } from "../stores/preferencesUi";
 import { sampleCredentialsChanged } from "../stores/sampleCredentials";
 import { useTooltip } from "./Tooltip";
@@ -59,6 +67,10 @@ const COMMAND_ERROR_KEYS: Record<string, I18nKey> = {
   checksum_mismatch: "sample.error.checksumMismatch",
   size_mismatch: "sample.error.sizeMismatch",
   project_unsaved: "sample.error.projectUnsaved",
+  not_found: "sample.error.notFound",
+  outside_folders: "sample.error.outsideFolders",
+  not_audio: "sample.error.notAudio",
+  too_large: "sample.error.tooLarge",
 };
 
 interface MarketNotice {
@@ -109,14 +121,24 @@ export function SampleMarketPanel() {
     message: string;
   } | null>(null);
   const [keyDraft, setKeyDraft] = createSignal("");
+  // Files from this computer's sound folders, listed before the markets.
+  const [localItems, setLocalItems] = createSignal<LocalSample[]>([]);
+  const [localLoading, setLocalLoading] = createSignal(false);
+  const [localTruncated, setLocalTruncated] = createSignal(false);
+  const [localFolders, setLocalFolders] = createSignal<number | null>(null);
+  const [localError, setLocalError] = createSignal<string | null>(null);
+  let localToken = 0;
   const previewOwner = createUniqueId();
-  let previewItem: SampleMarketItem | undefined;
+  /** Stops the preview this panel started last, if it is still playing. */
+  let stopPreview: (() => void) | undefined;
   const itemKey = (item: SampleMarketItem) => JSON.stringify([item.provider, item.id]);
+  const localKey = (item: LocalSample) => JSON.stringify(["local-file", item.path]);
   const action = (item: SampleMarketItem) => store.marketSampleAction(previewOwner, item.provider, item.id);
-  const previewLabel = (item: SampleMarketItem) => {
-    const next = action(item);
-    return i18n.t(next === "pause" ? "tooltip.previewPause" : next === "resume" ? "tooltip.previewResume" : "sample.preview");
-  };
+  const localAction = (item: LocalSample) => store.localSampleAction(previewOwner, item.path);
+  const actionLabel = (next: ReturnType<typeof action>) =>
+    i18n.t(next === "pause" ? "tooltip.previewPause" : next === "resume" ? "tooltip.previewResume" : "sample.preview");
+  const previewLabel = (item: SampleMarketItem) => actionLabel(action(item));
+  const localPreviewLabel = (item: LocalSample) => actionLabel(localAction(item));
 
   /** The keyed market the panel is asking a key for, if one is included. */
   const keyedProvider = createMemo(() =>
@@ -128,10 +150,19 @@ export function SampleMarketPanel() {
     ),
   );
 
-  /** Nothing to show yet: the markets are still answering, or the search is. */
+  /** No market rows yet: the markets are still answering, or the search is. */
   const pending = createMemo(
     () => items().length === 0 && (providersLoading() || loading()),
   );
+
+  /** The line under "On this computer" when it lists no file. */
+  const localEmptyText = createMemo(() => {
+    if (localLoading()) return i18n.t("sample.local.searching");
+    const error = localError();
+    if (error) return i18n.t("sample.local.failed", { message: error });
+    if (localFolders() === 0) return i18n.t("sample.local.noFolders");
+    return i18n.t("sample.local.none");
+  });
 
   /** One line per market that could not answer, read from its typed fields. */
   const notices = createMemo(() =>
@@ -153,9 +184,19 @@ export function SampleMarketPanel() {
     };
   }
 
+  function resetLocal() {
+    localToken += 1;
+    setLocalItems([]);
+    setLocalLoading(false);
+    setLocalTruncated(false);
+    setLocalFolders(null);
+    setLocalError(null);
+  }
+
   /** A filter change starts over: old rows and any in-flight page are dropped. */
   function resetResults() {
     pager.reset();
+    resetLocal();
     setPages([]);
     setSelectedId(null);
     setSearched(false);
@@ -213,7 +254,7 @@ export function SampleMarketPanel() {
   });
 
   onCleanup(() => {
-    if (previewItem) void store.stopMarketSample(previewOwner, previewItem.provider, previewItem.id);
+    stopPreview?.();
   });
 
   function toggleProvider(id: string) {
@@ -224,18 +265,41 @@ export function SampleMarketPanel() {
     resetResults();
   }
 
+  /** Search the sound folders; a newer search or a reset drops the answer. */
+  async function runLocalSearch(filters: api.SampleMarketSearchFilters) {
+    const mine = ++localToken;
+    setLocalItems([]);
+    setLocalTruncated(false);
+    setLocalFolders(null);
+    setLocalError(null);
+    setLocalLoading(true);
+    try {
+      const result = await api.localSampleSearch(filters);
+      if (mine !== localToken) return;
+      setLocalItems(result?.items ?? []);
+      setLocalTruncated(result?.truncated ?? false);
+      setLocalFolders(result?.folders ?? null);
+    } catch (error) {
+      if (mine === localToken) setLocalError(commandErrorText(error));
+    } finally {
+      if (mine === localToken) setLocalLoading(false);
+    }
+  }
+
   async function runSearch() {
     const text = query().trim();
     if (!text) return;
-    if (selectedProviders().length === 0) {
-      setStatus(i18n.t("sample.marketHint"));
-      return;
-    }
     setStatus(null);
     setPages([]);
     setSearched(true);
+    const filters = searchFilters(text);
+    void runLocalSearch(filters);
+    if (selectedProviders().length === 0) {
+      pager.reset();
+      return;
+    }
     try {
-      const result = await pager.search(searchFilters(text));
+      const result = await pager.search(filters);
       if (!result) return;
       applyProviders(result.providers);
       setPages(result.pages);
@@ -258,11 +322,33 @@ export function SampleMarketPanel() {
   }
 
   function selectItem(item: SampleMarketItem) {
-    previewItem = item;
+    stopPreview = () => void store.stopMarketSample(previewOwner, item.provider, item.id);
     setSelectedId(itemKey(item));
     void store.previewMarketSample(previewOwner, item.provider, item.id, item.name, error => {
       setStatus(i18n.t("sample.previewFailed", { message: commandErrorText(error) }));
     });
+  }
+
+  function selectLocal(item: LocalSample) {
+    stopPreview = () => void store.stopLocalSample(previewOwner, item.path);
+    setSelectedId(localKey(item));
+    void store.previewLocalSample(previewOwner, item.path, item.name, error => {
+      setStatus(i18n.t("sample.previewFailed", { message: commandErrorText(error) }));
+    });
+  }
+
+  async function addLocal(item: LocalSample) {
+    setAdding(localKey(item));
+    setStatus(null);
+    try {
+      const result = await api.localSampleAdd(item.path, store.selectedTrack()?.name ?? null);
+      store.applySampleSnapshot(result.snapshot);
+      setStatus(i18n.t("sample.added", { track: result.track }));
+    } catch (error) {
+      setStatus(commandErrorText(error));
+    } finally {
+      setAdding(null);
+    }
   }
 
   async function addItem(item: SampleMarketItem, acceptLicence = false) {
@@ -443,19 +529,92 @@ export function SampleMarketPanel() {
         )}
       </Show>
 
-      <Show when={notices().length > 0}>
-        <div class="sample-market-notices" role="status">
-          <For each={notices()}>
-            {(notice) => (
-              <div class="sample-market-notice" title={notice.detail ?? undefined}>
-                {notice.text}
-              </div>
-            )}
-          </For>
-        </div>
-      </Show>
-
       <div class="sample-market-list">
+        <Show when={searched()}>
+          <section
+            class="sample-market-section sample-market-local"
+            aria-label={i18n.t("sample.local.title")}
+            aria-busy={localLoading()}
+          >
+            <div class="sample-market-section-title">{i18n.t("sample.local.title")}</div>
+            <For each={localItems()}>
+              {(item) => (
+                <div
+                  class="sample-market-row sample-market-row-local"
+                  classList={{ selected: selectedId() === localKey(item) }}
+                  data-path={item.path}
+                  title={item.path}
+                  onClick={() => selectLocal(item)}
+                >
+                  <div class="sample-market-row-main">
+                    <span class="sample-market-name">{item.name}</span>
+                    <span class="sample-market-meta">
+                      <span class="sample-market-tag">{item.format.toUpperCase()}</span>
+                      <span>{kindLabel(item.kind)}</span>
+                      <Show when={item.duration_seconds !== null}>
+                        <span>{durationLabel(item.duration_seconds)}</span>
+                      </Show>
+                    </span>
+                    <span class="sample-market-credit">{item.relative}</span>
+                  </div>
+                  <span
+                    class="sample-market-license ok"
+                    {...useTooltip(() => i18n.t("sample.local.badgeHint"))}
+                  >
+                    {i18n.t("sample.local.badge")}
+                  </span>
+                  <div class="sample-market-actions">
+                    <button
+                      type="button"
+                      class="toolbar-btn"
+                      aria-label={localPreviewLabel(item)}
+                      {...useTooltip(() => localPreviewLabel(item))}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        selectLocal(item);
+                      }}
+                    >
+                      {localAction(item) === "pause" ? "Ⅱ" : "▶"}
+                    </button>
+                    <button
+                      type="button"
+                      class="toolbar-btn text-btn"
+                      disabled={adding() === localKey(item)}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void addLocal(item);
+                      }}
+                    >
+                      {i18n.t(adding() === localKey(item) ? "sample.adding" : "sample.add")}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </For>
+            <Show when={localItems().length === 0}>
+              <div class="sample-market-empty" role="status">{localEmptyText()}</div>
+            </Show>
+            <Show when={localTruncated()}>
+              <div class="sample-market-empty">
+                {i18n.t("sample.local.truncated", { count: localItems().length })}
+              </div>
+            </Show>
+          </section>
+          <div class="sample-market-section-title">{i18n.t("sample.online.title")}</div>
+        </Show>
+
+        <Show when={notices().length > 0}>
+          <div class="sample-market-notices" role="status">
+            <For each={notices()}>
+              {(notice) => (
+                <div class="sample-market-notice" title={notice.detail ?? undefined}>
+                  {notice.text}
+                </div>
+              )}
+            </For>
+          </div>
+        </Show>
+
         <Show when={pending()}>
           <div class="sample-market-skeleton" role="status" aria-busy="true">
             <div class="sample-market-empty">
@@ -563,7 +722,13 @@ export function SampleMarketPanel() {
           </For>
           <Show when={items().length === 0}>
             <div class="sample-market-empty">
-              {i18n.t(searched() ? "sample.noResults" : "sample.empty")}
+              {i18n.t(
+                !searched()
+                  ? "sample.empty"
+                  : selectedProviders().length === 0
+                  ? "sample.marketHint"
+                  : "sample.noResults",
+              )}
             </div>
           </Show>
         </Show>

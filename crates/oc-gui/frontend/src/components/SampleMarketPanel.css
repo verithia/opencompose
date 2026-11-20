@@ -207,6 +207,26 @@
   overflow-y: auto;
 }
 
+/* "On this computer" and "Online" split one scrolling list, so the local
+   files stay above the market rows without a second scrollbar. */
+.sample-market-section-title {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.sample-market-local .sample-market-empty {
+  padding: 8px 12px;
+}
+
 .sample-market-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto auto;

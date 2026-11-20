@@ -390,3 +390,62 @@ export const freesoundOAuthBegin = (clientId: string, clientSecret: string) =>
 /** Remove the stored token and client credentials. */
 export const freesoundOAuthSignOut = () =>
   invoke<FreesoundOAuthStatus>("freesound_oauth_sign_out");
+
+// ============================================================================
+// Samples on this computer
+// ============================================================================
+
+/** One audio file in the app's sound folders. */
+export interface LocalSample {
+  /** Absolute path; preview and add pass it back. */
+  path: string;
+  name: string;
+  /** The sound folder it was found in. */
+  folder: string;
+  /** The path below that folder, which the search matched. */
+  relative: string;
+  format: string;
+  kind: string;
+  /** Read from the header only when a duration bound asked for it. */
+  duration_seconds: number | null;
+}
+
+export interface LocalSampleSearchResult {
+  items: LocalSample[];
+  /** More files match than `items` lists. */
+  truncated: boolean;
+  /** Sound folders that exist and were searched. */
+  folders: number;
+}
+
+export interface LocalSampleAddResult {
+  status: "ok";
+  track: string;
+  file: string;
+  snapshot: ProjectSnapshot;
+}
+
+/** Search the sound folders with the panel's text, kind and duration. */
+export const localSampleSearch = (filters: SampleMarketSearchFilters) =>
+  sampleCommand(() => invoke<LocalSampleSearchResult>("local_sample_search", {
+    args: {
+      query: filters.query,
+      kind: filters.kind,
+      min_seconds: filters.min_seconds,
+      max_seconds: filters.max_seconds,
+    },
+  }));
+
+/** Play one local file through the audition stream. */
+export const localSamplePreview = (path: string, label: string, startPaused: boolean) =>
+  startNativeAudio(() => sampleCommand(() => invoke<{
+    status: "ok" | "cancelled";
+    provider: string;
+    id: string;
+    name: string;
+    seconds: number;
+  }>("local_sample_preview", { path, label, startPaused })));
+
+/** Copy one local file into the project and place it at the playhead. */
+export const localSampleAdd = (path: string, track: string | null) =>
+  sampleCommand(() => invoke<LocalSampleAddResult>("local_sample_add", { path, track }));
