@@ -327,7 +327,7 @@ export type FolderErrorCode =
   | "not_listed"
   | "too_many"
   | "invalid"
-  | "no_instruments"
+  | "no_sounds"
   | "failed";
 
 const FOLDER_ERROR_CODES: readonly FolderErrorCode[] = [
@@ -336,7 +336,7 @@ const FOLDER_ERROR_CODES: readonly FolderErrorCode[] = [
   "not_listed",
   "too_many",
   "invalid",
-  "no_instruments",
+  "no_sounds",
   "failed",
 ];
 

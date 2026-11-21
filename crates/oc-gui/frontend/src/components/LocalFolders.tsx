@@ -75,7 +75,7 @@ const ERROR_TEXT: Record<Exclude<FolderErrorCode, "failed">, I18nKey> = {
   not_listed: "folders.error.notListed",
   too_many: "folders.error.tooMany",
   invalid: "folders.error.invalid",
-  no_instruments: "folders.error.noInstruments",
+  no_sounds: "folders.error.noSounds",
 };
 
 /** The reason a folder change was refused, worded from the backend's code. */

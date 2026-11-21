@@ -81,9 +81,11 @@ and the first-block budget.
 
 ## Folders
 
-The Folders page lists every folder OpenCompose searches, in two blocks:
+The Folders page lists every folder OpenCompose searches, in two sections:
 **Plugin folders**, and **Sound folders** for SoundFont, SFZ and sampler files
-and samples. Each block groups its folders by where they come from:
+and samples. The **All**, **Plugins** and **Sounds** tabs above the list show
+both sections or one, and each tab counts the folders it shows. Each section
+groups its folders by where they come from:
 
 | Group | Block | Where the folders come from | Can you change them here? |
 |---|---|---|---|
@@ -94,15 +96,26 @@ and samples. Each block groups its folders by where they come from:
 | From environment variables | Plugins | `CLAP_PATH`, `VST3_PATH`, `VST_PATH`, `LXVST_PATH` and `LV2_PATH`. | No. Change the variable. |
 | From another app's settings | Plugins | Plugin folders that another music app is set to search. | No. Change them in that app. |
 
-Each row shows how many plugins, or how many instruments and samples, the
-folder holds. A standard or common location that does not exist on this
+A group's heading shows its name, how many folders it lists and why they are
+searched; click the heading to fold or unfold the group. Each row shows the
+folder's name, the folder that holds it, and how many plugins, or how many
+instruments and samples, it holds. A standard or common location that does not exist on this
 computer is not listed; the line under the block counts them. A folder you
 added that no longer exists stays in the list and reads **Not found**.
 [Plugins](manual/plugins.md) lists every location.
 
+Click a row to select it. The strip at the foot of the list then shows the
+folder's name, its full path, where it comes from and why, and what it holds.
+**Reveal in file manager** opens the folder's location; it is unavailable for a
+folder that no longer exists. Click the row again to clear the selection.
+
 When you add a plugin folder, the page saves it, recounts the folders and
 starts a plugin scan in the background, so the folder's plugins appear in the
-plugin browser. A sound folder must hold at least one SoundFont or SFZ file.
+plugin browser. A sound folder you add may hold SoundFont, SFZ or sampler
+files, audio samples (WAV, AIFF, FLAC, OGG or MP3), or both, so a folder of
+samples alone is accepted. That holds only for a folder you choose, here or in
+the first-run guide: when the assistant registers a content library, the
+folder must still hold an instrument file.
 
 When the app refuses a change, it writes nothing and the page says why:
 
@@ -111,7 +124,7 @@ When the app refuses a change, it writes nothing and the page says why:
 - the folder is no longer in your list;
 - your list of plugin folders is full (it holds 32);
 - the saved folder list cannot be read, so it is left unchanged;
-- the folder has no SoundFont, SFZ or sampler files;
+- the folder has neither audio samples nor SoundFont, SFZ or sampler files;
 - the change could not be saved.
 
 **Scan again** reads every plugin again, including ones that could not be read

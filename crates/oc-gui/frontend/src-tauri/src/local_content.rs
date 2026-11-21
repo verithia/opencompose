@@ -129,6 +129,11 @@ const PLUGIN_FORMATS: [&str; 5] = ["vst3", "clap", "au", "lv2", "vst2"];
 const INSTRUMENT_FORMATS: [&str; 4] = ["sf2", "sf3", "sfz", "sampler_asset"];
 const SAMPLE_EXTENSIONS: [&str; 6] = ["wav", "aif", "aiff", "flac", "ogg", "mp3"];
 
+/// Whether `path` names an audio sample the sound walk counts.
+pub(crate) fn is_sample_file(path: &Path) -> bool {
+    extension_of(path).is_some_and(|extension| SAMPLE_EXTENSIONS.contains(&extension.as_str()))
+}
+
 fn plugin_format(format: oc_host::PluginFormat) -> Option<&'static str> {
     match format {
         oc_host::PluginFormat::Vst3 => Some("vst3"),
@@ -599,8 +604,8 @@ pub enum FolderErrorCode {
     TooMany,
     /// The saved list is not one this version reads; it is left as it is.
     Invalid,
-    /// A sound folder holds no instrument file.
-    NoInstruments,
+    /// A sound folder holds no instrument file and no audio sample.
+    NoSounds,
     /// Reading, scanning or saving failed.
     Failed,
 }
@@ -637,7 +642,9 @@ impl From<content_library::LibraryError> for FolderChangeError {
         let code = match error.kind {
             LibraryErrorKind::NotFound => FolderErrorCode::NotADirectory,
             LibraryErrorKind::AlreadyRegistered => FolderErrorCode::AlreadySearched,
-            LibraryErrorKind::NoInstruments => FolderErrorCode::NoInstruments,
+            LibraryErrorKind::NoInstruments | LibraryErrorKind::NoSounds => {
+                FolderErrorCode::NoSounds
+            }
             LibraryErrorKind::UnknownLibrary => FolderErrorCode::NotListed,
             LibraryErrorKind::Failed => FolderErrorCode::Failed,
         };
@@ -685,14 +692,14 @@ pub async fn plugin_folder_remove(path: String) -> Result<LocalContentSummary, F
     .await
 }
 
-/// Register `path` as a content library so its instruments are found.
+/// Register `path` as a content library so its instruments and samples are
+/// found. The user chose it, so a folder of samples alone is accepted.
 #[tauri::command]
 pub async fn sound_folder_add(path: String) -> Result<LocalContentSummary, FolderChangeError> {
     folder_change(move || {
-        content_library::register(
+        content_library::register_sound_folder(
             &content_library::default_catalogue_path(),
             Path::new(&path),
-            None,
         )
         .map(drop)
     })
@@ -919,6 +926,34 @@ mod tests {
     }
 
     #[test]
+    fn a_chosen_folder_of_samples_alone_counts_its_samples_as_the_users() {
+        let scratch = Scratch::new("samples-only");
+        let catalogue = scratch.0.join("catalogue.json");
+        let drums = scratch.dir("Drums");
+        scratch.file("Drums/Kicks/kick.wav", b"RIFF");
+        scratch.file("Drums/Loops/loop.aiff", b"FORM");
+        let library = content_library::register_sound_folder(&catalogue, &drums)
+            .unwrap()
+            .library;
+        let roots = sound_roots(
+            vec![SearchRoot {
+                path: drums.clone(),
+                origin: RootOrigin::Library(library.id.clone()),
+            }],
+            Vec::new(),
+        );
+        let (instruments, samples) =
+            sound_summaries(&roots, std::slice::from_ref(&library), &|_| {});
+        assert_eq!(instruments.total, 0);
+        assert_eq!(samples.total, 2);
+        assert_eq!(samples.folders[0].origin, FolderOrigin::User);
+        assert_eq!(
+            samples.folders[0].library_id.as_deref(),
+            Some(library.id.as_str())
+        );
+    }
+
+    #[test]
     fn the_managed_sounds_folder_is_a_managed_search_root() {
         let scratch = Scratch::new("managed");
         let managed = scratch.dir("Sounds");
@@ -1041,7 +1076,11 @@ mod tests {
         let register = |root: &Path| {
             FolderChangeError::from(content_library::register(&catalogue, root, None).unwrap_err())
         };
-        assert_eq!(register(&empty).code, FolderErrorCode::NoInstruments);
+        assert_eq!(register(&empty).code, FolderErrorCode::NoSounds);
+        let chosen = FolderChangeError::from(
+            content_library::register_sound_folder(&catalogue, &empty).unwrap_err(),
+        );
+        assert_eq!(serde_json::to_value(chosen).unwrap()["code"], "no_sounds");
         assert_eq!(
             register(&scratch.0.join("gone")).code,
             FolderErrorCode::NotADirectory

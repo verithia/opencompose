@@ -358,7 +358,7 @@ describe("first-run onboarding", () => {
     const original = invokeMock.getMockImplementation()!;
     invokeMock.mockImplementation(async (command: string, ...args: unknown[]) => {
       if (command === "sound_folder_add") {
-        throw { code: "no_instruments", message: "no instrument files found under '/Users/me/Empty'" };
+        throw { code: "no_sounds", message: "no audio samples or instrument files found under '/Users/me/Empty'" };
       }
       return original(command, ...args);
     });
@@ -367,7 +367,7 @@ describe("first-run onboarding", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Add sound folder…" }));
     expect(await screen.findByRole("alert")).toHaveTextContent(
-      "Could not add the folder: That folder has no SoundFont, SFZ or sampler files.",
+      "Could not add the folder: That folder has no audio samples and no SoundFont, SFZ or sampler files.",
     );
     expect(screen.getByText("SF2 1")).toBeInTheDocument();
   });

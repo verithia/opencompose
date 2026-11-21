@@ -134,6 +134,8 @@ pub enum LibraryErrorKind {
     AlreadyRegistered,
     /// The root holds no instrument file this scan recognises.
     NoInstruments,
+    /// The root holds neither an instrument file nor an audio sample.
+    NoSounds,
     /// No library has that id.
     UnknownLibrary,
     /// The catalogue could not be read, scanned or written.
@@ -232,12 +234,42 @@ pub fn list(path: &Path) -> Result<CatalogueListing, String> {
     })
 }
 
+/// What a registration accepts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Contents {
+    /// A root with at least one instrument file.
+    Instruments,
+    /// Also a folder that holds only audio samples. The user chose the folder
+    /// in Preferences, so a sample library is what they mean it to be; the
+    /// automatic scans never register anything.
+    InstrumentsOrSamples,
+}
+
 /// Register one library root. The root is scanned first; a root with no
 /// recognisable instrument files is refused before anything is written.
 pub fn register(
     catalogue_path: &Path,
     root: &Path,
     name: Option<&str>,
+) -> Result<RegisterOutcome, LibraryError> {
+    register_with(catalogue_path, root, name, Contents::Instruments)
+}
+
+/// Register a sound folder the user chose. It may hold instrument files,
+/// audio samples or both; a folder with neither is refused with
+/// [`LibraryErrorKind::NoSounds`] before anything is written.
+pub fn register_sound_folder(
+    catalogue_path: &Path,
+    root: &Path,
+) -> Result<RegisterOutcome, LibraryError> {
+    register_with(catalogue_path, root, None, Contents::InstrumentsOrSamples)
+}
+
+fn register_with(
+    catalogue_path: &Path,
+    root: &Path,
+    name: Option<&str>,
+    contents: Contents,
 ) -> Result<RegisterOutcome, LibraryError> {
     let _guard = write_guard();
     let root = canonical_root(root)?;
@@ -256,7 +288,11 @@ pub fn register(
             ),
         ));
     }
-    let no_instruments = |message| LibraryError::new(LibraryErrorKind::NoInstruments, message);
+    let refusal_kind = match contents {
+        Contents::Instruments => LibraryErrorKind::NoInstruments,
+        Contents::InstrumentsOrSamples => LibraryErrorKind::NoSounds,
+    };
+    let no_instruments = |message| LibraryError::new(refusal_kind, message);
     if root.is_file() && !is_instrument_file(&root) {
         return Err(no_instruments(format!(
             "'{}' is not an instrument file ({})",
@@ -265,9 +301,17 @@ pub fn register(
         )));
     }
     let instruments = scan_root(&root).map_err(LibraryError::failed)?;
-    if instruments.is_empty() {
+    let samples_only = contents == Contents::InstrumentsOrSamples
+        && instruments.is_empty()
+        && root.is_dir()
+        && holds_sample(&root);
+    if instruments.is_empty() && !samples_only {
+        let wanted = match contents {
+            Contents::Instruments => "instrument files",
+            Contents::InstrumentsOrSamples => "audio samples or instrument files",
+        };
         return Err(no_instruments(format!(
-            "no instrument files ({} ) found under '{}'",
+            "no {wanted} ({}) found under '{}'",
             INSTRUMENT_EXTENSIONS.join(", "),
             root.display()
         )));
@@ -494,6 +538,39 @@ fn walk(
         }
     }
     Ok(())
+}
+
+/// Whether a folder holds at least one audio sample, within the same depth
+/// and entry caps as the instrument walk.
+fn holds_sample(root: &Path) -> bool {
+    let mut budget = MAX_ENTRIES;
+    let mut pending = vec![(root.to_path_buf(), 0usize)];
+    while let Some((directory, depth)) = pending.pop() {
+        let Ok(entries) = fs::read_dir(&directory) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            if budget == 0 {
+                return false;
+            }
+            budget -= 1;
+            if entry.file_name().to_string_lossy().starts_with('.') {
+                continue;
+            }
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            let path = entry.path();
+            if file_type.is_dir() {
+                if depth < MAX_DEPTH {
+                    pending.push((path, depth + 1));
+                }
+            } else if file_type.is_file() && crate::local_content::is_sample_file(&path) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn is_instrument_file(path: &Path) -> bool {
@@ -827,6 +904,45 @@ mod tests {
         assert_eq!(error.kind, LibraryErrorKind::NoInstruments, "{error}");
         assert!(error.to_string().contains("notes.txt"), "{error}");
         assert!(!catalogue.exists(), "nothing may be written on refusal");
+    }
+
+    #[test]
+    fn a_folder_of_samples_alone_registers_only_when_the_user_chose_it() {
+        let temp = TempDir::new("samples-only");
+        let catalogue = temp.path().join("catalogue.json");
+        let library = temp.path().join("Drum Samples");
+        write_file(&library.join("Kicks/kick.wav"), b"RIFF");
+        write_file(&library.join("Loops/loop.AIFF"), b"FORM");
+
+        // The agent's registration still asks for an instrument file.
+        let error = register(&catalogue, &library, None).unwrap_err();
+        assert_eq!(error.kind, LibraryErrorKind::NoInstruments, "{error}");
+        assert!(!catalogue.exists(), "nothing may be written on refusal");
+
+        let outcome = register_sound_folder(&catalogue, &library).unwrap();
+        assert!(outcome.library.instruments.is_empty());
+        assert_eq!(outcome.library.kind, "directory");
+        assert_eq!(list(&catalogue).unwrap().libraries.len(), 1);
+        // A rescan keeps a library that lists no instrument.
+        let rescanned = rescan(&catalogue, None).unwrap();
+        assert!(!rescanned.libraries[0].missing);
+        assert!(rescanned.warnings.is_empty());
+    }
+
+    #[test]
+    fn a_chosen_folder_with_no_sounds_is_refused_and_nothing_is_written() {
+        let temp = TempDir::new("no-sounds");
+        let catalogue = temp.path().join("catalogue.json");
+        let folder = temp.path().join("Documents");
+        write_file(&folder.join("notes.txt"), b"x");
+        write_file(&folder.join(".hidden/kick.wav"), b"RIFF");
+
+        let error = register_sound_folder(&catalogue, &folder).unwrap_err();
+        assert_eq!(error.kind, LibraryErrorKind::NoSounds, "{error}");
+        let file = folder.join("notes.txt");
+        let error = register_sound_folder(&catalogue, &file).unwrap_err();
+        assert_eq!(error.kind, LibraryErrorKind::NoSounds, "{error}");
+        assert!(!catalogue.exists());
     }
 
     #[test]

@@ -113,8 +113,9 @@ searches:
 - the sound folders you added.
 
 Each folder is searched up to eight levels deep and at most 20,000 entries.
-**Add sound folder…** adds a folder as a content library; it must hold at least
-one SoundFont or SFZ file. The SoundFont bank that ships with OpenCompose is
+**Add sound folder…** adds a folder as a content library. It must hold at
+least one SoundFont, SFZ or sampler file or one audio sample, so a folder of
+WAV or AIFF samples alone can be added. The SoundFont bank that ships with OpenCompose is
 not counted.
 
 After you install a plugin, press **Rescan** in the plugin browser or

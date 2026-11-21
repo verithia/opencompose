@@ -216,7 +216,7 @@ both.
 | File | Contents |
 |---|---|
 | `<config>/plugin-folders.json` | The plugin folders you added, at most 32. `OCP_PLUGIN_FOLDERS` points at another file. |
-| `<config>/content-libraries.json` | The sound folders you added. Each one is a content library with the instrument files its last scan found. A change keeps the previous version in `content-libraries.json.bak`. `OPENCOMPOSE_CONTENT_CATALOGUE` points at another file. |
+| `<config>/content-libraries.json` | The sound folders you added. Each one is a content library with the instrument files its last scan found; a folder of samples alone lists none. A change keeps the previous version in `content-libraries.json.bak`. `OPENCOMPOSE_CONTENT_CATALOGUE` points at another file. |
 
 If the app cannot read one of these files, it reports the problem and never
 overwrites the file. Removing a folder from a list leaves its files on disk.

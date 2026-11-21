@@ -1,11 +1,13 @@
 /**
- * The Folders page: the searched plugin and sound folders grouped by origin,
- * adding and removing the user's own, refusals worded from the backend's code,
- * and a rescan with the first-run scan's progress.
+ * The Folders page: the searched plugin and sound folders under kind tabs and
+ * folding origin groups, the selected folder's details, adding and removing
+ * the user's own, refusals worded from the backend's code, and a rescan with
+ * the first-run scan's progress.
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@solidjs/testing-library";
 import { PreferencesModal } from "../components/PreferencesModal";
+import { splitPath } from "../components/preferences/FoldersPage";
 import { i18n } from "../stores/i18n";
 import { localScan } from "../stores/localScan";
 import type { LocalContentSummary, LocalScanProgress, SearchedFolder } from "../stores/api";
@@ -74,6 +76,9 @@ const block = (kindName: "plugins" | "sounds") =>
   document.querySelector<HTMLElement>(`.preferences-folders[data-kind="${kindName}"]`)!;
 const group = (kindName: "plugins" | "sounds", origin: string) =>
   block(kindName).querySelector<HTMLElement>(`.preferences-folder-group[data-origin="${origin}"]`)!;
+/** The row of one folder, found by its full path. */
+const row = (path: string) => screen.getByTitle(path).closest<HTMLElement>(".preferences-folder-row")!;
+const details = () => document.querySelector<HTMLElement>(".preferences-folder-details")!;
 
 describe("the Folders preferences page", () => {
   it("groups searched folders by origin and keeps the non-user ones read-only", async () => {
@@ -83,22 +88,25 @@ describe("the Folders preferences page", () => {
     const standard = group("plugins", "standard");
     expect(within(standard).getByText("Standard locations")).toBeInTheDocument();
     expect(within(standard).getByText(/always searched and cannot be removed here/)).toBeInTheDocument();
-    expect(within(standard).getByText("/Library/Audio/Plug-Ins/VST3")).toBeInTheDocument();
-    expect(within(standard).queryByRole("button")).toBeNull();
+    // A row reads as the folder's name with the folder that holds it beside it.
+    const vst3 = within(standard).getByTitle("/Library/Audio/Plug-Ins/VST3");
+    expect(within(vst3).getByText("VST3")).toBeInTheDocument();
+    expect(within(vst3).getByText("/Library/Audio/Plug-Ins/")).toBeInTheDocument();
+    expect(within(standard).queryByRole("button", { name: /Stop searching/ })).toBeNull();
     // A standard folder that does not exist is counted, not listed.
-    expect(within(block("plugins")).queryByText("/Library/Audio/Plug-Ins/LV2")).toBeNull();
+    expect(within(block("plugins")).queryByTitle("/Library/Audio/Plug-Ins/LV2")).toBeNull();
     expect(within(block("plugins")).getByText("Usual locations not on this computer: 1")).toBeInTheDocument();
 
     const host = group("plugins", "host_settings");
     expect(within(host).getByText("From another app's settings")).toBeInTheDocument();
     expect(within(host).getByText("Change them in that app.", { exact: false })).toBeInTheDocument();
-    expect(within(host).queryByRole("button")).toBeNull();
+    expect(within(host).queryByRole("button", { name: /Stop searching/ })).toBeNull();
 
     const user = group("plugins", "user");
-    expect(within(user).getByText("/Volumes/Studio/Plugins")).toBeInTheDocument();
+    expect(within(user).getByTitle("/Volumes/Studio/Plugins")).toBeInTheDocument();
     expect(within(user).getByRole("button", { name: "Stop searching /Volumes/Studio/Plugins" })).toBeEnabled();
 
-    expect(within(group("sounds", "standard")).queryByRole("button")).toBeNull();
+    expect(within(group("sounds", "standard")).queryByRole("button", { name: /Stop searching/ })).toBeNull();
     expect(within(group("sounds", "user")).getByText("Instruments 2 · Samples 5")).toBeInTheDocument();
 
     const totals = document.querySelector(".preferences-folders-totals")!;
@@ -127,7 +135,7 @@ describe("the Folders preferences page", () => {
     await waitFor(() =>
       expect(invokeMock).toHaveBeenCalledWith("plugin_folder_add", { path: "/Volumes/More/Plugins" }),
     );
-    expect(await within(group("plugins", "user")).findByText("/Volumes/More/Plugins")).toBeInTheDocument();
+    expect(await within(group("plugins", "user")).findByTitle("/Volumes/More/Plugins")).toBeInTheDocument();
     await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("local_content_scan", { rescan: false }));
     await waitFor(() => expect(document.querySelector(".preferences-folders-totals")!.textContent).toContain("Plugins 10"));
   });
@@ -145,7 +153,7 @@ describe("the Folders preferences page", () => {
 
     fireEvent.click(within(block("sounds")).getByRole("button", { name: "Stop searching /Volumes/Studio/Fonts" }));
     await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("sound_folder_remove", { id: "lib-fonts" }));
-    await waitFor(() => expect(within(block("sounds")).queryByText("/Volumes/Studio/Fonts")).toBeNull());
+    await waitFor(() => expect(within(block("sounds")).queryByTitle("/Volumes/Studio/Fonts")).toBeNull());
     expect(within(group("sounds", "user")).getByText("You have not added any folders.")).toBeInTheDocument();
   });
 
@@ -166,7 +174,7 @@ describe("the Folders preferences page", () => {
       "Could not add the folder: Your list of plugin folders is full. Remove one first.",
     );
     expect(screen.getByRole("alert")).not.toHaveTextContent("at most 32");
-    expect(within(group("plugins", "user")).getByText("/Volumes/Studio/Plugins")).toBeInTheDocument();
+    expect(within(group("plugins", "user")).getByTitle("/Volumes/Studio/Plugins")).toBeInTheDocument();
     expect(invokeMock.mock.calls.some(([command]) => command === "local_content_scan")).toBe(false);
 
     // A failure without a code keeps the detail it has.
@@ -174,7 +182,104 @@ describe("the Folders preferences page", () => {
     await waitFor(() =>
       expect(screen.getByRole("alert")).toHaveTextContent("Could not remove the folder: the helper went away"),
     );
-    expect(within(group("plugins", "user")).getByText("/Volumes/Studio/Plugins")).toBeInTheDocument();
+    expect(within(group("plugins", "user")).getByTitle("/Volumes/Studio/Plugins")).toBeInTheDocument();
+  });
+
+  it("narrows the list to one kind with the tabs, each counting its folders", async () => {
+    await openFolders();
+    const tabs = within(screen.getByRole("tablist", { name: "Folder kinds" }));
+    const all = tabs.getByRole("tab", { name: "All 5" });
+    expect(all).toHaveAttribute("aria-selected", "true");
+    expect(block("plugins")).toBeInTheDocument();
+    expect(block("sounds")).toBeInTheDocument();
+
+    fireEvent.click(tabs.getByRole("tab", { name: "Sounds 2" }));
+    expect(document.querySelector('.preferences-folders[data-kind="plugins"]')).toBeNull();
+    expect(within(block("sounds")).getByRole("button", { name: "Add sound folder…" })).toBeInTheDocument();
+    expect(all).toHaveAttribute("aria-selected", "false");
+
+    fireEvent.click(tabs.getByRole("tab", { name: "Plugins 3" }));
+    expect(document.querySelector('.preferences-folders[data-kind="sounds"]')).toBeNull();
+    expect(block("plugins")).toBeInTheDocument();
+  });
+
+  it("folds an origin group and keeps its title, count and reason in view", async () => {
+    await openFolders();
+    const head = within(group("plugins", "standard")).getByRole("button", { name: /Standard locations/ });
+    expect(head).toHaveAttribute("aria-expanded", "true");
+    expect(head).toHaveTextContent("1");
+
+    fireEvent.click(head);
+    expect(head).toHaveAttribute("aria-expanded", "false");
+    expect(within(group("plugins", "standard")).queryByTitle("/Library/Audio/Plug-Ins/VST3")).toBeNull();
+    expect(head).toHaveTextContent(/always searched and cannot be removed here/);
+    // Folding one kind's group leaves the other kind's group of that origin open.
+    expect(within(group("sounds", "standard")).getByTitle("/Users/me/Music/SoundFonts")).toBeInTheDocument();
+
+    fireEvent.click(head);
+    expect(within(group("plugins", "standard")).getByTitle("/Library/Audio/Plug-Ins/VST3")).toBeInTheDocument();
+  });
+
+  it("shows the selected folder's full path, source and contents, and reveals it", async () => {
+    const original = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation(async (command: string, ...args: unknown[]) => {
+      if (command === "reveal_path") return undefined;
+      return original(command, ...args);
+    });
+    await openFolders();
+    expect(details()).toHaveTextContent("Select a folder to see its full path");
+    expect(within(details()).queryByRole("button")).toBeNull();
+
+    const pick = screen.getByTitle("/Volumes/Studio/Fonts");
+    fireEvent.click(pick);
+    expect(pick).toHaveAttribute("aria-pressed", "true");
+    expect(row("/Volumes/Studio/Fonts")).toHaveClass("selected");
+    expect(within(details()).getByText("Fonts")).toBeInTheDocument();
+    expect(within(details()).getByText("/Volumes/Studio/Fonts")).toBeInTheDocument();
+    expect(within(details()).getByText("Added by you")).toBeInTheDocument();
+    expect(within(details()).getByText("Remove a folder to stop searching it. Its files stay on disk.")).toBeInTheDocument();
+    expect(details()).toHaveTextContent("Instruments 2 · Samples 5");
+
+    fireEvent.click(within(details()).getByRole("button", { name: "Reveal in file manager" }));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("reveal_path", { path: "/Volumes/Studio/Fonts" }));
+
+    // A second click clears the selection; a tab that hides the row does too.
+    fireEvent.click(pick);
+    expect(details()).toHaveTextContent("Select a folder");
+    fireEvent.click(pick);
+    fireEvent.click(screen.getByRole("tab", { name: /^Plugins/ }));
+    expect(details()).toHaveTextContent("Select a folder");
+  });
+
+  it("words a failed reveal and keeps the selection", async () => {
+    const original = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation(async (command: string, ...args: unknown[]) => {
+      if (command === "reveal_path") throw "file not found: /Volumes/Studio/Plugins";
+      return original(command, ...args);
+    });
+    await openFolders();
+    fireEvent.click(screen.getByTitle("/Volumes/Studio/Plugins"));
+    fireEvent.click(within(details()).getByRole("button", { name: "Reveal in file manager" }));
+    expect(await within(details()).findByRole("alert")).toHaveTextContent(
+      "Could not show the folder: file not found: /Volumes/Studio/Plugins",
+    );
+    expect(within(details()).getByText("/Volumes/Studio/Plugins")).toBeInTheDocument();
+  });
+
+  it("words the refusal of a folder with neither samples nor instruments", async () => {
+    openDialogMock.mockResolvedValueOnce("/Users/me/Documents");
+    const original = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation(async (command: string, ...args: unknown[]) => {
+      if (command === "sound_folder_add") {
+        throw { code: "no_sounds", message: "no audio samples or instrument files found under '/Users/me/Documents'" };
+      }
+      return original(command, ...args);
+    });
+    await openFolders();
+    fireEvent.click(within(block("sounds")).getByRole("button", { name: "Add sound folder…" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Could not add the folder: That folder has no audio samples and no SoundFont, SFZ or sampler files.",
+    );
   });
 
   it("rescans every plugin and shows the scan's progress while it runs", async () => {
@@ -207,5 +312,15 @@ describe("the Folders preferences page", () => {
     await waitFor(() => expect(screen.queryByRole("progressbar")).toBeNull());
     expect(again).toBeEnabled();
     expect(document.querySelector(".preferences-folders-totals")!.textContent).toContain("Plugins 9");
+  });
+});
+
+describe("splitPath", () => {
+  it("splits on either separator and ignores a trailing one", () => {
+    expect(splitPath("/Library/Audio/Plug-Ins/VST3")).toEqual({ name: "VST3", parent: "/Library/Audio/Plug-Ins/" });
+    expect(splitPath("D:\\Audio\\VST3\\")).toEqual({ name: "VST3", parent: "D:\\Audio\\" });
+    expect(splitPath("/Volumes")).toEqual({ name: "Volumes", parent: "/" });
+    expect(splitPath("/")).toEqual({ name: "/", parent: "" });
+    expect(splitPath("Samples")).toEqual({ name: "Samples", parent: "" });
   });
 });
