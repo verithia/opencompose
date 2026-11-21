@@ -10,6 +10,8 @@ Define the missing role before searching: short kick body, dry hat texture,
 breathy vocal answer, sustained string layer, or a top loop without a kick.
 Record target tempo, register, density, tail length and available space.
 Inspect audio_clips_list and content_libraries for authorized local candidates before another download.
+sample_search lists the user's own matching files first (provider local);
+prefer one, and sample_pull its local: id to copy it into the project.
 
 ## Search for properties, then listen
 Use sample_search with a specific query, appropriate kind and small limit.
