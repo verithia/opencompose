@@ -203,6 +203,12 @@ impl License {
         Self::unknown(name)
     }
 
+    /// Whether the licence lets a finished work be sold. A licence this build
+    /// could not classify is not shown to allow it, so it fails too.
+    pub fn allows_commercial_use(&self) -> bool {
+        !self.non_commercial && self.id != "unknown"
+    }
+
     /// Whether the licence needs the user's acceptance before the file is
     /// pulled. CC0, public domain, CC BY and CC BY-SA do not.
     pub fn needs_notice(&self) -> bool {

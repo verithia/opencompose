@@ -3,7 +3,7 @@ id: program-two-step-garage
 title: Program a two-step garage pocket
 when: Build UK garage, two-step, or future garage with syncopated kicks, swung detail, short bass notes, and vocal chops.
 category: production
-version: 1
+version: 2
 tools: [project_extract, edit_subtree, project_validate, audition_range, tracks_list]
 ---
 Start with a clearly audible backbeat and write the kick pattern around it.
@@ -12,9 +12,10 @@ a two-bar anchor before introducing fills or extra layers.
 
 ## Give different parts different timing
 Keep main snare accents stable while trying softer pickups before them.
-Use a separate pattern for hats or ghost hits if only those offbeat eighths
-should swing. The swing setting moves offbeat eighths, so write the desired
-position directly for later subdivisions. Compare on the same two bars and
+Use a separate pattern with its own swing amount for hats or ghost hits.
+The project swing_subdivision chooses eighths (default) or sixteenths for
+all patterns. Use explicit positions when parts need independent grids.
+Keep the backbeat fixed. Compare on the same two bars and
 keep only changes that add forward motion without a new flam.
 
 Play a short bass note against the quiet spaces in the kick pattern.

@@ -64,24 +64,31 @@ impl SampleProvider for FreesoundProvider {
         query: &SampleQuery,
         fetch: &dyn SampleFetch,
     ) -> Result<SamplePage, SampleError> {
+        let query = &query.normalized();
         let authorization = self.authorization();
         let headers = [("Authorization", authorization.as_str())];
         let body = get_json_with_headers(fetch, "Freesound", &self.search_url(query), &headers)?;
         let response: SearchResponse = serde_json::from_value(body).map_err(|error| {
-            SampleError::Failed(format!("Freesound: unreadable search response: {error}"))
+            SampleError::failed(format!("Freesound: unreadable search response: {error}"))
         })?;
         let page_size = query.page_size();
         let skip = query.offset % page_size;
-        let items: Vec<SampleItem> = response
+        let mut items: Vec<SampleItem> = response
             .results
             .iter()
             .skip(skip)
             .map(item_from_sound)
             .collect();
+        // The cursor counts what the source returned, so a filtered-out result
+        // is not fetched again on the next page.
         let next_offset = response
             .next
             .is_some()
             .then(|| query.offset.saturating_add(items.len()));
+        // Duration and channels are filtered by the server too; the kind and
+        // licence are not, and a server filter is re-checked rather than
+        // trusted.
+        query.retain_matching(&mut items);
         Ok(SamplePage {
             provider: PROVIDER_ID.to_string(),
             offset: query.offset,
@@ -116,7 +123,7 @@ impl SampleProvider for FreesoundProvider {
             &headers,
         )?;
         let sound: Sound = serde_json::from_value(body).map_err(|error| {
-            SampleError::Failed(format!("Freesound: unreadable sound: {error}"))
+            SampleError::failed(format!("Freesound: unreadable sound: {error}"))
         })?;
         Ok(item_from_sound(&sound))
     }
@@ -132,9 +139,8 @@ impl FreesoundProvider {
                 terms.push((*term).to_string());
             }
         }
-        let text = query.text.trim();
-        if !text.is_empty() {
-            terms.push(text.to_string());
+        if !query.text.is_empty() {
+            terms.push(query.text.clone());
         }
         let mut filters: Vec<String> = Vec::new();
         match (query.min_seconds, query.max_seconds) {
@@ -146,11 +152,10 @@ impl FreesoundProvider {
         if let Some(channels) = query.channels {
             filters.push(format!("channels:{channels}"));
         }
+        // The filter is percent-encoded once, as a whole, below. A tag that
+        // is not one plain word is quoted so a space or a `:` stays inside it.
         for tag in &query.tags {
-            let tag = tag.trim();
-            if !tag.is_empty() {
-                filters.push(format!("tag:{}", encode(tag)));
-            }
+            filters.push(format!("tag:{}", filter_value(tag)));
         }
         let mut url = format!(
             "{API}/search/text/?query={query}&fields={FIELDS}&page={page}&page_size={page_size}",
@@ -160,6 +165,19 @@ impl FreesoundProvider {
             url.push_str(&format!("&filter={}", encode(&filters.join(" "))));
         }
         url
+    }
+}
+
+/// One filter value: a plain ASCII word as is, anything else as a phrase.
+fn filter_value(tag: &str) -> String {
+    if !tag.is_empty()
+        && tag
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        tag.to_string()
+    } else {
+        super::query::quoted_phrase(tag)
     }
 }
 
@@ -245,7 +263,11 @@ mod tests {
     }
 
     impl SampleFetch for FixtureFetch {
-        fn get(&self, url: &str, max_bytes: usize) -> Result<FetchResponse, String> {
+        fn get(
+            &self,
+            url: &str,
+            max_bytes: usize,
+        ) -> Result<FetchResponse, crate::provider::FetchError> {
             self.get_with(url, max_bytes, &[])
         }
 
@@ -254,7 +276,7 @@ mod tests {
             url: &str,
             _max_bytes: usize,
             headers: &[(&str, &str)],
-        ) -> Result<FetchResponse, String> {
+        ) -> Result<FetchResponse, crate::provider::FetchError> {
             self.urls.lock().unwrap().push(url.to_string());
             *self.headers.lock().unwrap() = headers
                 .iter()
@@ -353,6 +375,7 @@ mod tests {
             tags: vec!["acoustic".into()],
             offset: 30,
             limit: 15,
+            commercial_ok: false,
         };
         FreesoundProvider::new("KEY")
             .search(&query, &fetch)
@@ -376,6 +399,30 @@ mod tests {
             "the key stays out of the URL: {url}"
         );
         assert!(!url.contains("KEY"), "{url}");
+    }
+
+    #[test]
+    fn a_tag_filter_is_encoded_exactly_once() {
+        let fetch = fetch(SEARCH);
+        let query = SampleQuery {
+            text: "pad".into(),
+            tags: vec!["hip  hop".into(), "café".into(), "a\"b".into()],
+            ..Default::default()
+        };
+        FreesoundProvider::new("KEY")
+            .search(&query, &fetch)
+            .unwrap();
+        let url = fetch.urls.lock().unwrap()[0].clone();
+        let filter = url
+            .split('&')
+            .find_map(|part| part.strip_prefix("filter="))
+            .expect("a filter parameter");
+        // Decoding once yields the filter syntax itself, with no `%` left.
+        assert_eq!(
+            filter,
+            "tag%3A%22hip%20hop%22%20tag%3A%22caf%C3%A9%22%20tag%3A%22a%5C%22b%22"
+        );
+        assert!(!filter.contains("%25"), "no double encoding: {filter}");
     }
 
     #[test]

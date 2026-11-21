@@ -31,7 +31,7 @@ export const es = {
   "export.audio.phasePublishing": "Escribiendo archivos…",
   "export.audio.phaseCancelled": "Exportación cancelada. No se escribieron archivos nuevos.",
   "export.audio.cancelHint": "Termina el bloque actual y se detiene sin guardar la exportación.",
-  "sample.searchPlaceholder": "Buscar en bibliotecas de muestras en línea…",
+  "sample.searchPlaceholder": "Buscar en tus muestras y en bibliotecas en línea…",
   "sample.licenseNotice": "«{name}» tiene la licencia {licence}. La atribución se guarda con el proyecto.",
   "clip.noDuplicate": "Para reutilizar este audio, vuelve a importar su archivo fuente.",
   "pianoroll.humaniseHint": "Añade pequeñas variaciones de tiempo o velocidad a las notas seleccionadas, o a todas las visibles si no hay selección.",

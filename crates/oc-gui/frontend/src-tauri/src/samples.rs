@@ -11,16 +11,17 @@
 //! catalogue work itself is [`oc_sample`].
 
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::tool_registry::ToolId;
 use crate::tool_registry::arguments::ToolArguments;
 
 use oc_sample::http::HttpFetch;
-use oc_sample::model::{Quality, SampleError, SampleItem, SampleKind, SampleQuery};
+use oc_sample::model::{FailureKind, Quality, SampleError, SampleItem, SampleKind, SampleQuery};
 use oc_sample::provider::{SampleFetch, SampleProvider};
 use oc_sample::provider_for_with;
 use oc_sample::registry::{self, ProviderKeys};
@@ -30,12 +31,28 @@ use oc_sample::store::{SampleReceipt, SampleStore};
 use crate::ai::credential_store::{self, KeyringSecrets};
 use crate::state::AppState;
 
+mod breaker;
+mod cursor;
+pub(crate) mod local;
+mod merge;
+pub(crate) mod preview_cache;
+
+use breaker::{Breakers, Observation, SkipReason};
+use cursor::{CursorError, SearchCursor};
+
 /// Folder a pull writes into, relative to the project file.
 pub const SAMPLES_SUBDIR: &str = "media/samples";
 /// Keyring service for sample-market keys; the account is the provider id.
 pub(crate) const KEY_SERVICE: &str = "org.opencompose.samples";
 /// Environment overrides so a headless session needs no keychain.
 const JAMENDO_KEY_ENV: &str = "JAMENDO_CLIENT_ID";
+/// The `provider` of a file from the user's own sound folders.
+pub(crate) const LOCAL_PROVIDER: &str = "local";
+/// The id prefix of such a file: the rest of the id is its path.
+const LOCAL_ID_PREFIX: &str = "local:";
+/// Most local files one agent search lists. The model reads the whole result,
+/// so a short list leaves room for the market rows.
+const AGENT_LOCAL_LIMIT: usize = 10;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct SearchArgs {
@@ -62,11 +79,22 @@ pub(crate) struct SearchArgs {
     )]
     pub(crate) providers: Vec<String>,
     #[serde(default)]
-    #[schemars(description = "Result offset, default 0; use next_offset from the previous page")]
+    #[schemars(
+        description = "Result offset for every market, default 0. Prefer cursor; next_offset is kept for older callers"
+    )]
     pub(crate) offset: usize,
     #[serde(default = "default_search_limit")]
     #[schemars(description = "Results per page per market, default 20, clamped to 1..50")]
     pub(crate) limit: usize,
+    #[serde(default)]
+    #[schemars(
+        description = "Keep only results whose licence allows commercial use; non-commercial and unclassified licences are dropped. Default false: no licence filter"
+    )]
+    pub(crate) commercial_ok: bool,
+    #[schemars(
+        description = "Opaque cursor from the previous result's cursor field. Continues each market that still has results at its own position and overrides offset"
+    )]
+    pub(crate) cursor: Option<String>,
 }
 
 fn default_search_limit() -> usize {
@@ -86,6 +114,8 @@ impl ToolArguments for SearchArgs {
         "providers",
         "offset",
         "limit",
+        "commercial_ok",
+        "cursor",
     ];
 }
 
@@ -222,71 +252,122 @@ fn build_fetch(timeout: std::time::Duration) -> Result<HttpFetch, String> {
     HttpFetch::with_proxy(timeout, choice).map_err(|error| format!("network: {error}"))
 }
 
+/// The client for a resolve and download, with the shared download deadline.
 pub(crate) fn http_fetch() -> Result<HttpFetch, String> {
-    build_fetch(std::time::Duration::from_secs(180))
+    build_fetch(oc_sample::http::DOWNLOAD_TIMEOUT)
 }
 
-/// One market's search must answer inside this. A market that is down would
-/// otherwise hold every other market's results for the client's long timeout.
-const SEARCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
-
+/// The client for a search, with the shared search deadline: a market that is
+/// down must not hold every other market's results for the long one.
 fn search_fetch() -> Result<HttpFetch, String> {
-    build_fetch(SEARCH_TIMEOUT)
+    build_fetch(oc_sample::http::SEARCH_TIMEOUT)
 }
 
-/// A market that just timed out twice is skipped for a while: one dead market
-/// otherwise costs every search the full request timeout.
-const BREAKER_FAILURES: u32 = 2;
-const BREAKER_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(600);
-
-struct Breaker {
-    failures: u32,
-    open_until: Option<std::time::Instant>,
+/// What a page's `error_kind` says about a market that returned no results.
+/// The wire spelling is snake_case; the panel reads it instead of `error`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum PageErrorKind {
+    /// The market needs a key, or rejected the one it was given.
+    NeedsKey,
+    /// The market cannot be searched in this build.
+    ProviderUnavailable,
+    /// The market was not asked; `skip_reason` says why.
+    Skipped,
+    RateLimited,
+    NotFound,
+    Unavailable,
+    Timeout,
+    Network,
+    Parse,
+    Other,
 }
 
-static BREAKERS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, Breaker>>> =
-    std::sync::OnceLock::new();
-
-fn breakers() -> &'static std::sync::Mutex<std::collections::HashMap<String, Breaker>> {
-    BREAKERS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
-}
-
-/// How long the market stays skipped, or `None` when it may be tried.
-fn breaker_wait(id: &str) -> Option<std::time::Duration> {
-    let map = breakers().lock().ok()?;
-    let entry = map.get(id)?;
-    let until = entry.open_until?;
-    let now = std::time::Instant::now();
-    (until > now).then(|| until - now)
-}
-
-fn note_failure(id: &str) {
-    if let Ok(mut map) = breakers().lock() {
-        let entry = map.entry(id.to_string()).or_insert(Breaker {
-            failures: 0,
-            open_until: None,
-        });
-        entry.failures += 1;
-        if entry.failures >= BREAKER_FAILURES {
-            entry.open_until = Some(std::time::Instant::now() + BREAKER_COOLDOWN);
+impl PageErrorKind {
+    /// The kind for a provider's error. Refusal codes are stable wire codes,
+    /// so they are matched as identifiers, never as text.
+    fn of(error: &SampleError) -> Self {
+        match error {
+            SampleError::Refused {
+                code: "key_required",
+                ..
+            } => PageErrorKind::NeedsKey,
+            SampleError::Refused {
+                code: "provider_unavailable" | "provider_unknown",
+                ..
+            } => PageErrorKind::ProviderUnavailable,
+            SampleError::Refused { .. } => PageErrorKind::Other,
+            SampleError::Failed(failure) => match failure.kind {
+                FailureKind::RateLimited => PageErrorKind::RateLimited,
+                FailureKind::Unauthorized => PageErrorKind::NeedsKey,
+                FailureKind::NotFound => PageErrorKind::NotFound,
+                FailureKind::Unavailable => PageErrorKind::Unavailable,
+                FailureKind::Timeout => PageErrorKind::Timeout,
+                FailureKind::Network => PageErrorKind::Network,
+                FailureKind::Parse => PageErrorKind::Parse,
+                FailureKind::Other => PageErrorKind::Other,
+            },
         }
     }
 }
 
-fn note_success(id: &str) {
-    if let Ok(mut map) = breakers().lock() {
-        map.remove(id);
+/// One market's page entry when it returned no results.
+struct PageFailure<'a> {
+    kind: PageErrorKind,
+    message: &'a str,
+    retry_after_secs: Option<u64>,
+    skip_reason: Option<SkipReason>,
+    http_status: Option<u16>,
+}
+
+fn failed_page(
+    provider: &str,
+    label: &str,
+    offset: Option<usize>,
+    failure: PageFailure<'_>,
+) -> Value {
+    let mut page = json!({
+        "provider": provider,
+        "provider_name": label,
+        "offset": offset,
+        "count": 0,
+        "next_offset": Value::Null,
+        "error": failure.message,
+        "error_kind": failure.kind,
+        "skip_reason": failure.skip_reason,
+        "retry_after_secs": failure.retry_after_secs,
+        "http_status": failure.http_status,
+    });
+    if failure.skip_reason.is_some() {
+        page["skipped"] = json!(true);
     }
+    page
 }
 
 /// One market's answer, or the reason it could not answer. `missing` carries a
 /// provider row for an id no spec knows, which the caller reports beside the
 /// market list instead of as a page.
 struct MarketOutcome {
+    /// The registry id, which the cursor records.
+    provider: Option<&'static str>,
+    label: &'static str,
     page: Value,
-    items: Vec<Value>,
-    more: bool,
+    items: Vec<SampleItem>,
+    next_offset: Option<usize>,
     missing: Option<Value>,
+}
+
+impl MarketOutcome {
+    fn failed(spec: &oc_sample::registry::ProviderSpec, page: Value) -> Self {
+        Self {
+            provider: Some(spec.id),
+            label: spec.label,
+            page,
+            items: Vec::new(),
+            next_offset: None,
+            missing: None,
+        }
+    }
 }
 
 fn search_market(
@@ -295,12 +376,15 @@ fn search_market(
     keys: ProviderKeys<'_>,
     fetch: &dyn SampleFetch,
     runtime: &dyn ProviderRuntime,
+    breakers: &Breakers,
 ) -> MarketOutcome {
     let Some(spec) = registry::spec(id) else {
         return MarketOutcome {
+            provider: None,
+            label: "",
             page: Value::Null,
             items: Vec::new(),
-            more: false,
+            next_offset: None,
             missing: Some(json!({
                 "id": id,
                 "label": Value::Null,
@@ -311,105 +395,195 @@ fn search_market(
         };
     };
     let row = registry::availability_of_with(spec, keys, runtime);
-    if !row.available {
-        return MarketOutcome {
-            page: json!({
-                "provider": spec.id,
-                "provider_name": spec.label,
-                "count": 0,
-                "error": row.reason,
-            }),
-            items: Vec::new(),
-            more: false,
-            missing: None,
-        };
-    }
     let provider = match provider_for_with(Some(spec.id), keys, runtime) {
-        Ok(provider) => provider,
-        Err(error) => {
-            return MarketOutcome {
-                page: json!({
-                    "provider": spec.id,
-                    "provider_name": spec.label,
-                    "count": 0,
-                    "error": error.message(),
-                }),
-                items: Vec::new(),
-                more: false,
-                missing: None,
+        Ok(provider) if row.available => provider,
+        result => {
+            let kind = match &result {
+                Err(error) => PageErrorKind::of(error),
+                Ok(_) => PageErrorKind::ProviderUnavailable,
             };
+            let message = match (&row.reason, &result) {
+                (Some(reason), _) if !row.available => reason.clone(),
+                (_, Err(error)) => error.message().to_string(),
+                _ => "not available".to_string(),
+            };
+            return MarketOutcome::failed(
+                spec,
+                failed_page(
+                    spec.id,
+                    spec.label,
+                    None,
+                    PageFailure {
+                        kind,
+                        message: &message,
+                        retry_after_secs: None,
+                        skip_reason: None,
+                        http_status: None,
+                    },
+                ),
+            );
         }
     };
-    if let Some(wait) = breaker_wait(spec.id) {
-        return MarketOutcome {
-            page: json!({
-                "provider": spec.id,
-                "provider_name": spec.label,
-                "count": 0,
-                "skipped": true,
-                "error": format!(
-                    "skipped after {BREAKER_FAILURES} consecutive failures; retrying in {}s",
-                    wait.as_secs().max(1)
-                ),
-            }),
-            items: Vec::new(),
-            more: false,
-            missing: None,
+    if let Some(skip) = breakers.skip(spec.id, Instant::now()) {
+        // Rounded up, so a caller that waits this long finds the market open.
+        let wait = (skip.remaining.as_secs() + u64::from(skip.remaining.subsec_nanos() > 0)).max(1);
+        let message = match skip.reason {
+            SkipReason::CircuitOpen => format!(
+                "skipped after {} consecutive failures; retrying in {wait}s",
+                breaker::BREAKER_FAILURES
+            ),
+            SkipReason::RateLimited => {
+                format!("skipped while the market asks to slow down; retrying in {wait}s")
+            }
         };
+        return MarketOutcome::failed(
+            spec,
+            failed_page(
+                spec.id,
+                spec.label,
+                Some(query.offset),
+                PageFailure {
+                    kind: PageErrorKind::Skipped,
+                    message: &message,
+                    retry_after_secs: Some(wait),
+                    skip_reason: Some(skip.reason),
+                    http_status: None,
+                },
+            ),
+        );
     }
     match provider.search(query, fetch) {
         Ok(page) => {
-            note_success(spec.id);
+            breakers.observe(spec.id, Observation::Answered, Instant::now());
             MarketOutcome {
-                items: page
-                    .items
-                    .iter()
-                    .map(|item| item_json(item, spec.label))
-                    .collect(),
+                provider: Some(spec.id),
+                label: spec.label,
                 page: json!({
                     "provider": page.provider,
                     "provider_name": provider.label(),
+                    "offset": query.offset,
                     "count": page.items.len(),
                     "total": page.total,
                     "next_offset": page.next_offset,
+                    "error": Value::Null,
+                    "error_kind": Value::Null,
+                    "skip_reason": Value::Null,
+                    "retry_after_secs": Value::Null,
+                    "http_status": Value::Null,
                 }),
-                more: page.next_offset.is_some(),
+                next_offset: page.next_offset,
+                items: page.items,
                 missing: None,
             }
         }
         Err(error) => {
-            note_failure(spec.id);
-            MarketOutcome {
-                page: json!({
-                    "provider": provider.id(),
-                    "provider_name": provider.label(),
-                    "count": 0,
-                    "error": error.message(),
-                }),
-                items: Vec::new(),
-                more: false,
-                missing: None,
+            let failure = error.failure_detail();
+            if let Some(failure) = failure {
+                breakers.observe(
+                    spec.id,
+                    Observation::Failed {
+                        kind: failure.kind,
+                        retry_after_secs: failure.retry_after_secs,
+                    },
+                    Instant::now(),
+                );
             }
+            // A throttled market reports the wait this search applies, which
+            // is the source's `Retry-After` bounded, or the default.
+            let retry_after_secs = match failure {
+                Some(failure) if failure.kind == FailureKind::RateLimited => {
+                    Some(breaker::rate_limit_wait(failure.retry_after_secs).as_secs())
+                }
+                Some(failure) => failure.retry_after_secs,
+                None => None,
+            };
+            MarketOutcome::failed(
+                spec,
+                failed_page(
+                    provider.id(),
+                    provider.label(),
+                    Some(query.offset),
+                    PageFailure {
+                        kind: PageErrorKind::of(&error),
+                        message: error.message(),
+                        retry_after_secs,
+                        skip_reason: None,
+                        http_status: failure.and_then(|failure| failure.status),
+                    },
+                ),
+            )
         }
     }
 }
 
-/// `sample_search`: one page across the markets the caller names, or every
-/// available market. Providers that cannot answer are reported in the result,
-/// never dropped.
-pub fn search(args: &Value) -> Result<Value, String> {
-    let request = SearchArgs::decode(args).map_err(|error| error.to_string())?;
-    search_request(&request)
+/// `sample_search` for the agent tool: matching files from this computer's
+/// sound folders first, then one page across the markets the caller names, or
+/// every available market. Providers that cannot answer are reported in the
+/// result, never dropped; a refusal reads as its sentence.
+pub(crate) fn search_request(request: &SearchArgs) -> Result<Value, String> {
+    let markets = search_request_typed(request).map_err(|error| error.message().to_string())?;
+    Ok(with_local(markets, request, &local::catalogue()))
 }
 
-pub(crate) fn search_request(request: &SearchArgs) -> Result<Value, String> {
+/// Put the user's own matching files ahead of the market rows, as the panel
+/// does. Only the first page lists them; a continuation pages through the
+/// markets alone. A local file has no licence to filter and no channel or tag
+/// metadata, so those filters do not apply to it.
+fn with_local(mut result: Value, request: &SearchArgs, catalogue: &local::Catalogue) -> Value {
+    if request.cursor.is_some() || request.offset > 0 {
+        return result;
+    }
+    let Ok(query) = local::LocalQuery::from_args(&local::LocalSearchArgs {
+        query: request.query.clone(),
+        kind: request.kind.clone(),
+        min_seconds: request.min_seconds,
+        max_seconds: request.max_seconds,
+        limit: Some(request.limit.clamp(1, AGENT_LOCAL_LIMIT)),
+    }) else {
+        return result;
+    };
+    let found = catalogue.search(&query);
+    let rows: Vec<Value> = found.items.iter().map(local_item_json).collect();
+    let count = rows.len();
+    if let Some(items) = result.get_mut("items").and_then(Value::as_array_mut) {
+        items.splice(0..0, rows);
+    }
+    let total = result["count"].as_u64().unwrap_or(0) + count as u64;
+    result["count"] = json!(total);
+    result["local"] = json!({
+        "count": count,
+        "truncated": found.truncated,
+        "folders": found.folders,
+    });
+    result
+}
+
+/// One local file as a search row. Its id carries the path, so `sample_pull`
+/// can copy it into the project.
+fn local_item_json(item: &local::LocalSample) -> Value {
+    json!({
+        "id": format!("{LOCAL_ID_PREFIX}{}", item.path),
+        "provider": LOCAL_PROVIDER,
+        "provider_name": "This computer",
+        "name": item.name,
+        "kind": item.kind,
+        "duration_seconds": item.duration_seconds,
+        "format": item.format,
+        "relative": item.relative,
+        "license_ok": true,
+    })
+}
+
+/// The panel's search: a refusal keeps its code.
+pub(crate) fn search_request_typed(request: &SearchArgs) -> Result<Value, SampleError> {
     let keys = load_keys();
-    let fetch = search_fetch()?;
+    let fetch = search_fetch().map_err(SampleError::failed)?;
     search_with_request(
         request,
         &keys,
         &fetch,
         &LocalRuntime::from_process_configuration(),
+        breaker::shared(),
     )
 }
 
@@ -421,7 +595,48 @@ fn search_with(
     runtime: &dyn ProviderRuntime,
 ) -> Result<Value, String> {
     let request = SearchArgs::decode(args).map_err(|error| error.to_string())?;
-    search_with_request(&request, keys, fetch, runtime)
+    search_with_request(&request, keys, fetch, runtime, &Breakers::default())
+        .map_err(|error| error.message().to_string())
+}
+
+/// The market a search asks next, and the provider offset it starts at.
+struct Planned {
+    id: String,
+    offset: usize,
+}
+
+/// The markets this request asks, in order. Without a cursor every requested
+/// market starts at `offset`. With one, only the markets it names are asked,
+/// each at its own offset, and an explicit `providers` list narrows them.
+fn plan_markets(
+    args: &SearchArgs,
+    cursor: Option<&SearchCursor>,
+    offset: usize,
+    keys: ProviderKeys<'_>,
+    runtime: &dyn ProviderRuntime,
+) -> Vec<Planned> {
+    let requested = requested_providers(args, keys, runtime);
+    let Some(cursor) = cursor else {
+        return requested
+            .into_iter()
+            .map(|id| Planned { id, offset })
+            .collect();
+    };
+    let explicit = !args.providers.is_empty() || args.provider.is_some();
+    let named: Vec<&'static str> = requested
+        .iter()
+        .filter_map(|id| registry::spec(id).map(|spec| spec.id))
+        .collect();
+    cursor
+        .markets()
+        .filter(|market| !explicit || named.contains(market))
+        .filter_map(|market| {
+            cursor.offset_of(market).map(|offset| Planned {
+                id: market.to_string(),
+                offset,
+            })
+        })
+        .collect()
 }
 
 fn search_with_request(
@@ -429,7 +644,8 @@ fn search_with_request(
     keys: &Keys,
     fetch: &dyn SampleFetch,
     runtime: &dyn ProviderRuntime,
-) -> Result<Value, String> {
+    breakers: &Breakers,
+) -> Result<Value, SampleError> {
     let kind = match args
         .kind
         .as_deref()
@@ -437,16 +653,29 @@ fn search_with_request(
         .filter(|kind| !kind.is_empty())
     {
         Some(value) => Some(SampleKind::parse(value).ok_or_else(|| {
-            format!(
-                "unknown sample kind '{value}'; accepted: drum, loop, vocal, fx, instrument, any"
+            SampleError::refused(
+                "invalid_kind",
+                format!(
+                    "unknown sample kind '{value}'; accepted: drum, loop, vocal, fx, instrument, any"
+                ),
             )
         })?),
         None => None,
     };
-    let text = args.query.clone();
+    let cursor = match args
+        .cursor
+        .as_deref()
+        .map(str::trim)
+        .filter(|cursor| !cursor.is_empty())
+    {
+        Some(text) => Some(
+            SearchCursor::decode(text)
+                .map_err(|error| SampleError::refused(CursorError::CODE, error.message()))?,
+        ),
+        None => None,
+    };
     let keys_view = keys.view();
-    let requested = requested_providers(args, keys_view, runtime);
-    let query = SampleQuery {
+    let base = SampleQuery {
         text: args.query.clone(),
         kind,
         min_seconds: args.min_seconds,
@@ -455,61 +684,100 @@ fn search_with_request(
         tags: args.tags.clone(),
         offset: args.offset,
         limit: args.limit,
-    };
+        commercial_ok: args.commercial_ok,
+    }
+    .normalized();
+    let plan = plan_markets(args, cursor.as_ref(), base.offset, keys_view, runtime);
     let mut providers: Vec<Value> = registry::availability_with(keys_view, runtime)
         .into_iter()
         .map(|row| serde_json::to_value(row).unwrap_or(Value::Null))
         .collect();
-    let mut pages: Vec<Value> = Vec::new();
-    let mut items: Vec<Value> = Vec::new();
-    let mut more = false;
     // Markets answer in parallel: one that is down must not delay the rest by
     // its own timeout, and the requested order is kept for the result.
     let outcomes: Vec<MarketOutcome> = std::thread::scope(|scope| {
-        let handles: Vec<_> = requested
+        let handles: Vec<_> = plan
             .iter()
-            .map(|id| {
-                let query = &query;
-                scope.spawn(move || search_market(id, query, keys_view, fetch, runtime))
+            .map(|planned| {
+                let query = SampleQuery {
+                    offset: planned.offset,
+                    ..base.clone()
+                };
+                let id = planned.id.as_str();
+                scope.spawn(move || search_market(id, &query, keys_view, fetch, runtime, breakers))
             })
             .collect();
         handles
             .into_iter()
-            .map(|handle| {
-                handle.join().unwrap_or_else(|_| MarketOutcome {
-                    page: json!({
-                        "provider": "unknown",
-                        "provider_name": "unknown",
-                        "count": 0,
-                        "error": "the market's search panicked",
-                    }),
-                    items: Vec::new(),
-                    more: false,
-                    missing: None,
+            .zip(&plan)
+            .map(|(handle, planned)| {
+                handle.join().unwrap_or_else(|_| {
+                    let spec = registry::spec(&planned.id);
+                    MarketOutcome {
+                        provider: spec.map(|spec| spec.id),
+                        label: spec.map_or("", |spec| spec.label),
+                        page: failed_page(
+                            &planned.id,
+                            spec.map_or("", |spec| spec.label),
+                            Some(planned.offset),
+                            PageFailure {
+                                kind: PageErrorKind::Other,
+                                message: "the market's search panicked",
+                                retry_after_secs: None,
+                                skip_reason: None,
+                                http_status: None,
+                            },
+                        ),
+                        items: Vec::new(),
+                        next_offset: None,
+                        missing: None,
+                    }
                 })
             })
             .collect()
     });
+    let mut pages: Vec<Value> = Vec::new();
+    let mut lists: Vec<Vec<SampleItem>> = Vec::new();
+    let mut labels: Vec<&'static str> = Vec::new();
+    let mut next = SearchCursor::default();
+    let mut more = false;
+    let mut raw_count = 0usize;
     for outcome in outcomes {
         if let Some(missing) = outcome.missing {
             providers.push(missing);
             continue;
         }
-        more |= outcome.more;
-        items.extend(outcome.items);
+        if let (Some(provider), Some(offset)) = (outcome.provider, outcome.next_offset) {
+            more = true;
+            next.push(provider, offset);
+        }
+        raw_count += outcome.items.len();
         pages.push(outcome.page);
+        labels.push(outcome.label);
+        lists.push(outcome.items);
     }
-    let next_offset = more.then(|| query.offset.saturating_add(query.page_size()));
+    let merged = merge::interleave(lists);
+    let duplicates = raw_count - merged.len();
+    let items: Vec<Value> = merged
+        .iter()
+        .map(|(index, item)| item_json(item, labels[*index]))
+        .collect();
+    // The shared offset only means something when every market started at it;
+    // a cursor search continues through `cursor` alone.
+    let next_offset =
+        (more && cursor.is_none()).then(|| base.offset.saturating_add(base.page_size()));
     Ok(json!({
         "status": "ok",
-        "query": text,
+        "query": base.text,
         "kind": kind.map(|kind| kind.as_str()),
-        "offset": query.offset,
-        "limit": query.page_size(),
+        "commercial_ok": base.commercial_ok,
+        "offset": base.offset,
+        "limit": base.page_size(),
         "providers": providers,
         "pages": pages,
         "count": items.len(),
+        "duplicates": duplicates,
         "next_offset": next_offset,
+        "cursor": next.encode(),
         "items": items,
     }))
 }
@@ -569,6 +837,13 @@ fn pull_with(
     if request.id.trim().is_empty() {
         return Err("sample_pull needs an id from sample_search".into());
     }
+    if let Some(path) = local_path(request) {
+        return pull_local(
+            project_root(state).as_deref(),
+            &crate::local_content::sample_search_roots(),
+            path,
+        );
+    }
     let provider = match provider_for_args(
         request.provider.as_deref(),
         request.id.trim(),
@@ -606,6 +881,71 @@ fn pull_with(
         project_root.as_deref(),
         provider.as_ref(),
     ))
+}
+
+/// The path a pull names when it asks for a file from this computer.
+fn local_path(request: &crate::agent_tools::sample::SamplePullArgs) -> Option<&str> {
+    let id = request.id.trim();
+    if let Some(path) = id.strip_prefix(LOCAL_ID_PREFIX) {
+        return Some(path);
+    }
+    let named = request.provider.as_deref().map(str::trim);
+    named
+        .is_some_and(|provider| provider.eq_ignore_ascii_case(LOCAL_PROVIDER))
+        .then_some(id)
+}
+
+/// Copy one file from the sound folders into the project's
+/// `media/local-samples`, the same copy the panel's Add makes. Only an audio
+/// file inside a searched folder is accepted, so the agent cannot read an
+/// arbitrary file through this path.
+fn pull_local(project_root: Option<&Path>, roots: &[PathBuf], path: &str) -> Result<Value, String> {
+    let refusal = |error: local::LocalSampleError| match error.refusal {
+        Some(refusal) => Ok(SampleError::refused(refusal.code(), error.message).to_json()),
+        None => Err(error.message),
+    };
+    let source = match local::resolve_in(roots, path) {
+        Ok(source) => source,
+        Err(error) => return refusal(error),
+    };
+    let Some(root) = project_root else {
+        return Ok(SampleError::refused(
+            "project_unsaved",
+            "Save the project first: a sample needs a media folder.",
+        )
+        .to_json());
+    };
+    let copy = match local::copy_into_project(&source, root) {
+        Ok(copy) => copy,
+        Err(error) => return refusal(error),
+    };
+    let copied = copy.path.clone();
+    copy.keep();
+    let media_path = copied
+        .strip_prefix(root)
+        .ok()
+        .map(|path| path.to_string_lossy().replace('\\', "/"));
+    let name = source
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let mut value = json!({
+        "status": "ok",
+        "provider": LOCAL_PROVIDER,
+        "provider_name": "This computer",
+        "id": format!("{LOCAL_ID_PREFIX}{path}"),
+        "name": name,
+        "kind": oc_sample::model::classify(&name, &[]),
+        "file": copied.file_name().map(|file| file.to_string_lossy().into_owned()),
+        "path": copied.to_string_lossy(),
+        "media_path": media_path,
+    });
+    if let Some(path) = &media_path {
+        value["next_step"] = json!(format!(
+            "Add it to a track with an audio clip: file: \"{path}\""
+        ));
+    }
+    Ok(value)
 }
 
 /// Pull one item. A Freesound item with a token downloads the original file;
@@ -687,7 +1027,9 @@ fn freesound_original_url(id: &str) -> String {
 /// A 401 is the one refusal worth a refresh; every other status stays the
 /// reason the original was not used.
 fn is_unauthorized(error: &SampleError) -> bool {
-    error.message().contains("HTTP 401")
+    error
+        .failure_detail()
+        .is_some_and(|failure| failure.status == Some(401))
 }
 
 /// Resolve the market a pull names or the id implies. An unknown market is
@@ -924,30 +1266,6 @@ mod url_tests {
 }
 
 #[cfg(test)]
-mod breaker_tests {
-    use super::*;
-
-    #[test]
-    fn a_market_that_failed_twice_is_skipped_for_a_while() {
-        note_success("breaker-fixture");
-        assert!(breaker_wait("breaker-fixture").is_none());
-
-        note_failure("breaker-fixture");
-        assert!(
-            breaker_wait("breaker-fixture").is_none(),
-            "one failure is not enough"
-        );
-        note_failure("breaker-fixture");
-        let wait = breaker_wait("breaker-fixture").expect("breakered after two failures");
-        assert!(wait <= BREAKER_COOLDOWN);
-
-        // A successful call clears it: the market is being tried again.
-        note_success("breaker-fixture");
-        assert!(breaker_wait("breaker-fixture").is_none());
-    }
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
     fn fixture_search_with(
@@ -1026,7 +1344,7 @@ mod tests {
             &self,
             url: &str,
             _max_bytes: usize,
-        ) -> Result<oc_sample::provider::FetchResponse, String> {
+        ) -> Result<oc_sample::provider::FetchResponse, oc_sample::provider::FetchError> {
             self.urls.lock().unwrap().push(url.to_string());
             let body = self
                 .routes
@@ -1085,6 +1403,131 @@ mod tests {
         assert_eq!(value["items"][1]["license_ok"], true);
         assert_eq!(value["pages"][0]["count"], 3);
         assert!(value["pages"][0]["total"].is_number());
+    }
+
+    fn local_wav(path: &Path) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            path,
+            oc_engine::wav::pcm_wav_bytes(&[0.1; 1_600], 8_000, 2).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn local_catalogue(root: &Path) -> local::Catalogue {
+        local::Catalogue::build(&[root.to_path_buf()], &|root| {
+            crate::local_content::sample_files(root)
+        })
+    }
+
+    #[test]
+    fn an_agent_search_lists_local_files_before_the_market_rows() {
+        let folder = tempfile::tempdir().unwrap();
+        local_wav(&folder.path().join("Drums/Snare Tight.wav"));
+        local_wav(&folder.path().join("Drums/Kick.wav"));
+        let catalogue = local_catalogue(folder.path());
+        let keys = no_keys();
+        let fetch = fixture(vec![("api.openverse.org", OPENVERSE)]);
+        let args = json!({"query": "snare", "providers": ["openverse"], "limit": 5});
+        let markets = fixture_search_with(&args, &keys, &fetch).unwrap();
+        let request = SearchArgs::decode(&args).unwrap();
+
+        let value = with_local(markets, &request, &catalogue);
+        let items = value["items"].as_array().unwrap();
+        assert_eq!(items.len(), 4);
+        assert_eq!(items[0]["provider"], LOCAL_PROVIDER);
+        assert_eq!(items[0]["name"], "Snare Tight");
+        assert_eq!(items[0]["relative"], "Drums/Snare Tight.wav");
+        let id = items[0]["id"].as_str().unwrap();
+        assert!(id.starts_with(LOCAL_ID_PREFIX) && id.ends_with("Snare Tight.wav"));
+        assert_eq!(items[1]["provider"], "openverse");
+        assert_eq!(value["count"], 4);
+        assert_eq!(value["local"]["count"], 1);
+        assert_eq!(value["local"]["folders"], 1);
+        assert_eq!(value["pages"][0]["count"], 3);
+
+        // A continuation pages through the markets alone, so a local file is
+        // never listed twice.
+        let markets = fixture_search_with(&args, &keys, &fetch).unwrap();
+        let next = SearchArgs::decode(&json!({"query": "snare", "offset": 5})).unwrap();
+        let value = with_local(markets, &next, &catalogue);
+        assert_eq!(value["items"][0]["provider"], "openverse");
+        assert!(value.get("local").is_none());
+    }
+
+    #[test]
+    fn an_agent_search_lists_at_most_ten_local_files() {
+        let folder = tempfile::tempdir().unwrap();
+        for index in 0..14 {
+            local_wav(&folder.path().join(format!("snare {index}.wav")));
+        }
+        let catalogue = local_catalogue(folder.path());
+        let request = SearchArgs::decode(&json!({"query": "snare"})).unwrap();
+        let value = with_local(json!({"count": 0, "items": []}), &request, &catalogue);
+        assert_eq!(value["items"].as_array().unwrap().len(), AGENT_LOCAL_LIMIT);
+        assert_eq!(value["local"]["truncated"], true);
+    }
+
+    #[test]
+    fn a_local_pull_copies_a_searched_file_into_the_project() {
+        let folder = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let source = folder.path().join("Drums/Snare Tight.wav");
+        local_wav(&source);
+        let roots = [folder.path().to_path_buf()];
+        let path = source.to_string_lossy().into_owned();
+
+        let value = pull_local(Some(project.path()), &roots, &path).unwrap();
+        assert_eq!(value["status"], "ok");
+        assert_eq!(value["provider"], LOCAL_PROVIDER);
+        assert_eq!(value["media_path"], "media/local-samples/Snare-Tight.wav");
+        assert!(
+            value["next_step"]
+                .as_str()
+                .unwrap()
+                .contains("media/local-samples/Snare-Tight.wav")
+        );
+        assert!(
+            project
+                .path()
+                .join("media/local-samples/Snare-Tight.wav")
+                .is_file()
+        );
+
+        // The id or an explicit provider routes a pull to this computer.
+        let by_id = crate::agent_tools::sample::SamplePullArgs {
+            id: format!("{LOCAL_ID_PREFIX}{path}"),
+            provider: None,
+            dest: None,
+            accept_licence: false,
+        };
+        assert_eq!(local_path(&by_id), Some(path.as_str()));
+        let by_provider = crate::agent_tools::sample::SamplePullArgs {
+            id: path.clone(),
+            provider: Some("local".into()),
+            dest: None,
+            accept_licence: false,
+        };
+        assert_eq!(local_path(&by_provider), Some(path.as_str()));
+    }
+
+    #[test]
+    fn a_local_pull_refuses_a_file_outside_the_sound_folders_and_an_unsaved_project() {
+        let folder = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let outside = elsewhere.path().join("secret.wav");
+        local_wav(&outside);
+        let inside = folder.path().join("snare.wav");
+        local_wav(&inside);
+        let roots = [folder.path().to_path_buf()];
+
+        let value = pull_local(Some(project.path()), &roots, &outside.to_string_lossy()).unwrap();
+        assert_eq!(value["status"], "refused");
+        assert_eq!(value["code"], "outside_folders");
+        let value = pull_local(None, &roots, &inside.to_string_lossy()).unwrap();
+        assert_eq!(value["code"], "project_unsaved");
+        assert!(!project.path().join("media").exists());
     }
 
     #[test]
@@ -1235,6 +1678,318 @@ mod tests {
         assert!(error.contains("accepted: drum, loop, vocal, fx, instrument, any"));
     }
 
+    fn run(
+        args: Value,
+        fetch: &dyn SampleFetch,
+        breakers: &Breakers,
+    ) -> Result<Value, SampleError> {
+        let request = SearchArgs::decode(&args).unwrap();
+        search_with_request(
+            &request,
+            &no_keys(),
+            fetch,
+            &oc_sample::runtime::FixtureBuiltinRuntime,
+            breakers,
+        )
+    }
+
+    /// Fails every request the way the HTTP client reports `error`.
+    struct FailingFetch {
+        error: oc_sample::provider::FetchError,
+        calls: Mutex<usize>,
+    }
+
+    impl FailingFetch {
+        fn new(kind: FailureKind, status: Option<u16>, retry_after_secs: Option<u64>) -> Self {
+            Self {
+                error: oc_sample::provider::FetchError {
+                    kind,
+                    status,
+                    retry_after_secs,
+                    message: "fixture failure".into(),
+                },
+                calls: Mutex::new(0),
+            }
+        }
+
+        fn calls(&self) -> usize {
+            *self.calls.lock().unwrap()
+        }
+    }
+
+    impl SampleFetch for FailingFetch {
+        fn get(
+            &self,
+            _url: &str,
+            _max_bytes: usize,
+        ) -> Result<oc_sample::provider::FetchResponse, oc_sample::provider::FetchError> {
+            *self.calls.lock().unwrap() += 1;
+            Err(self.error.clone())
+        }
+    }
+
+    fn openverse_only() -> Value {
+        json!({ "query": "snare", "providers": ["openverse"], "limit": 5 })
+    }
+
+    #[test]
+    fn a_page_reports_a_typed_error_kind_beside_its_message() {
+        let cases = [
+            (FailureKind::Unauthorized, Some(401), "needs_key"),
+            (FailureKind::NotFound, Some(404), "not_found"),
+            (FailureKind::Unavailable, Some(503), "unavailable"),
+            (FailureKind::Timeout, None, "timeout"),
+            (FailureKind::Network, None, "network"),
+            (FailureKind::Parse, None, "parse"),
+            (FailureKind::Other, None, "other"),
+        ];
+        for (kind, status, expected) in cases {
+            let fetch = FailingFetch::new(kind, status, None);
+            let value = run(openverse_only(), &fetch, &Breakers::default()).unwrap();
+            let page = &value["pages"][0];
+            assert_eq!(page["provider"], "openverse");
+            assert_eq!(page["error_kind"], expected, "{kind:?}");
+            assert!(page["error"].as_str().unwrap().contains("fixture failure"));
+            assert_eq!(page["http_status"], json!(status));
+            assert!(page["skip_reason"].is_null());
+        }
+        // A market without its key is the same `needs_key` state.
+        let value = run(
+            json!({ "query": "snare", "providers": ["freesound"] }),
+            &fixture(vec![]),
+            &Breakers::default(),
+        )
+        .unwrap();
+        assert_eq!(value["pages"][0]["error_kind"], "needs_key");
+        let value = run(
+            json!({ "query": "snare", "providers": ["mixkit"] }),
+            &fixture(vec![]),
+            &Breakers::default(),
+        )
+        .unwrap();
+        assert_eq!(value["pages"][0]["error_kind"], "provider_unavailable");
+    }
+
+    #[test]
+    fn two_timeouts_skip_the_market_and_a_bad_key_never_does() {
+        let breakers = Breakers::default();
+        let timeout = FailingFetch::new(FailureKind::Timeout, None, None);
+        run(openverse_only(), &timeout, &breakers).unwrap();
+        run(openverse_only(), &timeout, &breakers).unwrap();
+        let value = run(openverse_only(), &timeout, &breakers).unwrap();
+        assert_eq!(
+            timeout.calls(),
+            2,
+            "the third search does not reach the market"
+        );
+        let page = &value["pages"][0];
+        assert_eq!(page["skipped"], true);
+        assert_eq!(page["error_kind"], "skipped");
+        assert_eq!(page["skip_reason"], "circuit_open");
+        assert_eq!(
+            page["retry_after_secs"],
+            breaker::BREAKER_COOLDOWN.as_secs()
+        );
+
+        let breakers = Breakers::default();
+        let unauthorized = FailingFetch::new(FailureKind::Unauthorized, Some(401), None);
+        for _ in 0..3 {
+            let value = run(openverse_only(), &unauthorized, &breakers).unwrap();
+            assert_eq!(value["pages"][0]["error_kind"], "needs_key");
+        }
+        assert_eq!(
+            unauthorized.calls(),
+            3,
+            "a bad key is asked again every time"
+        );
+    }
+
+    #[test]
+    fn a_throttled_market_waits_for_its_retry_after() {
+        let breakers = Breakers::default();
+        let throttled = FailingFetch::new(FailureKind::RateLimited, Some(429), Some(90));
+        let first = run(openverse_only(), &throttled, &breakers).unwrap();
+        assert_eq!(first["pages"][0]["error_kind"], "rate_limited");
+        assert_eq!(first["pages"][0]["retry_after_secs"], 90);
+        let second = run(openverse_only(), &throttled, &breakers).unwrap();
+        assert_eq!(throttled.calls(), 1);
+        assert_eq!(second["pages"][0]["skip_reason"], "rate_limited");
+        let wait = second["pages"][0]["retry_after_secs"].as_u64().unwrap();
+        assert!((1..=90).contains(&wait), "{wait}");
+
+        // Without a Retry-After the default wait applies, and a huge one is
+        // capped.
+        let breakers = Breakers::default();
+        let bare = FailingFetch::new(FailureKind::RateLimited, Some(429), None);
+        let value = run(openverse_only(), &bare, &breakers).unwrap();
+        assert_eq!(
+            value["pages"][0]["retry_after_secs"],
+            breaker::RATE_LIMIT_DEFAULT.as_secs()
+        );
+        let breakers = Breakers::default();
+        let long = FailingFetch::new(FailureKind::RateLimited, Some(429), Some(86_400));
+        let value = run(openverse_only(), &long, &breakers).unwrap();
+        assert_eq!(
+            value["pages"][0]["retry_after_secs"],
+            breaker::RATE_LIMIT_MAX.as_secs()
+        );
+    }
+
+    fn decode_cursor(value: &Value) -> SearchCursor {
+        SearchCursor::decode(value["cursor"].as_str().expect("a cursor")).unwrap()
+    }
+
+    #[test]
+    fn a_cursor_continues_each_market_at_its_own_offset() {
+        let fetch = fixture(vec![
+            ("api.openverse.org", OPENVERSE),
+            ("archive.org/advancedsearch", ARCHIVE),
+            ("commons.wikimedia.org", COMMONS),
+        ]);
+        let breakers = Breakers::default();
+        let first = run(
+            json!({
+                "query": "snare",
+                "providers": ["openverse", "wikimedia-commons", "internet-archive"],
+                "limit": 5
+            }),
+            &fetch,
+            &breakers,
+        )
+        .unwrap();
+        let cursor = decode_cursor(&first);
+        // Commons returned its last page, so the cursor leaves it out.
+        assert_eq!(
+            cursor.markets().collect::<Vec<_>>(),
+            vec!["openverse", "internet-archive"]
+        );
+        assert_eq!(cursor.offset_of("openverse"), Some(3));
+        assert_eq!(cursor.offset_of("internet-archive"), Some(3));
+        // An old caller still gets the shared offset.
+        assert_eq!(first["next_offset"], 5);
+
+        let next = run(
+            json!({ "query": "snare", "cursor": first["cursor"], "limit": 5 }),
+            &fetch,
+            &breakers,
+        )
+        .unwrap();
+        let asked: Vec<(&str, u64)> = next["pages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|page| {
+                (
+                    page["provider"].as_str().unwrap(),
+                    page["offset"].as_u64().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(asked, vec![("openverse", 3), ("internet-archive", 3)]);
+        assert!(
+            next["next_offset"].is_null(),
+            "a cursor search pages by cursor"
+        );
+
+        // An explicit market list narrows what the cursor continues.
+        let narrowed = run(
+            json!({ "query": "snare", "cursor": first["cursor"], "providers": ["ia"] }),
+            &fetch,
+            &breakers,
+        )
+        .unwrap();
+        assert_eq!(narrowed["pages"].as_array().unwrap().len(), 1);
+        assert_eq!(narrowed["pages"][0]["provider"], "internet-archive");
+    }
+
+    #[test]
+    fn an_exhausted_search_returns_no_cursor() {
+        let body: &'static [u8] = br#"{"result_count":1,"page_count":1,"page":1,"results":[
+            {"id":"a","title":"Kick","license":"cc0","license_url":"https://creativecommons.org/publicdomain/zero/1.0/","url":"https://example.org/kick.wav"}
+        ]}"#;
+        let fetch = fixture(vec![("api.openverse.org", body)]);
+        let value = run(openverse_only(), &fetch, &Breakers::default()).unwrap();
+        assert!(value["cursor"].is_null());
+        assert!(value["next_offset"].is_null());
+    }
+
+    #[test]
+    fn a_malformed_cursor_is_refused_before_any_market_is_asked() {
+        let fetch = fixture(vec![("api.openverse.org", OPENVERSE)]);
+        for cursor in ["%%%", "eyJ2Ijo5LCJtIjpbXX0", &"A".repeat(5000)] {
+            let error = run(
+                json!({ "query": "snare", "providers": ["openverse"], "cursor": cursor }),
+                &fetch,
+                &Breakers::default(),
+            )
+            .unwrap_err();
+            assert_eq!(error.code(), Some("invalid_cursor"), "{cursor}");
+        }
+        assert!(fetch.urls.lock().unwrap().is_empty());
+        // The agent tool reads the same refusal as its sentence.
+        let message = fixture_search_with(
+            &json!({ "query": "snare", "cursor": "%%%" }),
+            &no_keys(),
+            &fetch,
+        )
+        .unwrap_err();
+        assert!(message.contains("search cursor"), "{message}");
+    }
+
+    #[test]
+    fn markets_interleave_in_the_requested_order() {
+        let fetch = fixture(vec![
+            ("api.openverse.org", OPENVERSE),
+            ("archive.org/advancedsearch", ARCHIVE),
+        ]);
+        let value = run(
+            json!({
+                "query": "snare",
+                "providers": ["internet-archive", "openverse"],
+                "limit": 5
+            }),
+            &fetch,
+            &Breakers::default(),
+        )
+        .unwrap();
+        let providers: Vec<&str> = value["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["provider"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            providers,
+            vec![
+                "internet-archive",
+                "openverse",
+                "internet-archive",
+                "openverse",
+                "internet-archive",
+                "openverse"
+            ]
+        );
+        assert_eq!(value["duplicates"], 0);
+    }
+
+    #[test]
+    fn the_licence_filter_reaches_every_market() {
+        let body: &'static [u8] = br#"{"result_count":2,"page_count":1,"page":1,"results":[
+            {"id":"nc","title":"Night Drive","license":"by-nc","license_version":"4.0","license_url":"https://creativecommons.org/licenses/by-nc/4.0/","url":"https://example.org/night.mp3"},
+            {"id":"ok","title":"Kick","license":"cc0","license_url":"https://creativecommons.org/publicdomain/zero/1.0/","url":"https://example.org/kick.wav"}
+        ]}"#;
+        let fetch = fixture(vec![("api.openverse.org", body)]);
+        let all = run(openverse_only(), &fetch, &Breakers::default()).unwrap();
+        assert_eq!(all["count"], 2);
+        assert_eq!(all["commercial_ok"], false);
+        let mut args = openverse_only();
+        args["commercial_ok"] = json!(true);
+        let filtered = run(args, &fetch, &Breakers::default()).unwrap();
+        assert_eq!(filtered["count"], 1);
+        assert_eq!(filtered["items"][0]["id"], "openverse:ok");
+        assert_eq!(filtered["commercial_ok"], true);
+    }
+
     /// Answers the authenticated download endpoint by bearer token: a stale
     /// token gets 401, an unknown one 403, and only the fresh token serves the
     /// original. Every other URL is the preview.
@@ -1284,7 +2039,7 @@ mod tests {
             &self,
             url: &str,
             max_bytes: usize,
-        ) -> Result<oc_sample::provider::FetchResponse, String> {
+        ) -> Result<oc_sample::provider::FetchResponse, oc_sample::provider::FetchError> {
             self.get_with(url, max_bytes, &[])
         }
 
@@ -1293,7 +2048,7 @@ mod tests {
             url: &str,
             _max_bytes: usize,
             headers: &[(&str, &str)],
-        ) -> Result<oc_sample::provider::FetchResponse, String> {
+        ) -> Result<oc_sample::provider::FetchResponse, oc_sample::provider::FetchError> {
             let bearer = headers
                 .iter()
                 .find(|(name, _)| name.eq_ignore_ascii_case("authorization"))
@@ -1305,18 +2060,28 @@ mod tests {
                 .push((url.to_string(), bearer.clone()));
             if url.contains("/download/") {
                 return match bearer.as_str() {
-                    "Bearer stale" => Err(format!("HTTP 401 from {url}")),
+                    "Bearer stale" => Err(status_error(401, url)),
                     "Bearer fresh" => Ok(oc_sample::provider::FetchResponse {
                         status: 200,
                         body: self.original.clone(),
                     }),
-                    _ => Err(format!("HTTP 403 from {url}")),
+                    _ => Err(status_error(403, url)),
                 };
             }
             Ok(oc_sample::provider::FetchResponse {
                 status: 200,
                 body: self.preview.clone(),
             })
+        }
+    }
+
+    /// The failure the HTTP client reports for a refused status.
+    fn status_error(status: u16, url: &str) -> oc_sample::provider::FetchError {
+        oc_sample::provider::FetchError {
+            kind: oc_sample::model::FailureKind::Unauthorized,
+            status: Some(status),
+            retry_after_secs: None,
+            message: format!("HTTP {status} from {url}"),
         }
     }
 

@@ -3,7 +3,14 @@
 use std::io::Read;
 use std::time::Duration;
 
-use crate::provider::{FetchResponse, SampleFetch};
+use crate::model::{FailureKind, MAX_RETRY_AFTER_SECS};
+use crate::provider::{FetchError, FetchResponse, SampleFetch};
+
+/// Deadline for one search request. A search fans out to several markets in
+/// parallel, so one unreachable market must not hold the others' results.
+pub const SEARCH_TIMEOUT: Duration = Duration::from_secs(15);
+/// Deadline for one file download: a resolve plus a whole sample file.
+pub const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(180);
 
 /// Sent to both catalogues. Wikimedia asks for an identifying agent, and
 /// Freesound throttles anonymous-looking clients.
@@ -28,9 +35,9 @@ pub struct HttpFetch {
 }
 
 impl HttpFetch {
-    /// Build a client with the crate's default 180-second timeout.
+    /// Build a client with the download deadline, [`DOWNLOAD_TIMEOUT`].
     pub fn new() -> Result<Self, String> {
-        Self::with_timeout(Duration::from_secs(180))
+        Self::with_timeout(DOWNLOAD_TIMEOUT)
     }
 
     /// A client that follows an explicit proxy decision instead of the system.
@@ -77,7 +84,7 @@ impl SampleFetch for HttpFetch {
         self.network.clone()
     }
 
-    fn get(&self, url: &str, max_bytes: usize) -> Result<FetchResponse, String> {
+    fn get(&self, url: &str, max_bytes: usize) -> Result<FetchResponse, FetchError> {
         self.get_with(url, max_bytes, &[])
     }
 
@@ -86,7 +93,7 @@ impl SampleFetch for HttpFetch {
         url: &str,
         max_bytes: usize,
         headers: &[(&str, &str)],
-    ) -> Result<FetchResponse, String> {
+    ) -> Result<FetchResponse, FetchError> {
         let mut request = self.client.get(url);
         for (name, value) in headers {
             request = request.header(*name, *value);
@@ -94,34 +101,98 @@ impl SampleFetch for HttpFetch {
         // Every message below goes through `redact`: a provider that still puts
         // a credential in the query string must not leak it through an error.
         let response = request.send().map_err(|error| {
-            format!(
-                "request to {} failed: {}",
-                redact(url),
-                redact(&error.to_string())
+            let kind = if error.is_timeout() {
+                FailureKind::Timeout
+            } else {
+                FailureKind::Network
+            };
+            FetchError::new(
+                kind,
+                format!(
+                    "request to {} failed: {}",
+                    redact(url),
+                    redact(&error.to_string())
+                ),
             )
         })?;
         let status = response.status().as_u16();
         if !response.status().is_success() {
-            return Err(format!("HTTP {status} from {}", redact(url)));
+            let retry_after = response
+                .headers()
+                .get(reqwest::header::RETRY_AFTER)
+                .and_then(|value| value.to_str().ok());
+            return Err(status_error(status, retry_after, &redact(url)));
         }
         if let Some(length) = response.content_length()
             && length > max_bytes as u64
         {
-            return Err(format!(
-                "{} declares {length} bytes, more than the {max_bytes} byte limit",
-                redact(url)
+            return Err(FetchError::new(
+                FailureKind::Other,
+                format!(
+                    "{} declares {length} bytes, more than the {max_bytes} byte limit",
+                    redact(url)
+                ),
             ));
         }
         let mut body = Vec::new();
         response
             .take(max_bytes as u64 + 1)
             .read_to_end(&mut body)
-            .map_err(|error| format!("reading {} failed: {error}", redact(url)))?;
+            .map_err(|error| {
+                let kind = if error.kind() == std::io::ErrorKind::TimedOut {
+                    FailureKind::Timeout
+                } else {
+                    FailureKind::Network
+                };
+                FetchError::new(kind, format!("reading {} failed: {error}", redact(url)))
+            })?;
         if body.len() > max_bytes {
-            return Err(format!("{} is larger than {max_bytes} bytes", redact(url)));
+            return Err(FetchError::new(
+                FailureKind::Other,
+                format!("{} is larger than {max_bytes} bytes", redact(url)),
+            ));
         }
         Ok(FetchResponse { status, body })
     }
+}
+
+/// The failure for a non-2xx status. `url` is already redacted.
+fn status_error(status: u16, retry_after: Option<&str>, url: &str) -> FetchError {
+    let kind = match status {
+        429 => FailureKind::RateLimited,
+        401 | 403 => FailureKind::Unauthorized,
+        404 | 410 => FailureKind::NotFound,
+        500..=599 => FailureKind::Unavailable,
+        _ => FailureKind::Other,
+    };
+    // Only a throttle or an outage asks the client to wait; a `Retry-After` on
+    // any other status says nothing about when to come back.
+    let retry_after_secs = match kind {
+        FailureKind::RateLimited | FailureKind::Unavailable => {
+            retry_after.and_then(parse_retry_after)
+        }
+        _ => None,
+    };
+    FetchError {
+        kind,
+        status: Some(status),
+        retry_after_secs,
+        message: format!("HTTP {status} from {url}"),
+    }
+}
+
+/// Read a `Retry-After` header given in seconds. The HTTP-date form gives a
+/// wall-clock time this client does not trust its own clock against, so it
+/// reads as absent. The value is capped at [`MAX_RETRY_AFTER_SECS`].
+pub fn parse_retry_after(value: &str) -> Option<u64> {
+    let value = value.trim();
+    if value.is_empty() || value.len() > 12 || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    value
+        .parse::<u64>()
+        .ok()
+        .map(|seconds| seconds.min(MAX_RETRY_AFTER_SECS))
 }
 
 /// Query parameters whose value is a credential. The comparison is
@@ -279,9 +350,63 @@ mod tests {
         let url = format!("http://127.0.0.1:{port}/search/?fields=id&token=sk-secret");
         let error = client(Duration::from_secs(5)).get(&url, 1024).unwrap_err();
 
+        assert_eq!(error.kind, FailureKind::Unauthorized);
+        assert_eq!(error.status, Some(401));
+        let error = error.message;
         assert!(error.contains("HTTP 401"), "{error}");
         assert!(error.contains("token=[redacted]"), "{error}");
         assert!(!error.contains("sk-secret"), "{error}");
+    }
+
+    #[test]
+    fn a_throttled_request_carries_its_retry_after() {
+        let port = serve_once(
+            "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 42\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        );
+        let url = format!("http://127.0.0.1:{port}/search/");
+        let error = client(Duration::from_secs(5)).get(&url, 1024).unwrap_err();
+        assert_eq!(error.kind, FailureKind::RateLimited);
+        assert_eq!(error.status, Some(429));
+        assert_eq!(error.retry_after_secs, Some(42));
+    }
+
+    #[test]
+    fn a_status_maps_to_one_failure_kind() {
+        let cases = [
+            (429, FailureKind::RateLimited),
+            (401, FailureKind::Unauthorized),
+            (403, FailureKind::Unauthorized),
+            (404, FailureKind::NotFound),
+            (410, FailureKind::NotFound),
+            (500, FailureKind::Unavailable),
+            (503, FailureKind::Unavailable),
+            (504, FailureKind::Unavailable),
+            (400, FailureKind::Other),
+            (418, FailureKind::Other),
+        ];
+        for (status, kind) in cases {
+            let error = status_error(status, Some("5"), "https://example.org/");
+            assert_eq!(error.kind, kind, "{status}");
+            assert_eq!(error.status, Some(status));
+        }
+        assert_eq!(status_error(503, Some("7"), "u").retry_after_secs, Some(7));
+        assert_eq!(status_error(404, Some("7"), "u").retry_after_secs, None);
+        assert_eq!(status_error(429, None, "u").retry_after_secs, None);
+    }
+
+    #[test]
+    fn a_retry_after_is_read_in_seconds_and_bounded() {
+        assert_eq!(parse_retry_after(" 120 "), Some(120));
+        assert_eq!(parse_retry_after("0"), Some(0));
+        assert_eq!(
+            parse_retry_after("999999999999"),
+            Some(MAX_RETRY_AFTER_SECS)
+        );
+        assert_eq!(parse_retry_after("Wed, 21 Oct 2015 07:28:00 GMT"), None);
+        assert_eq!(parse_retry_after("-5"), None);
+        assert_eq!(parse_retry_after("1.5"), None);
+        assert_eq!(parse_retry_after(""), None);
+        assert_eq!(parse_retry_after(&"9".repeat(40)), None);
     }
 
     #[test]
@@ -289,7 +414,10 @@ mod tests {
         let port =
             serve_once("HTTP/1.1 200 OK\r\nContent-Length: 4096\r\nConnection: close\r\n\r\n");
         let url = format!("http://127.0.0.1:{port}/search/?token=sk-secret");
-        let error = client(Duration::from_secs(5)).get(&url, 16).unwrap_err();
+        let error = client(Duration::from_secs(5))
+            .get(&url, 16)
+            .unwrap_err()
+            .message;
 
         assert!(error.contains("declares 4096 bytes"), "{error}");
         assert!(error.contains("token=[redacted]"), "{error}");
@@ -302,7 +430,10 @@ mod tests {
         // reports the overflow.
         let port = serve_once("HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n0123456789abcdef");
         let url = format!("http://127.0.0.1:{port}/search/?token=sk-secret");
-        let error = client(Duration::from_secs(5)).get(&url, 8).unwrap_err();
+        let error = client(Duration::from_secs(5))
+            .get(&url, 8)
+            .unwrap_err()
+            .message;
 
         assert!(error.contains("larger than 8 bytes"), "{error}");
         assert!(error.contains("token=[redacted]"), "{error}");
@@ -317,6 +448,8 @@ mod tests {
             .get(&url, 1024)
             .unwrap_err();
 
+        assert_eq!(error.kind, FailureKind::Timeout);
+        let error = error.message;
         assert!(error.contains("token=[redacted]"), "{error}");
         assert!(!error.contains("sk-secret"), "{error}");
         assert!(error.contains("127.0.0.1"), "{error}");

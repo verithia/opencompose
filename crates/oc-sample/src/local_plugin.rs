@@ -42,7 +42,7 @@ pub(crate) fn is_installed_in(directory: Option<&std::path::Path>, id: &str) -> 
 
 mod wire {
     use super::Network;
-    use crate::model::SampleQuery;
+    use crate::model::{FailureKind, SampleQuery};
     use serde::{Deserialize, Serialize};
 
     /// Protocol version written into every helper request.
@@ -68,7 +68,9 @@ mod wire {
 
     #[derive(Deserialize, Serialize)]
     #[serde(tag = "status", rename_all = "snake_case")]
-    /// The helper's tagged success or error response.
+    /// The helper's tagged success or error response. `kind`, `http_status`
+    /// and `retry_after_secs` are optional so a reply from a helper that does
+    /// not send them still reads; an absent or unknown kind is `other`.
     pub enum Reply<T> {
         Ok {
             value: T,
@@ -76,13 +78,22 @@ mod wire {
         Error {
             code: Option<String>,
             message: String,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            kind: Option<FailureKind>,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            http_status: Option<u16>,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            retry_after_secs: Option<u64>,
         },
     }
 }
 
 mod host {
     use super::wire::{self, Operation, Reply, Request};
-    use crate::model::{SampleError, SampleItem, SamplePage, SampleQuery};
+    use crate::model::{
+        Failure, FailureKind, MAX_RETRY_AFTER_SECS, SampleError, SampleItem, SamplePage,
+        SampleQuery,
+    };
     use crate::provider::{MAX_JSON_BYTES, SampleFetch, SampleProvider};
     use crate::registry::ProviderSpec;
     use serde::{Deserialize, de::DeserializeOwned};
@@ -180,9 +191,10 @@ mod host {
                         _ => {
                             let _ = child.kill();
                             let _ = child.wait();
-                            break Err(
-                                self.error("local executable timed out or could not be monitored")
-                            );
+                            break Err(self.failure(
+                                FailureKind::Timeout,
+                                "local executable timed out or could not be monitored",
+                            ));
                         }
                     }
                 };
@@ -197,17 +209,54 @@ mod host {
             })?;
             match serde_json::from_slice::<Reply<T>>(&result) {
                 Ok(Reply::Ok { value }) => Ok(value),
-                Ok(Reply::Error { code, message }) => match code.as_deref() {
-                    Some("unknown_id") => Err(SampleError::refused("unknown_id", message)),
-                    Some("no_download") => Err(SampleError::refused("no_download", message)),
-                    _ => Err(self.error(&message)),
-                },
-                Err(_) => Err(self.error("invalid response format")),
+                Ok(Reply::Error {
+                    code,
+                    message,
+                    kind,
+                    http_status,
+                    retry_after_secs,
+                }) => Err(reply_error(
+                    self.label,
+                    code.as_deref(),
+                    message,
+                    kind,
+                    http_status,
+                    retry_after_secs,
+                )),
+                Err(_) => Err(self.failure(FailureKind::Parse, "invalid response format")),
             }
         }
 
         fn error(&self, message: &str) -> SampleError {
-            SampleError::Failed(format!("{}: {message}", self.label))
+            self.failure(FailureKind::Other, message)
+        }
+
+        fn failure(&self, kind: FailureKind, message: &str) -> SampleError {
+            SampleError::failure(kind, format!("{}: {message}", self.label))
+        }
+    }
+
+    /// Map a helper's error reply. Only the refusal codes this host knows
+    /// survive as refusals; every other reply is a failure of the kind the
+    /// helper reported, with its wait bounded as if this host had read the
+    /// header itself.
+    pub(super) fn reply_error(
+        label: &str,
+        code: Option<&str>,
+        message: String,
+        kind: Option<FailureKind>,
+        http_status: Option<u16>,
+        retry_after_secs: Option<u64>,
+    ) -> SampleError {
+        match code {
+            Some("unknown_id") => SampleError::refused("unknown_id", message),
+            Some("no_download") => SampleError::refused("no_download", message),
+            _ => SampleError::Failed(Failure {
+                kind: kind.unwrap_or(FailureKind::Other),
+                status: http_status,
+                retry_after_secs: retry_after_secs.map(|seconds| seconds.min(MAX_RETRY_AFTER_SECS)),
+                message: format!("{label}: {message}"),
+            }),
         }
     }
 
@@ -291,10 +340,16 @@ pub fn run_adapter() -> Result<(), String> {
     ) -> Result<(), String> {
         let reply = match result {
             Ok(value) => Reply::Ok { value },
-            Err(error) => Reply::Error {
-                code: error.code().map(str::to_owned),
-                message: error.to_string(),
-            },
+            Err(error) => {
+                let failure = error.failure_detail();
+                Reply::Error {
+                    code: error.code().map(str::to_owned),
+                    message: error.to_string(),
+                    kind: failure.map(|failure| failure.kind),
+                    http_status: failure.and_then(|failure| failure.status),
+                    retry_after_secs: failure.and_then(|failure| failure.retry_after_secs),
+                }
+            }
         };
         serde_json::to_writer(std::io::stdout().lock(), &reply)
             .map_err(|_| "could not write response".into())
@@ -302,5 +357,91 @@ pub fn run_adapter() -> Result<(), String> {
     match request.operation {
         Operation::Search { query } => write_reply(provider.search(&query, &fetch)),
         Operation::Resolve { id } => write_reply(provider.resolve(&id, &fetch)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::host::reply_error;
+    use super::wire::Reply;
+    use crate::model::{FailureKind, MAX_RETRY_AFTER_SECS, SampleError};
+
+    fn read(json: &str) -> SampleError {
+        match serde_json::from_str::<Reply<serde_json::Value>>(json).unwrap() {
+            Reply::Error {
+                code,
+                message,
+                kind,
+                http_status,
+                retry_after_secs,
+            } => reply_error(
+                "Helper",
+                code.as_deref(),
+                message,
+                kind,
+                http_status,
+                retry_after_secs,
+            ),
+            Reply::Ok { .. } => panic!("expected an error reply"),
+        }
+    }
+
+    #[test]
+    fn a_reply_without_a_kind_is_an_other_failure() {
+        let error = read(r#"{"status":"error","code":null,"message":"boom"}"#);
+        assert_eq!(error.failure_kind(), Some(FailureKind::Other));
+        assert_eq!(error.message(), "Helper: boom");
+    }
+
+    #[test]
+    fn a_reply_carries_its_kind_status_and_bounded_wait() {
+        let error = read(
+            r#"{"status":"error","code":null,"message":"slow","kind":"rate_limited","http_status":429,"retry_after_secs":99999999}"#,
+        );
+        let failure = error.failure_detail().unwrap();
+        assert_eq!(failure.kind, FailureKind::RateLimited);
+        assert_eq!(failure.status, Some(429));
+        assert_eq!(failure.retry_after_secs, Some(MAX_RETRY_AFTER_SECS));
+    }
+
+    #[test]
+    fn an_unknown_kind_reads_as_other_and_known_codes_stay_refusals() {
+        let error = read(r#"{"status":"error","code":null,"message":"x","kind":"meteor"}"#);
+        assert_eq!(error.failure_kind(), Some(FailureKind::Other));
+        let refused =
+            read(r#"{"status":"error","code":"unknown_id","message":"gone","kind":"not_found"}"#);
+        assert_eq!(refused.code(), Some("unknown_id"));
+        // An unknown refusal code is a failure, never a refusal the host
+        // cannot name.
+        let other = read(r#"{"status":"error","code":"mystery","message":"x"}"#);
+        assert_eq!(other.code(), None);
+    }
+
+    #[test]
+    fn a_reply_written_by_a_helper_round_trips_its_failure() {
+        let reply: Reply<serde_json::Value> = Reply::Error {
+            code: None,
+            message: "down".into(),
+            kind: Some(FailureKind::Unavailable),
+            http_status: Some(503),
+            retry_after_secs: Some(12),
+        };
+        let json = serde_json::to_string(&reply).unwrap();
+        let failure = read(&json).failure_detail().cloned().unwrap();
+        assert_eq!(failure.kind, FailureKind::Unavailable);
+        assert_eq!(failure.status, Some(503));
+        assert_eq!(failure.retry_after_secs, Some(12));
+        // An old-format reply omits the new fields entirely.
+        let old: Reply<serde_json::Value> = Reply::Error {
+            code: Some("no_download".into()),
+            message: "m".into(),
+            kind: None,
+            http_status: None,
+            retry_after_secs: None,
+        };
+        assert_eq!(
+            serde_json::to_string(&old).unwrap(),
+            r#"{"status":"error","code":"no_download","message":"m"}"#
+        );
     }
 }

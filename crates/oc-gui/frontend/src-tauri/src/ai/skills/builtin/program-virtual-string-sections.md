@@ -1,33 +1,47 @@
 ---
 id: program-virtual-string-sections
-title: Program a virtual string section
-when: Separate virtual violin, viola, cello and bass parts, balance articulations, or make sampled strings breathe across a phrase.
+title: Program string sections and moving orchestral lines
+when: Strings or winds only double block chords, or an added orchestral part competes with the main melody.
 category: orchestration
-version: 2
-tools: [tracks_list, presets_list, project_extract, edit_subtree, project_validate, render_compat_report, audition_range, audio_analyze]
+version: 3
+tools: [read_skill, presets_list, tracks_list, project_extract, edit_subtree, project_validate, render_compat_report, audition_range]
 ---
-Sketch outer voices and a moving inner part. Use separate tracks for distinct placement, dynamics or
-articulation. Space low voices widely and reduce doublings that mask the moving line. Confirm what
-each loaded patch plays. A GM ensemble fallback can sketch voicing and shares its sample color across
-the `violin_section`, `viola_section` and `cello_section` paths.
+Start from the real melody, bass and harmonic timing. Mark who is foreground
+in each phrase before adding sections. Read arrange-brass-sections for brass-specific articulation checks.
+Verify actual string patch gates and transitions before writing the passage.
 
-Compare a short patch and a sustain at the intended tempo. Hear the attack and release before moving
-notes. Verify hosted dynamics and expression controllers independently. When switching is unavailable,
-use separate short and long presets. Keep strong accents deliberate and check that soft notes still speak.
+## Write two useful lines first
+Keep the principal melody and a supporting bass or cello line separate.
+Choose common tones, contrary movement or a held pedal by their musical job.
+GM violin_section, viola_section and cello_section fallbacks share sample color;
+those path labels alone do not create distinct recorded sections.
+A cello can answer independently rather than copy every piano bass note.
+Under a busy lead, try one sustained supporting tone; under a held lead,
+try a short answer derived from an existing motif.
+A shared pitch is not forbidden and a different pitch is not automatically
+harmony: hear each interval against the full bass and accompaniment.
 
-## Four-bar transition and balance study
+## Add inner voices selectively
+Fill only the harmonic information the arrangement needs.
+Give an inner part a destination and singable contour instead of selecting
+whichever chord tone has not yet been used.
+Retain common tones when continuity helps and release them when a fresh
+attack or breath is required. Do not join every repeated note automatically.
+Assign a real section size; stacked section patches multiply apparent players.
+Compare divisi or fewer pitches when a chord sounds inflated.
 
-1. At 120 BPM, assign melody to `strings/violin`, answer to `strings/viola` and bass to `strings/cello`.
-   These solo paths map to different GM programs. In bars 1–3 play the same quarter notes D5 and E5
-   at fixed velocity. Start D5 at `@0` in each phrase and E5 at `@1.06`, `@1`, and `@0.94`.
-   The written gates have a 30 ms gap, touch, and overlap by 30 ms respectively.
-2. Use plain notes for the control. A written `articulation=legato` extends the gate, and a preset
-   profile can send a patch-specific trigger. Check the actual sound before assuming a sampled transition.
-3. In bar 4, use the best transition and add cello D3 and a viola answer from A3 to C4. If the cello
-   or room masks the join, lower its level or shorten its release before changing melody timing.
-4. Use `project_extract` and `edit_subtree`, then `project_validate` and `render_compat_report`.
-   Use `tracks_list` for the violin index. Audition it alone and then the ensemble from bar 1
-   to the exclusive end bar 5. Check the first attack, connections and release.
-5. In a dry violin render, use `audio_analyze` with a `level_window` around a join, measured from
-   the returned file's start. RMS flags holes or bumps. Listen for a repeated attack or doubled
-   pitch before choosing the transition.
+## Hand the line between colors
+Try a wind phrase followed by a different wind or string answer.
+Check sounding pitch range, source octave labels, attack and release.
+Use rests and phrase dynamics for breathing room; do not draw a swell on
+every note. Verify the actual dynamics and expression controller mappings.
+When continuous articulation switching is unavailable, use separate patches.
+Keep low orchestral parts when they contribute a distinct line or color;
+do not remove a family solely because a band already occupies that register.
+
+## Verify in context
+Validate and check compatibility. Audition each line, the pair and the full cue.
+Include the handoff and next downbeat. Check melody focus, doubled attacks,
+held dissonances, missing note starts and room tails that conceal the answer.
+Compare the original chord stack with the two-line version before adding
+more instruments. Keep the smallest ensemble that expresses the phrase.

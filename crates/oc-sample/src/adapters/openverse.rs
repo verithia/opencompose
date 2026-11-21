@@ -48,20 +48,25 @@ impl SampleProvider for OpenverseProvider {
         query: &SampleQuery,
         fetch: &dyn SampleFetch,
     ) -> Result<SamplePage, SampleError> {
+        let query = &query.normalized();
         let body = get_json(fetch, "Openverse", &search_url(query))?;
         let response: SearchResponse = serde_json::from_value(body).map_err(|error| {
-            SampleError::Failed(format!("Openverse: unreadable search: {error}"))
+            SampleError::failed(format!("Openverse: unreadable search: {error}"))
         })?;
         let page_size = query.page_size();
         let skip = query.offset % page_size;
-        let items: Vec<SampleItem> = response
+        let mut items: Vec<SampleItem> = response
             .results
             .iter()
             .skip(skip)
             .map(item_from_result)
             .collect();
+        // The cursor counts what the source returned, so a filtered-out result
+        // is not fetched again on the next page.
         let next_offset =
             (response.page < response.page_count).then(|| query.offset.saturating_add(items.len()));
+        // The search sends text only; every bound is checked on the page.
+        query.retain_matching(&mut items);
         Ok(SamplePage {
             provider: PROVIDER_ID.to_string(),
             offset: query.offset,
@@ -89,7 +94,7 @@ impl SampleProvider for OpenverseProvider {
         }
         let body = get_json(fetch, "Openverse", &detail_url(uuid))?;
         let result: AudioResult = serde_json::from_value(body).map_err(|error| {
-            SampleError::Failed(format!("Openverse: unreadable audio: {error}"))
+            SampleError::failed(format!("Openverse: unreadable audio: {error}"))
         })?;
         let item = item_from_result(&result);
         if item.download_url.trim().is_empty() {
@@ -117,9 +122,8 @@ fn search_url(query: &SampleQuery) -> String {
                 .collect()
         })
         .unwrap_or_default();
-    let text = query.text.trim();
-    if !text.is_empty() {
-        terms.push(text.to_string());
+    if !query.text.is_empty() {
+        terms.push(query.text.clone());
     }
     format!(
         "{API}?q={query}&page={page}&page_size={page_size}",
@@ -319,7 +323,11 @@ mod tests {
     }
 
     impl SampleFetch for FixtureFetch {
-        fn get(&self, url: &str, _max_bytes: usize) -> Result<FetchResponse, String> {
+        fn get(
+            &self,
+            url: &str,
+            _max_bytes: usize,
+        ) -> Result<FetchResponse, crate::provider::FetchError> {
             self.urls.lock().unwrap().push(url.to_string());
             Ok(FetchResponse {
                 status: 200,
@@ -449,6 +457,30 @@ mod tests {
         // No licence filter: a refused result must stay visible.
         assert!(!url.contains("license="), "{url}");
         assert!(!url.contains("token="), "{url}");
+    }
+
+    #[test]
+    fn a_page_is_filtered_by_licence_and_duration_and_the_cursor_counts_raw_results() {
+        let body = br#"{"result_count":40,"page_count":2,"page":1,"results":[
+            {"id":"nc","title":"Night Drive","license":"by-nc","license_version":"4.0","license_url":"https://creativecommons.org/licenses/by-nc/4.0/","url":"https://example.org/night.mp3","duration":1000},
+            {"id":"long","title":"Long kick","license":"cc0","license_url":"https://creativecommons.org/publicdomain/zero/1.0/","url":"https://example.org/long.wav","duration":9000},
+            {"id":"ok","title":"Short kick","license":"cc0","license_url":"https://creativecommons.org/publicdomain/zero/1.0/","url":"https://example.org/kick.wav","duration":500}
+        ]}"#;
+        let fetch = fetch(body);
+        let page = OpenverseProvider::new()
+            .search(
+                &SampleQuery {
+                    commercial_ok: true,
+                    max_seconds: Some(2.0),
+                    limit: 3,
+                    ..Default::default()
+                },
+                &fetch,
+            )
+            .unwrap();
+        let ids: Vec<&str> = page.items.iter().map(|item| item.id.as_str()).collect();
+        assert_eq!(ids, vec!["openverse:ok"]);
+        assert_eq!(page.next_offset, Some(3));
     }
 
     #[test]

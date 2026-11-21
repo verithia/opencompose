@@ -3,9 +3,11 @@ id: map-a-multisampled-instrument
 title: Map and check a multisampled instrument
 when: Build or troubleshoot a melodic sampler with key zones, velocity layers, repeat variants, and sustained sample loops.
 category: production
-version: 1
+version: 2
 tools: [devices_catalog, project_extract, presets_add, presets_set_params, render_compat_report, audition_range, project_validate]
 ---
+For printing a source read resample-a-playable-instrument; for drum pads read assemble-a-sampled-drum-kit.
+
 ## Map pitch and dynamics separately
 Copy the samples into project media. Record each sample's real root, dynamic,
 and take. For two recordings rooted at MIDI 60 and 67, try adjacent ranges
@@ -31,6 +33,7 @@ use a drum kit instead. Check host compatibility before relying on additional
 SFZ opcodes such as keyswitches or velocity crossfades.
 
 ## Verify the saved instrument
+First compare the recorded root with its untransposed source; verify note-off behavior.
 Render a scale across every zone boundary and a velocity staircase at a fixed
 pitch. Repeat a single note to hear variation, then audition the part in its
 arrangement. If it fails after reopening, check project-relative sample paths

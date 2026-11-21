@@ -3,10 +3,13 @@ id: rebuild-a-reference-passage
 title: Rebuild and verify a reference passage
 when: Rebuild a reference passage or full song, or study a technique from a fan remake, artist session, or tracker module.
 category: production
-version: 11
+version: 12
 tools: [project_get, import_aligned_stems, midi_import_handoff, project_extract, edit_subtree, audio_clips_list, audio_clip_transients, devices_catalog, render_range, audition_clip_source, audition_range, audio_analyze, audio_compare, project_validate]
 ---
 Keep an untouched, authorized reference. Record the release or remix, artist, session author, revision and passage.
+Separate comparison-only audio from source material deliberately kept in the remake.
+Keep comparison-only audio out of candidate playback and export, including sends and returns.
+Prove exclusion with a reference-path ablation; a name or mute button alone is not proof.
 Distinguish creator documentation, file observations and inferences by ear.
 Ask the operator to inspect a copy in the source DAW or tracker. Record editable, printed, frozen and missing layers,
 routing, automation, media and plugins. For tracker retriggers or slides, retain a print and note order, row, pattern and channel.

@@ -5,3 +5,4 @@ pub(crate) mod freesound;
 pub(crate) mod internet_archive;
 pub(crate) mod jamendo;
 pub(crate) mod openverse;
+pub(crate) mod query;

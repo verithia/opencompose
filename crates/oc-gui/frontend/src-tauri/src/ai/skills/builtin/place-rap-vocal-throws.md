@@ -3,34 +3,43 @@ id: place-rap-vocal-throws
 title: Place rap vocal throws and ad-libs
 when: Keeping a rap lead clear while adding phrase-end doubles, ad-libs and timed delay throws.
 category: mixing
-version: 1
-tools: [tracks_list, project_extract, edit_subtree, project_validate, devices_catalog, buses_add, tracks_send_add, audition_range]
+version: 2
+tools: [tracks_list, project_extract, edit_subtree, project_validate, devices_catalog, buses_add, tracks_send_add, audition_range, read_skill]
 ---
-Choose one phrase ending where an answer or repeat improves the flow.
-Listen through the next line as well. Identify which word should trigger
-the effect and which following consonant needs clear space.
+Choose one phrase ending where a repeat or response improves the flow.
+Hear the next line too: name the selected word and following consonant that
+needs clear space. Keep the dry lead and original performance intact.
 
-## Place the performances
+## Place the answer
+A double reinforces a word; an ad-lib can answer in a separate rhythmic gap.
+Use a distinct take when available. Inspect vowel onset and consonant pickup
+rather than force every region edge to the same grid line.
+Lower a duplicate consonant or trim backing sustain if two attacks smear.
+Compare its level and register against the beat before adding a deeper space.
+Use stack-vocal-harmonies for multiple independent roles and chord voices.
 
-- Keep the lead centered. Put end-word doubles or ad-libs on their own tracks.
-  Align the important vowel onset of a double, then trim its level or soften
-  its consonant if you hear two attacks. Give a response its own rhythmic gap.
-- Set the backing gain in context first. Use a narrower tone or a deeper return
-  for a distant answer only after level and placement work. Check that small
-  speakers and mono still make the lead understandable.
+## Choose which signal excites the throw
+Use route-groups-and-returns for one intended dry path and a fully wet return.
+An isolated word copy can feed the wet effect without adding a second dry lead;
+retain a short edge fade without deleting the initial consonant or release.
+Alternatively automate the source send over that word. Closing the feed lets
+its existing tail ring; lowering return output also cuts accumulated tail.
+Those are different musical gestures. Pick the one the next line needs.
+Query devices_catalog for delay units, feedback and any available key ports.
+Choose a repeat by the gap and syllable rhythm, not a fixed division for rap.
 
-## Build one throw
+## Let the repeats yield
+Increase feedback only when later repeats contribute. Feedback duration and
+a compressor's output recovery are separate; output ducking does not erase
+the delay memory. Do not promise a delay-line reset control that is absent.
+A dry-vocal key on a compressor after the wet effect can suppress repeats
+under new words. Set recovery against the next gap, including quiet words.
+Filtering repeats can reduce duplicated consonant bite; it cannot repair a
+poorly cut source word. Compare delay-before-reverb and wet-only modulation
+only if the extra tail has a role. Avoid unsupported return feedback cycles.
 
-Route an isolated duplicate of the selected word to a dedicated wet delay bus.
-Check output and send routing so the trigger does not produce a second dry lead.
-A short fade at each trigger edge can keep the duplicate from clicking.
-Use devices_catalog for the available delay controls and their units.
-Start with a repeat that fits the gap. Add feedback only when another repeat
-fits, or lower the return and shorten its audible tail. Filter the repeats if
-their consonants compete with the next line.
-
-Leave enough arrangement space for the repeat to finish. If several effects
-share the same bus, inspect the route before changing a return control.
-Audition with and without the throw across both lines at comparable lead level.
-Check that the first syllable after the gap remains intelligible and that the
-end word stays strong when the effect is muted.
+Hear both lines with and without the throw at comparable lead loudness.
+Check intelligibility, the final echo and whether a trigger remains audible
+where no dry copy is intended. Check mono and a sparse section as well.
+If another part shares this return, inspect its effect before changing output.
+Validate edits and retain the simpler answer when a larger space steals focus.
