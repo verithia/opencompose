@@ -4,10 +4,10 @@
  * the user's own, refusals worded from the backend's code, and a rescan with
  * the first-run scan's progress.
  */
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@solidjs/testing-library";
 import { PreferencesModal } from "../components/PreferencesModal";
-import { splitPath } from "../components/preferences/FoldersPage";
+import { reserveBelow, splitPath } from "../components/preferences/FoldersPage";
 import { i18n } from "../stores/i18n";
 import { localScan } from "../stores/localScan";
 import type { LocalContentSummary, LocalScanProgress, SearchedFolder } from "../stores/api";
@@ -387,5 +387,41 @@ describe("splitPath", () => {
     expect(splitPath("/Volumes")).toEqual({ name: "Volumes", parent: "/" });
     expect(splitPath("/")).toEqual({ name: "/", parent: "" });
     expect(splitPath("Samples")).toEqual({ name: "Samples", parent: "" });
+  });
+});
+
+describe("reserveBelow", () => {
+  it("keeps the page's scroll padding equal to the strip's height and clears it after", () => {
+    let resized!: () => void;
+    let observed: Element | undefined;
+    const disconnect = vi.fn();
+    vi.stubGlobal("ResizeObserver", class {
+      constructor(callback: () => void) { resized = callback; }
+      observe(target: Element) { observed = target; }
+      disconnect = disconnect;
+    });
+    const page = document.createElement("div");
+    page.className = "preferences-page";
+    const strip = document.createElement("div");
+    page.append(strip);
+    let height = 96.4;
+    strip.getBoundingClientRect = () => ({ height } as DOMRect);
+
+    const release = reserveBelow(strip);
+    expect(page.style.getPropertyValue("--folder-details-height")).toBe("97px");
+    expect(observed).toBe(strip);
+    height = 140;
+    resized();
+    expect(page.style.getPropertyValue("--folder-details-height")).toBe("140px");
+
+    release();
+    expect(disconnect).toHaveBeenCalled();
+    expect(page.style.getPropertyValue("--folder-details-height")).toBe("");
+    vi.unstubAllGlobals();
+  });
+
+  it("does nothing outside a preferences page", () => {
+    const strip = document.createElement("div");
+    expect(() => reserveBelow(strip)()).not.toThrow();
   });
 });

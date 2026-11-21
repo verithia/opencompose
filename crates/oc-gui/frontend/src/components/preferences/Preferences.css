@@ -616,6 +616,12 @@
 
 .preferences-folder-add svg { width: 13px; height: 13px; }
 
+/* Rows reached with the keyboard stop above the sticky details strip; the
+   page sets the variable to the strip's height. */
+.preferences-page:has(.preferences-folder-details) {
+  scroll-padding-bottom: var(--folder-details-height, 0px);
+}
+
 /* The details stay in view at the foot of the scrolling page. A sticky box
    stops at the page's padding edge, so the offset cancels the page's bottom
    padding and no row shows beneath the strip. */

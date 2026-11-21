@@ -14,7 +14,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@solidjs/testing-library";
 import { mkdirSync, readFileSync } from "node:fs";
 import path from "node:path";
-import { chromium, type Browser } from "@playwright/test";
+import { chromium, webkit, type Browser } from "@playwright/test";
 import { PreferencesModal } from "../../components/PreferencesModal";
 import { i18n } from "../../stores/i18n";
 import { localScan } from "../../stores/localScan";
@@ -60,15 +60,75 @@ function summary(): LocalContentSummary {
 }
 
 let browser: Browser;
+let safari: Browser;
 beforeAll(async () => {
   browser = await chromium.launch({ headless: true });
+  safari = await webkit.launch({ headless: true });
   mkdirSync(SHOT_DIR, { recursive: true });
 });
-afterAll(async () => { await browser?.close(); });
+afterAll(async () => {
+  await browser?.close();
+  await safari?.close();
+});
 afterEach(() => {
   cleanup();
   localScan.reset();
   i18n.setLocale("en");
+});
+
+/** The page at the smallest window, as `reserveBelow` leaves it once mounted. */
+async function openPage(engine: Browser, theme: string) {
+  const page = await engine.newPage({ viewport: { width: 960, height: 600 } });
+  await page.setContent(`<!doctype html><html data-theme="${theme}"><head>
+    <meta charset="utf-8"><style>${stylesheet} html,body{margin:0}
+    *,*::before,*::after{animation:none!important;transition:none!important}</style></head>
+    <body>${document.body.innerHTML}</body></html>`);
+  await page.evaluate(() => {
+    const strip = document.querySelector<HTMLElement>(".preferences-folder-details")!;
+    strip.closest<HTMLElement>(".preferences-page")!.style.setProperty(
+      "--folder-details-height", `${Math.ceil(strip.getBoundingClientRect().height)}px`);
+  });
+  return page;
+}
+
+describe("Folders preferences page keyboard focus", () => {
+  for (const [name, engine] of [["chromium", () => browser], ["webkit", () => safari]] as const) {
+    it(`${name}: every row reached with Tab stays clear of the details strip`, async () => {
+      listenMock.mockImplementation(async () => () => {});
+      invokeMock.mockImplementation(async (command: string) =>
+        command === "local_content_summary" || command === "local_content_scan" ? summary() : null);
+      render(() => <PreferencesModal open onClose={() => {}} />);
+      fireEvent.click(document.querySelector('[data-page="folders"]')!);
+      await screen.findByText(i18n.t("folders.plugins"));
+      fireEvent.click(screen.getByTitle(LONG));
+
+      const page = await openPage(engine(), "graphite");
+      try {
+        await page.focus(".preferences-folder-tab.active");
+        // WebKit moves focus to buttons with Alt+Tab, as Safari does by default.
+        const key = engine() === safari ? "Alt+Tab" : "Tab";
+        const hidden: string[] = [];
+        let rows = 0;
+        for (let step = 0; step < 40; step += 1) {
+          await page.keyboard.press(key);
+          const state = await page.evaluate(() => {
+            const focused = document.activeElement as HTMLElement | null;
+            if (!focused?.closest(".preferences-folder-panel")) return null;
+            const box = focused.getBoundingClientRect();
+            const strip = document.querySelector(".preferences-folder-details")!.getBoundingClientRect();
+            return { text: focused.textContent?.slice(0, 30) ?? "", under: box.bottom > strip.top + 1 };
+          });
+          if (!state) continue;
+          rows += 1;
+          if (state.under) hidden.push(state.text);
+        }
+        expect(rows).toBeGreaterThan(10);
+        expect(hidden).toEqual([]);
+      } finally {
+        await page.close();
+      }
+    });
+  }
 });
 
 describe("Folders preferences page layout", () => {

@@ -8,7 +8,7 @@
  * Folders that come from the system, the environment or another app's
  * settings are shown read-only: they change where they are set, not here.
  */
-import { For, Show, createMemo, createSignal, onMount } from "solid-js";
+import { For, Show, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import { i18n, type I18nKey } from "../../stores/i18n";
 import * as api from "../../stores/api";
 import type { FolderOrigin } from "../../stores/api";
@@ -72,6 +72,27 @@ export function splitPath(path: string): { name: string; parent: string } {
 
 const rowKey = (row: FolderRow) => `${row.kind}:${row.folder.path}`;
 const groupId = (kind: FolderKind, key: GroupKey) => `${kind}:${key ?? "other"}`;
+
+/**
+ * Keep the scrolling page's bottom scroll padding equal to the sticky details
+ * strip's height. Keyboard focus and `scrollIntoView` honour scroll padding,
+ * so a row reached with Tab stops above the strip instead of behind it. The
+ * strip grows and shrinks with the selected folder, so its size is watched.
+ */
+export function reserveBelow(strip: HTMLElement): () => void {
+  const scroller = strip.closest<HTMLElement>(".preferences-page");
+  if (!scroller) return () => {};
+  const apply = () => {
+    scroller.style.setProperty("--folder-details-height", `${Math.ceil(strip.getBoundingClientRect().height)}px`);
+  };
+  apply();
+  const observer = typeof ResizeObserver === "function" ? new ResizeObserver(apply) : undefined;
+  observer?.observe(strip);
+  return () => {
+    observer?.disconnect();
+    scroller.style.removeProperty("--folder-details-height");
+  };
+}
 
 export function FoldersPage() {
   const [busy, setBusy] = createSignal(false);
@@ -248,7 +269,11 @@ export function FoldersPage() {
   };
 
   const details = () => (
-    <div class="preferences-folder-details" aria-live="polite">
+    <div
+      class="preferences-folder-details"
+      aria-live="polite"
+      ref={(strip) => onMount(() => onCleanup(reserveBelow(strip)))}
+    >
       <Show
         when={selected()}
         fallback={<p class="preferences-hint">{i18n.t("folders.details.empty")}</p>}
