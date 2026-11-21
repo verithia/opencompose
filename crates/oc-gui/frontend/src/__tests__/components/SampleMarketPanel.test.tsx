@@ -1,5 +1,5 @@
 /**
- * Sample markets panel — provider chips, a search, a preview and an add.
+ * Samples panel — the Sources list, a search, a preview and an add.
  *
  * The backend is mocked at the `invoke` boundary: these tests assert the panel
  * sends the search arguments the tool contract expects and renders the licence
@@ -250,6 +250,23 @@ beforeEach(async () => {
   await store.initProject();
 });
 
+/** The providers have answered: the Sources button counts the included ones. */
+async function ready(container: HTMLElement) {
+  await waitFor(() =>
+    expect(container.querySelector(".sample-market-sources-count")?.textContent).toBe("2"),
+  );
+}
+
+/** Open the Sources list and return it. */
+function openSources(container: HTMLElement): HTMLElement {
+  fireEvent.click(container.querySelector(".sample-market-sources-toggle")!);
+  return container.querySelector(".sample-market-sources-list") as HTMLElement;
+}
+
+function sourceBox(container: HTMLElement, id: string): HTMLInputElement {
+  return container.querySelector(`.sample-market-source[data-provider="${id}"] input`) as HTMLInputElement;
+}
+
 async function search(container: HTMLElement) {
   const input = container.querySelector(".sample-market-search") as HTMLInputElement;
   fireEvent.input(input, { target: { value: "snare" } });
@@ -262,22 +279,63 @@ async function search(container: HTMLElement) {
 }
 
 describe("SampleMarketPanel", () => {
-  it("shows every market with its availability", async () => {
-    const { container, getByText } = render(() => <SampleMarketPanel />);
-    await waitFor(() => expect(getByText("Openverse")).toBeInTheDocument());
-    expect(getByText("Freesound")).toBeInTheDocument();
-    expect(getByText("Mixkit")).toBeInTheDocument();
+  it("lists every source as a checkbox under the Sources button", async () => {
+    const { container, getByRole } = render(() => <SampleMarketPanel />);
+    await ready(container);
+    // Closed by default: the toolbar stays one strip.
+    const toggle = getByRole("button", { name: "Sources" });
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(container.querySelector(".sample-market-sources-list")).toBeNull();
+
+    const list = openSources(container);
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(toggle.getAttribute("aria-controls")).toBe(list.id);
+    // The list opens beneath the toolbar, not inside it.
+    expect(container.querySelector(".sample-market-toolbar")!.nextElementSibling).toBe(list);
     expect(
-      container.querySelector('[data-provider="mixkit"]')!.classList.contains("unavailable"),
-    ).toBe(true);
-    expect(
-      container.querySelector('[data-provider="openverse"]')!.classList.contains("unavailable"),
-    ).toBe(false);
-    // A market the registry adds later needs no panel change: the chip is
-    // rendered from the availability map and is included by default.
-    const commons = container.querySelector('[data-provider="wikimedia-commons"]')!;
-    expect(commons.classList.contains("unavailable")).toBe(false);
-    expect(commons.classList.contains("on")).toBe(true);
+      [...list.querySelectorAll<HTMLElement>(".sample-market-source")].map((label) => label.dataset.provider),
+    ).toEqual(["openverse", "wikimedia-commons", "freesound", "mixkit"]);
+    expect(sourceBox(container, "openverse").checked).toBe(true);
+    // A market the registry adds later needs no panel change: it is listed
+    // from the availability map and is included by default.
+    expect(sourceBox(container, "wikimedia-commons").checked).toBe(true);
+    for (const id of ["freesound", "mixkit"]) {
+      expect(sourceBox(container, id).disabled).toBe(true);
+      expect(sourceBox(container, id).checked).toBe(false);
+      expect(
+        container.querySelector(`.sample-market-source[data-provider="${id}"]`)!.classList.contains("unavailable"),
+      ).toBe(true);
+    }
+
+    fireEvent.click(toggle);
+    expect(container.querySelector(".sample-market-sources-list")).toBeNull();
+  });
+
+  it("greys out a source without a key and says where the key goes", async () => {
+    const { container, getByRole, queryByText } = render(() => <SampleMarketPanel />);
+    await ready(container);
+    openSources(container);
+
+    const freesound = getByRole("checkbox", { name: "Freesound" });
+    expect(freesound).toBeDisabled();
+    expect(freesound).toHaveAccessibleDescription(
+      "Add a Freesound API key in Preferences › External Sources to search it.",
+    );
+    // The backend's sentence is not the label; the panel words it per locale.
+    expect(queryByText(/FREESOUND_API_KEY/)).toBeNull();
+    expect(getByRole("checkbox", { name: "Mixkit" })).toHaveAccessibleDescription(
+      "Mixkit can't be searched from here.",
+    );
+    expect(getByRole("checkbox", { name: "Openverse" })).not.toHaveAccessibleDescription();
+
+    // Ticking it does nothing, and no key form appears in the panel.
+    fireEvent.click(freesound);
+    expect(freesound).not.toBeChecked();
+    expect(container.querySelector('input[type="password"]')).toBeNull();
+    await search(container);
+    expect(invokeMock).toHaveBeenCalledWith("sample_market_search", {
+      args: expect.objectContaining({ providers: ["openverse", "wikimedia-commons"] }),
+    });
   });
 
   it("paints the search field and a skeleton before the markets answer", () => {
@@ -287,13 +345,13 @@ describe("SampleMarketPanel", () => {
     );
     const { container } = render(() => <SampleMarketPanel />);
     expect(container.querySelector(".sample-market-search")).not.toBeNull();
-    // The kinds are chips of their own; the market group still holds only the
-    // placeholder, so no market chip can be pressed yet.
+    // The kinds are ready; the Sources list holds only the placeholder, so no
+    // source can be ticked yet.
     expect(container.querySelectorAll(".sample-market-kinds .sample-market-chip")).toHaveLength(6);
-    expect(
-      container.querySelectorAll(".sample-market-providers .sample-market-chip:not(.sample-market-chip-loading)"),
-    ).toHaveLength(0);
-    expect(container.querySelector(".sample-market-chip-loading")?.textContent).toContain(
+    expect(container.querySelector(".sample-market-sources-count")?.textContent).toBe("…");
+    const list = openSources(container);
+    expect(list.querySelectorAll(".sample-market-source")).toHaveLength(0);
+    expect(list.querySelector(".sample-market-source-loading")?.textContent).toContain(
       "Loading markets",
     );
     const skeleton = container.querySelector(".sample-market-skeleton");
@@ -306,7 +364,7 @@ describe("SampleMarketPanel", () => {
 
   it("searches the included markets and shows licence and credit", async () => {
     const { container, getByText, queryByText } = render(() => <SampleMarketPanel />);
-    await waitFor(() => expect(getByText("Openverse")).toBeInTheDocument());
+    await ready(container);
     await search(container);
 
     expect(invokeMock).toHaveBeenCalledWith("sample_market_search", {
@@ -325,7 +383,7 @@ describe("SampleMarketPanel", () => {
 
   it("maps kind, duration and commercial filters to the search arguments", async () => {
     const { container, getByRole } = render(() => <SampleMarketPanel />);
-    await waitFor(() => expect(getByRole("button", { name: "Openverse" })).toBeInTheDocument());
+    await ready(container);
 
     fireEvent.click(getByRole("button", { name: "Instrument" }));
     fireEvent.change(getByRole("combobox", { name: "Duration" }), {
@@ -359,7 +417,7 @@ describe("SampleMarketPanel", () => {
       return backend(cmd, args);
     });
     const { container, getByText } = render(() => <SampleMarketPanel />);
-    await waitFor(() => expect(getByText("Openverse")).toBeInTheDocument());
+    await ready(container);
     await search(container);
 
     fireEvent.click(getByText("Load more"));
@@ -385,8 +443,8 @@ describe("SampleMarketPanel", () => {
       if (cmd === "sample_market_search") return PAGED_RESULT;
       return backend(cmd, args);
     });
-    const { container, getByText } = render(() => <SampleMarketPanel />);
-    await waitFor(() => expect(getByText("Openverse")).toBeInTheDocument());
+    const { container } = render(() => <SampleMarketPanel />);
+    await ready(container);
     await search(container);
 
     const more = container.querySelector(".sample-market-more");
@@ -399,7 +457,7 @@ describe("SampleMarketPanel", () => {
     // then what it is. The Add button is short on screen and named in full
     // for assistive tech.
     const { container, getByText } = render(() => <SampleMarketPanel />);
-    await waitFor(() => expect(getByText("Openverse")).toBeInTheDocument());
+    await ready(container);
     await search(container);
 
     const row = getByText("Snare hit 01").closest(".sample-market-row") as HTMLElement;
@@ -416,8 +474,8 @@ describe("SampleMarketPanel", () => {
   it("lays the rows out in the shared result grid", async () => {
     // One grid per section, so local and market rows wrap two to a line on a
     // wide panel without a section's rows spilling into the other's.
-    const { container, getByText } = render(() => <SampleMarketPanel />);
-    await waitFor(() => expect(getByText("Openverse")).toBeInTheDocument());
+    const { container } = render(() => <SampleMarketPanel />);
+    await ready(container);
     await search(container);
 
     const grids = [...container.querySelectorAll(".sample-market-grid")];
@@ -428,31 +486,30 @@ describe("SampleMarketPanel", () => {
   });
 
   it("keeps the toolbar to one strip of controls", async () => {
-    // Search, duration, licence, kinds and markets share one strip: the bottom
+    // Search, duration, licence, kinds and Sources share one strip: the bottom
     // panel is short, so each extra toolbar row costs a result.
-    const { container, getByRole } = render(() => <SampleMarketPanel />);
-    await waitFor(() => expect(getByRole("button", { name: "Openverse" })).toBeInTheDocument());
+    const { container } = render(() => <SampleMarketPanel />);
+    await ready(container);
 
     const toolbar = container.querySelector(".sample-market-toolbar");
     expect(toolbar).not.toBeNull();
     expect(toolbar!.querySelector(".sample-market-header")).not.toBeNull();
     expect(toolbar!.querySelector(".sample-market-filters")).not.toBeNull();
-    // Kinds and markets wrap together, so a narrow panel loses no extra line.
+    // Kinds and the Sources button wrap together, so a narrow panel loses no
+    // extra line; the sources themselves are not in the strip.
     const markets = toolbar!.querySelector(".sample-market-markets");
     expect(markets?.querySelector(".sample-market-kinds")).not.toBeNull();
-    expect(markets?.querySelector(".sample-market-providers")).not.toBeNull();
-    expect(markets?.querySelector(".sample-market-sources")).not.toBeNull();
+    expect(markets?.querySelector(".sample-market-sources-toggle")).not.toBeNull();
+    expect(toolbar!.querySelector(".sample-market-source")).toBeNull();
   });
 
-  it("opens External Sources from the market strip", async () => {
+  it("opens External Sources from the Sources list", async () => {
     preferencesUi.close();
-    const { getByRole } = render(() => <SampleMarketPanel />);
-    await waitFor(() => expect(getByRole("button", { name: "Openverse" })).toBeInTheDocument());
+    const { container, getByRole } = render(() => <SampleMarketPanel />);
+    await ready(container);
+    openSources(container);
 
-    // An icon button beside the markets it configures, named for assistive tech.
-    const sources = getByRole("button", { name: "External Sources" });
-    expect(sources.textContent).toBe("");
-    fireEvent.click(sources);
+    fireEvent.click(getByRole("button", { name: "External Sources…" }));
     expect(preferencesUi.open()).toBe(true);
     expect(preferencesUi.page()).toBe("sources");
     preferencesUi.close();
@@ -465,15 +522,17 @@ describe("SampleMarketPanel", () => {
       return backend(cmd, args);
     });
     const { container, getByText, queryByText } = render(() => <SampleMarketPanel />);
-    await waitFor(() => expect(getByText("Openverse")).toBeInTheDocument());
+    await ready(container);
     const input = container.querySelector(".sample-market-search") as HTMLInputElement;
     fireEvent.input(input, { target: { value: "snare" } });
     fireEvent.submit(container.querySelector(".sample-market-header") as HTMLFormElement);
 
     await waitFor(() =>
-      expect(getByText("Openverse needs an API key.")).toBeInTheDocument(),
+      expect(getByText("Freesound is rate limited. Retry in 7 s.")).toBeInTheDocument(),
     );
-    expect(getByText("Freesound is rate limited. Retry in 7 s.")).toBeInTheDocument();
+    // A missing key is the Sources list's to explain, never a search notice.
+    expect(container.textContent).not.toMatch(/API key/);
+    expect(container.querySelectorAll(".sample-market-notice")).toHaveLength(4);
     expect(getByText("Jamendo is temporarily skipped.")).toBeInTheDocument();
     expect(getByText("Couldn't reach Pixabay.")).toBeInTheDocument();
     expect(getByText("Internet Archive could not complete the search.")).toBeInTheDocument();
@@ -491,7 +550,7 @@ describe("SampleMarketPanel", () => {
       return backend(cmd, args);
     });
     const { container, getByText, queryByText } = render(() => <SampleMarketPanel />);
-    await waitFor(() => expect(getByText("Openverse")).toBeInTheDocument());
+    await ready(container);
 
     const input = container.querySelector(".sample-market-search") as HTMLInputElement;
     fireEvent.input(input, { target: { value: "snare" } });
@@ -507,7 +566,7 @@ describe("SampleMarketPanel", () => {
 
   it("starts a result as a private paused preview before resuming it", async () => {
     const { container, getByText } = render(() => <SampleMarketPanel />);
-    await waitFor(() => expect(getByText("Openverse")).toBeInTheDocument());
+    await ready(container);
     await search(container);
 
     fireEvent.click(getByText("Snare hit 01"));
@@ -536,7 +595,7 @@ describe("SampleMarketPanel", () => {
       return backend(cmd, args);
     });
     const panel = render(() => <SampleMarketPanel />);
-    await waitFor(() => expect(panel.getByText("Openverse")).toBeInTheDocument());
+    await ready(panel.container);
     await search(panel.container);
     await store.play();
     fireEvent.click(panel.getByText("Snare hit 01"));
@@ -556,7 +615,7 @@ describe("SampleMarketPanel", () => {
     const first = render(() => <SampleMarketPanel />);
     const second = render(() => <SampleMarketPanel />);
     for (const panel of [first, second]) {
-      await waitFor(() => expect(within(panel.container).getByText("Openverse")).toBeInTheDocument());
+      await ready(panel.container);
       await search(panel.container);
       fireEvent.click(within(panel.container).getByText("Snare hit 01"));
       await waitFor(() => expect(within(panel.container).getByRole("button", { name: "Pause preview" })).toBeInTheDocument());
@@ -572,7 +631,7 @@ describe("SampleMarketPanel", () => {
 
   it("adds a result to the project at the playhead", async () => {
     const { container, getByText } = render(() => <SampleMarketPanel />);
-    await waitFor(() => expect(getByText("Openverse")).toBeInTheDocument());
+    await ready(container);
     await search(container);
 
     const row = getByText("Snare hit 01").closest(".sample-market-row") as HTMLElement;
@@ -591,7 +650,7 @@ describe("SampleMarketPanel", () => {
 
   it("asks before adding a result whose licence is not free to reuse", async () => {
     const { container, getByText } = render(() => <SampleMarketPanel />);
-    await waitFor(() => expect(getByText("Openverse")).toBeInTheDocument());
+    await ready(container);
     await search(container);
 
     const row = getByText("Night Drive").closest(".sample-market-row") as HTMLElement;
@@ -618,7 +677,7 @@ describe("SampleMarketPanel", () => {
 
   it("shows a refusal's message when it is not a licence notice", async () => {
     const { container, getByText, queryByText } = render(() => <SampleMarketPanel />);
-    await waitFor(() => expect(getByText("Openverse")).toBeInTheDocument());
+    await ready(container);
     await search(container);
 
     const row = getByText("Snare hit 01").closest(".sample-market-row") as HTMLElement;
@@ -635,23 +694,6 @@ describe("SampleMarketPanel", () => {
     );
     expect(queryByText("The download does not match its declared checksum.")).toBeNull();
     expect(queryByText("Download anyway")).toBeNull();
-  });
-
-  it("asks for a keyed market's key inline", async () => {
-    const { container, getByText } = render(() => <SampleMarketPanel />);
-    await waitFor(() => expect(getByText("Freesound")).toBeInTheDocument());
-    fireEvent.click(container.querySelector('[data-provider="freesound"]')!);
-    await waitFor(() => expect(container.querySelector(".sample-market-key")).toBeTruthy());
-
-    const input = container.querySelector(".sample-market-key input") as HTMLInputElement;
-    fireEvent.input(input, { target: { value: "KEY" } });
-    fireEvent.submit(container.querySelector(".sample-market-key") as HTMLFormElement);
-    await waitFor(() =>
-      expect(invokeMock).toHaveBeenCalledWith("sample_market_save_key", {
-        provider: "freesound",
-        key: "KEY",
-      }),
-    );
   });
 });
 
@@ -678,7 +720,7 @@ describe("local samples", () => {
   it("lists files on this computer before the market results", async () => {
     withLocal(LOCAL_RESULT);
     const { container, getByText } = render(() => <SampleMarketPanel />);
-    await waitFor(() => expect(getByText("Openverse")).toBeInTheDocument());
+    await ready(container);
     await search(container);
     await waitFor(() => expect(getByText("Snare Tight")).toBeInTheDocument());
 
@@ -702,7 +744,7 @@ describe("local samples", () => {
   it("sends the kind and duration filters to the local search too", async () => {
     withLocal(LOCAL_RESULT);
     const { container, getByRole } = render(() => <SampleMarketPanel />);
-    await waitFor(() => expect(getByRole("button", { name: "Openverse" })).toBeInTheDocument());
+    await ready(container);
     fireEvent.click(getByRole("button", { name: "Loop" }));
     fireEvent.change(getByRole("combobox", { name: "Duration" }), { target: { value: "short" } });
     await search(container);
@@ -714,20 +756,22 @@ describe("local samples", () => {
   it("searches this computer even when no market is included", async () => {
     withLocal(LOCAL_RESULT);
     const { container, getByText } = render(() => <SampleMarketPanel />);
-    await waitFor(() => expect(getByText("Openverse")).toBeInTheDocument());
-    fireEvent.click(container.querySelector('[data-provider="openverse"]')!);
-    fireEvent.click(container.querySelector('[data-provider="wikimedia-commons"]')!);
+    await ready(container);
+    openSources(container);
+    fireEvent.click(sourceBox(container, "openverse"));
+    fireEvent.click(sourceBox(container, "wikimedia-commons"));
+    expect(container.querySelector(".sample-market-sources-count")?.textContent).toBe("0");
     await search(container);
 
     await waitFor(() => expect(getByText("Snare Tight")).toBeInTheDocument());
-    expect(getByText("Press a market to include or exclude it.")).toBeInTheDocument();
+    expect(getByText("Open Sources to choose the online sources to search.")).toBeInTheDocument();
     expect(invokeMock.mock.calls.some(([cmd]) => cmd === "sample_market_search")).toBe(false);
   });
 
   it("says when no local file matches and when there are no sound folders", async () => {
     withLocal(NO_LOCAL);
     const first = render(() => <SampleMarketPanel />);
-    await waitFor(() => expect(first.getByText("Openverse")).toBeInTheDocument());
+    await ready(first.container);
     await search(first.container);
     await waitFor(() =>
       expect(first.getByText("No matching files in your sound folders.")).toBeInTheDocument(),
@@ -736,7 +780,7 @@ describe("local samples", () => {
 
     withLocal({ items: [], truncated: false, folders: 0 });
     const second = render(() => <SampleMarketPanel />);
-    await waitFor(() => expect(second.getByText("Openverse")).toBeInTheDocument());
+    await ready(second.container);
     await search(second.container);
     await waitFor(() =>
       expect(
@@ -748,7 +792,7 @@ describe("local samples", () => {
   it("previews a local file by its path and adds it to the project", async () => {
     withLocal(LOCAL_RESULT);
     const { container, getByText } = render(() => <SampleMarketPanel />);
-    await waitFor(() => expect(getByText("Openverse")).toBeInTheDocument());
+    await ready(container);
     await search(container);
     await waitFor(() => expect(getByText("Snare Tight")).toBeInTheDocument());
 
@@ -776,7 +820,7 @@ describe("local samples", () => {
   it("names a local refusal by its code", async () => {
     withLocal(LOCAL_RESULT);
     const { container, getByText, queryByText } = render(() => <SampleMarketPanel />);
-    await waitFor(() => expect(getByText("Openverse")).toBeInTheDocument());
+    await ready(container);
     await search(container);
     await waitFor(() => expect(getByText("Snare Tight")).toBeInTheDocument());
 
@@ -797,7 +841,7 @@ describe("local samples", () => {
       return backend(cmd, args);
     });
     const { container, getByText, queryByText } = render(() => <SampleMarketPanel />);
-    await waitFor(() => expect(getByText("Openverse")).toBeInTheDocument());
+    await ready(container);
     await search(container);
     await search(container);
     await waitFor(() => expect(answers).toHaveLength(2));

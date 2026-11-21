@@ -108,14 +108,15 @@
   max-width: 100%;
 }
 
-/* Chip groups never wrap: a second line of chips would cost a result row.
-   A group that does not fit scrolls sideways instead. */
+/* The kinds never wrap: a second line of chips would cost a result row.
+   Kinds that do not fit scroll sideways and leave the Sources button its
+   width. */
 .sample-market-chips {
   display: flex;
   align-items: center;
   gap: 4px;
   flex-wrap: nowrap;
-  flex-shrink: 0;
+  flex-shrink: 1;
   min-width: 0;
   max-width: 100%;
   overflow-x: auto;
@@ -124,12 +125,6 @@
 
 .sample-market-chips::-webkit-scrollbar {
   display: none;
-}
-
-/* The markets take the rest of the line and yield the sources button its
-   width, so the two never land on separate lines. */
-.sample-market-providers {
-  flex: 1 1 auto;
 }
 
 .sample-market-chip {
@@ -162,52 +157,85 @@
   color: var(--accent);
 }
 
-.sample-market-provider.unavailable {
-  border-style: dashed;
+/* Opens the source list; it sits at the end of the strip, where the eye
+   finishes reading the filters. */
+.sample-market-sources-toggle {
+  margin-left: auto;
+}
+
+.sample-market-sources-count {
+  min-width: 12px;
+  padding: 0 3px;
+  border-radius: 6px;
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  font-size: 9px;
+  line-height: 12px;
+  text-align: center;
+}
+
+.sample-market-caret {
+  font-size: 8px;
+}
+
+/* The sources open as one wrapping line of checkboxes under the toolbar. */
+.sample-market-sources-list {
+  flex-shrink: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 12px;
+  padding: 3px 8px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+  font-size: var(--font-size-xs);
+}
+
+.sample-market-source {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-primary);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.sample-market-source input {
+  margin: 0;
+}
+
+/* A source that cannot be searched stays listed so its tooltip can say why. */
+.sample-market-source.unavailable {
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
+.sample-market-source.unavailable input {
+  cursor: not-allowed;
+}
+
+/* The tooltip shows the reason on hover; this copy is for assistive tech. */
+.sample-market-source-hint {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.sample-market-source-loading {
   color: var(--text-muted);
 }
 
-.sample-market-provider.unavailable.on {
-  border-color: var(--text-muted);
-  background: var(--bg-elevated);
-  color: var(--text-secondary);
-}
-
-.sample-market-dot {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: var(--play-green);
-  flex-shrink: 0;
-}
-
-.sample-market-dot.off {
-  background: var(--text-muted);
-}
-
-/* A placeholder chip while the markets are still being read. */
-.sample-market-chip-loading {
-  cursor: default;
-  opacity: 0.7;
-}
-
-/* Preferences > External Sources, where the keys for these markets live. */
-.sample-market-sources {
-  flex-shrink: 0;
-  width: 20px;
-  height: 20px;
-  min-height: 20px;
+/* As short as a checkbox line, so opening the list costs one row. */
+.sample-market-sources-list .sample-market-sources-settings {
+  height: 18px;
+  min-height: 18px;
   margin-left: auto;
-  font-size: 11px;
+  padding: 0 6px;
+  font-size: var(--font-size-xs);
 }
-
-/* Half-width panels (the resource browser, a narrow sidebar) keep only the
-   controls whose meaning survives without a label. */
-/* A cell narrower than this cannot show the credit without starving the
-   name, so the credit goes, and the name and details split the width. */
-
-/* Below a comfortable cell width one column is the tighter choice; the credit
-   comes back because the row is full width again. */
 
 .sample-market-notices {
   display: flex;
@@ -228,21 +256,6 @@
   display: flex;
   justify-content: center;
   padding: 3px 8px;
-}
-
-.sample-market-key {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-  padding: 5px 8px;
-  background: var(--bg-secondary);
-  border-bottom: 1px solid var(--border);
-}
-
-.sample-market-key-label {
-  font-size: var(--font-size-xs);
-  color: var(--text-secondary);
 }
 
 .sample-market-oauth-status {
@@ -483,6 +496,8 @@
   justify-content: flex-end;
 }
 
+/* A cell narrower than this cannot show the credit without starving the
+   name, so the credit goes, and the name and details split the width. */
 @container (max-width: 1080px) {
   .sample-market-row {
     --sample-columns: minmax(0, 1.2fr) 22px 2.9rem minmax(0, 1.3fr) 5.5rem;
@@ -493,6 +508,8 @@
   }
 }
 
+/* Below a comfortable cell width one column is the tighter choice; the credit
+   comes back because the row is full width again. */
 @container (max-width: 960px) {
   .sample-market-grid {
     grid-template-columns: minmax(0, 1fr);
@@ -507,6 +524,8 @@
   }
 }
 
+/* Half-width panels (the resource browser, a narrow sidebar) keep only the
+   controls whose meaning survives without a label. */
 @container (max-width: 760px) {
   .sample-market-check > span {
     display: none;

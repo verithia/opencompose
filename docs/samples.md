@@ -108,7 +108,8 @@ never invented for it.
 | Cymatics | Per pack | none | no | no |
 
 A search that names no market asks every available market except Openverse,
-whose search often times out. Select its chip, or name it, to search it.
+whose search often times out. Tick it under **Sources**, or name it, to search
+it.
 
 Why the last nine markets are page-only:
 
@@ -127,7 +128,7 @@ Each market declares one spec in `oc_sample::registry`:
 
 | Field | Meaning |
 |---|---|
-| `id`, `label` | The stable id used in tool arguments, and the name on a chip. |
+| `id`, `label` | The stable id used in tool arguments, and the name in the **Sources** list. |
 | `id_prefix` | The prefix of every id the market issues (`commons:`, `openverse:`, `ia:`, `freesound:`, `jamendo:`), so a pull can tell the market from the id alone. |
 | `requires_key` | Whether a key is needed; `key_env` and `key_account` say where it comes from. |
 | `kinds` | The kinds the catalogue can serve. |
@@ -431,8 +432,8 @@ Mixer, Drum Kit, History and Inspector. It has no default shortcut; the command
 the **Browse** overlay shows the same panel.
 
 The bottom panel is short, so the panel spends its height on results: the
-search, duration, commercial filter, kind chips and market chips share one
-toolbar strip that wraps to a second line only when it must, every result is
+search, duration, commercial filter, kind chips and the **Sources** button
+share one toolbar strip that wraps to a second line only when it must, every result is
 a single line, and a wide panel puts two results on each line. A narrow panel
 returns to one column and drops the duration and the commercial label before
 it lets the toolbar or a row scroll sideways.
@@ -445,18 +446,19 @@ it lets the toolbar or a row scroll sideways.
   The bounds are inclusive.
 - **Commercial use OK** keeps only results whose licence allows commercial
   use.
-- Market chips: every market the build knows, with an availability dot. The
-  tooltip shows the licence sentence, or the reason the market is unavailable.
-  Click a chip to include or exclude that market. Until you change the chips,
-  every available market except Openverse is included.
-- **External Sources** opens that Preferences page. When an included market
-  needs a key it does not have, the panel also shows a key field; **Save key**
-  stores the key in the operating system's credential store and reads the
-  market list again.
+- **Sources** shows how many markets are included and opens a line of
+  checkboxes beneath the toolbar, one per market the build knows. A market
+  that cannot be searched stays listed but greyed out and cannot be ticked;
+  its tooltip says why. For a market that needs a key, the tooltip says to add
+  the key in **Preferences > External Sources**; the panel itself never asks
+  for a key. A market's tooltip otherwise shows its licence sentence. Until
+  you change the boxes, every available market except Openverse is included.
+  **External Sources…** at the end of the line opens that Preferences page;
+  a saved key makes its market available without reopening the panel.
 - **On this computer**: matching files from your sound folders, listed first.
 - **Online**: a notice line for each market that could not answer, for example
-  that it needs an API key, is rate limited (with the wait), is temporarily
-  skipped or could not be reached, then the market results.
+  that it is rate limited (with the wait), is temporarily skipped or could not
+  be reached, then the market results.
 - Each market result shows its name, market, kind, duration, credit line and
   a licence badge, green when the licence is free to reuse. Right-click a
   result to copy its credit, source link or download link.
@@ -510,7 +512,7 @@ is kept for 30 seconds, so several searches in a row walk the disk once.
 - **Duration** reads the length from each file's header. A file whose header
   states no length fails a duration bound, as a market result does. At most
   400 headers are read per search.
-- **Commercial use OK** and the market chips do not apply: these are your files.
+- **Commercial use OK** and the **Sources** boxes do not apply: these are your files.
 - At most 50 files are listed. When more match, the panel says so; add words to
   narrow the search.
 
@@ -586,7 +588,7 @@ mismatch and a licence that needs a notice each leave the folder empty, and a
 successful pull writes the audio, the sidecar and the receipt with a checksum
 that matches the bytes. The registry tests cover availability with and without
 keys, the page-only reasons and the id prefixes. The panel tests render the
-panel, search, show the market chips, page with **Load more** and add a result
+panel, search, show the Sources list, page with **Load more** and add a result
 through a mocked `invoke`. The local search tests cover word matching and
 ranking, the kind and duration filters, nested folders, the path check that
 preview and add apply, and the copy that a refused placement removes.

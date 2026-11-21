@@ -8,8 +8,9 @@
  * an add places one file in the project at the playhead; a local file is
  * copied into the project first.
  *
- * Provider chips are the availability map: an unavailable market stays visible
- * with its reason. Credentials are also available in External Sources.
+ * The Sources button opens the list of online sources as checkboxes. A source
+ * that cannot be searched stays listed, greyed out, and its tooltip says why;
+ * keys are entered in Preferences > External Sources, never in this panel.
  */
 import { For, Show, createEffect, createMemo, createSignal, createUniqueId, on, onCleanup, onMount } from "solid-js";
 import { i18n, type I18nKey } from "../stores/i18n";
@@ -107,6 +108,8 @@ export function SampleMarketPanel() {
   const [providersLoading, setProvidersLoading] = createSignal(true);
   const [selectedProviders, setSelectedProviders] = createSignal<string[]>([]);
   const [providersTouched, setProvidersTouched] = createSignal(false);
+  const [sourcesOpen, setSourcesOpen] = createSignal(false);
+  const sourcesListId = createUniqueId();
   const pager = api.createSampleMarketSearchPager();
   const items = pager.items;
   const loading = pager.loading;
@@ -120,7 +123,6 @@ export function SampleMarketPanel() {
     item: SampleMarketItem;
     message: string;
   } | null>(null);
-  const [keyDraft, setKeyDraft] = createSignal("");
   // Files from this computer's sound folders, listed before the markets.
   const [localItems, setLocalItems] = createSignal<LocalSample[]>([]);
   const [localLoading, setLocalLoading] = createSignal(false);
@@ -140,15 +142,13 @@ export function SampleMarketPanel() {
   const previewLabel = (item: SampleMarketItem) => actionLabel(action(item));
   const localPreviewLabel = (item: LocalSample) => actionLabel(localAction(item));
 
-  /** The keyed market the panel is asking a key for, if one is included. */
-  const keyedProvider = createMemo(() =>
-    providers().find(
-      (provider) =>
-        provider.requires_key && provider.search &&
-        !provider.available &&
-        selectedProviders().includes(provider.id),
-    ),
-  );
+  /** Why a source cannot be ticked, worded per locale from typed fields. */
+  const sourceBlocker = (provider: SampleProviderAvailability): string | null => {
+    if (provider.available) return null;
+    return provider.requires_key && provider.search
+      ? i18n.t("sample.source.needsKey", { provider: provider.label })
+      : i18n.t("sample.source.unavailable", { provider: provider.label });
+  };
 
   /** No market rows yet: the markets are still answering, or the search is. */
   const pending = createMemo(
@@ -228,11 +228,11 @@ export function SampleMarketPanel() {
     const available = list
       .filter((provider) => provider.available && provider.default_search !== false)
       .map((provider) => provider.id);
+    // Only a source that can answer stays included, so a search never reaches
+    // a market that would refuse it for want of a key.
     setSelectedProviders((previous) => {
       if (!providersTouched()) return available;
-      return previous.filter((id) => list.some((provider) =>
-        provider.id === id && (provider.available || (provider.search && provider.requires_key)),
-      ));
+      return previous.filter((id) => list.some((provider) => provider.id === id && provider.available));
     });
   }
 
@@ -258,6 +258,7 @@ export function SampleMarketPanel() {
   });
 
   function toggleProvider(id: string) {
+    if (!providers().some((provider) => provider.id === id && provider.available)) return;
     setProvidersTouched(true);
     setSelectedProviders((previous) =>
       previous.includes(id) ? previous.filter((entry) => entry !== id) : [...previous, id],
@@ -378,22 +379,6 @@ export function SampleMarketPanel() {
     }
   }
 
-  async function saveKey(provider: SampleProviderAvailability) {
-    const key = keyDraft().trim();
-    if (!key) return;
-    try {
-      await api.sampleMarketSaveKey(provider.id, key);
-      setKeyDraft("");
-      setStatus(i18n.t("sample.keySaved"));
-      await loadProviders();
-      setSelectedProviders((previous) =>
-        previous.includes(provider.id) ? previous : [...previous, provider.id],
-      );
-    } catch (error) {
-      setStatus(i18n.t("sample.keyFailed", { message: commandErrorText(error) }));
-    }
-  }
-
   return (
     <div class="sample-market-panel">
       {/* The bottom panel is short, so the search, the filters and the
@@ -447,8 +432,8 @@ export function SampleMarketPanel() {
           </label>
         </div>
 
-        {/* Kinds and markets travel together; a group that does not fit
-            scrolls sideways rather than adding a line. */}
+        {/* Kinds and the Sources button travel together; kinds that do not
+            fit scroll sideways rather than adding a line. */}
         <div class="sample-market-markets">
           <div
             class="sample-market-chips sample-market-kinds"
@@ -470,86 +455,79 @@ export function SampleMarketPanel() {
             </For>
           </div>
 
-          <div
-            class="sample-market-chips sample-market-providers"
-            role="group"
-            aria-label={i18n.t("sample.markets")}
-          >
-            <Show when={providersLoading() && providers().length === 0}>
-              <span class="sample-market-chip sample-market-chip-loading" role="status">
-                {i18n.t("sample.loadingMarkets")}
-              </span>
-            </Show>
-            <For each={providers()}>
-              {(provider) => (
-                <button
-                  type="button"
-                  class="sample-market-chip sample-market-provider"
-                  classList={{
-                    on: selectedProviders().includes(provider.id),
-                    unavailable: !provider.available,
-                  }}
-                  data-provider={provider.id}
-                  aria-pressed={selectedProviders().includes(provider.id)}
-                  onClick={() => toggleProvider(provider.id)}
-                  {...useTooltip(() =>
-                    provider.available
-                      ? provider.license
-                      : `${i18n.t("sample.unavailable")}: ${provider.reason ?? ""}`,
-                  )}
-                >
-                  <span
-                    class="sample-market-dot"
-                    classList={{ off: !provider.available }}
-                    aria-hidden="true"
-                  />
-                  {provider.label}
-                </button>
-              )}
-            </For>
-          </div>
           <button
             type="button"
-            class="toolbar-btn sample-market-sources"
-            aria-label={i18n.t("preferences.page.sources")}
-            {...useTooltip(() => i18n.t("preferences.page.sources"))}
-            onClick={(event) => preferencesUi.openOn("sources", undefined, event.currentTarget)}
+            class="sample-market-chip sample-market-sources-toggle"
+            classList={{ on: sourcesOpen() }}
+            aria-expanded={sourcesOpen()}
+            aria-controls={sourcesListId}
+            aria-label={i18n.t("sample.sources")}
+            {...useTooltip(() => i18n.t("sample.sourcesHint"))}
+            onClick={() => setSourcesOpen((open) => !open)}
           >
-            <svg width="12" height="12" viewBox="0 0 16 16" aria-hidden="true">
-              <path
-                fill="currentColor"
-                d="M9.4 1l.3 1.9c.5.2 1 .5 1.4.8l1.8-.7 1.4 2.4-1.5 1.2a5 5 0 010 1.7l1.5 1.2-1.4 2.4-1.8-.7c-.4.3-.9.6-1.4.8L9.4 15H6.6l-.3-1.9c-.5-.2-1-.5-1.4-.8l-1.8.7-1.4-2.4 1.5-1.2a5 5 0 010-1.7L1.7 6.5l1.4-2.4 1.8.7c.4-.3.9-.6 1.4-.8L6.6 1h2.8zM8 5.5a2.5 2.5 0 100 5 2.5 2.5 0 000-5z"
-              />
-            </svg>
+            {i18n.t("sample.sources")}
+            <span class="sample-market-sources-count">
+              {providersLoading() && providers().length === 0 ? "…" : selectedProviders().length}
+            </span>
+            <span class="sample-market-caret" aria-hidden="true">{sourcesOpen() ? "▴" : "▾"}</span>
           </button>
         </div>
       </div>
 
-      <Show when={keyedProvider()}>
-        {(provider) => (
-          <form
-            class="sample-market-key"
-            onSubmit={(event) => {
-              event.preventDefault();
-              void saveKey(provider());
-            }}
-          >
-            <span class="sample-market-key-label">
-              {i18n.t("sample.keyPrompt", { provider: provider().label })}
+      {/* The sources open beneath the toolbar, so the strip stays one line
+          however many markets the registry lists. */}
+      <Show when={sourcesOpen()}>
+        <div
+          id={sourcesListId}
+          class="sample-market-sources-list"
+          role="group"
+          aria-label={i18n.t("sample.markets")}
+        >
+          <Show when={providersLoading() && providers().length === 0}>
+            <span class="sample-market-source-loading" role="status">
+              {i18n.t("sample.loadingMarkets")}
             </span>
-            <input
-              class="sample-market-search"
-              type="password"
-              value={keyDraft()}
-              placeholder={i18n.t("sample.keyPlaceholder")}
-              aria-label={i18n.t("sample.keyPlaceholder")}
-              onInput={(event) => setKeyDraft(event.currentTarget.value)}
-            />
-            <button class="toolbar-btn text-btn" type="submit">
-              {i18n.t("sample.keySave")}
-            </button>
-          </form>
-        )}
+          </Show>
+          <For each={providers()}>
+            {(provider) => {
+              const hintId = createUniqueId();
+              return (
+                <label
+                  class="sample-market-source"
+                  classList={{ unavailable: !provider.available }}
+                  data-provider={provider.id}
+                  {...useTooltip(() => sourceBlocker(provider) ?? provider.license)}
+                >
+                  <input
+                    type="checkbox"
+                    checked={provider.available && selectedProviders().includes(provider.id)}
+                    disabled={!provider.available}
+                    aria-label={provider.label}
+                    aria-describedby={sourceBlocker(provider) ? hintId : undefined}
+                    onChange={(event) => {
+                      toggleProvider(provider.id);
+                      // The box shows the selection, not the click: a refused
+                      // toggle leaves it as it was.
+                      event.currentTarget.checked =
+                        provider.available && selectedProviders().includes(provider.id);
+                    }}
+                  />
+                  <span>{provider.label}</span>
+                  <Show when={sourceBlocker(provider)}>
+                    {(hint) => <span id={hintId} class="sample-market-source-hint">{hint()}</span>}
+                  </Show>
+                </label>
+              );
+            }}
+          </For>
+          <button
+            type="button"
+            class="toolbar-btn text-btn sample-market-sources-settings"
+            onClick={(event) => preferencesUi.openOn("sources", undefined, event.currentTarget)}
+          >
+            {i18n.t("preferences.page.sources")}…
+          </button>
+        </div>
       </Show>
 
       {/* The list is a two-column grid on a wide panel. The bottom panel is
@@ -840,8 +818,9 @@ function pageNotice(page: SampleMarketPage): MarketNotice | null {
   let text: string;
   switch (page.error_kind) {
     case "needs_key":
-      text = i18n.t("sample.notice.needsKey", { provider });
-      break;
+      // A keyless source cannot be ticked, and the Sources list already says
+      // where its key goes; a per-search line would only repeat that.
+      return null;
     case "rate_limited":
       text = retry(page.retry_after_secs);
       break;
