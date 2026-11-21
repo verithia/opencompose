@@ -17,6 +17,7 @@ export type PreferencesPageId =
   | "audio"
   | "keymap"
   | "performance"
+  | "folders"
   | "storage"
   | "network"
   | "sources"

@@ -3435,20 +3435,26 @@ fn dispatch_tool(
             use crate::tool_registry::arguments::ToolArguments;
             let request = crate::agent_tools::content::ContentLibraryRegisterArgs::decode(args)
                 .map_err(|error| error.to_string())?;
-            to_value(crate::content_library::register(
-                &crate::content_library::resolve_catalogue_path(request.catalogue.as_deref()),
-                std::path::Path::new(&request.path),
-                request.name.as_deref(),
-            )?)
+            to_value(
+                crate::content_library::register(
+                    &crate::content_library::resolve_catalogue_path(request.catalogue.as_deref()),
+                    std::path::Path::new(&request.path),
+                    request.name.as_deref(),
+                )
+                .map_err(String::from)?,
+            )
         }
         ToolId::ContentLibraryRemove => {
             use crate::tool_registry::arguments::ToolArguments;
             let request = crate::agent_tools::content::ContentLibraryRemoveArgs::decode(args)
                 .map_err(|error| error.to_string())?;
-            to_value(crate::content_library::remove(
-                &crate::content_library::resolve_catalogue_path(request.catalogue.as_deref()),
-                &request.id,
-            )?)
+            to_value(
+                crate::content_library::remove(
+                    &crate::content_library::resolve_catalogue_path(request.catalogue.as_deref()),
+                    &request.id,
+                )
+                .map_err(String::from)?,
+            )
         }
         ToolId::ContentLibraryRescan => {
             use crate::tool_registry::arguments::ToolArguments;

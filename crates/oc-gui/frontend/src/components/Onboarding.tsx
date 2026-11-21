@@ -27,7 +27,8 @@ import { localScan } from "../stores/localScan";
 import { soundPacks } from "../stores/soundPacks";
 import { needsPluginPicks, needsSoundPicks, pickStarterSounds } from "../stores/starterSounds";
 import { FolderIcon, KeyboardIcon, PlugIcon, WaveIcon } from "./icons";
-import { OnboardingScan, chooseFolder } from "./OnboardingScan";
+import { OnboardingScan } from "./OnboardingScan";
+import { chooseFolder, folderErrorText } from "./LocalFolders";
 import { ConnectionHelp } from "./ConnectionHelp";
 
 type Step = "scan" | "picks" | "basics" | "ai";
@@ -190,7 +191,7 @@ export function Onboarding(props: { onDone: () => void }) {
     } catch (cause) {
       setMessages((previous) => ({
         ...previous,
-        folder: { text: i18n.t("onboarding.local.failed", { error: String(cause) }), error: true },
+        folder: { text: i18n.t("onboarding.local.failed", { error: folderErrorText(cause) }), error: true },
       }));
     } finally {
       setFolderBusy(false);

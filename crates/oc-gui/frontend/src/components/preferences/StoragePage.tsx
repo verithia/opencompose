@@ -93,8 +93,11 @@ function ClipCacheRow(props: { label: string; usage: ClipCacheUsage }) {
   );
 }
 
-export function StoragePage(props: { onClose: () => void }) {
-  void props;
+export function StoragePage(props: {
+  onClose: () => void;
+  /** Opens the Folders page, where search folders are added and removed. */
+  onManageFolders?: () => void;
+}) {
   onMount(() => {
     void storageStore.load();
     void storageStore.loadSessionAudio();
@@ -489,6 +492,18 @@ export function StoragePage(props: { onClose: () => void }) {
                     </div>
                   )}
                 </For>
+                <Show when={props.onManageFolders}>
+                  {(manage) => (
+                    <div class="preferences-path-row">
+                      <span class="preferences-hint">{i18n.t("folders.manageHint")}</span>
+                      <button
+                        type="button"
+                        class="toolbar-btn text-btn preferences-manage-folders"
+                        onClick={() => manage()()}
+                      >{i18n.t("folders.manage")}</button>
+                    </div>
+                  )}
+                </Show>
               </div>
 
               <Show when={loaded().clip_pcm}>
