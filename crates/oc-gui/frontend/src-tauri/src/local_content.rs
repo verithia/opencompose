@@ -129,6 +129,11 @@ const PLUGIN_FORMATS: [&str; 5] = ["vst3", "clap", "au", "lv2", "vst2"];
 const INSTRUMENT_FORMATS: [&str; 4] = ["sf2", "sf3", "sfz", "sampler_asset"];
 const SAMPLE_EXTENSIONS: [&str; 6] = ["wav", "aif", "aiff", "flac", "ogg", "mp3"];
 
+/// Whether `path` names an audio sample the sound walk counts.
+pub(crate) fn is_sample_file(path: &Path) -> bool {
+    extension_of(path).is_some_and(|extension| SAMPLE_EXTENSIONS.contains(&extension.as_str()))
+}
+
 fn plugin_format(format: oc_host::PluginFormat) -> Option<&'static str> {
     match format {
         oc_host::PluginFormat::Vst3 => Some("vst3"),
@@ -585,48 +590,127 @@ pub async fn local_content_scan(
     .await
 }
 
+/// Why a folder could not be added or removed. The UI words each code itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FolderErrorCode {
+    /// The path does not exist or is not a folder.
+    NotADirectory,
+    /// The folder is searched already.
+    AlreadySearched,
+    /// The folder is not one the user added.
+    NotListed,
+    /// The user's plugin folder list is full.
+    TooMany,
+    /// The saved list is not one this version reads; it is left as it is.
+    Invalid,
+    /// A sound folder holds no instrument file and no audio sample.
+    NoSounds,
+    /// Reading, scanning or saving failed.
+    Failed,
+}
+
+/// The error a folder command returns: a stable code and the backend's
+/// message for logs. A refused change writes nothing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct FolderChangeError {
+    pub code: FolderErrorCode,
+    pub message: String,
+}
+
+impl From<oc_host::plugin_folders::FolderError> for FolderChangeError {
+    fn from(error: oc_host::plugin_folders::FolderError) -> Self {
+        use oc_host::plugin_folders::FolderError;
+        let code = match &error {
+            FolderError::NotADirectory(_) => FolderErrorCode::NotADirectory,
+            FolderError::AlreadySearched(_) => FolderErrorCode::AlreadySearched,
+            FolderError::NotListed(_) => FolderErrorCode::NotListed,
+            FolderError::TooMany => FolderErrorCode::TooMany,
+            FolderError::Invalid(_) => FolderErrorCode::Invalid,
+            FolderError::Io(_) => FolderErrorCode::Failed,
+        };
+        Self {
+            code,
+            message: error.to_string(),
+        }
+    }
+}
+
+impl From<content_library::LibraryError> for FolderChangeError {
+    fn from(error: content_library::LibraryError) -> Self {
+        use content_library::LibraryErrorKind;
+        let code = match error.kind {
+            LibraryErrorKind::NotFound => FolderErrorCode::NotADirectory,
+            LibraryErrorKind::AlreadyRegistered => FolderErrorCode::AlreadySearched,
+            LibraryErrorKind::NoInstruments | LibraryErrorKind::NoSounds => {
+                FolderErrorCode::NoSounds
+            }
+            LibraryErrorKind::UnknownLibrary => FolderErrorCode::NotListed,
+            LibraryErrorKind::Failed => FolderErrorCode::Failed,
+        };
+        Self {
+            code,
+            message: error.to_string(),
+        }
+    }
+}
+
+/// Run one folder change off the main thread and recount afterwards.
+async fn folder_change<E: Into<FolderChangeError>>(
+    change: impl FnOnce() -> Result<(), E> + Send + 'static,
+) -> Result<LocalContentSummary, FolderChangeError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        change().map_err(Into::into)?;
+        Ok(summary())
+    })
+    .await
+    .map_err(|error| FolderChangeError {
+        code: FolderErrorCode::Failed,
+        message: error.to_string(),
+    })?
+}
+
 /// Search `path` for plugins from now on, then rescan in the background.
 #[tauri::command]
-pub async fn plugin_folder_add(path: String) -> Result<LocalContentSummary, String> {
-    blocking(move || {
-        oc_host::plugin_folders::add(Path::new(&path)).map_err(|error| error.to_string())?;
+pub async fn plugin_folder_add(path: String) -> Result<LocalContentSummary, FolderChangeError> {
+    folder_change(move || {
+        oc_host::plugin_folders::add(Path::new(&path))?;
         crate::plugin_inventory::refresh_if_stale();
-        Ok(summary())
+        Ok::<_, oc_host::plugin_folders::FolderError>(())
     })
     .await
 }
 
 /// Stop searching `path` for plugins. Files on disk are never touched.
 #[tauri::command]
-pub async fn plugin_folder_remove(path: String) -> Result<LocalContentSummary, String> {
-    blocking(move || {
-        oc_host::plugin_folders::remove(Path::new(&path)).map_err(|error| error.to_string())?;
+pub async fn plugin_folder_remove(path: String) -> Result<LocalContentSummary, FolderChangeError> {
+    folder_change(move || {
+        oc_host::plugin_folders::remove(Path::new(&path))?;
         crate::plugin_inventory::refresh_if_stale();
-        Ok(summary())
+        Ok::<_, oc_host::plugin_folders::FolderError>(())
     })
     .await
 }
 
-/// Register `path` as a content library so its instruments are found.
+/// Register `path` as a content library so its instruments and samples are
+/// found. The user chose it, so a folder of samples alone is accepted.
 #[tauri::command]
-pub async fn sound_folder_add(path: String) -> Result<LocalContentSummary, String> {
-    blocking(move || {
-        content_library::register(
+pub async fn sound_folder_add(path: String) -> Result<LocalContentSummary, FolderChangeError> {
+    folder_change(move || {
+        content_library::register_sound_folder(
             &content_library::default_catalogue_path(),
             Path::new(&path),
-            None,
-        )?;
-        Ok(summary())
+        )
+        .map(drop)
     })
     .await
 }
 
 /// Unregister a content library by id. Files on disk are never touched.
 #[tauri::command]
-pub async fn sound_folder_remove(id: String) -> Result<LocalContentSummary, String> {
-    blocking(move || {
-        content_library::remove(&content_library::default_catalogue_path(), &id)?;
-        Ok(summary())
+pub async fn sound_folder_remove(id: String) -> Result<LocalContentSummary, FolderChangeError> {
+    folder_change(move || {
+        content_library::remove(&content_library::default_catalogue_path(), &id).map(drop)
     })
     .await
 }
@@ -842,6 +926,34 @@ mod tests {
     }
 
     #[test]
+    fn a_chosen_folder_of_samples_alone_counts_its_samples_as_the_users() {
+        let scratch = Scratch::new("samples-only");
+        let catalogue = scratch.0.join("catalogue.json");
+        let drums = scratch.dir("Drums");
+        scratch.file("Drums/Kicks/kick.wav", b"RIFF");
+        scratch.file("Drums/Loops/loop.aiff", b"FORM");
+        let library = content_library::register_sound_folder(&catalogue, &drums)
+            .unwrap()
+            .library;
+        let roots = sound_roots(
+            vec![SearchRoot {
+                path: drums.clone(),
+                origin: RootOrigin::Library(library.id.clone()),
+            }],
+            Vec::new(),
+        );
+        let (instruments, samples) =
+            sound_summaries(&roots, std::slice::from_ref(&library), &|_| {});
+        assert_eq!(instruments.total, 0);
+        assert_eq!(samples.total, 2);
+        assert_eq!(samples.folders[0].origin, FolderOrigin::User);
+        assert_eq!(
+            samples.folders[0].library_id.as_deref(),
+            Some(library.id.as_str())
+        );
+    }
+
+    #[test]
     fn the_managed_sounds_folder_is_a_managed_search_root() {
         let scratch = Scratch::new("managed");
         let managed = scratch.dir("Sounds");
@@ -933,5 +1045,55 @@ mod tests {
             "plugin bundles {} in {plugin_time:?}; instruments {} samples {} in {sound_time:?}",
             plugins.total, instruments.total, samples.total
         );
+    }
+
+    #[test]
+    fn a_refused_folder_change_carries_a_stable_code() {
+        use oc_host::plugin_folders::FolderError;
+        let wire = |error: FolderChangeError| serde_json::to_value(error).unwrap()["code"].clone();
+        assert_eq!(wire(FolderError::TooMany.into()), "too_many");
+        assert_eq!(
+            wire(FolderError::AlreadySearched(PathBuf::from("/p")).into()),
+            "already_searched"
+        );
+        assert_eq!(
+            wire(FolderError::NotADirectory(PathBuf::from("/p")).into()),
+            "not_a_directory"
+        );
+        assert_eq!(
+            wire(FolderError::NotListed(PathBuf::from("/p")).into()),
+            "not_listed"
+        );
+        assert_eq!(
+            wire(FolderError::Invalid("schema".into()).into()),
+            "invalid"
+        );
+        assert_eq!(wire(FolderError::Io("disk full".into()).into()), "failed");
+
+        let scratch = Scratch::new("folder-codes");
+        let catalogue = scratch.0.join("catalogue.json");
+        let empty = scratch.dir("Empty");
+        let register = |root: &Path| {
+            FolderChangeError::from(content_library::register(&catalogue, root, None).unwrap_err())
+        };
+        assert_eq!(register(&empty).code, FolderErrorCode::NoSounds);
+        let chosen = FolderChangeError::from(
+            content_library::register_sound_folder(&catalogue, &empty).unwrap_err(),
+        );
+        assert_eq!(serde_json::to_value(chosen).unwrap()["code"], "no_sounds");
+        assert_eq!(
+            register(&scratch.0.join("gone")).code,
+            FolderErrorCode::NotADirectory
+        );
+        scratch.file("Fonts/Piano.sf2", BANK);
+        content_library::register(&catalogue, &scratch.0.join("Fonts"), None).unwrap();
+        assert_eq!(
+            register(&scratch.0.join("Fonts")).code,
+            FolderErrorCode::AlreadySearched
+        );
+        let unknown = content_library::remove(&catalogue, "lib-unknown").unwrap_err();
+        let unknown = serde_json::to_value(FolderChangeError::from(unknown)).unwrap();
+        assert_eq!(unknown["code"], "not_listed");
+        assert!(unknown["message"].as_str().unwrap().contains("lib-unknown"));
     }
 }

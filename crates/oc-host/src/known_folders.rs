@@ -154,6 +154,11 @@ fn host_settings_folders() -> Vec<PathBuf> {
             paths.extend(reaper_plugin_paths(&text));
         }
     }
+    #[cfg(target_os = "windows")]
+    {
+        let settings = registry::fl_studio_settings();
+        paths.extend(fl_studio_plugin_paths(settings.list, settings.vst_dir));
+    }
     paths.retain(|path| !is_32_bit_location(path));
     paths.truncate(MAX_HOST_FOLDERS);
     paths
@@ -214,12 +219,81 @@ fn reaper_plugin_paths(text: &str) -> Vec<PathBuf> {
     paths
 }
 
+/// The plugin folders in FL Studio's plugin search path list in its registry
+/// settings: `list` holds each numbered entry's `path` value and `vst_dir` the
+/// 64-bit VST2 folder it names on its own. Entries are taken in index order.
+///
+/// The values are Windows paths whatever OS parses them, so absoluteness is
+/// judged lexically. A value with a `%` placeholder names one of that host's
+/// own folders, which hold its native plugins rather than VST or CLAP ones,
+/// and a relative value has no meaning outside that host; both are skipped.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn fl_studio_plugin_paths(mut list: Vec<(u32, String)>, vst_dir: Option<String>) -> Vec<PathBuf> {
+    list.sort_by_key(|(index, _)| *index);
+    let mut kept: Vec<String> = Vec::new();
+    for value in list.into_iter().map(|(_, value)| value).chain(vst_dir) {
+        let value = value.trim();
+        if value.contains('%') || !is_windows_absolute(value) {
+            continue;
+        }
+        let path = trim_windows_separators(value);
+        if !kept
+            .iter()
+            .any(|known| known.to_lowercase() == path.to_lowercase())
+        {
+            kept.push(path);
+            if kept.len() == MAX_HOST_FOLDERS {
+                break;
+            }
+        }
+    }
+    kept.into_iter().map(PathBuf::from).collect()
+}
+
+/// A drive-rooted (`C:\`) or UNC (`\\server\share`) path.
+fn is_windows_absolute(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    let drive = bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && matches!(bytes[2], b'\\' | b'/');
+    drive || path.starts_with("\\\\")
+}
+
+/// `path` without trailing separators, so `VstPlugins\` and `VstPlugins` are
+/// one folder. A drive root keeps its separator.
+fn trim_windows_separators(path: &str) -> String {
+    let trimmed = path.trim_end_matches(['\\', '/']);
+    if trimmed.len() == 2 && trimmed.ends_with(':') {
+        format!("{trimmed}\\")
+    } else {
+        trimmed.to_string()
+    }
+}
+
+/// Whether the Windows path `path` is `folder` or inside it. Windows compares
+/// paths without regard to case or separator style, so neither matters here.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn is_within_windows_folder(path: &str, folder: &str) -> bool {
+    let normalize = |text: &str| {
+        text.trim_end_matches(['\\', '/'])
+            .replace('/', "\\")
+            .to_lowercase()
+    };
+    let (path, folder) = (normalize(path), normalize(folder));
+    !folder.is_empty()
+        && path
+            .strip_prefix(&folder)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with('\\'))
+}
+
 /// Whether a folder holds 32-bit plugins, which this 64-bit host cannot load.
 fn is_32_bit_location(path: &Path) -> bool {
     #[cfg(target_os = "windows")]
     {
-        std::env::var_os("ProgramFiles(x86)")
-            .is_some_and(|x86| path.starts_with(PathBuf::from(x86)))
+        std::env::var_os("ProgramFiles(x86)").is_some_and(|x86| {
+            is_within_windows_folder(&path.to_string_lossy(), &x86.to_string_lossy())
+        })
     }
     #[cfg(not(target_os = "windows"))]
     {
@@ -230,7 +304,8 @@ fn is_32_bit_location(path: &Path) -> bool {
 
 #[cfg(target_os = "windows")]
 mod registry {
-    //! The VST2 folder installers record under `Software\VST`.
+    //! The VST2 folder installers record under `Software\VST`, and the plugin
+    //! search paths another host keeps in its registry settings.
 
     use std::ffi::OsString;
     use std::os::windows::ffi::{OsStrExt, OsStringExt};
@@ -244,6 +319,32 @@ mod registry {
 
     /// Longest value read, in UTF-16 units; a folder path is far shorter.
     const MAX_VALUE_UNITS: usize = 4096;
+
+    /// The values of FL Studio's plugin search path list, read under the
+    /// current user's hive, as described at
+    /// [`super::fl_studio_plugin_paths`].
+    pub struct FlStudioSettings {
+        pub list: Vec<(u32, String)>,
+        pub vst_dir: Option<String>,
+    }
+
+    pub fn fl_studio_settings() -> FlStudioSettings {
+        // Indices run from 0; a removed entry may leave a gap, so every index
+        // up to the cap is tried rather than stopping at the first miss.
+        let list = (0..super::MAX_HOST_FOLDERS as u32)
+            .filter_map(|index| {
+                let key =
+                    format!("Software\\Image-Line\\Shared\\Plugin search paths\\List\\{index}");
+                read_string(HKEY_CURRENT_USER, &key, "path").map(|value| (index, value))
+            })
+            .collect();
+        let vst_dir = read_string(
+            HKEY_CURRENT_USER,
+            "Software\\Image-Line\\Shared\\Plugins\\FL Studio",
+            "VstDir64",
+        );
+        FlStudioSettings { list, vst_dir }
+    }
 
     pub fn vst2_folders() -> Vec<PathBuf> {
         [HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE]
@@ -327,6 +428,87 @@ mod tests {
             .collect();
         let text = format!("vstpath={}", value.join(";"));
         assert_eq!(reaper_plugin_paths(&text).len(), MAX_HOST_FOLDERS);
+    }
+
+    fn listed(values: &[(u32, &str)]) -> Vec<(u32, String)> {
+        values
+            .iter()
+            .map(|(index, value)| (*index, (*value).to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn registry_search_paths_skip_placeholders_and_trim_separators() {
+        let list = listed(&[
+            (2, "C:\\Program Files (x86)\\VstPlugins\\"),
+            (0, "%FLPath%\\Plugins\\Fruity\\Effects\\"),
+            (1, "%FLPath%\\Plugins\\Fruity\\Generators\\"),
+            (3, "D:/Audio/CLAP//"),
+            (4, "relative\\folder"),
+            (5, "  \\\\studio\\share\\VST3\\ "),
+            (6, ""),
+        ]);
+        let paths =
+            fl_studio_plugin_paths(list, Some("C:\\Program Files\\Common Files\\VST2".into()));
+        assert_eq!(
+            paths,
+            vec![
+                PathBuf::from("C:\\Program Files (x86)\\VstPlugins"),
+                PathBuf::from("D:/Audio/CLAP"),
+                PathBuf::from("\\\\studio\\share\\VST3"),
+                PathBuf::from("C:\\Program Files\\Common Files\\VST2"),
+            ]
+        );
+    }
+
+    #[test]
+    fn registry_search_paths_follow_index_order_and_dedupe_without_case() {
+        let list = listed(&[
+            (1, "c:\\plugins\\"),
+            (0, "C:\\Plugins"),
+            (7, "E:\\"),
+            (3, "E:"),
+        ]);
+        assert_eq!(
+            fl_studio_plugin_paths(list, Some("C:\\PLUGINS\\".into())),
+            vec![PathBuf::from("C:\\Plugins"), PathBuf::from("E:\\")]
+        );
+    }
+
+    #[test]
+    fn registry_search_paths_are_capped() {
+        let list: Vec<(u32, String)> = (0..MAX_HOST_FOLDERS as u32 + 10)
+            .map(|index| (index, format!("C:\\P\\{index}")))
+            .collect();
+        let paths = fl_studio_plugin_paths(list, Some("C:\\Extra".into()));
+        assert_eq!(paths.len(), MAX_HOST_FOLDERS);
+        assert_eq!(paths.last(), Some(&PathBuf::from("C:\\P\\63")));
+    }
+
+    #[test]
+    fn a_32_bit_folder_is_matched_without_regard_to_case_or_separator() {
+        let x86 = "C:\\Program Files (x86)";
+        assert!(is_within_windows_folder(
+            "C:\\Program Files (x86)\\VstPlugins",
+            x86
+        ));
+        assert!(is_within_windows_folder(
+            "c:/program files (x86)/Steinberg",
+            x86
+        ));
+        assert!(is_within_windows_folder(
+            "C:\\Program Files (x86)",
+            "C:\\Program Files (x86)\\"
+        ));
+        assert!(!is_within_windows_folder(
+            "C:\\Program Files\\Common Files\\VST2",
+            x86
+        ));
+        assert!(!is_within_windows_folder(
+            "C:\\Program Files (x86) Extra\\VST",
+            x86
+        ));
+        assert!(!is_within_windows_folder("C:\\VST", ""));
     }
 
     #[test]

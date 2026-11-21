@@ -319,14 +319,65 @@ export const LOCAL_SCAN_PROGRESS_EVENT = "local_content_scan_progress";
 export const localContentScan = (rescan = false) =>
   invoke<LocalContentSummary>("local_content_scan", { rescan });
 export const localContentSummary = () => invoke<LocalContentSummary>("local_content_summary");
-export const pluginFolderAdd = (path: string) =>
-  invoke<LocalContentSummary>("plugin_folder_add", { path });
-export const pluginFolderRemove = (path: string) =>
-  invoke<LocalContentSummary>("plugin_folder_remove", { path });
-export const soundFolderAdd = (path: string) =>
-  invoke<LocalContentSummary>("sound_folder_add", { path });
-export const soundFolderRemove = (id: string) =>
-  invoke<LocalContentSummary>("sound_folder_remove", { id });
+
+/** Why the backend refused a folder change; matches `FolderErrorCode` in Rust. */
+export type FolderErrorCode =
+  | "not_a_directory"
+  | "already_searched"
+  | "not_listed"
+  | "too_many"
+  | "invalid"
+  | "no_sounds"
+  | "failed";
+
+const FOLDER_ERROR_CODES: readonly FolderErrorCode[] = [
+  "not_a_directory",
+  "already_searched",
+  "not_listed",
+  "too_many",
+  "invalid",
+  "no_sounds",
+  "failed",
+];
+
+/**
+ * A refused folder change. `code` is `null` for a failure the backend did not
+ * classify, such as a lost IPC call; `message` is then the only detail.
+ */
+export class FolderChangeError extends Error {
+  readonly code: FolderErrorCode | null;
+
+  constructor(code: FolderErrorCode | null, message: string) {
+    super(message);
+    this.name = "FolderChangeError";
+    this.code = code;
+  }
+}
+
+/** Read a folder command's rejection into its typed form. */
+export function toFolderChangeError(cause: unknown): FolderChangeError {
+  if (cause instanceof FolderChangeError) return cause;
+  if (cause && typeof cause === "object") {
+    const { code, message } = cause as { code?: unknown; message?: unknown };
+    const text = typeof message === "string" ? message : "";
+    if (typeof code === "string" && (FOLDER_ERROR_CODES as readonly string[]).includes(code)) {
+      return new FolderChangeError(code as FolderErrorCode, text);
+    }
+    if (cause instanceof Error) return new FolderChangeError(null, cause.message);
+  }
+  return new FolderChangeError(null, String(cause));
+}
+
+/** Folder commands reject with a `FolderChangeError`. */
+const folderChange = (command: string, args: Record<string, string>) =>
+  invoke<LocalContentSummary>(command, args).catch((cause: unknown) => {
+    throw toFolderChangeError(cause);
+  });
+
+export const pluginFolderAdd = (path: string) => folderChange("plugin_folder_add", { path });
+export const pluginFolderRemove = (path: string) => folderChange("plugin_folder_remove", { path });
+export const soundFolderAdd = (path: string) => folderChange("sound_folder_add", { path });
+export const soundFolderRemove = (id: string) => folderChange("sound_folder_remove", { id });
 
 export const pluginCatalog = () => invoke<PluginCatalog>("plugin_catalog");
 export const pluginStoreOpen = (url: string) => invoke<void>("plugin_store_open", { url });

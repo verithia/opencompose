@@ -16,6 +16,7 @@ import { AudioPage } from "./preferences/AudioPage";
 import { KeymapPage } from "./preferences/KeymapPage";
 import { PerformancePage } from "./preferences/PerformancePage";
 import { StoragePage } from "./preferences/StoragePage";
+import { FoldersPage } from "./preferences/FoldersPage";
 import { ExternalSourcesPage } from "./preferences/ExternalSourcesPage";
 import { NetworkPage } from "./preferences/NetworkPage";
 import { HelpPage } from "./preferences/HelpPage";
@@ -29,6 +30,7 @@ const PAGES: { id: PreferencesPageId; key: I18nKey }[] = [
   { id: "audio", key: "preferences.page.audio" },
   { id: "keymap", key: "preferences.page.keymap" },
   { id: "performance", key: "preferences.page.performance" },
+  { id: "folders", key: "preferences.page.folders" },
   { id: "storage", key: "preferences.page.storage" },
   { id: "network", key: "preferences.page.network" },
   { id: "sources", key: "preferences.page.sources" },
@@ -71,6 +73,10 @@ function PreferencesDialog(props: { onClose: () => void; page?: PreferencesPageI
   });
 
   const requestClose = () => preferencesUi.requestClose(props.onClose);
+  const showPage = (next: PreferencesPageId) => {
+    setPage(next);
+    preferencesUi.show(next);
+  };
 
   let dialog: HTMLDivElement | undefined;
   const isTopmost = useTopmostEscape(() => void requestClose(), () => !aiWorkspace.settingsBusy());
@@ -112,10 +118,7 @@ function PreferencesDialog(props: { onClose: () => void; page?: PreferencesPageI
                   classList={{ active: page() === entry.id }}
                   aria-current={page() === entry.id ? "page" : undefined}
                   data-page={entry.id}
-                  onClick={() => {
-                    setPage(entry.id);
-                    preferencesUi.show(entry.id);
-                  }}
+                  onClick={() => showPage(entry.id)}
                 >
                   {i18n.t(entry.key)}
                 </button>
@@ -129,7 +132,10 @@ function PreferencesDialog(props: { onClose: () => void; page?: PreferencesPageI
               <Match when={page() === "audio"}><AudioPage /></Match>
               <Match when={page() === "keymap"}><KeymapPage /></Match>
               <Match when={page() === "performance"}><PerformancePage /></Match>
-              <Match when={page() === "storage"}><StoragePage onClose={() => void requestClose()} /></Match>
+              <Match when={page() === "folders"}><FoldersPage /></Match>
+              <Match when={page() === "storage"}>
+                <StoragePage onClose={() => void requestClose()} onManageFolders={() => showPage("folders")} />
+              </Match>
               <Match when={page() === "network"}><NetworkPage /></Match>
               <Match when={page() === "sources"}><ExternalSourcesPage /></Match>
               <Match when={page() === "ai"}><AiPage /></Match>

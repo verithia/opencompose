@@ -124,6 +124,58 @@ pub struct RescanOutcome {
     pub warnings: Vec<String>,
 }
 
+/// What kind of refusal a registration or removal is. Adapters read the kind;
+/// the message is for logs and agent replies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LibraryErrorKind {
+    /// The root does not exist.
+    NotFound,
+    /// The root is already in the catalogue.
+    AlreadyRegistered,
+    /// The root holds no instrument file this scan recognises.
+    NoInstruments,
+    /// The root holds neither an instrument file nor an audio sample.
+    NoSounds,
+    /// No library has that id.
+    UnknownLibrary,
+    /// The catalogue could not be read, scanned or written.
+    Failed,
+}
+
+/// Why a catalogue change was refused. Nothing is written on any of them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LibraryError {
+    pub kind: LibraryErrorKind,
+    message: String,
+}
+
+impl LibraryError {
+    fn new(kind: LibraryErrorKind, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+        }
+    }
+
+    fn failed(message: String) -> Self {
+        Self::new(LibraryErrorKind::Failed, message)
+    }
+}
+
+impl std::fmt::Display for LibraryError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for LibraryError {}
+
+impl From<LibraryError> for String {
+    fn from(error: LibraryError) -> Self {
+        error.message
+    }
+}
+
 /// Default catalogue file. `OPENCOMPOSE_CONTENT_CATALOGUE` overrides it so a
 /// test or a second profile never touches the operator's catalogue.
 pub fn default_catalogue_path() -> PathBuf {
@@ -182,34 +234,87 @@ pub fn list(path: &Path) -> Result<CatalogueListing, String> {
     })
 }
 
+/// What a registration accepts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Contents {
+    /// A root with at least one instrument file.
+    Instruments,
+    /// Also a folder that holds only audio samples. The user chose the folder
+    /// in Preferences, so a sample library is what they mean it to be; the
+    /// automatic scans never register anything.
+    InstrumentsOrSamples,
+}
+
 /// Register one library root. The root is scanned first; a root with no
 /// recognisable instrument files is refused before anything is written.
 pub fn register(
     catalogue_path: &Path,
     root: &Path,
     name: Option<&str>,
-) -> Result<RegisterOutcome, String> {
+) -> Result<RegisterOutcome, LibraryError> {
+    register_with(catalogue_path, root, name, Contents::Instruments)
+}
+
+/// Register a sound folder the user chose. It may hold instrument files,
+/// audio samples or both; a folder with neither is refused with
+/// [`LibraryErrorKind::NoSounds`] before anything is written.
+pub fn register_sound_folder(
+    catalogue_path: &Path,
+    root: &Path,
+) -> Result<RegisterOutcome, LibraryError> {
+    register_with(catalogue_path, root, None, Contents::InstrumentsOrSamples)
+}
+
+fn register_with(
+    catalogue_path: &Path,
+    root: &Path,
+    name: Option<&str>,
+    contents: Contents,
+) -> Result<RegisterOutcome, LibraryError> {
     let _guard = write_guard();
     let root = canonical_root(root)?;
-    let mut catalogue = load(catalogue_path)?;
+    let mut catalogue = load(catalogue_path).map_err(LibraryError::failed)?;
     if catalogue
         .libraries
         .iter()
         .any(|library| same_path(&library.path, &root))
     {
-        return Err(format!(
-            "'{}' is already registered in '{}'",
-            root.display(),
-            catalogue_path.display()
+        return Err(LibraryError::new(
+            LibraryErrorKind::AlreadyRegistered,
+            format!(
+                "'{}' is already registered in '{}'",
+                root.display(),
+                catalogue_path.display()
+            ),
         ));
     }
-    let instruments = scan_root(&root)?;
-    if instruments.is_empty() {
-        return Err(format!(
-            "no instrument files ({} ) found under '{}'",
+    let refusal_kind = match contents {
+        Contents::Instruments => LibraryErrorKind::NoInstruments,
+        Contents::InstrumentsOrSamples => LibraryErrorKind::NoSounds,
+    };
+    let no_instruments = |message| LibraryError::new(refusal_kind, message);
+    if root.is_file() && !is_instrument_file(&root) {
+        return Err(no_instruments(format!(
+            "'{}' is not an instrument file ({})",
+            root.display(),
+            INSTRUMENT_EXTENSIONS.join(", ")
+        )));
+    }
+    let instruments = scan_root(&root).map_err(LibraryError::failed)?;
+    let samples_only = contents == Contents::InstrumentsOrSamples
+        && instruments.is_empty()
+        && root.is_dir()
+        && holds_sample(&root);
+    if instruments.is_empty() && !samples_only {
+        let wanted = match contents {
+            Contents::Instruments => "instrument files",
+            Contents::InstrumentsOrSamples => "audio samples or instrument files",
+        };
+        return Err(no_instruments(format!(
+            "no {wanted} ({}) found under '{}'",
             INSTRUMENT_EXTENSIONS.join(", "),
             root.display()
-        ));
+        )));
     }
     let now = now_seconds();
     let library = ContentLibrary {
@@ -226,7 +331,7 @@ pub fn register(
     catalogue
         .libraries
         .sort_by_key(|library| library.name.to_lowercase());
-    let backup = commit(catalogue_path, &catalogue)?;
+    let backup = commit(catalogue_path, &catalogue).map_err(LibraryError::failed)?;
     Ok(RegisterOutcome {
         catalogue_path: catalogue_path.display().to_string(),
         backup_path: backup.map(|path| path.display().to_string()),
@@ -235,16 +340,21 @@ pub fn register(
 }
 
 /// Remove a library row by id. The files on disk are never touched.
-pub fn remove(catalogue_path: &Path, id: &str) -> Result<RemoveOutcome, String> {
+pub fn remove(catalogue_path: &Path, id: &str) -> Result<RemoveOutcome, LibraryError> {
     let _guard = write_guard();
-    let mut catalogue = load(catalogue_path)?;
+    let mut catalogue = load(catalogue_path).map_err(LibraryError::failed)?;
     let index = catalogue
         .libraries
         .iter()
         .position(|library| library.id == id)
-        .ok_or_else(|| format!("unknown content library '{id}'"))?;
+        .ok_or_else(|| {
+            LibraryError::new(
+                LibraryErrorKind::UnknownLibrary,
+                format!("unknown content library '{id}'"),
+            )
+        })?;
     let removed = catalogue.libraries.remove(index);
-    let backup = commit(catalogue_path, &catalogue)?;
+    let backup = commit(catalogue_path, &catalogue).map_err(LibraryError::failed)?;
     Ok(RemoveOutcome {
         catalogue_path: catalogue_path.display().to_string(),
         backup_path: backup.map(|path| path.display().to_string()),
@@ -296,15 +406,16 @@ pub fn rescan(catalogue_path: &Path, id: Option<&str>) -> Result<RescanOutcome, 
     })
 }
 
-fn canonical_root(root: &Path) -> Result<PathBuf, String> {
+fn canonical_root(root: &Path) -> Result<PathBuf, LibraryError> {
     if !root.exists() {
-        return Err(format!(
-            "content library root '{}' does not exist",
-            root.display()
+        return Err(LibraryError::new(
+            LibraryErrorKind::NotFound,
+            format!("content library root '{}' does not exist", root.display()),
         ));
     }
-    root.canonicalize()
-        .map_err(|error| format!("cannot resolve '{}': {error}", root.display()))
+    root.canonicalize().map_err(|error| {
+        LibraryError::failed(format!("cannot resolve '{}': {error}", root.display()))
+    })
 }
 
 fn same_path(left: &str, right: &Path) -> bool {
@@ -427,6 +538,39 @@ fn walk(
         }
     }
     Ok(())
+}
+
+/// Whether a folder holds at least one audio sample, within the same depth
+/// and entry caps as the instrument walk.
+fn holds_sample(root: &Path) -> bool {
+    let mut budget = MAX_ENTRIES;
+    let mut pending = vec![(root.to_path_buf(), 0usize)];
+    while let Some((directory, depth)) = pending.pop() {
+        let Ok(entries) = fs::read_dir(&directory) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            if budget == 0 {
+                return false;
+            }
+            budget -= 1;
+            if entry.file_name().to_string_lossy().starts_with('.') {
+                continue;
+            }
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            let path = entry.path();
+            if file_type.is_dir() {
+                if depth < MAX_DEPTH {
+                    pending.push((path, depth + 1));
+                }
+            } else if file_type.is_file() && crate::local_content::is_sample_file(&path) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn is_instrument_file(path: &Path) -> bool {
@@ -720,7 +864,7 @@ mod tests {
         let before = fs::read(&catalogue).unwrap();
 
         let error = register(&catalogue, &library, None).unwrap_err();
-        assert!(error.contains("already registered"), "{error}");
+        assert_eq!(error.kind, LibraryErrorKind::AlreadyRegistered, "{error}");
         assert_eq!(fs::read(&catalogue).unwrap(), before);
     }
 
@@ -732,7 +876,7 @@ mod tests {
         let catalogue = temp.path().join("catalogue.json");
 
         let error = register(&catalogue, &library, None).unwrap_err();
-        assert!(error.contains("no instrument files"), "{error}");
+        assert_eq!(error.kind, LibraryErrorKind::NoInstruments, "{error}");
         assert!(!catalogue.exists(), "nothing may be written on refusal");
         assert!(!backup_path(&catalogue).exists());
     }
@@ -742,9 +886,9 @@ mod tests {
         let temp = TempDir::new("missing-root");
         let catalogue = temp.path().join("catalogue.json");
         let error = register(&catalogue, &temp.path().join("nope"), None).unwrap_err();
-        assert!(error.contains("does not exist"), "{error}");
+        assert_eq!(error.kind, LibraryErrorKind::NotFound, "{error}");
         assert!(
-            error.contains("nope"),
+            error.to_string().contains("nope"),
             "the refusal names the path the caller gave: {error}"
         );
         assert!(!catalogue.exists());
@@ -757,9 +901,48 @@ mod tests {
         let file = temp.path().join("notes.txt");
         write_file(&file, b"not an instrument");
         let error = register(&catalogue, &file, None).unwrap_err();
-        assert!(error.contains("not an instrument file"), "{error}");
-        assert!(error.contains("notes.txt"), "{error}");
+        assert_eq!(error.kind, LibraryErrorKind::NoInstruments, "{error}");
+        assert!(error.to_string().contains("notes.txt"), "{error}");
         assert!(!catalogue.exists(), "nothing may be written on refusal");
+    }
+
+    #[test]
+    fn a_folder_of_samples_alone_registers_only_when_the_user_chose_it() {
+        let temp = TempDir::new("samples-only");
+        let catalogue = temp.path().join("catalogue.json");
+        let library = temp.path().join("Drum Samples");
+        write_file(&library.join("Kicks/kick.wav"), b"RIFF");
+        write_file(&library.join("Loops/loop.AIFF"), b"FORM");
+
+        // The agent's registration still asks for an instrument file.
+        let error = register(&catalogue, &library, None).unwrap_err();
+        assert_eq!(error.kind, LibraryErrorKind::NoInstruments, "{error}");
+        assert!(!catalogue.exists(), "nothing may be written on refusal");
+
+        let outcome = register_sound_folder(&catalogue, &library).unwrap();
+        assert!(outcome.library.instruments.is_empty());
+        assert_eq!(outcome.library.kind, "directory");
+        assert_eq!(list(&catalogue).unwrap().libraries.len(), 1);
+        // A rescan keeps a library that lists no instrument.
+        let rescanned = rescan(&catalogue, None).unwrap();
+        assert!(!rescanned.libraries[0].missing);
+        assert!(rescanned.warnings.is_empty());
+    }
+
+    #[test]
+    fn a_chosen_folder_with_no_sounds_is_refused_and_nothing_is_written() {
+        let temp = TempDir::new("no-sounds");
+        let catalogue = temp.path().join("catalogue.json");
+        let folder = temp.path().join("Documents");
+        write_file(&folder.join("notes.txt"), b"x");
+        write_file(&folder.join(".hidden/kick.wav"), b"RIFF");
+
+        let error = register_sound_folder(&catalogue, &folder).unwrap_err();
+        assert_eq!(error.kind, LibraryErrorKind::NoSounds, "{error}");
+        let file = folder.join("notes.txt");
+        let error = register_sound_folder(&catalogue, &file).unwrap_err();
+        assert_eq!(error.kind, LibraryErrorKind::NoSounds, "{error}");
+        assert!(!catalogue.exists());
     }
 
     #[test]
@@ -776,7 +959,10 @@ mod tests {
         assert!(outcome.backup_path.is_some());
         assert!(library.join("a.sf2").exists(), "remove never deletes files");
         assert!(list(&catalogue).unwrap().libraries.is_empty());
-        assert!(remove(&catalogue, &id).unwrap_err().contains("unknown"));
+        assert_eq!(
+            remove(&catalogue, &id).unwrap_err().kind,
+            LibraryErrorKind::UnknownLibrary
+        );
     }
 
     #[test]
@@ -818,7 +1004,8 @@ mod tests {
         fake_library(&library, &["a.sf2"]);
 
         let error = register(&catalogue, &library, None).unwrap_err();
-        assert!(error.contains("not valid JSON"), "{error}");
+        assert_eq!(error.kind, LibraryErrorKind::Failed, "{error}");
+        assert!(error.to_string().contains("not valid JSON"), "{error}");
         assert_eq!(fs::read(&catalogue).unwrap(), b"{ not json");
     }
 
@@ -860,7 +1047,8 @@ mod tests {
         fs::create_dir_all(backup_path(&catalogue)).unwrap();
 
         let error = register(&catalogue, &second, None).unwrap_err();
-        assert!(error.contains("back up"), "{error}");
+        assert_eq!(error.kind, LibraryErrorKind::Failed, "{error}");
+        assert!(error.to_string().contains("back up"), "{error}");
         assert_eq!(fs::read(&catalogue).unwrap(), previous);
     }
 
@@ -923,11 +1111,11 @@ pub fn register_content_library(
     name: Option<String>,
     catalogue: Option<String>,
 ) -> Result<RegisterOutcome, String> {
-    register(
+    Ok(register(
         &resolve_catalogue_path(catalogue.as_deref()),
         Path::new(&path),
         name.as_deref(),
-    )
+    )?)
 }
 
 #[tauri::command]
@@ -935,7 +1123,7 @@ pub fn remove_content_library(
     id: String,
     catalogue: Option<String>,
 ) -> Result<RemoveOutcome, String> {
-    remove(&resolve_catalogue_path(catalogue.as_deref()), &id)
+    Ok(remove(&resolve_catalogue_path(catalogue.as_deref()), &id)?)
 }
 
 #[tauri::command]

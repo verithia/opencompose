@@ -442,3 +442,218 @@
 
 .preferences-engine-diagnostics summary { cursor: pointer; padding: 8px 0; color: var(--text-primary); }
 .preferences-engine-diagnostics .preferences-facts { margin-top: 8px; }
+
+/* Folders page: kind tabs over one list, a folding group per origin, a
+   one-line row per folder, and the selected folder's details at the foot. */
+.preferences-folder-browser { gap: 0; padding: 0; overflow: clip; }
+
+.preferences-folder-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.preferences-folder-tab {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 7px 10px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.preferences-folder-tab:hover { color: var(--text-primary); }
+.preferences-folder-tab.active { border-bottom-color: var(--accent); color: var(--accent); }
+.preferences-folder-tab-count { color: var(--text-muted); font-family: var(--font-mono); font-size: 10px; font-weight: 450; }
+
+.preferences-folder-panel { display: flex; flex-direction: column; }
+
+.preferences-folders { display: flex; flex-direction: column; }
+.preferences-folders + .preferences-folders { border-top: 1px solid var(--border); }
+
+/* Each kind keeps its own colour, on the kind's head and on every row icon. */
+.preferences-folders[data-kind="plugins"],
+.preferences-folder-row[data-kind="plugins"] { --folder-kind: var(--accent-cool); }
+.preferences-folders[data-kind="sounds"],
+.preferences-folder-row[data-kind="sounds"] { --folder-kind: var(--track-color-1); }
+
+.preferences-folder-kind {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px 4px;
+}
+
+.preferences-folder-kind .preferences-fact-label { flex: 1 1 auto; min-width: 0; margin: 0; }
+
+.preferences-folder-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  color: var(--folder-kind, var(--text-muted));
+}
+
+.preferences-folder-icon svg { width: 14px; height: 14px; }
+
+.preferences-folder-group { display: flex; flex-direction: column; }
+
+.preferences-folder-group-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  padding: 5px 12px;
+  border: 0;
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+.preferences-folder-group-head:hover { background: var(--accent-dim); }
+.preferences-folder-group-head .preferences-field-label { flex: 0 0 auto; }
+
+.preferences-folder-caret {
+  flex: 0 0 auto;
+  width: 0;
+  height: 0;
+  align-self: center;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  border-inline-start: 5px solid var(--text-muted);
+  transform: rotate(90deg);
+  transition: transform 120ms ease;
+}
+
+.preferences-folder-group.folded .preferences-folder-caret { transform: none; }
+
+.preferences-folder-group-count {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+.preferences-folder-group-hint {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.preferences-folder-list {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 2px 0;
+  list-style: none;
+}
+
+.preferences-folder-row {
+  gap: 8px;
+  min-height: 28px;
+  padding: 0 12px 0 22px;
+}
+
+.preferences-folder-row:hover { background: var(--bg-hover); }
+.preferences-folder-row.selected { background: var(--accent-dim); box-shadow: inset 2px 0 0 var(--accent); }
+
+.preferences-folder-select {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  padding: 5px 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+.preferences-folder-select .preferences-folder-icon { align-self: center; }
+
+.preferences-folder-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The location gives way first: the name and the counts stay readable. */
+.preferences-folder-select .preferences-path { flex: 1 1 0; }
+
+.preferences-folder-row.missing .preferences-folder-name,
+.preferences-folder-row.missing .preferences-path { color: var(--text-muted); text-decoration: line-through; }
+.preferences-folder-missing { color: var(--stop-red); }
+
+.preferences-folder-remove { flex: 0 0 auto; padding-block: 2px; }
+
+.preferences-folder-empty,
+.preferences-folder-absent { padding: 4px 12px 4px 22px; font-size: 12px; }
+
+.preferences-folder-add {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+}
+
+.preferences-folder-add svg { width: 13px; height: 13px; }
+
+/* Rows reached with the keyboard stop above the sticky details strip; the
+   page sets the variable to the strip's height. */
+.preferences-page:has(.preferences-folder-details) {
+  scroll-padding-bottom: var(--folder-details-height, 0px);
+}
+
+/* The details stay in view at the foot of the scrolling page. A sticky box
+   stops at the page's padding edge, so the offset cancels the page's bottom
+   padding and no row shows beneath the strip. */
+.preferences-folder-details {
+  position: sticky;
+  bottom: -18px;
+  z-index: 1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 8px 12px;
+  padding: 8px 12px 10px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-elevated);
+}
+
+.preferences-folder-facts {
+  display: grid;
+  flex: 1 1 320px;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 2px 12px;
+  min-width: 0;
+  margin: 0;
+  font-size: 12px;
+}
+
+.preferences-folder-facts dt { color: var(--text-muted); }
+.preferences-folder-facts dd { min-width: 0; margin: 0; color: var(--text-secondary); overflow-wrap: anywhere; }
+.preferences-folder-details-name { color: var(--text-primary); font-weight: 600; }
+.preferences-folder-details-path { font-family: var(--font-mono); font-size: 11px; user-select: text; }
+.preferences-folder-details-origin { color: var(--text-primary); }
+.preferences-folder-details-hint { display: block; }
+.preferences-folder-reveal { flex: 0 0 auto; }
+
+.preferences-folders-scan .onboarding-scan-phases { margin: 0; padding: 0; }

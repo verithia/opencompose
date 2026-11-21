@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render } from "@solidjs/testing-library";
 import { askDialogMock, expectInvoked, invokeMock } from "./setup";
 import { StoragePage } from "../components/preferences/StoragePage";
+import { PreferencesModal } from "../components/PreferencesModal";
 import { storageStore } from "../stores/storage";
 import { preferencesStore } from "../stores/preferencesBundle";
 import { i18n } from "../stores/i18n";
@@ -137,6 +138,23 @@ describe("the Storage page", () => {
     expect(container.querySelector(".preferences-soundfonts-path")?.textContent).toContain(
       "/Users/me/.opencompose/soundfonts",
     );
+  });
+
+  it("sends folder changes to the Folders page", async () => {
+    const rendered = render(() => <PreferencesModal open page="storage" onClose={() => {}} />);
+    const manage = await vi.waitFor(() => {
+      const button = document.querySelector<HTMLButtonElement>(".preferences-manage-folders");
+      expect(button).toBeTruthy();
+      return button!;
+    });
+    expect(manage.textContent).toBe(i18n.t("folders.manage"));
+    fireEvent.click(manage);
+    await vi.waitFor(() =>
+      expect(document.querySelector('[data-page="folders"]')?.getAttribute("aria-current")).toBe("page"),
+    );
+    expect(document.body.textContent).toContain(i18n.t("folders.intro"));
+    expect(invokeMock).toHaveBeenCalledWith("local_content_summary");
+    rendered.unmount();
   });
 
   it("reports plugin counts by format and the searched folders", async () => {
