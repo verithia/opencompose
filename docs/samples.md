@@ -536,6 +536,15 @@ folders. They refuse with `not_found` (the file is gone), `outside_folders`,
 and `cursor`. It returns the search result described above, with `provider`,
 `provider_name` and `license_ok` on every item.
 
+Like the panel, the first page of an agent search starts with matching files
+from your sound folders: at most 10, with `provider: "local"`, an id of the
+form `local:<path>`, the name, kind, format and the path below the sound
+folder. A `local` field gives their `count`, whether more matched
+(`truncated`) and how many `folders` were searched, and `count` includes
+them. `kind` and the duration bounds apply to these files; `commercial_ok`,
+`channels` and `tags` do not, because a file of your own carries no licence
+or tags. A page reached with `cursor` or `offset` lists market results only.
+
 `sample_pull` takes `id`, an optional `provider` (taken from the id prefix when
 left out), an optional `dest` and `accept_licence`. It writes into
 `<project>/media/samples` by default and returns `path`, the portable
@@ -543,9 +552,15 @@ left out), an optional `dest` and `accept_licence`. It writes into
 `quality` and, for a preview, a warning. A Freesound pull uses the stored
 OAuth2 token when there is one and returns `quality: "original"`; without a
 token, or when the original is refused, it returns `quality: "preview_mp3"`.
+A `local:` id, or `provider: "local"`, copies that file into
+`<project>/media/local-samples` as **Add** does and returns its `media_path`;
+`dest` and `accept_licence` do not apply. Only an audio file inside a searched
+sound folder is copied; any other path is refused with `outside_folders`,
+`not_found` or `not_audio`.
 
-Both tools are available in the AI panel: a search only reads catalogues, and a
-pull writes one file into a folder the project already owns. A refused call
+Both tools are available in the AI panel: a search only reads catalogues and
+your sound folders, and a pull writes one file into a folder the project
+already owns. A refused call
 returns `{"status": "refused", ...}`. A network or disk failure returns an
 error, because nothing changed and a retry may work.
 

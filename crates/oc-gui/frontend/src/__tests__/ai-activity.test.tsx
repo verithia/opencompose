@@ -66,6 +66,11 @@ describe("concise AI activity", () => {
       .toBe("7 results from 2 sites");
     expect(activitySummary({ name: "sample_search", args: '{"query":"snare"}' },
       JSON.stringify({ count: 1, pages: [{ count: 1 }] }))).toBe("1 result from 1 site");
+    // Files from the user's sound folders count as one more source.
+    expect(activitySummary({ name: "sample_search", args: '{"query":"snare"}' },
+      JSON.stringify({ count: 5, local: { count: 2 }, pages: [{ count: 3 }] }))).toBe("5 results from 2 sites");
+    expect(activitySummary({ name: "sample_search", args: '{"query":"snare"}' },
+      JSON.stringify({ count: 2, local: { count: 2 }, pages: [{ count: 0 }] }))).toBe("2 results from 1 site");
     const snapshot = JSON.stringify({ project: { sections: [
       { time_range: { start: { bar: 1, beat: 1 }, end: { bar: 9, beat: 1 } } },
       { time_range: { start: { bar: 9, beat: 1 }, end: { bar: 17, beat: 1 } } },

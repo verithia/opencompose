@@ -46,6 +46,13 @@ pub const SAMPLES_SUBDIR: &str = "media/samples";
 pub(crate) const KEY_SERVICE: &str = "org.opencompose.samples";
 /// Environment overrides so a headless session needs no keychain.
 const JAMENDO_KEY_ENV: &str = "JAMENDO_CLIENT_ID";
+/// The `provider` of a file from the user's own sound folders.
+pub(crate) const LOCAL_PROVIDER: &str = "local";
+/// The id prefix of such a file: the rest of the id is its path.
+const LOCAL_ID_PREFIX: &str = "local:";
+/// Most local files one agent search lists. The model reads the whole result,
+/// so a short list leaves room for the market rows.
+const AGENT_LOCAL_LIMIT: usize = 10;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(crate) struct SearchArgs {
@@ -509,11 +516,62 @@ fn search_market(
     }
 }
 
-/// `sample_search` for the agent tool: one page across the markets the caller
-/// names, or every available market. Providers that cannot answer are
-/// reported in the result, never dropped; a refusal reads as its sentence.
+/// `sample_search` for the agent tool: matching files from this computer's
+/// sound folders first, then one page across the markets the caller names, or
+/// every available market. Providers that cannot answer are reported in the
+/// result, never dropped; a refusal reads as its sentence.
 pub(crate) fn search_request(request: &SearchArgs) -> Result<Value, String> {
-    search_request_typed(request).map_err(|error| error.message().to_string())
+    let markets = search_request_typed(request).map_err(|error| error.message().to_string())?;
+    Ok(with_local(markets, request, &local::catalogue()))
+}
+
+/// Put the user's own matching files ahead of the market rows, as the panel
+/// does. Only the first page lists them; a continuation pages through the
+/// markets alone. A local file has no licence to filter and no channel or tag
+/// metadata, so those filters do not apply to it.
+fn with_local(mut result: Value, request: &SearchArgs, catalogue: &local::Catalogue) -> Value {
+    if request.cursor.is_some() || request.offset > 0 {
+        return result;
+    }
+    let Ok(query) = local::LocalQuery::from_args(&local::LocalSearchArgs {
+        query: request.query.clone(),
+        kind: request.kind.clone(),
+        min_seconds: request.min_seconds,
+        max_seconds: request.max_seconds,
+        limit: Some(request.limit.clamp(1, AGENT_LOCAL_LIMIT)),
+    }) else {
+        return result;
+    };
+    let found = catalogue.search(&query);
+    let rows: Vec<Value> = found.items.iter().map(local_item_json).collect();
+    let count = rows.len();
+    if let Some(items) = result.get_mut("items").and_then(Value::as_array_mut) {
+        items.splice(0..0, rows);
+    }
+    let total = result["count"].as_u64().unwrap_or(0) + count as u64;
+    result["count"] = json!(total);
+    result["local"] = json!({
+        "count": count,
+        "truncated": found.truncated,
+        "folders": found.folders,
+    });
+    result
+}
+
+/// One local file as a search row. Its id carries the path, so `sample_pull`
+/// can copy it into the project.
+fn local_item_json(item: &local::LocalSample) -> Value {
+    json!({
+        "id": format!("{LOCAL_ID_PREFIX}{}", item.path),
+        "provider": LOCAL_PROVIDER,
+        "provider_name": "This computer",
+        "name": item.name,
+        "kind": item.kind,
+        "duration_seconds": item.duration_seconds,
+        "format": item.format,
+        "relative": item.relative,
+        "license_ok": true,
+    })
 }
 
 /// The panel's search: a refusal keeps its code.
@@ -779,6 +837,13 @@ fn pull_with(
     if request.id.trim().is_empty() {
         return Err("sample_pull needs an id from sample_search".into());
     }
+    if let Some(path) = local_path(request) {
+        return pull_local(
+            project_root(state).as_deref(),
+            &crate::local_content::sample_search_roots(),
+            path,
+        );
+    }
     let provider = match provider_for_args(
         request.provider.as_deref(),
         request.id.trim(),
@@ -816,6 +881,71 @@ fn pull_with(
         project_root.as_deref(),
         provider.as_ref(),
     ))
+}
+
+/// The path a pull names when it asks for a file from this computer.
+fn local_path(request: &crate::agent_tools::sample::SamplePullArgs) -> Option<&str> {
+    let id = request.id.trim();
+    if let Some(path) = id.strip_prefix(LOCAL_ID_PREFIX) {
+        return Some(path);
+    }
+    let named = request.provider.as_deref().map(str::trim);
+    named
+        .is_some_and(|provider| provider.eq_ignore_ascii_case(LOCAL_PROVIDER))
+        .then_some(id)
+}
+
+/// Copy one file from the sound folders into the project's
+/// `media/local-samples`, the same copy the panel's Add makes. Only an audio
+/// file inside a searched folder is accepted, so the agent cannot read an
+/// arbitrary file through this path.
+fn pull_local(project_root: Option<&Path>, roots: &[PathBuf], path: &str) -> Result<Value, String> {
+    let refusal = |error: local::LocalSampleError| match error.refusal {
+        Some(refusal) => Ok(SampleError::refused(refusal.code(), error.message).to_json()),
+        None => Err(error.message),
+    };
+    let source = match local::resolve_in(roots, path) {
+        Ok(source) => source,
+        Err(error) => return refusal(error),
+    };
+    let Some(root) = project_root else {
+        return Ok(SampleError::refused(
+            "project_unsaved",
+            "Save the project first: a sample needs a media folder.",
+        )
+        .to_json());
+    };
+    let copy = match local::copy_into_project(&source, root) {
+        Ok(copy) => copy,
+        Err(error) => return refusal(error),
+    };
+    let copied = copy.path.clone();
+    copy.keep();
+    let media_path = copied
+        .strip_prefix(root)
+        .ok()
+        .map(|path| path.to_string_lossy().replace('\\', "/"));
+    let name = source
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let mut value = json!({
+        "status": "ok",
+        "provider": LOCAL_PROVIDER,
+        "provider_name": "This computer",
+        "id": format!("{LOCAL_ID_PREFIX}{path}"),
+        "name": name,
+        "kind": oc_sample::model::classify(&name, &[]),
+        "file": copied.file_name().map(|file| file.to_string_lossy().into_owned()),
+        "path": copied.to_string_lossy(),
+        "media_path": media_path,
+    });
+    if let Some(path) = &media_path {
+        value["next_step"] = json!(format!(
+            "Add it to a track with an audio clip: file: \"{path}\""
+        ));
+    }
+    Ok(value)
 }
 
 /// Pull one item. A Freesound item with a token downloads the original file;
@@ -1273,6 +1403,131 @@ mod tests {
         assert_eq!(value["items"][1]["license_ok"], true);
         assert_eq!(value["pages"][0]["count"], 3);
         assert!(value["pages"][0]["total"].is_number());
+    }
+
+    fn local_wav(path: &Path) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            path,
+            oc_engine::wav::pcm_wav_bytes(&[0.1; 1_600], 8_000, 2).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn local_catalogue(root: &Path) -> local::Catalogue {
+        local::Catalogue::build(&[root.to_path_buf()], &|root| {
+            crate::local_content::sample_files(root)
+        })
+    }
+
+    #[test]
+    fn an_agent_search_lists_local_files_before_the_market_rows() {
+        let folder = tempfile::tempdir().unwrap();
+        local_wav(&folder.path().join("Drums/Snare Tight.wav"));
+        local_wav(&folder.path().join("Drums/Kick.wav"));
+        let catalogue = local_catalogue(folder.path());
+        let keys = no_keys();
+        let fetch = fixture(vec![("api.openverse.org", OPENVERSE)]);
+        let args = json!({"query": "snare", "providers": ["openverse"], "limit": 5});
+        let markets = fixture_search_with(&args, &keys, &fetch).unwrap();
+        let request = SearchArgs::decode(&args).unwrap();
+
+        let value = with_local(markets, &request, &catalogue);
+        let items = value["items"].as_array().unwrap();
+        assert_eq!(items.len(), 4);
+        assert_eq!(items[0]["provider"], LOCAL_PROVIDER);
+        assert_eq!(items[0]["name"], "Snare Tight");
+        assert_eq!(items[0]["relative"], "Drums/Snare Tight.wav");
+        let id = items[0]["id"].as_str().unwrap();
+        assert!(id.starts_with(LOCAL_ID_PREFIX) && id.ends_with("Snare Tight.wav"));
+        assert_eq!(items[1]["provider"], "openverse");
+        assert_eq!(value["count"], 4);
+        assert_eq!(value["local"]["count"], 1);
+        assert_eq!(value["local"]["folders"], 1);
+        assert_eq!(value["pages"][0]["count"], 3);
+
+        // A continuation pages through the markets alone, so a local file is
+        // never listed twice.
+        let markets = fixture_search_with(&args, &keys, &fetch).unwrap();
+        let next = SearchArgs::decode(&json!({"query": "snare", "offset": 5})).unwrap();
+        let value = with_local(markets, &next, &catalogue);
+        assert_eq!(value["items"][0]["provider"], "openverse");
+        assert!(value.get("local").is_none());
+    }
+
+    #[test]
+    fn an_agent_search_lists_at_most_ten_local_files() {
+        let folder = tempfile::tempdir().unwrap();
+        for index in 0..14 {
+            local_wav(&folder.path().join(format!("snare {index}.wav")));
+        }
+        let catalogue = local_catalogue(folder.path());
+        let request = SearchArgs::decode(&json!({"query": "snare"})).unwrap();
+        let value = with_local(json!({"count": 0, "items": []}), &request, &catalogue);
+        assert_eq!(value["items"].as_array().unwrap().len(), AGENT_LOCAL_LIMIT);
+        assert_eq!(value["local"]["truncated"], true);
+    }
+
+    #[test]
+    fn a_local_pull_copies_a_searched_file_into_the_project() {
+        let folder = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let source = folder.path().join("Drums/Snare Tight.wav");
+        local_wav(&source);
+        let roots = [folder.path().to_path_buf()];
+        let path = source.to_string_lossy().into_owned();
+
+        let value = pull_local(Some(project.path()), &roots, &path).unwrap();
+        assert_eq!(value["status"], "ok");
+        assert_eq!(value["provider"], LOCAL_PROVIDER);
+        assert_eq!(value["media_path"], "media/local-samples/Snare-Tight.wav");
+        assert!(
+            value["next_step"]
+                .as_str()
+                .unwrap()
+                .contains("media/local-samples/Snare-Tight.wav")
+        );
+        assert!(
+            project
+                .path()
+                .join("media/local-samples/Snare-Tight.wav")
+                .is_file()
+        );
+
+        // The id or an explicit provider routes a pull to this computer.
+        let by_id = crate::agent_tools::sample::SamplePullArgs {
+            id: format!("{LOCAL_ID_PREFIX}{path}"),
+            provider: None,
+            dest: None,
+            accept_licence: false,
+        };
+        assert_eq!(local_path(&by_id), Some(path.as_str()));
+        let by_provider = crate::agent_tools::sample::SamplePullArgs {
+            id: path.clone(),
+            provider: Some("local".into()),
+            dest: None,
+            accept_licence: false,
+        };
+        assert_eq!(local_path(&by_provider), Some(path.as_str()));
+    }
+
+    #[test]
+    fn a_local_pull_refuses_a_file_outside_the_sound_folders_and_an_unsaved_project() {
+        let folder = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let outside = elsewhere.path().join("secret.wav");
+        local_wav(&outside);
+        let inside = folder.path().join("snare.wav");
+        local_wav(&inside);
+        let roots = [folder.path().to_path_buf()];
+
+        let value = pull_local(Some(project.path()), &roots, &outside.to_string_lossy()).unwrap();
+        assert_eq!(value["status"], "refused");
+        assert_eq!(value["code"], "outside_folders");
+        let value = pull_local(None, &roots, &inside.to_string_lossy()).unwrap();
+        assert_eq!(value["code"], "project_unsaved");
+        assert!(!project.path().join("media").exists());
     }
 
     #[test]
