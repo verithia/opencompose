@@ -44,8 +44,17 @@ async function run(rescan: boolean): Promise<void> {
   } catch {
     // Without events the page still shows an indeterminate bar and the result.
   }
+  // A folder added or removed while the scan runs publishes its own result,
+  // and the scan's answer still lists the folders it started with. It is then
+  // replaced by a recount, which reads the current folder list and the plugin
+  // list this scan has just published.
+  let seen = revision;
   try {
-    const result = await api.localContentScan(rescan);
+    let result = await api.localContentScan(rescan);
+    while (id === generation && seen !== revision) {
+      seen = revision;
+      result = await api.localContentSummary();
+    }
     if (id === generation) publish(result ?? null);
   } catch (cause) {
     if (id === generation) setError(String(cause));

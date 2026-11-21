@@ -316,6 +316,37 @@ describe("the Folders preferences page", () => {
     );
   });
 
+  it("keeps a folder removed during a scan removed when the scan returns", async () => {
+    let finish!: (value: LocalContentSummary) => void;
+    const started = summary();
+    const original = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation((command: string, ...args: unknown[]) => {
+      if (command === "local_content_scan") return new Promise((resolve) => { finish = resolve; });
+      if (command === "sound_folder_remove") {
+        current = summary({ sounds: [started.instruments.folders[0]], pluginTotal: 7 });
+        return Promise.resolve(current);
+      }
+      return original(command, ...args);
+    });
+    await openFolders();
+
+    fireEvent.click(screen.getByRole("button", { name: "Scan again" }));
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("local_content_scan", { rescan: true }));
+    fireEvent.click(within(block("sounds")).getByRole("button", { name: "Stop searching /Volumes/Studio/Fonts" }));
+    await waitFor(() => expect(within(block("sounds")).queryByTitle("/Volumes/Studio/Fonts")).toBeNull());
+
+    // The scan started before the removal, so its answer still lists the folder.
+    const recounts = invokeMock.mock.calls.filter(([command]) => command === "local_content_summary").length;
+    current = summary({ sounds: [started.instruments.folders[0]], pluginTotal: 12 });
+    finish({ ...started, plugins: { ...started.plugins, total: 12 } });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Scan again" })).toBeEnabled());
+    expect(invokeMock.mock.calls.filter(([command]) => command === "local_content_summary")).toHaveLength(recounts + 1);
+    expect(within(block("sounds")).queryByTitle("/Volumes/Studio/Fonts")).toBeNull();
+    expect(within(group("sounds", "user")).getByText("You have not added any folders.")).toBeInTheDocument();
+    // The recount carries the plugins the scan read.
+    expect(document.querySelector(".preferences-folders-totals")!.textContent).toContain("Plugins 12");
+  });
+
   it("rescans every plugin and shows the scan's progress while it runs", async () => {
     let emit!: (payload: LocalScanProgress) => void;
     listenMock.mockImplementation(async (event: string, handler: (event: { payload: LocalScanProgress }) => void) => {
