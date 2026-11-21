@@ -374,24 +374,45 @@ pub fn resolve_in(roots: &[PathBuf], path: &str) -> Result<PathBuf, LocalSampleE
     Ok(file)
 }
 
-/// The walk of the app's sound folders, reused for [`CATALOGUE_TTL`] so
-/// typing a few searches in a row walks the disk once.
-pub fn catalogue() -> Arc<Catalogue> {
-    static CACHE: Mutex<Option<(Instant, Arc<Catalogue>)>> = Mutex::new(None);
-    let mut cache = CACHE
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if let Some((built, catalogue)) = cache.as_ref()
-        && built.elapsed() < CATALOGUE_TTL
-    {
-        return Arc::clone(catalogue);
+/// One walk of the sound folders and the folder list it walked.
+#[derive(Default)]
+struct CachedWalk {
+    walk: Option<(Instant, Vec<PathBuf>, Arc<Catalogue>)>,
+}
+
+impl CachedWalk {
+    /// The stored walk while it is younger than `ttl` and `roots` still lists
+    /// the folders it walked; otherwise a new walk with `files`. A folder
+    /// added or removed in Preferences changes `roots`, so the next search
+    /// sees it without waiting for the walk to age out.
+    fn get(
+        &mut self,
+        roots: Vec<PathBuf>,
+        ttl: Duration,
+        files: &dyn Fn(&Path) -> Vec<PathBuf>,
+    ) -> Arc<Catalogue> {
+        if let Some((built, walked, catalogue)) = &self.walk
+            && built.elapsed() < ttl
+            && *walked == roots
+        {
+            return Arc::clone(catalogue);
+        }
+        let catalogue = Arc::new(Catalogue::build(&roots, files));
+        self.walk = Some((Instant::now(), roots, Arc::clone(&catalogue)));
+        catalogue
     }
-    let catalogue = Arc::new(Catalogue::build(
-        &crate::local_content::sample_search_roots(),
-        &crate::local_content::sample_files,
-    ));
-    *cache = Some((Instant::now(), Arc::clone(&catalogue)));
-    catalogue
+}
+
+/// The walk of the app's sound folders, reused for [`CATALOGUE_TTL`] so
+/// typing a few searches in a row walks the disk once. Listing the folders
+/// reads the library catalogue but no folder contents.
+pub fn catalogue() -> Arc<Catalogue> {
+    static CACHE: Mutex<CachedWalk> = Mutex::new(CachedWalk { walk: None });
+    let roots = crate::local_content::sample_search_roots();
+    CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(roots, CATALOGUE_TTL, &crate::local_content::sample_files)
 }
 
 /// [`resolve_in`] against the folders a search walks. It lists no
@@ -619,6 +640,35 @@ mod tests {
             .iter()
             .map(|item| item.relative.as_str())
             .collect()
+    }
+
+    #[test]
+    fn a_cached_walk_is_reused_until_the_folder_list_changes() {
+        let first = tempfile::tempdir().unwrap();
+        let added = tempfile::tempdir().unwrap();
+        wav(&first.path().join("kick.wav"), 0.1);
+        wav(&added.path().join("snare.wav"), 0.1);
+        let walks = std::cell::Cell::new(0);
+        let counted = |root: &Path| {
+            walks.set(walks.get() + 1);
+            walk(root)
+        };
+        let ttl = Duration::from_secs(3_600);
+        let mut cache = CachedWalk::default();
+
+        let one = vec![first.path().to_path_buf()];
+        let before = cache.get(one.clone(), ttl, &counted);
+        assert_eq!(names(&before.search(&query("snare"))), Vec::<&str>::new());
+        cache.get(one.clone(), ttl, &counted);
+        assert_eq!(walks.get(), 1, "an unchanged folder list reuses the walk");
+
+        let two = vec![first.path().to_path_buf(), added.path().to_path_buf()];
+        let after = cache.get(two, ttl, &counted);
+        assert_eq!(names(&after.search(&query("snare"))), ["snare.wav"]);
+        assert_eq!(walks.get(), 3, "an added folder walks every folder again");
+
+        let removed = cache.get(one, ttl, &counted);
+        assert_eq!(names(&removed.search(&query("snare"))), Vec::<&str>::new());
     }
 
     #[test]
