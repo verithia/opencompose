@@ -3,46 +3,45 @@ id: align-layered-transients
 title: Align layered transients
 when: Layered kicks, parallel drums or doubled transients lose weight, smear, or produce a flam when combined.
 category: mixing
-version: 3
+version: 4
 tools: [audio_clips_list, audio_clip_set_placement, tracks_list, project_extract, edit_subtree, project_validate, render_range, audition_range, audio_analyze, audio_compare]
 ---
-Choose several hits with recoverable source, routing and mix states. Decide
-which layer owns the attack or body. The GUI mixer offers polarity. For tools,
-inspect tracks_list and project_extract, then use edit_subtree on the track mix.
-Retain its other fields and validate. Polarity changes sign, not timing.
+Choose several real hits and decide which layer owns attack, body or texture.
+Inspect source, trim, placement, inserts, routing, gain and pan before moving it.
+For tools, read tracks_list/project_extract and edit the track mix subtree to
+change polarity while preserving other fields. Polarity changes sign, not time.
 
-## Check the polarity path before treating a real layer
-In a disposable project, duplicate one short dry drum lane with at least three
-hits. Use identical media, ranges, offsets, processing, gains, pan and pan law.
-Remove insert, bus and master processing from this control. Render A alone, B
-alone, both with normal polarity, then both with B's mix: polarity=invert.
-Pass track indices in render_range tracks, with fixed start/end and float_wav: true.
-Keep separate paths. Aligned inverted copies should cancel to numerical silence;
-if not, inspect source, gains and routing. Restore normal polarity before testing
-different sounds. Exact cancellation is not the target for complementary layers.
-On each real layer's saved WAV, use audio_analyze with transients: {start: 0,
-duration: 2, min_gap_ms: 5}, provided the two-second window fits. Compare matching
-attacks using file_seconds and resolution_seconds. A first click can align while
-the following low cycles still cancel. Do not shift a whole part from one hit.
+## Diagnose the layer in the actual phrase
+Hear each layer and their sum with raw gain fixed. A first click can align
+while following low cycles cancel. Do not shift an entire part from one hit.
+On retained WAVs, audio_analyze transients: {start: 0, duration: 2, min_gap_ms: 5}
+can locate matching attacks if that window fits. Use file_seconds and its
+resolution_seconds, not a rounded bar display, to compare positions.
+Compare equal attack/body windows relative to verified onsets. For one at
+0.10 seconds, level_window: {start: 0.10, duration: 0.02} and
+{start: 0.14, duration: 0.08} can show summing or loss across the onset and body.
+Repeat for A, B and both polarity sums at fixed raw gain across several hits.
+Larger peaks or RMS do not prove a better sound; compare articulation and weight.
 
-Choose equal attack and body windows relative to a verified onset. For an onset
-at file time 0.10 s, compare level_window: {start: 0.10, duration: 0.02} and
-{start: 0.14, duration: 0.08} with audio_analyze on A, B and both polarity sums.
-Keep raw gain fixed for these readings and repeat for the other hits. The RMS
-changes show summing or loss in those windows; a larger peak is not proof of
-a better sound. Judge attack and body separately before matching listening gain.
-
+## Choose the useful relationship
 Use audio_compare with listen: true on matching 0.4–8 second summed passages.
-Check the delivered match and listen for one clear attack, useful low weight and
-no flam. Compare the selected polarity in the full kit and with the bass using
-audition_range. Keep the original if a change helps one note but weakens others.
-Read audio_clips_list for actual start_seconds and revision. Move a whole clip
-with audio_clip_set_placement: use signed nudge_ms or absolute start_seconds.
-Retain duration and attack; source offset trims media instead. Recheck each hit.
+Inspect delivered match/channel support. Hear one clear attack, useful body
+and no flam, then compare the chosen version with the bass and full kit.
+Read audio_clips_list for current clip index, start_seconds and revision.
+Move a whole clip with audio_clip_set_placement using signed nudge_ms or
+absolute start_seconds. Changing source offset trims media instead; retain
+attack and duration unless trimming is intended. Recheck notes and loop return.
 
-For a stereo sum, separately call audio_analyze with mono_fold: {duration: 2}
-on a fitting window and inspect octave-band loss without normalization. This
-measures left/right cancellation, not cross-track cancellation already present
-in a centered sum. Preserve solo and polarity comparisons for that diagnosis.
-If no setting works across the phrase, narrow the layers' frequency roles or
-choose another sample, then check the whole kit.
+If gain/polarity/routing appears wrong, use a small disposable control:
+duplicate one dry lane with identical media, placement, processing, gain and
+pan law. Render A, B and their normal/inverted sums to distinct float WAVs
+with track indices selected in render_range and all downstream processing off.
+Aligned inverted copies should cancel numerically. Resolve a failed control
+before diagnosing real layers; don't repeat it for every normal layering task.
+Exact cancellation is not a goal for complementary samples. Restore polarity.
+
+For left/right loss, use audio_analyze mono_fold on a fitting window without
+normalization. That is different from cross-track cancellation already in a
+centered sum; preserve the separate-layer/polarity evidence for that question.
+If one shift helps a hit but hurts later notes, narrow frequency roles or use
+another source. Validate edits, restore solos and keep only useful complexity.

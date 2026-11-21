@@ -8,7 +8,7 @@
 
 use anyhow::{Result, bail};
 use clap::Subcommand;
-use oc_sample::http::HttpFetch;
+use oc_sample::http::{DOWNLOAD_TIMEOUT, HttpFetch, SEARCH_TIMEOUT};
 use oc_sample::model::{Quality, SampleItem, SampleKind, SamplePage, SampleQuery};
 use oc_sample::provider::SampleProvider;
 use oc_sample::registry::{self, ProviderKeys};
@@ -61,6 +61,10 @@ pub enum SampleCommand {
         #[arg(long, default_value_t = 20)]
         limit: usize,
 
+        /// Include only results whose licence allows commercial use
+        #[arg(long)]
+        commercial_ok: bool,
+
         /// Print the result as JSON instead of a table
         #[arg(long)]
         json: bool,
@@ -101,36 +105,8 @@ pub enum SampleCommand {
 /// Execute one sample-market subcommand.
 pub fn run(command: SampleCommand) -> Result<()> {
     match command {
-        SampleCommand::Search {
-            query,
-            kind,
-            min_seconds,
-            max_seconds,
-            channels,
-            tags,
-            provider,
-            offset,
-            limit,
-            json,
-        } => {
-            let kind = match kind.as_deref() {
-                Some(value) => Some(SampleKind::parse(value).ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "unknown sample kind '{value}'; accepted: drum, loop, vocal, fx, instrument, any"
-                    )
-                })?),
-                None => None,
-            };
-            let query = SampleQuery {
-                text: query,
-                kind,
-                min_seconds,
-                max_seconds,
-                channels,
-                tags,
-                offset,
-                limit,
-            };
+        SampleCommand::Search { .. } => {
+            let (query, provider, json) = search_request(command)?;
             search(query, provider.as_deref(), json)
         }
         SampleCommand::Pull {
@@ -142,6 +118,46 @@ pub fn run(command: SampleCommand) -> Result<()> {
         } => pull(&id, provider.as_deref(), &dest, json, accept_licence),
         SampleCommand::Providers { json } => providers(json),
     }
+}
+
+/// The query, market and output choice a `search` subcommand asks for.
+fn search_request(command: SampleCommand) -> Result<(SampleQuery, Option<String>, bool)> {
+    let SampleCommand::Search {
+        query,
+        kind,
+        min_seconds,
+        max_seconds,
+        channels,
+        tags,
+        provider,
+        offset,
+        limit,
+        commercial_ok,
+        json,
+    } = command
+    else {
+        bail!("not a search command");
+    };
+    let kind = match kind.as_deref() {
+        Some(value) => Some(SampleKind::parse(value).ok_or_else(|| {
+            anyhow::anyhow!(
+                "unknown sample kind '{value}'; accepted: drum, loop, vocal, fx, instrument, any"
+            )
+        })?),
+        None => None,
+    };
+    let query = SampleQuery {
+        text: query,
+        kind,
+        min_seconds,
+        max_seconds,
+        channels,
+        tags,
+        offset,
+        limit,
+        commercial_ok,
+    };
+    Ok((query, provider, json))
 }
 
 /// Keys read once per call, so the borrowed view never outlives the strings.
@@ -178,7 +194,7 @@ fn env_key(name: &str) -> Option<String> {
 
 fn search(query: SampleQuery, provider_id: Option<&str>, json: bool) -> Result<()> {
     let provider = provider(provider_id)?;
-    let fetch = HttpFetch::new().map_err(anyhow::Error::msg)?;
+    let fetch = HttpFetch::with_timeout(SEARCH_TIMEOUT).map_err(anyhow::Error::msg)?;
     let page = provider
         .search(&query, &fetch)
         .map_err(|error| anyhow::anyhow!("{}", error.message()))?;
@@ -200,7 +216,7 @@ fn pull(
     // The id prefix names the market; `--provider` only overrides it.
     let inferred = oc_sample::provider_of_id(id).map(|spec| spec.id.to_string());
     let provider = provider(provider_id.or(inferred.as_deref()))?;
-    let fetch = HttpFetch::new().map_err(anyhow::Error::msg)?;
+    let fetch = HttpFetch::with_timeout(DOWNLOAD_TIMEOUT).map_err(anyhow::Error::msg)?;
     let item = provider
         .resolve(id, &fetch)
         .map_err(|error| anyhow::anyhow!("{}", error.message()))?;
@@ -305,4 +321,43 @@ fn describe(item: &SampleItem) -> String {
         "{} · {duration} · {channels} · {rate} · {}",
         item.kind, item.license.name
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[derive(Parser)]
+    struct Probe {
+        #[command(subcommand)]
+        command: SampleCommand,
+    }
+
+    fn parse(args: &[&str]) -> SampleCommand {
+        Probe::try_parse_from(std::iter::once("ocp").chain(args.iter().copied()))
+            .unwrap()
+            .command
+    }
+
+    #[test]
+    fn a_search_carries_the_licence_filter_into_the_query() {
+        let (query, provider, json) = search_request(parse(&[
+            "search",
+            "snare",
+            "--commercial-ok",
+            "--max-seconds",
+            "2",
+            "--provider",
+            "openverse",
+        ]))
+        .unwrap();
+        assert!(query.commercial_ok);
+        assert_eq!(query.max_seconds, Some(2.0));
+        assert_eq!(provider.as_deref(), Some("openverse"));
+        assert!(!json);
+
+        let (plain, _, _) = search_request(parse(&["search", "snare"])).unwrap();
+        assert!(!plain.commercial_ok, "no licence filter unless asked");
+    }
 }

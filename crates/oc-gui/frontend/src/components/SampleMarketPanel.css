@@ -1,10 +1,12 @@
 /* ============================================================================
-   Sample markets — bottom panel
-   A client of other people's catalogues: search row, kind chips, provider
-   chips with availability, result rows, and one status line.
+   Samples — bottom panel
+   The bottom panel is short, so the panel spends its height on rows: the
+   toolbar wraps into as few lines as its width allows, and every result is a
+   single line of aligned columns.
    ============================================================================ */
 
 .sample-market-panel {
+  container-type: inline-size;
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -13,21 +15,33 @@
   color: var(--text-primary);
 }
 
-.sample-market-header {
+/* Search, duration, licence, kinds and markets share this strip. It is one
+   line on a wide panel and wraps to a second only when the panel is narrower
+   than its parts. */
+.sample-market-toolbar {
+  flex-shrink: 0;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
-  padding: 5px 8px;
+  gap: 3px 8px;
+  padding: 4px 8px;
   background: var(--bg-secondary);
   border-bottom: 1px solid var(--border);
 }
 
+.sample-market-header {
+  display: flex;
+  flex: 1 1 240px;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
 .sample-market-search {
-  flex: 1 1 200px;
-  min-width: 120px;
-  height: 24px;
-  padding: 0 8px;
+  flex: 1 1 auto;
+  min-width: 90px;
+  height: 22px;
+  padding: 0 6px;
   background: var(--bg-input);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
@@ -44,27 +58,89 @@
   color: var(--text-muted);
 }
 
-.sample-market-chips {
+.sample-market-filters {
   display: flex;
-  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.sample-market-check {
+  display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 4px 8px;
-  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.sample-market-check input {
+  accent-color: var(--accent);
+  cursor: pointer;
+  margin: 0;
+  width: 12px;
+  height: 12px;
+}
+
+.sample-market-select {
+  height: 22px;
+  padding: 0 2px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-size: var(--font-size-xs);
+}
+
+.sample-market-select:focus {
+  outline: none;
+  border-color: var(--border-focus);
+}
+
+.sample-market-markets {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* The kinds never wrap: a second line of chips would cost a result row.
+   Kinds that do not fit scroll sideways and leave the Sources button its
+   width. */
+.sample-market-chips {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: nowrap;
+  flex-shrink: 1;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.sample-market-chips::-webkit-scrollbar {
+  display: none;
 }
 
 .sample-market-chip {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  height: 20px;
-  padding: 0 8px;
+  gap: 4px;
+  flex-shrink: 0;
+  height: 18px;
+  padding: 0 7px;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 9px;
   background: var(--bg-primary);
   color: var(--text-muted);
   font-size: var(--font-size-xs);
   font-weight: 600;
+  white-space: nowrap;
   cursor: pointer;
   transition: background var(--transition-fast), color var(--transition-fast),
     border-color var(--transition-fast);
@@ -81,48 +157,105 @@
   color: var(--accent);
 }
 
-.sample-market-provider.unavailable {
-  border-style: dashed;
-  color: var(--text-muted);
+/* Opens the source list; it sits at the end of the strip, where the eye
+   finishes reading the filters. */
+.sample-market-sources-toggle {
+  margin-left: auto;
 }
 
-.sample-market-provider.unavailable.on {
-  border-color: var(--text-muted);
+.sample-market-sources-count {
+  min-width: 12px;
+  padding: 0 3px;
+  border-radius: 6px;
   background: var(--bg-elevated);
   color: var(--text-secondary);
+  font-size: 9px;
+  line-height: 12px;
+  text-align: center;
 }
 
-.sample-market-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--play-green);
+.sample-market-caret {
+  font-size: 8px;
+}
+
+/* The sources open as one wrapping line of checkboxes under the toolbar. */
+.sample-market-sources-list {
   flex-shrink: 0;
-}
-
-/* A placeholder chip while the markets are still being read. */
-.sample-market-chip-loading {
-  cursor: default;
-  opacity: 0.7;
-}
-
-.sample-market-dot.off {
-  background: var(--text-muted);
-}
-
-.sample-market-key {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
-  padding: 5px 8px;
+  gap: 2px 12px;
+  padding: 3px 8px;
   background: var(--bg-secondary);
   border-bottom: 1px solid var(--border);
+  font-size: var(--font-size-xs);
 }
 
-.sample-market-key-label {
+.sample-market-source {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-primary);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.sample-market-source input {
+  margin: 0;
+}
+
+/* A source that cannot be searched stays listed so its tooltip can say why. */
+.sample-market-source.unavailable {
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
+.sample-market-source.unavailable input {
+  cursor: not-allowed;
+}
+
+/* The tooltip shows the reason on hover; this copy is for assistive tech. */
+.sample-market-source-hint {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.sample-market-source-loading {
+  color: var(--text-muted);
+}
+
+/* As short as a checkbox line, so opening the list costs one row. */
+.sample-market-sources-list .sample-market-sources-settings {
+  height: 18px;
+  min-height: 18px;
+  margin-left: auto;
+  padding: 0 6px;
   font-size: var(--font-size-xs);
+}
+
+.sample-market-notices {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 2px 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-secondary);
+}
+
+.sample-market-notice {
   color: var(--text-secondary);
+  font-size: var(--font-size-xs);
+  overflow-wrap: anywhere;
+}
+
+.sample-market-more {
+  display: flex;
+  justify-content: center;
+  padding: 3px 8px;
 }
 
 .sample-market-oauth-status {
@@ -142,12 +275,47 @@
   overflow-y: auto;
 }
 
-.sample-market-row {
+/* "On this computer" and "Online" split one scrolling list, so the local
+   files stay above the market rows without a second scrollbar. */
+.sample-market-section-title {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 1px 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 16px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.sample-market-local .sample-market-empty {
+  padding: 4px 8px;
+}
+
+/* The bottom panel is wider than it is tall, so results sit two to a line.
+   One line per result: name, details, credit, licence, actions. Every row
+   uses the same column template, so the columns line up down the list. */
+.sample-market-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.sample-market-grid > .sample-market-empty {
+  grid-column: 1 / -1;
+}
+
+.sample-market-row {
+  --sample-columns: minmax(0, 1.1fr) 22px 2.9rem minmax(0, 1.1fr) minmax(0, 0.9fr) 5.5rem;
+  display: grid;
+  grid-template-columns: var(--sample-columns);
   align-items: center;
-  gap: 8px;
-  padding: 6px 8px;
+  gap: 6px;
+  min-height: 22px;
+  padding: 1px 8px;
   border-bottom: 1px solid var(--border);
   border-left: 3px solid transparent;
   cursor: pointer;
@@ -165,25 +333,32 @@
 
 /* Markets and the first search answer off-thread; show rows until they do. */
 .sample-market-skeleton {
-  padding: 4px 0;
+  padding: 2px 0;
 }
 
 .sample-market-row-skeleton {
   display: flex;
-  flex-direction: column;
-  gap: 5px;
   pointer-events: none;
   cursor: default;
 }
 
-.sample-market-row-main {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
+.sample-market-row-skeleton .skeleton-line {
+  height: 7px;
+}
+
+.sample-market-row-skeleton .skeleton-line-title {
+  flex: 0 0 28%;
+  width: auto;
+}
+
+.sample-market-row-skeleton .skeleton-line-meta {
+  flex: 0 0 16%;
+  width: auto;
+  margin-top: 0;
 }
 
 .sample-market-name {
+  min-width: 0;
   overflow: hidden;
   color: var(--text-primary);
   font-size: var(--font-size-sm);
@@ -192,19 +367,27 @@
   white-space: nowrap;
 }
 
+/* One ellipsis for the whole detail line; a token-by-token split reads as
+   three separate abbreviations. */
 .sample-market-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
   color: var(--text-muted);
   font-size: var(--font-size-xs);
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .sample-market-tag {
   color: var(--text-secondary);
 }
 
+.sample-market-meta > span {
+  margin-right: 5px;
+}
+
 .sample-market-credit {
+  min-width: 0;
   overflow: hidden;
   color: var(--text-muted);
   font-size: var(--font-size-xs);
@@ -213,12 +396,14 @@
 }
 
 .sample-market-license {
-  padding: 1px 6px;
+  justify-self: end;
+  padding: 0 5px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 7px;
   color: var(--text-muted);
   font-size: 9px;
   font-weight: 600;
+  line-height: 14px;
   white-space: nowrap;
 }
 
@@ -232,33 +417,44 @@
   color: var(--accent);
 }
 
-.sample-market-actions {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.sample-market-actions .toolbar-btn {
-  height: 22px;
-  min-height: 22px;
+/* Name, play, Add, details, credit, licence. The play glyph is the preview,
+   in the same green as the transport so it reads as playback. */
+.sample-market-row .toolbar-btn {
+  height: 18px;
+  min-height: 18px;
+  padding: 0 6px;
   font-size: 10px;
 }
 
-.sample-market-actions .toolbar-btn:disabled {
+.sample-market-row .sample-market-play {
+  width: 20px;
+  padding: 0;
+  color: var(--play-green);
+}
+
+/* A fixed track keeps the details aligned down the list; a preview-only
+   market truncates its label here and explains itself in its tooltip. */
+.sample-market-row .sample-market-add {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sample-market-row .toolbar-btn:disabled {
   opacity: 0.45;
   cursor: not-allowed;
 }
 
 .sample-market-empty {
-  padding: 16px 12px;
+  padding: 6px 8px;
   color: var(--text-muted);
-  font-size: var(--font-size-sm);
+  font-size: var(--font-size-xs);
   text-align: center;
 }
 
 .sample-market-status {
   flex-shrink: 0;
-  padding: 4px 8px;
+  padding: 2px 8px;
   border-top: 1px solid var(--border);
   background: var(--bg-secondary);
   color: var(--text-secondary);
@@ -275,8 +471,8 @@
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 10px 12px;
+  gap: 4px;
+  padding: 6px 8px;
   border-top: 1px solid var(--border);
   background: var(--bg-secondary);
 }
@@ -298,4 +494,70 @@
   display: flex;
   gap: 6px;
   justify-content: flex-end;
+}
+
+/* A cell narrower than this cannot show the credit without starving the
+   name, so the credit goes, and the name and details split the width. */
+@container (max-width: 1080px) {
+  .sample-market-row {
+    --sample-columns: minmax(0, 1.2fr) 22px 2.9rem minmax(0, 1.3fr) 5.5rem;
+  }
+
+  .sample-market-credit {
+    display: none;
+  }
+}
+
+/* Below a comfortable cell width one column is the tighter choice; the credit
+   comes back because the row is full width again. */
+@container (max-width: 960px) {
+  .sample-market-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .sample-market-row {
+    --sample-columns: minmax(0, 1.5fr) 22px 2.9rem minmax(0, 1.1fr) minmax(0, 1.9fr) 5.5rem;
+  }
+
+  .sample-market-credit {
+    display: block;
+  }
+}
+
+/* Half-width panels (the resource browser, a narrow sidebar) keep only the
+   controls whose meaning survives without a label. */
+@container (max-width: 760px) {
+  .sample-market-check > span {
+    display: none;
+  }
+
+  .sample-market-row {
+    --sample-columns: minmax(0, 1.5fr) 22px 2.9rem minmax(0, 1.3fr) minmax(0, 1.2fr) 5.5rem;
+  }
+
+  /* The duration is the first detail to go: a half-width panel has no room
+     for the whole detail group, and a clipped time reads as broken. */
+  .sample-market-meta .sample-market-duration {
+    display: none;
+  }
+}
+
+@container (max-width: 460px) {
+  .sample-market-row {
+    --sample-columns: minmax(0, 3fr) 22px 2.9rem minmax(0, 2fr) 5.5rem;
+  }
+
+  .sample-market-credit {
+    display: none;
+  }
+}
+
+@container (max-width: 330px) {
+  .sample-market-row {
+    --sample-columns: minmax(0, 1fr) 22px 2.9rem 5.5rem;
+  }
+
+  .sample-market-meta {
+    display: none;
+  }
 }

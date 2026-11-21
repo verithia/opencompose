@@ -3,10 +3,10 @@ id: audition-and-listen
 title: Audition and listen
 when: You need to know how a section sounds, not only how loud it measures.
 category: render
-version: 8
+version: 9
 tools: [render_range, audition_range, audio_clips_list, audition_clip_source, audio_analyze, audio_compare, plugin_search, plugin_pull, separate_stems]
 ---
-Start with the full mix. Name one audible issue and the section where it occurs.
+Start with the full mix. Name one audible issue and its section; read diagnose-a-sound to isolate its cause.
 
 ## Source and arrangement
 
@@ -44,5 +44,5 @@ Match playback levels where possible. Metric normalization alone does not
 level-match the delivered audio. 16 kHz mono cannot certify stereo width or
 full-band detail. Check stereo if the model keeps both channels, then mono.
 If delivery fails, use render_range and audio_analyze with a named WAV.
-Rendering, delivery, and listening are distinct. Report a failed stage explicitly.
+For final sequential coverage read review-a-complete-arrangement. Rendering, delivery, and listening are distinct; report a failed stage explicitly.
 Never claim to have listened to audio you only measured or did not receive.

@@ -3,11 +3,11 @@ id: playable-instruments
 title: Playable instruments
 when: Choosing or checking a playable preset, articulation or sampled kit, or diagnosing a silent track or a missing SoundFont.
 category: render
-version: 6
+version: 7
 tools: [tracks_list, presets_list, project_extract, render_compat_report, render_range, audio_analyze, audition_range]
 ---
 Inspect actual source, preset and parameters to identify the sound. Native OpenSynth, SoundFont and supported hosted instruments have different capabilities.
-A default is a way to get a playable starting point. For a saw-unison lead read `design-and-verify-supersaw`.
+A default is a playable starting point, not a timbral match. Read diagnose-a-sound for corrections, translate-a-production-technique for control mapping, or design-and-verify-supersaw for saw leads.
 ## A bare track already sounds
 When a project is opened, rendered or edited, a track with no preset gets a
 built-in default for its family; the project carries the `@preset oc_default_*`

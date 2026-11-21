@@ -117,14 +117,16 @@ function resultOf(result: string | undefined): Record<string, unknown> | null {
   }
 }
 
-/** How many markets actually returned an item, not how many were asked. */
+/** How many sources actually returned an item, not how many were asked. The
+ * user's own sound folders count as one source beside the markets. */
 function sampleSites(payload: Record<string, unknown> | null): number {
   if (!payload) return 0;
   const pages = Array.isArray(payload.pages) ? payload.pages : [];
+  const local = (numeric(asRecord(payload.local)?.count) ?? 0) > 0 ? 1 : 0;
   const answering = pages.filter((page) => {
     const entry = asRecord(page);
     return entry !== null && (numeric(entry.count) ?? 0) > 0;
-  }).length;
+  }).length + local;
   if (answering > 0) return answering;
   const items = Array.isArray(payload.items) ? payload.items : [];
   return new Set(items.map((item) => String(asRecord(item)?.provider ?? "")).filter(Boolean)).size;
