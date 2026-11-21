@@ -103,13 +103,16 @@ const EXTRA_MARKET_ITEMS = Array.from({ length: 4 }, (_, index) => ({
 
 const ROWS = [...MARKET_ITEMS, ...EXTRA_MARKET_ITEMS];
 
-async function fixtureHtml(width: number, height: number): Promise<string> {
+async function fixtureHtml(width: number, height: number, sourcesOpen = false): Promise<string> {
   const { container, unmount } = render(() => <SampleMarketPanel />);
   // The search fans out to the markets the provider list enables, so wait for
   // the list before submitting or the search has nothing to ask.
   await waitFor(() =>
-    expect(container.querySelector(".sample-market-provider")).not.toBeNull(),
+    expect(Number(container.querySelector(".sample-market-sources-count")?.textContent)).toBeGreaterThan(0),
   );
+  if (sourcesOpen) {
+    fireEvent.click(container.querySelector(".sample-market-sources-toggle")!);
+  }
   const input = container.querySelector(".sample-market-search") as HTMLInputElement;
   fireEvent.input(input, { target: { value: "snare" } });
   fireEvent.submit(container.querySelector(".sample-market-header") as HTMLFormElement);
@@ -142,6 +145,10 @@ interface PanelReport {
   firstLineTops: number[];
   durationDisplay: string;
   commercialLabelDisplay: string;
+  toggleRight: number;
+  panelRight: number;
+  sourcesListHeight: number | null;
+  sourceColors: Record<string, string>;
 }
 
 let browser: Browser;
@@ -179,10 +186,10 @@ afterAll(async () => {
   await browser?.close();
 });
 
-async function report(width: number, height: number): Promise<PanelReport> {
+async function report(width: number, height: number, sourcesOpen = false): Promise<PanelReport> {
   const page = await browser.newPage({ viewport: { width: width + 40, height: height + 40 } });
   try {
-    await page.setContent(await fixtureHtml(width, height));
+    await page.setContent(await fixtureHtml(width, height, sourcesOpen));
     return await page.evaluate(() => {
       const panel = document.querySelector(".sample-market-panel") as HTMLElement;
       const toolbar = document.querySelector(".sample-market-toolbar") as HTMLElement;
@@ -194,7 +201,18 @@ async function report(width: number, height: number): Promise<PanelReport> {
       const grid = document.querySelector(".sample-market-grid") as HTMLElement;
       const duration = document.querySelector(".sample-market-meta .sample-market-duration") as HTMLElement;
       const commercial = document.querySelector(".sample-market-check > span") as HTMLElement;
+      const toggle = document.querySelector(".sample-market-sources-toggle") as HTMLElement;
+      const sources = document.querySelector(".sample-market-sources-list") as HTMLElement | null;
       return {
+        toggleRight: toggle.getBoundingClientRect().right,
+        panelRight: panel.getBoundingClientRect().right,
+        sourcesListHeight: sources ? sources.getBoundingClientRect().height : null,
+        sourceColors: Object.fromEntries(
+          [...document.querySelectorAll<HTMLElement>(".sample-market-source")].map((label) => [
+            label.dataset.provider!,
+            getComputedStyle(label).color,
+          ]),
+        ),
         toolbarHeight: toolbar.getBoundingClientRect().height,
         listHeight: listBox.height,
         panelScrollWidth: panel.scrollWidth,
@@ -230,6 +248,20 @@ describe("the samples panel in a short bottom panel", () => {
     expect(panel.panelScrollWidth).toBeLessThanOrEqual(panel.panelClientWidth + 1);
     expect(panel.durationDisplay).not.toBe("none");
     expect(panel.commercialLabelDisplay).not.toBe("none");
+    // The Sources button is in the strip and the list stays closed.
+    expect(panel.toggleRight).toBeLessThanOrEqual(panel.panelRight);
+    expect(panel.sourcesListHeight).toBeNull();
+  });
+
+  it("opens the sources as one line beneath the toolbar", async () => {
+    const panel = await report(1440, 330, true);
+    expect(panel.toolbarHeight).toBeLessThanOrEqual(36);
+    expect(panel.sourcesListHeight).not.toBeNull();
+    expect(panel.sourcesListHeight!).toBeLessThanOrEqual(26);
+    expect(panel.visibleRows).toBeGreaterThanOrEqual(10);
+    // A source that needs a key is greyed out next to one that can answer.
+    expect(panel.sourceColors.freesound).toBeDefined();
+    expect(panel.sourceColors.freesound).not.toBe(panel.sourceColors.openverse);
   });
 
   it("wraps to two toolbar lines and drops details at half width", async () => {
@@ -247,5 +279,6 @@ describe("the samples panel in a short bottom panel", () => {
     expect(panel.panelScrollWidth).toBeLessThanOrEqual(panel.panelClientWidth + 1);
     expect(panel.durationDisplay).toBe("none");
     expect(panel.commercialLabelDisplay).toBe("none");
+    expect(panel.toggleRight).toBeLessThanOrEqual(panel.panelRight);
   });
 });
