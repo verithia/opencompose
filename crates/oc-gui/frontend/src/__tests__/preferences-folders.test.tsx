@@ -203,6 +203,40 @@ describe("the Folders preferences page", () => {
     expect(block("plugins")).toBeInTheDocument();
   });
 
+  it("moves between the tabs with the arrow keys and keeps one Tab stop", async () => {
+    await openFolders();
+    const list = screen.getByRole("tablist", { name: "Folder kinds" });
+    const tab = (name: RegExp) => within(list).getByRole("tab", { name });
+    const all = tab(/^All/);
+    const plugins = tab(/^Plugins/);
+    const sounds = tab(/^Sounds/);
+    expect([all, plugins, sounds].map((entry) => entry.tabIndex)).toEqual([0, -1, -1]);
+    expect(screen.getByRole("tabpanel")).toHaveAttribute("aria-labelledby", all.id);
+
+    all.focus();
+    fireEvent.keyDown(all, { key: "ArrowRight" });
+    expect(plugins).toHaveFocus();
+    expect(plugins).toHaveAttribute("aria-selected", "true");
+    expect([all, plugins, sounds].map((entry) => entry.tabIndex)).toEqual([-1, 0, -1]);
+    expect(document.querySelector('.preferences-folders[data-kind="sounds"]')).toBeNull();
+    expect(screen.getByRole("tabpanel")).toHaveAttribute("aria-labelledby", plugins.id);
+
+    fireEvent.keyDown(plugins, { key: "ArrowRight" });
+    expect(sounds).toHaveFocus();
+    fireEvent.keyDown(sounds, { key: "ArrowRight" });
+    expect(all).toHaveFocus();
+    fireEvent.keyDown(all, { key: "ArrowLeft" });
+    expect(sounds).toHaveFocus();
+    fireEvent.keyDown(sounds, { key: "Home" });
+    expect(all).toHaveFocus();
+    fireEvent.keyDown(all, { key: "End" });
+    expect(sounds).toHaveAttribute("aria-selected", "true");
+
+    // Other keys are left to the browser.
+    fireEvent.keyDown(sounds, { key: "ArrowDown" });
+    expect(sounds).toHaveAttribute("aria-selected", "true");
+  });
+
   it("folds an origin group and keeps its title, count and reason in view", async () => {
     await openFolders();
     const head = within(group("plugins", "standard")).getByRole("button", { name: /Standard locations/ });

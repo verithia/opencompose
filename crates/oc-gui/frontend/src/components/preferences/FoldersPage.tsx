@@ -109,6 +109,27 @@ export function FoldersPage() {
     }
   };
 
+  /**
+   * Arrow keys, Home and End move between the tabs and select the one they
+   * land on, so the tab list is a single Tab stop as a tab list is expected
+   * to be.
+   */
+  const onTabKey = (event: KeyboardEvent) => {
+    const at = TABS.findIndex((entry) => entry.id === tab());
+    const next = {
+      ArrowRight: (at + 1) % TABS.length,
+      ArrowLeft: (at - 1 + TABS.length) % TABS.length,
+      Home: 0,
+      End: TABS.length - 1,
+    }[event.key];
+    if (next === undefined) return;
+    event.preventDefault();
+    setTab(TABS[next].id);
+    (event.currentTarget as HTMLElement)
+      .querySelector<HTMLElement>(`[data-tab="${TABS[next].id}"]`)
+      ?.focus();
+  };
+
   const tabCount = (id: Tab) =>
     id === "all" ? KINDS.reduce((sum, kind) => sum + listedOf(kind).length, 0) : listedOf(id).length;
 
@@ -326,7 +347,12 @@ export function FoldersPage() {
 
       <Show when={localScan.summary()}>
         <div class="preferences-block preferences-folder-browser">
-          <div class="preferences-folder-tabs" role="tablist" aria-label={i18n.t("folders.tabs")}>
+          <div
+            class="preferences-folder-tabs"
+            role="tablist"
+            aria-label={i18n.t("folders.tabs")}
+            onKeyDown={onTabKey}
+          >
             <For each={TABS}>
               {(entry) => (
                 <button
@@ -335,6 +361,8 @@ export function FoldersPage() {
                   class="preferences-folder-tab"
                   classList={{ active: tab() === entry.id }}
                   aria-selected={tab() === entry.id}
+                  tabIndex={tab() === entry.id ? 0 : -1}
+                  id={`preferences-folder-tab-${entry.id}`}
                   aria-controls="preferences-folder-panel"
                   data-tab={entry.id}
                   onClick={() => setTab(entry.id)}
@@ -345,7 +373,12 @@ export function FoldersPage() {
               )}
             </For>
           </div>
-          <div class="preferences-folder-panel" id="preferences-folder-panel" role="tabpanel">
+          <div
+            class="preferences-folder-panel"
+            id="preferences-folder-panel"
+            role="tabpanel"
+            aria-labelledby={`preferences-folder-tab-${tab()}`}
+          >
             <For each={shownKinds()}>{section}</For>
           </div>
           {details()}
