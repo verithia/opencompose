@@ -31,6 +31,26 @@ describe("i18n dictionaries", () => {
     expect(missingHant, "missing zh-Hant").toEqual([]);
   });
 
+  it.each([
+    ["zh-Hans", "声音文件夹"],
+    ["zh-Hant", "聲音資料夾"],
+  ] as const)("names sound folders the way Preferences does in %s", (locale, stray) => {
+    i18n.setLocale(locale);
+    // Preferences > Folders titles the group "<term>"; the Samples panel
+    // messages refer to the same folders and must use the same term.
+    const term = i18n.t("folders.sounds");
+    const keys = [
+      "sample.empty",
+      "sample.local.searching",
+      "sample.local.none",
+      "sample.local.noFolders",
+      "sample.local.failed",
+      "sample.error.outsideFolders",
+    ] as const;
+    for (const key of keys) expect(i18n.t(key), key).toContain(term);
+    for (const key of i18n.keys()) expect(i18n.t(key), key).not.toContain(stray);
+  });
+
   it("covers every Japanese interface key", () => {
     expect(i18n.keys().filter(key => !i18n.has("ja", key))).toEqual([]);
   });
