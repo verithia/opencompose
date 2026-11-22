@@ -71,7 +71,7 @@ REAPER 的资源文件夹在 Windows 上是 `%APPDATA%\REAPER`，在 macOS 上�
 - 其他音乐软件使用的采样文件夹：“文稿”下的 `Samples`、`Image-Line`、`Ableton/User Library`、`Ableton/Factory Packs`、`lmms/samples` 和 `Splice`；“音乐”下的 `Samples`、`Ableton/User Library` 和 `Ableton/Factory Packs`；主文件夹中的 `Splice` 和 `lmms/samples`；
 - 你添加的音色文件夹。
 
-每个文件夹最多搜索八层、两万个条目。**添加音色文件夹…**会把文件夹添加为内容库，其中至少要有一个 SoundFont 或 SFZ 文件。OpenCompose 自带的 SoundFont 音色库不计入。
+每个文件夹最多搜索八层、两万个条目。**添加音色文件夹…**会把文件夹添加为内容库，其中至少要有一个 SoundFont、SFZ 或采样器文件，或者一个音频采样，所以只有 WAV 或 AIFF 采样的文件夹也可以添加。OpenCompose 自带的 SoundFont 音色库不计入。
 
 安装插件后，请在插件浏览器中按**重新扫描**，或在文件夹页按**重新扫描**。
 

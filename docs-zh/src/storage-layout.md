@@ -142,7 +142,7 @@
 | 文件 | 内容 |
 |---|---|
 | `<config>/plugin-folders.json` | 你添加的插件文件夹，最多 32 个。`OCP_PLUGIN_FOLDERS` 可以指向别的文件。 |
-| `<config>/content-libraries.json` | 你添加的音色文件夹。每个文件夹是一个内容库，附带上次扫描找到的乐器文件。每次修改都会把上一版保存为 `content-libraries.json.bak`。`OPENCOMPOSE_CONTENT_CATALOGUE` 可以指向别的文件。 |
+| `<config>/content-libraries.json` | 你添加的音色文件夹。每个文件夹是一个内容库，附带上次扫描找到的乐器文件；只有采样的文件夹不列出任何乐器文件。每次修改都会把上一版保存为 `content-libraries.json.bak`。`OPENCOMPOSE_CONTENT_CATALOGUE` 可以指向别的文件。 |
 
 如果应用无法读取其中某个文件，它会报告问题，并且绝不覆盖该文件。从列表中移除文件夹不会删除其中的文件。
 
