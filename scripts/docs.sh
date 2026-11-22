@@ -111,7 +111,8 @@ case "${1:-}" in
         done
         echo "docs: serving the book on http://127.0.0.1:${port}/" >&2
         echo "docs: mdbook rebuilds book/ on every edit and cleans it, so the" >&2
-        echo "      api/ pages are only present after 'scripts/docs.sh build'." >&2
+        echo "      api/ pages and the zh/ book are only present after" >&2
+        echo "      'scripts/docs.sh build'." >&2
         exec mdbook serve --hostname 127.0.0.1 --port "$port"
         ;;
     *)
