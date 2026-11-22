@@ -109,9 +109,7 @@ class BookToolGateTests(unittest.TestCase):
         self.assert_zh_refused("docs-zh/src/stray.md: not a chapter")
 
     def test_zh_chapter_without_an_english_source_is_refused(self):
-        (self.zh / "SUMMARY.md").write_text(
-            (self.zh / "SUMMARY.md").read_text() + "- [Extra](extra.md)\n"
-        )
+        (self.zh / "SUMMARY.md").write_text((self.zh / "SUMMARY.md").read_text() + "- [Extra](extra.md)\n")
         (self.zh / "extra.md").write_text("# 额外\n")
         self.assert_zh_refused("no English chapter at docs/extra.md")
 
@@ -124,9 +122,7 @@ class BookToolGateTests(unittest.TestCase):
         self.assert_zh_refused("leaves the zh book")
 
     def test_language_switch_list_must_equal_the_zh_chapters(self):
-        (self.root / "docs/theme/lang-switch.js").write_text(
-            'const TRANSLATED = ["index.html", "gone.html"];\n'
-        )
+        (self.root / "docs/theme/lang-switch.js").write_text('const TRANSLATED = ["index.html", "gone.html"];\n')
         result = self.check_book()
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("TRANSLATED is missing 'nested/guide.html'", result.stderr)
