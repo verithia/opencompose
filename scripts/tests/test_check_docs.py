@@ -99,6 +99,39 @@ class BookToolGateTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("missing/index.html", result.stderr)
 
+    def assert_zh_refused(self, needle):
+        result = self.check_book()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(needle, result.stderr)
+
+    def test_zh_page_outside_the_summary_is_refused(self):
+        (self.zh / "stray.md").write_text("# 多余\n")
+        self.assert_zh_refused("docs-zh/src/stray.md: not a chapter")
+
+    def test_zh_chapter_without_an_english_source_is_refused(self):
+        (self.zh / "SUMMARY.md").write_text(
+            (self.zh / "SUMMARY.md").read_text() + "- [Extra](extra.md)\n"
+        )
+        (self.zh / "extra.md").write_text("# 额外\n")
+        self.assert_zh_refused("no English chapter at docs/extra.md")
+
+    def test_zh_html_link_into_the_zh_book_is_refused(self):
+        self.english_only.write_text("# 只有英文\n\n- [Guide](nested/guide.html)\n")
+        self.assert_zh_refused("points into the zh book")
+
+    def test_zh_md_link_out_of_the_zh_book_is_refused(self):
+        self.english_only.write_text("# 只有英文\n\n- [Components](../components/index.md)\n")
+        self.assert_zh_refused("leaves the zh book")
+
+    def test_language_switch_list_must_equal_the_zh_chapters(self):
+        (self.root / "docs/theme/lang-switch.js").write_text(
+            'const TRANSLATED = ["index.html", "gone.html"];\n'
+        )
+        result = self.check_book()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("TRANSLATED is missing 'nested/guide.html'", result.stderr)
+        self.assertIn("TRANSLATED lists 'gone.html'", result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()
