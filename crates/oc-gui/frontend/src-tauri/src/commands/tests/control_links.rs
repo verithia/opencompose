@@ -1,6 +1,6 @@
 //! Control-link command: learn one row per target, edit, remove, undo.
 
-use oc_dsl::ast::{ControlLinkSource, ControlLinkTarget, LinkFormula};
+use oc_dsl::ast::{AutomationValueMapping, ControlLinkSource, ControlLinkTarget, LinkFormula};
 
 use super::support::{make_track, test_state};
 use crate::commands::control_links::{
@@ -20,6 +20,7 @@ fn target(track: &str, param: &str) -> ControlLinkTarget {
         track: track.into(),
         param: param.into(),
         formula: LinkFormula::Linear,
+        value_mapping: None,
         smoothing_ms: 0,
     }
 }
@@ -28,6 +29,102 @@ fn state_with_track() -> crate::state::AppStateInner {
     let mut inner = test_state();
     inner.project.tracks.push(make_track("Lead"));
     inner
+}
+
+#[test]
+fn lane_link_to_bus_preserves_the_value_mapping_when_retuned() {
+    let mut inner = test_state();
+    inner.project = oc_dsl::parse(
+        "@project\n@track Source | instrument: audio/clip\n  effects:\n    - gain: factor=1\n  automation: fx1.factor {1:1=0.4}\n@bus Return\n  routes: [master]\n  effects:\n    - gain: factor=1\n",
+    ).unwrap();
+    let lane = ControlLinkSource::Lane {
+        track: "Source".into(),
+        param: "fx1.factor".into(),
+    };
+    let mut row = target("Return", "fx1.factor");
+    row.value_mapping = Some(AutomationValueMapping {
+        scale: 2.0,
+        ..Default::default()
+    });
+    add_control_link_target_inner(&mut inner, lane.clone(), row.clone()).unwrap();
+    update_control_link_target_inner(
+        &mut inner,
+        lane,
+        "Return",
+        "fx1.factor",
+        LinkFormula::Inverted,
+        10,
+    )
+    .unwrap();
+    let parsed = oc_dsl::parse(&inner.dsl_source).unwrap();
+    let edited = &parsed.properties.control_links[0].targets[0];
+    assert_eq!(edited.value_mapping, row.value_mapping);
+    assert_eq!(edited.formula, LinkFormula::Inverted);
+    assert_eq!(edited.smoothing_ms, 10);
+    assert!(
+        add_control_link_target_inner(&mut inner, ControlLinkSource::Macro { index: 1 }, row)
+            .is_err()
+    );
+}
+
+#[test]
+fn midi_cc_link_to_bus_round_trips_through_learn_and_remove() {
+    let mut inner = test_state();
+    inner.project = oc_dsl::parse(
+        "@project\n@bus Return\n  routes: [master]\n  effects:\n    - gain: factor=1\n",
+    )
+    .unwrap();
+    let midi = cc(74);
+    let mut row = target("Return", "fx1.factor");
+    row.value_mapping = Some(AutomationValueMapping {
+        scale: 2.0,
+        ..Default::default()
+    });
+    add_control_link_target_inner(&mut inner, midi.clone(), row.clone()).unwrap();
+    let parsed = oc_dsl::parse(&inner.dsl_source).unwrap();
+    oc_dsl::validate(&parsed).unwrap();
+    assert_eq!(
+        parsed.properties.control_links[0].target("Return", "fx1.factor"),
+        Some(&row)
+    );
+    remove_control_link_target_inner(&mut inner, &midi, "Return", "fx1.factor").unwrap();
+    assert!(inner.project.properties.control_links.is_empty());
+}
+
+#[test]
+fn named_preset_macro_tracks_the_source_through_preset_rename_and_undo() {
+    let mut inner = test_state();
+    inner.project = oc_dsl::parse(
+        r#"@project
+@preset controls
+  source: builtin
+  plugin: "builtin.open_synth"
+  params: {macro.8: 0.6}
+@bus Return
+  routes: [master]
+  effects:
+    - gain: factor=1
+"#,
+    )
+    .unwrap();
+    let source = ControlLinkSource::PresetMacro {
+        preset: "controls".into(),
+        index: 8,
+    };
+    add_control_link_target_inner(&mut inner, source.clone(), target("Return", "fx1.factor"))
+        .unwrap();
+    crate::commands::rename_preset_inner(&mut inner, "controls", "Rack controls").unwrap();
+    let renamed = oc_dsl::parse(&inner.dsl_source).unwrap();
+    oc_dsl::validate(&renamed).unwrap();
+    assert_eq!(
+        renamed.properties.control_links[0].source,
+        ControlLinkSource::PresetMacro {
+            preset: "Rack controls".into(),
+            index: 8
+        },
+    );
+    inner.undo.undo(&mut inner.project).unwrap();
+    assert_eq!(inner.project.properties.control_links[0].source, source);
 }
 
 #[test]

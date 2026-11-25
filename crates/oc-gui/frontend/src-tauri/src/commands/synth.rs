@@ -214,17 +214,20 @@ pub fn remove_preset(name: String, state: State<AppState>) -> Result<ProjectSnap
     let mut inner = state.lock_inner();
     let old_project = inner.project.clone();
     inner.project.presets.retain(|p| p.name != name);
+    inner.project.properties.control_links.retain(|link| {
+        !matches!(&link.source, ast::ControlLinkSource::PresetMacro { preset, .. } if preset == &name)
+    });
     // Clear preset ref from any tracks using it
     for track in &mut inner.project.tracks {
         if track.preset.as_deref() == Some(&name) {
             track.preset = None;
         }
     }
-    resync_with_undo(
-        &mut inner,
-        old_project,
-        UndoEdit::new("preset remove", UndoScope::Preset),
-    )?;
+    let mut edit = UndoEdit::new("preset remove", UndoScope::Preset);
+    if old_project.properties.control_links != inner.project.properties.control_links {
+        edit = edit.with_scope(UndoScope::Automation);
+    }
+    resync_with_undo(&mut inner, old_project, edit)?;
     Ok(snapshot(&inner))
 }
 

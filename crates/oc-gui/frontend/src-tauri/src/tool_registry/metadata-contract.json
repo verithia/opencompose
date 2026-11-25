@@ -1110,6 +1110,16 @@
     "handler": "backend"
   },
   {
+    "name": "effects_import_curve",
+    "area": "effects",
+    "mutation": true,
+    "approval": "automatic",
+    "panel": {
+      "enabled": true
+    },
+    "handler": "backend"
+  },
+  {
     "name": "effects_set_param",
     "area": "effects",
     "mutation": true,

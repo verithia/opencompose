@@ -456,15 +456,22 @@ pub(crate) fn apply_set_track_output_port(
     project: &mut ast::Project,
     track_index: usize,
     port: u16,
+    pair: Option<u16>,
 ) -> Result<(), String> {
     if port > 63 {
         return Err("output port must be 0-63".into());
+    }
+    if pair.is_some_and(|pair| pair > 63) {
+        return Err("output pair must be 0-63".into());
     }
     let track = project
         .tracks
         .get_mut(track_index)
         .ok_or_else(|| format!("Track {} out of range", track_index))?;
     track.output_port = (port > 0).then_some(port);
+    if let Some(pair) = pair {
+        track.output_pair = (pair > 0).then_some(pair);
+    }
     Ok(())
 }
 
@@ -473,11 +480,12 @@ pub(crate) fn apply_set_track_output_port(
 pub fn set_track_output_port(
     track_index: usize,
     port: u16,
+    pair: Option<u16>,
     state: State<AppState>,
 ) -> Result<ProjectSnapshot, String> {
     let mut inner = state.lock_inner();
     let old_project = inner.project.clone();
-    apply_set_track_output_port(&mut inner.project, track_index, port)?;
+    apply_set_track_output_port(&mut inner.project, track_index, port, pair)?;
     resync_with_undo(
         &mut inner,
         old_project,

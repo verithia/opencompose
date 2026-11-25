@@ -695,6 +695,7 @@ fn move_phrase_between_tracks_keeps_duration_and_events() {
     let mut project = default_project();
     let mut from = make_track("A");
     from.phrases.push(ast::Phrase {
+        playlist_lane: None,
         name: "melody".to_string(),
         time_range: Some(ast::TimeRange {
             start: ast::BarBeat::new(1, 1, 0),
@@ -724,6 +725,7 @@ fn move_phrase_between_tracks_rejects_an_unknown_track() {
     let mut project = default_project();
     let mut track = make_track("A");
     track.phrases.push(ast::Phrase {
+        playlist_lane: None,
         name: "melody".to_string(),
         time_range: Some(ast::TimeRange {
             start: ast::BarBeat::new(1, 1, 0),

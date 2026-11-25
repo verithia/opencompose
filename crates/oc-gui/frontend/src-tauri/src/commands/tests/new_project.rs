@@ -46,6 +46,25 @@ fn new_project_answers_before_the_warm_up_opens_the_device() {
     );
 }
 
+#[test]
+fn headless_new_keeps_the_render_worker_and_audio_device_closed() {
+    let state = AppState::new();
+    state.lock_inner().audio.set_automatic_preload(false);
+    let snapshot = install(&state, None);
+    assert!(!warm_preload_if_current(&state, snapshot.revision));
+    {
+        let mut inner = state.lock_inner();
+        let project = inner.project.clone();
+        inner.audio.preload_project(&project);
+        assert!(inner.audio.render_thread.is_none());
+        assert!(!inner.audio.streaming_active);
+        assert!(inner.audio.render_dirty);
+        assert_eq!(inner.revision, snapshot.revision);
+    }
+    state.lock_inner().audio.set_automatic_preload(true);
+    assert!(warm_preload_if_current(&state, snapshot.revision));
+}
+
 /// A second New lands while the first document's warm-up is still queued. The
 /// warm-up must leave the newer document alone instead of building the old one
 /// over it.

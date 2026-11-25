@@ -4,7 +4,9 @@
 use super::support::{make_track, test_state};
 use crate::audio::PlaybackState;
 use crate::commands::touch::{
-    begin_effect_param_touch_inner, end_effect_param_touch_inner, update_effect_param_touch_inner,
+    begin_effect_param_touch_inner, begin_preset_macro_preview_inner, end_effect_param_touch_inner,
+    end_preset_macro_preview_inner, update_effect_param_touch_inner,
+    update_preset_macro_preview_inner,
 };
 use crate::state::AppStateInner;
 use oc_dsl::ast::{
@@ -26,12 +28,14 @@ fn touch_inner() -> AppStateInner {
         smoothing_ms: 0.0,
         points: vec![
             AutomationPoint {
+                curvature: None,
                 position: BarBeat::new(1, 1, 0),
                 value: ParamValue::Number(1.0),
                 curve: Curve::Linear,
                 tension: None,
             },
             AutomationPoint {
+                curvature: None,
                 position: BarBeat::new(1, 2, 0),
                 value: ParamValue::Number(0.25),
                 curve: Curve::Linear,
@@ -44,6 +48,118 @@ fn touch_inner() -> AppStateInner {
     inner.audio.playback_state = PlaybackState::Playing;
     inner.audio.render_thread = Some(crate::render_thread::RenderThreadHandle::spawn(8000));
     inner
+}
+
+#[test]
+fn owned_preset_macro_preview_does_not_edit_the_document_and_retires_after_save() {
+    use crate::render_thread::{RenderCommand, RenderThreadHandle};
+    use std::{
+        path::PathBuf,
+        sync::{Arc, mpsc},
+        time::Duration,
+    };
+
+    let mut inner = test_state();
+    inner.project = oc_dsl::parse(
+        r#"@project
+@preset Controls
+  source: builtin
+  plugin: "builtin.open_synth"
+  params: {macro.8: 0.25}
+@preset Carrier
+  source: builtin
+  plugin: "builtin.test_tone"
+@track Lead | instrument: synth/lead, preset: Carrier
+  effects:
+    - gain: factor=1
+  @phrase held [1:1 - 2:1]
+    C4 w
+@control_link Drive
+  from: macro(8, Controls)
+  -> track: Lead param: fx1.factor formula: linear
+"#,
+    )
+    .unwrap();
+    inner.audio.playback_state = PlaybackState::Playing;
+    inner.audio.render_thread = Some(RenderThreadHandle::spawn_with_controls(
+        8_000,
+        None,
+        Some(Arc::clone(&inner.audio.preset_macros)),
+    ));
+    let queue_load = |inner: &AppStateInner| {
+        let thread = inner.audio.render_thread.as_ref().unwrap();
+        thread.send(RenderCommand::ProjectChanged {
+            project: Box::new(inner.project.clone()),
+            soundfont_path: PathBuf::new(),
+            root: None,
+            warm: false,
+        });
+    };
+    queue_load(&inner);
+    inner
+        .audio
+        .render_thread
+        .as_ref()
+        .unwrap()
+        .wait_project_loaded(Duration::from_secs(2))
+        .unwrap();
+    let before = inner.project.clone();
+    let begin = |inner: &AppStateInner| {
+        begin_preset_macro_preview_inner(
+            inner,
+            "Controls",
+            8,
+            inner.undo.parameter_target_stamp().unwrap().clone(),
+        )
+        .unwrap()
+        .unwrap()
+    };
+    let canceled = begin(&inner);
+    assert!(update_preset_macro_preview_inner(
+        &inner, "Controls", 8, 0.5, &canceled
+    ));
+    assert_eq!(inner.project, before);
+    end_preset_macro_preview_inner(&inner, "Controls", 8, &canceled, false);
+    assert!(!update_preset_macro_preview_inner(
+        &inner, "Controls", 8, 0.7, &canceled
+    ));
+
+    let committed = begin(&inner);
+    assert!(update_preset_macro_preview_inner(
+        &inner, "Controls", 8, 0.7, &committed
+    ));
+    inner.project.presets[0].params[0].1 = ParamValue::Number(0.7);
+    queue_load(&inner);
+    end_preset_macro_preview_inner(&inner, "Controls", 8, &committed, true);
+    let (signal, entered) = mpsc::channel();
+    let (release, done) = mpsc::channel();
+    inner
+        .audio
+        .render_thread
+        .as_ref()
+        .unwrap()
+        .send(RenderCommand::TestBarrier {
+            entered: signal,
+            release: done,
+        });
+    entered.recv_timeout(Duration::from_secs(2)).unwrap();
+    let loaded = inner
+        .audio
+        .render_thread
+        .as_ref()
+        .unwrap()
+        .wait_project_loaded(Duration::from_millis(100));
+    release.send(()).unwrap();
+    loaded.unwrap();
+    assert!(!update_preset_macro_preview_inner(
+        &inner, "Controls", 8, 0.1, &committed
+    ));
+
+    let stale = begin(&inner);
+    inner.invalidate_parameter_owners();
+    assert!(!update_preset_macro_preview_inner(
+        &inner, "Controls", 8, 0.1, &stale
+    ));
 }
 
 #[test]

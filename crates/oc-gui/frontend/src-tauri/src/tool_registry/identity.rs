@@ -151,6 +151,7 @@ tool_ids! {
     EffectsAdd => ("effects_add", "effects", Panel::Enabled, true, Automatic, Backend),
     EffectsRemove => ("effects_remove", "effects", Panel::Enabled, true, Confirm, Backend),
     EffectsSetBypass => ("effects_set_bypass", "effects", Panel::Enabled, true, Automatic, Backend),
+    EffectsImportCurve => ("effects_import_curve", "effects", Panel::Enabled, true, Automatic, Backend),
     EffectsSetParam => ("effects_set_param", "effects", Panel::Enabled, true, Automatic, Backend),
     BusesAdd => ("buses_add", "buses", Panel::Enabled, true, Automatic, Backend),
     BusesRoutes => ("buses_routes", "buses", Panel::Enabled, true, Automatic, Backend),

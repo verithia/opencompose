@@ -1275,6 +1275,7 @@ pub(crate) fn upsert_plugin_automation_point(
         value: ast::ParamValue::Number(normalized.clamp(0.0, 1.0)),
         curve: ast::Curve::Linear,
         tension: None,
+        curvature: None,
     };
     if let Some(existing) = lane
         .points

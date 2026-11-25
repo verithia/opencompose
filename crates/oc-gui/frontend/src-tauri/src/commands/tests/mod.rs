@@ -15,6 +15,7 @@ mod edit_media;
 mod edit_preview;
 mod effect_chain;
 mod flow;
+mod gain_automation;
 mod groups;
 mod hit_velocity;
 mod host;

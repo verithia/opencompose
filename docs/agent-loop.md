@@ -36,6 +36,14 @@ participate in desktop single-instance forwarding, focus requests or operating
 system document-open events. Opening or closing a desktop window therefore does
 not control a headless host's session.
 
+Headless startup serves cached plugin metadata, or built-in metadata on a cold
+profile. It does not automatically instantiate every installed plugin to refresh
+the browser inventory. Format-qualified plugin requests resolve their selected
+module; use `plugins_scan` when you explicitly want a complete native scan.
+Creating, opening or saving a project in this mode also leaves hardware output
+closed. Offline render tools do not require a playback device; explicit
+transport commands can open one.
+
 Give each concurrent host a separate `OPENCOMPOSE_CONFIG_DIR`. This directory
 owns its configuration and private `agent.json` endpoint; it does not
 automatically inherit another profile's provider settings or credentials.

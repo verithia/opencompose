@@ -161,9 +161,10 @@ pub(crate) fn automation_value_at_inner(
         let index = oc_dsl::automation::resolve_effect(effects, effect_target)
             .map_err(|error| format!("automation lane '{}': {error}", lane.param))?;
         let effect = &effects[index];
+        let device = oc_engine::dsp::device_for_effect(&effect.effect_type);
         let value =
             oc_dsl::automation::value_at(lane, &clock, sample_rate, position_beats, |value| {
-                oc_engine::automation::effect_point_value(effect, parameter, value)
+                oc_engine::automation::effect_curve_point_value(lane, parameter, value, device)
             })?;
         (value, AutomationDomain::Device)
     } else if let Some(param) = oc_dsl::automation::decode_plugin_automation_param(&lane.param) {

@@ -41,7 +41,7 @@ agent_api::dispatch  ◄──  POST /call, POST /mcp tools/call, panel calls
 
 ## The catalog
 
-<!-- tool-registry: mcp=127 panel=99 -->
+<!-- tool-registry: mcp=128 panel=100 -->
 
 The catalog has one entry per MCP tool. The built-in panel adds three
 panel-local tools whose handlers live in the agent loop and not in `dispatch`:

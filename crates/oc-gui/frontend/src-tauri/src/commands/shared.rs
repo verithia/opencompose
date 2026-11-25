@@ -80,7 +80,6 @@ pub(crate) fn snapshot(inner: &crate::state::AppStateInner) -> ProjectSnapshot {
 }
 
 /// Which audio state the edit invalidates.
-#[derive(Clone, Copy)]
 enum AudioSync {
     /// Structure changed: the render thread must rebuild its sources.
     Full,
@@ -88,6 +87,8 @@ enum AudioSync {
     Mixer,
     /// FX-chain-only: patch the affected chains, never the instruments.
     Chain,
+    /// Attempt to retain the playing graph for a saved rack control.
+    RackMacro(crate::render_thread::RackMacroEdit),
 }
 
 enum PresetValidation {
@@ -139,6 +140,18 @@ pub(crate) fn resync_with_undo(
     edit: crate::state::UndoEdit,
 ) -> Result<(), String> {
     resync(inner, old_project, edit, AudioSync::Full.into())
+}
+
+pub(crate) fn resync_preset_parameter_with_undo(
+    inner: &mut crate::state::AppStateInner,
+    old_project: ast::Project,
+    edit: crate::state::UndoEdit,
+    preset: &str,
+    parameter: &str,
+) -> Result<(), String> {
+    let audio = crate::render_thread::RackMacroEdit::from_saved(&inner.project, preset, parameter)
+        .map_or(AudioSync::Full, AudioSync::RackMacro);
+    resync(inner, old_project, edit, audio.into())
 }
 
 /// Publish a document edit only when the project it produces still validates.
@@ -247,6 +260,12 @@ fn resync(
         }
         AudioSync::Mixer => inner.audio.apply_mixer_change(&inner.project),
         AudioSync::Chain => inner.audio.apply_chain_change(&inner.project),
+        AudioSync::RackMacro(change) => {
+            inner.audio.mark_dirty();
+            inner
+                .audio
+                .preload_project_with_macro(&inner.project, Some(change));
+        }
     }
     // Split borrow: undo gets &mut, project gets & — no clone needed for `new`.
     // `old_project` is moved into push (avoids a clone for the merge base).

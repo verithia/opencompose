@@ -254,6 +254,7 @@ pub fn add_phrase(
         .ok_or_else(|| format!("Track {} out of range", track_index))?;
     let phrase_name = format!("phrase_{}", track.phrases.len() + 1);
     let phrase = ast::Phrase {
+        playlist_lane: None,
         name: phrase_name,
         time_range: Some(ast::TimeRange {
             start: ast::BarBeat {

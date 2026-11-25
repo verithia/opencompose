@@ -154,10 +154,12 @@ pub(super) fn apply_single_parameter(
     } else {
         inner.audio.invalidate_live_synth(&name);
     }
-    resync_with_undo(
+    super::super::shared::resync_preset_parameter_with_undo(
         inner,
         old_project,
         UndoEdit::new("preset parameter", UndoScope::Preset),
+        &name,
+        key,
     )?;
     Ok(snapshot(inner))
 }

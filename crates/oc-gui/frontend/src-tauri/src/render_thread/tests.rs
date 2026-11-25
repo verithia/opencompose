@@ -1,4 +1,73 @@
 #[test]
+fn live_midi_cc_reaches_mixer_effects_without_an_audition_or_take() {
+    use super::*;
+    use crate::midi_bridge::LiveEvent;
+    use crate::midi_live::{LiveInputSink, LiveSink};
+
+    let project = oc_dsl::parse(
+        r#"@project
+  tempo: 120
+@preset tone
+  source: builtin
+  plugin: "builtin.test_tone"
+@track lead | preset: tone, instrument: synth/lead
+  mix: output=return
+  effects:
+    - gain: factor=1
+  @phrase p [1:1 - 2:1]
+    C4 w
+@bus return
+  routes: [master]
+  effects:
+    - gain: factor=1
+@control_link performance
+  from: cc(74, 2)
+  -> track: lead param: fx1.factor formula: midi_unit
+  -> track: return param: fx1.factor formula: midi_centered
+"#,
+    )
+    .unwrap();
+    let midi_cc = Arc::new(MidiControlInput::default());
+    let mut sink = LiveInputSink {
+        route: Arc::new(Mutex::new(None)),
+        capture: Arc::default(),
+        midi_cc: Arc::clone(&midi_cc),
+    };
+    let event = |channel, value| LiveEvent::ControlChange {
+        channel,
+        controller: 74,
+        value,
+    };
+    let mut reference = RenderState::new(8_000);
+    let mut with_input = RenderState::new(8_000);
+    with_input.midi_cc = Some(midi_cc);
+    for renderer in [&mut reference, &mut with_input] {
+        renderer.load_project(&project, PathBuf::new()).unwrap();
+    }
+    sink.route(event(0, 0));
+    let dry = reference.render_chunk(64);
+    assert!(dry.iter().any(|value| value.abs() > 0.05));
+    assert_eq!(with_input.render_chunk(64), dry);
+
+    sink.route(event(1, 64));
+    let dry = reference.render_chunk(64);
+    let linked = with_input.render_chunk(64);
+    assert_eq!(linked.len(), dry.len());
+    assert!(dry.iter().any(|value| value.abs() > 0.05));
+    for (linked, dry) in linked.into_iter().zip(dry) {
+        assert!(
+            (linked - dry * (64.0 / 127.0)).abs() < 1e-6,
+            "linked {linked}, authored {dry}"
+        );
+    }
+
+    sink.route(event(1, 127));
+    let muted = with_input.render_chunk(64);
+    assert_eq!(muted.len(), 128);
+    assert!(muted.iter().all(|value| *value == 0.0));
+}
+
+#[test]
 fn natural_playback_drains_effects_without_extending_the_timeline_or_preview() {
     use super::*;
     let project = oc_dsl::parse(
