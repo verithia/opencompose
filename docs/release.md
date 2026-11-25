@@ -73,9 +73,16 @@ then compiles and bundles. `scripts/build-gui.sh` wraps the same command and
 prints the artefact paths and sizes:
 
 ```bash
+rustup target add x86_64-apple-darwin
 ./scripts/build-gui.sh              # release .app + .dmg
 ./scripts/build-gui.sh --bundles app   # .app only, faster
 ```
+
+For Apple Silicon and universal packages, `npm run tauri build` builds the
+Intel plugin worker from the same checkout and stages it as a Tauri external
+binary. The bundler places it beside the main executable and includes it in
+the normal signing order. Rosetta is required on the user's Mac for Intel
+VST2 and VST3 plugins.
 
 `bundle.targets` is `all`, which on macOS means `.app` + `.dmg`. Nothing is
 signed: `bundle.macOS` has no `signingIdentity`, and when neither that setting

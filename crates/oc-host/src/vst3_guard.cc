@@ -74,6 +74,7 @@ extern "C" bool oc_vst3_factory_count(OcVst3Factory *factory, int32_t *result, O
 extern "C" bool oc_vst3_factory_class_info(OcVst3Factory *factory, int32_t index, OcVst3ClassInfo *info, int32_t *result, OcNativeFault *fault) noexcept { *info = {}; OC_VST3_GUARD(factory->getClassInfo(index, info)) }
 extern "C" bool oc_vst3_factory_class_info2(OcVst3Factory2 *factory, int32_t index, OcVst3ClassInfo2 *info, int32_t *result, OcNativeFault *fault) noexcept { *info = {}; OC_VST3_GUARD(factory->getClassInfo2(index, info)) }
 extern "C" bool oc_vst3_factory_create(OcVst3Factory *factory, const char *cid, const char *iid, void **output, int32_t *result, OcNativeFault *fault) noexcept { *output = nullptr; OC_VST3_GUARD(factory->createInstance(cid, iid, output)) }
+extern "C" bool oc_vst3_compatibility_json(OcVst3Compatibility *compatibility, OcVst3Stream *stream, int32_t *result, OcNativeFault *fault) noexcept { OC_VST3_GUARD(compatibility->getCompatibilityJSON(stream)) }
 extern "C" bool oc_vst3_controller_class_id(OcVst3Component *component, char *cid, int32_t *result, OcNativeFault *fault) noexcept { for (int i = 0; i < 16; ++i) cid[i] = 0; OC_VST3_GUARD(component->getControllerClassId(cid)) }
 extern "C" bool oc_vst3_get_factory(void *entry, OcVst3Factory **result, OcNativeFault *fault) noexcept { OC_VST3_GUARD(reinterpret_cast<OcVst3Factory *(*)()>(entry)()) }
 extern "C" bool oc_vst3_module_entry(void *entry, void *handle, bool *result, OcNativeFault *fault) noexcept { OC_VST3_GUARD(reinterpret_cast<bool (*)(void *)>(entry)(handle)) }

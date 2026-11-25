@@ -4,7 +4,8 @@ use vst3::Steinberg::Vst::{
     BusInfo, IAudioProcessor, IComponent, IEditController, ProcessData, ProcessSetup,
 };
 use vst3::Steinberg::{
-    IBStream, IPluginFactory, IPluginFactory2, PClassInfo, PClassInfo2, TUID, tresult,
+    IBStream, IPluginCompatibility, IPluginFactory, IPluginFactory2, PClassInfo, PClassInfo2, TUID,
+    tresult,
 };
 
 unsafe extern "C" {
@@ -78,6 +79,12 @@ unsafe extern "C" {
         cid: *const std::ffi::c_char,
         iid: *const std::ffi::c_char,
         output: *mut *mut std::ffi::c_void,
+        result: *mut tresult,
+        fault: *mut RawFault,
+    ) -> bool;
+    fn oc_vst3_compatibility_json(
+        compatibility: *mut IPluginCompatibility,
+        stream: *mut IBStream,
         result: *mut tresult,
         fault: *mut RawFault,
     ) -> bool;
@@ -280,14 +287,12 @@ unsafe extern "C" {
         result: *mut tresult,
         fault: *mut RawFault,
     ) -> bool;
-    #[cfg(any(test, feature = "test-support"))]
     fn oc_vst3_controller_set_state(
         controller: *mut IEditController,
         stream: *mut IBStream,
         result: *mut tresult,
         fault: *mut RawFault,
     ) -> bool;
-    #[cfg(any(test, feature = "test-support"))]
     fn oc_vst3_controller_get_state(
         controller: *mut IEditController,
         stream: *mut IBStream,
@@ -454,6 +459,19 @@ pub(crate) unsafe fn factory_create(
     output: *mut *mut std::ffi::c_void,
 ) -> Result<tresult, Fault> {
     invoke!(oc_vst3_factory_create(factory, cid, iid, output))
+}
+/// # Safety
+/// The retained compatibility object and host stream remain live during the
+/// synchronous factory query.
+#[expect(
+    clippy::result_large_err,
+    reason = "native causes stay inline for bounded failure publication"
+)]
+pub(crate) unsafe fn compatibility_json(
+    compatibility: *mut IPluginCompatibility,
+    stream: *mut IBStream,
+) -> Result<tresult, Fault> {
+    invoke!(oc_vst3_compatibility_json(compatibility, stream))
 }
 /// # Safety
 /// The native interface or module symbol must be live with its specified ABI;
@@ -833,13 +851,11 @@ macro_rules! state_method {
 }
 state_method!(component_set_state, oc_vst3_component_set_state, IComponent);
 state_method!(component_get_state, oc_vst3_component_get_state, IComponent);
-#[cfg(any(test, feature = "test-support"))]
 state_method!(
     controller_set_state,
     oc_vst3_controller_set_state,
     IEditController
 );
-#[cfg(any(test, feature = "test-support"))]
 state_method!(
     controller_get_state,
     oc_vst3_controller_get_state,
@@ -861,6 +877,7 @@ pub enum Operation {
     FactoryClassInfo,
     FactoryClassInfo2,
     FactoryCreate,
+    CompatibilityJson,
     ControllerClassId,
     GetPluginFactory,
     ModuleEntry,
@@ -911,6 +928,7 @@ impl Operation {
             Self::FactoryClassInfo => "getClassInfo",
             Self::FactoryClassInfo2 => "getClassInfo2",
             Self::FactoryCreate => "createInstance",
+            Self::CompatibilityJson => "getCompatibilityJSON",
             Self::ControllerClassId => "getControllerClassId",
             Self::GetPluginFactory => "GetPluginFactory",
             Self::ModuleEntry => "ModuleEntry",

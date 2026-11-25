@@ -37,7 +37,7 @@ pub const VST2_NATIVE_GUARD_CASES: &[&str] = &[
     "preparation-owned-success",
     "preparation-shadowed",
     "preparation-invalid-final",
-    "preparation-state-refused",
+    "preparation-state-positive-ack",
     "preparation-state-fault",
     "preparation-param-fault",
     "preparation-activate-fault",
@@ -369,6 +369,18 @@ pub fn audit_owned_vst2_native_case(
     let mut no_later_native_calls = fixture.counts() == before
         && failure.first_fault() == Some(record)
         && repeated_calls_refused;
+    if matches!(case, "close" | "close-deleted") {
+        let mut next_preparation_called = false;
+        let acknowledgement = poll_owned_vst2_retirements_checked().and_then(|_| {
+            next_preparation_called = true;
+            Ok(())
+        });
+        no_later_native_calls &= matches!(
+            acknowledgement,
+            Err(Vst2OwnedError::RetirementIncomplete { resident }) if resident > 0
+        ) && !next_preparation_called
+            && fixture.counts() == before;
+    }
     // SAFETY: The observer returns only the saved pointer value. In particular,
     // deleted-CLOSE callbacks must be rejected without reading that descriptor.
     let saved_address = unsafe { (fixture.saved_address)(0) };
@@ -426,9 +438,17 @@ fn ordinary(fixture: &Fixture) -> Result<Vst2NativeGuardAudit, Vst2OwnedError> {
     fixture.configure(0, 0, 0, 0, 0);
     let instance = fixture.load()?;
     let failure = instance.control.failure();
-    fixture.configure(2, 24, 3, 0, 0);
-    let rejected = control(&instance.control, |native| native.set_state_bytes(&[0; 8]))?;
-    let healthy = !failure.failed() && rejected.is_err();
+    fixture.configure(2, 24, 7, 0, 0);
+    let state: Vec<u8> = [0.25f32, 0.0]
+        .into_iter()
+        .flat_map(f32::to_ne_bytes)
+        .collect();
+    let restored = control(&instance.control, |native| {
+        native.set_state_bytes(&state)?;
+        let captured = native.state_bytes()?;
+        Ok::<_, String>(captured == state && native.get_param_by_name("Gain") == Some(0.25))
+    })?;
+    let healthy = !failure.failed() && restored == Ok(true);
     drop(instance);
     poll_owned_vst2_retirements()?;
     Ok(Vst2NativeGuardAudit {

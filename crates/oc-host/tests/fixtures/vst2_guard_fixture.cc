@@ -161,7 +161,7 @@ intptr_t OC_VST2_CALL dispatcher(OcVst2Effect *effect, int32_t opcode, int32_t i
                 instance->state_loaded=true; update_latency(instance);
                 if (preparation_mode.load() && !instance->active) preparation_status.fetch_or(1);
             }
-            return 0;
+            return configured(Dispatch, 24) && configured_kind.load() == 7 ? 1 : 0;
         case 25: instance->host(effect, 0x4f430004, 0, 0, nullptr, 0); return 1;
         case 26: return 1;
         case 35: return 1;

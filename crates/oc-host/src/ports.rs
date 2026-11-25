@@ -10,6 +10,32 @@
 
 pub use oc_device_schema::PortKind;
 
+/// Copy a stereo source into one plane of a hosted audio bus.
+pub(crate) fn write_stereo_input(
+    input: &[f32],
+    output: &mut [f32],
+    channels: usize,
+    channel: usize,
+) {
+    if channel >= 2 {
+        output.fill(0.0);
+        return;
+    }
+    let frames = (input.len() / 2).min(output.len());
+    let (signal, remainder) = output.split_at_mut(frames);
+    let input = input[..frames * 2].as_chunks::<2>().0;
+    if channels == 1 {
+        for (sample, [left, right]) in signal.iter_mut().zip(input) {
+            *sample = left * 0.5 + right * 0.5;
+        }
+    } else {
+        for (sample, frame) in signal.iter_mut().zip(input) {
+            *sample = frame[channel];
+        }
+    }
+    remainder.fill(0.0);
+}
+
 /// One declared audio port: channel count and default target stereo pair.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AudioPort {
@@ -110,6 +136,18 @@ fn ports_from_iter(channels: impl Iterator<Item = u32>) -> Vec<AudioPort> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stereo_input_planes_preserve_mono_center_and_clear_unfed_frames() {
+        let input = [0.0, 0.5, 0.5, 0.5, -0.75, 0.75];
+        let mut output = [1.0; 4];
+        write_stereo_input(&input, &mut output, 1, 0);
+        assert_eq!(output, [0.25, 0.5, 0.0, 0.0]);
+        write_stereo_input(&input, &mut output, 4, 1);
+        assert_eq!(output, [0.5, 0.5, 0.75, 0.0]);
+        write_stereo_input(&input, &mut output, 4, 2);
+        assert_eq!(output, [0.0; 4]);
+    }
 
     #[test]
     fn stereo_buses_map_one_to_one_and_wide_buses_span_pairs() {

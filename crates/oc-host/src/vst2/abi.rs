@@ -159,6 +159,14 @@ pub mod plugin_op {
     pub const OPEN: i32 = 0;
     /// release the plugin
     pub const CLOSE: i32 = 1;
+    /// Select a program by index in the dispatch value.
+    pub const SET_PROGRAM: i32 = 2;
+    /// Read the selected program index.
+    pub const GET_PROGRAM: i32 = 3;
+    /// Set the selected program's name.
+    pub const SET_PROGRAM_NAME: i32 = 4;
+    /// Read the selected program's name.
+    pub const GET_PROGRAM_NAME: i32 = 5;
     /// short parameter label
     pub const GET_PARAM_LABEL: i32 = 6;
     /// parameter display string

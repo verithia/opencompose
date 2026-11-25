@@ -9,8 +9,8 @@ plugin, and what the free-plugin catalog contains.
 
 | Format | Instruments | Effects | Notes |
 |---|---|---|---|
-| VST3 | yes | yes | In process. Opens the plugin's own editor window. |
-| VST2 | yes | yes | In process. One stereo output and no plugin editor; the preset editor shows a generated parameter panel. See [VST2 plugins](../vst2.md). |
+| VST3 | yes | yes | In process. Opens the plugin's own editor window. Intel-only plugins on Apple Silicon run in the Rosetta worker, without an editor. |
+| VST2 | yes | yes | In process. Instruments can have several stereo outputs. No plugin editor; the preset editor shows a generated parameter panel. Intel-only plugins on Apple Silicon run in the Rosetta worker. See [VST2 plugins](../vst2.md). |
 | CLAP | yes | yes | In process. Opens the plugin's own editor window. |
 | AU (AudioUnit) | yes | yes | macOS only. One stereo output; the preset editor shows a generated parameter panel. See [AudioUnit hosting](../au-hosting.md). |
 | LV2 | yes | yes | In process. One stereo output and no plugin UI; the preset editor shows a generated parameter panel. |
@@ -121,6 +121,20 @@ not counted.
 After you install a plugin, press **Rescan** in the plugin browser or
 **Scan again** on the Folders page.
 
+## Intel plugins on Apple Silicon
+
+On Apple Silicon, a bundled worker running under Rosetta scans Intel-only VST2
+and VST3 plugins and runs them during playback and export. Instruments receive
+the score's MIDI and can have several stereo outputs. VST3 effects take
+parameter automation and an external sidechain when the plugin declares one.
+A saved Intel VST3 instrument or effect is restored from `vst3_state_file` or
+`vst3_state_hex`. Intel-only plugins cannot open their editor windows.
+
+An Intel VST2 instrument with saved state gets 250 ms to load inside its worker
+while playback prepares the other tracks. If playback reaches the instrument
+sooner, the render worker waits for that time to pass before it sends the
+first notes.
+
 ## Naming a plugin in a project
 
 A preset names the plugin format in `source` and the plugin in `plugin`:
@@ -160,9 +174,10 @@ Kontakt renders silence until a multi is loaded.
 In the preset editor, open **Advanced instrument settings**, then
 **Saved plugin settings**. Choose **Embed** to store the plugin state in the
 project, or **Save** to write it to a state file. A file-based preset names
-that file in `vst3_state_file`, and a relative path is resolved from the
-project's folder. A Kontakt `.nkm` multi is a document you open inside the
-plugin; it is not host state.
+that file in `vst3_state_file`; it can also name a `.vstpreset` file saved for
+the same plugin. A relative path is resolved from the project's folder. A
+Kontakt `.nkm` multi is a document you open inside the plugin; it is not host
+state.
 
 Assign the preset to a track and use the MIDI channel set in Kontakt. The saved
 state brings the setup back. Every computer that opens the project needs the

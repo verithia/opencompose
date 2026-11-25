@@ -232,7 +232,7 @@ impl AuthoredParameterOwner for Vst2AuthoredParameterOwner<'_> {
                 source: Box::new(error),
             });
         }
-        if self.instance.host.io_changed.load(Ordering::Acquire)
+        if self.instance.host.has_io_changed()
             || self
                 .instance
                 .host

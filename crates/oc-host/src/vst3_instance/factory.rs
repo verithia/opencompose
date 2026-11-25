@@ -2,6 +2,7 @@
 use super::*;
 
 pub(super) const MAX_FACTORY_CLASSES: i32 = 4096;
+pub(super) const AUDIO_CLASS: &str = "Audio Module Class";
 
 fn healthy(failure: &Vst3Failure) -> Result<(), String> {
     if failure.failed() {
@@ -109,11 +110,50 @@ pub(super) fn classes(
     Ok(result)
 }
 
-pub(super) fn audio_class(classes: Vec<Vst3ClassInfo>) -> Result<Vst3ClassInfo, String> {
-    classes
+pub(super) fn audio_class(
+    classes: Vec<Vst3ClassInfo>,
+    selector: Vst3ClassSelector<'_>,
+) -> Result<Vst3ClassInfo, String> {
+    let name = match selector {
+        Vst3ClassSelector::Uid(uid) => {
+            return audio_class_by_uid(&classes, uid)?
+                .ok_or_else(|| "the requested VST3 audio class is absent from the factory".into());
+        }
+        Vst3ClassSelector::Name(name) => Some(name),
+        Vst3ClassSelector::First => None,
+    };
+    let mut matching = classes
         .into_iter()
-        .find(|class| class.category == "Audio Module Class")
-        .ok_or_else(|| "No Audio Module Class in VST3 bundle".into())
+        .filter(|class| class.category == AUDIO_CLASS)
+        .filter(|class| name.is_none_or(|name| class.name == name));
+    let selected = matching.next().ok_or_else(|| {
+        name.map_or_else(
+            || "No Audio Module Class in VST3 bundle".into(),
+            |name| format!("VST3 bundle does not expose audio class '{name}'"),
+        )
+    })?;
+    if let Some(name) = name
+        && matching.next().is_some()
+    {
+        return Err(format!(
+            "VST3 audio class '{name}' is ambiguous within its bundle"
+        ));
+    }
+    Ok(selected)
+}
+
+pub(super) fn audio_class_by_uid(
+    classes: &[Vst3ClassInfo],
+    uid: [u8; 16],
+) -> Result<Option<Vst3ClassInfo>, String> {
+    let mut matching = classes.iter().filter(|class| {
+        class.category == AUDIO_CLASS && preset_file::class_id_bytes(class.cid) == uid
+    });
+    let selected = matching.next();
+    if matching.next().is_some() {
+        return Err("the VST3 bundle repeats a matching processor class identity".into());
+    }
+    Ok(selected.cloned())
 }
 
 pub(super) fn create<I: Interface>(

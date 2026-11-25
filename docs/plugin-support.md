@@ -91,13 +91,22 @@ A bundle that crashes the helper or fails to load produces a receipt in
 loadable binary by path, mtime and size, so replacing the binary in place
 invalidates it and the next scan of any kind retries the bundle. A bundle whose
 binary has not changed stays quarantined, so opening a project does not pay for
-it again.
+it again. The background inventory scan and on-demand project lookups merge
+receipts under a shared file lock, so publishing one result preserves the
+quarantines recorded by another scan.
+
+Overlapping requests in one OpenCompose process share the helper and its
+result for the same bundle path, format and binary identity. A project lookup
+can use the result as soon as that helper finishes, while the inventory is
+still scanning other bundles. Distinct bundles can use separate slots in the
+same bounded helper pool.
 
 The explicit **Rescan** button, `ocp scan --rescan`, and `plugins_scan` with
-`rescan: true` retry every bundle, including the quarantined ones. Each bundle
-still gets one bounded helper run per rescan, so one that keeps crashing is
+`rescan: true` retry every bundle, including the quarantined ones. Requests
+that overlap an existing scan share its results. Each bundle still gets at
+most one bounded helper run per rescan, so one that keeps crashing is
 quarantined again instead of looping; the rescan logs how many bundles it
-retried and how many still failed. A `timed_out` receipt also stops
+retried and how many still failed, including timeouts. A `timed_out` receipt also stops
 quarantining after 24 hours, and a `HelperMissing` receipt is never written.
 
 The host drains the helper's stdout and stderr while it runs and bounds both
@@ -209,12 +218,11 @@ different count is refused.
 
 ## Limits
 
-- CLAP and VST3 instruments expose their declared stereo output pairs; VST2,
-  LV2 and AudioUnit hosts are single-pair, and an effect that needs a second
-  pair is refused. See [Multi-output routing](multi-output-routing.md),
+- CLAP, VST3 and VST2 instruments expose their declared stereo output pairs.
+  LV2 and AudioUnit instruments use one pair. See [Multi-output routing](multi-output-routing.md),
   [VST 2 hosting](vst2.md) and [AudioUnit hosting](au-hosting.md).
 - VST2 and LV2 have no in-app editor.
-- Scanning is crash-isolated; rendering is not. A plugin that crashes while
-  rendering takes the process down.
+- Scanning and translated playback run in helper processes. A native plugin
+  can still take the host down if it crashes during in-process rendering.
 - Parameter automation is normalised. A plain-value automation curve is not
   guaranteed for an unverified plugin.

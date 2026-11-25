@@ -122,6 +122,46 @@ fn effect_renders_exact_gain_and_offset() {
 }
 
 #[test]
+fn effect_reset_clears_native_history_and_keeps_parameter_bindings() {
+    let bundle = fixture_or_skip!("OpenCompose Gain Fixture");
+    let mut instance = Vst2Instance::load(&bundle, 48_000, 64).expect("load fixture");
+    instance.dispatch(10004, 0, 1, std::ptr::null_mut());
+    let effect: &mut dyn AudioEffect = &mut instance;
+    effect.prepare_block(64).unwrap();
+    let gain = effect.prepare_parameter("Gain").unwrap();
+    assert_eq!(
+        effect.set_prepared_parameter(gain, 0.75),
+        oc_audio::PreparedParameterOutcome::Applied
+    );
+
+    let mut audio = [0.0, 0.0, 0.5, -0.25];
+    effect.process(&mut audio, 48_000);
+    assert_eq!(audio, [0.0; 4]);
+    // The fixture stores the last input frame until it is suspended.
+    let mut history = [0.0; 4];
+    effect.process(&mut history, 48_000);
+    assert_eq!(history, [0.75, -0.375, 0.0, 0.0]);
+    let mut audio = [0.0, 0.0, 0.5, -0.25];
+    effect.process(&mut audio, 48_000);
+    assert_eq!(audio, [0.0; 4]);
+    let mut silence = [0.0; 4];
+    assert_eq!(
+        oc_test_support::operations(|| {
+            effect.reset();
+            effect.process(&mut silence, 48_000);
+        }),
+        0
+    );
+    assert_eq!(silence, [0.0; 4]);
+    assert_eq!(effect.get_param("Gain"), Some(0.75));
+    assert_eq!(
+        effect.set_prepared_parameter(gain, 0.25),
+        oc_audio::PreparedParameterOutcome::Applied
+    );
+    assert!(!effect.processing_failed());
+}
+
+#[test]
 fn chunk_roundtrip_restores_parameters() {
     let bundle = fixture_or_skip!("OpenCompose Gain Fixture");
     let mut instance = Vst2Instance::load(&bundle, 48_000, 512).expect("load fixture");

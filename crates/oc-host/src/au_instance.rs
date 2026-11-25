@@ -30,6 +30,9 @@ mod au_guard;
 pub use au_guard::{AuForeignError, AuForeignFault, AuForeignFaultKind};
 
 mod authored_parameters;
+mod bundle;
+pub(crate) use bundle::collect_au_bundles;
+pub use bundle::resolve_plugin_metadata;
 pub use authored_parameters::{AuAuthoredParameterKey, AuAuthoredParameterOwner};
 
 // Scopes and the one stream format this host negotiates.
@@ -839,13 +842,21 @@ fn status_name(status: i32) -> Option<&'static str> {
     })
 }
 
-fn frame_count(seconds: f64, sample_rate: u32) -> u32 {
+fn frames_from_seconds(seconds: f64, sample_rate: u32) -> f64 {
     if !seconds.is_finite() || seconds <= 0.0 {
-        return 0;
+        return 0.0;
     }
-    (seconds * f64::from(sample_rate))
-        .ceil()
-        .min(f64::from(u32::MAX)) as u32
+    seconds * f64::from(sample_rate)
+}
+
+fn latency_frame_count(seconds: f64, sample_rate: u32) -> u32 {
+    // AU reports seconds while the graph aligns integer sample positions. A
+    // sub-sample remainder or floating-point round-off must not add a frame.
+    frames_from_seconds(seconds, sample_rate).round() as u32
+}
+
+fn tail_frame_count(seconds: f64, sample_rate: u32) -> u32 {
+    frames_from_seconds(seconds, sample_rate).ceil() as u32
 }
 
 fn normalize_key(name: &str) -> String {
@@ -961,6 +972,13 @@ pub fn resolve_component(query: &str) -> Result<AudioComponentDescription, AuErr
     component_by_name(query)
 }
 
+/// Whether this selector supplies exact AudioUnit component codes.
+pub fn is_component_id(selector: &str) -> bool {
+    parse_codes(selector).is_some_and(|description| {
+        category_of(&description) != AuCategory::Unsupported
+    })
+}
+
 fn parse_codes(text: &str) -> Option<AudioComponentDescription> {
     let parts: Vec<&str> = text.split(':').collect();
     if parts.len() != 3 {
@@ -1049,77 +1067,7 @@ fn split_display_name(name: &str) -> (&str, &str) {
 }
 
 fn component_from_bundle(path: &Path, query: &str) -> Result<AudioComponentDescription, AuError> {
-    let info_path = if path.is_dir() {
-        path.join("Contents/Info.plist")
-    } else {
-        path.to_path_buf()
-    };
-    let value = plist::Value::from_file(&info_path).map_err(|error| {
-        AuError::new(
-            AuErrorKind::InvalidDescription,
-            format!(
-                "could not read '{}' for {query:?}: {error}",
-                info_path.display()
-            ),
-        )
-    })?;
-    let entries = value
-        .as_dictionary()
-        .and_then(|dictionary| dictionary.get("AudioComponents"))
-        .and_then(plist::Value::as_array)
-        .ok_or_else(|| {
-            AuError::new(
-                AuErrorKind::InvalidDescription,
-                format!(
-                    "'{}' declares no AudioComponents entry",
-                    info_path.display()
-                ),
-            )
-        })?;
-    let stem = path
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .unwrap_or_default();
-    let mut hostable = Vec::new();
-    for entry in entries {
-        let Some(entry) = entry.as_dictionary() else {
-            continue;
-        };
-        let code = |key: &str| entry.get(key).and_then(plist::Value::as_string);
-        let Some(description) = code("type")
-            .zip(code("subtype"))
-            .zip(code("manufacturer"))
-            .and_then(|((component_type, sub_type), manufacturer)| {
-                AudioComponentDescription::from_codes(component_type, sub_type, manufacturer)
-            })
-        else {
-            continue;
-        };
-        if category_of(&description) == AuCategory::Unsupported {
-            continue;
-        }
-        let name = entry.get("name").and_then(plist::Value::as_string);
-        let named = name.is_some_and(|name| {
-            normalize_key(name) == normalize_key(stem)
-                || normalize_key(name) == normalize_key(query)
-        });
-        hostable.push((named, description));
-    }
-    if hostable.is_empty() {
-        return Err(AuError::new(
-            AuErrorKind::UnsupportedType,
-            format!(
-                "'{}' declares no instrument or effect AudioComponents entry",
-                info_path.display()
-            ),
-        ));
-    }
-    let description = hostable
-        .iter()
-        .find(|(named, _)| *named)
-        .or_else(|| hostable.first())
-        .map(|(_, description)| *description)
-        .ok_or_else(|| AuError::new(AuErrorKind::NotFound, "empty AudioComponents list"))?;
+    let description = bundle::Bundle::read(path)?.preferred(query)?.description;
     if !is_registered(&description)? {
         return Err(AuError::new(
             AuErrorKind::NotFound,
@@ -1254,6 +1202,8 @@ pub struct AuInstance {
     accepts_audio_input: bool,
     midi_protocol: MidiProtocol,
     rendered_frames: u64,
+    /// Native render timestamps remain monotonic across musical seeks/resets.
+    native_rendered_frames: u64,
     pending: Vec<PendingEvent>,
     params: Vec<AuParam>,
     param_scope: u32,
@@ -1386,6 +1336,7 @@ impl AuInstance {
             accepts_audio_input: category == AuCategory::Effect,
             midi_protocol: MidiProtocol::Midi1,
             rendered_frames: 0,
+            native_rendered_frames: 0,
             pending: Vec::with_capacity(MAX_PENDING_EVENTS),
             params: Vec::new(),
             param_scope: SCOPE_GLOBAL,
@@ -1498,11 +1449,11 @@ impl AuInstance {
 
         self.latency = self
             .property_f64(PROP_LATENCY)
-            .map(|seconds| frame_count(seconds, self.sample_rate))
+            .map(|seconds| latency_frame_count(seconds, self.sample_rate))
             .unwrap_or(0);
         self.tail = self
             .property_f64(PROP_TAIL_TIME)
-            .map(|seconds| frame_count(seconds, self.sample_rate))
+            .map(|seconds| tail_frame_count(seconds, self.sample_rate))
             .unwrap_or(0);
         self.tail_reported = self.property_f64(PROP_TAIL_TIME).is_some();
         self.load_params()?;
@@ -2305,6 +2256,42 @@ impl AuInstance {
         });
     }
 
+    /// Queue a MIDI 1 channel message, including its note-off velocity.
+    /// Two-byte messages use zero in the unused data slot.
+    pub fn queue_midi_packet(
+        &mut self,
+        [status, data1, data2]: [u8; 3],
+        sample_offset: u32,
+    ) -> Result<(), oc_audio::MidiInputError> {
+        use oc_audio::MidiInputError;
+        if !self.accepts_midi {
+            return Err(MidiInputError::Unsupported);
+        }
+        if self.foreign.failed() || self.process_error.is_some() {
+            return Err(MidiInputError::ProcessorFailed);
+        }
+        if !(0x80..0xf0).contains(&status)
+            || data1 > 127
+            || data2 > 127
+            || (matches!(status & 0xf0, 0xc0 | 0xd0) && data2 != 0)
+        {
+            return Err(MidiInputError::InvalidMessage);
+        }
+        if sample_offset as usize >= self.max_frames {
+            return Err(MidiInputError::InvalidOffset);
+        }
+        if self.pending.len() >= MAX_PENDING_EVENTS {
+            return Err(MidiInputError::CapacityExceeded);
+        }
+        self.queue_midi(
+            u32::from(status),
+            u32::from(data1),
+            u32::from(data2),
+            sample_offset as i32,
+        );
+        Ok(())
+    }
+
     fn note_process_error(&mut self, error: AuProcessError) {
         if self.process_error.is_none() {
             self.process_error = Some(error);
@@ -2382,6 +2369,10 @@ impl AuInstance {
             return Err(AuProcessError::EventOffsetOutOfRange);
         }
         if self.rendered_frames.checked_add(frames as u64).is_none()
+            || self
+                .native_rendered_frames
+                .checked_add(frames as u64)
+                .is_none()
             || transport
                 .is_some_and(|transport| transport.sample_pos.checked_add(frames as u64).is_none())
         {
@@ -2622,10 +2613,11 @@ impl AuInstance {
         }
         let position = transport.map_or(self.rendered_frames, |transport| transport.sample_pos);
         self.host_clock.publish(transport, position);
+        let native_position = self.native_rendered_frames;
         if with_input {
             self.input
                 .block_start
-                .store(position as i64, Ordering::Relaxed);
+                .store(native_position as i64, Ordering::Relaxed);
         }
         self.flush_pending(frames)?;
 
@@ -2646,7 +2638,10 @@ impl AuInstance {
                 },
             ],
         };
-        let timestamp = AudioTimeStamp::at_sample(position as f64);
+        // AudioUnit render caches key by native timestamp, independently of the
+        // musical transport published through host callbacks. Reusing a timestamp
+        // after reset can return the old block without consuming new MIDI.
+        let timestamp = AudioTimeStamp::at_sample(native_position as f64);
         let mut flags: u32 = 0;
         self.input
             .valid_frames
@@ -2667,6 +2662,7 @@ impl AuInstance {
         self.input.valid_frames.store(0, Ordering::Release);
         let status = result?;
         self.rendered_frames += frames as u64;
+        self.native_rendered_frames += frames as u64;
         if status != 0 {
             return Err(AuProcessError::Native {
                 operation: "AudioUnitRender",
@@ -2822,6 +2818,21 @@ impl Drop for AuInstance {
 }
 
 impl oc_audio::AudioEffect for AuInstance {
+    fn midi_input_capacity(&self) -> usize {
+        if self.accepts_midi {
+            MAX_PENDING_EVENTS
+        } else {
+            0
+        }
+    }
+
+    fn queue_midi_input(
+        &mut self,
+        event: oc_audio::MidiInputEvent,
+    ) -> Result<(), oc_audio::MidiInputError> {
+        self.queue_midi_packet(event.message.bytes()?, event.sample_offset)
+    }
+
     fn prepare_block(&mut self, _max_frames: usize) -> Result<(), oc_audio::BlockPreparationError> {
         // Native frame capacity is fixed at load. The graph splits calls at
         // max_block_frames rather than changing the AU stream format on DSP.
@@ -3277,6 +3288,22 @@ unsafe extern "C" {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn audio_unit_latency_uses_the_nearest_frame_and_the_tail_rounds_up() {
+        let rate = 44_100;
+        assert_eq!(latency_frame_count(0.002, rate), 88);
+        assert_eq!(tail_frame_count(0.002, rate), 89);
+        let exact = 661.0 / f64::from(rate);
+        assert_eq!(latency_frame_count(exact.next_up(), rate), 661);
+        assert_eq!(latency_frame_count(88.75 / f64::from(rate), rate), 89);
+        for invalid in [f64::NEG_INFINITY, f64::INFINITY, f64::NAN, -0.001, 0.0] {
+            assert_eq!(latency_frame_count(invalid, rate), 0);
+            assert_eq!(tail_frame_count(invalid, rate), 0);
+        }
+        assert_eq!(latency_frame_count(f64::MAX, rate), u32::MAX);
+        assert_eq!(tail_frame_count(f64::MAX, rate), u32::MAX);
+    }
 
     struct NativeString(*mut c_void);
     impl NativeString {
@@ -3892,6 +3919,75 @@ mod prepared_state_tests {
     use super::*;
 
     #[test]
+    fn effect_midi_input_is_bounded_and_refusals_preserve_the_queue() {
+        use oc_audio::{AudioEffect, MidiInputError, MidiInputEvent, MidiInputMessage};
+        let mut unit =
+            AuInstance::load("Apple: DLSMusicDevice", 48_000, 128).expect("system DLS unit");
+        let valid = MidiInputEvent {
+            sample_offset: 0,
+            message: MidiInputMessage::NoteOn {
+                channel: 2,
+                key: 60,
+                velocity: 100,
+            },
+        };
+        assert_eq!(unit.midi_input_capacity(), MAX_PENDING_EVENTS);
+        let invalid = MidiInputEvent {
+            sample_offset: 128,
+            ..valid
+        };
+        assert_eq!(
+            unit.queue_midi_input(invalid),
+            Err(MidiInputError::InvalidOffset)
+        );
+        assert!(unit.pending.is_empty());
+        assert_eq!(
+            oc_test_support::operations(|| {
+                for _ in 0..MAX_PENDING_EVENTS {
+                    unit.queue_midi_input(valid).unwrap();
+                }
+                assert_eq!(
+                    unit.queue_midi_input(valid),
+                    Err(MidiInputError::CapacityExceeded)
+                );
+            }),
+            0
+        );
+        assert_eq!(unit.pending.len(), MAX_PENDING_EVENTS);
+        unit.accepts_midi = false;
+        assert_eq!(unit.midi_input_capacity(), 0);
+        assert_eq!(
+            unit.queue_midi_input(valid),
+            Err(MidiInputError::Unsupported)
+        );
+        assert_eq!(unit.pending.len(), MAX_PENDING_EVENTS);
+    }
+
+    #[test]
+    fn au_midi_packets_preserve_release_velocity_and_refuse_invalid_packets() {
+        use oc_audio::MidiInputError;
+        let mut unit =
+            AuInstance::load("Apple: DLSMusicDevice", 48_000, 128).expect("system DLS unit");
+        for bytes in [[0xf0, 0, 0], [0x82, 128, 37], [0xc2, 1, 2]] {
+            assert_eq!(
+                unit.queue_midi_packet(bytes, 9),
+                Err(MidiInputError::InvalidMessage)
+            );
+        }
+        assert!(unit.pending.is_empty());
+        unit.queue_midi_packet([0x82, 60, 37], 9).unwrap();
+        assert!(matches!(
+            unit.pending.as_slice(),
+            [PendingEvent::Midi {
+                status: 0x82,
+                data1: 60,
+                data2: 37,
+                offset: 9,
+            }]
+        ));
+    }
+
+    #[test]
     fn prepared_au_refusal_preserves_queued_event_and_native_timeline() {
         let mut unit =
             AuInstance::load("Apple: DLSMusicDevice", 48_000, 128).expect("system DLS unit");
@@ -3904,16 +4000,36 @@ mod prepared_state_tests {
         );
         assert_eq!(unit.pending.len(), 1);
         assert_eq!(unit.rendered_frames, 0);
+        assert_eq!(unit.native_rendered_frames, 0);
         assert_eq!(unit.host_clock.sample_pos.load(Ordering::Relaxed), 0);
         assert_eq!(output, [9.0; 256]);
         unit.prepare_block_buffers().unwrap();
         unit.process_block_into(&mut output, None).unwrap();
         assert!(unit.pending.is_empty());
         assert_eq!(unit.rendered_frames, 128);
+        assert_eq!(unit.native_rendered_frames, 128);
         let capacity = unit.pending.capacity();
         unit.reset_prepared().unwrap();
         assert_eq!(unit.rendered_frames, 0);
+        assert_eq!(unit.native_rendered_frames, 128);
         assert_eq!(unit.pending.capacity(), capacity);
+    }
+
+    #[test]
+    fn native_render_clock_overflow_preserves_audio_midi_and_musical_time() {
+        let mut unit =
+            AuInstance::load("Apple: DLSMusicDevice", 48_000, 128).expect("system DLS unit");
+        unit.native_rendered_frames = u64::MAX;
+        unit.note_on_channel(0, 60, 0.9, 0);
+        let mut output = [9.0; 256];
+        assert_eq!(
+            unit.process_block_into(&mut output, None),
+            Err(AuProcessError::TimelineOverflow)
+        );
+        assert_eq!(unit.native_rendered_frames, u64::MAX);
+        assert_eq!(unit.rendered_frames, 0);
+        assert_eq!(unit.pending.len(), 1);
+        assert_eq!(output, [9.0; 256]);
     }
 }
 

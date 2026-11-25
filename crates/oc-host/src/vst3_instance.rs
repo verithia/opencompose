@@ -24,10 +24,19 @@ pub use owned_lifecycle::{
     audit_owned_authored_preparation, audit_owned_authored_runtime,
     audit_owned_initial_preparation, audit_owned_midi_ingress,
 };
+mod compatibility;
 mod factory;
+mod legacy_import;
+mod legacy_import_worker;
+pub use legacy_import_worker::{
+    VST2_BANK_WORKER_ARG, import_vst2_bank_isolated, run_vst2_bank_worker,
+};
+mod lifecycle_status;
+use lifecycle_status::processing_notification_succeeded;
 mod note_ids;
 use note_ids::Vst3NoteIds;
 mod note_expression;
+mod preset_file;
 pub use note_expression::{
     Vst3NoteExpressionError, Vst3NoteExpressionValue, Vst3StandardNoteExpression,
 };
@@ -1496,6 +1505,32 @@ struct Vst3LoadContext {
     failure: Arc<Vst3Failure>,
 }
 
+struct Vst3LoadTarget<'a> {
+    bundle: &'a Path,
+    class: Vst3ClassSelector<'a>,
+}
+
+enum Vst3ClassSelector<'a> {
+    First,
+    Name(&'a str),
+    Uid([u8; 16]),
+}
+
+impl<'a> From<Option<&'a str>> for Vst3ClassSelector<'a> {
+    fn from(name: Option<&'a str>) -> Self {
+        name.map_or(Self::First, Self::Name)
+    }
+}
+
+impl<'a> From<&'a Path> for Vst3LoadTarget<'a> {
+    fn from(bundle: &'a Path) -> Self {
+        Self {
+            bundle,
+            class: Vst3ClassSelector::First,
+        }
+    }
+}
+
 struct Vst3LoadingParts {
     component: Vst3ForeignRef<IComponent>,
     processor: Vst3ForeignRef<IAudioProcessor>,
@@ -1606,8 +1641,6 @@ struct Vst3OutputLayout {
     _bus_pointers: Vec<Vec<*mut Sample32>>,
     buses: Vec<AudioBusBuffers>,
     input_channels: [Vec<f32>; 2],
-    /// Stereo scratch the effect path renders into before interleaving.
-    effect_outputs: [Vec<f32>; 2],
     frames: usize,
 }
 
@@ -1642,7 +1675,6 @@ impl Vst3OutputLayout {
             _bus_pointers: bus_pointers,
             buses,
             input_channels: [vec![0.0; frames], vec![0.0; frames]],
-            effect_outputs: [vec![0.0; frames], vec![0.0; frames]],
             frames,
         }
     }
@@ -1653,12 +1685,29 @@ impl Vst3OutputLayout {
         }
     }
 
-    fn clear(&mut self, frames: usize) {
+    fn clear_outputs(&mut self, frames: usize) {
         for channel in &mut self.channels {
             channel[..frames].fill(0.0);
         }
-        for channel in &mut self.input_channels {
-            channel[..frames].fill(0.0);
+        for bus in &mut self.buses {
+            bus.silenceFlags = 0;
+        }
+    }
+
+    fn write_main_to_stereo(&self, buffer: &mut [f32]) {
+        let channels = self.bus_channel_counts.first().copied().unwrap_or(0).max(0) as usize;
+        match &self.channels[..channels] {
+            [] => buffer.fill(0.0),
+            [mono] => {
+                for (frame, sample) in buffer.chunks_exact_mut(2).zip(mono) {
+                    frame.fill(*sample);
+                }
+            }
+            [left, right, ..] => {
+                for ((frame, left), right) in buffer.chunks_exact_mut(2).zip(left).zip(right) {
+                    frame.copy_from_slice(&[*left, *right]);
+                }
+            }
         }
     }
 
@@ -1745,24 +1794,16 @@ impl Vst3InputLayout {
         frames: usize,
     ) {
         for (bus, channels) in self.channels.iter_mut().enumerate() {
+            let channel_count = channels.len();
+            let input = if bus == 0 {
+                Some(buffer)
+            } else {
+                sidechain.filter(|_| sidechain_bus == Some(bus))
+            };
             for (channel, data) in channels.iter_mut().enumerate() {
                 let data = &mut data[..frames];
-                if bus == 0 {
-                    for (frame, sample) in data.iter_mut().enumerate() {
-                        *sample = match channel {
-                            0 => buffer[frame * 2],
-                            1 => buffer[frame * 2 + 1],
-                            _ => 0.0,
-                        };
-                    }
-                } else if sidechain_bus == Some(bus) {
-                    if let Some(sidechain) = sidechain {
-                        for (frame, sample) in data.iter_mut().enumerate() {
-                            *sample = sidechain.get(frame * 2 + channel).copied().unwrap_or(0.0);
-                        }
-                    } else {
-                        data.fill(0.0);
-                    }
+                if let Some(input) = input {
+                    crate::ports::write_stereo_input(input, data, channel_count, channel);
                 } else {
                     data.fill(0.0);
                 }
@@ -2641,7 +2682,11 @@ impl Vst3Instance {
 
     /// Sidechain inputs declared after the main one.
     pub fn sidechain_input_count(&self) -> usize {
-        self.input_bus_channels.iter().skip(1).count()
+        self.input_bus_channels
+            .iter()
+            .skip(1)
+            .filter(|&&channels| channels > 0)
+            .count()
     }
 
     /// Absolute input bus index of the `index`-th sidechain input.
@@ -2697,15 +2742,40 @@ impl Vst3Instance {
     /// main thread, because offline rendering and scanning load plugins on a
     /// worker. A host that owns an editor calls [`Self::load_on_main_thread`].
     pub fn load(vst3_path: &Path, sample_rate: u32, max_frames: u32) -> Result<Self, String> {
+        Self::load_selected(vst3_path.into(), sample_rate, max_frames)
+    }
+
+    /// Load the audio class resolved by the plugin registry.
+    pub fn load_class(
+        bundle: &Path,
+        name: &str,
+        sample_rate: u32,
+        max_frames: u32,
+    ) -> Result<Self, String> {
+        Self::load_selected(
+            Vst3LoadTarget {
+                bundle,
+                class: Vst3ClassSelector::Name(name),
+            },
+            sample_rate,
+            max_frames,
+        )
+    }
+
+    fn load_selected(
+        target: Vst3LoadTarget<'_>,
+        sample_rate: u32,
+        max_frames: u32,
+    ) -> Result<Self, String> {
         let _timer = oc_diag::perf_counter("plugin.vst3.load.ms").map(oc_diag::Timer::start);
         oc_diag::diag_info!(
             "plugin: vst3 load path={} sample_rate={} max_frames={}",
-            vst3_path.display(),
+            target.bundle.display(),
             sample_rate,
             max_frames
         );
         let loaded = Self::load_with_context(
-            vst3_path,
+            target,
             sample_rate,
             max_frames,
             ptr::null_mut(),
@@ -2750,7 +2820,7 @@ impl Vst3Instance {
                 "VST3 plugin instantiation must run on the AppKit main thread"
             );
             Self::load_with_context(
-                vst3_path,
+                vst3_path.into(),
                 sample_rate,
                 max_frames,
                 ptr::null_mut(),
@@ -2781,7 +2851,7 @@ impl Vst3Instance {
         context: *mut vst3::Steinberg::FUnknown,
     ) -> Result<Self, String> {
         Self::load_with_context(
-            vst3_path,
+            vst3_path.into(),
             sample_rate,
             max_frames,
             context,
@@ -2805,7 +2875,7 @@ impl Vst3Instance {
         activate_on_load: bool,
     ) -> Result<Self, String> {
         Self::load_with_context(
-            vst3_path,
+            vst3_path.into(),
             sample_rate,
             max_frames,
             host_context,
@@ -2816,7 +2886,7 @@ impl Vst3Instance {
     }
 
     fn load_with_context(
-        vst3_path: &Path,
+        target: Vst3LoadTarget<'_>,
         sample_rate: u32,
         max_frames: u32,
         host_context: *mut vst3::Steinberg::FUnknown,
@@ -2826,7 +2896,7 @@ impl Vst3Instance {
     ) -> Result<Self, String> {
         let failure = Arc::new(Vst3Failure::default());
         let result = Self::load_with_context_inner(
-            vst3_path,
+            target,
             sample_rate,
             max_frames,
             Vst3LoadContext {
@@ -2855,11 +2925,12 @@ impl Vst3Instance {
     }
 
     fn load_with_context_inner(
-        vst3_path: &Path,
+        target: Vst3LoadTarget<'_>,
         sample_rate: u32,
         max_frames: u32,
         context: Vst3LoadContext,
     ) -> Result<Self, String> {
+        let vst3_path = target.bundle;
         let Vst3LoadContext {
             host_context,
             component_handler,
@@ -2904,7 +2975,8 @@ impl Vst3Instance {
         let factory2 = factory
             .try_query::<IPluginFactory2>()
             .map_err(|error| error.to_string())?;
-        let class_info = factory::audio_class(factory::classes(&factory, factory2.as_ref())?)?;
+        let class_info =
+            factory::audio_class(factory::classes(&factory, factory2.as_ref())?, target.class)?;
         let component = factory::create::<IComponent>(&factory, &class_info.cid)?;
 
         // The guard is declared after component; explicit ordinary-error cleanup
@@ -3704,7 +3776,12 @@ impl Vst3Instance {
         if self.failed() {
             return false;
         }
-        let Some(info) = self.param_info_by_name(name) else {
+        let Some(info) = self.cached_param(name).or_else(|| {
+            self.param_info_by_name(name).map(|param| CachedParam {
+                id: param.id,
+                flags: param.flags,
+            })
+        }) else {
             return false;
         };
         if !parameter_can_automate(info.flags) {
@@ -4046,7 +4123,7 @@ impl Vst3Instance {
         Ok(())
     }
 
-    /// Apply processor and controller state, so the editor reflects the preset.
+    /// Restore an opaque component chunk or a VST3 preset file.
     ///
     /// `IEditController::setComponentState` is optional: a processor-only plugin
     /// answers `kNotImplemented`, which is not a failure. A controller that
@@ -4055,6 +4132,21 @@ impl Vst3Instance {
     /// on a controller that cannot read its own processor's state.
     pub fn set_state_bytes(&mut self, bytes: &[u8]) -> Result<(), String> {
         self.healthy().map_err(|error| error.to_string())?;
+        if preset_file::PresetFile::recognize(bytes) {
+            let preset = preset_file::PresetFile::decode(bytes, self.class_info.cid)
+                .map_err(|error| error.to_string())?;
+            self.apply_component_and_sync_controller(preset.component)?;
+            if let Some(controller) = preset.controller
+                && !self.set_controller_own_state(controller)?
+            {
+                oc_diag::diag_info!("plugin: the controller does not implement its own VST3 state");
+            }
+            return Ok(());
+        }
+        self.apply_component_and_sync_controller(bytes)
+    }
+
+    fn apply_component_and_sync_controller(&mut self, bytes: &[u8]) -> Result<(), String> {
         self.set_component_state_bytes(bytes)?;
         let Some(controller) = self.controller.as_ref() else {
             return Ok(());
@@ -4174,42 +4266,87 @@ impl Vst3Instance {
     /// Feed a blob to `IEditController::setState`, for editor experiments.
     #[cfg(any(test, feature = "test-support"))]
     pub fn feed_controller_own_state(&mut self, bytes: &[u8]) -> Result<(), String> {
+        if self.set_controller_own_state(bytes)? {
+            Ok(())
+        } else {
+            Err("VST3 controller has no separate state".into())
+        }
+    }
+
+    fn set_controller_own_state(&mut self, bytes: &[u8]) -> Result<bool, String> {
         self.healthy().map_err(|error| error.to_string())?;
-        let controller = self.controller.as_ref().ok_or("VST3: no edit controller")?;
+        let Some(controller) = self.controller.as_ref() else {
+            return Ok(false);
+        };
         let stream = Vst3StateStream::new(bytes.to_vec());
         let wrapper = ComWrapper::new(stream);
         let com_stream = wrapper
             .to_com_ptr::<IBStream>()
             .ok_or("VST3: failed to create state stream")?;
         // SAFETY: the healthy retained controller and host stream outlive this control call.
-        if self.control_result(Operation::ControllerSetState, unsafe {
+        let result = self.control_result(Operation::ControllerSetState, unsafe {
             vst3_guard::controller_set_state(controller.as_ptr(), com_stream.as_ptr())
-        })? != kResultOk
-        {
-            return Err("VST3 controller setState failed".to_string());
+        })?;
+        if result == kNotImplemented {
+            return Ok(false);
         }
-        Ok(())
+        if result != kResultOk {
+            return Err(format!("VST3 controller setState failed (0x{result:x})"));
+        }
+        self.invalidate_param_cache();
+        Ok(true)
     }
 
     /// Capture the controller's own state without applying it back.
     #[cfg(any(test, feature = "test-support"))]
     pub fn controller_state_bytes(&self) -> Result<Vec<u8>, String> {
+        self.capture_controller_state()?
+            .ok_or_else(|| "VST3 controller has no separate state".into())
+    }
+
+    /// Capture a preset for persistence or delivery to a separate editor.
+    pub fn portable_state_bytes(&self) -> Result<Vec<u8>, String> {
+        let component = self.state_bytes()?;
+        let Some(controller) = self
+            .capture_controller_state()?
+            .filter(|bytes| !bytes.is_empty())
+        else {
+            return Ok(component);
+        };
+        preset_file::PresetFile {
+            component: &component,
+            controller: Some(&controller),
+        }
+        .encode(self.class_info.cid)
+        .map_err(|error| error.to_string())
+    }
+
+    fn capture_controller_state(&self) -> Result<Option<Vec<u8>>, String> {
         self.healthy().map_err(|error| error.to_string())?;
-        let controller = self.controller.as_ref().ok_or("VST3: no edit controller")?;
+        let Some(controller) = self.controller.as_ref() else {
+            return Ok(None);
+        };
         let stream = Vst3StateStream::new(Vec::new());
         let data = stream.data.clone();
+        let overflowed = stream.overflowed.clone();
         let wrapper = ComWrapper::new(stream);
         let com_stream = wrapper
             .to_com_ptr::<IBStream>()
             .ok_or("VST3: failed to create state stream")?;
         // SAFETY: the healthy retained controller and host stream outlive this control call.
-        if self.control_result(Operation::ControllerGetState, unsafe {
+        let result = self.control_result(Operation::ControllerGetState, unsafe {
             vst3_guard::controller_get_state(controller.as_ptr(), com_stream.as_ptr())
-        })? != kResultOk
-        {
-            return Err("VST3 controller getState failed".to_string());
+        })?;
+        if overflowed.get() {
+            return Err("VST3 controller state exceeds its size limit".into());
         }
-        Ok(data.borrow().clone())
+        if result == kResultOk {
+            Ok(Some(data.take()))
+        } else if result == kNotImplemented {
+            Ok(None)
+        } else {
+            Err(format!("VST3 controller getState failed (0x{result:x})"))
+        }
     }
 
     /// Capture the component state.
@@ -4217,6 +4354,7 @@ impl Vst3Instance {
         self.healthy().map_err(|error| error.to_string())?;
         let stream = Vst3StateStream::new(Vec::new());
         let data = stream.data.clone();
+        let overflowed = stream.overflowed.clone();
         let wrapper = ComWrapper::new(stream);
         let com_stream = wrapper
             .to_com_ptr::<IBStream>()
@@ -4235,8 +4373,10 @@ impl Vst3Instance {
         {
             return Err("VST3 getState failed".to_string());
         }
-
-        Ok(data.borrow().clone())
+        if overflowed.get() {
+            return Err("VST3 component state exceeds its size limit".into());
+        }
+        Ok(data.take())
     }
 
     /// Connect a host-side connection point to the component and controller.
@@ -4284,7 +4424,7 @@ impl Vst3Instance {
         }
         // SAFETY: the healthy retained processor is valid for this control call.
         match unsafe { vst3_guard::processing(self.processor.as_ptr(), on) } {
-            Ok(code) if code == kResultOk => self.processing = on,
+            Ok(code) if processing_notification_succeeded(code) => self.processing = on,
             Ok(_) => {}
             Err(fault) => {
                 self.native_fault(Operation::SetProcessing, fault);
@@ -4292,36 +4432,44 @@ impl Vst3Instance {
         }
     }
 
-    /// Return the component to its initial processing state without reloading
-    /// it. Returns `false` when the component refuses the stop/start cycle, so
-    /// the caller can rebuild the lane instead.
-    pub fn reset(&mut self) -> bool {
-        if self.failed() {
-            return false;
-        }
-        self.pending_events.clear();
-        self.note_ids.clear();
-        if !self.processing {
-            return true;
-        }
-        // SAFETY: this healthy instance retains its processor throughout the stop/start cycle.
-        let stopped = unsafe { vst3_guard::processing(self.processor.as_ptr(), false) };
-        match stopped {
-            Ok(code) if code == kResultOk => {}
-            Ok(_) => return false,
-            Err(fault) => {
-                self.native_fault(Operation::SetProcessing, fault);
+    /// Notify an already-rendering instrument of a transport stop before a seek.
+    /// The stop notification carries no score events and publishes no audio.
+    pub fn reset_at_transport(&mut self, mut transport: PluginTransport) -> bool {
+        if self.active && self.processing && self.process_queues.is_some() && !self.failed() {
+            self.pending_events.clear();
+            transport.playing = false;
+            if self.render_block(1, Some(transport)).is_err() {
                 return false;
             }
         }
-        // SAFETY: the stop succeeded without a native fault and the processor is retained.
-        match unsafe { vst3_guard::processing(self.processor.as_ptr(), true) } {
-            Ok(code) => code == kResultOk,
-            Err(fault) => {
-                self.native_fault(Operation::SetProcessing, fault);
-                false
-            }
+        self.reset()
+    }
+
+    /// Request an in-place processing reset without reloading.
+    /// Returns `false` when the component refuses the stop/start cycle, so
+    /// the caller can rebuild the lane instead.
+    pub fn reset(&mut self) -> bool {
+        self.reset_processing().is_ok()
+    }
+
+    #[expect(clippy::result_large_err, reason = "native failures stay inline")]
+    fn reset_processing(&mut self) -> Result<(), Vst3ProcessError> {
+        self.healthy()?;
+        self.pending_events.clear();
+        self.note_ids.clear();
+        if !self.processing {
+            return Ok(());
         }
+        for processing in [false, true] {
+            // SAFETY: this healthy instance retains its processor for the entire stop/start cycle.
+            let code = unsafe { vst3_guard::processing(self.processor.as_ptr(), processing) }
+                .map_err(|fault| self.native_fault(Operation::SetProcessing, fault))?;
+            if !processing_notification_succeeded(code) {
+                return Err(Vst3ProcessError::refused(Operation::SetProcessing, code));
+            }
+            self.processing = processing;
+        }
+        Ok(())
     }
 
     /// Cycle `setActive` for host-side load experiments.
@@ -4541,6 +4689,12 @@ impl Vst3Instance {
         self._host
             .as_ref()
             .map_or(0, |host| host.edit_sink().parameter_inventory_revision())
+    }
+
+    fn pending_restart(&self) -> i32 {
+        self._host
+            .as_ref()
+            .map_or(0, |host| host.edit_sink().pending_restart())
     }
 
     /// Drop the parameter name lookup after the plugin changed its list.
@@ -4792,7 +4946,10 @@ impl Vst3Instance {
     ) -> Result<(), Vst3ProcessError> {
         self.healthy()?;
         let frames = num_frames as usize;
-        self.output_layout.clear(frames);
+        self.output_layout.clear_outputs(frames);
+        for channel in &mut self.output_layout.input_channels {
+            channel[..frames].fill(0.0);
+        }
         self.drain_editor_edits();
 
         // Build VST3 note events and sample-accurate parameter queues in the
@@ -4875,6 +5032,24 @@ impl Vst3Instance {
     /// Process audio in-place (for effect plugins).
     pub fn process_effect(&mut self, buffer: &mut [f32], _sample_rate: u32) {
         self.process_effect_with_transport(buffer, _sample_rate, None);
+    }
+
+    /// Let an insert publish its initial latency after state and parameter restore.
+    /// Call on the preparation worker, before the mixer builds its delay lines.
+    pub fn prepare_restored_insert(
+        &mut self,
+        transport: Option<&PluginTransport>,
+    ) -> Result<(), String> {
+        self.healthy().map_err(|error| error.to_string())?;
+        let sample_rate = self.sample_rate as u32;
+        let mut stopped = transport
+            .cloned()
+            .unwrap_or_else(|| PluginTransport::new(0, sample_rate, 120.0));
+        stopped.playing = false;
+        // Some processors publish latency only after a nonempty process call.
+        // The stopped frame carries no project input and never reaches the mix.
+        self.process_effect_with_transport(&mut [0.0; 2], sample_rate, Some(stopped));
+        self.reset_processing().map_err(|error| error.to_string())
     }
 
     /// Process an interleaved effect block with transport.
@@ -4993,21 +5168,9 @@ impl Vst3Instance {
         self.input_layout
             .write(buffer, sidechain, sidechain_bus, num_frames);
 
-        let (out_l, out_r) = {
-            let [left, right] = &mut self.output_layout.effect_outputs;
-            left[..num_frames].fill(0.0);
-            right[..num_frames].fill(0.0);
-            (left.as_mut_ptr(), right.as_mut_ptr())
-        };
-        let mut out_ptrs: [*mut Sample32; 2] = [out_l, out_r];
-
-        let mut output_bus = AudioBusBuffers {
-            numChannels: 2,
-            silenceFlags: 0,
-            __field0: AudioBusBuffers__type0 {
-                channelBuffers32: out_ptrs.as_mut_ptr(),
-            },
-        };
+        // Activated auxiliary outputs still need buffers even when the insert
+        // only mixes its main bus back into the track.
+        self.output_layout.clear_outputs(num_frames);
 
         let queues = self
             .process_queues
@@ -5022,9 +5185,9 @@ impl Vst3Instance {
             symbolicSampleSize: SymbolicSampleSizes_::kSample32 as int32,
             numSamples: num_frames as int32,
             numInputs: input_bus_count,
-            numOutputs: 1,
+            numOutputs: self.output_layout.buses.len() as i32,
             inputs: input_buses,
-            outputs: &mut output_bus,
+            outputs: self.output_layout.buses.as_mut_ptr(),
             inputParameterChanges: input_parameter_changes,
             // Null is the documented opt-out: this path has no parameter
             // feedback consumer and no MIDI input to emit changes from.
@@ -5061,11 +5224,7 @@ impl Vst3Instance {
             }
         }
 
-        // Re-interleave output
-        for i in 0..num_frames {
-            buffer[i * 2] = self.output_layout.effect_outputs[0][i];
-            buffer[i * 2 + 1] = self.output_layout.effect_outputs[1][i];
-        }
+        self.output_layout.write_main_to_stereo(buffer);
     }
 
     /// Load the module and its factory, reporting why the loader refused it.
@@ -5096,7 +5255,7 @@ impl Drop for Vst3Instance {
         if self.processing {
             // SAFETY: the healthy processor reference is retained through this call.
             match unsafe { vst3_guard::processing(self.processor.as_ptr(), false) } {
-                Ok(code) if code == kResultOk => self.processing = false,
+                Ok(code) if processing_notification_succeeded(code) => self.processing = false,
                 Ok(code) => {
                     self.failure
                         .slot
@@ -5289,7 +5448,28 @@ impl AudioEffect for Vst3Instance {
     fn get_param(&self, name: &str) -> Option<f64> {
         self.get_param_by_name(name)
     }
-    fn reset(&mut self) {}
+    fn reset(&mut self) {
+        if let Err(error) = self.reset_processing() {
+            self.failure.slot.record(error);
+        }
+    }
+    fn processing_failed(&self) -> bool {
+        self.failed()
+    }
+    fn take_processing_failure(&self) -> oc_audio::ProcessingFailureReport {
+        use oc_audio::ProcessingFailureReport;
+        if self.failure.first_fault().is_none() {
+            return if self.failed() {
+                ProcessingFailureReport::Pending
+            } else {
+                ProcessingFailureReport::Unavailable
+            };
+        }
+        match self.failure.take_report() {
+            Some(error) => ProcessingFailureReport::Ready(error.to_string()),
+            None => ProcessingFailureReport::Reported,
+        }
+    }
     fn latency_samples(&self) -> u32 {
         self.processor_latency_samples()
     }
@@ -5348,13 +5528,21 @@ fn append_output_pairs(
 struct Vst3StateStream {
     data: Rc<RefCell<Vec<u8>>>,
     position: Cell<usize>,
+    overflowed: Rc<Cell<bool>>,
+    write_limit: usize,
 }
 
 impl Vst3StateStream {
     fn new(data: Vec<u8>) -> Self {
+        Self::with_write_limit(data, crate::plugin_state_io::MAX_PLUGIN_STATE_BYTES)
+    }
+
+    fn with_write_limit(data: Vec<u8>, write_limit: usize) -> Self {
         Self {
             data: Rc::new(RefCell::new(data)),
             position: Cell::new(0),
+            overflowed: Rc::new(Cell::new(false)),
+            write_limit,
         }
     }
 }
@@ -5404,7 +5592,11 @@ impl IBStreamTrait for Vst3StateStream {
         let count = num_bytes as usize;
         let position = self.position.get();
         let mut data = self.data.borrow_mut();
-        let Some(end) = position.checked_add(count) else {
+        let Some(end) = position
+            .checked_add(count)
+            .filter(|end| *end <= self.write_limit)
+        else {
+            self.overflowed.set(true);
             return -1;
         };
         if data.len() < end {
@@ -5799,7 +5991,7 @@ fn char16_to_string(chars: &[char16]) -> String {
     String::from_utf16_lossy(&u16s)
 }
 
-fn normalize_param_name(name: &str) -> String {
+pub(crate) fn normalize_param_name(name: &str) -> String {
     name.chars()
         .filter(|c| c.is_ascii_alphanumeric())
         .map(|c| c.to_ascii_lowercase())

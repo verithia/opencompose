@@ -44,6 +44,7 @@ pub enum Vst2OwnedError {
     Authority(UiAuthorityError),
     Busy,
     Retired,
+    RetirementIncomplete { resident: usize },
     Capacity,
     Preparation(oc_audio::BlockPreparationError),
     Runtime(Vst2RuntimeError),
@@ -66,6 +67,10 @@ impl std::fmt::Display for Vst2OwnedError {
             Self::Authority(error) => error.fmt(f),
             Self::Busy => f.write_str("VST2 owned lifecycle or processing is busy"),
             Self::Retired => f.write_str("VST2 source was retired"),
+            Self::RetirementIncomplete { resident } => write!(
+                f,
+                "VST2 retirement left {resident} pending or quarantined native owners; further batch preparation is refused"
+            ),
             Self::Capacity => f.write_str("VST2 owned instance capacity exhausted"),
             Self::Preparation(error) => write!(f, "VST2 block preparation refused: {error:?}"),
             Self::Runtime(error) => error.fmt(f),
@@ -165,6 +170,7 @@ pub struct Vst2OwnedSnapshot {
     pub parameters: Vec<Vst2Param>,
     pub inputs: Vec<AudioPort>,
     pub outputs: Vec<AudioPort>,
+    pub output_pairs: usize,
     pub sample_rate: u32,
     pub max_frames: u32,
     pub latency_samples: u32,
@@ -244,6 +250,24 @@ impl Vst2ProcessorLease {
     pub fn failure(&self) -> &Vst2Failure {
         &self.link.failure
     }
+
+    /// Apply a score parameter at the next block boundary using the prepared inventory.
+    pub fn write_parameter_for_block(&mut self, name: &str, value: f64) -> Result<(), Vst2OwnedError> {
+        if !value.is_finite() {
+            return Err(Vst2OwnedError::Runtime(Vst2RuntimeError::NonFinite));
+        }
+        let _permit = self.link.acquire(PROCESSING)?;
+        // SAFETY: This exclusive permit retains the native owner and setter.
+        let native = unsafe { &mut *self.link.native.as_ptr() };
+        let applied = native.set_param_by_name(name, value);
+        if self.link.failure.failed() {
+            return Err(Vst2OwnedError::Faulted(self.link.failure.clone()));
+        }
+        if !applied {
+            return Err(Vst2OwnedError::Runtime(Vst2RuntimeError::Binding));
+        }
+        Ok(())
+    }
     /// The transport and stereo storage stay borrowed through this prepared call.
     pub fn process_effect_into(
         &mut self,
@@ -281,7 +305,7 @@ impl Vst2ProcessorLease {
         midi::validate_block(&native.pending_midi, output.len() / 2)
             .map_err(Vst2OwnedError::Midi)?;
         let result =
-            native.process_prepared(output, self.link.snapshot.sample_rate, transport, input);
+            native.process_prepared(output, self.link.snapshot.sample_rate, transport, input, None);
         if self.link.failure.failed() {
             output.fill(0.0);
             return Err(Vst2OwnedError::Faulted(self.link.failure.clone()));
@@ -333,6 +357,28 @@ impl Vst2ControlHandle {
     /// Retain this reporting handle before retiring the source.
     pub fn failure(&self) -> Arc<Vst2Failure> {
         self.link.failure.clone()
+    }
+
+    /// Rewind processing while retaining the program and application-main ownership.
+    pub fn reset_processing_on_ui(&self) -> Result<(), Vst2OwnedError> {
+        let link = self.link.clone();
+        dispatch(move || {
+            let _token = application_main::ui_authority()?;
+            let _phase = Phase::enter()?;
+            let _permit = link.acquire(CONTROL)?;
+            // SAFETY: The exclusive UI control permit retains the native owner.
+            let native = unsafe { &mut *link.native.as_ptr() };
+            native.reset();
+            if link.failure.failed() {
+                return Err(Vst2OwnedError::Faulted(link.failure.clone()));
+            }
+            if let Some(error) = native.process_error {
+                return Err(Vst2OwnedError::Process(error));
+            }
+            Ok(())
+        })?
+        .wait()
+        .map_err(Vst2OwnedError::Control)?
     }
     /// Capture state on the UI thread.
     pub fn capture_state_on_ui(&self) -> Result<Vec<u8>, Vst2OwnedError> {
@@ -401,4 +447,10 @@ impl Vst2ControlHandle {
 pub fn poll_owned_vst2_retirements() -> Result<usize, Vst2OwnedError> {
     let token = application_main::ui_retirement_authority()?;
     registry::drain(&token)
+}
+
+/// A preparation barrier requires completed teardown, not merely attempted CLOSE.
+pub fn poll_owned_vst2_retirements_checked() -> Result<usize, Vst2OwnedError> {
+    let token = application_main::ui_retirement_authority()?;
+    registry::drain_checked(&token)
 }

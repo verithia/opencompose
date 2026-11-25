@@ -8,6 +8,10 @@ pub(super) fn watch_if_requested(args: &[String]) -> Result<(), String> {
     if !args.iter().any(|arg| arg == WATCH_STDIN_ARG) {
         return Ok(());
     }
+    watch_parent_stdin()
+}
+
+pub(crate) fn watch_parent_stdin() -> Result<(), String> {
     std::thread::Builder::new()
         .name("scan-parent-lifetime".into())
         .spawn(|| {

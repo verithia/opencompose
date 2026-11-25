@@ -173,7 +173,7 @@ impl Authority {
         // SAFETY: The exclusive lease retains this admitted descriptor. Callers
         // check immutable native failure before any read, including post-call checks.
         let descriptor = unsafe { &*native.effect };
-        if native.host.io_changed.load(Ordering::Acquire)
+        if native.pending_io_change_requires_preparation()
             || descriptor.num_params != self.count
             || descriptor.num_inputs != self.inputs
             || descriptor.num_outputs != self.outputs
@@ -205,6 +205,44 @@ fn checked_value(value: f64) -> Result<f32, Vst2RuntimeError> {
         },
     )
 }
+
+enum BatchAudio<'a> {
+    Stereo { buffer: &'a mut [f32], effect: bool },
+    Outputs(Vst2OutputBlock<'a>),
+}
+
+impl BatchAudio<'_> {
+    fn samples(&self, source: &Vst2Instance) -> Result<usize, Vst2ProcessError> {
+        match self {
+            Self::Stereo { buffer, .. } => Ok(buffer.len()),
+            Self::Outputs(outputs) => outputs.validate(source.output_count()),
+        }
+    }
+
+    fn input(&self) -> Option<&[f32]> {
+        match self {
+            Self::Stereo {
+                buffer,
+                effect: true,
+            } => Some(buffer),
+            _ => None,
+        }
+    }
+
+    fn publish(&mut self, source: &Vst2Instance) {
+        match self {
+            Self::Stereo { buffer, .. } => source.read_output_pair(0, buffer),
+            Self::Outputs(outputs) => outputs.append(source),
+        }
+    }
+
+    fn discard(&mut self) {
+        if let Self::Stereo { buffer, .. } = self {
+            buffer.fill(0.0);
+        }
+    }
+}
+
 impl Vst2ProcessorLease {
     /// Render an instrument block with batched parameter and MIDI events.
     pub fn process_instrument_batch_into(
@@ -213,7 +251,24 @@ impl Vst2ProcessorLease {
         transport: Option<&PluginTransport>,
         batch: Vst2BlockBatch<'_>,
     ) -> Result<(), Vst2OwnedError> {
-        self.process_batch(output, transport, batch, false)
+        self.process_batch(
+            BatchAudio::Stereo {
+                buffer: output,
+                effect: false,
+            },
+            transport,
+            batch,
+        )
+    }
+
+    /// Publish the selected pairs from one native instrument processing call.
+    pub fn process_instrument_outputs_into(
+        &mut self,
+        output: Vst2OutputBlock<'_>,
+        transport: Option<&PluginTransport>,
+        batch: Vst2BlockBatch<'_>,
+    ) -> Result<(), Vst2OwnedError> {
+        self.process_batch(BatchAudio::Outputs(output), transport, batch)
     }
     /// Render an effect block with batched parameter and MIDI events.
     pub fn process_effect_batch_into(
@@ -222,23 +277,30 @@ impl Vst2ProcessorLease {
         transport: Option<&PluginTransport>,
         batch: Vst2BlockBatch<'_>,
     ) -> Result<(), Vst2OwnedError> {
-        self.process_batch(output, transport, batch, true)
+        self.process_batch(
+            BatchAudio::Stereo {
+                buffer: output,
+                effect: true,
+            },
+            transport,
+            batch,
+        )
     }
     fn process_batch(
         &mut self,
-        output: &mut [f32],
+        mut output: BatchAudio<'_>,
         transport: Option<&PluginTransport>,
         batch: Vst2BlockBatch<'_>,
-        input: bool,
     ) -> Result<(), Vst2OwnedError> {
         let _permit = self.link.acquire(PROCESSING)?;
         // SAFETY: The same exclusive gate used by all processing/control owners
         // retains the complete candidate, scratch and immutable runtime capability.
         let native = unsafe { &mut *self.link.native.as_ptr() };
+        let samples = output.samples(native).map_err(Vst2OwnedError::Process)?;
         native
-            .preflight_block(output.len(), self.link.snapshot.sample_rate)
+            .preflight_block(samples, self.link.snapshot.sample_rate)
             .map_err(Vst2OwnedError::Process)?;
-        let frames = output.len() / 2;
+        let frames = samples / 2;
         if let Some(clock) = transport {
             clock
                 .checked_process_block(self.link.snapshot.sample_rate, frames)
@@ -272,7 +334,7 @@ impl Vst2ProcessorLease {
         let total = queued
             .checked_add(batch.midi.len())
             .ok_or(Vst2OwnedError::Midi(Vst2MidiError::Capacity))?;
-        if total != 0 && !native.accepts_midi {
+        if total != 0 && !native.accepts_midi() {
             return Err(Vst2OwnedError::Runtime(Vst2RuntimeError::MidiUnsupported));
         }
         if total > MAX_PENDING_MIDI.min(native.pending_midi.capacity()) {
@@ -341,7 +403,7 @@ impl Vst2ProcessorLease {
                 return Err(Vst2OwnedError::Runtime(error));
             }
             native
-                .process_audio(output, input)
+                .process_audio_channels(frames, output.input(), None)
                 .map_err(Vst2OwnedError::Process)?;
             if self.link.failure.failed() {
                 return Err(Vst2OwnedError::Faulted(self.link.failure.clone()));
@@ -356,11 +418,13 @@ impl Vst2ProcessorLease {
         })();
         native.host.process_level.store(previous, Ordering::Relaxed);
         if self.link.failure.failed() {
-            output.fill(0.0);
+            output.discard();
             return Err(Vst2OwnedError::Faulted(self.link.failure.clone()));
         }
-        if result.is_err() {
-            output.fill(0.0);
+        if result.is_ok() {
+            output.publish(native);
+        } else {
+            output.discard();
         }
         result
     }

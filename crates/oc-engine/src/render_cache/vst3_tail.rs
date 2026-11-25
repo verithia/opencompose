@@ -26,24 +26,34 @@ pub(super) struct Vst3InstrumentRequest {
     invalid_claims: Vec<(String, String)>,
 }
 impl Vst3InstrumentRequest {
-    pub fn execute(self) -> Result<oc_host::vst3_instance::Vst3OwnedInstance, String> {
+    pub fn execute(self) -> Result<super::vst3_group::Vst3GroupInstance, String> {
         let Self {
             plan,
             invalid_claims,
         } = self;
-        plan.execute_on_ui().map_err(|error| {
-            let detail = if let Vst3OwnedError::Authored(apply) = &error {
-                invalid_claims
-                    .iter()
-                    .rev()
-                    .find(|(name, _)| name == &apply.parameter)
-                    .map(|(_, cause)| format!("; external profile input: {cause}"))
-                    .unwrap_or_default()
-            } else {
-                String::new()
-            };
-            format!("{error}{detail}")
-        })
+        #[cfg(target_os = "macos")]
+        if oc_host::vst2_bridge::needs_vst3_translation(&plan.path) {
+            return oc_host::vst2_bridge::BridgedVst3::load(
+                plan,
+                oc_host::vst2_bridge::BridgeMode::Offline,
+            )
+            .map(|plugin| super::vst3_group::Vst3GroupInstance::Translated(Box::new(plugin)));
+        }
+        plan.execute_on_ui()
+            .map(|plugin| super::vst3_group::Vst3GroupInstance::Native(Box::new(plugin)))
+            .map_err(|error| {
+                let detail = if let Vst3OwnedError::Authored(apply) = &error {
+                    invalid_claims
+                        .iter()
+                        .rev()
+                        .find(|(name, _)| name == &apply.parameter)
+                        .map(|(_, cause)| format!("; external profile input: {cause}"))
+                        .unwrap_or_default()
+                } else {
+                    String::new()
+                };
+                format!("{error}{detail}")
+            })
     }
     pub fn merge_shared(&mut self, other: Self) -> Result<(), String> {
         let native = |rows: &[Vst3AuthoredInput]| {
@@ -55,6 +65,7 @@ impl Vst3InstrumentRequest {
         // Profile consumers are per-track. Only actual native initial values
         // and component state must agree across the shared component.
         if self.plan.path != other.plan.path
+            || self.plan.class_name != other.plan.class_name
             || self.plan.component_state != other.plan.component_state
             || native(&self.plan.parameters) != native(&other.plan.parameters)
         {
@@ -93,6 +104,14 @@ pub(super) fn instrument_tail(
     probe: Vst3TailProbe,
 ) -> Result<u32, String> {
     let mut request = instrument_request(definitions, preset, track, sample_rate, resource_root)?;
+    #[cfg(target_os = "macos")]
+    if oc_host::vst2_bridge::needs_vst3_translation(&request.plan.path) {
+        return oc_host::vst2_bridge::BridgedVst3::load(
+            request.plan,
+            oc_host::vst2_bridge::BridgeMode::Offline,
+        )
+        .map(|plugin| plugin.tail_samples());
+    }
     request.plan.budget = Vst3ProcessingBudget {
         events: request.plan.parameters.len().max(1),
         points_per_parameter: 1,
@@ -128,7 +147,7 @@ pub(super) fn instrument_request(
         .plugin
         .as_deref()
         .ok_or_else(|| format!("VST3 preset '{}' has no plugin id", preset.name))?;
-    let (path, identity) = resolve_plugin(plugin_id, &preset.name)?;
+    let (path, identity, class_name) = resolve_plugin(plugin_id, &preset.name)?;
     let assembled = assemble_hosted_parameters(HostedPresetInput {
         definitions,
         preset_name: &preset.name,
@@ -206,6 +225,7 @@ pub(super) fn instrument_request(
     Ok(Vst3InstrumentRequest {
         plan: Vst3OwnedAuthoredPlan {
             path,
+            class_name,
             sample_rate,
             max_frames: 512,
             component_state,
@@ -219,13 +239,16 @@ pub(super) fn instrument_request(
     })
 }
 
-fn resolve_plugin(plugin_id: &str, preset_name: &str) -> Result<(PathBuf, String), String> {
+fn resolve_plugin(
+    plugin_id: &str,
+    preset_name: &str,
+) -> Result<(PathBuf, String, Option<String>), String> {
     #[cfg(any(test, feature = "test-support"))]
     if oc_host::vst3_instance::test_support::fake_plugin_bus_count(plugin_id).is_some() {
-        return Ok((PathBuf::from(plugin_id), plugin_id.to_owned()));
+        return Ok((PathBuf::from(plugin_id), plugin_id.to_owned(), None));
     }
     find_plugin_info(plugin_id, PluginFormat::Vst3)
-        .map(|info| (PathBuf::from(info.path), info.id))
+        .map(|info| (PathBuf::from(info.path), info.id, Some(info.name)))
         .ok_or_else(|| {
             format!("VST3 plugin '{plugin_id}' for preset '{preset_name}' was not found")
         })

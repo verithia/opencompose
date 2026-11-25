@@ -1,4 +1,4 @@
-//! Offline groups use only UI-prepared leases; no legacy acquisition fallback.
+//! Offline groups use UI-prepared leases in the host or translated worker.
 use super::plugin_tracks::{Vst3RenderGroup, plan_output_pairs, pre_roll_plugin};
 use super::*;
 use oc_host::vst3_instance::{
@@ -171,34 +171,11 @@ fn prepare_events(
         }
     }
     if let Some(commands) = performance {
-        use oc_dsl::performance::ChannelCommand;
         for command in commands {
             prepared.sample = command.sample;
-            let message = match command.message {
-                ChannelCommand::NoteOn { note, velocity } => Vst3MidiMessage::NoteOn {
-                    key: note,
-                    velocity,
-                },
-                ChannelCommand::NoteOff { note, velocity } => Vst3MidiMessage::NoteOff {
-                    key: note,
-                    velocity,
-                },
-                ChannelCommand::ControlChange { controller, value } => {
-                    Vst3MidiMessage::ControlChange { controller, value }
-                }
-                ChannelCommand::ProgramChange { program } => {
-                    Vst3MidiMessage::ProgramChange { program }
-                }
-                ChannelCommand::PitchBend { value } => Vst3MidiMessage::PitchBend { value },
-                ChannelCommand::ChannelPressure { pressure } => {
-                    Vst3MidiMessage::ChannelPressure { pressure }
-                }
-                ChannelCommand::PolyPressure { note, pressure } => Vst3MidiMessage::PolyPressure {
-                    key: note,
-                    pressure,
-                },
-            };
-            prepared.midi(command.channel, message);
+            prepared.push(Message::Midi(super::event_sink::vst3_performance_event(
+                command, 0,
+            )));
             if let Some(error) = prepared.error.take() {
                 return Err(error);
             }
@@ -225,8 +202,60 @@ pub(super) struct Vst3GroupRenderOptions<'a> {
     pub pre_roll_seconds: f64,
     pub cancel: Option<&'a crate::render_cancel::CancelToken>,
 }
+
+pub(super) enum Vst3GroupInstance {
+    Native(Box<Vst3OwnedInstance>),
+    #[cfg(target_os = "macos")]
+    Translated(Box<oc_host::vst2_bridge::BridgedVst3>),
+}
+
+impl Vst3GroupInstance {
+    pub fn output_ports(&self) -> Vec<AudioPort> {
+        match self {
+            Self::Native(plugin) => plugin.snapshot.outputs.clone(),
+            #[cfg(target_os = "macos")]
+            Self::Translated(plugin) => plugin.output_ports(),
+        }
+    }
+
+    pub fn latency_samples(&self) -> u32 {
+        match self {
+            Self::Native(plugin) => plugin.snapshot.latency_samples,
+            #[cfg(target_os = "macos")]
+            Self::Translated(plugin) => plugin.latency_samples(),
+        }
+    }
+
+    fn bind_names(&mut self, names: Vec<String>) -> Result<Vec<u32>, String> {
+        match self {
+            Self::Native(plugin) => plugin
+                .control
+                .normalized_bindings_plan(names)
+                .execute_on_ui()
+                .map_err(|error| format!("VST3 runtime parameter binding: {error}")),
+            #[cfg(target_os = "macos")]
+            Self::Translated(plugin) => plugin.bind_names(names),
+        }
+    }
+
+    fn process(
+        &mut self,
+        block: Vst3OwnedInstrumentBlock<'_>,
+        events: &[Vst3OrderedEvent],
+    ) -> Result<(), String> {
+        match self {
+            Self::Native(plugin) => plugin
+                .processor
+                .process_outputs_with_ordered_events_into(block, events)
+                .map_err(|error| format!("VST3 owned instrument processing: {error:?}")),
+            #[cfg(target_os = "macos")]
+            Self::Translated(plugin) => plugin.process(block, events),
+        }
+    }
+}
+
 pub(super) fn render_tracks_via_vst3(
-    instance: &mut Vst3OwnedInstance,
+    instance: &mut Vst3GroupInstance,
     group: &Vst3RenderGroup<'_>,
     options: Vst3GroupRenderOptions<'_>,
 ) -> Result<(Vec<Vec<f32>>, AuxOutputBuffers), String> {
@@ -237,21 +266,25 @@ pub(super) fn render_tracks_via_vst3(
         pre_roll_seconds,
         cancel,
     } = options;
-    pre_roll_plugin(pre_roll_seconds);
+    pre_roll_plugin(super::offline_warmup::WarmupOptions {
+        seconds: pre_roll_seconds,
+        cancel,
+    })?;
     let track_indices = group.track_indices;
     let event_groups = group.event_groups;
     let profiles = group.profiles;
     let pairs = group.pairs;
     let aux_pairs = group.aux_pairs;
     let block_size: u32 = 128;
+    let capacity = output_count(&instance.output_ports());
     if let Some(pair) = aux_pairs
         .iter()
         .flat_map(|pairs| pairs.iter())
-        .find(|pair| **pair >= output_count(&instance.snapshot.outputs))
+        .find(|pair| **pair >= capacity)
     {
         return Err(format!(
             "VST3 instrument declares {} stereo outputs; auxiliary output {} was requested",
-            output_count(&instance.snapshot.outputs),
+            capacity,
             pair + 1
         ));
     }
@@ -260,11 +293,7 @@ pub(super) fn render_tracks_via_vst3(
         .map(|_| Vec::with_capacity(total_samples * 2))
         .collect();
     let prepared = prepare_events(event_groups, profiles, performance)?;
-    let ids = instance
-        .control
-        .normalized_bindings_plan(prepared.names)
-        .execute_on_ui()
-        .map_err(|error| format!("VST3 runtime parameter binding: {error}"))?;
+    let ids = instance.bind_names(prepared.names)?;
     let events = prepared.events;
     let mut ordered = Vec::with_capacity(65536);
 
@@ -334,19 +363,16 @@ pub(super) fn render_tracks_via_vst3(
         for output in &mut outputs {
             output.resize(frames as usize * 2, 0.0);
         }
-        instance
-            .processor
-            .process_outputs_with_ordered_events_into(
-                Vst3OwnedInstrumentBlock {
-                    frames,
-                    transport: Some(&block_transport),
-                    parameters: &[],
-                    output_pairs: &requested_pairs,
-                    outputs: &mut outputs,
-                },
-                &ordered,
-            )
-            .map_err(|error| format!("VST3 owned instrument processing: {error:?}"))?;
+        instance.process(
+            Vst3OwnedInstrumentBlock {
+                frames,
+                transport: Some(&block_transport),
+                parameters: &[],
+                output_pairs: &requested_pairs,
+                outputs: &mut outputs,
+            },
+            &ordered,
+        )?;
         for (buffer, &slot) in buffers.iter_mut().zip(&track_slots) {
             buffer.extend_from_slice(&outputs[slot]);
         }

@@ -40,8 +40,8 @@ pub(super) fn audit(fixture: &Fixture, case: &str) -> Result<Vst2NativeGuardAudi
     if let Some((point, opcode, _)) = expected_fault {
         fixture.configure(point, opcode, 1, 0, 0);
     }
-    if case == "preparation-state-refused" {
-        fixture.configure(2, 24, 3, 0, 0);
+    if case == "preparation-state-positive-ack" {
+        fixture.configure(2, 24, 7, 0, 0);
     }
     let state = [0.25f32, 0.0]
         .into_iter()
@@ -81,8 +81,6 @@ pub(super) fn audit(fixture: &Fixture, case: &str) -> Result<Vst2NativeGuardAudi
         matches!(result,Err(Vst2OwnedError::Parameter(error)) if matches!(error.kind,ParameterErrorKind::NonNumeric))
             && fixture.count(3) == 0
             && status == 1
-    } else if case == "preparation-state-refused" {
-        matches!(result, Err(Vst2OwnedError::Native(_))) && fixture.count(3) == 0 && status == 0
     } else {
         let snapshot = result?;
         snapshot.tail_samples == Some(1860)

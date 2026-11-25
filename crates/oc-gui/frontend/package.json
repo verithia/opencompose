@@ -17,7 +17,7 @@
     "test:coverage": "vitest run --coverage",
     "test:watch": "vitest",
     "layout-check": "vitest run --config vitest.layout.config.ts",
-    "tauri": "tauri",
+    "tauri": "node scripts/tauri.mjs",
     "version:check": "node scripts/check-version.mjs",
     "smoke:macos": "bash scripts/smoke-macos.sh"
   },

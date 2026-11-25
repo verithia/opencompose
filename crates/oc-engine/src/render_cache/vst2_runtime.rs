@@ -3,11 +3,31 @@ use super::*;
 use oc_host::vst2::{
     MAX_PENDING_MIDI, MAX_VST2_AUTHORED_NAME_BYTES, MAX_VST2_AUTHORED_PARAMETERS,
     MAX_VST2_AUTHORED_TOTAL_NAME_BYTES, MAX_VST2_RUNTIME_PARAMETER_POINTS, Vst2BlockBatch,
-    Vst2MidiMessage, Vst2OwnedInstance, Vst2ParameterPoint, Vst2RuntimeParameterKey,
+    Vst2MidiMessage, Vst2OutputBlock, Vst2OwnedInstance, Vst2ParameterPoint,
+    Vst2RuntimeParameterKey,
 };
 mod packets;
+pub(crate) use packets::encode as encode_vst2_score;
 mod schedule;
 use schedule::{Cursor, Schedule, ScoreValue};
+
+const BLOCK_FRAMES: usize = 128;
+
+#[cfg(target_os = "macos")]
+pub(crate) fn queue_translated_score(
+    plugin: &mut oc_host::vst2_bridge::BridgedVst2,
+    event: &MidiMessage,
+    offset: u32,
+) -> Result<(), String> {
+    if let MidiMessage::PluginParam { name, value } = event {
+        return plugin.change_parameter(name, *value);
+    }
+    let packets = packets::encode(event)?;
+    for &bytes in &packets.bytes[..packets.count] {
+        plugin.queue_midi(bytes, offset)?;
+    }
+    Ok(())
+}
 
 #[cfg(test)]
 mod tests;
@@ -36,24 +56,136 @@ pub(super) fn compile(
 pub(super) fn render(
     instance: &mut Vst2OwnedInstance,
     schedule: &Schedule,
-    track_count: usize,
+    pairs: &[usize],
     frames: usize,
     transport: PluginTransport,
     cancel: Option<&crate::render_cancel::CancelToken>,
+) -> Result<Vec<Vec<f32>>, String> {
+    let keys = bound_keys(instance, schedule)?;
+    let mut parameters = Vec::new();
+    parameters
+        .try_reserve_exact(schedule.max_parameter_points)
+        .map_err(|error| format!("Could not reserve VST2 parameter batch: {error}"))?;
+    let mut first_block = true;
+    render_blocks(
+        schedule,
+        pairs,
+        frames,
+        transport,
+        cancel,
+        |output, transport, changes, midi| {
+            if std::mem::take(&mut first_block)
+                && midi.iter().any(|event| {
+                    event.status & 0xf0 == oc_host::vst2::abi::midi_status::NOTE_ON
+                        && event.data2 != 0
+                })
+            {
+                // The processor may finish startup on its first callback. Use
+                // a stopped block with no events so the first note reaches an
+                // initialized processor at its original transport position.
+                let mut stopped = transport.clone();
+                stopped.playing = false;
+                instance
+                    .processor
+                    .process_instrument_batch_into(
+                        &mut [0.0; 2 * BLOCK_FRAMES],
+                        Some(&stopped),
+                        Vst2BlockBatch::default(),
+                    )
+                    .map_err(|error| {
+                        format!(
+                            "VST2 source startup: {}",
+                            crate::processing_failure::vst2_owned(&error, cancel)
+                        )
+                    })?;
+                if crate::render_cancel::stopped(cancel) {
+                    return Err(crate::render_cancel::cancelled());
+                }
+            }
+            parameters.clear();
+            parameters.extend(changes.iter().map(|&(slot, value)| Vst2ParameterPoint {
+                key: keys[slot],
+                value,
+            }));
+            instance
+                .processor
+                .process_instrument_outputs_into(
+                    output,
+                    Some(&transport),
+                    Vst2BlockBatch {
+                        parameters: &parameters,
+                        midi,
+                    },
+                )
+                .map_err(|error| {
+                    format!(
+                        "VST2 offline source processing: {}",
+                        crate::processing_failure::vst2_owned(&error, cancel)
+                    )
+                })
+        },
+    )
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub(super) fn render_translated(
+    plugin: &mut oc_host::vst2_bridge::BridgedVst2,
+    schedule: &Schedule,
+    pairs: &[usize],
+    frames: usize,
+    transport: PluginTransport,
+    cancel: Option<&crate::render_cancel::CancelToken>,
+) -> Result<Vec<Vec<f32>>, String> {
+    render_blocks(
+        schedule,
+        pairs,
+        frames,
+        transport,
+        cancel,
+        |output, transport, changes, midi| {
+            for &(slot, value) in changes {
+                plugin.change_parameter(&schedule.names[slot], value)?;
+            }
+            for event in midi {
+                plugin.queue_midi(
+                    [event.status, event.data1, event.data2],
+                    event.offset as u32,
+                )?;
+            }
+            plugin.render_instrument_outputs_into(
+                output.frames,
+                &transport,
+                output.pairs,
+                output.buffers,
+            )
+        },
+    )
+}
+
+fn render_blocks(
+    schedule: &Schedule,
+    pairs: &[usize],
+    frames: usize,
+    transport: PluginTransport,
+    cancel: Option<&crate::render_cancel::CancelToken>,
+    mut process: impl FnMut(
+        Vst2OutputBlock<'_>,
+        PluginTransport,
+        &[(usize, f64)],
+        &[Vst2MidiMessage],
+    ) -> Result<(), String>,
 ) -> Result<Vec<Vec<f32>>, String> {
     let samples = frames
         .checked_mul(2)
         .ok_or("VST2 render output size overflow")?;
     let mut buffers = Vec::new();
-    for _ in 0..track_count {
+    for _ in pairs {
         let mut buffer = Vec::new();
         buffer
             .try_reserve_exact(samples)
             .map_err(|error| format!("Could not reserve VST2 render output: {error}"))?;
-        buffer.resize(samples, 0.0);
         buffers.push(buffer);
     }
-    let keys = bound_keys(instance, schedule)?;
     let mut parameters = Vec::new();
     parameters
         .try_reserve_exact(schedule.max_parameter_points)
@@ -62,7 +194,6 @@ pub(super) fn render(
     midi.try_reserve_exact(MAX_PENDING_MIDI)
         .map_err(|error| format!("Could not reserve VST2 MIDI batch: {error}"))?;
     let mut cursor = Cursor::default();
-    let mut output = [0.0f32; 128 * 2];
     for span in &schedule.blocks {
         if crate::render_cancel::stopped(cancel) {
             return Err(crate::render_cancel::cancelled());
@@ -92,34 +223,20 @@ pub(super) fn render(
                     if parameters.len() == parameters.capacity() {
                         return Err("VST2 prepared parameter batch capacity exceeded".into());
                     }
-                    parameters.push(Vst2ParameterPoint {
-                        key: keys[slot],
-                        value,
-                    });
+                    parameters.push((slot, value));
                 }
             }
         }
-        let block = &mut output[..count * 2];
-        instance
-            .processor
-            .process_instrument_batch_into(
-                block,
-                Some(&block_transport),
-                Vst2BlockBatch {
-                    parameters: &parameters,
-                    midi: &midi,
-                },
-            )
-            .map_err(|error| {
-                format!(
-                    "VST2 offline source processing: {}",
-                    crate::processing_failure::vst2_owned(&error, cancel)
-                )
-            })?;
-        let start = position * 2;
-        for buffer in &mut buffers {
-            buffer[start..start + block.len()].copy_from_slice(block);
-        }
+        process(
+            Vst2OutputBlock {
+                frames: count,
+                pairs,
+                buffers: &mut buffers,
+            },
+            block_transport,
+            &parameters,
+            &midi,
+        )?;
     }
     if !cursor.performance_complete(schedule) {
         return Err("performance events exceeded the render horizon".into());

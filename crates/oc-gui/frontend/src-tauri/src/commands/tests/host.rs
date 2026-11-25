@@ -695,6 +695,7 @@ fn move_phrase_between_tracks_keeps_duration_and_events() {
     let mut project = default_project();
     let mut from = make_track("A");
     from.phrases.push(ast::Phrase {
+        playlist_lane: None,
         name: "melody".to_string(),
         time_range: Some(ast::TimeRange {
             start: ast::BarBeat::new(1, 1, 0),
@@ -724,6 +725,7 @@ fn move_phrase_between_tracks_rejects_an_unknown_track() {
     let mut project = default_project();
     let mut track = make_track("A");
     track.phrases.push(ast::Phrase {
+        playlist_lane: None,
         name: "melody".to_string(),
         time_range: Some(ast::TimeRange {
             start: ast::BarBeat::new(1, 1, 0),
@@ -1451,8 +1453,8 @@ fn vst2_to_vst3_migration_applies_only_when_asked_and_is_undoable() {
     let mut halcyon = preset("Halcyon", "vst2", "vst2:halcyon_2");
     halcyon.params = vec![
         (
-            "vst2_state_hex".to_string(),
-            ast::ParamValue::String("deadbeef".to_string()),
+            "plugin_state_abi".to_string(),
+            ast::ParamValue::String("vst2:old".to_string()),
         ),
         ("gain".to_string(), ast::ParamValue::Number(0.5)),
     ];
@@ -1488,7 +1490,7 @@ fn vst2_to_vst3_migration_applies_only_when_asked_and_is_undoable() {
             migrated
                 .params
                 .iter()
-                .all(|(name, _)| name != "vst2_state_hex")
+                .all(|(name, _)| name != "plugin_state_abi")
         );
         assert!(migrated.params.iter().any(|(name, _)| name == "gain"));
         assert!(inner.undo.can_undo(), "the migration did not enter undo");
@@ -1501,6 +1503,32 @@ fn vst2_to_vst3_migration_applies_only_when_asked_and_is_undoable() {
         project
     };
     assert_eq!(restored, before, "undo did not restore the VST2 preset");
+}
+
+#[test]
+fn vst2_to_vst3_migration_keeps_original_state_on_a_name_match() {
+    let mut halcyon = preset("Halcyon", "vst2", "vst2:halcyon_2");
+    halcyon.params = vec![(
+        "state_file".to_string(),
+        ast::ParamValue::String("source.fxb".to_string()),
+    )];
+    let state = state_with_presets(vec![halcyon]);
+    let vst3 = [vst3_plugin("vst3:halcyon_2", "Halcyon 2")];
+    let mut inner = state.lock_inner();
+    let before = inner.project.clone();
+
+    let (_, report) = migrate_vst2_presets_to_vst3_inner(&mut inner, &[], &vst3, false).unwrap();
+
+    assert!(!report.applied);
+    assert!(report.migrations.is_empty());
+    assert_eq!(report.skipped.len(), 1);
+    assert!(
+        report.skipped[0]
+            .reason
+            .contains("verified state conversion")
+    );
+    assert_eq!(inner.project, before);
+    assert!(!inner.undo.can_undo());
 }
 
 #[test]

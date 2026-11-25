@@ -13,14 +13,19 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use vst3::Steinberg::Vst::{
-    IAttributeList, IComponentHandler, IComponentHandler2, IComponentHandler2Trait,
-    IComponentHandler3, IComponentHandler3Trait, IComponentHandlerTrait, IContextMenu,
-    IEditController, IEditControllerTrait, IHostApplication, IHostApplicationTrait, IMessage,
-    IPlugInterfaceSupport, IPlugInterfaceSupportTrait, ParamID, String128,
+    IAttributeList, IAudioProcessor, IComponent, IComponentHandler, IComponentHandler2,
+    IComponentHandler2Trait, IComponentHandler3, IComponentHandler3Trait, IComponentHandlerTrait,
+    IConnectionPoint, IContextMenu, IEditController, IEditControllerTrait, IHostApplication,
+    IHostApplicationTrait, IKeyswitchController, IMessage, IMidiMapping, INoteExpressionController,
+    IPlugInterfaceSupport, IPlugInterfaceSupportTrait, IProgramListData, IUnitInfo, ParamID,
+    String128,
 };
 use vst3::Steinberg::{
-    FIDString, TUID, char16, kInvalidArgument, kNotImplemented, kResultOk, tresult,
+    FIDString, TUID, char16, kInvalidArgument, kNotImplemented, kResultFalse, kResultOk,
+    kResultTrue, tresult,
 };
+#[cfg(target_os = "macos")]
+use vst3::Steinberg::{IPlugView, IPlugViewContentScaleSupport};
 use vst3::{Class, ComRef, ComWrapper, Interface};
 
 use crate::param_edit::ParamEditBus;
@@ -122,6 +127,11 @@ impl EditSink {
     /// Observe inventory invalidation without consuming the pending UI events.
     pub fn parameter_inventory_revision(&self) -> u64 {
         self.parameter_inventory_revision.load(Ordering::Acquire)
+    }
+
+    /// Inspect outstanding restart requests without draining the owner queue.
+    pub(crate) fn pending_restart(&self) -> i32 {
+        self.restart.load(Ordering::Acquire)
     }
 
     /// Take the restart flags accumulated since the last call.
@@ -342,8 +352,29 @@ impl IComponentHandler3Trait for Vst3Host {
 }
 
 impl IPlugInterfaceSupportTrait for Vst3Host {
-    unsafe fn isPlugInterfaceSupported(&self, _iid: *const TUID) -> tresult {
-        kResultOk
+    unsafe fn isPlugInterfaceSupported(&self, iid: *const TUID) -> tresult {
+        // SAFETY: a nonnull argument to this SDK callback points to one readable TUID.
+        let Some(iid) = (unsafe { iid.cast::<[u8; 16]>().as_ref() }) else {
+            return kInvalidArgument;
+        };
+        // Components can choose different protocol paths based on this reply.
+        // Advertise the plugin-side interfaces the host actually uses.
+        let supported = [
+            &IComponent::IID,
+            &IAudioProcessor::IID,
+            &IEditController::IID,
+            &IConnectionPoint::IID,
+            &IMidiMapping::IID,
+            &INoteExpressionController::IID,
+            &IKeyswitchController::IID,
+            &IUnitInfo::IID,
+            &IProgramListData::IID,
+        ]
+        .contains(&iid);
+        #[cfg(target_os = "macos")]
+        let supported =
+            supported || [&IPlugView::IID, &IPlugViewContentScaleSupport::IID].contains(&iid);
+        if supported { kResultTrue } else { kResultFalse }
     }
 }
 
@@ -363,6 +394,28 @@ mod tests {
     use vst3::ComPtr;
 
     #[test]
+    fn vst3_host_reports_implemented_plugin_interfaces() {
+        use vst3::Steinberg::Vst::IEditController2;
+
+        let host = Vst3Host::new();
+        let support = host.to_com_ptr::<IPlugInterfaceSupport>().unwrap();
+        let query = |iid: &[u8; 16]| {
+            // SAFETY: the host callback and the entire IID are live for the call.
+            unsafe { support.isPlugInterfaceSupported(iid.as_ptr().cast()) }
+        };
+        assert_eq!(query(&IAudioProcessor::IID), kResultTrue);
+        assert_eq!(query(&IMidiMapping::IID), kResultTrue);
+        assert_eq!(query(&INoteExpressionController::IID), kResultTrue);
+        assert_eq!(query(&IEditController2::IID), kResultFalse);
+        assert_eq!(query(&[0xff; 16]), kResultFalse);
+        // SAFETY: exercising the callback's explicit null-argument refusal.
+        assert_eq!(
+            unsafe { support.isPlugInterfaceSupported(std::ptr::null()) },
+            kInvalidArgument
+        );
+    }
+
+    #[test]
     fn parameter_inventory_revision_is_independent_of_restart_event_consumption() {
         use vst3::Steinberg::Vst::RestartFlags_;
         let sink = EditSink::default();
@@ -374,8 +427,9 @@ mod tests {
         assert_eq!(sink.parameter_inventory_revision(), 0);
         sink.restart(titles);
         assert_eq!(sink.parameter_inventory_revision(), 1);
+        assert_eq!(sink.pending_restart(), titles | values);
         assert_eq!(sink.take_restart(), titles | values);
-        assert_eq!(sink.take_restart(), 0);
+        assert_eq!(sink.pending_restart(), 0);
         assert_eq!(sink.parameter_inventory_revision(), 1);
         sink.restart(reload);
         assert_eq!(sink.parameter_inventory_revision(), 2);

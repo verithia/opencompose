@@ -13,7 +13,10 @@ pub(super) use admission::PreparedAdmission;
 pub enum Vst3ProcessLeaseError {
     Busy,
     Retired,
-    InventoryChanged,
+    InventoryChanged {
+        pending_restart_flags: i32,
+        during_block: bool,
+    },
     InvalidBlock,
     Clock(oc_audio::TransportBlockError),
     /// SDK project/continuous sample clocks and their following cursor are signed.
@@ -266,7 +269,10 @@ impl Vst3ProcessorLease {
         if self.link.snapshot.source != self.link.source
             || instance.parameter_inventory_revision() != self.link.snapshot.inventory_revision
         {
-            return Err(Vst3ProcessLeaseError::InventoryChanged);
+            return Err(Vst3ProcessLeaseError::InventoryChanged {
+                pending_restart_flags: instance.pending_restart(),
+                during_block: false,
+            });
         }
         // SAFETY: the registry retains this scratch Box beside the native owner
         // until all tickets retire. This unique lease holds the exclusive gate.
@@ -345,7 +351,10 @@ impl Vst3ProcessorLease {
             && instance.parameter_inventory_revision() != self.link.snapshot.inventory_revision
         {
             output.clear();
-            return Err(Vst3ProcessLeaseError::InventoryChanged);
+            return Err(Vst3ProcessLeaseError::InventoryChanged {
+                pending_restart_flags: instance.pending_restart(),
+                during_block: true,
+            });
         }
         result
     }

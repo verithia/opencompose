@@ -6,12 +6,14 @@
 
 use crate::PluginFormat;
 use oc_dsl::ast::ParamValue;
+pub use oc_dsl::media::PluginStateEncoding as HostStateEncoding;
+use oc_dsl::media::{PluginStateBackend, normalized_plugin_state_parameter};
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
 use std::hash::Hash;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 /// How an authored value is interpreted.
 pub enum ParameterWriteDomain {
     NativePlain,
@@ -375,13 +377,6 @@ pub enum HostParameterConsumer {
     PluginStateAbi,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-/// How host-owned state is encoded.
-pub enum HostStateEncoding {
-    File,
-    Hex,
-    ImportedVst3Resource,
-}
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// A host-owned parameter that is not a plugin control.
 pub enum HostOwnedParameter {
     State(HostStateEncoding),
@@ -428,26 +423,24 @@ pub fn classify_host_parameter(
     name: &str,
 ) -> Result<Option<HostOwnedParameter>, ParameterErrorKind> {
     use HostOwnedParameter::{PluginArchitecture, PluginStateAbi, PluginVersion, State};
-    use HostStateEncoding::{File, Hex, ImportedVst3Resource};
     let key = host_parameter_key(name);
     let (owner, parameter) = match key.as_str() {
-        "statefile" | "pluginstatefile" => (None, State(File)),
-        "statehex" | "pluginstatehex" => (None, State(Hex)),
-        "clapstatefile" => (Some(PluginFormat::Clap), State(File)),
-        "clapstatehex" => (Some(PluginFormat::Clap), State(Hex)),
-        "vst3statefile" => (Some(PluginFormat::Vst3), State(File)),
-        "vst3statehex" => (Some(PluginFormat::Vst3), State(Hex)),
-        "vst2statefile" => (Some(PluginFormat::Vst2), State(File)),
-        "vst2statehex" => (Some(PluginFormat::Vst2), State(Hex)),
-        "austatefile" => (Some(PluginFormat::Au), State(File)),
-        "austatehex" => (Some(PluginFormat::Au), State(Hex)),
-        "lv2statefile" => (Some(PluginFormat::Lv2), State(File)),
-        "lv2statehex" => (Some(PluginFormat::Lv2), State(Hex)),
-        "serumfile" => (Some(PluginFormat::Vst3), State(ImportedVst3Resource)),
         "pluginversion" => (None, PluginVersion),
         "pluginarchitecture" => (None, PluginArchitecture),
         "pluginstateabi" => (None, PluginStateAbi),
-        _ => return Ok(None),
+        _ => {
+            let Some((backend, encoding)) = normalized_plugin_state_parameter(&key) else {
+                return Ok(None);
+            };
+            let owner = backend.map(|backend| match backend {
+                PluginStateBackend::Au => PluginFormat::Au,
+                PluginStateBackend::Clap => PluginFormat::Clap,
+                PluginStateBackend::Lv2 => PluginFormat::Lv2,
+                PluginStateBackend::Vst2 => PluginFormat::Vst2,
+                PluginStateBackend::Vst3 => PluginFormat::Vst3,
+            });
+            (owner, State(encoding))
+        }
     };
     if let Some(expected) = owner
         && expected != format

@@ -4,7 +4,9 @@
 //! is recorded as a receipt instead of ending the application. Receipts make a
 //! repeat scan cheap and let a quarantined bundle stay skipped.
 
-mod parent_lifetime;
+mod parameter_inventory;
+pub(crate) mod parent_lifetime;
+pub use parameter_inventory::{PluginParameterInventory, inspect_plugin_parameters};
 
 use std::fs;
 use std::io;
@@ -15,13 +17,11 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 /// A timeout quarantines a bundle for a day, not forever: the stall may have
 /// been the machine, not the plugin.
 const TIMEOUT_QUARANTINE_SECS: u64 = 24 * 60 * 60;
-/// A stalled helper is retried once before the bundle is judged.
-const SCAN_ATTEMPTS: usize = 2;
 
 use serde::{Deserialize, Serialize};
 
 use super::resolution::{self, PluginQuery};
-use super::{PluginCategory, PluginFormat, PluginInfo, discover_plugin_files, display_path};
+use super::{PluginFormat, PluginInfo, discover_plugin_files, display_path};
 
 const DEFAULT_TIMEOUT_SECS: u64 = 10;
 /// Schema of every receipt this host writes.
@@ -34,6 +34,31 @@ const MAX_HELPER_STDOUT_BYTES: usize = 8 * 1024 * 1024;
 const MAX_HELPER_STDERR_BYTES: usize = 64 * 1024;
 /// CLI flag that runs the scanner as a helper.
 pub const HELPER_MODE_ARG: &str = "--opencompose-plugin-scan-helper";
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum ScanRuntime {
+    #[default]
+    Native,
+    IntelVst2StereoInsert,
+    IntelVst2Playback,
+    IntelVst3Playback,
+}
+
+impl ScanRuntime {
+    fn for_bundle(path: &Path, format: PluginFormat) -> Self {
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        if format == PluginFormat::Vst2 && crate::vst2_bridge::needs_translation(path) {
+            return Self::IntelVst2Playback;
+        }
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        if format == PluginFormat::Vst3 && crate::vst2_bridge::needs_vst3_translation(path) {
+            return Self::IntelVst3Playback;
+        }
+        let _ = (path, format);
+        Self::Native
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -48,7 +73,7 @@ pub enum ScanStatus {
 
 /// The loadable binary a receipt describes. A bundle rebuilt in place keeps its
 /// path but not this identity, so its old receipt must not quarantine it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct BundleIdentity {
     pub path: String,
     pub modified_nanos: Option<u64>,
@@ -74,6 +99,8 @@ pub struct PluginScanReceipt {
     /// version is reused, because the helper's classification can change.
     #[serde(default)]
     pub host_version: Option<String>,
+    #[serde(default)]
+    runtime: ScanRuntime,
     pub plugins: Vec<PluginInfo>,
 }
 
@@ -191,10 +218,11 @@ fn quarantines(receipt: &PluginScanReceipt, now_unix: u64) -> bool {
         _ => false,
     };
     status_quarantines
+        && receipt.runtime == ScanRuntime::for_bundle(Path::new(&receipt.path), receipt.format)
         && receipt.binary.as_ref() == Some(&bundle_identity(Path::new(&receipt.path)))
 }
 
-fn bundle_identity(bundle: &Path) -> BundleIdentity {
+pub(crate) fn bundle_identity(bundle: &Path) -> BundleIdentity {
     let binary = super::bundle::binary_path(bundle).unwrap_or_else(|| bundle.to_path_buf());
     let metadata = fs::metadata(&binary).ok();
     BundleIdentity {
@@ -245,15 +273,6 @@ fn bundle_match(
     resolution::bundle_identifier_matches(path_ref, query).then_some(BundleMatch::Identifier)
 }
 
-// Bundles often expose an instrument and an effect class; default to the instrument.
-fn preferred_class<'a>(candidates: &[&'a PluginInfo]) -> Option<&'a PluginInfo> {
-    candidates
-        .iter()
-        .copied()
-        .find(|info| info.category == PluginCategory::Instrument)
-        .or_else(|| candidates.first().copied())
-}
-
 // The bundle is identified exactly, but its descriptor may be named differently.
 fn select_plugin(
     receipt: &PluginScanReceipt,
@@ -265,24 +284,19 @@ fn select_plugin(
     if receipt.status != ScanStatus::Passed {
         return None;
     }
-    let candidates: Vec<&PluginInfo> = receipt
+    let candidates = receipt
         .plugins
         .iter()
-        .filter(|info| info.format == format && info.path == path)
-        .collect();
-    let matching: Vec<&PluginInfo> = candidates
-        .iter()
-        .copied()
-        .filter(|info| resolution::plugin_matches_query(info, query))
-        .collect();
-    if let Some(info) = preferred_class(&matching) {
+        .filter(|info| info.format == format && info.path == path);
+    // An exact class ID or name takes precedence over a normalized sibling.
+    if let Some(info) = resolution::resolve_candidates(candidates.clone(), query) {
         return Some(info.clone());
     }
     // A path or bundle id identifies the bundle; pick its default class.
-    if !allow_default_class {
+    if !allow_default_class && !resolution::path_matches_query(Path::new(path), query) {
         return None;
     }
-    preferred_class(&candidates).cloned()
+    resolution::preferred(candidates).cloned()
 }
 
 /// Scan `files` once each and record their receipts.
@@ -392,6 +406,7 @@ fn reusable_receipt<'a>(
     (receipt.status == ScanStatus::Passed
         && receipt.schema == RECEIPT_SCHEMA
         && receipt.host_version.as_deref() == Some(HOST_VERSION)
+        && receipt.runtime == ScanRuntime::for_bundle(Path::new(path), format)
         && receipt.binary.as_ref() == Some(&bundle_identity(Path::new(path))))
     .then_some(receipt)
 }
@@ -418,12 +433,10 @@ struct ProgressTracker<'a> {
 
 impl ProgressTracker<'_> {
     fn publish(&self, change: impl FnOnce(&mut ScanProgress)) {
-        let snapshot = {
-            let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-            change(&mut state);
-            state.clone()
-        };
-        (self.sink)(snapshot);
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        change(&mut state);
+        // Publish in the same order as the worker updates.
+        (self.sink)(state.clone());
     }
 }
 
@@ -470,14 +483,31 @@ fn run_pending(
     done
 }
 
-/// Scan one candidate bundle unless it is quarantined.
-fn scan_candidate(path: &str, actual: PluginFormat) -> Option<PluginScanReceipt> {
-    if !rescan_requested() && is_bundle_quarantined(Path::new(path)) {
+/// Resolve one bundle without repeating discovery for an unchanged binary.
+fn scan_candidate(path: &str, format: PluginFormat) -> Option<PluginScanReceipt> {
+    let force = rescan_requested();
+    let receipts = if force { Vec::new() } else { load_receipts() };
+    scan_candidate_with_receipts(path, format, &receipts, || {
+        let receipt = scan_bundle_isolated(Path::new(path), format, scan_timeout());
+        append_receipt(&receipt);
+        receipt
+    })
+}
+
+fn scan_candidate_with_receipts(
+    path: &str,
+    format: PluginFormat,
+    receipts: &[PluginScanReceipt],
+    scan: impl FnOnce() -> PluginScanReceipt,
+) -> Option<PluginScanReceipt> {
+    if quarantining_receipt(receipts, path, now_unix()).is_some() {
         return None;
     }
-    let receipt = scan_bundle_isolated(Path::new(path), actual, scan_timeout());
-    append_receipt(&receipt);
-    Some(receipt)
+    Some(
+        reusable_receipt(receipts, path, format)
+            .cloned()
+            .unwrap_or_else(scan),
+    )
 }
 
 fn resolve_bundle_from(
@@ -537,13 +567,8 @@ pub(super) fn resolve_plugin_isolated(
     ) {
         return None;
     }
-    if let Some(path) = query.direct_bundle_path(format) {
-        let path = display_path(path);
-        if let Some(receipt) = scan_candidate(&path, format)
-            && let Some(info) = select_plugin(&receipt, query, format, &path, true)
-        {
-            return Some(info);
-        }
+    if query.is_explicit_path() {
+        return resolve_explicit_bundle(query, format, scan_candidate);
     }
     // Matching is against the identifiers a project stores, so discovery's
     // paths become strings here; a non-UTF-8 one keeps its lossy form.
@@ -555,6 +580,34 @@ pub(super) fn resolve_plugin_isolated(
     files.sort_by(|left, right| left.0.cmp(&right.0));
     files.dedup_by(|left, right| left.0 == right.0);
     resolve_bundle_from(query, format, files, scan_candidate)
+        .or_else(|| resolve_scanned_class(&load_receipts(), query, format))
+}
+
+fn resolve_scanned_class(
+    receipts: &[PluginScanReceipt],
+    query: &PluginQuery,
+    format: PluginFormat,
+) -> Option<PluginInfo> {
+    let candidates: Vec<_> = receipts
+        .iter()
+        .filter(|receipt| {
+            receipt.format == format
+                && resolution::resolve_plugin(&receipt.plugins, query, format).is_some()
+                && reusable_receipt(std::slice::from_ref(*receipt), &receipt.path, format).is_some()
+        })
+        .flat_map(|receipt| receipt.plugins.iter().cloned())
+        .collect();
+    resolution::resolve_plugin(&candidates, query, format).cloned()
+}
+
+fn resolve_explicit_bundle(
+    query: &PluginQuery,
+    format: PluginFormat,
+    scan: impl FnOnce(&str, PluginFormat) -> Option<PluginScanReceipt>,
+) -> Option<PluginInfo> {
+    let path = display_path(query.direct_bundle_path(format)?);
+    let receipt = scan(&path, format)?;
+    select_plugin(&receipt, query, format, &path, true)
 }
 
 /// Scan one bundle in a helper process with a timeout.
@@ -563,6 +616,23 @@ pub fn scan_bundle_isolated(
     format: PluginFormat,
     timeout: Duration,
 ) -> PluginScanReceipt {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    {
+        let runtime = ScanRuntime::for_bundle(path, format);
+        if matches!(
+            runtime,
+            ScanRuntime::IntelVst2Playback | ScanRuntime::IntelVst3Playback
+        ) {
+            let mut receipt = new_receipt(path, format);
+            receipt.runtime = runtime;
+            let Some(helper) = crate::vst2_bridge::helper_path() else {
+                receipt.status = ScanStatus::HelperMissing;
+                receipt.error = Some("The OpenCompose Intel plugin worker is missing".into());
+                return receipt;
+            };
+            return scan_bundle_with_helper(receipt, &helper, path, format, timeout);
+        }
+    }
     scan_bundle_isolated_with_resolver(path, format, timeout, helper_path)
 }
 
@@ -596,6 +666,7 @@ fn new_receipt(path: &Path, format: PluginFormat) -> PluginScanReceipt {
         error: None,
         binary: Some(bundle_identity(path)),
         host_version: Some(HOST_VERSION.to_string()),
+        runtime: ScanRuntime::Native,
         plugins: Vec::new(),
     }
 }
@@ -617,81 +688,77 @@ fn scan_bundle_with_helper(
             return receipt;
         }
     };
-    for attempt in 0..SCAN_ATTEMPTS {
-        let outcome = match run_helper(helper, path, format_arg, timeout) {
-            Ok(outcome) => outcome,
-            Err(error) => {
-                receipt.status = if matches!(error.stage, HelperIoStage::Spawn) {
-                    ScanStatus::HelperMissing
+    // A stalled plugin may be waiting on a modal dialog. Quarantine it
+    // immediately so the same scan does not reopen the dialog.
+    let outcome = match run_helper(helper, path, format_arg, timeout) {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            receipt.status = if matches!(error.stage, HelperIoStage::Spawn) {
+                ScanStatus::HelperMissing
+            } else {
+                ScanStatus::Failed
+            };
+            receipt.exit_code = error.exit_code;
+            receipt.error = Some(format!("{}: {error}", helper.display()));
+            receipt.duration_ms = started.elapsed().as_millis();
+            return receipt;
+        }
+    };
+    match outcome {
+        HelperOutcome::Finished {
+            success,
+            code,
+            stdout,
+            stderr,
+            signal,
+        } => {
+            receipt.exit_code = code;
+            if success {
+                match serde_json::from_slice(&stdout) {
+                    Ok(plugins) => {
+                        receipt.plugins = plugins;
+                        receipt.status = ScanStatus::Passed;
+                    }
+                    Err(error) => {
+                        receipt.status = ScanStatus::Failed;
+                        receipt.error = Some(format!(
+                            "invalid scan helper JSON: {error}; stdout_bytes={}; stdout_prefix={:?}",
+                            stdout.len(),
+                            String::from_utf8_lossy(&stdout[..stdout.len().min(256)])
+                        ));
+                    }
+                }
+            } else {
+                receipt.status = if code.is_none() {
+                    ScanStatus::Crashed
                 } else {
                     ScanStatus::Failed
                 };
-                receipt.exit_code = error.exit_code;
-                receipt.error = Some(format!("{}: {error}", helper.display()));
-                receipt.duration_ms = started.elapsed().as_millis();
-                return receipt;
-            }
-        };
-        match outcome {
-            HelperOutcome::Finished {
-                success,
-                code,
-                stdout,
-                stderr,
-                signal,
-            } => {
-                receipt.exit_code = code;
-                if success {
-                    match serde_json::from_slice(&stdout) {
-                        Ok(plugins) => {
-                            receipt.plugins = plugins;
-                            receipt.status = ScanStatus::Passed;
-                        }
-                        Err(error) => {
-                            receipt.status = ScanStatus::Failed;
-                            receipt.error = Some(format!(
-                                "invalid scan helper JSON: {error}; stdout_bytes={}; stdout_prefix={:?}",
-                                stdout.len(),
-                                String::from_utf8_lossy(&stdout[..stdout.len().min(256)])
-                            ));
-                        }
-                    }
-                } else {
-                    receipt.status = if code.is_none() {
-                        ScanStatus::Crashed
-                    } else {
-                        ScanStatus::Failed
-                    };
-                    receipt.error = Some(stderr).filter(|error| !error.is_empty());
-                    if receipt.error.is_none() {
-                        receipt.error = Some(match signal {
-                            Some(signal) => format!("helper terminated by signal {signal}"),
-                            None => "helper exited without diagnostics".into(),
-                        });
-                    }
-                    // A binary that rejects the helper flag is not a helper at
-                    // all (stale or foreign build beside the host executable).
-                    if receipt
-                        .error
-                        .as_deref()
-                        .is_some_and(|error| error.contains("Unrecognized option"))
-                    {
-                        receipt.status = ScanStatus::HelperMissing;
-                    }
+                receipt.error = Some(stderr).filter(|error| !error.is_empty());
+                if receipt.error.is_none() {
+                    receipt.error = Some(match signal {
+                        Some(signal) => format!("helper terminated by signal {signal}"),
+                        None => "helper exited without diagnostics".into(),
+                    });
                 }
-                break;
-            }
-            HelperOutcome::TimedOut { diagnostics } => {
-                receipt.status = ScanStatus::TimedOut;
-                let mut message = format!("scan exceeded {} ms", timeout.as_millis());
-                if let Some(diagnostic) = diagnostic_line(&diagnostics) {
-                    message.push_str(&format!("; stderr: {diagnostic:?}"));
-                }
-                receipt.error = Some(message);
-                if attempt + 1 == SCAN_ATTEMPTS {
-                    break;
+                // A binary that rejects the helper flag is not a helper at
+                // all (stale or foreign build beside the host executable).
+                if receipt
+                    .error
+                    .as_deref()
+                    .is_some_and(|error| error.contains("Unrecognized option"))
+                {
+                    receipt.status = ScanStatus::HelperMissing;
                 }
             }
+        }
+        HelperOutcome::TimedOut { diagnostics } => {
+            receipt.status = ScanStatus::TimedOut;
+            let mut message = format!("scan exceeded {} ms", timeout.as_millis());
+            if let Some(diagnostic) = diagnostic_line(&diagnostics) {
+                message.push_str(&format!("; stderr: {diagnostic:?}"));
+            }
+            receipt.error = Some(message);
         }
     }
     receipt.duration_ms = started.elapsed().as_millis();
@@ -801,6 +868,16 @@ fn run_helper(
     format_arg: &str,
     timeout: Duration,
 ) -> Result<HelperOutcome, HelperIoError> {
+    run_helper_query(helper, path, format_arg, None, timeout)
+}
+
+fn run_helper_query(
+    helper: &Path,
+    path: &Path,
+    format_arg: &str,
+    parameter_class: Option<&str>,
+    timeout: Duration,
+) -> Result<HelperOutcome, HelperIoError> {
     use crate::child_process::{self, CommandSpec, FailureKind, RunOptions, StdioMode};
     let mut command = CommandSpec::new(helper);
     command
@@ -810,6 +887,9 @@ fn run_helper(
         .arg(format_arg)
         .arg("--path")
         .arg(path);
+    if let Some(class) = parameter_class {
+        command.arg("--parameters-for").arg(class);
+    }
     match child_process::run(
         command,
         StdioMode::Capture,
@@ -882,8 +962,31 @@ fn helper_path() -> Option<PathBuf> {
     }
 }
 
-/// Run the scan helper from process arguments.
+/// Run the scan helper from process arguments. The caller must exit the
+/// dedicated one-bundle helper process after this returns.
 pub fn run_helper_cli(args: &[String]) -> Result<(), String> {
+    run_helper_cli_for_runtime(args, ScanRuntime::Native)
+}
+
+/// Inventory the plugin topologies accepted by the Intel render worker.
+#[cfg(target_os = "macos")]
+pub fn run_intel_plugin_helper_cli(args: &[String]) -> Result<(), String> {
+    if !cfg!(target_arch = "x86_64") {
+        return Err("Plugin bridge helper must be Intel".into());
+    }
+    let runtime = match args
+        .windows(2)
+        .find(|pair| pair[0] == "--format")
+        .map(|pair| pair[1].as_str())
+    {
+        Some("vst2") => ScanRuntime::IntelVst2Playback,
+        Some("vst3") => ScanRuntime::IntelVst3Playback,
+        _ => return Err("The Intel worker scans VST2 and VST3 modules".into()),
+    };
+    run_helper_cli_for_runtime(args, runtime)
+}
+
+fn run_helper_cli_for_runtime(args: &[String], runtime: ScanRuntime) -> Result<(), String> {
     parent_lifetime::watch_if_requested(args)?;
     let format = args
         .windows(2)
@@ -896,8 +999,18 @@ pub fn run_helper_cli(args: &[String]) -> Result<(), String> {
             .map(|pair| pair[1].as_str())
             .ok_or("missing --path")?,
     );
+    if let Some(class) = args
+        .windows(2)
+        .find(|pair| pair[0] == "--parameters-for")
+        .map(|pair| pair[1].as_str())
+    {
+        return parameter_inventory::emit(&path, format, class);
+    }
     let mut plugins = match format {
-        "vst2" => super::vst2::scan::scan_bundle(&path)?,
+        "vst2" => super::vst2::scan::scan_in_disposable_process(
+            &path,
+            runtime == ScanRuntime::IntelVst2Playback,
+        )?,
         "clap" => super::clap_host::scan_clap_bundle(&path),
         "vst3" => super::vst3_instance::Vst3Instance::scan_bundle(&path)
             .into_iter()
@@ -1083,6 +1196,7 @@ fn record_receipts(path: &Path, fresh: &[PluginScanReceipt]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::PluginCategory;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
@@ -1324,6 +1438,58 @@ mod tests {
     }
 
     #[test]
+    fn candidate_lookup_reuses_a_receipt_and_scans_a_replaced_binary() {
+        let fixture = QuarantineFixture::new("candidate-reuse");
+        let path = fixture.path();
+        let format = PluginFormat::Vst3;
+        let receipt = passed_receipt(&path, format, Vec::new());
+        let cached =
+            scan_candidate_with_receipts(&path, format, std::slice::from_ref(&receipt), || {
+                panic!("lookup must not scan an unchanged bundle")
+            })
+            .unwrap();
+        assert_eq!(cached.binary, receipt.binary);
+
+        assert!(
+            scan_candidate_with_receipts(&path, format, &[fixture.failed_receipt()], || {
+                panic!("lookup must not scan a quarantined bundle")
+            })
+            .is_none()
+        );
+
+        fixture.write_binary(b"a different size invalidates the old receipt");
+        let fresh =
+            scan_candidate_with_receipts(&path, format, std::slice::from_ref(&receipt), || {
+                passed_receipt(&path, format, Vec::new())
+            })
+            .unwrap();
+        assert_ne!(fresh.binary, receipt.binary);
+
+        let forced =
+            scan_candidate_with_receipts(&path, format, &[], || fixture.failed_receipt()).unwrap();
+        assert_eq!(forced.status, ScanStatus::Failed);
+    }
+
+    #[test]
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn native_failure_does_not_quarantine_the_translated_vst2_runtime() {
+        let fixture = QuarantineFixture::new("translated-vst2");
+        fixture.write_binary(&[0xcf, 0xfa, 0xed, 0xfe, 7, 0, 0, 1]);
+        let mut receipt = fixture.failed_receipt();
+        receipt.format = PluginFormat::Vst2;
+        assert!(!quarantines(&receipt, now_unix()));
+        receipt.runtime = ScanRuntime::IntelVst2Playback;
+        assert!(quarantines(&receipt, now_unix()));
+        receipt.status = ScanStatus::Passed;
+        let path = fixture.path();
+        assert!(
+            reusable_receipt(std::slice::from_ref(&receipt), &path, PluginFormat::Vst2).is_some()
+        );
+        receipt.runtime = ScanRuntime::Native;
+        assert!(reusable_receipt(&[receipt], &path, PluginFormat::Vst2).is_none());
+    }
+
+    #[test]
     fn a_receipt_from_another_host_version_is_not_reused() {
         let root = oc_audio::private_fs::test_root()
             .join(format!("ocp-scan-version-{}", std::process::id()));
@@ -1488,6 +1654,42 @@ mod tests {
         info
     }
 
+    #[test]
+    fn isolated_class_selection_matches_published_inventory_precedence() {
+        let path = "/plugins/Halcyon.vst3";
+        let instrument = descriptor(path, "vst3:halcyon_fx", "Halcyon FX");
+        let mut effect = descriptor(path, "vst3:Halcyon_FX", "Halcyon Fx");
+        effect.category = PluginCategory::Effect;
+        let query = PluginQuery::parse(&effect.id).unwrap();
+        let receipt = passed_receipt(path, PluginFormat::Vst3, vec![instrument, effect.clone()]);
+        let selected = select_plugin(&receipt, &query, PluginFormat::Vst3, path, false).unwrap();
+        assert_eq!(selected.id, effect.id);
+        assert_eq!(selected.category, PluginCategory::Effect);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn passed_receipts_resolve_an_audio_class_without_scanning_unrelated_bundles() {
+        let fixture = QuarantineFixture::new("class-id");
+        fixture.write_binary(b"current version");
+        let path = fixture.path();
+        let mut receipt = new_receipt(&fixture.bundle, PluginFormat::Vst3);
+        receipt.status = ScanStatus::Passed;
+        receipt.plugins = vec![
+            descriptor(&path, "vst3:halcyon", "Halcyon"),
+            descriptor(&path, "vst3:halcyon_fx", "Halcyon FX"),
+        ];
+        let query = PluginQuery::parse("vst3:halcyon_fx").unwrap();
+        assert_eq!(
+            resolve_scanned_class(std::slice::from_ref(&receipt), &query, PluginFormat::Vst3)
+                .unwrap()
+                .name,
+            "Halcyon FX"
+        );
+        fixture.write_binary(b"new version with a different size");
+        assert!(resolve_scanned_class(&[receipt], &query, PluginFormat::Vst3).is_none());
+    }
+
     fn passed_receipt(
         path: &str,
         format: PluginFormat,
@@ -1497,6 +1699,47 @@ mod tests {
         receipt.status = ScanStatus::Passed;
         receipt.plugins = plugins;
         receipt
+    }
+
+    #[test]
+    fn explicit_paths_probe_only_the_requested_compatible_bundle() {
+        let root = oc_test_support::temp_dir("plugin-path", "isolated-resolution");
+        let bundle = root.join("Example.vst3");
+        fs::create_dir_all(&bundle).unwrap();
+        let path = bundle.to_string_lossy();
+        let query = PluginQuery::parse(&path).unwrap();
+        assert!(query.is_explicit_path());
+        assert!(
+            resolve_explicit_bundle(&query, PluginFormat::Vst2, |_, _| {
+                panic!("a differently formatted path must not probe any bundle")
+            })
+            .is_none()
+        );
+        let missing = root.join("Missing.vst3");
+        let missing = PluginQuery::parse(missing.to_str().unwrap()).unwrap();
+        assert!(
+            resolve_explicit_bundle(&missing, PluginFormat::Vst3, |_, _| {
+                panic!("a missing explicit path must not probe other bundles")
+            })
+            .is_none()
+        );
+        for passed in [false, true] {
+            let mut calls = 0;
+            let result = resolve_explicit_bundle(&query, PluginFormat::Vst3, |actual, format| {
+                calls += 1;
+                assert_eq!(Path::new(actual), bundle);
+                assert_eq!(format, PluginFormat::Vst3);
+                passed.then(|| {
+                    passed_receipt(
+                        actual,
+                        format,
+                        vec![descriptor(actual, "example", "Example")],
+                    )
+                })
+            });
+            assert_eq!(calls, 1);
+            assert_eq!(result.is_some(), passed);
+        }
     }
 
     #[test]
@@ -1894,41 +2137,32 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn stalled_helper_is_retried_once_before_quarantining() {
+    fn stalled_helper_is_quarantined_after_one_launch() {
         use std::os::unix::fs::PermissionsExt;
 
-        let directory = std::env::temp_dir().join(format!("ocp-scan-retry-{}", std::process::id()));
-        fs::create_dir_all(&directory).unwrap();
-        let helper = directory.join("flaky-helper");
-        let flag = directory.join("attempted");
+        let directory = oc_test_support::temp_dir("scanner", "single-launch");
+        let helper = directory.join("stalled-helper");
         fs::write(
             &helper,
-            format!(
-                "#!/bin/sh\nif [ ! -f {flag} ]; then touch {flag}; sleep 10; fi\necho '[]'\n",
-                flag = flag.display()
-            ),
+            "#!/bin/sh\nprintf 'launch\\n' >> \"$0.runs\"\nsleep 30\n",
         )
         .unwrap();
         fs::set_permissions(&helper, fs::Permissions::from_mode(0o755)).unwrap();
-        let base = new_receipt(Path::new("/tmp/flaky.clap"), PluginFormat::Clap);
+        let bundle = directory.join("stalled.clap");
         let receipt = scan_bundle_with_helper(
-            base,
+            new_receipt(&bundle, PluginFormat::Clap),
             &helper,
-            Path::new("/tmp/flaky.clap"),
+            &bundle,
             PluginFormat::Clap,
-            // The helper sleeps 10 s on its first attempt. The timeout must leave
-            // enough room for a loaded machine to start the shell and create the
-            // flag before it fires; 1.5 s occasionally fired before the flag
-            // existed, so the retry slept too and the test failed as a flake.
             Duration::from_secs(5),
         );
 
-        assert_eq!(receipt.status, ScanStatus::Passed);
-        assert!(
-            receipt.duration_ms >= 5_000,
-            "the first attempt should have timed out"
+        assert_eq!(receipt.status, ScanStatus::TimedOut);
+        assert!(quarantines(&receipt, now_unix()));
+        assert_eq!(
+            fs::read_to_string(directory.join("stalled-helper.runs")).unwrap(),
+            "launch\n"
         );
-        let _ = fs::remove_dir_all(directory);
     }
 
     #[test]
@@ -2042,11 +2276,12 @@ mod tests {
         assert_eq!(plugins[0].path, lossy, "the receipt keeps the lossy path");
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn the_au_pass_lists_a_component_with_a_path() {
         let (base, bundle) = bundle_root("au", "Legacy.component");
         let mut listed = Vec::new();
-        super::super::collect_au_bundles(&base, &mut listed);
+        crate::au_instance::collect_au_bundles(&base, &mut listed);
         let _ = fs::remove_dir_all(&base);
 
         assert_eq!(listed.len(), 1);
@@ -2056,6 +2291,7 @@ mod tests {
         assert_eq!(Path::new(&listed[0].path), bundle.as_path());
         assert_eq!(listed[0].name, "Legacy");
         assert_eq!(listed[0].format, PluginFormat::Au);
+        assert_eq!(listed[0].category, crate::PluginCategory::Other);
     }
 
     /// Only Linux can name a directory with bytes that are not valid UTF-8;
