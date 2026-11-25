@@ -26,7 +26,8 @@ these rules for human contributors.
    logs, renders, screenshots, corpora, keys and machine-specific paths or
    measurements belong in `./private/` (ignored) or outside the tree.
 3. **English only** in code, comments, docs, commits and logs. Exceptions: UI
-   locale dictionaries and tests of localized output or Unicode handling.
+   locale dictionaries, the Simplified Chinese book in `docs-zh/` with its
+   language link, and tests of localized output or Unicode handling.
 4. **Licensing.** The application is AGPL-3.0-or-later. `oc-dsl`,
    `oc-device-schema`, `oc-lsp`, `oc-test-support` and `editors/vscode-ocp` are
    MIT OR Apache-2.0 and must never depend on an AGPL crate. Never copy code

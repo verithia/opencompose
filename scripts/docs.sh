@@ -4,6 +4,7 @@
 # Layout of the published artifact:
 #
 #   book/            the mdBook built from docs/
+#   book/zh/         the Simplified Chinese mdBook built from docs-zh/
 #   book/api/        rustdoc for every workspace crate (cargo doc --no-deps)
 #   book/plugin-index/  the committed signed plugin index, copied byte for byte
 #
@@ -49,9 +50,26 @@ write_api_index() {
     } > book/api/index.html
 }
 
+# The language switch inserts itself into the menu bar mdBook renders; a
+# template without that element would drop the switch with no error, so both
+# books are checked for it.
+check_theme_hooks() {
+    local page
+    for page in book/index.html book/zh/index.html; do
+        if ! grep -q 'id="mdbook-menu-bar"' "$page" || ! grep -q 'class="right-buttons"' "$page"; then
+            echo "docs: $page has no #mdbook-menu-bar .right-buttons for docs/theme/lang-switch.js" >&2
+            exit 1
+        fi
+    done
+}
+
 build_book() {
     mdbook build
-    echo "docs: book written to book/ (entry point book/index.html)"
+    # mdBook cleans its build directory, so the zh book, which lives inside
+    # book/, is built after the English one.
+    mdbook build docs-zh
+    check_theme_hooks
+    echo "docs: book written to book/ (entry point book/index.html, zh at book/zh/)"
 }
 
 # The app verifies the exact signed bytes, so the index is copied, never
@@ -93,7 +111,8 @@ case "${1:-}" in
         done
         echo "docs: serving the book on http://127.0.0.1:${port}/" >&2
         echo "docs: mdbook rebuilds book/ on every edit and cleans it, so the" >&2
-        echo "      api/ pages are only present after 'scripts/docs.sh build'." >&2
+        echo "      api/ pages and the zh/ book are only present after" >&2
+        echo "      'scripts/docs.sh build'." >&2
         exec mdbook serve --hostname 127.0.0.1 --port "$port"
         ;;
     *)

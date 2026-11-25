@@ -21,11 +21,31 @@ class BookToolGateTests(unittest.TestCase):
         self.identity.parent.mkdir(parents=True)
         shutil.copy2(ROOT / IDENTITIES, self.identity)
         (self.root / "docs/nested").mkdir(parents=True)
-        (self.root / "docs/SUMMARY.md").write_text("# Summary\n- [Home](README.md)\n- [Guide](nested/guide.md)\n")
+        (self.root / "docs/components").mkdir()
+        (self.root / "docs/SUMMARY.md").write_text(
+            "# Summary\n- [Home](README.md)\n- [Guide](nested/guide.md)\n- [Components](components/index.md)\n"
+        )
         (self.root / "docs/README.md").write_text("# Home\n`system_capabilities`\n")
+        (self.root / "docs/components/index.md").write_text("# Components\n")
         self.guide = self.root / "docs/nested/guide.md"
         self.guide.write_text("# Guide\n`tracks_list` and `sample_rate`.\n")
         shutil.copy2(ROOT / "docs/tool-names-allow.txt", self.root / "docs/tool-names-allow.txt")
+
+        self.zh = self.root / "docs-zh/src"
+        (self.zh / "nested").mkdir(parents=True)
+        (self.zh / "SUMMARY.md").write_text(
+            "# Summary\n- [Home](README.md)\n- [Guide](nested/guide.md)\n- [English-only](english-only.md)\n"
+        )
+        (self.zh / "README.md").write_text("# 首页\n")
+        (self.zh / "nested/guide.md").write_text("# 指南\n")
+        self.english_only = self.zh / "english-only.md"
+        self.english_only.write_text(
+            "# 只有英文\n\n- [Home](../index.html)\n- [Components](../components/index.html)\n"
+        )
+        (self.root / "docs/theme").mkdir()
+        (self.root / "docs/theme/lang-switch.js").write_text(
+            'const TRANSLATED = ["index.html", "nested/guide.html"];\n'
+        )
 
     def check_book(self):
         return subprocess.run(
@@ -68,6 +88,45 @@ class BookToolGateTests(unittest.TestCase):
         self.identity.write_text(source.replace(needle, 'SystemCapabilities => (\n    "system_capabilities",'))
         result = self.check_book()
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_english_html_link_accepts_index_md_or_readme_md(self):
+        result = self.check_book()
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_english_html_link_to_missing_index_is_refused(self):
+        self.english_only.write_text("# 只有英文\n\n- [Missing](../missing/index.html)\n")
+        result = self.check_book()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("missing/index.html", result.stderr)
+
+    def assert_zh_refused(self, needle):
+        result = self.check_book()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(needle, result.stderr)
+
+    def test_zh_page_outside_the_summary_is_refused(self):
+        (self.zh / "stray.md").write_text("# 多余\n")
+        self.assert_zh_refused("docs-zh/src/stray.md: not a chapter")
+
+    def test_zh_chapter_without_an_english_source_is_refused(self):
+        (self.zh / "SUMMARY.md").write_text((self.zh / "SUMMARY.md").read_text() + "- [Extra](extra.md)\n")
+        (self.zh / "extra.md").write_text("# 额外\n")
+        self.assert_zh_refused("no English chapter at docs/extra.md")
+
+    def test_zh_html_link_into_the_zh_book_is_refused(self):
+        self.english_only.write_text("# 只有英文\n\n- [Guide](nested/guide.html)\n")
+        self.assert_zh_refused("points into the zh book")
+
+    def test_zh_md_link_out_of_the_zh_book_is_refused(self):
+        self.english_only.write_text("# 只有英文\n\n- [Components](../components/index.md)\n")
+        self.assert_zh_refused("leaves the zh book")
+
+    def test_language_switch_list_must_equal_the_zh_chapters(self):
+        (self.root / "docs/theme/lang-switch.js").write_text('const TRANSLATED = ["index.html", "gone.html"];\n')
+        result = self.check_book()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("TRANSLATED is missing 'nested/guide.html'", result.stderr)
+        self.assertIn("TRANSLATED lists 'gone.html'", result.stderr)
 
 
 if __name__ == "__main__":

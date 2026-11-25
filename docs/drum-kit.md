@@ -1,9 +1,9 @@
 # Drum Kit
 
-`builtin.drumkit` is a pad-per-note drum sampler built on the same sample
-decoder as `builtin.sampler`. It adds a pad grid, velocity layers, deterministic
-round-robin, choke groups, per-pad envelopes, reverse playback, and polyphonic
-voice stealing.
+`builtin.drumkit` is a drum sampler with one pad per MIDI note. It uses the
+same sample decoder as `builtin.sampler` and adds a pad grid, velocity layers,
+deterministic round-robin, choke groups, per-pad envelopes, reverse playback,
+voice stealing, and a synthesised fallback voice for pads without samples.
 
 ```ocp
 @kit basic
@@ -23,178 +23,189 @@ voice stealing.
     snare 2:0 mf
 ```
 
-A bare `instrument:` name denotes a drum-kit instrument; the canonical form is
-`instrument: drums/drumkit`. `@kit` lowers to a `source: builtin`,
-`plugin: "builtin.drumkit"` preset whose `params` carry the pad document, so
-every render path (offline, per-track, streaming, JSON export) resolves kits the
-same way. `fmt` writes kits back as `@kit` blocks.
+`instrument: drumkit` is short for the full form `instrument: drums/drumkit`.
+An `@kit` block becomes a preset with `source: builtin` and
+`plugin: "builtin.drumkit"`, whose `params` hold the pads and layers as
+`pad.<name>.*` and `layer.<name>.<index>.*` entries. Every render path (offline,
+per track, streaming, JSON export) reads kits the same way. `ocp fmt` writes a
+kit back as an `@kit` block.
 
-## Pad model
+## Pads
 
 | Field | Range | Default | Meaning |
 |---|---|---|---|
-| `note` | MIDI number or note name | `36 + declaration index` | MIDI note that triggers the pad |
-| `gain` | dB | `0` | Pad level; linear, no normalisation |
-| `pan` | `-1..1` | `0` | Balance pan: unity per side at centre, attenuates the opposite side |
-| `tune` | semitones | `0` | Playback transposition |
-| `cents` | cents | `0` | Fine transposition |
-| `decay` | seconds | `0` | VCA decay to -60 dB; `0` keeps the sample envelope |
-| `release` | seconds | `0.005` | Gate-mode release after note-off |
-| `reverse` | bool | `false` | Decode the sample back to front once, at construction |
-| `one_shot` | bool | `true` | Ignore note-off; `false` = gate mode |
-| `choke` | `0..127` | `0` | Choke group; `0` = no group |
-| `voice` | `kick`, `snare`, `hat_closed`, `hat_open`, `tom`, `clap`, `rim` | from the pad name, then the note | Fallback synthesised voice used when the pad has no playable `layer`; see [drum-synthesis.md](drum-synthesis.md) |
+| `note` | MIDI number or note name | 36 plus the pad's position in the block | The MIDI note that triggers the pad. |
+| `gain` | dB | `0` | Pad level, linear, with no normalisation. |
+| `pan` | −1 to 1 | `0` | Balance: centre leaves both sides at full level, and a pan turns down the other side. |
+| `tune` | whole semitones | `0` | Transposition. |
+| `cents` | cents | `0` | Fine transposition. |
+| `decay` | seconds | `0` | Fade to −60 dB over this time. `0` keeps the sample's own envelope. |
+| `release` | seconds | `0.005` | Release after note-off, in gate mode. |
+| `reverse` | `true` or `false` | `false` | Play the sample backwards. The sample is reversed once, when it is decoded. |
+| `one_shot` | `true` or `false` | `true` | Ignore note-off. `false` is gate mode. |
+| `choke` | 0 to 127 | `0` | Choke group. `0` means no group. |
+| `voice` | `kick`, `snare`, `hat_closed`, `hat_open`, `tom`, `clap`, `rim` | from the pad name, then the note | The synthesised voice the pad plays when it has no playable layer. See [Synthesised drum voices](drum-synthesis.md). |
 
-A pad with no playable layer falls back to its synthesised voice, so a kit written from the pad table alone is audible. `voice` overrides the name-based guess; write it when the pad name is not a voice (`pad snare_top | note: D2, voice: snare`).
+A pad with no playable layer plays its synthesised voice, so a kit written with
+pads alone is already audible. The voice comes from `voice`, then from the pad
+name, then from the General MIDI drum note. Write `voice` when the pad name is
+not a voice name, for example `pad snare_top | note: D2, voice: snare`. An
+unknown `voice` is reported and ignored. A pad that has no playable layer and
+no voice stays silent and is reported once.
 
-Each pad owns a list of layers:
+Each pad has a list of layers:
 
 | Layer field | Range | Default | Meaning |
 |---|---|---|---|
-| `low`, `high` | MIDI velocity | `1`, `127` | Velocity window |
-| `sample` | path | required | WAV or FLAC, resolved against the project directory |
-| `gain` | dB | `0` | Layer trim |
+| `low`, `high` | MIDI velocity | `1`, `127` | The velocity window. |
+| `sample` | path | required | A WAV or FLAC file, resolved against the project folder. |
+| `gain` | dB | `0` | Layer trim. |
 
-The panel always shows at least **16 pads**; a kit may declare fewer (empty
-slots stay silent and accept a sample drop) or more (the grid grows).
+All samples are decoded when the kit is built. A missing or unreadable file
+produces one warning per path, and its layer stays silent; the project still
+loads and renders. `DrumKit::warnings()` returns the same list.
 
-All samples are decoded at construction. Missing or unreadable files produce one
-`log::warn!` per unique path and that layer is silent; the project still loads
-and renders. `DrumKit::warnings()` exposes the same list for callers.
-
-A hit that no pad answers falls back to its General MIDI note. When the kit does
-not hold that note either, the hit is silent and the render reports it once per
-(track, pad) with the number of hits; see
-[render warnings](render-warnings.md).
+A pattern hit names a pad, for example `kick` or `snare`. When the kit has no
+pad of that name, the hit uses the General MIDI note for the name (a name that
+is not a General MIDI drum uses note 38). The render reports this once per
+track and hit name, with the number of hits, and says whether a pad holds that
+note or the hit is silent. See [Render warnings](render-warnings.md).
 
 ## Velocity layers and round-robin
 
-Selection is deterministic and clock-free:
+The choice of layer is deterministic and does not depend on time:
 
-1. Consider the pad's **playable** layers whose `[low, high]` contains the
-   note-on velocity.
-2. Keep a per-pad trigger counter. The selected layer is
-   `matching[counter % matching.len()]`, and the counter increments once per
-   note-on.
-3. If no layer matches, use the nearest velocity window (smallest distance,
-   first declaration wins).
+1. Take the pad's playable layers whose `low` to `high` window contains the
+   velocity.
+2. Each pad keeps a trigger counter. The chosen layer is
+   `matching[counter % matching.len()]`, and the counter goes up by one.
+3. If no window contains the velocity, use the playable layer with the nearest
+   window. On a tie, the first declared layer wins. The counter does not move.
 
-Consequences:
+As a result:
 
-- Non-overlapping windows are ordinary **velocity layers**: quiet hits select
-  the soft sample, loud hits the hard one.
-- Several layers sharing the same window form a **round-robin bank**: repeated
-  hits at the same velocity cycle through them in declaration order.
-- The selection depends only on trigger order. Two runs of the same pattern
-  produce the same sequence; no clock, random source, or note timing is used.
-- Only playable layers participate, so one missing file does not silence a pad
-  that still has samples.
+- Windows that do not overlap are velocity layers: soft hits play the soft
+  sample and hard hits the hard one.
+- Several layers with the same window form a round-robin set: repeated hits at
+  that velocity cycle through them in the order they are declared.
+- The order depends only on the order of the hits. Two renders of the same
+  pattern play the same sequence; no clock, random source or note timing is
+  involved.
+- Only playable layers count, so one missing file does not silence a pad that
+  still has other samples.
 
-Velocity gain is linear (`velocity / 127`) multiplied by pad and layer gain.
-Layers are not level-matched: two samples recorded at different levels keep
-their difference.
+The level is `velocity / 127` times the pad gain and the layer gain. Layers are
+not level-matched: two samples recorded at different levels keep their
+difference.
 
-## Choke groups and sharing
+## Choke groups
 
-- Voices remember the `choke` group of the pad that started them.
-- A note-on on a pad with `choke != 0` fades **every active primary voice in the
-  same group** over `CHOKE_FADE_SECONDS` (4 ms) before starting the new voice.
-  This is the classic hi-hat behaviour: closed hat cuts open hat; triggering a
-  second kick in group 1 cuts the previous kick.
-- Chokes are cross-pad: the group id is global to the kit, and pad names do not
-  matter.
-- The fading voice moves to a preallocated **fade slot**, so the cut is a
-  linear amplitude ramp to zero rather than a waveform discontinuity. Fade
-  slots are also used by voice stealing.
-- Pads with `choke: 0` never choke and are never choked.
+- Each voice remembers the `choke` group of the pad that started it.
+- A note-on on a pad whose `choke` is not `0` fades out every active voice in
+  the same group over 4 ms (`CHOKE_FADE_SECONDS`) before the new voice starts.
+  A closed hi-hat cuts an open one, and a second hit on a pad in a group cuts
+  the first.
+- Groups are shared by the whole kit; pad names do not matter.
+- A choked voice moves to a fade slot and ramps down linearly to zero, so the
+  cut does not click. Voice stealing uses the same slots.
+- A pad with `choke: 0` never chokes another pad and is never choked.
 
 ## Polyphony and voice stealing
 
-- Hard maximum: **64 primary voices** (`MAX_VOICES`); `max_voices` may lower it
-  per kit (default 32).
-- 32 extra preallocated **fade slots** hold voices that are choking or being
-  stolen. They are never used for new notes.
-- When all primary slots are busy, the voice with the lowest current output
-  (`envelope level × gain`) is stolen; ties go to the oldest voice. The stolen
-  voice moves to a fade slot over `STEAL_FADE_SECONDS` (8 ms) and the freed
-  primary slot starts the new note.
-- If every fade slot is busy, the quietest fade tail is overwritten. That is the
-  only path that can cut a still-fading voice, and it requires more than 32
-  simultaneous chokes/steals.
+- A kit has at most 64 voices (`MAX_VOICES`). `max_voices` sets the number per
+  kit; the default is 32.
+- 32 more fade slots hold voices that are being choked or stolen. New notes
+  never use them.
+- When every voice is busy, the quietest one (envelope level × gain) is
+  stolen, and on a tie the oldest one. It fades out over 8 ms
+  (`STEAL_FADE_SECONDS`) in a fade slot, and the new note takes its place.
+- When every fade slot is busy too, the quietest fading voice is dropped. Only
+  then can a fading voice be cut short, and it takes more than 32 chokes or
+  steals at once.
 
-## DSP law and measured numbers
+## Envelope and level laws
 
-Measured with the `oc-synth` and `oc-engine` tests at 48 kHz:
+The values below come from the `oc-synth` and `oc-engine` tests at 48 kHz.
 
-| Quantity | Law | Measured |
+| Quantity | Law | Test result |
 |---|---|---|
-| Onset ramp | linear, 0.5 ms | 24 frames |
-| Decay | `level *= 0.001^(1 / (decay × sr))` — -60 dB over `decay` | `decay: 0.1s` → frame 30: 0.500, frame 4 790: 0.0005 (**-60.0 dB**) |
-| Gate release | linear over `release` seconds from the level at note-off | 10 ms release → silence after 480 frames |
-| Choke fade | linear over 4 ms | tail **< 0.001** (-60 dBFS) after 192 frames; largest per-sample jump **< 0.01** |
-| Steal fade | linear over 8 ms | largest per-sample jump **< 0.02**; quietest voice (velocity 10) is the one moved to a tail |
-| Silence floor | `level <= 1e-5` ends the voice | -100 dB relative to unity |
-| Velocity | `velocity / 127`, linear | -2 dB pad + 4× layer = 12 dB peak difference at equal velocity |
-| Pitch | `2^((tune + cents/100) / 12)` × asset rate / output rate | one octave doubles the resampling ratio |
-| Render timing | pattern hits on the project clock | 120 BPM: kick at frame 0, snare at frame 24 000 |
+| Attack | linear, 0.5 ms | 24 frames |
+| Decay | `level *= 0.001^(1 / (decay × rate))`, −60 dB over `decay` | `decay: 0.1s`: 0.500 at frame 30, −60.0 dB at frame 4,790 |
+| Gate release | linear over `release` from the level at note-off | a 10 ms release is silent after 480 frames |
+| Choke fade | linear over 4 ms | below 0.001 (−60 dBFS) after 192 frames; largest step between samples below 0.01 |
+| Steal fade | linear over 8 ms | largest step between samples below 0.02; the quietest voice (velocity 10) is the one moved to a fade slot |
+| End of a voice | the voice stops at `level <= 1e-5` | −100 dB relative to full scale |
+| Velocity | `velocity / 127`, linear | layers at 0.1 and 0.4 stay 4× (12 dB) apart at velocities 63 and 64 |
+| Pitch | `2^((tune + cents/100) / 12)` × file rate / output rate | one octave up doubles the playback ratio |
+| Timing | hits on the project clock | at 120 BPM, the kick lands on frame 0 and the snare on frame 24,000 |
 
 Reverse is applied once when the sample is decoded, so the audio callback does
 not branch on it.
 
-## Render path and export
+## Rendering and export
 
-- `render_cache::render_builtin_project` dispatches `builtin.drumkit` to
-  `oc_synth::drumkit::try_render_track`.
-- Streaming playback uses `BlockSource::DrumKit`; the block source decodes once
-  and renders chunks without allocating.
-- `RenderCache` stamps every existing `layer.*.sample` file, so replacing a
-  sample on disk dirties the track and re-renders it.
-- The kit tail reported to the renderer is the longest decoded sample plus the
-  pad release, capped at 30 s.
-- `ocp fmt` round-trips `@kit` blocks; `ocp export --format json` includes the
-  lowered preset with its `pad.*` / `layer.*` params.
+- Offline rendering (`render_cache::render_builtin_project`) sends
+  `builtin.drumkit` tracks to `oc_synth::drumkit::try_render_track_with_warnings`.
+- Streaming playback uses `BlockSource::DrumKit`, which decodes once and
+  renders blocks without allocating. A seek resets every voice and every
+  round-robin counter.
+- `RenderCache` records the state of every `layer.*.sample` file, so replacing
+  a sample on disk marks the track as changed and renders it again.
+- The tail reported to the renderer is the longest sample plus the pad's
+  release, or the synthesised voice's tail for a pad without samples, at most
+  30 seconds.
+- `ocp fmt` keeps `@kit` blocks, and `ocp export --format json` includes the
+  preset with its `pad.*` and `layer.*` params.
 
-## GUI
+## The Drum Kit panel
 
-The **Drum Kit** bottom panel (`K`) shows the grid for the kit of the selected
-track (or the selected kit preset):
+The **Drum Kit** bottom panel (`K`) shows the kit of the selected track. Without
+one, it shows the selected kit preset, or else the first kit in the project.
+The header shows the kit's name, its number of pads and its voice count.
 
-- each pad shows its name, first sample file name, MIDI note, layer and
-  round-robin counts, and choke group;
-- clicking a pad auditions it through the backend kit instrument and flashes it;
-- dropping a WAV/FLAC file on a pad loads it into that pad (creating the pad if
-  the slot was empty), by calling `set_preset_params`;
-- the inspector edits gain, pan, tune, cents, decay, release, choke, one-shot vs
-  gate, and reverse, also through `set_preset_params`;
-- incoming live MIDI note-ons from the MIDI monitor flash the matching pad.
+- The grid shows at least 16 pads, sorted by note. A kit can declare fewer
+  (empty slots stay silent and accept a sample) or more (the grid grows).
+- Each pad shows its name, the file name of its first sample, its note, its
+  number of layers and round-robin samples, and its choke group.
+- Clicking a pad plays it at velocity 110 through the kit instrument, flashes
+  it and selects it.
+- Dropping a WAV or FLAC file on a pad replaces the sample of its first layer.
+  Dropping it on an empty slot creates a pad at the next free note.
+- The inspector beside the grid edits **Gain dB**, **Pan**, **Tune st**,
+  **Cents**, **Decay s**, **Release s**, **Choke group**, **Mode**
+  (**one-shot** or **gate**) and **Reverse**, and lists the layers with their
+  velocity windows.
+- Note-ons arriving from a live MIDI input flash the matching pad.
 
-Every sample load and inspector edit goes through the same preset mutation
-command as the rest of the GUI, so it participates in the backend undo stack.
+Every sample drop and inspector edit uses the same preset command as the rest
+of the app, so you can undo it.
 
-## Deliberately not implemented
+## Not supported
 
-- Time-stretching or tempo-following samples. Pads always play at their
-  recorded rate, transposed by `tune`/`cents`.
-- Multi-mic / multi-velocity-dimension layers (round-robin is one dimension:
-  the trigger counter).
-- Per-pad filters, EQ, compression, or insert FX; use the track chain.
-- Sample disk streaming or background decoding; kits are assumed to fit in RAM.
-- MIDI CC / aftertouch modulation of pad parameters, and per-pad output routing.
-- A kit authoring workflow outside the DSL/GUI (import of third-party kit
-  formats).
-- GUI waveform trimming, loop points, or sample replacement history beyond the
-  project undo stack.
+- Time-stretching or following the tempo. Pads play at their recorded speed,
+  transposed by `tune` and `cents`.
+- Layers in more than one dimension, such as several microphones
+  (round-robin is the single trigger counter).
+- Filters, EQ, compression or insert effects per pad; use the track's effect
+  chain.
+- Streaming samples from disk or decoding in the background; a kit must fit in
+  memory.
+- Changing pad parameters with MIDI CC or aftertouch, and a separate output per
+  pad.
+- Importing kit formats from other software.
+- Trimming waveforms or setting loop points in the panel, and any sample
+  history beyond the project's undo.
 
 ## Verification
 
 ```sh
-CARGO_TARGET_DIR=… cargo test -p oc-synth drumkit
-CARGO_TARGET_DIR=… cargo test -p oc-engine drumkit
+cargo test -p oc-synth drumkit
+cargo test -p oc-engine drumkit
 cd crates/oc-gui/frontend && npx vitest run src/__tests__/drumkit-utils.test.ts \
   src/__tests__/components/DrumKitPanel.test.tsx
 ```
 
-The tests cover choke timing, one-shot vs gate, velocity layers, round-robin
-determinism, voice stealing, missing samples, reverse, the decay law, DSL
-round-trip and JSON export, and a full render proving hits at the expected
-frames.
+The tests cover choke timing, one-shot and gate modes, velocity layers,
+deterministic round-robin, voice stealing, missing samples, reverse playback,
+the decay law, the synthesised fallback voices, DSL round-trip and JSON export,
+and a full render with hits on the expected frames.

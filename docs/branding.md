@@ -44,7 +44,9 @@ mark and the desktop and web icons.
 
 ## App launcher
 
-The launcher uses the same mark in pale green on a dark evergreen plate.
+The launcher draws the same mark in ink (`#1b1c20`) on a paper plate
+(`#f6f4ef`). The plate has no hue, so the icon sits quietly next to other
+apps in a dock or taskbar, and the mark stays legible at 16 px.
 `src-tauri/icons/` contains the macOS ICNS, multi-size Windows ICO, Linux PNGs,
 and Windows tiles. The web assets are the favicon and Apple touch icon in
 `public/`.
@@ -54,3 +56,18 @@ installing the frontend dependencies. The script uses the bundled Tauri CLI
 to rasterize the vector and Pillow and macOS `iconutil` to generate the icon
 set. macOS and Linux use the padded plate. Windows and web use a larger plate
 to keep the mark legible at small sizes.
+
+## Documentation site
+
+Both books share `docs/theme/`, which overrides only three parts of mdBook's
+default theme:
+
+- `favicon.svg` and `favicon.png` are the launcher icon at tab size.
+- `brand.css` draws the mark before the book title as a mask, so it takes the
+  text colour of the reader's chosen theme.
+- `lang-switch.js` adds a link to the other language to the menu bar. It
+  opens the same page in the other book when a translation exists and the
+  other book's front page otherwise.
+
+When the mark changes, regenerate the app icons, then copy the new path data
+into `favicon.svg` and the data URI in `brand.css`.

@@ -1,0 +1,38 @@
+/* The mark sits before the book title and follows the theme's text colour.
+ * It is inlined because mdBook renames and moves additional stylesheets, so a
+ * relative url() would not find a sibling file. */
+:root {
+    --oc-mark: url("data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 120 120%22%3E %3Cpath d=%22 M 68 18 C 36 14, 11 39, 15 71 C 19 99, 48 114, 78 104 C 96 98, 107 82, 108 62 C 101 80, 85 93, 65 94 C 41 95, 24 77, 26 53 C 28 33, 46 20, 66 23 Z %22 /%3E %3Cpath fill-rule=%22evenodd%22 clip-rule=%22evenodd%22 d=%22 M 61.6 51.4 A 15.4 10.8 -26 1 0 66.4 63.6 L 80.0 25.5 C 85.5 34.5, 97.5 39.5, 113.5 36.0 C 108.5 22.5, 98.0 11.5, 82.0 10.0 C 78.2 9.6, 76.0 11.0, 74.8 14.5 Z M 45.0 64.2 A 8.5 5.6 -26 1 0 59.8 56.2 A 8.5 5.6 -26 1 0 45.0 64.2 Z %22 /%3E %3Cpath d=%22M 74 56 L 80 51 L 80 82 Q 77 84.5 74 85.5 Z%22 /%3E %3Cpath d=%22M 85 52 L 91 47 L 91 74 Q 88 78.5 85 81 Z%22 /%3E %3C/svg%3E");
+}
+.menu-title {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.45em;
+}
+
+.menu-title::before {
+    content: "";
+    width: 1.35em;
+    height: 1.35em;
+    flex: none;
+    background-color: currentColor;
+    -webkit-mask: var(--oc-mark) center / contain no-repeat;
+    mask: var(--oc-mark) center / contain no-repeat;
+}
+
+/* The language link reads like the icon buttons next to it. */
+.oc-lang-switch {
+    display: inline-flex;
+    align-items: center;
+    height: var(--menu-bar-height);
+    padding: 0 0.6em;
+    font-size: 1.4rem;
+    color: var(--icons);
+    text-decoration: none;
+}
+
+.oc-lang-switch:hover,
+.oc-lang-switch:focus-visible {
+    color: var(--icons-hover);
+}

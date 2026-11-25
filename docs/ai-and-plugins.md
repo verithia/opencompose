@@ -2,174 +2,221 @@
 
 ## AI settings
 
-Open **AI → Settings**. Select a provider, enter the full OpenAI-compatible
-chat-completions endpoint, model ID and key, then **Save settings / key**.
-Use **Test Connection** before chatting. Model names are editable; a built-in
-entry does not guarantee your account has access to that model.
+1. Open the **AI** tab and press **Settings**.
+2. Select a provider. In the endpoint field, enter its base URL or the full
+   request URL. A base URL such as `https://host/v1` gets the protocol path (for
+   example `/chat/completions`) appended.
+3. Enter the model ID and the key, then press **Save settings / key**.
+4. Press **Test Connection** before you start chatting.
 
-Keys live in macOS Keychain, Windows Credential Manager or Linux Secret Service,
-not YAML, project files or browser storage. Linux needs a running/unlocked Secret
-Service (e.g. GNOME Keyring or compatible service). Failure is visible; no insecure
-fallback. Non-secret settings live in `~/.opencompose/ai-providers.yaml`.
+Model names are editable. A built-in entry does not mean your account has access
+to that model.
+
+Each provider speaks one protocol, chosen under **Provider protocol**: OpenAI
+Chat Completions, OpenAI Responses, Anthropic Messages, Gemini Interactions or
+Gemini GenerateContent. The bundled catalog sets the protocol for its own
+providers.
+
+Keys are stored in the macOS Keychain, the Windows Credential Manager or the
+Linux Secret Service. They never go into YAML, project files or browser storage.
+On Linux, a Secret Service (for example GNOME Keyring or a compatible service)
+must be running and unlocked. If the store is unavailable, the app reports the
+failure and does not fall back to an insecure location. Settings that are not
+secret live in `~/.opencompose/ai-providers.yaml`.
 
 The panel reads the active provider's key when it loads and whenever you switch
-provider, and keeps the answer for the life of the process. macOS asks you to
-allow the read the first time a build touches its own keychain item; answer
-**Always Allow** so later reads are silent. The question is asked before you send
-anything, never during a turn: a turn only reads the remembered verdict, and that
-verdict can be a refusal. A dismissed prompt therefore fails the turn with a
-configuration error that names the fix instead of leaving it looking hung, and
+provider, and remembers the result for the life of the process. The first time a
+build reads its own keychain item, macOS asks you to allow it; answer
+**Always Allow** so that later reads are silent. The question comes before you
+send anything and never during a turn: a turn only reads the remembered result,
+and that result can be a refusal. If you dismissed the prompt, the turn fails
+with a configuration error that names the fix, and it does not appear to hang.
 **Read key again** in Settings asks the OS once more.
 
-A build the store does not trust yet is the normal result of rebuilding the app,
-because macOS ties the keychain item to the binary that created it. Save the key
+After you rebuild the app, macOS usually does not trust the new build yet,
+because it ties the keychain item to the binary that created it. Save the key
 again in Settings, or press **Read key again** and choose **Always Allow**. The
-dialog never displays a stored key; it reports whether the key is readable, and
-shows the store's own words when it is not.
+dialog never displays a stored key. It reports whether the key is readable and,
+when it is not, shows the store's own message.
 
-Stored keys are scoped to provider ID + exact endpoint
-(`<provider-id>:sha256(<endpoint>)`). Changing the endpoint does not forward an
-existing credential to a new server: saving deletes the old entry, and the status
-line then reports no saved key for the new endpoint. Select the original endpoint
-and save before removing its old credential. A blank key field preserves the
-stored credential; a key you type stays in memory for that provider until you
-save or remove it, so closing the dialog does not lose it, and it is never
-written to another provider. **Remove saved key** deletes it explicitly, and
-removing a provider you added deletes its key with it.
+A stored key belongs to one provider ID and one exact endpoint
+(`<provider-id>:sha256(<endpoint>)`). Changing the endpoint does not forward the
+existing credential to the new server. Saving deletes the old entry, and the
+status line then reports no saved key for the new endpoint. If you still need
+the old credential, select the original endpoint and save before you remove it.
 
-An endpoint on a host from the bundled catalog always authenticates, so a request
-to one with no saved key is refused by name before it is sent. A loopback server
-or your own gateway may be keyless: its authentication is its own.
+- A blank key field keeps the stored credential.
+- A key you type stays in memory for that provider until you save or remove it,
+  so closing the dialog does not lose it. It is never written to another
+  provider.
+- **Remove saved key** deletes the key.
+- Removing a provider you added deletes its key when the settings are saved.
 
-**Add provider** can start from a catalog preset. A preset fills the name,
+An endpoint on a host from the bundled catalog always authenticates. A request to
+one with no saved key is refused, with the provider named, before it is sent. A
+loopback server or your own gateway may run without a key; its authentication is
+its own business.
+
+**Add provider** can start from a catalog preset. A preset fills in the name,
 protocol and base URL for providers such as OpenRouter, Google AI Studio,
-DashScope, SiliconFlow, Moonshot, Zhipu, Groq and xAI; its model list is left
-empty so **Fetch models** reads the account's own list, and any model id can be
-added by hand. A preset with no model cannot be created until at least one model
-is enabled.
+DashScope, SiliconFlow, Moonshot, Zhipu, Groq and xAI. Its model list starts
+empty, so **Fetch models** reads your account's list, and you can add any model
+ID by hand. A provider cannot be created until at least one model is enabled.
 
-For a headless run, set `OPENCOMPOSE_AI_KEY` instead. It wins over the store, so
-no process opens the keychain; `/ai/complete` resolves credentials the same way.
+For a headless run, set `OPENCOMPOSE_AI_KEY`. It takes precedence over the store,
+so no process opens the keychain. `/ai/complete` resolves credentials the same
+way.
 
-Remote endpoints require HTTPS. HTTP is allowed only on loopback, including
-localhost/127.0.0.1/::1. URLs containing userinfo, query strings or fragments and
-HTTP redirects are rejected. Requests have a 15s connection/120s total timeout,
-2MiB request/response limits and cancellation. No automatic billable retries.
-Provider error bodies are not echoed because they can contain credentials.
+Remote endpoints require HTTPS. HTTP is allowed only on loopback (`localhost`,
+`127.0.0.1` or `::1`). The app rejects URLs that contain userinfo, a query string
+or a fragment, and does not follow HTTP redirects. A request has a 15 s connect
+timeout, a 300 s idle timeout and a 600 s total limit, and you can cancel it. The
+request text is limited to 2 MiB and the response to 16 MiB. A failed request is
+never retried automatically, because a retry can be billed. Provider error bodies
+are not shown, because they can contain credentials.
 
-Enable **Native tools** if the endpoint/model supports OpenAI function tools.
-Otherwise a complete JSON text-tool request is supported. Enable **Streaming**
-for OpenAI-compatible SSE; turn it off for servers without SSE support.
-This is not an Anthropic Messages or Gemini-native protocol adapter.
+Turn on **Native tools** when the endpoint and model support native function
+calling. With it off, the panel uses a complete JSON text-tool request. Turn on
+**Streaming** for server-sent events, and turn it off for servers that do not
+support them.
 
-**Project instructions** in the same dialog is a short note for the open project:
-"always print stems at -14 LUFS", "this song is in D minor, do not modulate". The
-note rides in the system prompt of every request for that project and never in
-another project's request; it is capped at 4,000 characters. See
-`docs/ai-sessions.md` for where it is stored and how it is counted against the
-prompt budget.
+**Project instructions**, in the same dialog, is a short note for the open
+project, such as "always print stems at -14 LUFS" or "this song is in D minor, do
+not modulate". The note goes into the system prompt of every request for that
+project and never into a request for another project. It is limited to 4,000
+characters. [Saved conversations](ai-sessions.md) describes where the note is
+stored and how it counts against the prompt budget.
 
-Sending a message sends the selected project context and recent conversation to
-the configured provider. Tools may retrieve further project subtrees. Use only
-a provider you trust with that project, and with any audio or image file you
-attach: an attachment is read from disk and sent inline while the request is
-built.
+Sending a message sends the selected project context and the recent conversation
+to the configured provider, and tools can retrieve more of the project. Use a
+provider you trust with that project, and with any audio or image file you
+attach: the app reads an attachment from disk and sends it inline when it builds
+the request.
 
 ### OAuth providers
 
-No OAuth sign-in ships in this build because no client registration is
-bundled. Use an API-key provider instead.
+This build ships no OAuth sign-in, because it bundles no client registration.
+Use an API-key provider.
 
-A saved provider entry whose protocol or sign-in this build does not ship is
-skipped when the settings load, with a warning in the log. The other providers
+When the settings load, a saved provider entry whose protocol or sign-in this
+build does not ship is skipped, with a warning in the log. The other providers
 load unchanged, and the next save writes the file without that entry.
 
 ### Available tools and edit policy
 
-- `list_skills()`, `read_skill(id)` consult the bundled reference catalog.
-- `plugin_search(...)` searches the bundled free-plugin catalog read-only; it
-  never downloads, installs, opens URLs, or touches the network.
-- `read_context(path)`, `list_tracks()`, `list_presets()` inspect the open project.
-- `validate(path, dsl)` checks a replacement without changing anything.
-- `edit_subtree(path, new_dsl)` proposes one complete replacement. Inspect the
-  diff and choose **Accept** or **Reject**. Accept is one undoable transaction.
-  A session with no user to ask (a headless agent) applies the validated
-  replacement itself, as the same one undoable transaction.
+The panel offers every catalog tool its policy enables, plus the panel-local
+`edit_subtree`, `plan_update` and `ask_user`. [Drawing from an
+agent](manual/agents.md) lists what the panel leaves out. Some of the tools a
+turn uses most:
 
-No model-controlled shell, filesystem, arbitrary IPC, plugin installation or
-unrestricted network tools. Plugin installation exists only on the external
-agent API's `plugin_pull`, which requires `dry_run: false` and uses catalog URLs. Edits follow the conversation's permission mode: `require_approval` asks for
-every change, `autoreview` records each diff before applying it, and `write`
-applies directly; a destructive call asks under all three. See [Agent feedback
-loop](agent-loop.md). A changed project invalidates an old proposal; regenerate
-rather than overwriting newer work. At most sixty-four
-model rounds and thirty-two calls per round; the round cap commits what landed. One
-pending edit per turn. Audio preview/tool contracts remain outside this release.
+- `list_skills()` and `read_skill(id)` read the bundled reference notes.
+- `plugin_search(...)` searches the bundled free-plugin catalog. It is read-only
+  and never downloads or installs anything.
+- `project_context(path)`, `tracks_list()` and `presets_list()` inspect the open
+  project.
+- `project_validate(path, dsl)` checks a replacement without changing anything.
+- `edit_subtree(path, new_dsl)` proposes one complete replacement. Under **Ask**,
+  inspect the diff and choose **Approve** or **Reject**. An approved replacement
+  is one undoable transaction. A session with nobody to ask (a headless agent)
+  applies the validated replacement itself, as the same single undoable
+  transaction.
 
-Smoke test: ask “List tracks, then read the bass track and suggest a change.”
-Check the tool results and diff, reject once, then accept a new proposal and Undo.
-Cancel a request and confirm no edit appears afterward. Restart the DAW and use
-Test Connection to check credential persistence.
+The model gets no shell, no filesystem access, no arbitrary IPC and no
+unrestricted network access. The one install path is `plugin_pull`. It defaults
+to `dry_run: true`, installs only with `dry_run: false`, and takes its URLs from
+the verified catalog. From the panel it installs only native plugin archives
+(VST3, VST2, CLAP, LV2) and managed separator runtimes that the signed index pins
+by checksum and size; it refuses manual DMG, PKG and EXE installers.
+
+Edits follow the conversation's permission mode. **Ask** (`require_approval`)
+asks before every change, **Review** (`autoreview`) records each diff and then
+applies it, and **Auto** (`write`) applies directly. A destructive call, such as
+removing a track, asks in all three modes unless you chose **Always allow** for
+it in this conversation. See [Agent feedback loop](agent-loop.md).
+
+If the project changes while a proposal is waiting, the proposal is refused;
+ask for a new one so newer work is not overwritten. A turn waits on one approval
+at a time. A turn has at most 64 model rounds and 32 tool calls per round, and
+reaching the round cap commits the edits that landed.
+
+To check the setup:
+
+1. Ask "List tracks, then read the bass track and suggest a change."
+2. Check the tool results and the diff. Reject the first proposal, then approve
+   a new one, then press Undo.
+3. Cancel a request and confirm that no edit appears afterwards.
+4. Restart the app and press **Test Connection** to confirm the credential
+   persists.
 
 ## Attachment input
 
-The composer's paperclip attaches one file at a time: an audio file (`wav`,
+The paperclip in the composer attaches one file at a time: an audio file (`wav`,
 `mp3`, `aif`, `aiff`, `aac`, `ogg`, `flac`, `m4a`, `opus`) or an image (`png`,
-`jpg`, `jpeg`, `webp`). The descriptor carries the path, size and content hash;
-a request reads the file and sends it inline, up to 12 MiB per file, four files
-per message and 20 MB of base64 per request.
+`jpg`, `jpeg`, `webp`). The attachment descriptor holds the path, size and
+content hash. When a request is built, the app reads the file and sends it
+inline. The limits are 12 MiB per file, four files per message and 20 MB of
+base64 per request. An audio file between 12 MiB and 512 MiB is attached as a
+local reference: the request carries its path and size, no audio, and the model
+can pass the path to the analysis tools.
 
-The model decides what it accepts, and the refusal happens **before** the
-request:
+The model's declared inputs decide what is accepted, and the refusal happens
+before the request is sent:
 
-- Audio is gated on the catalog entry's `audio_in` flag.
-- Image input is gated on the merged model limits' `input.image`. The bundled
-  catalog declares no image input, so enable it per model under **Edit limits**;
-  a model with `image` off refuses the image and names itself plus the
-  modalities it does declare (`text`, or `text, audio`).
+- Audio follows the model's audio input, which comes from the catalog entry's
+  `audio_in` flag. The protocol also limits the formats: the OpenAI protocols
+  take `wav` and `mp3`, the Gemini protocols take every listed format, and
+  Anthropic Messages takes no audio.
+- Images follow `input.image` in the merged model limits. The bundled catalog
+  declares no image input, so enable it per model under **Edit limits**. A model
+  with image input off refuses the image, and the message names the model and the
+  inputs it does declare (`text`, or `text, audio`).
 
-The panel checks the gate before sending, and the request builder enforces the
-same rule, so the headless `/ai/complete` endpoint refuses an image the same way
-and names the same model. A refusal leaves the attachment in the composer, so
-switching to a model that accepts images sends it without re-picking the file.
+The panel checks these rules before sending, and the request builder enforces
+them again. The headless `/ai/complete` endpoint therefore refuses an image in
+the same way and names the same model. A refused attachment stays in the
+composer, so after you switch to a model that accepts images, you can send it
+without picking the file again.
 
-A saved conversation keeps each attachment descriptor. Reopening it paints the
-chip again and a later turn replays the file, re-hashed at send. If the file no
-longer exists, the chip reads **file is missing**, that attachment is skipped,
-and the rest of the message is sent; one text line in the request names the
-missing path. A descriptor the current model cannot take degrades the same way:
-the saved chip stays, and the request carries one text line naming the file
-instead of its bytes. Only the turn's own attachment can refuse a request, so a
-conversation that switches to a text-only model keeps running. Export names
-attachments but never inlines them.
+A saved conversation keeps each attachment descriptor. When you reopen it, the
+chip appears again, and a later turn sends the file again, hashed anew at send
+time. If the file no longer exists, the chip reads **file is missing**, that
+attachment is skipped and the rest of the message is sent, with one text line in
+the request naming the missing path. A saved attachment that the current model
+cannot take is handled the same way: the chip stays, and the request carries one
+text line naming the file in place of its bytes. Only an attachment on the
+current turn can make a request fail, so a conversation that switches to a
+text-only model keeps working. An exported conversation names its attachments
+but never includes their contents.
 
 ## Model prices and cost
 
-The panel shows an estimated cost of what a session spends on tokens. Prices are
-per million tokens, in the currency the catalogue publishes them in, and come
-from the models.dev dataset. The bundled snapshot is
-`crates/oc-gui/frontend/src-tauri/ai-prices.json`; it carries one record per
-model the bundled catalogue declares.
+The panel shows an estimated cost for the tokens a session uses. Prices are per
+million tokens, in the currency the catalogue publishes, and come from the
+models.dev dataset. The bundled snapshot is
+`crates/oc-gui/frontend/src-tauri/ai-prices.json`, with one record per model the
+bundled catalogue declares.
 
-A model without a published price has no record. The panel then shows no cost for
-it rather than `$0.00`, because zero is a claim and an unknown price is not a
-claim of zero. A local server such as Ollama is the usual case: it is not billed
-per token.
+A model without a published price has no record, and the panel shows no cost for
+it. It does not show `$0.00`, because an unknown price is not a price of zero. A
+local server such as Ollama is the usual case, since it does not bill per token.
 
-Cost is computed from the usage the provider reports: fresh input tokens at the
-input price, cached input tokens at the cached-input price (the input price when
-the catalogue publishes none), and output tokens, including reasoning tokens, at
-the output price. A model priced at zero in the catalogue is free and costs
-zero.
+The cost comes from the usage the provider reports:
 
-The session total adds the turns that had a price. When a session also used an
-unpriced model, the total states the priced part and marks itself **partial**.
+- fresh input tokens at the input price;
+- cached input tokens at the cached-input price, or at the input price when the
+  catalogue publishes no cached price;
+- output tokens, including reasoning tokens, at the output price.
 
-**Edit limits** on a model lets you set your own price. Your price wins over the
+A model the catalogue prices at zero is free and costs zero.
+
+The session total adds up the turns that had a price. If the session also used
+an unpriced model, the total shows the priced part and is marked **partial**.
+
+Under **Edit limits** you can set your own price for a model. It overrides the
 catalogue for that provider and model, and the dialog still shows the catalogue
-price as the baseline.
+price for comparison.
 
-Refresh the snapshot after the dataset changes:
+Refresh the snapshot when the dataset changes:
 
 ```sh
 python3 scripts/refresh-ai-prices.py            # fetch, rewrite the snapshot
@@ -177,64 +224,78 @@ python3 scripts/refresh-ai-prices.py --check    # fail when the file is stale
 ```
 
 The script keeps only the provider and model pairs the bundled catalogue
-declares, so a model it cannot request is never priced. Commit the rewritten
-`ai-prices.json` with the prices it reports; do not hand-edit prices.
+declares, so a model the app cannot request never gets a price. Commit the
+rewritten `ai-prices.json` with the prices the script reports, and do not edit
+prices by hand.
 
 ## Load an instrument plugin
 
-1. Install a compatible **CLAP or VST3** plugin using its vendor installer in
-   the normal OS plugin directory. AU-only instruments are not supported here.
-2. Open **Presets** (`P`), press **+**, then refresh/rescan and choose **Plugins**
-   or search by name. Select the instrument to create a project preset.
-3. Select that preset. The CLAP/VST3 section loads its parameters and shows
-   **Open GUI** when the host supports its editor. **Reload** retries loading;
-   failures appear in the panel. VST3 native editor hosting is currently macOS-
-   qualified, not a claim of Windows/Linux editor support.
-4. Choose a sound inside the plugin. Under **Rendering Profile → Plugin state**,
-   use **Embed** (self-contained state) or **Save** (state sidecar). Save the OCP.
-   Library sample content remains external and must be installed/licensed.
-5. Assign the preset to a track using its preset selector, or use the preset's
-   **+T** action to add a track. Add notes and audition in context.
+1. Install the instrument with its vendor installer into the standard plugin
+   folder for its format. [Plugins](manual/plugins.md) lists the hosted formats
+   and the folders that are searched.
+2. Open **Presets** (`P`) and press **+**. Press **Rescan plugins** if the
+   instrument is new, then open the **Plugins** category or search by name.
+   Select the instrument to create a project preset.
+3. Select that preset. The plugin section loads its parameters and shows
+   **Open editor** when the host can open the plugin's editor.
+   **Reload parameters** retries the load, and failures appear in the panel.
+   Native VST3 editor hosting is qualified on macOS only; Windows and Linux
+   editor support is not claimed.
+4. Choose a sound inside the plugin. Under **Advanced instrument settings →
+   Saved plugin settings**, press **Embed** to store the state in the project, or
+   **Save** to write a state sidecar file. Then save the `.ocp` file. Sample
+   content from a library stays external and must be installed and licensed on
+   the machine.
+5. Assign the preset to a track with the track's preset selector, or press the
+   preset's **Add as new track** button (`+↗`). Add notes and listen in context.
 
 ## Kontakt / Tokyo Scoring Strings Free
 
-Install/activate Kontakt Player and the string library in Native Access, including
-its sample content. Scan and select **Kontakt 8 (VST3)**, then **Open GUI** and load
-the desired violin/cello patch in Kontakt. Capture **Embed** or **Save** state as
-above. A bare Kontakt instance is not a loaded string instrument.
+1. In Native Access, install and activate Kontakt Player and the string library,
+   including its sample content.
+2. Scan, select **Kontakt 8 (VST3)**, press **Open editor**, and load the violin
+   or cello patch you want in Kontakt.
+3. Store the state with **Embed** or **Save** as described above.
 
-Use a separate named preset for each instrument/patch initially. Route a track to
-it and keep its MIDI channel consistent with the loaded instrument. Set dynamics
-(commonly CC1) and expression (commonly CC11) according to the library, not only
-note velocity. Verify articulations/keyswitches against the patch's documentation;
-note overlap alone does not guarantee realistic legato. Captured state restores
-the selection without reopening the editor for every render, but it does not
-redistribute samples, bypass activation, or make every patch equally realistic.
+A bare Kontakt instance is not a loaded string instrument.
 
-The chooser's **Strings** category lists General MIDI soundfont programs, not
-Kontakt libraries. Use **Plugins → Kontakt** for the sample library workflow.
+Start with a separate named preset for each instrument or patch. Route a track to
+it and keep the track's MIDI channel consistent with the loaded instrument. Set
+dynamics (commonly CC1) and expression (commonly CC11) as the library expects;
+note velocity alone is not enough. Check articulations and keyswitches against
+the patch's documentation, because overlapping notes alone do not guarantee a
+realistic legato. Captured state restores the selection without reopening the
+editor for every render. It does not redistribute samples, bypass activation or
+make every patch equally realistic.
+
+The **Strings** category in the chooser lists General MIDI SoundFont programs.
+For a Kontakt library, use **Plugins → Kontakt**.
 
 ## Verification scope
 
-Automated fixtures cover transport authentication/redaction/redirect policy,
-streamed tool arguments, bounded tool execution and confirmation-only edits.
-Browser fixtures exercise settings and proposal acceptance without a paid API.
-The native macOS credential store has a temporary-account round-trip smoke.
-Live provider/model compatibility needs your key; Windows/Linux credential and
-plugin paths require testing on those platforms before a release certification.
+Automated fixtures cover the transport's authentication, redaction and redirect
+policy, streamed tool arguments, bounded tool execution and confirmation-only
+edits. Browser fixtures exercise the settings and proposal acceptance without a
+paid API. The native macOS credential store has a round-trip smoke test with a
+temporary account. Live provider and model compatibility needs your key. The
+Windows and Linux credential and plugin paths need testing on those platforms
+before a release is certified.
 
 Implementation references: [keyring](https://docs.rs/keyring/3.6.3/keyring/),
 [reqwest redirect policy](https://docs.rs/reqwest/0.12.28/reqwest/redirect/struct.Policy.html).
 
 ## Bundled reference skills
 
-The app includes 31 compact skills in four groups: composition, production/sound
-design, DAW workflows, and style applications. The AI can call `list_skills` and
-`read_skill` to consult relevant guidance before proposing an edit. No separate
-skill installation or RAG service is needed. Reference guidance does not grant
-training rights or new tools; edits still require confirmation. Details:
-the skill catalog at `crates/oc-gui/frontend/src/ai/skills/`.
+The app bundles short skills, each tagged with a category such as
+arrangement, mixing, production or workflow. Before it proposes an edit, the
+model can call `list_skills` and `read_skill` to read the relevant notes. You do
+not install anything or run a retrieval service. You can add your own skills as
+`~/.opencompose/ai/skills/<id>.md`; a user skill cannot reuse a bundled id. A
+skill grants no training rights and no tools, and edits still follow the
+conversation's permission mode. The bundled notes are in
+`crates/oc-gui/frontend/src-tauri/src/ai/skills/builtin/`.
 
-Try: “List your bundled skills, read the low-end roles skill, and inspect my bass
-track before suggesting any change.” The tool log should show discovery and a
-single skill read. No project change occurs until an edit proposal is accepted.
+To try it, ask: "List your bundled skills, read the unmask-kick-and-bass skill,
+and inspect my bass track before suggesting any change." The tool log should
+show the skill list and a single skill read. Under **Ask**, the project does not
+change until you approve an edit.

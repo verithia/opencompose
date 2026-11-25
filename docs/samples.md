@@ -501,7 +501,9 @@ standard instrument folders, and the usual sample-library folders in your
 Documents, Music and home folders. It reads `wav`, `aif`, `aiff`, `flac`,
 `ogg` and `mp3` files, with the scan's limits of 20,000 entries and 8 folder
 levels per folder. Hidden folders and symbolic links are skipped. The file list
-is kept for 30 seconds, so several searches in a row walk the disk once.
+is kept for 30 seconds, so several searches in a row walk the disk once. Adding
+or removing a sound folder in Preferences makes the next search walk the
+folders again.
 
 - Every word of the search must appear in the file's path below its sound
   folder; case, `_`, `-` and folder separators do not matter. A file whose name
