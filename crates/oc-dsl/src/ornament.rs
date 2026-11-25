@@ -269,9 +269,10 @@ pub fn step_above(pitch: Pitch, key: Option<KeySignature>) -> Pitch {
 fn trill(pitch: Pitch, key: Option<KeySignature>, total: f64) -> Vec<Segment> {
     let parts = (total / STEP_QUARTERS).floor() as usize;
     // An even part count would end on the upper pitch; drop one so the trill
-    // returns to the written pitch, as a player would close it.
+    // returns to the written pitch, as a player would close it. A gate shorter
+    // than a step has no parts at all, so it holds the note.
     let parts = if parts.is_multiple_of(2) {
-        parts - 1
+        parts.saturating_sub(1)
     } else {
         parts
     };
@@ -415,6 +416,18 @@ mod tests {
                 < 1e-9
         );
         assert!((segments[2].offset_quarters - 2.0 / 3.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_trill_shorter_than_two_steps_holds_the_written_pitch() {
+        let mut note = note(0.0, "C4");
+        note.modifiers = marked("trill");
+        for gate in [STEP_QUARTERS / 2.0, STEP_QUARTERS, STEP_QUARTERS * 2.5] {
+            let segments = segments(&note, Some(c_major()), gate).unwrap();
+            assert_eq!(segments.len(), 1, "gate {gate}");
+            assert_eq!(segments[0].pitch, note.pitch);
+            assert!((segments[0].duration_quarters - gate).abs() < 1e-9);
+        }
     }
 
     #[test]
