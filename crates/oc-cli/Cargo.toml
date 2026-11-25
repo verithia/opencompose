@@ -60,6 +60,7 @@ hound = "3"
 claxon = "0.4"          # FLAC decoding, to check what the encoder wrote
 midly = "0.5"
 serde_json.workspace = true
+tempfile.workspace = true
 # The in-process VST3 fakes (test-support) give the CLI an instrument-shaped
 # insert without instantiating a commercial plugin.
 oc-engine = { path = "../oc-engine", features = ["test-support", "perf-log"] }

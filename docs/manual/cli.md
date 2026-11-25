@@ -343,6 +343,10 @@ Freesound through OAuth2 and pull the original file. `ocp sample providers`
 lists the providers this build knows. The store layout, the licence rule and
 the tool names are in [Samples](../samples.md).
 
+`ocp sample slices loop.wav --first-key 60` prints an SFZ patch with one region
+per WAVE cue point; `--gated` follows note length and `--json` prints the frame
+ranges instead. See [Sampler](../sampler.md).
+
 ## Range render and analysis
 
 The windowed render, audio analysis and A/B comparison tools (`render_range`,
