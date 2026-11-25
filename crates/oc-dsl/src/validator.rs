@@ -962,6 +962,14 @@ fn validate_control_links(
                     });
                 }
             }
+            ControlLinkSource::PresetMacro { .. } => {
+                if let Err(value) = link.source.resolve_macro_preset(project) {
+                    errors.push(ValidationError::InvalidValue {
+                        field: format!("control link '{}' macro", link.name),
+                        value,
+                    });
+                }
+            }
             ControlLinkSource::Lane { track, param } => {
                 if !track_names.contains(track.as_str()) {
                     errors.push(ValidationError::InvalidValue {
@@ -996,9 +1004,20 @@ fn validate_control_links(
         }
         let mut seen = HashSet::new();
         for target in &link.targets {
-            if !track_names.contains(target.track.as_str()) {
+            if matches!(link.source, ControlLinkSource::PresetMacro { .. })
+                && !target.is_mixer_effect_target(&link.source)
+            {
                 errors.push(ValidationError::InvalidValue {
-                    field: format!("control link '{}' target track", link.name),
+                    field: format!("control link '{}' target param", link.name),
+                    value: "a named preset macro needs a mixer effect target".into(),
+                });
+            }
+            let on_track = track_names.contains(target.track.as_str());
+            let on_bus = target.is_mixer_effect_target(&link.source)
+                && project.buses.iter().any(|bus| bus.name == target.track);
+            if on_track == on_bus {
+                errors.push(ValidationError::InvalidValue {
+                    field: format!("control link '{}' target track or bus", link.name),
                     value: target.track.clone(),
                 });
             }
@@ -1021,6 +1040,12 @@ fn validate_control_links(
                         "'{}' reads raw MIDI values; the source is not a MIDI CC",
                         target.formula
                     ),
+                });
+            }
+            if let Err(value) = target.validate_value_mapping(&link.source) {
+                errors.push(ValidationError::InvalidValue {
+                    field: format!("control link '{}' mapping", link.name),
+                    value,
                 });
             }
             if target.smoothing_ms > 60_000 {
@@ -1097,6 +1122,25 @@ fn validate_audio_clip(
                 value: value.to_string(),
             });
         }
+    }
+    for (field, curve) in [
+        ("fade_in_curve", clip.fade_curves.fade_in),
+        ("fade_out_curve", clip.fade_curves.fade_out),
+    ] {
+        if let Some(handles) = curve
+            && !handles.iter().all(|v| (0.0..=1.0).contains(v))
+        {
+            errors.push(ValidationError::InvalidValue {
+                field: format!("audio clip '{}'.{field}", clip.name),
+                value: "Bézier handles must be finite and within [0, 1]".into(),
+            });
+        }
+    }
+    if !clip.stereo_offset_seconds.is_finite() {
+        errors.push(ValidationError::InvalidValue {
+            field: format!("audio clip '{}'.stereo_offset", clip.name),
+            value: clip.stereo_offset_seconds.to_string(),
+        });
     }
     if !clip.stretch.is_finite() || clip.stretch <= 0.0 {
         errors.push(ValidationError::InvalidValue {
@@ -1631,6 +1675,12 @@ fn validate_track(
         bus_names,
     } = *context;
     let properties = &project.properties;
+    if let Err(reason) = crate::instruments::validate_midi_only_source(project, track) {
+        errors.push(ValidationError::InvalidValue {
+            field: format!("{}.instrument", track.name),
+            value: reason,
+        });
+    }
     if track.name.trim().is_empty() {
         errors.push(ValidationError::InvalidValue {
             field: "track.name".to_string(),
@@ -2172,12 +2222,85 @@ fn validate_automation_lanes<'a>(
         // have to make sense once the mute is lifted.
         if let Some(range) = &lane.time_range {
             validate_time_range(range, &field, errors);
+        } else if lane.playlist_lane.is_some() {
+            errors.push(ValidationError::InvalidAutomationLane {
+                owner: owner.to_string(),
+                lane: lane.param.clone(),
+                reason: "a playlist row requires a scoped automation clip".into(),
+            });
+        }
+        let compact_curve = lane
+            .points
+            .iter()
+            .any(|point| point.curve == Curve::Exponential || point.curvature.is_some());
+        let effect_target = lane.effect_lane().is_some();
+        let encoded_parameter =
+            crate::automation::decode_plugin_automation_param(&lane.param).is_some();
+        if (lane.value_mapping.is_some() && !effect_target)
+            || (compact_curve && !effect_target && !encoded_parameter)
+        {
+            errors.push(ValidationError::InvalidAutomationLane {
+                owner:owner.to_string(),lane:lane.param.clone(),
+                reason:"compact curves require an effect or encoded plugin parameter; value mappings require an effect-parameter lane".into()
+            });
+        }
+        if let Err(reason) =
+            crate::automation::validate_encoded_parameter_curve(lane, synth.is_some())
+        {
+            errors.push(ValidationError::InvalidAutomationLane {
+                owner: owner.to_string(),
+                lane: lane.param.clone(),
+                reason,
+            });
+        }
+        if lane.value_mapping.is_some() {
+            let result = crate::timing::ProjectClock::new(properties).and_then(|clock| {
+                crate::automation::LaneCurve::new(lane, &clock, 48_000, |value| match value {
+                    ParamValue::Number(value) => Ok(*value),
+                    _ => Err("mapped automation currently requires numeric anchors".into()),
+                })
+                .and_then(|_curve| {
+                    let (target, parameter) = lane
+                        .effect_lane()
+                        .ok_or("mapped automation requires an effect target")?;
+                    let index = crate::automation::resolve_effect(effects, target)?;
+                    let effect = &effects[index];
+                    let device_id = effect.effect_type.device_id();
+                    if device_id.is_none() && !matches!(effect.effect_type, EffectType::Plugin(_)) {
+                        return Err(
+                            "mapped automation recipient has no declared numeric domain".into()
+                        );
+                    }
+                    crate::automation::validate_mapped_bounds(
+                        parameter,
+                        device_id,
+                        Some(crate::automation::authored_mapped_bounds(lane)?),
+                    )
+                })
+            });
+            if let Err(reason) = result {
+                errors.push(ValidationError::InvalidAutomationLane {
+                    owner: owner.to_string(),
+                    lane: lane.param.clone(),
+                    reason,
+                });
+            }
         }
         let effect_lane = lane.param.contains('.');
+        if lane.is_recorded()
+            && (!effect_lane || lane.time_range.is_none() || lane.points.is_empty())
+        {
+            errors.push(ValidationError::InvalidAutomationLane {
+                owner: owner.to_string(),
+                lane: lane.param.clone(),
+                reason: "Recorded automation requires samples and a scoped effect parameter."
+                    .to_string(),
+            });
+        }
         if effect_lane {
             validate_effect_lane(lane, effects, owner, synth, errors);
         } else if lane.smoothing_ms != 0.0
-            || lane.points.iter().any(|point| point.curve != Curve::Linear)
+            || (!encoded_parameter && lane.points.iter().any(|point| point.curve != Curve::Linear))
         {
             errors.push(ValidationError::InvalidAutomationLane {
                 owner: owner.to_string(),
@@ -2232,6 +2355,17 @@ fn validate_automation_lanes<'a>(
                 validate_bar_beat(&point.position, &field, errors);
             }
             validate_param_value(&field, &point.value, errors);
+            if let Some(curvature) = point.curvature
+                && (point.curve != Curve::Exponential
+                    || !oc_device_schema::automation_curves::valid_curvature(curvature))
+            {
+                errors.push(ValidationError::InvalidAutomationLane {
+                    owner: owner.to_string(),
+                    lane: lane.param.clone(),
+                    reason: "curvature requires curve=exponential and the supported finite range"
+                        .into(),
+                });
+            }
             if let Some(tension) = point.tension {
                 if point.curve != Curve::Smooth {
                     errors.push(ValidationError::InvalidAutomationLane {
@@ -2351,9 +2485,11 @@ struct SynthControls {
 /// Control declarations a built-in synth track resolves, or None when the
 /// track plays another sound source.
 fn synth_controls(project: &Project, track: &Track) -> Option<SynthControls> {
+    let resolved_preset;
     let params: &[(String, ParamValue)] = match track.preset.as_deref() {
         Some(name) => {
-            let preset = project.presets.iter().find(|preset| preset.name == name)?;
+            resolved_preset = crate::preset::resolve_preset(&project.presets, name).ok()?;
+            let preset = &resolved_preset;
             if preset.plugin.as_deref() != Some(oc_device_schema::synth::SYNTH_PLUGIN_ID) {
                 return None;
             }
@@ -2439,9 +2575,12 @@ fn validate_effect_lane(
             if is_lane_identifier(target) && is_lane_identifier(parameter) =>
         {
             match crate::automation::resolve_effect(effects, target) {
-                Ok(index) => {
-                    crate::automation::validate_device_param(&effects[index], parameter).err()
-                }
+                Ok(index) => match oc_device_schema::effect_slot::SlotControl::from_id(parameter) {
+                    Some(control) => crate::automation::validate_slot_lane(lane, control).err(),
+                    None => {
+                        crate::automation::validate_device_param(&effects[index], parameter).err()
+                    }
+                },
                 Err(reason) => Some(reason),
             }
         }
@@ -2489,6 +2628,20 @@ fn validate_gain_automation(
     };
     let mut last_end = None;
     for clip in clips {
+        let segments = clip.interpolation == GainInterpolation::Segments;
+        if segments {
+            if let Err(value) = crate::gain_automation::compile_segments(clip, &clock, 48_000) {
+                errors.push(ValidationError::InvalidValue {
+                    field: format!("{owner}.gain_automation"),
+                    value,
+                });
+            }
+        } else if clip.value_mapping.is_some() || clip.preserve_discontinuities {
+            errors.push(ValidationError::InvalidValue {
+                field: format!("{owner}.gain_automation"),
+                value: "mapping and discontinuities require interpolation=Segments".into(),
+            });
+        }
         if clip.ppq == 0 || clip.ppq > 96000 {
             errors.push(ValidationError::InvalidValue {
                 field: format!("{owner}.gain_automation.ppq"),
@@ -2529,11 +2682,25 @@ fn validate_gain_automation(
         last_end = Some(end);
         let mut previous = None;
         for p in &clip.points {
+            if !segments && (p.curve == Curve::Exponential || p.curvature.is_some()) {
+                errors.push(ValidationError::InvalidValue {
+                    field: format!("{owner}.gain_automation.points"),
+                    value: "compact exponential gain points require interpolation=Segments".into(),
+                });
+            }
             validate_bar_beat(&p.position, owner, errors);
             let position = beat(&p.position);
             // A point on the range end is the last interpolated value, not an
             // out-of-range position, so it stays legal.
-            if position < start || position > end || previous.is_some_and(|v| position <= v) {
+            if (!segments && (position < start || position > end))
+                || previous.is_some_and(|v| {
+                    if segments && clip.preserve_discontinuities {
+                        position < v
+                    } else {
+                        position <= v
+                    }
+                })
+            {
                 errors.push(ValidationError::InvalidValue {
                     field: format!("{owner}.gain_automation.points"),
                     value: "out of range or not strictly increasing".into(),
@@ -2541,6 +2708,14 @@ fn validate_gain_automation(
             }
             previous = Some(position);
             match p.value {
+                ParamValue::Number(v) if segments && clip.value_mapping.is_some() => {
+                    if !v.is_finite() {
+                        errors.push(ValidationError::InvalidValue {
+                            field: owner.into(),
+                            value: "gain mapping input must be finite".into(),
+                        });
+                    }
+                }
                 ParamValue::Number(v) => validate_finite_range(owner, v, 0.0, 16.0, errors),
                 _ => errors.push(ValidationError::InvalidValue {
                     field: owner.into(),
@@ -2656,6 +2831,22 @@ fn validate_input_routes(
             .device_id()
             .and_then(oc_device_schema::find_device);
         match route.kind {
+            RouteKind::Midi => {
+                if !track_names.contains(route.source.as_str()) {
+                    errors.push(ValidationError::UnknownRouteSource {
+                        owner: owner.to_string(),
+                        kind: "midi".into(),
+                        name: route.source.clone(),
+                    });
+                }
+                if !matches!(effect.effect_type, EffectType::Plugin(_)) {
+                    errors.push(ValidationError::InvalidRouteTarget {
+                        owner: owner.to_string(),
+                        target: route.target.clone(),
+                        reason: "device has no MIDI input".into(),
+                    });
+                }
+            }
             RouteKind::Audio => {
                 if route.source == consumer_track.unwrap_or("") {
                     errors.push(ValidationError::SidechainSelfKey {
@@ -3194,8 +3385,19 @@ fn validate_effect(
     emissions: &mut Emissions,
     subject: SourceSubject,
 ) {
+    use oc_device_schema::effect_slot::SlotControl;
     let start = errors.len();
     let label = owner.label();
+    for (name, value) in &effect.params {
+        if name == SlotControl::WET_ID
+            && let Err(reason) = crate::automation::slot_point_value(SlotControl::Wet, value)
+        {
+            errors.push(ValidationError::InvalidValue {
+                field: format!("{label}.effect.{name}"),
+                value: reason,
+            });
+        }
+    }
     if let EffectType::Plugin(plugin) = &effect.effect_type
         && plugin.trim().is_empty()
     {
@@ -3205,15 +3407,68 @@ fn validate_effect(
         });
     }
     if effect.effect_type == EffectType::Gain {
+        use oc_device_schema::ParamUnit::Fraction;
+        let schema = oc_device_schema::find_device("gain").expect("gain device schema");
         for (name, value) in &effect.params {
-            match (name.as_str(), value.as_f64()) {
-                ("factor", Some(value)) => {
-                    validate_finite_range("gain.factor", value, 0.0, 16.0, errors)
-                }
-                _ => errors.push(ValidationError::InvalidEffectParam {
+            if name == SlotControl::WET_ID {
+                continue;
+            }
+            let valid = schema.param(name).and_then(|param| {
+                let number = match (param.unit, value) {
+                    (Fraction, ParamValue::Number(v)) => Some(*v),
+                    (Fraction, ParamValue::Percentage(v)) => Some(v / 100.0),
+                    (Fraction, _) => None,
+                    (_, value) => value.as_f64(),
+                }?;
+                Some((param, number))
+            });
+            if let Some((param, value)) = valid {
+                validate_finite_range(
+                    &format!("gain.{}", param.id),
+                    value,
+                    param.min,
+                    param.max,
+                    errors,
+                );
+            } else {
+                errors.push(ValidationError::InvalidEffectParam {
                     effect: "gain".into(),
                     param: name.clone(),
-                }),
+                });
+            }
+        }
+    }
+    if effect.effect_type == EffectType::TransferShaper {
+        let mut has_asset = false;
+        for (name, value) in &effect.params {
+            if name == SlotControl::WET_ID {
+                continue;
+            }
+            let valid = if matches!(name.as_str(), "curve" | "curve_file") {
+                let unique = !std::mem::replace(&mut has_asset, true);
+                unique
+                    && match (name.as_str(), value) {
+                        ("curve", ParamValue::String(text)) => {
+                            oc_device_schema::transfer_curve::TransferCurve::decode(text).is_ok()
+                        }
+                        ("curve_file", ParamValue::String(path)) => !path.trim().is_empty(),
+                        _ => false,
+                    }
+            } else {
+                oc_device_schema::transfer_curve::PARAMS
+                    .iter()
+                    .find(|p| p.id == name)
+                    .is_some_and(|p| {
+                        value
+                            .as_f64()
+                            .is_some_and(|v| v.is_finite() && (p.min..=p.max).contains(&v))
+                    })
+            };
+            if !valid {
+                errors.push(ValidationError::InvalidEffectParam {
+                    effect: "transfer_shaper".into(),
+                    param: name.clone(),
+                });
             }
         }
     }
@@ -3280,10 +3535,12 @@ fn validate_sidechain_key(
 enum DynamicEqField {
     Switch,
     BandType,
+    Slope,
     Channel,
     Frequency,
     Q,
     Gain,
+    OutputGain,
     Threshold,
     Range,
     Attack,
@@ -3291,6 +3548,12 @@ enum DynamicEqField {
 }
 
 fn dynamic_eq_field(name: &str) -> Option<DynamicEqField> {
+    if matches!(name, "auto_gain" | "oversample" | "oversample_fir") {
+        return Some(DynamicEqField::Switch);
+    }
+    if name == "output_gain" {
+        return Some(DynamicEqField::OutputGain);
+    }
     if let Some(rest) = name
         .strip_prefix("low_cut_")
         .or_else(|| name.strip_prefix("high_cut_"))
@@ -3299,18 +3562,20 @@ fn dynamic_eq_field(name: &str) -> Option<DynamicEqField> {
             "enabled" => Some(DynamicEqField::Switch),
             "freq" => Some(DynamicEqField::Frequency),
             "q" => Some(DynamicEqField::Q),
+            "slope" => Some(DynamicEqField::Slope),
             _ => None,
         };
     }
     let rest = name.strip_prefix("band")?;
     let (index, field) = rest.split_once('_')?;
     let index: usize = index.parse().ok()?;
-    if !(1..=6).contains(&index) {
+    if !(1..=oc_device_schema::DYNAMIC_EQ_CENTER_FREQUENCIES.len()).contains(&index) {
         return None;
     }
     match field {
-        "enabled" | "dynamic" | "solo" => Some(DynamicEqField::Switch),
+        "enabled" | "dynamic" | "solo" | "sidechain" => Some(DynamicEqField::Switch),
         "type" => Some(DynamicEqField::BandType),
+        "slope" => Some(DynamicEqField::Slope),
         "channel" => Some(DynamicEqField::Channel),
         "freq" => Some(DynamicEqField::Frequency),
         "q" => Some(DynamicEqField::Q),
@@ -3351,6 +3616,9 @@ fn dynamic_eq_channel(name: &str) -> bool {
 
 fn validate_dynamic_eq(params: &[(String, ParamValue)], errors: &mut Vec<ValidationError>) {
     for (name, value) in params {
+        if name == oc_device_schema::effect_slot::SlotControl::WET_ID {
+            continue;
+        }
         let Some(field) = dynamic_eq_field(name) else {
             errors.push(ValidationError::InvalidEffectParam {
                 effect: "dynamic_eq".into(),
@@ -3382,6 +3650,22 @@ fn validate_dynamic_eq(params: &[(String, ParamValue)], errors: &mut Vec<Validat
                 ParamValue::String(kind) if dynamic_eq_band_kind(kind) => {}
                 _ => invalid(errors),
             },
+            DynamicEqField::Slope => {
+                let valid = match value {
+                    ParamValue::Number(code) => {
+                        code.fract() == 0.0
+                            && (0.0..oc_device_schema::DYNAMIC_EQ_CUT_SLOPES.len() as f64)
+                                .contains(code)
+                    }
+                    ParamValue::String(label) => {
+                        oc_device_schema::dynamic_eq_cut_slope_code(label).is_some()
+                    }
+                    _ => false,
+                };
+                if !valid {
+                    invalid(errors);
+                }
+            }
             DynamicEqField::Channel => match value {
                 ParamValue::String(channel) if dynamic_eq_channel(channel) => {}
                 ParamValue::Number(number) => {
@@ -3408,6 +3692,14 @@ fn validate_dynamic_eq(params: &[(String, ParamValue)], errors: &mut Vec<Validat
             DynamicEqField::Gain => {
                 if let Some(number) = unit_number(value, Unit::Db) {
                     validate_finite_range(&field_name, number, -24.0, 24.0, errors);
+                } else {
+                    invalid(errors);
+                }
+            }
+            DynamicEqField::OutputGain => {
+                if let Some(number) = unit_number(value, Unit::Db) {
+                    let (min, max) = oc_device_schema::DYNAMIC_EQ_OUTPUT_GAIN_DB_RANGE;
+                    validate_finite_range(&field_name, number, min, max, errors);
                 } else {
                     invalid(errors);
                 }
@@ -3696,12 +3988,40 @@ fn validate_finite_range(
     }
 }
 
-fn bar_beat_order(position: &BarBeat) -> u64 {
-    position.bar as u64 * 1_000_000 + position.beat as u64 * 1_000 + position.subdivision as u64
+fn bar_beat_order(position: &BarBeat) -> (u32, u32, u32) {
+    (position.bar, position.beat, position.subdivision)
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn high_resolution_ranges_preserve_beat_order() {
+        let early = super::BarBeat::new(12, 2, 48_000);
+        let late = super::BarBeat::new(12, 4, 0);
+        let mut errors = Vec::new();
+        super::validate_time_range(
+            &super::TimeRange {
+                start: early,
+                end: late,
+            },
+            "automation",
+            &mut errors,
+        );
+        assert!(errors.is_empty());
+        super::validate_time_range(
+            &super::TimeRange {
+                start: late,
+                end: early,
+            },
+            "automation",
+            &mut errors,
+        );
+        assert!(matches!(
+            errors.as_slice(),
+            [super::ValidationError::InvalidTimeRange { .. }]
+        ));
+    }
+
     #[test]
     fn root_reference_inline_pattern_does_not_borrow_a_root_or_track_subject() {
         let mut project = crate::parse("@project\n@pattern p | preset: absent, instrument: synth/lead\n  events:\n    @0 C4 q\n@track t\n").unwrap();
@@ -3964,6 +4284,24 @@ mod tests {
         )
         .unwrap();
         assert!(validate(&valid).is_ok());
+        let seventh = crate::parse(
+            "@project\n@track t | instrument: piano/acoustic_grand\n  effects:\n    - dynamic_eq: band7_enabled=true, band7_type=high_cut, band7_freq=12kHz, band7_gain=-3dB, band7_sidechain=true, auto_gain=true, oversample=true, oversample_fir=true, output_gain=+4.71dB, band7_slope=\"48 dB/oct\", low_cut_slope=1\n",
+        )
+        .unwrap();
+        assert!(validate(&seventh).is_ok());
+        let extended = crate::parse(
+            "@project\n@bus wet\n  routes: [master]\n  effects:\n    - dynamic_eq: band12_enabled=true, band12_type=high_cut, band12_q=1\n  automation: fx1.band12_freq {1:1:0=12000Hz, 2:1:0=8000Hz}\n",
+        )
+        .unwrap();
+        assert!(validate(&extended).is_ok());
+        let automated_mode = crate::parse(
+            "@project\n@bus wet\n  routes: [master]\n  effects:\n    - dynamic_eq: oversample_fir=true\n  automation: fx1.oversample_fir {1:1=1, 2:1=0}\n",
+        )
+        .unwrap();
+        let errors = validate(&automated_mode).unwrap_err();
+        assert!(errors.iter().any(|error| matches!(error,
+            ValidationError::InvalidAutomationLane { lane, .. } if lane == "fx1.oversample_fir"
+        )));
 
         for param in [
             "band1_freq=19Hz",
@@ -3972,6 +4310,12 @@ mod tests {
             "band1_q=21",
             "band1_gain=25dB",
             "band1_gain=-25dB",
+            "output_gain=25dB",
+            "output_gain=-25dB",
+            "output_gain=1kHz",
+            "oversample=2",
+            "oversample=1kHz",
+            "oversample_fir=2",
             "band1_threshold=1dB",
             "band1_threshold=-61dB",
             "band1_range=25dB",
@@ -3982,6 +4326,12 @@ mod tests {
             "band1_type=wobble",
             "band1_enabled=2",
             "band1_wobble=1",
+            "band13_enabled=true",
+            "band7_sidechain=2",
+            "band7_slope=1.5",
+            "band7_slope=4",
+            "low_cut_slope=steeper",
+            "low_cut_slope=\"1.2 dB/oct\"",
         ] {
             let project = crate::parse(&format!(
                 "@project\n@track t | instrument: piano/acoustic_grand\n  effects:\n    - dynamic_eq: {param}\n"
@@ -4328,19 +4678,44 @@ mod tests {
     }
 
     #[test]
+    fn insert_controls_round_trip_and_validate_on_track_bus_and_master() {
+        let source = "@project\n@track t | instrument: piano/acoustic_grand\n  effects:\n    - gain: factor=2, slot/wet=30%, bypass=true\n  automation: fx1.slot/enabled {1:1=false, 1:2=true}\n@bus aux\n  effects:\n    - gain: factor=3\n  automation: fx1.slot/wet {1:1=0, 1:2=1}\n@master\n  effects:\n    - plugin:\"vst3.some_plugin\"\n  automation: fx1.slot/wet {1:1=25%}\n";
+        let project = crate::parse(source).unwrap();
+        validate(&project).unwrap();
+        assert_eq!(crate::parse(&crate::serialize(&project)).unwrap(), project);
+        for (changed, expected) in [
+            (
+                source.replace("slot/wet=30%", "slot/wet=130%"),
+                "slot/wet requires",
+            ),
+            (
+                source.replace("1:2=true", "1:2=0.5"),
+                "slot/enabled requires",
+            ),
+            (
+                source.replace("1:1=false", "1:1=false curve=smooth"),
+                "accepts stepped anchors",
+            ),
+            (source.replace("1:2=1}", "1:2=1.1}"), "slot/wet requires"),
+        ] {
+            assert!(messages(&changed).contains(expected), "{changed}");
+        }
+    }
+
+    #[test]
     fn effect_lane_naming_an_unknown_parameter_is_rejected() {
         let text = messages(
-            "@project\n  tempo: 120\n@track t | instrument: piano/acoustic_grand\n  effects:\n    - gain: factor=1\n  automation: gain.mix {1:1:0=1}\n",
+            "@project\n  tempo: 120\n@track t | instrument: piano/acoustic_grand\n  effects:\n    - gain: factor=1\n  automation: gain.ceiling {1:1:0=1}\n",
         );
         assert!(
-            text.contains("Invalid automation lane 'gain.mix'"),
+            text.contains("Invalid automation lane 'gain.ceiling'"),
             "{text}"
         );
         assert!(
-            text.contains("effect 'gain' has no parameter 'mix'"),
+            text.contains("effect 'gain' has no parameter 'ceiling'"),
             "{text}"
         );
-        assert!(text.contains("expected one of: factor"), "{text}");
+        assert!(text.contains("expected one of: factor, mix"), "{text}");
     }
 
     #[test]

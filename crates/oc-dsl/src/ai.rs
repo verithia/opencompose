@@ -161,16 +161,16 @@ pub fn validate_edit_in(edit: &AiEdit, project: &Project, root: Option<&Path>) -
             };
         }
     };
-    let document = candidate_document(&candidate);
+    let locations = DiagnosticLocations::new(&candidate);
     let mut errors: Vec<String> = root
         .map(|root| {
             crate::media::missing_diagnostics(&candidate, root)
                 .into_iter()
-                .map(|(error, subject)| locate_message(error, subject, document.as_ref()))
+                .map(|(error, subject)| locate_message(error, subject, locations.document()))
                 .collect()
         })
         .unwrap_or_default();
-    errors.extend(introduced_errors_located(project, &candidate));
+    errors.extend(introduced_errors_located(project, &candidate, &locations));
     if errors.is_empty() {
         ValidationResult {
             valid: true,
@@ -212,7 +212,8 @@ pub fn apply_edit_in(
     let mut errors = root
         .map(|root| crate::media::missing(&candidate, root))
         .unwrap_or_default();
-    errors.extend(introduced_errors_located(project, &candidate));
+    let locations = DiagnosticLocations::new(&candidate);
+    errors.extend(introduced_errors_located(project, &candidate, &locations));
     if !errors.is_empty() {
         return Err(errors.join("\n"));
     }
@@ -224,6 +225,28 @@ pub fn apply_edit_in(
 /// error the project already had does not block an unrelated edit.
 fn candidate_document(candidate: &Project) -> Option<crate::source_map::ParsedDocument> {
     crate::parse_document(&crate::serialize(candidate), Default::default()).ok()
+}
+
+/// A successful validation needs no serialized source snapshot. All errors in
+/// one result share the same immutable snapshot when locations are requested.
+struct DiagnosticLocations<'a> {
+    candidate: &'a Project,
+    document: std::cell::OnceCell<Option<crate::source_map::ParsedDocument>>,
+}
+
+impl<'a> DiagnosticLocations<'a> {
+    fn new(candidate: &'a Project) -> Self {
+        Self {
+            candidate,
+            document: std::cell::OnceCell::new(),
+        }
+    }
+
+    fn document(&self) -> Option<&crate::source_map::ParsedDocument> {
+        self.document
+            .get_or_init(|| candidate_document(self.candidate))
+            .as_ref()
+    }
 }
 
 fn locate_message(
@@ -264,9 +287,18 @@ fn introduced_diagnostics(
 /// sample below an added track, is not blamed for it. The errors that remain
 /// are located in `candidate`.
 pub fn introduced_errors(base: &Project, candidate: &Project, root: Option<&Path>) -> Vec<String> {
+    let locations = DiagnosticLocations::new(candidate);
+    introduced_errors_with_locations(base, candidate, root, &locations)
+}
+
+fn introduced_errors_with_locations(
+    base: &Project,
+    candidate: &Project,
+    root: Option<&Path>,
+    locations: &DiagnosticLocations<'_>,
+) -> Vec<String> {
     let mut errors = Vec::new();
     if let Some(root) = root {
-        let document = candidate_document(candidate);
         let existing: std::collections::HashSet<String> =
             crate::media::missing_diagnostics(base, root)
                 .into_iter()
@@ -276,20 +308,23 @@ pub fn introduced_errors(base: &Project, candidate: &Project, root: Option<&Path
             crate::media::missing_diagnostics(candidate, root)
                 .into_iter()
                 .filter(|(error, _)| !existing.contains(error))
-                .map(|(error, subject)| locate_message(error, subject, document.as_ref())),
+                .map(|(error, subject)| locate_message(error, subject, locations.document())),
         );
     }
-    errors.extend(introduced_errors_located(base, candidate));
+    errors.extend(introduced_errors_located(base, candidate, locations));
     errors
 }
 
-fn introduced_errors_located(base: &Project, candidate: &Project) -> Vec<String> {
-    let document = candidate_document(candidate);
+fn introduced_errors_located(
+    base: &Project,
+    candidate: &Project,
+    locations: &DiagnosticLocations<'_>,
+) -> Vec<String> {
     introduced_diagnostics(base, candidate)
         .into_iter()
         .map(|diagnostic| {
-            match document
-                .as_ref()
+            match locations
+                .document()
                 .and_then(|document| diagnostic.locate(document))
             {
                 Some((line, column)) => format!("{line}:{column}: {}", diagnostic.error),
@@ -513,6 +548,67 @@ fn resolve_track_from_path<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn successful_validation_does_not_build_a_source_location_snapshot() {
+        let base = crate::parse("@project\n tempo: 120\n@track keys | instrument: piano/acoustic_grand\n mix: vol=-500dB\n").unwrap();
+        let mut candidate = base.clone();
+        candidate.properties.tempo = 132.0;
+        let root = oc_test_support::temp_dir("oc-ai", "lazy-success");
+        let locations = DiagnosticLocations::new(&candidate);
+        assert!(
+            introduced_errors_with_locations(&base, &candidate, Some(&root), &locations).is_empty()
+        );
+        assert!(
+            locations.document.get().is_none(),
+            "unchanged baseline errors need no locations"
+        );
+    }
+
+    #[test]
+    fn media_and_semantic_errors_share_the_same_located_candidate_snapshot() {
+        let root = oc_test_support::temp_dir("oc-ai", "lazy-errors");
+        let base =
+            crate::parse("@project\n tempo: 120\n@track vocal | instrument: audio/clip\n").unwrap();
+        let candidate = crate::parse("@project\n tempo: 120\n@track vocal | instrument: audio/clip\n mix: vol=-500dB\n@audio_clip take [1:1 - 2:1] | track: vocal\n file: \"missing.wav\"\n").unwrap();
+        let locations = DiagnosticLocations::new(&candidate);
+        let errors = introduced_errors_with_locations(&base, &candidate, Some(&root), &locations);
+        assert!(
+            errors.iter().any(|error| error.contains("missing.wav")),
+            "{errors:?}"
+        );
+        assert!(
+            errors.iter().any(|error| !error.contains("missing.wav")),
+            "{errors:?}"
+        );
+        assert!(
+            errors
+                .iter()
+                .filter(|error| error.contains("missing.wav"))
+                .all(|error| error
+                    .split_once(':')
+                    .is_some_and(|(line, _)| line.parse::<u32>().is_ok())),
+            "{errors:?}"
+        );
+        let first = locations.document.get().unwrap().as_ref().unwrap();
+        assert!(std::ptr::eq(first, locations.document().unwrap()));
+        // Compare the locations to an independently parsed immutable snapshot.
+        let eager = candidate_document(&candidate).unwrap();
+        let mut expected: Vec<_> = crate::media::missing_diagnostics(&candidate, &root)
+            .into_iter()
+            .map(|(error, subject)| locate_message(error, subject, Some(&eager)))
+            .collect();
+        expected.extend(
+            introduced_diagnostics(&base, &candidate).into_iter().map(
+                |diagnostic| match diagnostic.locate(&eager) {
+                    Some((line, column)) => format!("{line}:{column}: {}", diagnostic.error),
+                    None => diagnostic.error.to_string(),
+                },
+            ),
+        );
+        assert_eq!(errors, expected);
+        assert_eq!(introduced_errors(&base, &candidate, Some(&root)), expected);
+    }
 
     #[test]
     fn a_change_is_blamed_only_for_the_media_it_adds_wherever_old_errors_move() {

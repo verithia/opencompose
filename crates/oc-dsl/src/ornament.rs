@@ -112,6 +112,12 @@ pub fn check_combinations(ornament: Ornament, note: &NoteEvent) -> Result<(), St
         ));
     }
     let conflicting = [
+        (
+            "pitch_curve_mode",
+            note.modifiers
+                .iter()
+                .any(|(key, _)| key == "pitch_curve_mode"),
+        ),
         ("bend", note.pitch_bend.is_some()),
         ("vibrato", note.vibrato.is_some()),
         ("expression", note.expression.is_some()),
@@ -499,6 +505,14 @@ mod tests {
         note.modifiers = marked("trill");
         note.pitch_bend = Some(20.0);
         assert!(segments(&note, None, 1.0).unwrap_err().contains("bend="));
+        note.pitch_bend = None;
+        note.modifiers
+            .push(("pitch_curve_mode".into(), ParamValue::String("step".into())));
+        assert!(
+            segments(&note, None, 1.0)
+                .unwrap_err()
+                .contains("pitch_curve_mode=")
+        );
     }
 
     fn c_major() -> KeySignature {
