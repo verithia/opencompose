@@ -50,6 +50,78 @@ fn render_full(project: &Project, rate: u32) -> Vec<f32> {
         .expect("full render")
 }
 
+#[test]
+fn mixing_progress_completes_only_after_a_successful_render() {
+    use crate::render_cancel::RenderStage;
+    use std::sync::{Arc, Mutex};
+    let records = Arc::new(Mutex::new(Vec::new()));
+    let captured = records.clone();
+    let mut cache = RenderCache::new();
+    cache.set_pattern_previews(false);
+    cache.set_progress(Box::new(move |progress| {
+        captured.lock().unwrap().push(progress);
+    }));
+    let audio = cache
+        .render_full(
+            &range_project(),
+            Path::new("unused.sf2"),
+            8_000,
+            &mut HashMap::new(),
+        )
+        .unwrap();
+    assert!(audio.iter().any(|sample| sample.abs() > 0.001));
+    let records = records.lock().unwrap();
+    let mixing: Vec<_> = records
+        .iter()
+        .filter(|p| p.stage == RenderStage::Mixing)
+        .collect();
+    assert!(
+        mixing.len() >= 2,
+        "mixing must report both in-progress and completed states"
+    );
+    assert_eq!(mixing.first().unwrap().fraction, 0.0);
+    assert_eq!(mixing.last().unwrap().fraction, 1.0);
+    assert!(mixing[..mixing.len() - 1].iter().all(|p| p.fraction < 1.0));
+}
+
+#[test]
+fn cancelling_at_mix_start_never_reports_completion_or_publishes_pcm() {
+    use crate::render_cancel::{CancelToken, RenderStage};
+    use std::sync::{Arc, Mutex};
+    let cancel = CancelToken::new();
+    let request_cancel = cancel.clone();
+    let records = Arc::new(Mutex::new(Vec::new()));
+    let captured = records.clone();
+    let mut cache = RenderCache::new();
+    cache.set_pattern_previews(false);
+    cache.set_cancel_token(cancel);
+    cache.set_progress(Box::new(move |progress| {
+        captured.lock().unwrap().push(progress);
+        if progress.stage == RenderStage::Mixing {
+            request_cancel.cancel();
+        }
+    }));
+    let error = cache
+        .render_full(
+            &range_project(),
+            Path::new("unused.sf2"),
+            8_000,
+            &mut HashMap::new(),
+        )
+        .unwrap_err();
+    assert_eq!(error, crate::render_cancel::CANCELLED_MESSAGE);
+    assert!(cache.master_buffer().is_none());
+    assert!(cache.is_dirty());
+    let records = records.lock().unwrap();
+    assert!(records.iter().any(|p| p.stage == RenderStage::Mixing));
+    assert!(
+        records
+            .iter()
+            .filter(|p| p.stage == RenderStage::Mixing)
+            .all(|p| p.fraction < 1.0)
+    );
+}
+
 fn render_range(
     project: &Project,
     rate: u32,
@@ -1562,4 +1634,305 @@ fn replacing_a_media_file_invalidates_a_subset_window() {
     );
 
     let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn cold_full_window_bounds_the_prefix_without_publishing_a_full_cache() {
+    use std::sync::{Arc, Mutex};
+    let rate = 8_000;
+    let project = window_project();
+    let full = render_full(&project, rate);
+    let records = Arc::new(Mutex::new(Vec::new()));
+    let sink = records.clone();
+    let mut cache = RenderCache::new();
+    cache.set_pattern_previews(false);
+    cache.set_progress(Box::new(move |progress| {
+        sink.lock().unwrap().push(progress)
+    }));
+    let request = window_request(16_000, 24_000, None);
+    let output = cache
+        .render_range(
+            &project,
+            Path::new("unused.sf2"),
+            rate,
+            &mut HashMap::new(),
+            request.clone(),
+        )
+        .unwrap();
+    assert_eq!(
+        output.audio,
+        full[32_000..48_000],
+        "stateful bus/master history must match from frame0"
+    );
+    assert!(!output.cache_hit);
+    assert_eq!(output.window, None);
+    assert!(
+        cache.master_buffer().is_none(),
+        "a prefix cannot become a complete cached mix"
+    );
+    assert!(cache.is_dirty());
+    assert!(
+        cache.progress.is_some(),
+        "scratch returns the owned callback"
+    );
+    assert!(
+        records
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|p| p.stage == crate::render_cancel::RenderStage::Mixing)
+    );
+    let next = cache
+        .render_range(
+            &project,
+            Path::new("unused.sf2"),
+            rate,
+            &mut HashMap::new(),
+            window_request(24_000, 32_000, None),
+        )
+        .unwrap();
+    assert_eq!(next.audio, full[48_000..64_000]);
+    assert!(
+        !next.cache_hit,
+        "a different range cannot hit a partial full cache"
+    );
+    let complete = cache
+        .render_full(&project, Path::new("unused.sf2"), rate, &mut HashMap::new())
+        .unwrap();
+    assert_eq!(complete, full);
+    assert!(!cache.is_dirty());
+}
+
+#[test]
+fn cold_full_window_keeps_export_bus_captures_on_the_complete_path() {
+    let project = window_project();
+    let rate = 8_000;
+    let mut cache = RenderCache::new();
+    cache.capture_export_stems();
+    let output = cache
+        .render_range(
+            &project,
+            Path::new("unused.sf2"),
+            rate,
+            &mut HashMap::new(),
+            window_request(16_000, 24_000, None),
+        )
+        .unwrap();
+    assert!(!output.cache_hit);
+    let master = cache
+        .master_buffer()
+        .expect("capture requests retain the full cache");
+    assert!(master.len() > 48_000);
+    assert_eq!(output.audio, master[32_000..48_000]);
+    let capture = cache.stem_capture.as_ref().unwrap();
+    assert!(!capture.buses.is_empty());
+    assert!(
+        capture
+            .buses
+            .iter()
+            .all(|(_, buffer)| buffer.len() >= master.len())
+    );
+}
+
+#[test]
+fn cold_full_window_cancellation_restores_progress_and_publishes_nothing() {
+    let project = window_project();
+    let token = crate::render_cancel::CancelToken::new();
+    let signal = token.clone();
+    let mut cache = RenderCache::new();
+    cache
+        .render_full(
+            &project,
+            Path::new("unused.sf2"),
+            8_000,
+            &mut HashMap::new(),
+        )
+        .unwrap();
+    cache.mark_all_dirty();
+    cache.set_cancel_token(token);
+    cache.set_progress(Box::new(move |_| signal.cancel()));
+    let error = cache
+        .render_range(
+            &project,
+            Path::new("unused.sf2"),
+            8_000,
+            &mut HashMap::new(),
+            window_request(16_000, 24_000, None),
+        )
+        .unwrap_err();
+    assert_eq!(error, crate::render_cancel::CANCELLED_MESSAGE);
+    assert!(cache.master_buffer().is_none());
+    assert!(cache.is_dirty());
+    assert!(
+        cache.progress.is_some(),
+        "cancelled scratch must return its callback"
+    );
+}
+
+#[test]
+fn cold_full_window_falls_back_when_future_stereo_changes_earlier_pan_gains() {
+    let rate = 8_000;
+    let root = oc_test_support::temp_dir("oc-range", "future-width");
+    let mut writer = hound::WavWriter::create(
+        root.join("hit.wav"),
+        hound::WavSpec {
+            channels: 2,
+            sample_rate: rate,
+            bits_per_sample: 32,
+            sample_format: hound::SampleFormat::Float,
+        },
+    )
+    .unwrap();
+    for frame in 0..rate * 4 {
+        let value = (frame as f32 * 0.1).sin() * 0.25;
+        writer.write_sample(value).unwrap();
+        writer
+            .write_sample(if frame < rate * 3 { value } else { -value })
+            .unwrap();
+    }
+    writer.finalize().unwrap();
+    let project = media_project();
+    let mut reference = RenderCache::new();
+    reference.set_resource_root(Some(root.to_path_buf()));
+    let full = reference
+        .render_full(&project, Path::new("unused.sf2"), rate, &mut HashMap::new())
+        .unwrap();
+    let mut cache = RenderCache::new();
+    cache.set_resource_root(Some(root.to_path_buf()));
+    let output = cache
+        .render_range(
+            &project,
+            Path::new("unused.sf2"),
+            rate,
+            &mut HashMap::new(),
+            window_request(0, 1_000, None),
+        )
+        .unwrap();
+    assert_eq!(
+        output.audio,
+        full[..2_000],
+        "late stereo must use balance gain even in the mono prefix"
+    );
+    assert!(
+        cache.master_buffer().is_some(),
+        "ambiguous mono prefix requires the complete fallback"
+    );
+    assert!(!cache.is_dirty());
+}
+
+#[test]
+fn a_cold_far_past_end_window_does_not_allocate_its_offset_as_a_prefix() {
+    let project = window_project();
+    let mut cache = RenderCache::new();
+    let output = cache
+        .render_range(
+            &project,
+            Path::new("unused.sf2"),
+            8_000,
+            &mut HashMap::new(),
+            window_request(1_000_000_000_000, 1_000_000_000_001, None),
+        )
+        .unwrap();
+    assert_eq!(output.audio, [0.0, 0.0]);
+    assert!(cache.master_buffer().unwrap().len() < 1_000_000);
+}
+
+#[test]
+fn a_cold_far_past_end_subset_renders_real_tails_without_allocating_its_offset() {
+    let project = window_project();
+    let mut cache = RenderCache::new();
+    let output = cache
+        .render_range(
+            &project,
+            Path::new("unused.sf2"),
+            8_000,
+            &mut HashMap::new(),
+            window_request(1_000_000_000_000, 1_000_000_000_001, Some(vec![0])),
+        )
+        .unwrap();
+    assert_eq!(output.audio, [0.0, 0.0]);
+    assert_eq!(output.tracks, [0]);
+    assert_eq!(output.window, Some(RangeWindowPath::Cold));
+    assert!(!output.cache_hit);
+    assert!(cache.master_buffer().is_none());
+    assert!(cache.is_dirty());
+}
+
+#[test]
+fn cold_full_window_resolves_only_mono_widths_and_their_sidechain_feeds() {
+    let project = oc_dsl::parse(
+        r#"@project "Mono width witness"
+  tempo: 120
+@preset mono
+  source: builtin
+  plugin: "builtin.open_synth"
+  params: {osc.a.waveform: 0, osc.b.level: 0, sub.level: 0, noise.level: 0, unison.voices: 1}
+@track feed | preset: mono, instrument: synth/lead_square
+  performance: { @0 ch0 note_on 60 100; @12 ch0 note_off 60 0; }
+@track target | preset: mono, instrument: synth/lead_square
+  effects:
+    - compression: threshold=-24dB, ratio=4:1, attack=2ms, release=80ms, sidechain=feed
+  performance: { @0 ch0 note_on 48 100; @12 ch0 note_off 48 0; }
+@track stable | preset: mono, instrument: synth/lead_square
+  mix: pan_law=balance
+  performance: { @0 ch0 note_on 72 100; @12 ch0 note_off 72 0; }
+"#,
+    )
+    .unwrap();
+    let rate = 8_000;
+    let full = render_full(&project, rate);
+    let mut cache = RenderCache::new();
+    let output = cache
+        .render_range(
+            &project,
+            Path::new("unused.sf2"),
+            rate,
+            &mut HashMap::new(),
+            window_request(1_000, 8_000, None),
+        )
+        .unwrap();
+    assert_eq!(output.audio, full[2_000..16_000]);
+    assert!(
+        cache.master_buffer().is_none(),
+        "resolved mono must keep the prefix path instead of rerendering the complete mix"
+    );
+    assert!(cache.is_dirty());
+    assert!(!output.cache_hit);
+    let counters = cache.render_counters();
+    assert_eq!(
+        counters.source_renders, 5,
+        "3prefix sources plus2mono/dependency witnesses, no second stable source: {counters:?}"
+    );
+    assert_eq!(counters.full_render_calls, 0);
+}
+
+#[test]
+fn captured_bus_range_has_exact_length_padding_and_atomic_refusal() {
+    let mut cache = RenderCache::new();
+    assert!(cache.captured_bus_range("room", 0, 1).is_err());
+    cache.capture_export_stems();
+    cache
+        .stem_capture
+        .as_mut()
+        .unwrap()
+        .buses
+        .push(("room".into(), vec![1.0, -1.0, 2.0, -2.0, 3.0, -3.0]));
+    assert!(
+        cache.captured_bus_range("room", 0, 1).is_err(),
+        "a dirty capture cannot be read"
+    );
+    cache.mix_dirty = false;
+    let before = cache.stems().unwrap().buses.clone();
+    assert_eq!(
+        cache.captured_bus_range("room", 1, 4).unwrap(),
+        [2.0, -2.0, 3.0, -3.0, 0.0, 0.0, 0.0, 0.0]
+    );
+    assert_eq!(
+        cache.captured_bus_range("room", u64::MAX, 2).unwrap(),
+        [0.0; 4]
+    );
+    assert!(cache.captured_bus_range("missing", 0, 1).is_err());
+    assert!(cache.captured_bus_range("room", 0, usize::MAX).is_err());
+    assert!(cache.captured_bus_range("room", 0, usize::MAX / 2).is_err());
+    assert_eq!(cache.stems().unwrap().buses, before);
 }

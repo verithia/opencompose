@@ -24,10 +24,14 @@ use oc_dsl::ast::{Effect, InstrumentPath, ParamValue, PresetDef, Project};
 use oc_dsl::timing::ProjectClock;
 use oc_engine::block_source::{BlockSource, MAX_SOURCE_BLOCK_FRAMES, SmartSource, SourceOutput};
 use oc_engine::clip_lane::ClipLanes;
-use oc_engine::graph::{AudioGraph, PreparedGraphBlock};
+use oc_engine::control_link::MidiControlInput;
+use oc_engine::graph::{AudioGraph, GraphLiveInputs, PreparedGraphBlock, PresetMacroInput};
+
+mod rack_macro;
 use oc_engine::interpret::{self, InterpretSettings, MidiEvent, MidiMessage};
 use oc_engine::media_cache::MediaKey;
 use oc_host::PluginTransport;
+pub(crate) use rack_macro::RackMacroEdit;
 
 use crate::first_block::{FirstBlock, StartPath};
 use crate::meters::{Correlation, GONIOMETER_VALUES, MeterHub, MonitorValues, goniometer};
@@ -170,6 +174,13 @@ pub enum RenderCommand {
         /// Pre-render the opening lookahead while stopped (warm-up on load).
         warm: bool,
     },
+    SavedRackMacro {
+        project: Box<Project>,
+        soundfont_path: PathBuf,
+        root: Option<PathBuf>,
+        warm: bool,
+        edit: RackMacroEdit,
+    },
     /// Mixer-only change: patch the live graph, never rebuild existing instruments.
     MixerChanged {
         project: Box<Project>,
@@ -182,6 +193,12 @@ pub enum RenderCommand {
     ChainChanged {
         project: Box<Project>,
         soundfont_path: PathBuf,
+    },
+    /// Retire the temporary value after the queued saved edit has been applied.
+    EndPresetMacroPreview {
+        preset: String,
+        index: u8,
+        token: oc_engine::touch::TouchToken,
     },
     /// Point the analyser at one node, or stop it with None.
     Spectrum { target: Option<String> },
@@ -469,6 +486,8 @@ pub struct StreamingPlayback {
     pub meters: Arc<MeterHub>,
     /// Live per-parameter touch overrides; offline renders never see this.
     pub touch: Arc<oc_engine::touch::TouchRegistry>,
+    midi_cc: Option<Arc<MidiControlInput>>,
+    preset_macros: Option<Arc<PresetMacroInput>>,
     /// Session loop region in frames. The pair is one value: a reader never
     /// pairs one edit's start with another edit's end.
     loop_region: AtomicPair,
@@ -738,6 +757,8 @@ fn streaming_playback(consumer: rtrb::Consumer<f32>) -> StreamingPlayback {
         stream_error: Mutex::new(None),
         meters: Arc::new(MeterHub::new()),
         touch: Arc::new(oc_engine::touch::TouchRegistry::new()),
+        midi_cc: None,
+        preset_macros: None,
         loop_region: AtomicPair::new(),
         loop_enabled: AtomicBool::new(false),
         loop_seam: AtomicPair::new(),
@@ -749,13 +770,25 @@ fn streaming_playback(consumer: rtrb::Consumer<f32>) -> StreamingPlayback {
 impl RenderThreadHandle {
     /// Spawn the background render thread.
     pub fn spawn(sample_rate: u32) -> Self {
+        Self::spawn_with_controls(sample_rate, None, None)
+    }
+
+    pub(crate) fn spawn_with_controls(
+        sample_rate: u32,
+        midi_cc: Option<Arc<MidiControlInput>>,
+        preset_macros: Option<Arc<PresetMacroInput>>,
+    ) -> Self {
         let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
         let (build_tx, build_rx) = std::sync::mpsc::channel();
 
         // Create ring buffer (stereo interleaved, so capacity * 2 floats)
         let (producer, consumer) = rtrb::RingBuffer::new(RING_BUFFER_FRAMES * 2);
 
-        let playback = Arc::new(streaming_playback(consumer));
+        let playback = Arc::new(StreamingPlayback {
+            midi_cc,
+            preset_macros,
+            ..streaming_playback(consumer)
+        });
 
         let playback_clone = Arc::clone(&playback);
         let render_build_tx = build_tx.clone();
@@ -829,7 +862,10 @@ impl RenderThreadHandle {
             }
             _ => {}
         }
-        if matches!(&cmd, RenderCommand::ProjectChanged { .. }) {
+        if matches!(
+            &cmd,
+            RenderCommand::ProjectChanged { .. } | RenderCommand::SavedRackMacro { .. }
+        ) {
             self.playback.project_loaded.store(false, Ordering::Release);
             *self.playback.load_error.lock().unwrap() = None;
         }
@@ -944,6 +980,9 @@ fn is_musical_event(event: &MidiMessage) -> bool {
 
 /// True when a lane's audio comes only from clip lanes on its track.
 fn clip_only_lane(project: &Project, lane: &oc_dsl::ast::Track, has_musical_events: bool) -> bool {
+    if lane.instrument.is_midi_only() {
+        return true;
+    }
     !has_musical_events
         && lane.preset.is_none()
         && project
@@ -961,6 +1000,7 @@ fn clip_only_lane(project: &Project, lane: &oc_dsl::ast::Track, has_musical_even
 struct SourceSignature<'a> {
     presets: &'a [PresetDef],
     soundfont: &'a Path,
+    resource_root: Option<&'a Path>,
     /// Tempo and meter decide the sample position of every scheduled
     /// performance command, which a lane captures when it is built.
     properties: &'a oc_dsl::ast::ProjectProperties,
@@ -983,10 +1023,11 @@ struct TrackSignature<'a> {
     gain_automation: &'a [oc_dsl::ast::GainAutomation],
 }
 
-fn source_signature(project: &Project, soundfont_path: &Path) -> u64 {
+fn source_signature(project: &Project, soundfont_path: &Path, resource_root: Option<&Path>) -> u64 {
     let signature = SourceSignature {
         presets: &project.presets,
         soundfont: soundfont_path,
+        resource_root,
         properties: &project.properties,
         tracks: project
             .tracks
@@ -1140,6 +1181,8 @@ struct RenderState {
     source_epoch: u64,
     /// Live touch overrides; `None` in offline-only states and offline renders.
     touch: Option<Arc<oc_engine::touch::TouchRegistry>>,
+    midi_cc: Option<Arc<MidiControlInput>>,
+    preset_macros: Option<Arc<PresetMacroInput>>,
     /// Fold the monitored master to mono; read from the meter hub each loop.
     mono_check: bool,
     /// Short-term loudness of the monitored master.
@@ -1227,6 +1270,8 @@ impl RenderState {
             pending_sources: Vec::new(),
             source_epoch: 0,
             touch: None,
+            midi_cc: None,
+            preset_macros: None,
             mono_check: false,
             loudness: oc_engine::analysis::ShortTermLoudness::new(sample_rate),
             correlation: Correlation::new(sample_rate),
@@ -1281,8 +1326,12 @@ impl RenderState {
         root: Option<PathBuf>,
         cursor: u64,
     ) -> Result<(), String> {
-        self.root = root;
-        self.replace_project(project, soundfont_path, Some(cursor))
+        let previous_root = std::mem::replace(&mut self.root, root);
+        let result = self.replace_project(project, soundfont_path, Some(cursor));
+        if result.is_err() {
+            self.root = previous_root;
+        }
+        result
     }
 
     fn load_project(&mut self, project: &Project, soundfont_path: PathBuf) -> Result<(), String> {
@@ -1298,11 +1347,12 @@ impl RenderState {
     ) -> Result<(), String> {
         // Build a replacement completely before publishing it. No partial track
         // set or bypassed effect chain may be reported as a loaded project.
+        let clock = ProjectClock::new(&project.properties)?;
         let mut replacement = Self::new(self.sample_rate);
         // A change that leaves every instrument, preset and lane chain alone
         // (a note edit, a clip move, automation) reuses the built sources: the
         // project is re-interpreted, but no plugin is instantiated again.
-        let signature = source_signature(project, &soundfont_path);
+        let signature = source_signature(project, &soundfont_path, self.root.as_deref());
         let reuse_sources = signature == self.source_signature
             && self.renderers.len() == project.tracks.len()
             && !self.renderers.is_empty();
@@ -1323,9 +1373,11 @@ impl RenderState {
             replacement.sounding_voices = Arc::clone(&self.sounding_voices);
         }
         replacement.touch.clone_from(&self.touch);
+        replacement.midi_cc.clone_from(&self.midi_cc);
+        replacement.preset_macros.clone_from(&self.preset_macros);
         replacement.click_settings = self.click_settings;
         replacement.preroll_budget = self.preroll_budget;
-        replacement.clock = ProjectClock::new(&project.properties).ok();
+        replacement.clock = Some(clock);
         replacement.mono_check = self.mono_check;
         replacement
             .spectrum_target
@@ -1369,7 +1421,7 @@ impl RenderState {
         // The scope publishes progress only while this build owns the report.
         let progress = crate::build_progress::scope(project.tracks.len());
         // A reused lane set is still the signature this build describes.
-        self.source_signature = source_signature(project, &soundfont_path);
+        self.source_signature = source_signature(project, &soundfont_path, self.root.as_deref());
         #[cfg(test)]
         let phase = std::time::Instant::now();
         let worker_options = crate::gui_settings::load().worker_options();
@@ -1394,10 +1446,11 @@ impl RenderState {
         if self.sample_rate == 0 {
             return Err("Streaming sample rate must be positive".into());
         }
-        let clock = Arc::new(ProjectClock::new(&project.properties).map_err(|e| e.to_string())?);
-        self.transport = Some(
-            PluginTransport::new(0, self.sample_rate, project.properties.tempo).with_clock(clock),
-        );
+        self.transport = Some(PluginTransport::from_project(
+            0,
+            self.sample_rate,
+            &project.properties,
+        )?);
         self.soundfont_path = soundfont_path;
         self.num_tracks = project.tracks.len();
 
@@ -1608,8 +1661,12 @@ impl RenderState {
                         track,
                         self.root.as_deref(),
                     );
-                    let mut chain =
-                        oc_engine::source_lanes::effect_chain(project, track, self.sample_rate)?;
+                    let mut chain = oc_engine::source_lanes::effect_chain_with_resources(
+                        project,
+                        track,
+                        self.sample_rate,
+                        self.root.as_deref(),
+                    )?;
                     // Lane effects run on the streaming path, so their hosted
                     // plugins participate in the idle gate.
                     chain.set_streaming_idle_gate(true);
@@ -1751,19 +1808,17 @@ impl RenderState {
         // Preset effects run on the pattern lanes; the graph's chains carry only
         // each track's own effects, exactly as an in-place chain patch does.
         let mixer_project = oc_engine::graph::graph_document(project);
-        self.graph = Some(match self.touch.as_ref() {
-            Some(touch) => AudioGraph::try_from_project_with_source_latencies_and_touch(
-                &mixer_project,
-                self.sample_rate,
-                &track_latencies,
-                Arc::clone(touch),
-            )?,
-            None => AudioGraph::try_from_project_with_source_latencies(
-                &mixer_project,
-                self.sample_rate,
-                &track_latencies,
-            )?,
-        });
+        self.graph = Some(AudioGraph::try_from_project_with_live_inputs(
+            &mixer_project,
+            self.sample_rate,
+            &track_latencies,
+            self.root.as_deref(),
+            GraphLiveInputs {
+                touch: self.touch.clone(),
+                midi_cc: self.midi_cc.clone(),
+                preset_macros: self.preset_macros.clone(),
+            },
+        )?);
         if let Some(graph) = &mut self.graph {
             graph.set_spectrum_target(self.spectrum_target.clone());
             publish_chain_latency(&self.chain_latency_frames, graph);
@@ -2298,10 +2353,10 @@ impl RenderState {
             let mut pos = chunk_start;
 
             while pos < source_end {
-                if self.renderers[track_idx].is_vst3()
+                if self.renderers[track_idx].supports_score_offsets()
                     || self.renderers[track_idx].performance_uses_offsets()
                 {
-                    // Same 128-frame VST3 processing quantum as offline export.
+                    // Same 128-frame hosted processing quantum as offline export.
                     // Keep sample offsets; chopping at each note changes plugin
                     // block-dependent envelopes and round-robin behavior.
                     let transport = self.transport.as_ref().unwrap().at_sample(pos);
@@ -2334,7 +2389,7 @@ impl RenderState {
                             break;
                         }
                         if let Err(error) = self.renderers[track_idx]
-                            .send_vst3_at(&ev.event, ev.time_samples.saturating_sub(pos) as i32)
+                            .send_score_at(&ev.event, ev.time_samples.saturating_sub(pos) as i32)
                         {
                             self.render_error = Some(format!("Track {track_idx}: {error}"));
                             return;
@@ -2839,8 +2894,12 @@ impl RenderState {
     /// A source that cannot restore its own DSP state is rebuilt alone; the
     /// other lanes keep their instances and plugin state.
     fn rewind_for_seek(&mut self) -> Result<(), String> {
+        let transport = self
+            .transport
+            .as_ref()
+            .map(|transport| transport.at_sample(self.dsp_cursor));
         for lane in 0..self.renderers.len() {
-            if self.renderers[lane].rewind() {
+            if self.renderers[lane].rewind_from(transport.clone()) {
                 continue;
             }
             self.rebuild_source(lane)?;
@@ -2848,8 +2907,11 @@ impl RenderState {
         for chain in &mut self.source_chains {
             chain.reset();
         }
-        if let Some(graph) = self.graph.as_mut() {
-            graph.reset();
+        if let (Some(graph), Some(project)) = (self.graph.as_mut(), self.project.as_ref()) {
+            if graph.rewind_mixer_for_seek(project, self.touch.as_ref(), CHUNK_FRAMES)? {
+                publish_chain_latency(&self.chain_latency_frames, graph);
+                self.update_drain_frames();
+            }
         }
         for delay in &mut self.source_delays {
             for sample in delay.iter_mut() {
@@ -3179,7 +3241,12 @@ fn build_lanes(
             .iter()
             .find(|p| Some(&p.name) == lane.preset.as_ref());
         let params = oc_engine::preset::builtin_track_params_at(project, preset, &lane, root);
-        let mut chain = oc_engine::source_lanes::effect_chain(project, &lane, sample_rate)?;
+        let mut chain = oc_engine::source_lanes::effect_chain_with_resources(
+            project,
+            &lane,
+            sample_rate,
+            root,
+        )?;
         chain.set_streaming_idle_gate(true);
         let mut source = if clip_only_lane(project, &lane, has_musical) {
             BlockSource::Silent
@@ -3230,6 +3297,9 @@ struct SourceBuilder {
 
 impl SourceBuilder {
     fn run(self) {
+        #[cfg(target_os = "macos")]
+        let _bridge_scope =
+            oc_host::vst2_bridge::BridgeScope::enter(oc_host::vst2_bridge::BridgeMode::Streaming);
         while let Ok(request) = self.requests.recv() {
             if self.shutdown.load(Ordering::Acquire) {
                 break;
@@ -3381,6 +3451,9 @@ fn render_loop(
     shutdown: Arc<AtomicBool>,
     build_tx: Sender<SourceBuildRequest>,
 ) {
+    #[cfg(target_os = "macos")]
+    let _bridge_scope =
+        oc_host::vst2_bridge::BridgeScope::enter(oc_host::vst2_bridge::BridgeMode::Streaming);
     let mut state = RenderState::new(sample_rate);
     let mut chunk = Vec::with_capacity(CHUNK_FRAMES * 2);
     state.meter_hub = Some(Arc::clone(&playback.meters));
@@ -3391,6 +3464,8 @@ fn render_loop(
         state.sounding_voices = Arc::clone(&playback.sounding_voices);
     }
     state.touch = Some(Arc::clone(&playback.touch));
+    state.midi_cc = playback.midi_cc.clone();
+    state.preset_macros = playback.preset_macros.clone();
     // Reset whenever a seek generation has not been acknowledged for this long.
     let mut ack_wait_started: Option<std::time::Instant> = None;
     // Loop generation already applied; a newer one invalidates the queued pass.
@@ -3476,6 +3551,12 @@ fn render_loop(
         }
 
         if let Some(cmd) = cmd {
+            // A rack-only save shares the project-load queue so the gesture
+            // release cannot overtake its saved value.
+            let rack_macro = match &cmd {
+                RenderCommand::SavedRackMacro { edit, .. } => Some(edit.clone()),
+                _ => None,
+            };
             // Ack on every exit (including rejected requests), after command
             // state/ring invalidation is visible. A newer Pause still owns its
             // independent output gate and cannot be undone by this ack.
@@ -3495,6 +3576,15 @@ fn render_loop(
                 .then_some(&playback.position_applied),
             );
             match cmd {
+                RenderCommand::EndPresetMacroPreview {
+                    preset,
+                    index,
+                    token,
+                } => {
+                    if let Some(macros) = &state.preset_macros {
+                        macros.end(&preset, index, &token);
+                    }
+                }
                 #[cfg(test)]
                 RenderCommand::TestBarrier { entered, release } => {
                     let _ = entered.send(());
@@ -3678,11 +3768,34 @@ fn render_loop(
                     playback.meters.clear();
                 }
                 RenderCommand::ProjectChanged {
-                    project,
+                    mut project,
                     soundfont_path,
                     root,
                     warm,
+                }
+                | RenderCommand::SavedRackMacro {
+                    mut project,
+                    soundfont_path,
+                    root,
+                    warm,
+                    ..
                 } => {
+                    if state.playing
+                        && rack_macro.as_ref().is_some_and(|edit| {
+                            state.try_commit_rack_macro(
+                                &mut project,
+                                &soundfont_path,
+                                root.as_deref(),
+                                edit,
+                            )
+                        })
+                    {
+                        state.source_signature =
+                            source_signature(&project, &soundfont_path, root.as_deref());
+                        state.project = Some(*project);
+                        playback.project_loaded.store(true, Ordering::Release);
+                        continue;
+                    }
                     let was_playing = state.playing;
                     let current_frame = playback.play_cursor_frames.load(Ordering::Acquire);
                     playback.project_loaded.store(false, Ordering::Release);
@@ -3702,13 +3815,16 @@ fn render_loop(
                         .then_some(current_frame.min(state.total_frames));
                     invalidate_playback_buffer(&playback);
                     state.publish_ends(&playback);
-                    playback.project_loaded.store(true, Ordering::Release);
                     playback
                         .active_sources
                         .store(state.renderers.len() as u64, Ordering::Release);
-                    // Warm only a stopped project: a playing project is filled by
-                    // the consumer-driven loop and must not preroll twice.
-                    if warm && !was_playing {
+                    if warm
+                        && !was_playing
+                        && state
+                            .renderers
+                            .iter()
+                            .all(SmartSource::can_prefill_before_play)
+                    {
                         state.warm_fill = true;
                         warm_stage = false;
                         playback.warm_state.store(WARM_BUILDING, Ordering::Release);
@@ -3718,6 +3834,7 @@ fn render_loop(
                             warm_first = None;
                         }
                     }
+                    playback.project_loaded.store(true, Ordering::Release);
                     log::info!(
                         "[render_thread] Project loaded: {} tracks, {:.1}s duration",
                         state.num_tracks,

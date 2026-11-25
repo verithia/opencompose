@@ -9,6 +9,31 @@ use std::time::Duration;
 use crate::state::AppState;
 
 #[test]
+fn engine_render_progress_never_completes_before_mixing_or_moves_backwards() {
+    use crate::commands::render::{ExportPhase, engine_progress};
+    use oc_engine::render_cancel::{RenderProgress, RenderStage};
+    let (tx, rx) = mpsc::channel();
+    let report = engine_progress(Arc::new(move |phase, fraction| {
+        tx.send((phase, fraction)).unwrap();
+    }));
+    for stage in [RenderStage::Rendering, RenderStage::Mixing] {
+        for fraction in [0.0, 0.5, 1.0] {
+            report(RenderProgress { stage, fraction });
+        }
+    }
+    let rows: Vec<_> = rx.try_iter().collect();
+    assert!(rows.iter().all(|row| row.0 == ExportPhase::Rendering));
+    let fractions: Vec<_> = rows.iter().map(|row| row.1).collect();
+    assert_eq!(fractions, [0.0, 0.25, 0.5, 0.5, 0.75, 1.0]);
+    assert!(fractions.windows(2).all(|pair| pair[0] <= pair[1]));
+    assert!(
+        fractions[..fractions.len() - 1]
+            .iter()
+            .all(|fraction| *fraction < 1.0)
+    );
+}
+
+#[test]
 fn an_agent_audition_keeps_its_source_when_the_explicit_output_is_reused() {
     let state = render_state();
     let rate = state.lock_inner().audio.sample_rate;

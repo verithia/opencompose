@@ -1,4 +1,73 @@
 #[test]
+fn live_midi_cc_reaches_mixer_effects_without_an_audition_or_take() {
+    use super::*;
+    use crate::midi_bridge::LiveEvent;
+    use crate::midi_live::{LiveInputSink, LiveSink};
+
+    let project = oc_dsl::parse(
+        r#"@project
+  tempo: 120
+@preset tone
+  source: builtin
+  plugin: "builtin.test_tone"
+@track lead | preset: tone, instrument: synth/lead
+  mix: output=return
+  effects:
+    - gain: factor=1
+  @phrase p [1:1 - 2:1]
+    C4 w
+@bus return
+  routes: [master]
+  effects:
+    - gain: factor=1
+@control_link performance
+  from: cc(74, 2)
+  -> track: lead param: fx1.factor formula: midi_unit
+  -> track: return param: fx1.factor formula: midi_centered
+"#,
+    )
+    .unwrap();
+    let midi_cc = Arc::new(MidiControlInput::default());
+    let mut sink = LiveInputSink {
+        route: Arc::new(Mutex::new(None)),
+        capture: Arc::default(),
+        midi_cc: Arc::clone(&midi_cc),
+    };
+    let event = |channel, value| LiveEvent::ControlChange {
+        channel,
+        controller: 74,
+        value,
+    };
+    let mut reference = RenderState::new(8_000);
+    let mut with_input = RenderState::new(8_000);
+    with_input.midi_cc = Some(midi_cc);
+    for renderer in [&mut reference, &mut with_input] {
+        renderer.load_project(&project, PathBuf::new()).unwrap();
+    }
+    sink.route(event(0, 0));
+    let dry = reference.render_chunk(64);
+    assert!(dry.iter().any(|value| value.abs() > 0.05));
+    assert_eq!(with_input.render_chunk(64), dry);
+
+    sink.route(event(1, 64));
+    let dry = reference.render_chunk(64);
+    let linked = with_input.render_chunk(64);
+    assert_eq!(linked.len(), dry.len());
+    assert!(dry.iter().any(|value| value.abs() > 0.05));
+    for (linked, dry) in linked.into_iter().zip(dry) {
+        assert!(
+            (linked - dry * (64.0 / 127.0)).abs() < 1e-6,
+            "linked {linked}, authored {dry}"
+        );
+    }
+
+    sink.route(event(1, 127));
+    let muted = with_input.render_chunk(64);
+    assert_eq!(muted.len(), 128);
+    assert!(muted.iter().all(|value| *value == 0.0));
+}
+
+#[test]
 fn natural_playback_drains_effects_without_extending_the_timeline_or_preview() {
     use super::*;
     let project = oc_dsl::parse(
@@ -73,6 +142,52 @@ fn natural_playback_drains_effects_without_extending_the_timeline_or_preview() {
     }
     assert_eq!(state.render_chunk(32).len(), 10);
     assert!(state.render_chunk(32).is_empty());
+}
+
+#[test]
+fn streaming_insert_sidecars_are_loaded_from_each_projects_own_directory() {
+    use super::*;
+    let project = oc_dsl::parse(
+        r#"@project
+  tempo: 120
+@preset tone
+  source: builtin
+  plugin: "builtin.test_tone"
+  effects:
+    - plugin:"vst3.test.fake.effect": state_file="source.bank"
+@track lead | preset: tone, instrument: synth/lead
+  @phrase notes [1:1 - 2:1]
+    C4 q
+"#,
+    )
+    .unwrap();
+    let first = tempfile::tempdir().unwrap();
+    let second = tempfile::tempdir().unwrap();
+    for (root, value) in [(&first, 0.125_f64), (&second, 0.25_f64)] {
+        std::fs::write(
+            root.path().join("source.bank"),
+            oc_host::encode_plugin_state(
+                oc_host::PluginFormat::Vst3,
+                "test.fake.effect",
+                &value.to_le_bytes(),
+            ),
+        )
+        .unwrap();
+    }
+    let mut state = RenderState::new(8000);
+    state
+        .load_project_from(&project, PathBuf::new(), Some(first.path().to_owned()), 0)
+        .unwrap();
+    let before = state.render_chunk(64);
+    assert!(before.iter().any(|value| value.abs() > 0.05));
+    state
+        .load_project_from(&project, PathBuf::new(), Some(second.path().to_owned()), 0)
+        .unwrap();
+    let after = state.render_chunk(64);
+    assert_eq!(before.len(), after.len());
+    for (before, after) in before.into_iter().zip(after) {
+        assert!((before * 2.0 - after).abs() < 1e-6);
+    }
 }
 
 #[test]
@@ -1689,6 +1804,407 @@ fn pause_intent_silences_callback_even_if_queued_play_sets_active() {
     assert!(!handle.playback.output_suspended.load(Ordering::Acquire));
 }
 
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[test]
+#[ignore = "requires Rosetta, the Intel bridge helper and an Intel gain fixture"]
+fn intel_vst2_insert_streams_through_the_device_ring() {
+    let fixture = std::env::var("OPENCOMPOSE_TEST_INTEL_VST2_GAIN")
+        .expect("set OPENCOMPOSE_TEST_INTEL_VST2_GAIN to the cross-compiled VST2 gain fixture");
+    let module = std::path::Path::new(&fixture);
+    assert!(module.is_absolute());
+    assert!(oc_host::vst2_bridge::needs_translation(module));
+
+    let mut wet = tone_project();
+    wet.tracks[0].effects.push(oc_dsl::ast::Effect {
+        effect_type: oc_dsl::ast::EffectType::Plugin(format!("vst2.{fixture}")),
+        params: vec![("Gain".into(), oc_dsl::ast::ParamValue::Number(0.25))],
+        bypass: false,
+        sidechain_source: None,
+    });
+    let dry = first_streamed_plugin_test_frames(tone_project(), None);
+    let wet = first_streamed_plugin_test_frames(wet, None);
+    assert!(dry.iter().any(|sample| sample.abs() > 0.001));
+    for (dry, wet) in dry.into_iter().zip(wet) {
+        assert!((wet - dry * 0.5).abs() < 1e-6);
+    }
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[test]
+#[ignore = "requires Rosetta, the Intel bridge helper and a real stereo VST2 insert"]
+fn intel_vst2_original_insert_state_matches_offline_audio() {
+    let plugin = std::env::var("OPENCOMPOSE_TEST_INTEL_VST2_EFFECT").unwrap();
+    let state_file = std::env::var_os("OPENCOMPOSE_TEST_INTEL_VST2_STATE").unwrap();
+    let state: String = std::fs::read(state_file)
+        .unwrap()
+        .into_iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    assert!(oc_host::vst2_bridge::needs_translation(
+        std::path::Path::new(&plugin)
+    ));
+
+    let directory = tempfile::tempdir().unwrap();
+    clip_media(directory.path());
+    let mut dry_project = oc_dsl::parse(
+        "@project\n  tempo: 120\n@track tone | instrument: audio/clip\n@audio_clip input [1:1 - 2:1] | track: tone\n  file: \"clip.wav\"\n  gain: 20dB\n",
+    )
+    .unwrap();
+    dry_project =
+        oc_engine::block_source::prepare_project(&dry_project, Some(directory.path())).unwrap();
+    let root = Some(directory.path().to_path_buf());
+    let dry = first_streamed_plugin_test_frames(dry_project.clone(), root.clone());
+    let dry_offline = offline_render(&dry_project, directory.path());
+    let dry_error = dry
+        .into_iter()
+        .zip(&dry_offline)
+        .map(|(streamed, offline)| (streamed - offline).abs())
+        .fold(0.0, f32::max);
+    assert!(dry_error < 1e-6, "dry source maximum error: {dry_error}");
+    let mut project = dry_project;
+    project.tracks[0].effects.push(oc_dsl::ast::Effect {
+        effect_type: oc_dsl::ast::EffectType::Plugin(format!("vst2.{plugin}")),
+        params: vec![("state_hex".into(), oc_dsl::ast::ParamValue::String(state))],
+        bypass: false,
+        sidechain_source: None,
+    });
+    let streamed = first_streamed_plugin_test_frames(project.clone(), root);
+    assert!(streamed.iter().all(|sample| sample.is_finite()));
+    assert!(
+        streamed
+            .iter()
+            .zip(dry)
+            .any(|(wet, dry)| (wet - dry).abs() > 1e-3)
+    );
+
+    let _scope =
+        oc_host::vst2_bridge::BridgeScope::enter(oc_host::vst2_bridge::BridgeMode::Offline);
+    let offline = offline_render(&project, directory.path());
+    let max_error = streamed
+        .into_iter()
+        .zip(&offline)
+        .map(|(streamed, offline)| (streamed - offline).abs())
+        .fold(0.0, f32::max);
+    assert!(
+        max_error < 1e-6,
+        "streamed/offline maximum error: {max_error}"
+    );
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[test]
+#[ignore = "requires Rosetta, the Intel helper and a cross-built four-input fixture"]
+fn intel_vst2_insert_midi_reaches_the_first_streamed_block() {
+    let plugin = std::env::var("OPENCOMPOSE_TEST_INTEL_VST2_KEY").unwrap();
+    assert!(oc_host::vst2_bridge::needs_translation(
+        std::path::Path::new(&plugin)
+    ));
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    clip_media(root);
+    let text = format!(
+        r#"@project
+  tempo: 120
+@track control | instrument: midi/out, channel: 2
+  automation: volume {{1:1=1}}
+@track carrier | instrument: audio/clip
+  effects:
+    - plugin:"vst2.{plugin}"
+@audio_clip input [1:1 - 2:1] | track: carrier
+  file: "clip.wav"
+  gain: 20dB
+"#
+    );
+    let routed = text.replace("@audio_clip", "  route: midi control -> fx1\n@audio_clip");
+    let prepare = |text: &str| {
+        let project = oc_dsl::parse(text).unwrap();
+        oc_engine::block_source::prepare_project(&project, Some(root)).unwrap()
+    };
+    let reference = offline_render(&prepare(&text), root);
+    let routed = prepare(&routed);
+    let streamed = first_streamed_plugin_test_frames(routed.clone(), Some(root.to_path_buf()));
+    let offline = offline_render(&routed, root);
+    let error = streamed
+        .iter()
+        .zip(&offline)
+        .map(|(streamed, offline)| (streamed - offline).abs())
+        .fold(0.0f32, f32::max);
+    assert!(error < 1e-6, "streamed audio differs by {error}");
+    assert!(streamed.iter().any(|sample| sample.abs() > 0.001));
+    assert!(
+        streamed
+            .iter()
+            .zip(&reference)
+            .all(|(sample, reference)| { (*sample - 2.0 * reference).abs() < 1e-6 })
+    );
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[test]
+#[ignore = "requires Rosetta, the Intel helper and a cross-built VST2 instrument fixture"]
+fn intel_vst2_instrument_stream_matches_offline_midi_render() {
+    let fixture = std::env::var("OPENCOMPOSE_TEST_INTEL_VST2_TONE").unwrap();
+    assert!(oc_host::vst2_bridge::needs_translation(
+        std::path::Path::new(&fixture)
+    ));
+    let project = oc_dsl::parse(&format!(
+        "@project\n  tempo: 120\n@preset tone\n  source: vst2\n  plugin: \"{fixture}\"\n@track lead | preset: tone, instrument: synth/lead\n  @phrase p [1:1 - 2:1]\n    C4 q ff\n"
+    ))
+    .unwrap();
+    let streamed = first_streamed_plugin_test_frames(project.clone(), None);
+    let directory = tempfile::tempdir().unwrap();
+    let offline = offline_render(&project, directory.path());
+    assert!(streamed.iter().any(|sample| sample.abs() > 0.001));
+    assert!(
+        streamed
+            .iter()
+            .zip(&offline)
+            .all(|(live, file)| (*live - file).abs() < 1e-6)
+    );
+}
+
+fn vst2_multi_output_project(fixture: &str) -> Project {
+    oc_dsl::parse(&format!(
+        "@project\n  tempo: 120\n@preset tone\n  source: vst2\n  plugin: \"{fixture}\"\n@track lead | preset: tone, instrument: synth/lead, pair: 1\n  mix: send(lead.out4->drums=100%)\n  @phrase p [1:1 - 1:2]\n    C4 q ff\n@bus drums\n  routes: [master]\n"
+    ))
+    .unwrap()
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[test]
+#[ignore = "requires Rosetta, the Intel helper and an Intel VST3 instrument"]
+fn intel_vst3_instrument_stream_matches_offline_midi_render() {
+    let plugin = std::env::var("OPENCOMPOSE_TEST_INTEL_VST3_INSTRUMENT").unwrap();
+    assert!(oc_host::vst2_bridge::needs_vst3_translation(
+        std::path::Path::new(&plugin)
+    ));
+    let project = oc_dsl::parse(&format!(
+        "@project\n  tempo: 120\n@preset tone\n  source: vst3\n  plugin: \"{plugin}\"\n@track lead | preset: tone, instrument: synth/lead\n  @phrase p [1:1 - 2:1]\n    C4 q ff\n"
+    )).unwrap();
+    let streamed = first_streamed_plugin_test_frames(project.clone(), None);
+    let directory = tempfile::tempdir().unwrap();
+    let offline = offline_render(&project, directory.path());
+    assert!(streamed.iter().any(|sample| sample.abs() > 0.001));
+    let max_error = streamed
+        .iter()
+        .zip(&offline)
+        .map(|(live, file)| (*live - file).abs())
+        .fold(0.0f32, f32::max);
+    assert!(
+        max_error < 1e-6,
+        "streamed/offline maximum error: {max_error}"
+    );
+
+    let mut state = RenderState::new(48_000);
+    state.load_project(&project, PathBuf::new()).unwrap();
+    let before_seek = state.render_chunk(super::CHUNK_FRAMES);
+    assert!(before_seek.iter().any(|sample| sample.abs() > 0.001));
+    state.seek_to(0).unwrap();
+    let after_seek = state.render_chunk(super::CHUNK_FRAMES);
+    assert_eq!(before_seek, after_seek);
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[test]
+#[ignore = "requires Rosetta, the Intel helper and an Intel kHs Gain VST3 fixture"]
+fn intel_vst3_insert_stream_matches_offline_and_rewind() {
+    let plugin = std::env::var("OPENCOMPOSE_TEST_INTEL_VST3_EFFECT").unwrap();
+    assert!(oc_host::vst2_bridge::needs_vst3_translation(
+        std::path::Path::new(&plugin)
+    ));
+
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    clip_media(root);
+    let dry = oc_dsl::parse(
+        "@project\n  tempo: 120\n@track tone | instrument: audio/clip\n@audio_clip input [1:1 - 2:1] | track: tone\n  file: \"clip.wav\"\n  gain: 20dB\n",
+    )
+    .unwrap();
+    let dry = oc_engine::block_source::prepare_project(&dry, Some(root)).unwrap();
+    let dry_pcm = offline_render(&dry, root);
+    let mut wet = dry;
+    wet.tracks[0].effects.push(oc_dsl::ast::Effect {
+        effect_type: oc_dsl::ast::EffectType::Plugin(format!("vst3.{plugin}")),
+        params: vec![("Gain".into(), oc_dsl::ast::ParamValue::Number(0.25))],
+        bypass: false,
+        sidechain_source: None,
+    });
+
+    let streamed = first_streamed_plugin_test_frames(wet.clone(), Some(root.to_path_buf()));
+    assert!(streamed.iter().any(|sample| sample.abs() > 0.001));
+    assert!(
+        streamed
+            .iter()
+            .zip(&dry_pcm)
+            .any(|(wet, dry)| (wet - dry).abs() > 0.001),
+    );
+    let offline = offline_render(&wet, root);
+    let max_error = streamed
+        .iter()
+        .zip(&offline)
+        .map(|(live, file)| (*live - file).abs())
+        .fold(0.0f32, f32::max);
+    assert!(
+        max_error < 1e-6,
+        "streamed/offline maximum error: {max_error}"
+    );
+
+    let mut state = RenderState::new(48_000);
+    let _bridge_scope =
+        oc_host::vst2_bridge::BridgeScope::enter(oc_host::vst2_bridge::BridgeMode::Streaming);
+    state.root = Some(root.to_path_buf());
+    state.load_project(&wet, PathBuf::new()).unwrap();
+    let before_seek = state.render_chunk(super::CHUNK_FRAMES);
+    assert!(before_seek.iter().any(|sample| sample.abs() > 0.001));
+    state.seek_to(0).unwrap();
+    let after_seek = state.render_chunk(super::CHUNK_FRAMES);
+    let rewind_error = before_seek
+        .iter()
+        .zip(&after_seek)
+        .map(|(first, rewound)| (*first - rewound).abs())
+        .fold(0.0f32, f32::max);
+    assert_eq!(before_seek.len(), after_seek.len());
+    assert!(rewind_error < 1e-6, "rewind maximum error: {rewind_error}");
+}
+
+#[test]
+fn native_vst2_streaming_routes_the_typed_pair_and_the_auxiliary_return() {
+    let project = vst2_multi_output_project("test.fixture.vst2.multi");
+    let pcm = first_streamed_plugin_test_frames(project, None);
+    let (left, right) = (pcm[0], pcm[1]);
+    assert!(left > 0.01 && right > left);
+    assert!((left / (right - left) - 4.125).abs() < 1e-5);
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[test]
+#[ignore = "requires Rosetta, the Intel helper and an Intel multi-output instrument fixture"]
+fn intel_vst2_multi_output_stream_matches_offline_routes() {
+    let fixture = std::env::var("OPENCOMPOSE_TEST_INTEL_VST2_MULTI").unwrap();
+    assert!(oc_host::vst2_bridge::needs_translation(
+        std::path::Path::new(&fixture)
+    ));
+    let project = vst2_multi_output_project(&fixture);
+    let streamed = first_streamed_plugin_test_frames(project.clone(), None);
+    let directory = tempfile::tempdir().unwrap();
+    let offline = offline_render(&project, directory.path());
+    assert!(streamed[0] > 0.01 && streamed[1] > streamed[0]);
+    assert!((streamed[0] / (streamed[1] - streamed[0]) - 4.125).abs() < 1e-5);
+    assert!(
+        streamed
+            .iter()
+            .zip(&offline)
+            .all(|(live, file)| (*live - file).abs() < 1e-6)
+    );
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[test]
+#[ignore = "requires Rosetta, the Intel helper and a sample instrument with its saved state"]
+fn translated_vst2_streams_its_saved_samples_from_the_first_note_and_after_rewind() {
+    let path = std::env::var("OPENCOMPOSE_TEST_INTEL_VST2_SAMPLER").unwrap();
+    let state_path = std::env::var_os("OPENCOMPOSE_TEST_INTEL_VST2_SAMPLER_STATE").unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    std::fs::copy(state_path, root.join("program.chunk")).unwrap();
+    assert!(oc_host::vst2_bridge::needs_translation(
+        std::path::Path::new(&path)
+    ));
+    let project = oc_dsl::parse(&format!(
+        r#"@project
+  tempo: 156
+@preset kit
+  source: vst2
+  plugin: "{path}"
+  params: {{vst2_state_file: "program.chunk"}}
+@track drums | preset: kit, instrument: drums/acoustic_kit
+  @phrase attacks [1:1 - 2:1]
+    @0 C2 q v=108
+    @1 D#2 q v=108
+"#
+    ))
+    .unwrap();
+    let peak = |pcm: &[f32]| {
+        assert!(pcm.iter().all(|sample| sample.is_finite()));
+        pcm.iter().map(|value| value.abs()).fold(0.0f32, f32::max)
+    };
+    let (streamed, load, play) =
+        measure_streamed_plugin_test_frames(project.clone(), Some(root.to_path_buf()));
+    let first_peak = peak(&streamed);
+    eprintln!(
+        "saved instrument first streamed block peak={first_peak:.9}, load_ms={:.2}, play_ms={:.2}",
+        load.as_secs_f64() * 1000.0,
+        play.as_secs_f64() * 1000.0,
+    );
+    assert!(first_peak > 0.001, "sample not ready at the first attack");
+
+    let _bridge_scope =
+        oc_host::vst2_bridge::BridgeScope::enter(oc_host::vst2_bridge::BridgeMode::Streaming);
+    let mut state = RenderState::new(48_000);
+    state.root = Some(root.to_path_buf());
+    state.load_project(&project, PathBuf::new()).unwrap();
+    let first = peak(&state.render_chunk(super::CHUNK_FRAMES));
+    state.seek_to(0).unwrap();
+    let rewound = peak(&state.render_chunk(super::CHUNK_FRAMES));
+    eprintln!("saved instrument first render peak={first:.9} rewind peak={rewound:.9}");
+    assert!(first > 0.001 && rewound > 0.001);
+}
+
+fn first_streamed_plugin_test_frames(project: Project, root: Option<PathBuf>) -> [f32; 1024] {
+    measure_streamed_plugin_test_frames(project, root).0
+}
+
+fn measure_streamed_plugin_test_frames(
+    project: Project,
+    root: Option<PathBuf>,
+) -> ([f32; 1024], std::time::Duration, std::time::Duration) {
+    use std::time::{Duration, Instant};
+
+    let handle = RenderThreadHandle::spawn(48_000);
+    let timeout = Duration::from_secs(15);
+    let load_start = Instant::now();
+    handle.send(RenderCommand::ProjectChanged {
+        root,
+        project: Box::new(project),
+        soundfont_path: PathBuf::new(),
+        warm: false,
+    });
+    handle.wait_project_loaded(timeout).unwrap();
+    let load = load_start.elapsed();
+    let loaded_generation = handle.playback.seek_generation.load(Ordering::Acquire);
+    let start = Instant::now();
+    handle.send(RenderCommand::Play {
+        start_frame: 0,
+        resume: false,
+        end_frame: None,
+    });
+    let mut audio = [0.0; 1024];
+    loop {
+        let playback = &handle.playback;
+        let generation = playback.seek_generation.load(Ordering::Acquire);
+        if generation != playback.callback_generation.load(Ordering::Acquire) {
+            crate::audio::streaming_audio_callback(&mut [], playback);
+        }
+        if generation != loaded_generation
+            && playback.position_applied.load(Ordering::Acquire)
+                == playback.position_requested.load(Ordering::Acquire)
+            && ring_slots(&handle) >= audio.len()
+        {
+            break;
+        }
+        assert!(start.elapsed() < timeout, "{:?}", handle.load_error());
+        assert!(handle.load_error().is_none(), "{:?}", handle.load_error());
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    crate::audio::streaming_audio_callback(&mut audio, &handle.playback);
+    assert_eq!(
+        handle.playback.play_cursor_frames.load(Ordering::Acquire),
+        512
+    );
+    assert!(handle.load_error().is_none());
+    (audio, load, start.elapsed())
+}
+
 #[test]
 fn mixer_change_patches_graph_without_reloading_sources() {
     use super::*;
@@ -1984,6 +2500,49 @@ fn warm_up_builds_sources_without_starting_playback() {
     assert!(
         ring_slots(&handle) > 0,
         "the staged warm audio must reach the ring after play"
+    );
+}
+
+#[test]
+fn vst3_instrument_waits_for_play_before_rendering_the_opening() {
+    use std::time::Duration;
+
+    let handle = RenderThreadHandle::spawn(48_000);
+    let timeout = Duration::from_secs(5);
+    handle.send(RenderCommand::ProjectChanged {
+        root: None,
+        project: Box::new(fake_aux_project("test.fake.two_bus", 2, false)),
+        soundfont_path: PathBuf::new(),
+        warm: true,
+    });
+    handle.wait_project_loaded(timeout).unwrap();
+    let playback = &handle.playback;
+    assert_eq!(
+        playback.warm_state.load(Ordering::Acquire),
+        super::WARM_IDLE
+    );
+    assert!(!playback.ready.load(Ordering::Acquire));
+    assert_eq!(ring_slots(&handle), 0);
+    let instruments = playback.instrument_instantiations.load(Ordering::Acquire);
+    assert_eq!(instruments, 1);
+
+    handle.send(RenderCommand::Play {
+        start_frame: 0,
+        resume: false,
+        end_frame: None,
+    });
+    let started = std::time::Instant::now();
+    let mut audio = [0.0; 1024];
+    while ring_slots(&handle) < audio.len() {
+        assert!(started.elapsed() < timeout, "{:?}", handle.load_error());
+        crate::audio::streaming_audio_callback(&mut [], playback);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    crate::audio::streaming_audio_callback(&mut audio, playback);
+    assert_eq!(&audio[..2], &[3.0, 4.0]);
+    assert_eq!(
+        playback.instrument_instantiations.load(Ordering::Acquire),
+        instruments
     );
 }
 

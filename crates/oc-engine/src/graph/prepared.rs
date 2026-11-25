@@ -391,21 +391,6 @@ impl AudioGraph {
             .checked_mul(2)
             .filter(|samples| *samples <= isize::MAX as usize / std::mem::size_of::<f32>())
             .ok_or(PreparationError::CapacityExceeded)?;
-        let feeds = self
-            .control_runtimes
-            .iter()
-            .map(|runtime| (runtime.name.clone(), runtime.source_track))
-            .collect();
-        let keys = KeyPlan::build(
-            &self.track_names,
-            &self.track_chains,
-            &self.bus_chains,
-            &self.master_chain,
-            &feeds,
-        );
-        self.key_plan = keys;
-        self.configure_sidechain_alignment();
-        self.refresh_latency_compensation();
         for chain in &mut self.track_chains {
             chain
                 .prepare_block(max_frames)
@@ -427,6 +412,23 @@ impl AudioGraph {
         for runtime in &mut self.control_runtimes {
             runtime.prepare(max_frames)?;
         }
+        let feeds = self
+            .control_runtimes
+            .iter()
+            .map(|runtime| (runtime.name.clone(), runtime.source_track))
+            .collect();
+        let key_plan = KeyPlan::build(
+            &self.track_names,
+            &self.track_chains,
+            &self.bus_chains,
+            &self.master_chain,
+            &feeds,
+        );
+        if self.key_plan != key_plan {
+            self.key_plan = key_plan;
+            self.invalidate_latency_plan();
+        }
+        self.refresh_latency_compensation();
         self.prepared = Some(PreparedGraph::new(self, max_samples)?);
         Ok(())
     }
@@ -482,6 +484,12 @@ impl AudioGraph {
         }
         if output.is_empty() {
             return Ok(());
+        }
+        if let Some(controls) = &self.live_controls {
+            controls.latch();
+        }
+        if let Some(macros) = &self.preset_macros {
+            macros.latch();
         }
         let mut prepared = self.prepared.take().unwrap();
         self.set_streaming_idle_gate(true);
@@ -544,13 +552,21 @@ impl AudioGraph {
                 delay.process(routed);
             }
             if route.target == "master" {
-                if let Some(capture) = stems
-                    .as_deref_mut()
-                    .filter(|capture| capture.capture_master_inputs)
-                {
-                    capture
-                        .master_inputs
-                        .push((format!("bus:{}", plan.name), routed.clone()));
+                if let Some(capture) = stems.as_deref_mut() {
+                    if capture.capture_master_inputs {
+                        capture
+                            .master_inputs
+                            .push((format!("bus:{}", plan.name), routed.clone()));
+                    }
+                    if capture.align_master_exports && capture.selection.captures_bus(&plan.name) {
+                        if let Some((name, samples)) = capture.buses.last_mut()
+                            && *name == plan.name
+                        {
+                            sum_buffer(samples, routed, 1.0);
+                        } else {
+                            capture.buses.push((plan.name.clone(), routed.clone()));
+                        }
+                    }
                 }
                 sum_buffer(master, routed, 1.0);
             } else if let Some(target) = self.bus_chains.get_mut(&route.target) {

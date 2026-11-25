@@ -124,6 +124,95 @@ fn median(mut values: Vec<Duration>) -> Duration {
     values[values.len() / 2]
 }
 
+/// Includes project loading, fresh-cache preparation, the complete mix graph
+/// and file publication. A previously rendered slice cannot satisfy this gate.
+#[test]
+fn cold_full_mix_ten_second_budget() {
+    let path = project_path();
+    let font = soundfont_path();
+    let rate = 48_000;
+    let duration = 10.0;
+    let budget = Duration::from_secs(1);
+    let directory = tempfile::tempdir().expect("guarded range benchmark outputs");
+    let mut elapsed_runs = Vec::new();
+    let mut first_audio = None;
+    let mut reference_project = None;
+
+    for run in 0..repeat() {
+        let output_path = directory.path().join(format!("range-{run}.wav"));
+        oc_engine::stage_log::begin();
+        let started = Instant::now();
+        let project = oc_engine::project_file::load(&path)
+            .expect("load benchmark project")
+            .project;
+        let mut cache = RenderCache::new();
+        cache.set_resource_root(path.parent().map(Path::to_path_buf));
+        let output = cache
+            .render_range(
+                &project,
+                &font,
+                rate,
+                &mut HashMap::new(),
+                RangeRenderRequest {
+                    start_sample: 0,
+                    end_sample: u64::from(rate) * 10,
+                    tracks: None,
+                    stems: false,
+                },
+            )
+            .expect("cold full-mix window");
+        let mut spec = oc_engine::encode::EncodeSpec::for_project(&project, rate);
+        spec.container = oc_dsl::ast::ExportContainer::Wav;
+        spec.wav.depth = oc_dsl::ast::SampleFormat::F32;
+        spec.wav.dither = false;
+        oc_engine::encode::encode_to_file(&output_path, &spec, &output.audio)
+            .expect("publish benchmark audio");
+        let elapsed = started.elapsed();
+        let stages = oc_engine::stage_log::take();
+        elapsed_runs.push(elapsed);
+        println!(
+            "cold full mix 0-10s run {}: {:.3}s, {:.2}x, load {}",
+            run + 1,
+            elapsed.as_secs_f64(),
+            duration / elapsed.as_secs_f64(),
+            load_average()
+        );
+        for stage in stages {
+            println!(
+                "  stage {}: {:.3} ms",
+                stage.label,
+                stage.elapsed.as_secs_f64() * 1000.0
+            );
+        }
+        assert!(!output.cache_hit, "every sample starts with a fresh cache");
+        assert_eq!(output.frames, rate as usize * 10);
+        assert_eq!(output.audio.len(), output.frames * 2);
+        assert!(output.audio.iter().all(|value| value.is_finite()));
+        assert!(output.audio.iter().any(|value| value.abs() > 1e-5));
+        if first_audio.is_none() {
+            first_audio = Some(output.audio);
+            reference_project = Some(project);
+        }
+    }
+
+    // A fast incorrect window must fail before any timing claim is accepted.
+    let mut reference_cache = RenderCache::new();
+    reference_cache.set_resource_root(path.parent().map(Path::to_path_buf));
+    let reference = render_full(&mut reference_cache, &reference_project.unwrap(), rate);
+    let audio = first_audio.unwrap();
+    let mismatch = audio
+        .iter()
+        .zip(&reference[..rate as usize * 10 * 2])
+        .position(|(window, full)| window != full);
+    assert_eq!(mismatch, None, "cold window differs at this sample index");
+    let measured = median(elapsed_runs);
+    assert!(
+        measured <= budget,
+        "cold 10-second full mix takes {:.3}s; the 1-second budget is missed",
+        measured.as_secs_f64()
+    );
+}
+
 #[test]
 fn range_window_cost() {
     let project_text = std::fs::read_to_string(project_path()).expect("project file");

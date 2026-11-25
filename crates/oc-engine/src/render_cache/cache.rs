@@ -135,7 +135,14 @@ impl RenderCache {
         let mut source_chains = lane_project
             .tracks
             .iter()
-            .map(|lane| crate::source_lanes::effect_chain(project, lane, sample_rate))
+            .map(|lane| {
+                crate::source_lanes::effect_chain_with_resources(
+                    project,
+                    lane,
+                    sample_rate,
+                    self.resource_root.as_deref(),
+                )
+            })
             .collect::<Result<Vec<_>, _>>()?;
         self.track_source_tails = vec![0; num_tracks];
         for (lane, chain) in source_chains.iter().enumerate() {
@@ -156,6 +163,17 @@ impl RenderCache {
         self.sample_rate = sample_rate;
 
         let mut stamps = HashMap::new();
+        for file in oc_dsl::media::insert_state_files(project) {
+            let path = self.resource_root.as_deref().map_or_else(
+                || PathBuf::from(file),
+                |root| oc_dsl::media::resolve(root, Path::new(file)),
+            );
+            // A selected chain is responsible for refusing a broken state file.
+            // Watch present files even when a render does not select their chain.
+            if let Ok(stamp) = native_state_stamp(&path) {
+                stamps.insert(path, stamp);
+            }
+        }
         for track in &lane_project.tracks {
             let preset = lane_project
                 .presets
@@ -342,6 +360,23 @@ impl RenderCache {
             &settings,
             self.resource_root.as_deref(),
         )?;
+        // Certify the whole authored source program before a window truncates
+        // its events. The actual prepared instrument owns the proof.
+        let mut source_programs = if scope.window().is_some() {
+            super::window::mono_proof::source_programs(&all_events, num_lanes)
+        } else {
+            vec![None; num_lanes]
+        };
+        for (program, performance) in source_programs.iter_mut().zip(&performance) {
+            if performance.is_some() {
+                *program = None;
+            }
+        }
+        let source_proof_plan = super::window::mono_proof::SourceProofPlan::new(
+            lane_project,
+            source_programs,
+            self.resource_root.as_deref(),
+        );
         // Remove ALL generated defaults for explicit performance tracks.
         all_events.retain(|event| performance[event.track_index].is_none());
         if let Some(tracks) = scope.tracks() {
@@ -416,14 +451,19 @@ impl RenderCache {
         let total_frames = if let Some(scope) = scope.window() {
             scope.end_sample - scope.start_sample
         } else {
-            let last_event = all_events
-                .iter()
-                .map(|e| e.time_samples)
-                .max()
-                .unwrap_or(0)
-                .max(audio_end)
-                .max(performance_end.unwrap_or(0));
-            let declared_tail = project_instrument_tail_samples(
+            let mut ends = vec![0; num_lanes];
+            for event in &all_events {
+                let end = ends
+                    .get_mut(event.track_index)
+                    .ok_or("instrument horizon event lane out of range")?;
+                *end = (*end).max(event.time_samples);
+            }
+            for (end, commands) in ends.iter_mut().zip(&performance) {
+                if let Some(last) = commands.as_ref().and_then(|commands| commands.last()) {
+                    *end = (*end).max(last.sample);
+                }
+            }
+            let tails = instrument_tails_by_lane(
                 lane_project,
                 authored_presets,
                 plugin_instances,
@@ -434,13 +474,15 @@ impl RenderCache {
                     vst2: self.vst2_tail_probe,
                 },
             )?;
-            let fallback_tail = u64::from(sample_rate) * u64::from(DEFAULT_RENDER_TAIL_SECONDS);
-            let tail = declared_tail.max(fallback_tail);
-            last_event
-                .checked_add(tail)
-                .ok_or_else(|| "instrument tail render length overflow".to_string())?
-                .max((self.minimum_duration_seconds * f64::from(sample_rate)).ceil() as u64)
-                .max(arrangement_end)
+            source_horizon::render_horizon(source_horizon::SourceHorizon {
+                ends: &ends,
+                tails: &tails,
+                audio_end,
+                fallback_tail: u64::from(sample_rate) * u64::from(DEFAULT_RENDER_TAIL_SECONDS),
+                minimum_end: ((self.minimum_duration_seconds * f64::from(sample_rate)).ceil()
+                    as u64)
+                    .max(arrangement_end),
+            })?
         };
         self.duration_seconds = total_frames as f64 / sample_rate as f64;
         let total_samples = usize::try_from(total_frames)
@@ -482,7 +524,11 @@ impl RenderCache {
                 if tracks.contains(&index) {
                     self.track_dirty[index] = true;
                 } else {
-                    self.track_buffers[index] = Some(vec![0.0; total_samples * 2]);
+                    self.track_buffers[index] = Some(if scope.widths_only() {
+                        Vec::new()
+                    } else {
+                        vec![0.0; total_samples * 2]
+                    });
                     self.track_source_latencies[index] = 0;
                     self.track_dirty[index] = false;
                 }
@@ -525,6 +571,7 @@ impl RenderCache {
         // Sources render per lane; a track's lanes are summed into its cached
         // buffer once every lane has rendered.
         let mut lane_buffers: Vec<Option<Vec<f32>>> = vec![None; num_lanes];
+        let mut lane_symmetry = vec![oc_audio::ChannelSymmetry::Unknown; num_lanes];
         let mut lane_latencies: Vec<u32> = vec![0; num_lanes];
         let mut lane_aux: AuxOutputBuffers = HashMap::new();
 
@@ -569,6 +616,9 @@ impl RenderCache {
 
             // A shared multi-output track may intentionally contain no MIDI:
             // it still captures a pair driven by another track in its group.
+            if track.instrument.is_midi_only() {
+                continue;
+            }
             let has_audio_clips = project
                 .audio_clips()
                 .iter()
@@ -818,7 +868,10 @@ impl RenderCache {
                 &pairs,
                 &aux_pairs,
                 performance[first].as_deref(),
-                self.pre_roll_seconds,
+                super::offline_warmup::WarmupOptions {
+                    seconds: self.pre_roll_seconds,
+                    cancel: cancel.as_ref(),
+                },
             )?;
             let latency = instance.latency_samples();
             for (&lane, buffer) in group.iter().zip(buffers) {
@@ -871,14 +924,14 @@ impl RenderCache {
             let mut instance = request
                 .execute()
                 .map_err(|error| format!("VST3 instrument preset '{preset_name}': {error}"))?;
-            let ports = &instance.snapshot.outputs;
+            let ports = instance.output_ports();
             let pairs = resolve_group_pairs(
                 lane_project,
                 &group,
                 "VST3",
                 preset_name,
                 sample_rate,
-                ports,
+                &ports,
                 self.resource_root.as_deref(),
             )?;
             let profiles: Vec<_> = group
@@ -917,7 +970,7 @@ impl RenderCache {
                     cancel: cancel.as_ref(),
                 },
             )?;
-            let latency = instance.snapshot.latency_samples;
+            let latency = instance.latency_samples();
             for (&lane, buffer) in group.iter().zip(buffers) {
                 lane_latencies[lane] = latency;
                 lane_buffers[lane] = Some(buffer);
@@ -927,64 +980,82 @@ impl RenderCache {
             }
         }
 
-        // VST2 instruments render in process. The interface has one stereo
-        // output pair, so every track in the group reads the same pair.
-        for group in group_tracks_by_preset(lane_project, &vst2_tracks) {
-            if crate::render_cancel::stopped(cancel.as_ref()) {
-                return Err(crate::render_cancel::cancelled());
+        // Each bounded cohort finishes state preparation before any member
+        // waits or renders, so asynchronous library loading overlaps safely.
+        let vst2_groups = group_tracks_by_preset(lane_project, &vst2_tracks);
+        for cohort in vst2_groups.chunks(super::vst2_batch::capacity(worker_options.workers())) {
+            let mut prepared = Vec::with_capacity(cohort.len());
+            for group in cohort {
+                let result = (|| {
+                    if crate::render_cancel::stopped(cancel.as_ref()) {
+                        return Err(crate::render_cancel::cancelled());
+                    }
+                    progress_done = (progress_done + group.len()).min(progress_total);
+                    self.report_progress(
+                        crate::render_cancel::RenderStage::Rendering,
+                        progress_done,
+                        progress_total,
+                    );
+                    let first = group[0];
+                    let preset_name = lane_project.tracks[first].preset.as_deref().unwrap();
+                    let preset = lane_project
+                        .presets
+                        .iter()
+                        .find(|p| p.name == preset_name)
+                        .ok_or_else(|| format!("Preset '{}' not found", preset_name))?;
+                    let plugin = super::vst2_group::prepare_plugin(
+                        authored_presets,
+                        lane_project,
+                        preset,
+                        group,
+                        sample_rate,
+                        self.resource_root.as_deref(),
+                    )?;
+                    let aux_pairs: Vec<_> = group
+                        .iter()
+                        .map(|&index| self.aux_pairs[targets[index]].as_slice())
+                        .collect();
+                    let event_groups: Vec<_> = group
+                        .iter()
+                        .map(|&index| events_by_track[index].as_slice())
+                        .collect();
+                    let request = super::vst2_group::Vst2GroupRequest {
+                        plugin,
+                        preset,
+                        project: lane_project,
+                        tracks: group,
+                        aux_pairs: &aux_pairs,
+                        events: &event_groups,
+                        performance: performance[first].as_deref(),
+                        total_frames: total_samples,
+                        transport: project_transport(project, timeline_start, sample_rate),
+                        pre_roll_seconds: self.pre_roll_seconds,
+                        cancel: cancel.as_ref(),
+                    };
+                    if let Some(prepare) = self.vst2_group_preparer {
+                        prepare(request)
+                    } else {
+                        super::vst2_batch::PreparedGroup::completed((self.vst2_group_renderer)(
+                            request,
+                        )?)
+                    }
+                })();
+                match result {
+                    Ok(group) => prepared.push(group),
+                    Err(error) => {
+                        super::vst2_batch::discard(prepared)?;
+                        return Err(error);
+                    }
+                }
             }
-            progress_done = (progress_done + group.len()).min(progress_total);
-            self.report_progress(
-                crate::render_cancel::RenderStage::Rendering,
-                progress_done,
-                progress_total,
-            );
-            let first = group[0];
-            let preset_name = lane_project.tracks[first].preset.as_deref().unwrap();
-            let preset = lane_project
-                .presets
-                .iter()
-                .find(|p| p.name == preset_name)
-                .ok_or_else(|| format!("Preset '{}' not found", preset_name))?;
-            let plugin = super::vst2_group::prepare_plugin(
-                authored_presets,
-                lane_project,
-                preset,
-                &group,
-                sample_rate,
-                self.resource_root.as_deref(),
-            )?;
-            if let Some(pair) = group
-                .iter()
-                .flat_map(|&index| self.aux_pairs[targets[index]].iter())
-                .find(|pair| **pair > 0)
-            {
-                return Err(format!(
-                    "VST2 preset '{}' exposes only the main stereo pair; output pair {} was requested",
-                    preset.name,
-                    pair + 1
-                ));
-            }
-            let event_groups: Vec<_> = group
-                .iter()
-                .map(|&index| events_by_track[index].as_slice())
-                .collect();
-            let rendered = (self.vst2_group_renderer)(super::vst2_group::Vst2GroupRequest {
-                plugin,
-                preset,
-                tracks: &group,
-                events: &event_groups,
-                performance: performance[first].as_deref(),
-                total_frames: total_samples,
-                transport: project_transport(project, timeline_start, sample_rate),
-                pre_roll_seconds: self.pre_roll_seconds,
-                cancel: cancel.as_ref(),
-            })?;
-            let latency = rendered.latency;
-            let buffers = rendered.buffers;
-            for (&lane, buffer) in group.iter().zip(buffers) {
-                lane_latencies[lane] = latency;
-                lane_buffers[lane] = Some(buffer);
+            let outputs = super::vst2_batch::render(prepared, cancel.as_ref())?;
+            for (group, rendered) in cohort.iter().zip(outputs) {
+                let latency = rendered.latency;
+                for (&lane, buffer) in group.iter().zip(rendered.buffers) {
+                    lane_latencies[lane] = latency;
+                    lane_buffers[lane] = Some(buffer);
+                }
+                lane_aux.extend(rendered.aux);
             }
         }
 
@@ -1034,6 +1105,11 @@ impl RenderCache {
             }
             let mut instance = match AuInstance::load(plugin_id, sample_rate, 512) {
                 Ok(instance) => instance,
+                Err(error) if performance[first].is_some() => {
+                    return Err(format!(
+                        "AudioUnit performance preset '{preset_name}': {error}"
+                    ));
+                }
                 Err(error) => {
                     crate::render_warnings::push(format!(
                         "AU preset '{}' used by track '{}' cannot render in process: {error}. Its tracks render silence",
@@ -1049,6 +1125,11 @@ impl RenderCache {
                 &context,
                 self.resource_root.as_deref(),
             ) {
+                if performance[first].is_some() {
+                    return Err(format!(
+                        "AudioUnit performance preset '{preset_name}': {error}"
+                    ));
+                }
                 crate::render_warnings::push(format!(
                     "AU preset '{}' keeps the unit's default state: {error}",
                     preset.name
@@ -1074,7 +1155,11 @@ impl RenderCache {
                 &event_groups,
                 total_samples,
                 project_transport(project, timeline_start, sample_rate),
-                self.pre_roll_seconds,
+                super::offline_warmup::WarmupOptions {
+                    seconds: self.pre_roll_seconds,
+                    cancel: cancel.as_ref(),
+                },
+                performance[first].as_deref(),
             )?;
             let latency = instance.latency_samples();
             for (&lane, buffer) in group.iter().zip(buffers) {
@@ -1156,7 +1241,10 @@ impl RenderCache {
                 &event_groups,
                 total_samples,
                 project_transport(project, timeline_start, sample_rate),
-                self.pre_roll_seconds,
+                super::offline_warmup::WarmupOptions {
+                    seconds: self.pre_roll_seconds,
+                    cancel: cancel.as_ref(),
+                },
             )?;
             let latency = instance.latency_samples();
             for (&lane, buffer) in group.iter().zip(buffers) {
@@ -1188,19 +1276,38 @@ impl RenderCache {
                         .preset
                         .as_deref()
                         .and_then(|n| lane_project.presets.iter().find(|p| p.name == n));
+                    let mut params =
+                        source_proof_plan.parameters(i).cloned().unwrap_or_else(|| {
+                            crate::preset::builtin_track_params_untrimmed(
+                                lane_project,
+                                preset,
+                                track,
+                            )
+                        });
+                    // Only the normalization owner can authorize independent
+                    // preparation. Asset-backed and hosted probes stay serial.
+                    let trim_preset = preset
+                        .filter(|preset| crate::loudness::can_prepare_in_parallel(preset))
+                        .cloned();
+                    if trim_preset.is_none() {
+                        if let Some(preset) = preset {
+                            crate::loudness::append_trim(
+                                &mut params,
+                                preset,
+                                self.resource_root.as_deref(),
+                            );
+                        }
+                    }
                     BuiltinTrackJob {
+                        full_program: source_proof_plan.program(i),
                         index: i,
                         preset_name: preset.map_or("", |p| p.name.as_str()).to_owned(),
                         plugin_id: preset
                             .and_then(|p| p.plugin.as_deref())
                             .unwrap_or("builtin.test_tone")
                             .to_string(),
-                        params: crate::preset::builtin_track_params_at(
-                            lane_project,
-                            preset,
-                            track,
-                            self.resource_root.as_deref(),
-                        ),
+                        params,
+                        trim_preset,
                         events: events_by_track[i].iter().map(|e| (*e).clone()).collect(),
                         performance: performance[i].clone(),
                     }
@@ -1221,9 +1328,14 @@ impl RenderCache {
                 },
             )?;
             crate::stage_log::push("builtin synth tracks", source_start);
-            for (lane, buffer, latency) in rendered.into_iter() {
-                lane_buffers[lane] = Some(buffer);
-                lane_latencies[lane] = latency;
+            let proofs: Vec<_> = rendered
+                .iter()
+                .map(|result| (result.index, result.symmetry))
+                .collect();
+            source_proof_plan.propagate(&proofs, &mut lane_symmetry);
+            for result in rendered {
+                lane_buffers[result.index] = Some(result.audio);
+                lane_latencies[result.index] = result.latency;
             }
             progress_done = (progress_done + builtin_tracks.len()).min(progress_total);
             self.report_progress(
@@ -1233,33 +1345,41 @@ impl RenderCache {
             );
         }
 
+        self.track_channel_symmetry = super::window::mono_proof::fold_sources(
+            project,
+            targets,
+            &lane_symmetry,
+            &source_chains,
+        );
+
         // Source inserts precede the hosting mixer chain. Include their
         // latency in the lane's identity before aligning independent sources.
         let instrument_latencies = lane_latencies.clone();
-        for (lane, chain) in source_chains.iter_mut().enumerate() {
-            if let Some(buffer) = lane_buffers[lane].as_mut() {
-                crate::processing_failure::chain(chain, cancel.as_ref())
-                    .map_err(|error| error.to_string())?;
-                let extra_frames = u64::from(chain.latency_samples())
+        let source_insert_stage = crate::stage_log::stage("source insert chains");
+        let extra_frames = source_chains
+            .iter()
+            .map(|chain| {
+                u64::from(chain.latency_samples())
                     .checked_add(bounded_tail_samples(chain.tail_samples(), sample_rate))
-                    .ok_or("Source insert render length overflow")?;
-                let extra = usize::try_from(extra_frames)
-                    .ok()
-                    .and_then(|frames| frames.checked_mul(2))
-                    .and_then(|samples| buffer.len().checked_add(samples))
-                    .ok_or("Source insert render length overflow")?;
-                buffer.resize(extra, 0.0);
-                chain.process_with_transport(
-                    buffer,
-                    sample_rate,
-                    Some(project_transport(project, timeline_start, sample_rate)),
-                );
-                chain.end_processing();
-                crate::processing_failure::chain(chain, cancel.as_ref())
-                    .map_err(|error| error.to_string())?;
-                lane_latencies[lane] = lane_latencies[lane].saturating_add(chain.latency_samples());
-            }
-        }
+                    .ok_or("Source insert render length overflow")
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let source_transport = project_transport(project, timeline_start, sample_rate);
+        crate::source_lanes::process_source_inserts(
+            crate::source_lanes::SourceInsertLanes {
+                chains: &mut source_chains,
+                buffers: &mut lane_buffers,
+                latencies: &mut lane_latencies,
+                extra_frames: &extra_frames,
+            },
+            crate::source_lanes::SourceInsertOptions {
+                sample_rate,
+                transport: &source_transport,
+                cancel: cancel.as_ref(),
+                workers: worker_options,
+            },
+        )?;
+        drop(source_insert_stage);
         let mut parent_latencies = vec![0u32; num_tracks];
         for (lane, &target) in targets.iter().enumerate() {
             parent_latencies[target] = parent_latencies[target].max(lane_latencies[lane]);
@@ -1390,19 +1510,42 @@ impl RenderCache {
             if crate::render_cancel::stopped(cancel.as_ref()) {
                 return Err(crate::render_cancel::cancelled());
             }
-            self.report_progress(
-                crate::render_cancel::RenderStage::Mixing,
-                progress_total,
-                progress_total,
-            );
+            self.report_progress(crate::render_cancel::RenderStage::Mixing, 0, progress_total);
+            if crate::render_cancel::stopped(cancel.as_ref()) {
+                return Err(crate::render_cancel::cancelled());
+            }
+            if scope.widths_only() {
+                let reference = self
+                    .width_reference
+                    .as_ref()
+                    .ok_or("missing width timeline reference")?;
+                let selected = scope.tracks().unwrap_or_default();
+                for index in 0..num_tracks {
+                    if !selected.contains(&index) {
+                        self.track_source_latencies[index] =
+                            reference.source_latencies.get(index).copied().unwrap_or(0);
+                        self.track_source_tails[index] =
+                            reference.source_tails.get(index).copied().unwrap_or(0);
+                    }
+                }
+            }
             let mut capture = self.stem_capture.take();
             let mixed = self.mix_cached(
                 project,
                 GraphMixOptions {
+                    purpose: if scope.widths_only() {
+                        GraphMixPurpose::TrackWidths
+                    } else {
+                        GraphMixPurpose::Audio
+                    },
                     sample_rate,
                     total_samples,
                     timeline_start,
-                    selection: None,
+                    selection: if scope.widths_only() {
+                        scope.tracks()
+                    } else {
+                        None
+                    },
                     window: None,
                     workers: worker_options,
                 },
@@ -1413,12 +1556,25 @@ impl RenderCache {
             if crate::render_cancel::stopped(cancel.as_ref()) {
                 return Err(crate::render_cancel::cancelled());
             }
+            if scope.widths_only() {
+                // A width witness is not an audio timeline and cannot satisfy a
+                // later full render or range lookup.
+                self.master_buffer = None;
+                self.render_horizon_samples = 0;
+                self.mix_dirty = true;
+                return Ok(master);
+            }
             self.render_horizon_samples = layout.output_total;
             self.duration_seconds = layout.output_total as f64 / f64::from(sample_rate);
             self.mix_dirty = false;
             if !self.consume_source_buffers {
                 self.master_buffer = Some(master.clone());
             }
+            self.report_progress(
+                crate::render_cancel::RenderStage::Mixing,
+                progress_total,
+                progress_total,
+            );
             Ok(master)
         } else {
             // Nothing changed, return cached master
@@ -1447,7 +1603,13 @@ impl RenderCache {
             })
             .collect();
         let mixer_project = crate::graph::graph_document(project);
-        AudioGraph::try_from_project_with_source_latencies(&mixer_project, sample_rate, &latencies)
+        AudioGraph::try_from_project_with_resources(
+            &mixer_project,
+            sample_rate,
+            &latencies,
+            self.resource_root.as_deref(),
+            None,
+        )
     }
 
     /// Mix the cached track buffers through the graph.
@@ -1457,7 +1619,15 @@ impl RenderCache {
         options: GraphMixOptions<'_>,
         stems: &mut Option<crate::graph::StemCapture>,
     ) -> Result<(Vec<f32>, MixLayout), String> {
-        let graph = self.graph_for(project, options.sample_rate, options.selection)?;
+        let graph = self.graph_for(
+            project,
+            options.sample_rate,
+            if options.purpose == GraphMixPurpose::TrackWidths {
+                None
+            } else {
+                options.selection
+            },
+        )?;
         self.mix_graph(project, options, stems, graph)
     }
 
@@ -1488,6 +1658,7 @@ impl RenderCache {
         mut graph: AudioGraph,
     ) -> Result<(Vec<f32>, MixLayout), String> {
         let GraphMixOptions {
+            purpose,
             sample_rate,
             total_samples,
             timeline_start,
@@ -1499,6 +1670,15 @@ impl RenderCache {
             .map_err(|error| error.to_string())?;
         let mix_start = std::time::Instant::now();
         let layout = MixLayout::new(&graph, sample_rate, total_samples, &self.track_source_tails)?;
+        log::info!(
+            target: "oc_engine::render_clock",
+            "offline mix clock: timeline_start_frame={timeline_start} sample_rate={sample_rate} \
+             program_frames={total_samples} pre_master_alignment_frames={} \
+             master_insert_latency_frames={} output_frames={}",
+            graph.pre_master_latency_samples(),
+            layout.master_latency,
+            layout.output_total,
+        );
         self.master_latency_samples = layout.master_latency as u32;
         #[cfg(test)]
         if selection.is_some()
@@ -1636,6 +1816,21 @@ impl RenderCache {
             return Err(crate::render_cancel::cancelled());
         }
 
+        for (symmetry, chain) in self
+            .track_channel_symmetry
+            .iter_mut()
+            .zip(&graph.track_chains)
+        {
+            if !chain.preserves_channel_equality() {
+                *symmetry = oc_audio::ChannelSymmetry::Unknown;
+            }
+        }
+        if purpose == GraphMixPurpose::TrackWidths {
+            graph.detect_track_widths(&track_bufs);
+            self.full_mix_widths = graph.track_widths().to_vec();
+            return Ok((Vec::new(), layout));
+        }
+
         // A window keeps what it just processed for the next window on the
         // same tracks, so a repeat request skips the chains entirely.
         if window.is_some_and(|window| window.capture) {
@@ -1741,6 +1936,14 @@ impl RenderCache {
             frames,
             workers: self.worker_options.unwrap_or_default(),
         };
+        match self.try_bounded_range(project, soundfont_path, sample_rate, plugin_instances, pass) {
+            Ok(Some(output)) => return Ok(output),
+            Ok(None) => {}
+            Err(error) => {
+                self.invalidate_failed_render();
+                return Err(error);
+            }
+        }
         let Some(tracks) = request.tracks.clone() else {
             return self.render_full_window(
                 project,
@@ -1756,17 +1959,12 @@ impl RenderCache {
         expand_shared_output_groups(project, &mut selected);
         // Keeping every track is the full-mix path: only it may fill the cache.
         if selected.len() == project.tracks.len() {
-            let mut all = request.clone();
-            all.tracks = None;
             return self.render_full_window(
                 project,
                 soundfont_path,
                 sample_rate,
                 plugin_instances,
-                RangeRenderPass {
-                    request: &all,
-                    ..pass
-                },
+                pass,
             );
         }
         // A subset window reuses the source and post-FX snapshots instead of
@@ -1789,7 +1987,7 @@ impl RenderCache {
         )
     }
 
-    /// Full-mix window: slice the cached render, refreshing the cache first.
+    /// Full-mix window: use a proved cold prefix or refresh a complete cache.
     fn render_full_window(
         &mut self,
         project: &Project,
@@ -1803,11 +2001,28 @@ impl RenderCache {
             frames,
             workers,
         } = pass;
+        self.refresh_clip_fingerprints(project, sample_rate);
         let clean = !self.is_dirty() && self.master_buffer.is_some();
         if request.stems {
             self.capture_stems(true);
         }
         let cache_hit = clean && !self.is_dirty();
+        if !cache_hit {
+            match self.try_cold_full_window(
+                project,
+                soundfont_path,
+                sample_rate,
+                plugin_instances,
+                pass,
+            ) {
+                Ok(Some(output)) => return Ok(output),
+                Ok(None) => {}
+                Err(error) => {
+                    self.invalidate_failed_render();
+                    return Err(error);
+                }
+            }
+        }
         let master = match self.render_scoped(
             project,
             soundfont_path,

@@ -652,15 +652,17 @@ fn progress_reporter(
 }
 
 /// Map the engine's progress reports onto export events.
-fn engine_progress(
+pub(super) fn engine_progress(
     progress: Arc<dyn Fn(ExportPhase, f32) + std::marker::Send + std::marker::Sync>,
 ) -> oc_engine::render_cancel::ProgressCallback {
     Box::new(move |report| {
-        let phase = match report.stage {
-            oc_engine::render_cancel::RenderStage::Rendering
-            | oc_engine::render_cancel::RenderStage::Mixing => ExportPhase::Rendering,
+        // Stage-local fractions occupy separate halves of the render phase,
+        // so starting the mix cannot reset the dialog or report completion.
+        let fraction = match report.stage {
+            oc_engine::render_cancel::RenderStage::Rendering => report.fraction * 0.5,
+            oc_engine::render_cancel::RenderStage::Mixing => 0.5 + report.fraction * 0.5,
         };
-        progress(phase, report.fraction);
+        progress(ExportPhase::Rendering, fraction);
     })
 }
 
@@ -1370,8 +1372,8 @@ pub struct RangeRenderResult {
     pub tracks: Vec<usize>,
     pub stems: Vec<RangeStemFile>,
     pub pre_encode: RangeEncodingReport,
-    /// True when the request was answered from an already clean cached render
-    /// without re-synthesising any source; false only for a cold cache.
+    /// True when a qualified complete or bounded cached timeline answers the
+    /// request without re-synthesising a source.
     pub cache_hit: bool,
     /// How a `tracks` window was assembled; null for a full-mix window.
     pub window: Option<&'static str>,
@@ -1591,18 +1593,7 @@ fn render_window(
         return Err(oc_engine::render_cancel::CANCELLED_MESSAGE.into());
     }
     let tapped = match tapped_bus {
-        Some(bus) => {
-            let capture = cache
-                .stems()
-                .ok_or("the range render captured no bus stems")?;
-            let buffer = capture
-                .buses
-                .iter()
-                .find(|(name, _)| name == bus)
-                .map(|(_, samples)| samples.clone())
-                .ok_or_else(|| format!("bus '{bus}' produced no returned signal"))?;
-            Some(buffer)
-        }
+        Some(bus) => Some(cache.captured_bus_range(bus, start_sample, rendered.frames)?),
         None => None,
     };
     cache.clear_render_controls();
@@ -1646,7 +1637,7 @@ fn render_window(
     for stem in &stem_files {
         crate::render_grid::write(std::path::Path::new(&stem.path), &grid);
     }
-    if !cache.is_dirty() {
+    if !cache.is_dirty() || cache.has_bounded_range() {
         state.store_range_cache(epoch, sample_rate, cache);
     }
 

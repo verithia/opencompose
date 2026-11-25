@@ -92,6 +92,8 @@ fn parallel_builtin_tracks_are_deterministic_and_faster() {
         .unwrap_or(8);
     let jobs: Vec<super::BuiltinTrackJob> = (0..track_count)
         .map(|index| super::BuiltinTrackJob {
+            full_program: None,
+            trim_preset: None,
             index,
             plugin_id: oc_synth::synth::PLUGIN_ID.to_string(),
             preset_name: "parallel synth".to_string(),
@@ -141,7 +143,8 @@ fn parallel_builtin_tracks_are_deterministic_and_faster() {
     }
     let sequential_time = start.elapsed();
 
-    for ((pa, pb, pl), (sa, sb)) in parallel.iter().zip(sequential.iter()) {
+    for (result, (sa, sb)) in parallel.iter().zip(sequential.iter()) {
+        let (pa, pb, pl) = (&result.index, &result.audio, &result.latency);
         assert_eq!(pa, sa);
         // The dense patch carries a delay and a shaper, so its rack reports
         // latency; every worker must report exactly that.
@@ -348,8 +351,8 @@ fn offline_failure_boundary_discards_failed_track_bus_master_and_post_fx_caches(
         let effect: Box<dyn oc_audio::AudioEffect> = if slot == "vst2" {
             let path = oc_host::vst2::test_support::fixture_path("OpenCompose Gain Fixture")
                 .expect("host fixture");
-            let plugin = Vst2Instance::load(&path, 8_000, 128).unwrap();
-            oc_host::vst2::test_support::notify_io_changed(&plugin);
+            let mut plugin = Vst2Instance::load(&path, 8_000, 128).unwrap();
+            oc_host::vst2::test_support::change_latency_and_notify(&mut plugin, 7);
             Box::new(plugin)
         } else {
             Box::new(Failure(std::sync::atomic::AtomicBool::new(false)))
@@ -369,6 +372,7 @@ fn offline_failure_boundary_discards_failed_track_bus_master_and_post_fx_caches(
         let result = cache.mix_graph(
             &project,
             GraphMixOptions {
+                purpose: GraphMixPurpose::Audio,
                 sample_rate: 8_000,
                 total_samples: 128,
                 timeline_start: 0,
@@ -431,6 +435,7 @@ fn offline_failure_boundary_vst2_source_refuses_warm_cache_stems_and_wav_publica
                 .iter()
                 .map(|_| vec![0.25; request.total_frames * 2])
                 .collect(),
+            aux: Default::default(),
             latency: 0,
         })
     }

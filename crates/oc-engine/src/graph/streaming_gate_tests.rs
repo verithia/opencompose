@@ -29,6 +29,7 @@ fn gated_effect_graph(opt_out: bool) -> (AudioGraph, Arc<FakeControl>) {
 
 fn plain_graph(chain: EffectChain) -> AudioGraph {
     let mut graph = AudioGraph {
+        resource_root: None,
         track_chains: vec![chain],
         bus_chains: HashMap::new(),
         master_chain: EffectChain::new(),
@@ -68,6 +69,8 @@ fn plain_graph(chain: EffectChain) -> AudioGraph {
         control_gains: vec![None],
         control_only: Vec::new(),
         key_plan: KeyPlan::default(),
+        live_controls: None,
+        preset_macros: None,
         prepared: None,
         control_fresh: Vec::new(),
     };
