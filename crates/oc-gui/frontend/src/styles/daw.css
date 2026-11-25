@@ -10,6 +10,7 @@
 @import "./daw/mixer-base.css";
 @import "./daw/chrome.css";
 @import "./daw/devices.css";
+@import "./daw/gain-automation.css";
 @import "./daw/mixer-sends.css";
 @import "./daw/pianoroll.css";
 @import "./daw/presets.css";

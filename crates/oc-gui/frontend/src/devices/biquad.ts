@@ -31,8 +31,9 @@ export function designBiquad(
   q: number,
   gainDb: number,
   sampleRate = DEFAULT_SAMPLE_RATE,
+  rateCeiling = 0.45,
 ): BiquadCoefficients {
-  const clampedFreq = clamp(freq, MIN_FREQ, sampleRate * 0.45);
+  const clampedFreq = clamp(freq, MIN_FREQ, sampleRate * rateCeiling);
   const clampedQ = Math.max(q, 0.1);
   const w0 = (2 * Math.PI * clampedFreq) / sampleRate;
   const cosW0 = Math.cos(w0);

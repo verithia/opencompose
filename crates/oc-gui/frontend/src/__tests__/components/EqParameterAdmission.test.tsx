@@ -57,7 +57,9 @@ beforeEach(() => {
       const updated = structuredClone(current);
       for (const [key, raw] of args?.params as [string, string][]) {
         const params = updated.project.tracks[0].effects[0].params;
-        const value = raw.endsWith("Hz") ? { Frequency: Number.parseFloat(raw) } : raw.endsWith("dB") ? { Db: Number.parseFloat(raw) } : { Number: Number(raw) };
+        const value = raw === "true" || raw === "false" ? { Bool: raw === "true" }
+          : raw.endsWith("Hz") ? { Frequency: Number.parseFloat(raw) }
+          : raw.endsWith("dB") ? { Db: Number.parseFloat(raw) } : { Number: Number(raw) };
         const index = params.findIndex(([name]) => name === key);
         if (index >= 0) params[index] = [key, value]; else params.push([key, value]);
       }
@@ -70,6 +72,47 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.useRealTimers(); });
 
 describe("EQ parameter admission", () => {
+  it("adds another visible band after the initial slots are filled", async () => {
+    await load(true);
+    const params = current.project.tracks[0].effects[0].params;
+    for (let band = 2; band <= 7; band += 1) {
+      params.push([`band${band}_enabled`, { Bool: true }]);
+    }
+    current = { ...current, revision: current.revision + 1 };
+    store.applyAiSnapshot(current);
+
+    const { container } = mount(true);
+    expect(container.querySelector('[data-peq-band="band8"]')).toBeNull();
+    fireEvent.click(container.querySelector("[data-peq-add]")!);
+    await vi.waitFor(() => expect(calls("set_effect_params_owned")).toHaveLength(1));
+    expect(calls("set_effect_params_owned")[0][1]).toMatchObject({
+      params: [["band8_enabled", "true"], ["band8_solo", "false"]],
+    });
+    expect(container.querySelector('[data-peq-node="band8"]')).toBeInTheDocument();
+    expect(container.querySelector('[data-band-enable="band8"]')).toHaveAttribute("aria-checked", "true");
+  });
+
+  it("switches the insert's oversampling mode in one history entry per selection", async () => {
+    await load(true);
+    const view = mount(true);
+    const select = view.getByRole("combobox", { name: "2× oversampling" }) as HTMLSelectElement;
+    expect(select.value).toBe("off");
+    fireEvent.change(select, { target: { value: "polyphase" } });
+    await vi.waitFor(() => expect(history).toBe(1));
+    expect(calls("set_effect_params_owned")[0][1]).toMatchObject({
+      params: [["oversample", "true"], ["oversample_fir", "false"]],
+    });
+    fireEvent.change(select, { target: { value: "fir" } });
+    await vi.waitFor(() => expect(history).toBe(2));
+    expect(calls("set_effect_params_owned")[1][1]).toMatchObject({
+      params: [["oversample", "false"], ["oversample_fir", "true"]],
+    });
+    expect(select.value).toBe("fir");
+    fireEvent.change(select, { target: { value: "off" } });
+    await vi.waitFor(() => expect(history).toBe(3));
+    expect(select.value).toBe("off");
+  });
+
   it.each([false, true])("refuses a same-type replacement during the %s EQ drag", async dynamic => {
     await load(dynamic); const { container } = mount(dynamic); const node = plot(container, dynamic);
     fireEvent.mouseDown(node, { button: 0, clientX: 150, clientY: 100 });

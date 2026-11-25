@@ -11,6 +11,8 @@ import {
   type BiquadShape,
 } from "./biquad";
 
+const FILTER_RATE_CEILING = 0.49;
+
 export type ParametricShape =
   | "bell"
   | "low_shelf"
@@ -33,6 +35,8 @@ export interface ParametricBand {
   shape: ParametricShape;
   freq: number;
   q: number;
+  /** Number of second-order sections when the band is a low or high cut. */
+  cutSections?: number;
   gainDb: number;
   enabled: boolean;
   solo: boolean;
@@ -90,6 +94,10 @@ export function shapeUsesGain(shape: ParametricShape): boolean {
   return shape !== "low_cut" && shape !== "high_cut" && shape !== "band_pass";
 }
 
+export function isCutShape(shape: ParametricShape): boolean {
+  return shape === "low_cut" || shape === "high_cut";
+}
+
 export function soloActive(bands: ParametricBand[]): boolean {
   return bands.some((band) => band.enabled && band.solo);
 }
@@ -116,9 +124,25 @@ export function bandResponseDb(
   sampleRate = DEFAULT_SAMPLE_RATE,
   dynamicRange = false,
 ): number {
+  return bandSections(band, sampleRate, dynamicRange).reduce(
+    (total, section) => total + magnitudeDb(section, freq, sampleRate),
+    0,
+  );
+}
+
+function bandSections(band: ParametricBand, sampleRate: number, dynamicRange: boolean) {
+  const count = isCutShape(band.shape) ? band.cutSections ?? 1 : 1;
   const gain = band.dynamic && dynamicRange ? band.gainDb + band.rangeDb : band.gainDb;
-  const coefficients = designBiquad(SHAPE_TO_BIQUAD[band.shape], band.freq, band.q, gain, sampleRate);
-  return magnitudeDb(coefficients, freq, sampleRate);
+  const shape = SHAPE_TO_BIQUAD[band.shape];
+  if (count === 1) {
+    return [designBiquad(shape, band.freq, band.q, gain, sampleRate, FILTER_RATE_CEILING)];
+  }
+  const scale = Math.pow(Math.SQRT2 * band.q, 1 / count);
+  return Array.from({ length: count }, (_, index) => {
+    const angle = (2 * index + 1) * Math.PI / (4 * count);
+    const q = scale / (2 * Math.cos(angle));
+    return designBiquad(shape, band.freq, q, 0, sampleRate, FILTER_RATE_CEILING);
+  });
 }
 
 export function responseDb(
@@ -147,10 +171,9 @@ export function responseCurve(
   view: ChannelView = "all",
   dynamicRange = false,
 ): CurvePoint[] {
-  const sections = audibleBands(bands, view).map((band) => {
-    const gain = band.dynamic && dynamicRange ? band.gainDb + band.rangeDb : band.gainDb;
-    return designBiquad(SHAPE_TO_BIQUAD[band.shape], band.freq, band.q, gain, sampleRate);
-  });
+  const sections = audibleBands(bands, view).flatMap(
+    (band) => bandSections(band, sampleRate, dynamicRange),
+  );
   return logFrequencies(points, MIN_FREQ, MAX_FREQ).map((freq) => ({
     freq,
     db: sections.reduce((total, section) => total + magnitudeDb(section, freq, sampleRate), 0),
@@ -178,8 +201,9 @@ export function bandCurve(
   sampleRate = DEFAULT_SAMPLE_RATE,
   dynamicRange = false,
 ): CurvePoint[] {
+  const sections = bandSections(band, sampleRate, dynamicRange);
   return logFrequencies(points, MIN_FREQ, MAX_FREQ).map((freq) => ({
     freq,
-    db: bandResponseDb(band, freq, sampleRate, dynamicRange),
+    db: sections.reduce((total, section) => total + magnitudeDb(section, freq, sampleRate), 0),
   }));
 }

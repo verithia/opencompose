@@ -43,22 +43,6 @@ function slotColors(container: HTMLElement): string[] {
     .map((element) => (element as HTMLElement).style.background.replace(/\s/g, "").toLowerCase());
 }
 
-const BAND_FREQS = [100, 250, 500, 1000, 2000, 8000];
-
-function continuousParam(
-  id: string, name: string, unit: DeviceParamDef["unit"],
-  min: number, max: number, value: number, curve: "linear" | "log",
-): DeviceParamDef {
-  return { id, name, unit, min, max, default: value, curve, steps: null };
-}
-
-function boolParam(id: string, name: string): DeviceParamDef {
-  return {
-    id, name, unit: "none", min: 0, max: 1, default: 0,
-    curve: "linear", steps: 2, kind: "bool",
-  };
-}
-
 function enumParam(id: string, name: string, options: string[]): DeviceParamDef {
   return {
     id, name, unit: "none", min: 0, max: options.length - 1, default: 0,
@@ -66,41 +50,7 @@ function enumParam(id: string, name: string, options: string[]): DeviceParamDef 
   };
 }
 
-function bandParams(index: number, freq: number): DeviceParamDef[] {
-  const prefix = `band${index}`;
-  const label = `Band ${index}`;
-  return [
-    boolParam(`${prefix}_enabled`, `${label} Enabled`),
-    boolParam(`${prefix}_solo`, `${label} Solo`),
-    enumParam(`${prefix}_channel`, `${label} Channel`, ["Stereo", "Mid", "Side", "Left", "Right"]),
-    enumParam(`${prefix}_type`, `${label} Type`,
-      ["Bell", "Low Shelf", "High Shelf", "Low Cut", "High Cut", "Notch", "Band Pass"]),
-    continuousParam(`${prefix}_freq`, `${label} Frequency`, "Hz", 20, 20000, freq, "log"),
-    continuousParam(`${prefix}_q`, `${label} Q`, "none", 0.1, 20, 1, "log"),
-    continuousParam(`${prefix}_gain`, `${label} Gain`, "dB", -24, 24, 0, "linear"),
-    boolParam(`${prefix}_dynamic`, `${label} Dynamic`),
-    continuousParam(`${prefix}_threshold`, `${label} Threshold`, "dB", -60, 0, -30, "linear"),
-    continuousParam(`${prefix}_range`, `${label} Range`, "dB", -24, 24, -6, "linear"),
-    continuousParam(`${prefix}_attack`, `${label} Attack`, "ms", 0.1, 200, 10, "log"),
-    continuousParam(`${prefix}_release`, `${label} Release`, "ms", 5, 2000, 100, "log"),
-  ];
-}
-
-const dynamicEqDevice: DeviceDef = {
-  id: "dynamic-eq",
-  name: "Dynamic EQ",
-  category: "eq",
-  params: [
-    boolParam("bypass", "Bypass"),
-    ...BAND_FREQS.flatMap((freq, index) => bandParams(index + 1, freq)),
-    boolParam("low_cut_enabled", "Low Cut Enabled"),
-    continuousParam("low_cut_freq", "Low Cut Frequency", "Hz", 20, 20000, 20, "log"),
-    continuousParam("low_cut_q", "Low Cut Q", "none", 0.1, 20, 0.707, "log"),
-    boolParam("high_cut_enabled", "High Cut Enabled"),
-    continuousParam("high_cut_freq", "High Cut Frequency", "Hz", 20, 20000, 20000, "log"),
-    continuousParam("high_cut_q", "High Cut Q", "none", 0.1, 20, 0.707, "log"),
-  ],
-};
+const dynamicEqDevice = FALLBACK_DEVICES.find((device) => device.id === "dynamic-eq")!;
 
 function dynamicHarness(params: [string, ParamValue][] = []) {
   return (
@@ -763,8 +713,8 @@ describe("DevicePanel", () => {
 
     expect(container.querySelector("[data-parametric-eq]")).toBeTruthy();
     expect(container.querySelector('[data-param-id="band1_enabled"]')).toBeNull();
-    expect(container.querySelectorAll("[data-peq-node]")).toHaveLength(8);
-    expect(container.querySelectorAll("[data-peq-band]")).toHaveLength(8);
+    expect(container.querySelectorAll("[data-peq-node]")).toHaveLength(9);
+    expect(container.querySelectorAll("[data-peq-band]")).toHaveLength(9);
 
     const enable = container.querySelector('[data-band-enable="band1"]') as HTMLElement;
     expect(enable.getAttribute("aria-checked")).toBe("false");
@@ -782,6 +732,64 @@ describe("DevicePanel", () => {
       expect(setParamCalls().some(
         (call) => call.paramName === "band1_type" && call.paramValue === "low_cut",
       )).toBe(true);
+    });
+  });
+
+  it("adds a seventh parametric band when the first six are active", async () => {
+    const effects: Effect["params"] = Array.from({ length: 6 }, (_, index) => [
+      `band${index + 1}_enabled`,
+      { Bool: true },
+    ]);
+    const { container } = render(() => dynamicHarness(effects));
+    const add = container.querySelector("[data-peq-add]") as HTMLElement;
+    fireEvent.click(add);
+    await vi.waitFor(() => {
+      expect(setParamCalls().some(
+        (call) => call.paramName === "band7_enabled" && call.paramValue === "true",
+      )).toBe(true);
+    });
+    expect(container.querySelector('[data-peq-node="band7"]')?.classList.contains("selected")).toBe(true);
+  });
+
+  it("sets the cut slope for a parametric band and a dedicated cut independently", async () => {
+    const { container } = render(() => dynamicHarness([
+      ["band7_enabled", { Bool: true }],
+      ["band7_type", { String: "low_cut" }],
+      ["band7_slope", { Number: 1 }],
+    ]));
+    expect(container.querySelector('[data-band-slope="band1"]')).toBeNull();
+    const band = container.querySelector('[data-band-slope="band7"]') as HTMLSelectElement;
+    expect(band.selectedOptions[0].textContent).toBe("24 dB/oct");
+    fireEvent.change(band, { target: { value: "3" } });
+    await vi.waitFor(() => {
+      expect(setParamCalls()).toEqual(expect.arrayContaining([
+        expect.objectContaining({ paramName: "band7_slope", paramValue: "48_db/oct" }),
+      ]));
+    });
+    const dedicated = container.querySelector('[data-band-slope="high_cut"]') as HTMLSelectElement;
+    fireEvent.change(dedicated, { target: { value: "2" } });
+    await vi.waitFor(() => {
+      expect(setParamCalls()).toEqual(expect.arrayContaining([
+        expect.objectContaining({ paramName: "high_cut_slope", paramValue: "36_db/oct" }),
+      ]));
+    });
+  });
+
+  it("shows output gain in the summed response and commits it as a device parameter", async () => {
+    const neutral = render(() => dynamicHarness());
+    const { container } = render(() => dynamicHarness([
+      ["output_gain", { Db: -6 }],
+    ]));
+    expect(container.querySelector(".peq-curve")?.getAttribute("d"))
+      .not.toBe(neutral.container.querySelector(".peq-curve")?.getAttribute("d"));
+
+    const output = container.querySelector<HTMLInputElement>('[data-peq-field="output_gain"]')!;
+    expect(output.value).toBe("-6");
+    fireEvent.change(output, { target: { value: "4.5" } });
+    await vi.waitFor(() => {
+      expect(setParamCalls()).toEqual(expect.arrayContaining([
+        expect.objectContaining({ paramName: "output_gain", paramValue: "4.5dB" }),
+      ]));
     });
   });
 

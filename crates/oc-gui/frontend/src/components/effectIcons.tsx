@@ -101,7 +101,12 @@ const GLYPHS: Record<ListedEffectType, GlyphEntry> = {
   // Rotating phase
   Phaser: { label: EFFECT_LABELS.Phaser, glyph: path("M6 2 A4 4 0 1 1 2.3 7.5 M2.3 7.5 L1.5 5.5 M2.3 7.5 L4.4 7") },
   // Two arrows apart
+  TransferShaper: { label: EFFECT_LABELS.TransferShaper, glyph: path("M1 10 L4 8 L7 3 L11 2") },
+  AllPass: { label: EFFECT_LABELS.AllPass, glyph: path("M1 6 Q4 0 6 6 T11 6 M1 9 H11") },
+  FrequencyShift: { label: EFFECT_LABELS.FrequencyShift, glyph: path("M1 9 Q3 3 5 9 M6 6 Q8 0 10 6 M8 9 L11 6") },
+  Vocoder: { label: EFFECT_LABELS.Vocoder, glyph: path("M2 8 V4 M4.5 10 V2 M7.5 9 V3 M10 7 V5") },
   StereoWidth: { label: EFFECT_LABELS.StereoWidth, glyph: path("M6 3 V9 M1 6 H4 M1 6 L2.5 4.5 M1 6 L2.5 7.5 M11 6 H8 M11 6 L9.5 4.5 M11 6 L9.5 7.5") },
+  StereoMatrix: { label: EFFECT_LABELS.StereoMatrix, glyph: path("M1 3 H11 M1 9 H11 M1 3 L11 9 M1 9 L11 3") },
   // Fader
   Gain: { label: EFFECT_LABELS.Gain, glyph: path("M6 1.5 V10.5 M3.5 5 H8.5") },
 };

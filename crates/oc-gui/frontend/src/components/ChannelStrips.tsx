@@ -2,11 +2,12 @@
  * ChannelStrips — horizontal mixer row: track channels, bus returns, master.
  * Sends are edited in place; every edit is one undoable project mutation.
  */
-import { For, Show, createSignal, onMount } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal, on, onCleanup } from "solid-js";
 import { store } from "../stores/project";
 import { i18n } from "../stores/i18n";
 import type { Bus, PluginPortInfo, Track } from "../types/project";
 import { ChannelMeter, MasterMonitor } from "./MeterBars";
+import { trackDisplayName } from "../utils/trackLabel";
 
 // Fallback when the theme tokens can't be read (tests, SSR). The live colour is
 // the theme's `--track-color-N`, the same data colour the timeline lanes use.
@@ -41,9 +42,7 @@ function channelColor(track: Track, index: number): string {
   return track.mix.overrides?.color || themeTrackColor(index);
 }
 
-function channelLabel(track: Track): string {
-  return track.mix.overrides?.display_name || track.name;
-}
+const channelLabel = trackDisplayName;
 
 function SendRow(props: {
   trackIndex: number;
@@ -136,9 +135,10 @@ function TrackStrip(props: {
 }) {
   const [sendTarget, setSendTarget] = createSignal("");
   const [sourceOutput, setSourceOutput] = createSignal(1);
-  const [auxPairs, setAuxPairs] = createSignal(1);
   const [auxLoading, setAuxLoading] = createSignal(false);
   const [outputPorts, setOutputPorts] = createSignal<PluginPortInfo[]>([]);
+  let outputRequest = 0;
+  onCleanup(() => { outputRequest++; });
   const soloSafe = () => props.track.mix.overrides?.solo_safe ?? false;
   const polarity = () => props.track.mix.polarity_inverted ?? false;
   const presetName = () => props.track.preset;
@@ -146,6 +146,25 @@ function TrackStrip(props: {
     ? store.project.presets.find((preset) => preset.name === presetName()
       && (preset.source === "clap" || preset.source === "vst3" || preset.source === "vst2"))
     : undefined;
+  const outputPreset = createMemo(() => {
+    const preset = pluginPreset();
+    return preset ? JSON.stringify([preset.name, preset.source, preset.plugin]) : null;
+  });
+  const outputChoices = createMemo(() => outputPorts().flatMap((port, index) =>
+    Array.from({ length: port.pairs }, (_, pair) => ({
+      port: index,
+      pair,
+      absolute: port.first_pair + pair,
+      multiple: port.pairs > 1,
+      channels: Math.min(2, port.channels - pair * 2),
+    })),
+  ));
+  const auxPairs = () => outputChoices().length;
+  const selectedOutput = () => {
+    const port = props.track.output_port;
+    const pair = props.track.output_pair ?? 0;
+    return port == null ? pair : (outputPorts()[port]?.first_pair ?? 0) + pair;
+  };
   const sendSource = () => sourceOutput() > 1 && presetName()
     ? { owner: presetName()!, output: sourceOutput() }
     : undefined;
@@ -155,22 +174,27 @@ function TrackStrip(props: {
         ? send.source?.owner === presetName() && send.source?.output === sourceOutput()
         : !send.source)),
   );
-  const loadAuxOutputs = async () => {
-    if (!presetName() || !pluginPreset()) return;
-    setAuxLoading(true);
+  const readOutputs = async (load: boolean) => {
+    const preset = pluginPreset();
+    if (!preset) return;
+    const target = outputPreset();
+    const request = ++outputRequest;
+    if (load) setAuxLoading(true);
     try {
-      setAuxPairs(await store.presetOutputPairs(presetName()!));
-      // Loading the plugin also reveals its declared output ports.
-      setOutputPorts(await store.presetOutputPorts(presetName()!));
+      const ports = await store.presetOutputPorts(preset.name, load);
+      if (request === outputRequest && outputPreset() === target) setOutputPorts(ports);
     } finally {
-      setAuxLoading(false);
+      if (request === outputRequest) setAuxLoading(false);
     }
   };
   // An already-loaded instrument reports its ports without a second load.
-  onMount(async () => {
-    if (!presetName() || !pluginPreset()) return;
-    setOutputPorts(await store.presetOutputPorts(presetName()!));
-  });
+  createEffect(on(outputPreset, () => {
+    outputRequest++;
+    setAuxLoading(false);
+    setOutputPorts([]);
+    setSourceOutput(1);
+    void readOutputs(false);
+  }));
 
   return (
     <div
@@ -275,19 +299,25 @@ function TrackStrip(props: {
             }}
           />
         </label>
-        <Show when={outputPorts().length > 1}>
+        <Show when={outputChoices().length > 1}>
           <label class="channel-strip-port">
             <span>{i18n.t("mixer.port")}</span>
             <select
               aria-label={i18n.t("mixer.portLabel", { name: props.track.name })}
-              value={String(props.track.output_port ?? 0)}
-              onChange={(e) => void store.setTrackOutputPort(props.index, Number(e.currentTarget.value))}
+              value={String(selectedOutput())}
+              onChange={(e) => {
+                const selected = Number(e.currentTarget.value);
+                const choice = outputChoices().find((output) => output.absolute === selected);
+                if (!choice) return;
+                const pair = choice.multiple || props.track.output_pair != null ? choice.pair : undefined;
+                void store.setTrackOutputPort(props.index, choice.port, pair);
+              }}
               onClick={(e) => e.stopPropagation()}
             >
-              <For each={outputPorts()}>
-                {(port, index) => (
-                  <option value={String(index())}>
-                    {index() + 1} ({port.channels}ch)
+              <For each={outputChoices()}>
+                {(choice) => (
+                  <option value={String(choice.absolute)}>
+                    {choice.multiple ? `${choice.port + 1}.${choice.pair + 1}` : choice.port + 1} ({choice.channels}ch)
                   </option>
                 )}
               </For>
@@ -344,7 +374,7 @@ function TrackStrip(props: {
                 class="track-btn channel-send-aux"
                 aria-label={i18n.t("mixer.loadAux", { name: props.track.name })}
                 disabled={auxLoading()}
-                onClick={(e) => { e.stopPropagation(); void loadAuxOutputs(); }}
+                onClick={(e) => { e.stopPropagation(); void readOutputs(true); }}
               >{auxLoading() ? "…" : auxPairs() > 1 ? `${auxPairs() - 1} AUX` : "AUX"}</button>
             </Show>
             <button

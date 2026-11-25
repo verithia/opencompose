@@ -15,6 +15,7 @@ import { i18n } from "../stores/i18n";
 import { useTooltip } from "./Tooltip";
 import { openEffectContextMenu } from "./effectMenu";
 import { EffectIcon } from "./effectIcons";
+import { GainAutomationEditor } from "./GainAutomationEditor";
 import { EffectAutomation } from "./EffectAutomation";
 import { effectDeviceId, type DeviceId } from "../devices/effectIds";
 
@@ -48,6 +49,11 @@ const DEVICE_COLORS: Record<DeviceId, string> = {
   flanger: "#4dd0e1",
   phaser: "#f48fb1",
   stereo_width: "#9575cd",
+  "stereo-matrix": "#9575cd",
+  "frequency-shift": "#9575cd",
+  vocoder: "#9575cd",
+  allpass: "#90a4ae",
+  "transfer-shaper": "#ff8a65",
 };
 
 export { effectDeviceId };
@@ -260,6 +266,7 @@ export function EffectsRack(props: {
       </div>
 
       <EffectAutomation target={props.target} />
+      <GainAutomationEditor target={props.target} />
     </div>
   );
 }

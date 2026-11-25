@@ -39,11 +39,15 @@ export function createProjectClock(properties: ProjectProperties) {
     if (bar === 1) meters[0] = segment; else meters.push(segment);
     previousBar = bar;
   }
-  const quarterAt = (p: BarBeat): number => {
+  const quarterAt = (p: BarBeat, ppq = 0): number => {
     if (!Number.isInteger(p.bar) || p.bar < 1) throw new Error("Invalid bar");
     const m = lastAtOrBefore(meters, (m) => m.bar, p.bar);
-    if (!Number.isInteger(p.beat) || p.beat < 1 || p.beat > m.meter.numerator || !Number.isInteger(p.subdivision) || p.subdivision < 0 || p.subdivision >= 4) throw new Error("Invalid beat/subdivision");
-    return m.quarter + ((p.bar-m.bar)*m.meter.numerator + p.beat-1 + p.subdivision/4)*4/m.meter.denominator;
+    if (!Number.isInteger(ppq) || ppq < 0 || ppq > 96000) throw new Error("Invalid PPQ");
+    const validSubdivision = Number.isSafeInteger(p.subdivision) && p.subdivision >= 0
+      && (ppq === 0 ? p.subdivision < 4 : p.subdivision * m.meter.denominator < ppq * 4);
+    if (!Number.isInteger(p.beat) || p.beat < 1 || p.beat > m.meter.numerator || !validSubdivision) throw new Error("Invalid beat/subdivision");
+    const base = m.quarter + ((p.bar-m.bar)*m.meter.numerator + p.beat-1)*4/m.meter.denominator;
+    return base + (ppq === 0 ? p.subdivision/m.meter.denominator : p.subdivision/ppq);
   };
   const tempos = [{ quarter: 0, seconds: 0, bpm: properties.tempo }];
   let previousQuarter = -1;

@@ -48,6 +48,7 @@ import {
   type AutomationWriteSurface,
 } from "../stores/automationWrite";
 import { createParameterGesture } from "../utils/parameterGesture";
+import { capturePresetMacroPreview } from "../stores/presetMacroPreview";
 import { automationPositionAt } from "../utils/automationSampler";
 import { i18n, type I18nKey } from "../stores/i18n";
 import { log } from "../stores/log";
@@ -770,17 +771,20 @@ export function OpenSynthEditor(props: {
     void props.stopAudition();
   });
   const commit = async (name: string, next: number, owner = store.parameterRequestOwner()) => {
-    if (busy() || !ownsCurrentPreset()) return;
+    if (busy() || !ownsCurrentPreset()) return false;
     const version = touchDraft(name);
     try {
       const error = await mutateOwned((token) => props.setParam(name, String(next), token), () => true, owner);
-      if (!ownsCurrentPreset() || draftVersions.get(name) !== version) return;
+      if (!ownsCurrentPreset() || draftVersions.get(name) !== version) return false;
       setPatchError(error ?? "");
       clearDraft(name);
+      return error === null;
     } catch (error) {
-      if (!ownsCurrentPreset() || draftVersions.get(name) !== version) return;
-      setPatchError(String(error));
-      clearDraft(name);
+      if (ownsCurrentPreset() && draftVersions.get(name) === version) {
+        setPatchError(String(error));
+        clearDraft(name);
+      }
+      return false;
     }
   };
   const setDraft = (name: string, next: number) => {
@@ -956,10 +960,19 @@ export function OpenSynthEditor(props: {
       value: current,
       draft: (next) => setDraft(key, next),
       clearDraft: () => clearDraft(key),
-      commit: (next) => { void commit(key, next); },
+      commit: (next) => commit(key, next),
       captureCommit: () => {
         const owner = store.parameterRequestOwner();
-        return next => { void commit(key, next, owner); };
+        return next => commit(key, next, owner);
+      },
+      capturePreview: () => {
+        if (!key.startsWith("macro.") || !ownsCurrentPreset()) return null;
+        const source = store.project.properties.control_links?.find(({ source }) =>
+          source.kind === "preset_macro"
+          && source.preset === props.preset.name && `macro.${source.index}` === key,
+        )?.source;
+        if (source?.kind !== "preset_macro") return null;
+        return capturePresetMacroPreview(source.preset, source.index, store.parameterRequestOwner());
       },
       surface: () => ownsCurrentPreset() ? writeSurface(key) : null,
       quarter: () => store.transport().position_beats,

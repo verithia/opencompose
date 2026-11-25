@@ -18,8 +18,9 @@ import {
 } from "./setup";
 import { i18n } from "../stores/i18n";
 import { store } from "../stores/project";
-import { patternKey } from "../stores/clipPool";
+import { patternKey, automationKey } from "../stores/clipPool";
 import {
+  clipMenuItems,
   copyClip,
   copyClipToClipboard,
   duplicateClip,
@@ -194,4 +195,17 @@ describe("document identity", () => {
     expect(store.documentIdentity().path).toBe("/tmp/second.ocp");
     expect(store.documentIdentity().generation).toBe(first.generation + 1);
   });
+});
+
+
+it("reads a fine automation menu and keeps its exact authored duplicate endpoint", async () => {
+  const snap = project();
+  snap.project.tracks[0].automation = [{param:"gain.factor",ppq:96000,
+    time_range:range([1,1,24001],[3,1,48001]),
+    points:[{position:{bar:1,beat:1,subdivision:24001},value:{Number:0}}]}];
+  await load(snap);
+  const key = automationKey("track:0",0);
+  expect(() => clipMenuItems(key)).not.toThrow();
+  await duplicateClip(key);
+  expect(getLastCallArgs("duplicate_automation_clip")).toMatchObject({atBar:3,atBeat:1,atSubdivision:48001});
 });

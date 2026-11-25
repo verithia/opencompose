@@ -132,6 +132,15 @@ export const endOwnedEffectParamTouch = (
   token: EffectTouchToken, target: string, effectIndex: number, paramName: string,
 ) => invoke<boolean>("end_owned_effect_param_touch", { target, effectIndex, paramName, token });
 
+export const beginPresetMacroPreview = (preset: string, index: number, expectedStamp: ParameterTargetStamp) =>
+  invoke<EffectTouchToken | null>("begin_preset_macro_preview", { preset, index, expectedStamp });
+
+export const updatePresetMacroPreview = (preset: string, index: number, value: number, token: EffectTouchToken) =>
+  invoke<boolean>("update_preset_macro_preview", { preset, index, value, token });
+
+export const endPresetMacroPreview = (preset: string, index: number, token: EffectTouchToken, committed: boolean) =>
+  invoke<void>("end_preset_macro_preview", { preset, index, token, committed });
+
 export const beginEffectParamTouch = (
   target: string,
   effectIndex: number,

@@ -10,12 +10,18 @@ import { i18n } from "../stores/i18n";
 import { commandBindingLabel } from "../stores/keymap";
 import { audioClipBounds } from "../utils/audioClipPlacement";
 import { projectClock, type ProjectClock } from "../utils/projectClock";
-import { overlapsByTrack } from "../utils/timelineLayout";
+import { AUTOMATION_ROW_HEIGHT } from "../utils/automationRow";
+import { GainAutomationPreview } from "./GainAutomationPreview";
+import { gainAutomationGroups } from "../utils/gainAutomationView";
+import { AUTOMATION_CURVES } from "../data/automationCurves.gen";
+import { effectivePatternSound, patternSoundLabel, patternSoundOrigin } from "../utils/patternSound";
+import { trackDisplayName } from "../utils/trackLabel";
+import { overlapsByTrack, packTimelineBands } from "../utils/timelineLayout";
 import { hitTimingOffset, hitWrittenQuarters, patternHitOnsets, swingOffsetQuarters } from "../utils/drumkit";
 import { barMarks } from "../utils/tempoLane";
 import { TempoLane, TempoLaneHeader } from "./TempoLane";
 
-import { instrumentDisplay, trackSoundDisplay, type AudioClip, type AutomationCurve, type AutomationLane, type BarBeat, type Clip, type HitEvent, type Marker, type NoteEvent, type Pattern, type PatternDef, type Phrase, type TimeRange, type TimeSignature, type Track } from "../types/project";
+import { trackSoundDisplay, type AudioClip, type AutomationCurve, type AutomationLane, type BarBeat, type Clip, type GainAutomation, type HitEvent, type Marker, type NoteEvent, type Pattern, type PatternDef, type Phrase, type TimeRange, type TimeSignature, type Track } from "../types/project";
 import { AudioClipBlock } from "./AudioClipBlock";
 import { TakeHeaders, TakeLanes, takeGroupFor } from "./TakeLanes";
 import { GRID_OPTIONS, blockPositionNote, gridDivision, gridOptionLabel, setGridDivision, snapBlockQuarter } from "../stores/grid";
@@ -348,6 +354,12 @@ function thumbnailOnsets<T>(
 
 // Thumbnail x positions are fractions of the full clip width; .clip-thumbnail keeps 0 horizontal inset.
 export function noteThumbnails(events: NoteEvent[], lengthBeats: number, offsetBeats = 0, loopBeats = 0) {
+  return noteThumbnailRects(events, lengthBeats, offsetBeats, loopBeats).map(({ x, y, width, height }) => ({
+    left: `${x}%`, top: `${y}%`, width: `${width}%`, height: `${height}%`,
+  }));
+}
+
+function noteThumbnailRects(events: NoteEvent[], lengthBeats: number, offsetBeats = 0, loopBeats = 0) {
   const limit = 512;
   const notes = audibleNotes(events);
   const end = offsetBeats + lengthBeats;
@@ -367,7 +379,7 @@ export function noteThumbnails(events: NoteEvent[], lengthBeats: number, offsetB
   const pitches = [...new Set(midis)].sort((a, b) => a - b);
   const smallestGap = pitches.slice(1).reduce((gap, midi, index) =>
     Math.min(gap, midi - pitches[index]), span);
-  const height = `${Math.min(8, (smallestGap / span) * 80 * 0.65)}%`;
+  const height = Math.min(8, (smallestGap / span) * 80 * 0.65);
 
   // Ordinary phrases show every note. Dense previews retain the whole time
   // span instead of truncating the tail after the first few chords.
@@ -377,11 +389,11 @@ export function noteThumbnails(events: NoteEvent[], lengthBeats: number, offsetB
     const visibleStart = Math.max(0, offsetBeats - event.start_beat);
     const dur = Math.min(lengthBeats - start, durationToBeats(event) - visibleStart);
     const midi = pitchToMidi(event);
-    const left = (start / lengthBeats) * 100;
+    const x = (start / lengthBeats) * 100;
     return {
-      left: `${left}%`,
-      width: `${Math.min(100 - left, Math.max(1.2, (dur / lengthBeats) * 100))}%`,
-      top: `${8 + ((maxMidi - midi) / span) * 80}%`,
+      x,
+      width: Math.min(100 - x, Math.max(1.2, (dur / lengthBeats) * 100)),
+      y: 8 + ((maxMidi - midi) / span) * 80,
       height,
     };
   });
@@ -449,7 +461,7 @@ function trackTooltipContent(track: Track): TooltipContent {
     label: i18n.t("tooltip.phrases"),
     value: `${track.phrases.length} · ${track.phrases.reduce((sum, phrase) => sum + pitchedNotes(phrase.events).length, 0)} ${i18n.t("tooltip.notes")}`,
   });
-  return { title: track.name, rows };
+  return { title: trackDisplayName(track), rows };
 }
 
 function formatBarBeat(position: BarBeat): string {
@@ -525,14 +537,6 @@ function trackMixRows(track: Track): TooltipRow[] {
   return rows;
 }
 
-/** Clips play through the track channel, so the track owns the sound. */
-function soundValue(track: Track): string {
-  if (track.preset) {
-    const preset = store.project.presets.find((candidate) => candidate.name === track.preset);
-    return preset ? preset.name : `${track.preset} (${i18n.t("tooltip.notFound")})`;
-  }
-  return instrumentDisplay(track.instrument) || i18n.t("tooltip.noSound");
-}
 
 function blockTitle(name: string): string {
   return name || i18n.t("tooltip.unnamed");
@@ -551,14 +555,19 @@ function blockContent(
   track: Track,
   rows: TooltipRow[],
 ): TooltipContent {
-  return { title: blockTitle(name), subtitle: `${blockKind(kind)} · ${track.name}`, rows };
+  return { title: blockTitle(name), subtitle: `${blockKind(kind)} · ${trackDisplayName(track)}`, rows };
 }
 
 function contentRows(
   track: Track,
   counts: { notes?: number; hits?: number },
+  pattern?: PatternDef | null,
 ): TooltipRow[] {
-  const rows: TooltipRow[] = [{ label: i18n.t("tooltip.sound"), value: soundValue(track) }];
+  const sound = effectivePatternSound(store.project, track, pattern);
+  const rows: TooltipRow[] = [
+    { label: i18n.t("tooltip.sound"), value: patternSoundLabel(sound) },
+    { label: i18n.t("clip.info.soundOrigin"), value: patternSoundOrigin(sound) },
+  ];
   if (counts.notes !== undefined) {
     rows.push({ label: i18n.t("tooltip.notes"), value: String(counts.notes), mono: true });
   }
@@ -625,12 +634,12 @@ function clipTooltipContent(
   const rows: TooltipRow[] = [
     // The clip menu carries actions only; what the clip is and where it sits
     // lives here.
-    { label: i18n.t("clip.info.track"), value: track.name },
+    { label: i18n.t("clip.info.track"), value: trackDisplayName(track) },
     ...positionRows(clock, clip.time_range),
     ...contentRows(track, {
       notes: noteCount > 0 || hitCount === 0 ? noteCount : undefined,
       hits: hitCount > 0 ? hitCount : undefined,
-    }),
+    }, pattern),
   ];
   if ((clip.offset_quarters ?? 0) > 0) {
     rows.push({
@@ -798,6 +807,98 @@ export function Timeline() {
   });
 
   const audioClips = () => store.project.properties.audio_clips ?? [];
+  const [playlistView, setPlaylistView] = createSignal<boolean>();
+  type PlaylistPhrase = { phrase: Phrase; trackIndex: number; phraseIndex: number; track: Track };
+  type PlaylistAudio = { clip: AudioClip; clipIndex: number; track: Track; index: number };
+  type PlaylistGroup = { name: string; range: TimeRange; parts: PlaylistPhrase[] };
+  type PlaylistAutomation = {
+    target: string; laneIndex: number;
+  } & ({ kind: "parameter"; lane: AutomationLane } | { kind: "gain"; curve: GainAutomation });
+  type PlaylistItem = { start: number; end: number } & (
+    { kind: "audio"; entry: PlaylistAudio } | { kind: "notes"; group: PlaylistGroup } | PlaylistAutomation
+  );
+
+  const playlistOwners = createMemo(() => [
+    ...store.project.tracks.map((owner, index) => ({ target: `track:${index}`, owner })),
+    ...store.project.buses.map((owner) => ({ target: `bus:${owner.name}`, owner })),
+    { target: "master", owner: store.project.master },
+  ]);
+  const hasPlaylist = createMemo(() =>
+    audioClips().some((clip) => clip.playlist_lane !== undefined) ||
+    store.project.tracks.some((track) => track.phrases.some((phrase) => phrase.playlist_lane !== undefined)) ||
+    playlistOwners().some(({ owner }) =>
+      owner?.automation?.some((lane) => lane.playlist_lane !== undefined) ||
+      owner?.gain_automation?.some((curve) => curve.playlist_lane !== undefined),
+    ),
+  );
+  // The playlist represents audio and inline phrases. Keep the track view as
+  // the default if switching would hide placed patterns or reusable clips.
+  const playlistCoversArrangement = createMemo(() =>
+    store.project.tracks.every((track) =>
+      track.clips.length === 0 && !track.patterns.some((pattern) => pattern.time_range),
+    ),
+  );
+  const showPlaylist = () => hasPlaylist() && (playlistView() ?? playlistCoversArrangement());
+  const playlistRows = createMemo(() => {
+    if (!showPlaylist()) return [];
+    const owners = new Map(store.project.tracks.map((track, index) => [track.name, { track, index }]));
+    const rows = new Map<number | undefined, PlaylistItem[]>();
+    const groups = new Map<number | undefined, Map<string, PlaylistGroup>>();
+    const clock = projectClock(store.project.properties);
+    const collect = (rowIndex: number | undefined, item: PlaylistItem) => {
+      const row = rows.get(rowIndex) ?? [];
+      row.push(item);
+      rows.set(rowIndex, row);
+    };
+    const rangeAt = (range: TimeRange, ppq = 0) => ({
+      start: clock.quarterAt(range.start, ppq),
+      end: clock.quarterAt(range.end, ppq),
+    });
+    for (const [clipIndex, clip] of audioClips().entries()) {
+      const owner = owners.get(clip.track);
+      if (!owner) continue;
+      const bounds = audioClipBounds(clock, clip);
+      collect(clip.playlist_lane, {
+        kind: "audio", entry: { clip, clipIndex, ...owner },
+        start: bounds.startQuarter, end: bounds.endQuarter,
+      });
+    }
+    for (const [trackIndex, track] of store.project.tracks.entries()) {
+      for (const [phraseIndex, phrase] of track.phrases.entries()) {
+        const range = phrase.time_range;
+        if (!range) continue;
+        const lane = phrase.playlist_lane;
+        const rowGroups = groups.get(lane) ?? new Map<string, PlaylistGroup>();
+        // A source pattern can put one phrase on each of several instrument owners.
+        const key = lane === undefined
+          ? JSON.stringify([trackIndex, phraseIndex])
+          : JSON.stringify([phrase.name, range.start, range.end]);
+        let group = rowGroups.get(key);
+        if (!group) {
+          group = { name: phrase.name, range, parts: [] };
+          rowGroups.set(key, group);
+          groups.set(lane, rowGroups);
+          collect(lane, { kind: "notes", group, ...rangeAt(range) });
+        }
+        group.parts.push({ phrase, track, trackIndex, phraseIndex });
+      }
+    }
+    for (const { target, owner } of playlistOwners()) {
+      for (const [laneIndex, lane] of (owner?.automation ?? []).entries()) {
+        if (lane.playlist_lane === undefined || !lane.time_range) continue;
+        collect(lane.playlist_lane, { kind: "parameter", lane, target, laneIndex, ...rangeAt(lane.time_range, lane.ppq) });
+      }
+      for (const [laneIndex, curve] of (owner?.gain_automation ?? []).entries()) {
+        if (curve.playlist_lane === undefined) continue;
+        const ppq = curve.ppq ?? AUTOMATION_CURVES.gain.defaultPpq;
+        collect(curve.playlist_lane, { kind: "gain", curve, target, laneIndex, ...rangeAt(curve.time_range, ppq) });
+      }
+    }
+    return Array.from(rows, ([lane, items]) => ({ lane, bands: packTimelineBands(items) }))
+      .sort((a, b) => (a.lane ?? Infinity) - (b.lane ?? Infinity));
+  });
+  const playlistRowStyle = { height: `${AUTOMATION_ROW_HEIGHT}px` };
+  const playlistRowColor = (lane: number | undefined) => `var(--track-color-${((lane ?? 1) - 1) % 8})`;
 
   /** Tracks whose take rows are open; keyed by name so a track edit cannot
       move the disclosure to another track. */
@@ -1212,7 +1313,23 @@ export function Timeline() {
     return maxBar + 4;
   });
 
-  const totalWidth = createMemo(() => barBeatToPixel(totalBars()+1, 1, 0, pxPerBeat(), beatsPerBar()));
+  const totalQuarters = createMemo(() => projectClock(store.project.properties).barStartQuarter(totalBars() + 1));
+  const totalWidth = createMemo(() => totalQuarters() * pxPerBeat());
+  const rulerMarks = createMemo(() => barMarks(store.project.properties, totalBars()));
+  const rulerLabels = createMemo(() => {
+    const marks = rulerMarks();
+    const meterChanges = new Set(store.project.properties.time_sig_map?.map((point) => point.position.bar));
+    const labels: typeof marks = [];
+    for (const mark of marks) {
+      const previous = labels.at(-1);
+      if (!previous || (mark.quarter - previous.quarter) * pxPerBeat() >= 34) {
+        labels.push(mark);
+      } else if (previous.bar !== 1 && meterChanges.has(mark.bar) && !meterChanges.has(previous.bar)) {
+        labels[labels.length - 1] = mark;
+      }
+    }
+    return labels;
+  });
 
   /** Which clips overlap another clip of their lane, for every track at once.
    * A document change re-scans here once; a paint only reads the sets. */
@@ -1479,19 +1596,30 @@ export function Timeline() {
 
   // Timeline-local commands: the zoom and follow state lives here, and the
   // split acts on the block this view has selected.
+  const zoomAround = (next: number, clientX?: number) => {
+    const scale = Math.max(0.1, Math.min(120, next));
+    if (!lanesRef || scale === zoom()) return;
+    const header = headersRef?.offsetWidth ?? 0;
+    const anchor = clientX === undefined
+      ? Math.max(0, lanesRef.clientWidth - header) / 2
+      : Math.max(0, clientX - lanesRef.getBoundingClientRect().left - header);
+    const quarter = (lanesRef.scrollLeft + anchor) / zoom();
+    setZoom(scale);
+    lanesRef.scrollLeft = Math.max(0, quarter * scale - anchor);
+  };
   const zoomIn = () => {
-    setZoom(Math.min(120, zoom() + 4));
+    zoomAround(zoom() < 8 ? zoom() * 1.25 : zoom() + 4);
   };
   const zoomOut = () => {
-    setZoom(Math.max(6, zoom() - 4));
+    zoomAround(zoom() <= 8 ? zoom() / 1.25 : zoom() - 4);
   };
   const zoomToFit = () => {
     const lanes = lanesRef;
     if (!lanes) return;
     const headerWidth = headersRef?.offsetWidth ?? 0;
     const visible = Math.max(1, lanes.clientWidth - headerWidth);
-    const beats = Math.max(1, totalBars() * beatsPerBar());
-    setZoom(Math.max(6, Math.min(120, visible / beats)));
+    setZoom(Math.min(120, visible / Math.max(1, totalQuarters())));
+    lanes.scrollLeft = 0;
   };
   const toggleFollowPlayhead = () => {
     setFollowPlayback((value) => !value);
@@ -1523,7 +1651,7 @@ export function Timeline() {
     { target: string; laneIndex: number } | null
   >(null);
   const [tensionPrompt, setTensionPrompt] = createSignal<
-    { target: string; laneIndex: number; pointIndex: number; initial: string } | null
+    { target: string; laneIndex: number; pointIndex: number; initial: string; curve: "smooth" | "exponential" } | null
   >(null);
 
   /**
@@ -1541,6 +1669,7 @@ export function Timeline() {
   // document that was open when they were made. A load replaces that document
   // and drops them, which keeps Delete off content the user never picked.
   createEffect(on(store.documentIdentity, () => {
+    setPlaylistView(undefined);
     setSelectedPoint(null);
     setSelectedAutomationBlock(null);
     setSelectedAudioClip(null);
@@ -1562,6 +1691,8 @@ export function Timeline() {
   const lanesOf = (target: string): AutomationLane[] => ownerAutomationLanes(store.project, target);
 
   /** Bus and master lanes, drawn after the last track lane. */
+  const gainGroups = createMemo(() => gainAutomationGroups(store.project));
+
   const ownerAutomationGroups = createMemo(() => {
     const groups: { target: string; owner: string; lanes: AutomationLane[] }[] = [];
     for (const bus of store.project.buses) {
@@ -1680,10 +1811,11 @@ export function Timeline() {
     pointIndex: number,
     curve: AutomationCurve,
     tension: number | null,
+    curvature?: number | null,
   ) => {
     const lane = editableLane(target, laneIndex);
     if (!lane) return;
-    void store.setAutomationPointCurve(target, lane.param, pointIndex, curve, tension, laneIndex);
+    void store.setAutomationPointCurve(target, lane.param, pointIndex, curve, tension, laneIndex, curvature);
   };
 
   const toggleAutomationMute = (target: string, laneIndex: number) => {
@@ -1700,7 +1832,8 @@ export function Timeline() {
       target,
       laneIndex,
       pointIndex,
-      initial: String(point.tension ?? 1),
+      initial: String(point.curve === "exponential" ? (point.curvature ?? AUTOMATION_CURVES.curvature.default) : (point.tension ?? 1)),
+      curve: point.curve === "exponential" ? "exponential" : "smooth",
     });
   };
 
@@ -1749,8 +1882,8 @@ export function Timeline() {
       moveAutomationPointAt(target, laneIndex, pointIndex, positionBeats, value),
     onDeletePoint: (pointIndex: number) =>
       deleteAutomationPointAt(target, laneIndex, pointIndex),
-    onCurve: (pointIndex: number, curve: AutomationCurve, tension: number | null) =>
-      setAutomationCurveAt(target, laneIndex, pointIndex, curve, tension),
+    onCurve: (pointIndex: number, curve: AutomationCurve, tension: number | null, curvature?: number | null) =>
+      setAutomationCurveAt(target, laneIndex, pointIndex, curve, tension, curvature),
     onTension: (pointIndex: number) => openTensionPrompt(target, laneIndex, pointIndex),
     onToggleMute: () => toggleAutomationMute(target, laneIndex),
     blockSelected:
@@ -1860,7 +1993,7 @@ export function Timeline() {
     if (e.ctrlKey || e.metaKey) {
       e.preventDefault();
       const delta = e.deltaY > 0 ? 0.9 : 1.1;
-      setZoom(Math.round(Math.max(6, Math.min(120, zoom() * delta))));
+      zoomAround(zoom() * delta, e.clientX);
     }
   };
 
@@ -1905,6 +2038,7 @@ export function Timeline() {
   };
 
   const handlePatternDrop = async (e: DragEvent) => {
+    if (showPlaylist()) return;
     const patternName = e.dataTransfer?.getData("application/x-pattern");
     if (!patternName || !lanesRef) return;
     e.preventDefault();
@@ -1975,6 +2109,7 @@ export function Timeline() {
    *  A lane owns the rows between it and the next one, so a drop over a take or
    *  automation row still names that track; nothing below the last track does. */
   const trackAtClientY = (clientY: number): number | null => {
+    if (showPlaylist()) return null;
     if (!laneColumnRef || store.project.tracks.length === 0) return null;
     const bounds = laneBounds ?? measureLaneBounds();
     for (let index = 0; index < bounds.length; index++) {
@@ -2603,9 +2738,187 @@ export function Timeline() {
   onCleanup(() => endBlockResize());
   onCleanup(() => stopRulerScrub?.());
 
+  const openPlaylistPhrase = (event: MouseEvent, group: PlaylistGroup) => {
+    const identity = store.documentIdentity();
+    const edit = (part: PlaylistPhrase) => {
+      const track = store.project.tracks[part.trackIndex];
+      if (store.documentIdentity() !== identity || track?.name !== part.track.name ||
+          track.phrases[part.phraseIndex] !== part.phrase) return;
+      selectBlock("phrase", part.trackIndex, part.phraseIndex, false);
+      panelStore.openBottom("pianoroll");
+    };
+    if (group.parts.length === 1) {
+      edit(group.parts[0]);
+      return;
+    }
+    const anchor = (event.currentTarget as HTMLElement).getBoundingClientRect();
+    openContextMenu({
+      x: anchor.left,
+      y: anchor.bottom,
+      ariaLabel: i18n.t("timeline.playlistNoteSources"),
+      items: group.parts.map((part) => ({
+        label: trackDisplayName(part.track),
+        onSelect: () => edit(part),
+      })),
+    });
+  };
+
+  const renderPlaylistNoteGroup = (group: PlaylistGroup, length: number) => {
+    const thumbnail = noteThumbnailRects(group.parts.flatMap(({ phrase }) => phrase.events), length)
+      .map(({ x, y, width, height }) =>
+        `M${x.toFixed(2)},${y.toFixed(2)}h${width.toFixed(2)}v${height.toFixed(2)}h${(-width).toFixed(2)}z`).join("");
+    return (
+      <button class="clip-block phrase-block playlist-note-group" type="button"
+        style={{
+          "--clip-accent": trackColor(group.parts[0].trackIndex),
+        }}
+        aria-label={i18n.t("timeline.playlistNoteGroup", { name: group.name, count: group.parts.length })}
+        onClick={(event) => openPlaylistPhrase(event, group)}>
+        <span class="clip-accent-flag" aria-hidden="true" />
+        <svg class="clip-thumbnail playlist-note-thumbnail" viewBox="0 0 100 100"
+          preserveAspectRatio="none" aria-hidden="true">
+          <path d={thumbnail} />
+        </svg>
+        <div class="clip-label-chip" aria-hidden="true">
+          <span class="phrase-block-name">{group.name}</span>
+          <Show when={group.parts.length > 1}><span class="clip-meta">{group.parts.length}</span></Show>
+        </div>
+      </button>
+    );
+  };
+
+  const togglePlaylistView = () => {
+    const next = !showPlaylist();
+    clearPicks(null);
+    setSelectedBlock(null);
+    store.setEditorSelection(null);
+    invalidateLaneBounds();
+    setPlaylistView(next);
+  };
+
+  const renderAudioBlock = (
+    clip: AudioClip,
+    track: Track,
+    clipIndex: () => number,
+    ownerIndex: () => number,
+    playlist?: { start: number; containsY: (clientY: number) => boolean },
+  ) => (
+    <AudioClipBlock
+      originQuarter={playlist?.start}
+      clip={clip}
+      index={clipIndex()}
+      color={trackColor(ownerIndex())}
+      height={playlist ? AUTOMATION_ROW_HEIGHT : trackHeight() - 10}
+      pxPerBeat={pxPerBeat()}
+      selected={selectedAudioClip() === clipIndex()}
+      tooltipContent={() => audioClipTooltipContent(track, clip, projectClock(store.project.properties), selectedAudioClip() === clipIndex())}
+      beatFromClientX={beatFromClientX}
+      trackAtClientY={(clientY) => {
+        if (playlist) return playlist.containsY(clientY) ? clip.track : null;
+        const laneIndex = trackAtClientY(clientY);
+        return laneIndex === null
+          ? null
+          : (store.project.tracks[laneIndex]?.name ?? null);
+      }}
+      onSelect={selectAudioClip}
+      onEditPlayback={(index) => gainEnvelopeWindow.open(index, "playback")}
+      onStretch={(index, end, revision) => {
+        void store.setAudioClipPlayback(index, { stretch_to: end }, revision).then((error) => {
+          if (error) store.setError(error);
+        });
+      }}
+      onWarp={(index, markers, revision) => {
+        void store.setAudioClipPlayback(index, { warp_markers: markers }, revision).then((error) => {
+          if (error) store.setError(error);
+        });
+      }}
+      onMove={(index, targetTrack, start) => {
+        void withUndoGesture("project", () =>
+          moveClip(audioClipKey(index), { ...start, trackName: targetTrack }),
+        );
+      }}
+      onTrim={(index, start, end, edge) => {
+        void withUndoGesture("project", () =>
+          resizeClip(audioClipKey(index), edge, edge === "start" ? start : end),
+        );
+      }}
+      onEnvelope={(index, envelope, revision) => {
+        void withUndoGesture("project", () => store.setAudioClipEnvelope(index, envelope, revision));
+      }}
+      onSlip={(index, offsetSeconds, revision) => {
+        void withUndoGesture("project", () => store.setAudioClipOffset(index, offsetSeconds, revision));
+      }}
+      onLoop={(index, loopSeconds, revision) => {
+        void withUndoGesture("project", () => store.setAudioClipLoop(index, loopSeconds, revision));
+      }}
+      onError={(message) => store.setError(message)}
+      onContextMenu={(event) => openPoolClipMenu(event, audioClipKey(clipIndex()))}
+    />
+  );
+
+  const renderPlaylistItem = (item: PlaylistItem, layer: number, containsY: (clientY: number) => boolean) => {
+    const [hovered, setHovered] = createSignal(false);
+    const width = () => Math.max(2, (item.end - item.start) * pxPerBeat());
+    const renderContent = () => {
+      switch (item.kind) {
+        case "audio": {
+          const { entry } = item;
+          const { clip, clipIndex, index, track } = entry;
+          return (
+            <Show when={width() >= 8 || hovered() || selectedAudioClip() === clipIndex} fallback={
+              <button type="button" class="playlist-mini-audio"
+                style={{ "--clip-accent": trackColor(index) }}
+                aria-label={i18n.t("clip.audioLabel", { name: clip.name })}
+                title={clip.name}
+                onClick={() => selectAudioClip(clipIndex)}
+                onContextMenu={(event) => openPoolClipMenu(event, audioClipKey(clipIndex))}
+              />
+            }>
+              {renderAudioBlock(clip, track, () => clipIndex, () => index, { start: item.start, containsY })}
+            </Show>
+          );
+        }
+        case "notes":
+          return renderPlaylistNoteGroup(item.group, item.end - item.start);
+        case "gain":
+          return <GainAutomationPreview
+            curve={item.curve} target={item.target} index={item.laneIndex}
+            playlistStartQuarter={item.start} pxPerBeat={pxPerBeat()} width={width()}
+          />;
+        case "parameter":
+          return <AutomationLaneRow
+            lane={item.lane} laneIndex={item.laneIndex}
+            playlistStartQuarter={item.start} pxPerBeat={pxPerBeat()} width={width()}
+            selectedPoint={selectedPointIndex(item.target, item.laneIndex)}
+            {...automationCallbacks(item.target, item.laneIndex)}
+          />;
+      }
+    };
+    return (
+      <div class="playlist-item" classList={{
+        "playlist-overlap": layer > 0,
+        "playlist-compact-item": width() < 32,
+        "playlist-miniature": width() < 8,
+      }}
+        data-playlist-label={item.kind === "audio" ? item.entry.clip.name
+          : item.kind === "notes" ? item.group.name : undefined}
+        data-playlist-layer={layer}
+        onMouseEnter={() => { if (item.kind === "audio" && width() < 8) setHovered(true); }}
+        onMouseLeave={() => setHovered(false)}
+        style={{
+          left: `${item.start * pxPerBeat()}px`,
+          width: `${width()}px`,
+          "--playlist-preview-color": item.kind === "audio" ? trackColor(item.entry.index)
+            : item.kind === "notes" ? trackColor(item.group.parts[0].trackIndex) : "var(--accent-cool)",
+        }}>
+        {renderContent()}
+      </div>
+    );
+  };
+
   return (
-    <div class="timeline-panel" ref={timelineRef} tabIndex={0} onDragOver={(e) => {
-      if (e.dataTransfer?.types.includes("application/x-pattern")) {
+    <div class="timeline-panel" style={{ "--playlist-band-height": `${AUTOMATION_ROW_HEIGHT}px` }} ref={timelineRef} tabIndex={0} onDragOver={(e) => {
+      if (!showPlaylist() && e.dataTransfer?.types.includes("application/x-pattern")) {
         e.preventDefault(); e.dataTransfer.dropEffect = "copy";
       }
     }} onDrop={handlePatternDrop}>
@@ -2638,6 +2951,13 @@ export function Timeline() {
                 <span class="tempo-lane-toggle-caret" aria-hidden="true">{tempoLaneOpen() ? "▾" : "▸"}</span>
                 <span class="tempo-lane-toggle-label">{i18n.t("tempoLane.toggle")}</span>
               </button>
+              <Show when={hasPlaylist()}>
+                <button type="button" class="tempo-lane-toggle" classList={{ active: showPlaylist() }}
+                  aria-pressed={showPlaylist()}
+                  onClick={togglePlaylistView}>
+                  {i18n.t("timeline.audioPlaylist")}
+                </button>
+              </Show>
             </div>
             <Show when={tempoLaneOpen()}>
               <TempoLaneHeader />
@@ -2646,6 +2966,22 @@ export function Timeline() {
             {(store.project.sections.length > 0 || store.project.properties.key_map?.length > 0) && (
               <div class="timeline-info-spacer" style={{ height: "18px", "border-bottom": "1px solid var(--border)" }} />
             )}
+            <Show when={showPlaylist()}>
+              <For each={playlistRows()}>
+                {({ lane }) => {
+                  const label = () => lane === undefined
+                    ? i18n.t("timeline.playlistUnassigned")
+                    : store.project.properties.playlist_rows?.[lane] || i18n.t("timeline.playlistRow", { lane });
+                  return (
+                    <div class="track-header playlist-header"
+                      style={{ ...playlistRowStyle, "--playlist-row-color": playlistRowColor(lane) }}>
+                      <span class="track-name" title={label()}>{label()}</span>
+                    </div>
+                  );
+                }}
+              </For>
+            </Show>
+            <Show when={!showPlaylist()}>
             <For each={store.project.tracks}>
               {(track, i) => (
                 <>
@@ -2686,7 +3022,7 @@ export function Timeline() {
                     <Show when={editingTrackIndex() === i()}
                       fallback={
                         <div class="track-name" onDblClick={() => startRename(i(), track.name)}>
-                          {track.name}
+                          {trackDisplayName(track)}
                         </div>
                       }
                     >
@@ -2783,6 +3119,10 @@ export function Timeline() {
                 </>
               )}
             </For>
+            <For each={gainGroups()}>{group=><>
+              <AutomationOwnerStrip label={i18n.t("timeline.automation.owner",{owner:group.target==="master"?i18n.t("mixer.master"):group.name})}/>
+              <For each={group.curves}>{(_,index)=><div class="automation-lane-header" style={{height:`${AUTOMATION_ROW_HEIGHT}px`}}>{i18n.t("gainEditor.title",{index:index()+1})}</div>}</For>
+            </>}</For>
             {/* Add track button */}
             <div style={{ height: "24px", display: "flex", "align-items": "center", padding: "0 4px", "border-top": "1px solid var(--border)" }}
               {...useTooltip(() => i18n.t("timeline.addTrack"))}
@@ -2819,6 +3159,7 @@ export function Timeline() {
                   </span>
                 </div>
               </div>
+            </Show>
             </Show>
           </div>
 
@@ -2860,7 +3201,7 @@ export function Timeline() {
                   />
                 )}
               </Show>
-              <For each={barMarks(store.project.properties, totalBars())}>
+              <For each={rulerLabels()}>
                 {(mark) => (
                   <span class="timeline-ruler-mark" style={{ left: `${mark.quarter * pxPerBeat()}px` }}>
                     {mark.bar}
@@ -2963,6 +3304,29 @@ export function Timeline() {
               </div>
             )}
 
+            <Show when={showPlaylist()}>
+              <For each={playlistRows()}>
+                {({ lane, bands }) => {
+                  let row: HTMLDivElement | undefined;
+                  const containsY = (clientY: number) => {
+                    const bounds = row?.getBoundingClientRect();
+                    return bounds !== undefined && clientY >= bounds.top && clientY < bounds.bottom;
+                  };
+                  return (
+                    <div class="track-lane playlist-track-lane" data-playlist-lane={lane ?? "unassigned"}
+                      ref={row}
+                      style={{ ...playlistRowStyle, width: `${totalWidth()}px` }}>
+                      <div class="playlist-band">
+                        <For each={bands}>
+                          {(band, layer) => <For each={band}>{(item) => renderPlaylistItem(item, layer(), containsY)}</For>}
+                        </For>
+                      </div>
+                    </div>
+                  );
+                }}
+              </For>
+            </Show>
+            <Show when={!showPlaylist()}>
             {/* Track lanes */}
             <For each={store.project.tracks}>
               {(track, i) => {
@@ -3019,7 +3383,7 @@ export function Timeline() {
                 >
                   <Show when={track.performance?.events.length}>
                     <button class="clip-block performance-block"
-                      aria-label={i18n.t("timeline.performanceBlockLabel", { name: track.name })}
+                      aria-label={i18n.t("timeline.performanceBlockLabel", { name: trackDisplayName(track) })}
                       {...useTooltip(() => i18n.t("timeline.performanceBlockHint"))}
                       style={{ left: `${(track.performance?.events[0]?.quarter ?? 0) * pxPerBeat()}px`,
                         width: `${Math.max(80, ((track.performance?.events.at(-1)?.quarter ?? 0) - (track.performance?.events[0]?.quarter ?? 0)) * pxPerBeat())}px`,
@@ -3058,7 +3422,7 @@ export function Timeline() {
                         }
                         return seams;
                       };
-                      const notes = () => noteThumbnails(patInfo?.events ?? [], clipBeats(), offsetBeats(), loopBeats());
+                      const notes = createMemo(() => noteThumbnails(patInfo?.events ?? [], clipBeats(), offsetBeats(), loopBeats()));
                       const hits = createMemo(() => {
                         if (!patInfo?.hits.length) return [];
                         const clock = projectClock(store.project.properties);
@@ -3067,6 +3431,7 @@ export function Timeline() {
                           start, swing: patInfo.swing ?? store.project.properties.swing,
                         });
                       });
+                      const sound = createMemo(() => effectivePatternSound(store.project, track, patInfo));
                       const isSelected = () => isBlockSelected("clip", i(), ci());
                       const group = () => store.groupOfClip(i(), ci());
                       const follow = () => followPreview("clip", i(), ci());
@@ -3117,6 +3482,11 @@ export function Timeline() {
                           </Show>
                           <div class="clip-label-chip">
                             <span class="phrase-block-name">{clip.pattern}</span>
+                            <Show when={sound().origin === "pattern"}>
+                              <span class="clip-sound-override" title={patternSoundOrigin(sound())}>
+                                ↳ {patternSoundLabel(sound())}
+                              </span>
+                            </Show>
                             <Show when={patInfo}>
                               <span class="clip-meta">
                                 {loopBeats() > 0
@@ -3146,68 +3516,8 @@ export function Timeline() {
                     }}
                   </For>
 
-                  {/* Audio clips carrying a decoded waveform */}
                   <For each={audioClips()}>
-                    {(clip, ci) => {
-                      if (clip.track !== track.name) return null;
-                      return (
-                        <AudioClipBlock
-                          clip={clip}
-                          index={ci()}
-                          color={trackColor(i())}
-                          height={trackHeight() - 10}
-                          pxPerBeat={pxPerBeat()}
-                          selected={selectedAudioClip() === ci()}
-                          tooltipContent={() => audioClipTooltipContent(track, clip, projectClock(store.project.properties), selectedAudioClip() === ci())}
-                          beatFromClientX={beatFromClientX}
-                          trackAtClientY={(clientY) => {
-                            const laneIndex = trackAtClientY(clientY);
-                            return laneIndex === null
-                              ? null
-                              : (store.project.tracks[laneIndex]?.name ?? null);
-                          }}
-                          onSelect={selectAudioClip}
-                          onEditPlayback={(index) => gainEnvelopeWindow.open(index, "playback")}
-                          onStretch={(index, end, revision) => {
-                            void store.setAudioClipPlayback(index, { stretch_to: end }, revision).then((error) => {
-                              if (error) store.setError(error);
-                            });
-                          }}
-                          onWarp={(index, markers, revision) => {
-                            void store.setAudioClipPlayback(index, { warp_markers: markers }, revision).then((error) => {
-                              if (error) store.setError(error);
-                            });
-                          }}
-                          onMove={(index, targetTrack, start) => {
-                            void withUndoGesture("project", () =>
-                              moveClip(audioClipKey(index), { ...start, trackName: targetTrack }),
-                            );
-                          }}
-                          onTrim={(index, start, end, edge) => {
-                            void withUndoGesture("project", () =>
-                              resizeClip(audioClipKey(index), edge, edge === "start" ? start : end),
-                            );
-                          }}
-                          onEnvelope={(index, envelope, revision) => {
-                            void withUndoGesture("project", () =>
-                              store.setAudioClipEnvelope(index, envelope, revision),
-                            );
-                          }}
-                          onSlip={(index, offsetSeconds, revision) => {
-                            void withUndoGesture("project", () =>
-                              store.setAudioClipOffset(index, offsetSeconds, revision),
-                            );
-                          }}
-                          onLoop={(index, loopSeconds, revision) => {
-                            void withUndoGesture("project", () =>
-                              store.setAudioClipLoop(index, loopSeconds, revision),
-                            );
-                          }}
-                          onError={(message) => store.setError(message)}
-                          onContextMenu={(event) => openPoolClipMenu(event, audioClipKey(ci()))}
-                        />
-                      );
-                    }}
+                    {(clip, ci) => clip.track === track.name ? renderAudioBlock(clip, track, ci, i) : null}
                   </For>
 
                   {/* Drag preview — a single ghost in the lane under the pointer */}
@@ -3236,7 +3546,7 @@ export function Timeline() {
                       const right = () => barBeatToPixel(range.end.bar, range.end.beat, range.end.subdivision, pxPerBeat(), beatsPerBar());
                       const width = () => Math.max(right() - left(), 20);
                       const phraseBeats = () => clipLengthBeats(range, beatsPerBar());
-                      const notes = () => noteThumbnails(phrase.events ?? [], phraseBeats());
+                      const notes = createMemo(() => noteThumbnails(phrase.events ?? [], phraseBeats()));
                       const follow = () => followPreview("phrase", i(), pi());
                       const resize = () => resizePreviewFor("phrase", i(), pi());
                       return (
@@ -3391,6 +3701,13 @@ export function Timeline() {
               )}
             </For>
 
+            <For each={gainGroups()}>{group=><>
+              <AutomationOwnerStrip label={i18n.t("timeline.automation.owner",{owner:group.target==="master"?i18n.t("mixer.master"):group.name})}/>
+              <For each={group.curves}>{(curve,index)=><GainAutomationPreview curve={curve} target={group.target} index={index()} width={totalWidth()} pxPerBeat={pxPerBeat()}/>}</For>
+            </>}</For>
+
+            </Show>
+
             {/* Rubber-band rectangle; painted above the blocks and inert */}
             <Show when={marqueeRect()}>
               {(box) => (
@@ -3425,14 +3742,20 @@ export function Timeline() {
         <button
           class="zoom-step"
           aria-label={i18n.t("timeline.zoomOut")}
-          onClick={() => setZoom(Math.max(6, zoom() - 4))}
+          onClick={zoomOut}
         >−</button>
-        <span class="zoom-label">{i18n.t("timeline.pxPerBeat", { px: Math.round(zoom()) })}</span>
+        <span class="zoom-label">{i18n.t("timeline.pxPerBeat", { px: Number(zoom().toPrecision(2)) })}</span>
         <button
           class="zoom-step"
           aria-label={i18n.t("timeline.zoomIn")}
-          onClick={() => setZoom(Math.min(120, zoom() + 4))}
+          onClick={zoomIn}
         >+</button>
+        <button
+          class="zoom-step"
+          aria-label={i18n.t("command.view.zoomToFit")}
+          title={i18n.t("command.view.zoomToFit")}
+          onClick={zoomToFit}
+        >↔</button>
       </div>
 
       {/* The grid step is exact; a block position is written on a 16th. State the
@@ -3474,11 +3797,11 @@ export function Timeline() {
         )}
       </Show>
 
-      {/* Point tension: the value that rounds a smooth segment, 0..1. */}
+      {/* Smooth tension and exponential curvature keep distinct owner-defined domains. */}
       <Show when={tensionPrompt()}>
         {(request) => (
           <TextPromptDialog
-            title={i18n.t("timeline.automation.tensionTitle")}
+            title={request().curve === "exponential" ? i18n.t("timeline.automation.curvatureTitle", {min: AUTOMATION_CURVES.curvature.min, max: AUTOMATION_CURVES.curvature.max}) : i18n.t("timeline.automation.tensionTitle")}
             initial={request().initial}
             onCancel={() => setTensionPrompt(null)}
             onConfirm={(raw) => {
@@ -3486,12 +3809,14 @@ export function Timeline() {
               setTensionPrompt(null);
               const tension = Number(raw);
               if (!Number.isFinite(tension)) return;
+              if (target.curve === "exponential" && (tension < AUTOMATION_CURVES.curvature.min || tension > AUTOMATION_CURVES.curvature.max)) return;
               setAutomationCurveAt(
                 target.target,
                 target.laneIndex,
                 target.pointIndex,
-                "smooth",
-                tension,
+                target.curve,
+                target.curve === "smooth" ? tension : null,
+                target.curve === "exponential" ? tension : undefined,
               );
             }}
           />

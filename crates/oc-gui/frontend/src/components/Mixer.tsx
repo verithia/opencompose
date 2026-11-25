@@ -1,4 +1,5 @@
 import { Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
+import { gainAutomationUi } from "../stores/gainAutomationUi";
 import { store } from "../stores/project";
 import { BusGraph, edgeSourceNode, type RoutingEdge } from "./BusGraph";
 import { RoutingToolbar } from "./RoutingToolbar";
@@ -26,6 +27,11 @@ export function Mixer() {
     setSelectedNode(id);
     setSelectedEdge(null);
   };
+
+  createEffect(() => {
+    const request = gainAutomationUi.request();
+    if (request) selectNode(request.target);
+  });
 
   const selectEdge = (edge: RoutingEdge | null) => {
     setSelectedEdge(edge);

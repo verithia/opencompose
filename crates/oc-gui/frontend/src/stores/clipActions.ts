@@ -124,12 +124,12 @@ function rangeQuarters(range: TimeRange): number {
 }
 
 /** Whether `beats` sits inside the range and can be split there. */
-function canSplitAt(range: TimeRange | null | undefined, margin: number): boolean {
+function canSplitAt(range: TimeRange | null | undefined, margin: number, ppq = 0): boolean {
   if (!range) return false;
   const current = clock();
   const at = playhead();
-  return at >= current.quarterAt(range.start) + margin
-    && at <= current.quarterAt(range.end) - margin;
+  return at >= current.quarterAt(range.start, ppq) + margin
+    && at <= current.quarterAt(range.end, ppq) - margin;
 }
 
 function splitPosition(): BarBeat {
@@ -363,7 +363,7 @@ export async function duplicateClip(key: string): Promise<string | null> {
   if (!lane || !range) return wholeTimeline();
   const failure = await store.duplicateAutomationClip(
     ref.owner!, lane.param, ref.laneIndex,
-    clock().barBeatAt(clock().quarterAt(range.end)),
+    range.end,
   );
   if (failure === null) hooks?.forget(ref);
   return failure;
@@ -402,7 +402,7 @@ export async function splitClip(key: string): Promise<string | null> {
   }
   const lane = automationLane(ref);
   if (!lane) return missing();
-  if (!canSplitAt(lane.time_range, BLOCK_POSITION_QUARTERS)) {
+  if (!canSplitAt(lane.time_range, BLOCK_POSITION_QUARTERS, lane.ppq ?? 0)) {
     return i18n.t("timeline.automation.splitHint");
   }
   const at = splitPosition();
@@ -871,7 +871,7 @@ function automationMenu(ref: ClipRef): ContextMenuItem[] {
   const key = ref.key;
   const whole = isWholeTimeline(ref);
   const reason = whole ? wholeTimeline() : undefined;
-  const canSplit = canSplitAt(lane.time_range, BLOCK_POSITION_QUARTERS);
+  const canSplit = canSplitAt(lane.time_range, BLOCK_POSITION_QUARTERS, lane.ppq ?? 0);
   const range = lane.time_range;
   const heading = range
     ? `${ref.label} · ${positionText(range.start)} – ${positionText(range.end)}`

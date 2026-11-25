@@ -75,6 +75,8 @@ interface TempoLaneProps {
   pxPerBeat: number;
 }
 
+const TEMPO_AND_METER_HEIGHT = 2 * TEMPO_LANE_ROW_HEIGHT + 1;
+
 const clock = () => projectClock(store.project.properties);
 const tempoPoints = (): TempoPoint[] => store.project.properties.tempo_map ?? [];
 const meterPoints = (): TimeSigPoint[] => store.project.properties.time_sig_map ?? [];
@@ -122,7 +124,7 @@ export function TempoLaneHeader(): JSX.Element {
   const tempo = () => tempoAtQuarter(store.project.properties, playheadQuarter());
   const meter = () => meterAtQuarter(store.project.properties, playheadQuarter());
   return (
-    <div class="tempo-lane-headers" style={{ height: `${TEMPO_LANE_ROW_HEIGHT * 2 + 1}px` }}>
+    <div class="tempo-lane-headers" style={{ height: `${TEMPO_AND_METER_HEIGHT}px` }}>
       <div class="tempo-lane-head tempo-lane-head-tempo">
         <span class="tempo-lane-head-label">{i18n.t("tempoLane.tempo")}</span>
         <span class="tempo-lane-head-value">{formatTempo(tempo())}</span>
@@ -519,7 +521,7 @@ export function TempoLane(props: TempoLaneProps): JSX.Element {
       id="timeline-tempo-lane"
       data-own-keys
       class="tempo-lane"
-      style={{ width: `${props.width}px` }}
+      style={{ width: `${props.width}px`, height: `${TEMPO_AND_METER_HEIGHT}px` }}
       role="group"
       aria-label={i18n.t("tempoLane.region")}
       onKeyDown={onKeyDown}

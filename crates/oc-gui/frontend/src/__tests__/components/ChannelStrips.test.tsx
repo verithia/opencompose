@@ -198,6 +198,34 @@ describe("ChannelStrips", () => {
     });
   });
 
+  it.each([
+    ["an unreadable reply", async () => ({ ports: "two" }), "The plugin's output list could not be read."],
+    ["a refused query", async () => { throw "plugin is not loaded"; }, "plugin is not loaded"],
+  ])("keeps a plugin strip usable after %s", async (_case, outputPorts, message) => {
+    const snapshot = makeSnapshot({
+      presets: [{
+        name: "Kit",
+        source: "vst3",
+        plugin: "test.kit",
+        program: null,
+        patch: null,
+        file: null,
+        root_note: null,
+        extends: null,
+        params: [],
+        effects: [],
+      }],
+      tracks: [{ ...makeTrack("Kit", 1), preset: "Kit" }],
+    });
+    invokeMock.mockImplementation(async (cmd: string) =>
+      cmd === "preset_output_ports" ? outputPorts() : snapshot);
+    await store.initProject();
+
+    const { queryByLabelText } = renderStrips();
+    await vi.waitFor(() => expect(store.error()).toBe(message));
+    expect(queryByLabelText("Output port Kit")).toBeNull();
+  });
+
   it("routes a plugin track to a declared output port", async () => {
     const snapshot = makeSnapshot({
       presets: [{
@@ -239,11 +267,11 @@ describe("ChannelStrips", () => {
     expectInvoked("preset_output_ports", { presetName: "Kit", load: false });
   });
 
-  it("creates a plugin auxiliary send from the strip", async () => {
+  it("selects a VST2 channel pair and creates an auxiliary send from one port query", async () => {
     const snapshot = makeSnapshot({
       presets: [{
         name: "Kit",
-        source: "vst3",
+        source: "vst2",
         plugin: "test.kit",
         program: null,
         patch: null,
@@ -256,15 +284,11 @@ describe("ChannelStrips", () => {
       tracks: [{ ...makeTrack("Kit", 1), preset: "Kit" }],
       buses: [{ name: "drums", routes: ["master"], effects: [] }],
     });
-    invokeMock.mockImplementation(async (cmd: string) => {
-      if (cmd === "preset_output_pairs") return 4;
+    invokeMock.mockImplementation(async (cmd: string, args?: { load?: boolean }) => {
       if (cmd === "preset_output_ports") {
-        return [
-          { channels: 2, first_pair: 0, pairs: 1 },
-          { channels: 2, first_pair: 1, pairs: 1 },
-          { channels: 2, first_pair: 2, pairs: 1 },
-          { channels: 2, first_pair: 3, pairs: 1 },
-        ];
+        return args?.load
+          ? [{ channels: 8, first_pair: 0, pairs: 4 }]
+          : [{ channels: 2, first_pair: 0, pairs: 1 }];
       }
       return snapshot;
     });
@@ -273,10 +297,16 @@ describe("ChannelStrips", () => {
     const { getByLabelText } = renderStrips();
     fireEvent.click(getByLabelText("Load auxiliary outputs for Kit"));
     await vi.waitFor(() => {
-      expectInvoked("preset_output_pairs", { presetName: "Kit", load: true });
+      expectInvoked("preset_output_ports", { presetName: "Kit", load: true });
     });
     await vi.waitFor(() => {
       expect(getByLabelText("Send source for Kit")).toBeTruthy();
+    });
+    const port = getByLabelText("Output port Kit") as HTMLSelectElement;
+    expect(port.options).toHaveLength(4);
+    fireEvent.change(port, { target: { value: "1" } });
+    await vi.waitFor(() => {
+      expectInvoked("set_track_output_port", { trackIndex: 0, port: 0, pair: 1 });
     });
     fireEvent.change(getByLabelText("Send source for Kit"), { target: { value: "3" } });
     fireEvent.change(getByLabelText("Add send target for Kit"), { target: { value: "drums" } });

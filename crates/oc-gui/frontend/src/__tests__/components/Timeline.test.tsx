@@ -851,3 +851,21 @@ describe("Timeline document swap and clip keys", () => {
     selection.removeAllRanges();
   });
 });
+
+describe("track display identity", () => {
+  it("shows the human label while retaining stable clip bindings and rename seed", async () => {
+    const track = makeTrack("source_ch005",0);
+    track.mix.overrides={display_name:"  Intro pluck  "};
+    track.clips=[{pattern:"beat",time_range:{start:{bar:1,beat:1,subdivision:0},end:{bar:2,beat:1,subdivision:0}}}];
+    invokeMock.mockImplementation(async()=>makeSnapshot({tracks:[track],patterns:[makePattern("beat")]}));
+    await store.initProject();
+    const view=render(()=> <Timeline />);
+    expect(view.container.querySelector(".track-name")?.textContent).toBe("Intro pluck");
+    expect(store.project.tracks[0].name).toBe("source_ch005");
+    expect(store.project.tracks[0].clips[0].pattern).toBe("beat");
+    fireEvent.dblClick(view.container.querySelector(".track-name")!);
+    const input=view.container.querySelector<HTMLInputElement>(".track-name-input");
+    expect(input?.value).toBe("source_ch005");
+    fireEvent.keyDown(input!,{key:"Escape"});
+  });
+});

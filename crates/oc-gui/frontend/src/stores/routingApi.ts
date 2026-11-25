@@ -38,8 +38,10 @@ export const setTrackOutput = (trackIndex: number, output: string) =>
   invoke<ProjectSnapshot>("set_track_output", { trackIndex, output });
 
 /** Route a track to one declared output port of its instrument (0-based). */
-export const setTrackOutputPort = (trackIndex: number, port: number) =>
-  invoke<ProjectSnapshot>("set_track_output_port", { trackIndex, port });
+export const setTrackOutputPort = (trackIndex: number, port: number, pair?: number) =>
+  invoke<ProjectSnapshot>("set_track_output_port", {
+    trackIndex, port, ...(pair === undefined ? {} : { pair }),
+  });
 
 /** Connect a control source to a device control input in one mixer node. */
 export const addControlRoute = (owner: string, target: string, source: string) =>
