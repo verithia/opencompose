@@ -3,45 +3,43 @@ id: sequence-trance-and-psytrance
 title: Sequence trance and psytrance motion
 when: Build a rolling trance or psytrance kick and bass, a recurring lead cell, or a buildup that returns cleanly.
 category: production
-version: 2
-tools: [project_extract, edit_subtree, project_validate, audition_range, devices_catalog, presets_set_params, audio_analyze]
+version: 3
+tools: [read_skill, project_extract, edit_subtree, project_validate, render_range, audition_range, audio_compare, devices_catalog, presets_set_params, audio_analyze]
 ---
-Start with separate kick and bass tracks. Preserve a baseline and keep the same
-percussion phrase across comparisons. Query devices_catalog for controls and units.
+Start with separate kick and bass tracks, a baseline and unchanged percussion for comparison.
+Query devices_catalog for the actual source controls and units.
 
 ## Choose the source before mixing
-A kit label does not certify a trance kick. Hear the dry kick: distinguish its
-initial click, low body and decay. Replace or synthesize an unsuitable source
-before EQ or gain. For synthesis, check the oscillator, pitch-envelope and amp
-controls. Compare pitch fall and body length at tempo. A constant low sine or a
-long distorted tail is not automatically suitable for uplifting trance.
-Keep the low body centered. Test several bass notes: tuning alone guarantees
-neither phase alignment nor separation. Read unmask-kick-and-bass for the pair.
-Shorten bass notes and release until attacks are distinct and the kick has space.
-Try timing and release before raising level; listen for pumping and lost notes.
+A kit label does not certify a trance kick. Hear its dry click, low body and decay.
+Replace or synthesize an unsuitable source before EQ or gain; a constant sine or long distorted tail is not automatically suitable.
+For synthesis, compare pitch fall and amp length at tempo using the real oscillator and envelope controls.
+Keep the low body centered and test several bass notes; tuning alone guarantees neither phase alignment nor separation.
+Read unmask-kick-and-bass. Compare bass gate and release before adding gain ducking, then hear the following bass attack.
 
-## Give the arp an envelope
-Start dry with one oscillator at the written register. Compare repeated short
-notes and a held note: a pluck should decay while the key stays held. Full sustain
-makes amp decay ineffective. Set attack, decay, sustain and release deliberately;
-hear note-off as well as note-on. Query units rather than guessing seconds or ms.
-Use a separate decaying envelope on filter cutoff when supported. Adjust resting
-cutoff and depth for a clear attack without abrasive sustained buzz. Check that
-the modulation actually moves the filter; a lower fader cannot replace it.
-At tempo, leave space between attacks before adding delay. Compare wet and dry;
-keep repeats quieter than the main notes. Distinguish arp and lead by register,
-envelope and rhythm before widening. Remove support notes that obscure the hook.
+## Separate amplitude, spectrum and retriggering
+Use one pitch and velocity for a held note, short repeated cell and overlapping two-note change. Start dry.
+Compare an amp envelope falling to low sustain with a full-sustain amp and a decaying filter envelope.
+Full amp sustain makes amp decay ineffective; a closing filter can darken a held note while its amplifier stays up.
+Check filter.env.amount and the actual destination before changing filter_env times; a stored envelope alone is not movement.
+Compare the shortest gate with filter attack. Extending amp release differs from making the filter open sooner.
+Set mono and legato explicitly; keep glide at zero while testing envelope retriggering.
+Test LFO restart separately: carrying an envelope across notes need not preserve the modulation phase.
+Query seconds versus milliseconds, restore the baseline between alternatives, and do not identify envelope ownership from RMS alone.
 
-## Keep the lead focused
-Read design-and-verify-supersaw for an uplifting lead. Hear the tight pitch-bearing
-layer alone, then add the wide layer. Test the actual melody, gaps and held notes:
-excessive detune, slow attack or long release can turn a hook into an indistinct pad.
-For psytrance, test one supported modulation or warp on a held pitch, then on the
-short repeating cell. Keep lead movement separate from the repeating bass pulse.
-Repeat a melodic cell with a changed ending at phrase boundaries before adding FX.
+## Keep arp and lead distinct
+At tempo, leave space between attacks before adding delay; keep repeats behind the written notes.
+Compare written gate, instrument release and wet tail separately; a short gate can still leave a long echo.
+Distinguish arp and lead by register, envelope and rhythm before widening or adding support notes.
+Carry the arp through every chord change and remove notes that fight the bass or lead's held tone.
+Let one layer hold while another pulses; identical dense articulation can erase the hook.
+Read design-and-verify-supersaw for an uplifting lead. Hear a tight pitch-bearing layer before its wide partner.
+Check the actual melody, gaps and held notes for slow attack, excessive detune or accumulated release.
+For psytrance, verify one working modulation or warp on a held pitch, then on the short repeating cell.
+Keep lead movement separate from the repeating bass pulse; change a phrase ending before adding FX.
 
 ## Give the return room
 Compare a filter or layer-density change across the buildup and returned downbeat.
-Lower a delay return or shorten its tail if it covers the lead's opening attack.
-Hear each suspect part alone, with its nearest competitor and in the full mix.
-Compare mono and stereo at matched playback level, then keep the clearer version.
+Write the intended reset, preserve the hook pickup and test the next repeated entrance.
+Hear each suspect alone, with its nearest competitor and in the full mix over the same phrase and tail.
+Use matched short audio_compare excerpts for one change, then audition the complete handoff.
+Compare mono and stereo when delivered; keep the clearer phrasing rather than the louder solo patch.

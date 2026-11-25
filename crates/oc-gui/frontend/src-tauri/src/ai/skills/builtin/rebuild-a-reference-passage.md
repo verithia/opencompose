@@ -1,47 +1,48 @@
 ---
 id: rebuild-a-reference-passage
 title: Rebuild and verify a reference passage
-when: Rebuild a reference passage or full song, or study a technique from a fan remake, artist session, or tracker module.
+when: Rebuild a reference passage or full song, or learn an arrangement, sample-editing or mixing technique from an existing piece.
 category: production
-version: 12
-tools: [project_get, import_aligned_stems, midi_import_handoff, project_extract, edit_subtree, audio_clips_list, audio_clip_transients, devices_catalog, render_range, audition_clip_source, audition_range, audio_analyze, audio_compare, project_validate]
+version: 13
+tools: [read_skill, project_get, import_aligned_stems, midi_import_handoff, project_extract, edit_subtree, audio_clips_list, audio_clip_transients, devices_catalog, render_range, audition_clip_source, audition_range, audio_analyze, audio_compare, project_validate]
 ---
-Keep an untouched, authorized reference. Record the release or remix, artist, session author, revision and passage.
-Separate comparison-only audio from source material deliberately kept in the remake.
-Keep comparison-only audio out of candidate playback and export, including sends and returns.
-Prove exclusion with a reference-path ablation; a name or mute button alone is not proof.
-Distinguish creator documentation, file observations and inferences by ear.
-Ask the operator to inspect a copy in the source DAW or tracker. Record editable, printed, frozen and missing layers,
-routing, automation, media and plugins. For tracker retriggers or slides, retain a print and note order, row, pattern and channel.
+Keep an untouched, authorized reference and choose a short passage with an entrance and a phrase ending. Record the
+release or remix, artist, session author, revision and passage. Listen first and name the target: groove, chord motion,
+bass articulation, a sample gesture or vocal depth. Describe what changes at the entrance and which part carries the
+hook; keep uncertain explanations as hypotheses. Separate comparison-only audio from kept source material, and keep it
+out of candidate playback, export, sends and returns. Prove exclusion with a reference-path ablation; a name or mute
+button alone is not proof. Distinguish creator documentation, file observations and inferences by ear. Ask the operator
+to inspect a copy in the source DAW or tracker. Record editable, printed, frozen and missing layers, routing,
+automation, media and plugins. For tracker retriggers or slides, retain a print and note order, row, pattern and
+channel.
 
-Record the source start, tempo and meter changes, and two named landmarks with bar:beat and elapsed time.
-Keep leading silence in WAVs. If the grid is unknown, use audio_analyze beat_grid and confirm pulse, meter and downbeat against a later passage.
-Get the saved revision with project_get. Stage files in handoff/. Use import_aligned_stems for WAVs with optional muted MIDI.
-Use midi_import_handoff for MIDI alone. Existing arrangements keep their clock. Compare the tempo and meter maps in project_get.
-Extract the MIDI track with project_extract. Check a note released under pedal against the source key release and both CC64 points.
+## Rebuild the musical roles
+Sketch the main accents, bass rhythm and chord movement with simple sounds before refining the texture. Separate a held
+foundation, rhythmic middle and short answer when those jobs are audible. Match attacks, occupied note lengths and
+useful silences before adding more layers. For each sound, identify the required attack, stable body and decay, then
+select a suitable source or supported synth. Change source choice, pitch, note length and processing separately so a
+timing improvement is not mistaken for a better patch. Read choose-and-fit-a-sample for source selection and
+write-mix-automation for a coordinated section handover.
 
-## Verify stem origin
+## Give each sound one clear owner
+Choose the live sound or its processed print for playback; keep the other recoverable and inactive unless layering is
+intentional. Trace direct output, sends, parents and returns with project_extract when a part is too loud, hollow or
+washed out. Restore one clear path first, then test a deliberate parallel blend at compensated level. If a print is late
+or cuts off, check its first transient, source offset and retained decay before changing the master mix.
 
-Broadcast WAV timestamps declare an origin and may survive an edit. Missing timestamps leave origin unverified.
-Against a trusted print or source log, match two distinctive attacks, including a later hit after any clock change.
-Use audio_clips_list for indices, then audio_clip_transients with clip_index, source_start_seconds and duration_seconds.
-For example, check 0.5 s windows starting at 1 and 3 s. Use audition_clip_source to identify each attack.
-Compare source_seconds to the trusted times, with leading silence. For an attached print, use its conversation path,
-audio_analyze in transients mode for file_seconds, and audition_clip_source. Preserve intentional timing between parts.
-Treat differences within combined resolution_seconds as uncertain.
+## Preserve the phrase when transferring material
+When editable parts are available, use them to test a note, articulation or routing hypothesis. For synchronized stems,
+keep leading silence and the common origin. Confirm an early and later landmark by ear. Use import_aligned_stems for
+aligned audio or midi_import_handoff for MIDI, with the saved project_get revision. Preserve the existing project's
+clock and check tempo changes, pickups, note releases and pedal state after transfer. Read align-and-stretch-audio if
+the second landmark drifts; a metadata label alone does not verify alignment.
 
-If reference attacks at 1.250 and 3.250 s appear at 1.125 and 3.125 s in a stem, delay that stem 125 ms.
-Prefer a common-start re-export with leading silence. For an authorized fix in a project copy, extract and edit_subtree at path project.
-Move both bounds of only the suspect clip by the delay. At 120 BPM in 4/4, a 125 ms shift takes 1:1 to 1:1:1.
-Keep file and playback settings. Request a re-export if the grid cannot represent the delay or the move would lose a pickup.
-If offsets disagree beyond detector resolution, check sample rate, tempo map and edits before shifting.
-Run project_validate and audition_range around both landmarks. Render the windows with render_range and stems enabled.
-Add each window start to the new file_seconds from audio_analyze transients. Report confirmed hits and any uncertain origin.
-
-## Rebuild a keyed bass
-
-For a four-bar ducking study, record the detector and compressor settings. Print kick, dry bass and keyed bass from one origin,
-at fixed gain and with only the compressor switched. Import them, then use devices_catalog and edit_subtree to rebuild the key.
-Render the bass stem with render_range and stems enabled, keeping the kick active. Compare dry to wet, then wet to the rebuild.
-Use audio_analyze level_window for RMS before the kick, in the dip and after recovery. Use audio_compare on longer aligned passages.
-Listen to one pass at a time with audition_range. Run project_validate and record timing, listening verdicts and remaining differences.
+## Choose the next correction by listening
+Render the same passage and tail before and after one change, with the reference excluded. Use audio_compare with
+listen: true and listening_only: true on corresponding short passages for matched listening. Audition the complete
+phrase and its repeat, with the target role alone and in the full mix. If the attack is hidden, shorten a competing tail
+or thin the fill; if harmony is unclear, simplify the voicing before widening it. For keyed bass, hear kick plus dry
+bass, then the keyed version, keeping the kick active while rendering bass stems. Check the dip and recovery by ear; use
+audio_analyze level_window as support rather than a quality score. Validate the chosen edit, hear its neighboring
+transition, and state the audible improvement and remaining mismatch. For a full song, carry the accepted roles through
+the form and audition the complete final render, including transitions and ending.

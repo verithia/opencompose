@@ -3,7 +3,7 @@ id: design-and-verify-supersaw
 title: Design and verify a supersaw
 when: A supersaw or wide saw lead/pad is requested, or a named synth part has the wrong actual sound source.
 category: production
-version: 3
+version: 4
 tools: [devices_catalog, presets_list, project_extract, presets_add, presets_duplicate, presets_set_params, tracks_list, render_range, audition_range, audio_analyze]
 ---
 Inspect the preset source and parameters. A strings SoundFont keeps playing
@@ -33,6 +33,9 @@ the chord's upper note, vocal masking and release overlap. Compare the mono
 downmix with stereo at matched loudness before increasing width again. If the
 stack thins in mono, reduce width or detune and retest before adding layers.
 Use `audio_analyze` for headroom and stereo correlation as supporting evidence.
+For layers with different envelopes, compare early, middle and late portions of the same held note.
+A centered attack can drift as one side fades; repeated notes can hide that drift by retriggering it.
+Keep a centered pitch-bearing component and check time-dependent balance before adding more width.
 
 Request `audition_range` with `channel: stereo` and a higher `clip_sample_rate`
 when the provider preserves them. A 16 kHz mono audition cannot certify
