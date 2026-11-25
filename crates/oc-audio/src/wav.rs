@@ -180,6 +180,121 @@ fn projected_header(file: &mut BufReader<File>) -> io::Result<Option<(Vec<u8>, u
     Ok(audio.map(|(offset, len)| (header, offset, len)))
 }
 
+/// A cue in the primary audio data, identified by its RIFF cue ID.
+pub struct WaveCue {
+    pub id: u32,
+    pub frame: u32,
+}
+
+/// Frame dimensions and cue metadata of one uncompressed WAVE file.
+pub struct WaveCues {
+    pub sample_rate: u32,
+    pub frames: u32,
+    pub cues: Vec<WaveCue>,
+}
+
+/// Read at most `limit` cue points without reading the sample payload.
+pub fn read_wave_cues(path: &Path, limit: u16) -> Result<WaveCues, String> {
+    if !std::fs::metadata(path)
+        .map_err(|error| error.to_string())?
+        .is_file()
+    {
+        return Err("expected a regular WAVE file".into());
+    }
+    let mut reader = BufReader::new(File::open(path).map_err(|error| error.to_string())?);
+    let mut declared = [0; 12];
+    reader
+        .read_exact(&mut declared)
+        .map_err(|error| error.to_string())?;
+    let riff_end = 8 + u64::from(riff_word(&declared[4..8]));
+    let actual_len = reader
+        .get_ref()
+        .metadata()
+        .map_err(|error| error.to_string())?
+        .len();
+    if &declared[..4] != b"RIFF"
+        || &declared[8..] != b"WAVE"
+        || !(12..=actual_len).contains(&riff_end)
+    {
+        return Err("invalid or truncated RIFF/WAVE header".into());
+    }
+    reader.rewind().map_err(|error| error.to_string())?;
+    let mut next_offset = 12;
+    let (mut format, mut data, mut cues) = (false, false, None);
+    let complete = scan_wave_chunks(&mut reader, |reader, chunk| {
+        next_offset = chunk.data + u64::from(chunk.size) + u64::from(chunk.size % 2);
+        if !chunk.complete || next_offset > riff_end {
+            return Err(invalid_wave("WAVE chunk extends past the RIFF boundary"));
+        }
+        match &chunk.tag {
+            b"fmt " if !format && (16..=4096).contains(&chunk.size) => {
+                let mut fields = [0; 4];
+                reader.read_exact(&mut fields)?;
+                if fields[2..4] == [0; 2] {
+                    return Err(invalid_wave("WAVE format has no channels"));
+                }
+                format = true;
+            }
+            b"fmt " => return Err(invalid_wave("invalid or duplicate WAVE format declaration")),
+            b"data" if format && !data => data = true,
+            b"data" => return Err(invalid_wave("misplaced or duplicate WAVE audio data")),
+            b"cue " if cues.is_none() => cues = Some(read_cue_chunk(reader, chunk.size, limit)?),
+            b"cue " => return Err(invalid_wave("multiple WAVE cue chunks are unsupported")),
+            _ => {}
+        }
+        Ok(true)
+    })
+    .map_err(|error| error.to_string())?;
+    if !complete || !data || next_offset != riff_end {
+        return Err("incomplete WAVE layout or too many WAVE chunks".into());
+    }
+    let wave = open_file_reader(reader.into_inner()).map_err(|error| error.to_string())?;
+    let sample_rate = wave.spec().sample_rate;
+    if sample_rate == 0 {
+        return Err("invalid WAVE sample rate".into());
+    }
+    Ok(WaveCues {
+        sample_rate,
+        frames: wave.duration(),
+        cues: cues.unwrap_or_default(),
+    })
+}
+
+fn read_cue_chunk(mut input: impl Read, len: u32, limit: u16) -> io::Result<Vec<WaveCue>> {
+    if len < 4 {
+        return Err(invalid_wave("truncated WAVE cue count"));
+    }
+    let mut count = [0; 4];
+    input.read_exact(&mut count)?;
+    let count = riff_word(&count);
+    if count > u32::from(limit) || u64::from(len) != 4 + 24 * u64::from(count) {
+        return Err(invalid_wave("invalid or oversized WAVE cue table"));
+    }
+    (0..count)
+        .map(|_| {
+            let mut bytes = [0; 24];
+            input.read_exact(&mut bytes)?;
+            if &bytes[8..12] != b"data" || bytes[12..20] != [0; 8] {
+                return Err(invalid_wave(
+                    "WAVE cue must reference a frame in the main data chunk",
+                ));
+            }
+            Ok(WaveCue {
+                id: riff_word(&bytes[..4]),
+                frame: riff_word(&bytes[20..]),
+            })
+        })
+        .collect()
+}
+
+fn invalid_wave(message: &'static str) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, message)
+}
+
+fn riff_word(bytes: &[u8]) -> u32 {
+    u32::from_le_bytes(bytes.try_into().expect("RIFF word is four bytes"))
+}
+
 /// EBU Tech 3285 first-sample timestamp. The chunk may follow audio data.
 pub fn broadcast_time_reference(path: &Path) -> io::Result<Option<u64>> {
     const BEXT_FIXED_BYTES: u32 = 602;
