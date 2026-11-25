@@ -3818,6 +3818,7 @@ dependencies = [
  "hound",
  "log",
  "md-5",
+ "oc-device-schema",
  "oc-dsl",
  "oc-dsp",
  "oc-synth-core",

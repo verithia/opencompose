@@ -14,7 +14,7 @@
 //! - `pitch_keycenter`, `tune`, `volume`, `pan`, `amp_veltrack`
 //! - `loop_start`, `loop_end`, `loop_mode`, `end`
 //! - `seq_position`, `group`, `off_by`
-//! - `ampeg_attack`, `ampeg_decay`, `ampeg_sustain`, `ampeg_release`
+//! - `ampeg_attack`, `ampeg_decay`, `ampeg_sustain`, `ampeg_release`, `ampeg_release_shape`
 //!
 //! Unsupported opcodes and headers are collected in
 //! [`SamplerPatch::diagnostics`] and logged when the patch is instantiated.
@@ -32,6 +32,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+mod envelope;
+pub use envelope::AmpEnvelope;
+use envelope::ReleaseRamp;
+pub mod wav_slices;
 
 /// Built-in sampler plugin id.
 pub const PLUGIN_ID: &str = "builtin.sampler";
@@ -62,26 +67,6 @@ pub enum LoopMode {
     LoopSustain,
     /// Forward, then backward, then forward again between the loop points.
     LoopPingPong,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-/// ADSR envelope in seconds, with sustain as a fraction.
-pub struct AmpEnvelope {
-    pub attack: f64,
-    pub decay: f64,
-    pub sustain: f64,
-    pub release: f64,
-}
-
-impl Default for AmpEnvelope {
-    fn default() -> Self {
-        Self {
-            attack: 0.0,
-            decay: 0.0,
-            sustain: 1.0,
-            release: DEFAULT_RELEASE_SECONDS,
-        }
-    }
 }
 
 /// One SFZ region after sample-path resolution.
@@ -231,6 +216,7 @@ impl SamplerPatch {
 #[derive(Debug)]
 /// Decoded interleaved sample frames.
 pub struct DecodedSample {
+    dual_mono: bool,
     channels: usize,
     rate: u32,
     /// Interleaved f32 frames.
@@ -261,6 +247,15 @@ impl DecodedSample {
         self.frames.len().checked_div(self.channels).unwrap_or(0)
     }
 
+    /// A decoded mono asset is duplicated exactly by the stereo reader.
+    pub fn channel_symmetry(&self) -> oc_audio::ChannelSymmetry {
+        if self.dual_mono {
+            oc_audio::ChannelSymmetry::DualMono
+        } else {
+            oc_audio::ChannelSymmetry::Unknown
+        }
+    }
+
     pub(crate) fn channels(&self) -> usize {
         self.channels.max(1)
     }
@@ -273,16 +268,37 @@ impl DecodedSample {
     }
 }
 
+/// Shared decoder policy; existing callers retain their stereo projection.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DecodeChannelPolicy {
+    LegacyStereo,
+    MonoOrStereo,
+}
+
+fn validate_decode_channels(channels: usize, policy: DecodeChannelPolicy) -> Result<(), String> {
+    if policy == DecodeChannelPolicy::MonoOrStereo && !(1..=2).contains(&channels) {
+        return Err("sample requires mono or stereo input".into());
+    }
+    Ok(())
+}
+
 /// Decode a sample file, choosing the decoder by extension.
 pub fn decode_sample(path: &Path) -> Result<DecodedSample, String> {
+    decode_sample_with_policy(path, DecodeChannelPolicy::LegacyStereo)
+}
+
+pub(crate) fn decode_sample_with_policy(
+    path: &Path,
+    policy: DecodeChannelPolicy,
+) -> Result<DecodedSample, String> {
     match path
         .extension()
         .and_then(std::ffi::OsStr::to_str)
         .map(str::to_ascii_lowercase)
         .as_deref()
     {
-        Some("wav" | "wave") => decode_wav(path),
-        Some("flac") => decode_flac(path),
+        Some("wav" | "wave") => decode_wav(path, policy),
+        Some("flac") => decode_flac(path, policy),
         // Extensionless and unusual names: sniff the first four magic bytes.
         _ if std::fs::File::open(path)
             .and_then(|mut file| {
@@ -293,9 +309,9 @@ pub fn decode_sample(path: &Path) -> Result<DecodedSample, String> {
             .map(|magic| &magic == b"fLaC")
             .unwrap_or(false) =>
         {
-            decode_flac(path)
+            decode_flac(path, policy)
         }
-        _ => decode_wav(path),
+        _ => decode_wav(path, policy),
     }
 }
 
@@ -339,7 +355,7 @@ fn push_decoded(frames: &mut Vec<f32>, sample: f32, path: &Path) -> Result<(), S
     Ok(())
 }
 
-fn decode_wav(path: &Path) -> Result<DecodedSample, String> {
+fn decode_wav(path: &Path, policy: DecodeChannelPolicy) -> Result<DecodedSample, String> {
     let mut reader = oc_audio::wav::open_reader(path)
         .map_err(|error| format!("could not open WAV '{}': {error}", path.display()))?;
     let spec = reader.spec();
@@ -347,6 +363,7 @@ fn decode_wav(path: &Path) -> Result<DecodedSample, String> {
         return Err(format!("WAV '{}' has no channels", path.display()));
     }
     let channels = spec.channels as usize;
+    validate_decode_channels(channels, policy)?;
     let mut frames = Vec::new();
     reserve_decoded(&mut frames, reader.len() as usize, path)?;
     match spec.sample_format {
@@ -380,7 +397,7 @@ fn decode_wav(path: &Path) -> Result<DecodedSample, String> {
     finish_decoded(frames, channels, spec.sample_rate, path)
 }
 
-fn decode_flac(path: &Path) -> Result<DecodedSample, String> {
+fn decode_flac(path: &Path, policy: DecodeChannelPolicy) -> Result<DecodedSample, String> {
     let mut reader = claxon::FlacReader::open(path)
         .map_err(|error| format!("could not open FLAC '{}': {error}", path.display()))?;
     let info = reader.streaminfo();
@@ -391,6 +408,7 @@ fn decode_flac(path: &Path) -> Result<DecodedSample, String> {
         ));
     }
     let channels = info.channels as usize;
+    validate_decode_channels(channels, policy)?;
     let scale = 1.0 / (1i64 << (info.bits_per_sample - 1)) as f32;
     let mut frames = Vec::new();
     let declared = (info.samples.unwrap_or(0) as usize).saturating_mul(channels);
@@ -426,7 +444,9 @@ fn finish_decoded(
         }
         frames = stereo;
     }
+    let dual_mono = channels == 1 && frames.iter().all(|sample| sample.is_finite());
     Ok(DecodedSample {
+        dual_mono,
         channels: channels.min(2),
         rate,
         frames,
@@ -496,6 +516,7 @@ struct RawRegion {
     ampeg_decay: Option<f64>,
     ampeg_sustain: Option<f64>,
     ampeg_release: Option<f64>,
+    ampeg_release_shape: Option<f64>,
     default_path: Option<String>,
 }
 
@@ -535,6 +556,7 @@ impl RawRegion {
             ampeg_decay,
             ampeg_sustain,
             ampeg_release,
+            ampeg_release_shape,
             default_path,
         );
     }
@@ -747,6 +769,9 @@ fn finish_region(
                 .ampeg_release
                 .unwrap_or(DEFAULT_RELEASE_SECONDS)
                 .max(0.0),
+            release_shape: raw
+                .ampeg_release_shape
+                .unwrap_or(oc_device_schema::sampler::RELEASE_SHAPE.default),
         },
     };
     patch.regions.push(region);
@@ -900,6 +925,13 @@ fn set_opcode(key: &str, value: &str, region: &mut RawRegion) -> Result<(), Stri
         "ampeg_decay" => region.ampeg_decay = Some(numeric(value)?),
         "ampeg_sustain" => region.ampeg_sustain = Some(numeric(value)?),
         "ampeg_release" => region.ampeg_release = Some(numeric(value)?),
+        "ampeg_release_shape" => {
+            let shape = numeric(value)?;
+            if !oc_device_schema::sampler::valid_release_shape(shape) {
+                return Err("ampeg_release_shape is outside its finite control range".into());
+            }
+            region.ampeg_release_shape = Some(shape);
+        }
         "default_path" => region.default_path = Some(value.trim().to_string()),
         _ => return Err(format!("unsupported opcode '{key}' ignored")),
     }
@@ -1218,7 +1250,7 @@ struct SampleVoice {
     envelope: AmpEnvelope,
     env_level: f64,
     env_stage: EnvStage,
-    release_step: f64,
+    release_ramp: ReleaseRamp,
     key_down: bool,
     group: Option<u32>,
     age: u64,
@@ -1255,7 +1287,7 @@ impl SampleVoice {
             }
             EnvStage::Sustain => {}
             EnvStage::Release => {
-                self.env_level -= self.release_step;
+                self.env_level = self.release_ramp.next(self.env_level);
                 if self.env_level <= 0.0 {
                     self.env_level = 0.0;
                     self.finished = true;
@@ -1271,12 +1303,8 @@ impl SampleVoice {
         }
         self.key_down = false;
         self.env_stage = EnvStage::Release;
-        self.release_step = if self.envelope.release <= 0.0 {
-            self.env_level
-        } else {
-            self.env_level / (self.envelope.release * sample_rate)
-        };
-        if self.release_step <= 0.0 {
+        self.release_ramp = ReleaseRamp::new(self.env_level, self.envelope, sample_rate);
+        if self.env_level <= 0.0 {
             self.finished = true;
         }
     }
@@ -1301,6 +1329,11 @@ pub struct Sampler {
 impl Sampler {
     /// Build a sampler from a resolved patch, decoding each region.
     pub fn from_patch(patch: &SamplerPatch) -> Result<Self, String> {
+        if patch.regions.iter().any(|region| {
+            !oc_device_schema::sampler::valid_release_shape(region.ampeg.release_shape)
+        }) {
+            return Err("sampler release shape is outside its finite control range".into());
+        }
         for diagnostic in &patch.diagnostics {
             log::warn!("builtin.sampler: {diagnostic}");
         }
@@ -1500,7 +1533,7 @@ impl Sampler {
                 envelope,
                 env_level: 0.0,
                 env_stage: EnvStage::Attack,
-                release_step: 0.0,
+                release_ramp: ReleaseRamp::default(),
                 key_down: true,
                 group,
                 age: self.age,
@@ -1763,7 +1796,9 @@ fn render_sample_voice(
             LoopMode::LoopContinuous | LoopMode::LoopPingPong => true,
             LoopMode::LoopSustain => voice.key_down,
         };
-    if voice.position >= region.end as f64 {
+    // Loop wrapping owns the endpoint while a loop is active. The decoded
+    // sample end terminates only a non-looping or released sustain voice.
+    if !looping && voice.position >= region.end as f64 {
         voice.finished = true;
         return None;
     }
@@ -1785,7 +1820,14 @@ fn render_sample_voice(
             voice.position = region.loop_start as f64 + over % loop_length as f64;
         }
     }
-    let (sample_left, sample_right) = read_stereo(&region.sample, voice.position);
+    let last_frame = if looping {
+        region.sample.frame_count().saturating_sub(1)
+    } else {
+        // A fractional read at a slice boundary must stay in the same slice.
+        region.end.saturating_sub(1) as usize
+    };
+    let (sample_left, sample_right) =
+        read_stereo_through(&region.sample, voice.position, last_frame);
     let (sample_left, sample_right) = if mono {
         let sum = sample_left + sample_right;
         (sum, sum)
@@ -1809,11 +1851,14 @@ fn render_sample_voice(
 
 /// Linearly interpolate a decoded sample at `position`.
 pub fn read_stereo(sample: &DecodedSample, position: f64) -> (f64, f64) {
+    read_stereo_through(sample, position, sample.frame_count().saturating_sub(1))
+}
+
+fn read_stereo_through(sample: &DecodedSample, position: f64, last: usize) -> (f64, f64) {
     let position = position.max(0.0);
     let frame = position.floor() as usize;
     let next = frame + 1;
     let fraction = position - frame as f64;
-    let last = sample.frame_count().saturating_sub(1);
     let frame = frame.min(last);
     let next = next.min(last);
     let channel = |index: usize| sample.at(index, 0) as f64;
@@ -2004,6 +2049,7 @@ mod tests {
                 decay: 0.0,
                 sustain: 1.0,
                 release: 0.0,
+                release_shape: oc_device_schema::sampler::RELEASE_SHAPE.default,
             },
         }
     }
@@ -2100,6 +2146,45 @@ mod tests {
             sampler.next_stereo(44_100);
         }
         assert!(!sampler.is_active());
+    }
+
+    #[test]
+    fn loops_at_the_sample_end_keep_playing_at_unity_and_octave_rates() {
+        let dir = TempDir::new("loop-at-end");
+        let path = dir.join("loop.wav");
+        write_tone(&path, 441.0, 4_410, 0.8);
+        for mode in [
+            LoopMode::LoopContinuous,
+            LoopMode::LoopSustain,
+            LoopMode::LoopPingPong,
+        ] {
+            for loop_end in [None, Some(4_410)] {
+                for note in [60, 72] {
+                    let mut region = region(path.clone(), 0, 127);
+                    region.loop_mode = mode;
+                    region.loop_end = loop_end;
+                    let mut sampler =
+                        Sampler::from_patch(&patch_with_regions(vec![region])).unwrap();
+                    sampler.note_on(0, note, 100);
+                    let mut late_peak = 0.0_f32;
+                    for frame in 0..12_000 {
+                        let [left, _] = sampler.next_stereo(44_100);
+                        if frame >= 8_000 {
+                            late_peak = late_peak.max(left.abs());
+                        }
+                    }
+                    assert!(sampler.is_active(), "{mode:?}, {loop_end:?}, {note}");
+                    assert!(late_peak > 0.1, "looped audio must remain audible");
+                    if mode == LoopMode::LoopSustain {
+                        sampler.note_off(0, note);
+                        for _ in 0..5_000 {
+                            sampler.next_stereo(44_100);
+                        }
+                        assert!(!sampler.is_active(), "sustain loop must release");
+                    }
+                }
+            }
+        }
     }
 
     #[test]
@@ -2475,6 +2560,44 @@ default_path=Upright Piano Samples/\n\
         bytes.extend_from_slice(&[0u8; 16]); // MD5
         bytes.extend_from_slice(&[0xff, 0xf8]); // truncated frame header
         std::fs::write(path, &bytes).unwrap();
+    }
+
+    #[test]
+    fn mono_stereo_policy_refuses_three_channel_headers_before_payload_decode() {
+        let dir = TempDir::new("channel-policy");
+        let wav = dir.join("three.wav");
+        let mut writer = hound::WavWriter::create(
+            &wav,
+            hound::WavSpec {
+                channels: 3,
+                sample_rate: 44_100,
+                bits_per_sample: 16,
+                sample_format: hound::SampleFormat::Int,
+            },
+        )
+        .unwrap();
+        for value in [100_i16, 200, 300] {
+            writer.write_sample(value).unwrap();
+        }
+        writer.finalize().unwrap();
+        let error = decode_sample_with_policy(&wav, DecodeChannelPolicy::MonoOrStereo).unwrap_err();
+        assert!(error.contains("mono or stereo"));
+        let legacy = decode_sample(&wav).unwrap();
+        assert_eq!(legacy.channels(), 2);
+        assert_eq!(legacy.at(0, 0), 100.0 / 32768.0);
+        assert_eq!(legacy.at(0, 1), 200.0 / 32768.0);
+        // The huge frame count and truncated frame must never be decoded under
+        // the mono/stereo policy: the channel header is already a refusal.
+        let flac = dir.join("three.flac");
+        flac_with_declared_samples(&flac, 0x0f_ffff_ffff);
+        let mut bytes = std::fs::read(&flac).unwrap();
+        let packed = (44_100_u64 << 44) | (2_u64 << 41) | (15_u64 << 36) | 0x0f_ffff_ffff;
+        bytes[18..26].copy_from_slice(&packed.to_be_bytes());
+        std::fs::write(&flac, bytes).unwrap();
+        let error =
+            decode_sample_with_policy(&flac, DecodeChannelPolicy::MonoOrStereo).unwrap_err();
+        assert!(error.contains("mono or stereo"), "{error}");
+        assert!(!decode_sample(&flac).unwrap_err().contains("mono or stereo"));
     }
 
     /// A header count is a hint, not a reservation. The file stays tiny, so a

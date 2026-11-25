@@ -600,6 +600,8 @@ mod tests {
             })
             .collect();
         SourceSample {
+            decimated: Default::default(),
+            channels: 1,
             frames,
             sample_rate: rate,
             duration: len as f64 / rate,

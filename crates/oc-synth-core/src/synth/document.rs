@@ -402,15 +402,24 @@ impl PatchDocument {
                 return Err("invalid preset metadata".into());
             }
         }
-        let p = &self.patch;
-        macro_rules! range {
+        validate_signal_patch(&self.patch)
+    }
+}
+
+// Borrow the patch so metadata-only checks never clone embedded wave tables.
+pub(super) fn validate_signal_patch(p: &SynthPatch) -> Result<(), String> {
+    for source in p.granular.iter().flatten() {
+        source.validate()?;
+    }
+
+    macro_rules! range {
             ($lo:expr, $hi:expr; $($field:ident),+ ) => { $(
                 if !p.$field.is_finite() || !(($lo)..=($hi)).contains(&p.$field) {
                     return Err(format!("out-of-range {}", stringify!($field)));
                 }
             )+ };
         }
-        range!(0.0, 1.0; oscillator_a_level, oscillator_b_level, oscillator_c_level,
+    range!(0.0, 1.0; oscillator_a_level, oscillator_b_level, oscillator_c_level,
             oscillator_a_wavetable_position, oscillator_b_wavetable_position,
             oscillator_c_wavetable_position, oscillator_a_warp_amount,
             oscillator_b_warp_amount, oscillator_c_warp_amount,
@@ -421,117 +430,116 @@ impl PatchDocument {
             sustain, stereo_width, filter_resonance, filter_drive, filter2_resonance,
             filter2_drive, filter_wet, filter2_wet, filter_keytrack, filter_sustain, step_smoothing,
             oscillator_start_phase, oscillator_random_phase, amp_damping);
-        range!(0.05, 0.95; oscillator_a_pulse_width, oscillator_b_pulse_width,
+    range!(0.05, 0.95; oscillator_a_pulse_width, oscillator_b_pulse_width,
             oscillator_c_pulse_width);
-        range!(-24.0, 24.0; oscillator_b_semitones, oscillator_c_semitones, tuning_transpose);
-        range!(0.0, 10.0; attack, decay, filter_attack, filter_decay);
-        range!(0.0, 20.0; release, filter_release);
-        range!(-1.0, 1.0; amp_curve, filter_curve);
-        range!(0.0, 10.0; env3_attack, env3_decay, env4_attack, env4_decay);
-        range!(0.0, 20.0; env3_release, env4_release);
-        range!(0.0, 1.0; env3_sustain, env4_sustain);
-        range!(-1.0, 1.0; env3_curve, env4_curve);
-        range!(0.0, 100.0; detune_cents);
-        range!(8.0, 22050.0; filter_cutoff, filter2_cutoff);
-        range!(-8.0, 8.0; filter_envelope_amount);
-        range!(0.0, 100.0; lfo_rate);
-        range!(0.01, 30.0; step_rate);
-        range!(0.0, 200.0; lfo_pitch_cents);
-        range!(0.0, 360.0; lfo_phase);
-        range!(0.0, 1.0; lfo_smooth);
-        range!(0.0, 5.0; lfo_rise, lfo_delay);
-        range!(-1.0, 1.0; lfo_bend);
-        range!(0.0, 4.0; glide_time);
-        range!(-48.0, 48.0; oscillator_a_semitones, sub_semitones);
-        range!(0.0, 127.0; filter_keytrack_origin);
-        range!(400.0, 480.0; tuning_reference_hz);
-        range!(-100.0, 100.0; tuning_fine_cents);
-        if !(1..=7).contains(&p.unison_voices)
-            || !(1..=32).contains(&p.polyphony)
-            || p.oscillator_quality > 2
-            || p.lfo_division > 5
-            || p.lfo_sync_div
-                .is_some_and(|index| index >= super::LFO_SYNC_DIVISIONS.len())
-            || p.step_division > 5
-        {
-            return Err("invalid discrete control".into());
-        }
-        for (values, lo) in [(&p.macros[..], 0.0), (&p.step_values[..], -1.0)] {
-            if values
-                .iter()
-                .any(|v| !v.is_finite() || !(lo..=1.0).contains(v))
-            {
-                return Err("invalid macro/step value".into());
-            }
-        }
-        if p.extra_lfos.iter().any(|lfo| {
-            !lfo.rate.is_finite()
-                || !(0.0..=100.0).contains(&lfo.rate)
-                || lfo.division > 5
-                || lfo
-                    .sync_div
-                    .is_some_and(|index| index >= super::LFO_SYNC_DIVISIONS.len())
-                || !(0.0..=360.0).contains(&lfo.phase)
-                || !(0.0..=1.0).contains(&lfo.smooth)
-                || !(0.0..=5.0).contains(&lfo.rise)
-                || !(0.0..=5.0).contains(&lfo.delay)
-                || !(-1.0..=1.0).contains(&lfo.bend)
-        }) {
-            return Err("invalid extra LFO settings".into());
-        }
-        if p.mod_routes.len() > super::MAX_MOD_ROUTES {
-            return Err("invalid modulation matrix size".into());
-        }
-        if p.mod_routes
-            .iter()
-            .any(|r| !r.amount.is_finite() || r.amount.abs() > 1.0)
-        {
-            return Err("invalid modulation depth".into());
-        }
-        if p.fx.len() > super::fx::MAX_SYNTH_FX {
-            return Err("too many synth effects".into());
-        }
-        if p.fx.iter().any(|fx| {
-            fx.params
-                .iter()
-                .any(|(name, value)| name.trim().is_empty() || !value.is_finite())
-        }) {
-            return Err("invalid synth effect parameter".into());
-        }
-        if p.fx_mod_routes.len() > super::MAX_FX_MOD_ROUTES {
-            return Err("invalid FX modulation matrix size".into());
-        }
-        if p.fx_mod_routes.iter().any(|route| {
-            !route.amount.is_finite()
-                || route.amount.abs() > 1.0
-                || route.fx_index >= super::fx::MAX_SYNTH_FX
-        }) {
-            return Err("invalid FX modulation route".into());
-        }
-        for table in [
-            &p.custom_wavetable,
-            &p.oscillator_b_wavetable,
-            &p.oscillator_c_wavetable,
-        ]
-        .into_iter()
-        .flatten()
-        {
-            if table.samples.len() > super::MAX_CUSTOM_WAVETABLE_SAMPLES
-                || table.frame_size < 32
-                || table.frame_count == 0
-                || table.frame_count > 256
-                || table.frame_size.checked_mul(table.frame_count) != Some(table.samples.len())
-                || table
-                    .samples
-                    .iter()
-                    .any(|v| !v.is_finite() || v.abs() > 1.0)
-                || !table.samples.iter().any(|v| v.abs() > f64::EPSILON)
-            {
-                return Err("invalid embedded wavetable".into());
-            }
-        }
-        Ok(())
+    range!(-24.0, 24.0; oscillator_b_semitones, oscillator_c_semitones, tuning_transpose);
+    range!(0.0, 10.0; attack, decay, filter_attack, filter_decay);
+    range!(0.0, 20.0; release, filter_release);
+    range!(-1.0, 1.0; amp_curve, filter_curve);
+    range!(0.0, 10.0; env3_attack, env3_decay, env4_attack, env4_decay);
+    range!(0.0, 20.0; env3_release, env4_release);
+    range!(0.0, 1.0; env3_sustain, env4_sustain);
+    range!(-1.0, 1.0; env3_curve, env4_curve);
+    range!(0.0, 100.0; detune_cents);
+    range!(8.0, 22050.0; filter_cutoff, filter2_cutoff);
+    range!(-8.0, 8.0; filter_envelope_amount);
+    range!(0.0, 100.0; lfo_rate);
+    range!(0.01, 30.0; step_rate);
+    range!(0.0, 200.0; lfo_pitch_cents);
+    range!(0.0, 360.0; lfo_phase);
+    range!(0.0, 1.0; lfo_smooth);
+    range!(0.0, 5.0; lfo_rise, lfo_delay);
+    range!(-1.0, 1.0; lfo_bend);
+    range!(0.0, 4.0; glide_time);
+    range!(-48.0, 48.0; oscillator_a_semitones, sub_semitones);
+    range!(0.0, 127.0; filter_keytrack_origin);
+    range!(400.0, 480.0; tuning_reference_hz);
+    range!(-100.0, 100.0; tuning_fine_cents);
+    if !(1..=7).contains(&p.unison_voices)
+        || !(1..=32).contains(&p.polyphony)
+        || p.oscillator_quality > 2
+        || p.lfo_division > 5
+        || p.lfo_sync_div
+            .is_some_and(|index| index >= super::LFO_SYNC_DIVISIONS.len())
+        || p.step_division > 5
+    {
+        return Err("invalid discrete control".into());
     }
+    for (values, lo) in [(&p.macros[..], 0.0), (&p.step_values[..], -1.0)] {
+        if values
+            .iter()
+            .any(|v| !v.is_finite() || !(lo..=1.0).contains(v))
+        {
+            return Err("invalid macro/step value".into());
+        }
+    }
+    if p.extra_lfos.iter().any(|lfo| {
+        !lfo.rate.is_finite()
+            || !(0.0..=100.0).contains(&lfo.rate)
+            || lfo.division > 5
+            || lfo
+                .sync_div
+                .is_some_and(|index| index >= super::LFO_SYNC_DIVISIONS.len())
+            || !(0.0..=360.0).contains(&lfo.phase)
+            || !(0.0..=1.0).contains(&lfo.smooth)
+            || !(0.0..=5.0).contains(&lfo.rise)
+            || !(0.0..=5.0).contains(&lfo.delay)
+            || !(-1.0..=1.0).contains(&lfo.bend)
+    }) {
+        return Err("invalid extra LFO settings".into());
+    }
+    if p.mod_routes.len() > super::MAX_MOD_ROUTES {
+        return Err("invalid modulation matrix size".into());
+    }
+    if p.mod_routes
+        .iter()
+        .any(|r| !r.amount.is_finite() || r.amount.abs() > 1.0)
+    {
+        return Err("invalid modulation depth".into());
+    }
+    if p.fx.len() > super::fx::MAX_SYNTH_FX {
+        return Err("too many synth effects".into());
+    }
+    if p.fx.iter().any(|fx| {
+        fx.params
+            .iter()
+            .any(|(name, value)| name.trim().is_empty() || !value.is_finite())
+    }) {
+        return Err("invalid synth effect parameter".into());
+    }
+    if p.fx_mod_routes.len() > super::MAX_FX_MOD_ROUTES {
+        return Err("invalid FX modulation matrix size".into());
+    }
+    if p.fx_mod_routes.iter().any(|route| {
+        !route.amount.is_finite()
+            || route.amount.abs() > 1.0
+            || route.fx_index >= super::fx::MAX_SYNTH_FX
+    }) {
+        return Err("invalid FX modulation route".into());
+    }
+    for table in [
+        &p.custom_wavetable,
+        &p.oscillator_b_wavetable,
+        &p.oscillator_c_wavetable,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if table.samples.len() > super::MAX_CUSTOM_WAVETABLE_SAMPLES
+            || table.frame_size < 32
+            || table.frame_count == 0
+            || table.frame_count > 256
+            || table.frame_size.checked_mul(table.frame_count) != Some(table.samples.len())
+            || table
+                .samples
+                .iter()
+                .any(|v| !v.is_finite() || v.abs() > 1.0)
+            || !table.samples.iter().any(|v| v.abs() > f64::EPSILON)
+        {
+            return Err("invalid embedded wavetable".into());
+        }
+    }
+    Ok(())
 }
 
 /// Export a shape as the same array params the DSL preset importer reads.
@@ -602,6 +610,58 @@ mod tests {
             patch: SynthPatch::default(),
         }
     }
+    #[test]
+    fn granular_domain_errors_refuse_the_complete_document() {
+        let mut document = PatchDocument {
+            version: 1,
+            name: "Grain fixture".into(),
+            author: "Test".into(),
+            category: "Granular".into(),
+            use_policy: "Generated test".into(),
+            patch: SynthPatch::default(),
+        };
+        let source = super::super::granular::GranularPatch {
+            channel_mode: Default::default(),
+            pitch_mode: Default::default(),
+            read_mode: Default::default(),
+            loop_grains: false,
+            envelope: None,
+            sample: PathBuf::from("missing.wav"),
+            root_note: 60.0,
+            density: 20.0,
+            grain_length: 0.1,
+            position: 0.0,
+            loop_start: 0.0,
+            loop_end: 0.0,
+            ping_pong: false,
+            scan_rate: 0.0,
+            window: super::super::granular::GrainWindow::Hann,
+            window_param: 0.5,
+            window_skew: 0.0,
+            random_offset: 0.0,
+            random_length: 0.0,
+            random_pitch: 0.0,
+            random_direction: 0.0,
+            random_pan: 0.0,
+            random_gain: 0.0,
+            reverse: false,
+            pitch_track: true,
+            seed: 1,
+        };
+        document.patch.granular[0] = Some(source);
+        assert!(document.validate().is_ok());
+        let before = document.to_json().unwrap();
+        let mut invalid = document.clone();
+        invalid.patch.granular[0].as_mut().unwrap().density = -1.0;
+        assert!(invalid.to_json().is_err());
+        // Deserialization checks the same admission boundary as direct export.
+        let text = String::from_utf8(before.clone())
+            .unwrap()
+            .replace("\"density\": 20.0", "\"density\": -1.0");
+        assert!(PatchDocument::from_json(text.as_bytes()).is_err());
+        assert_eq!(document.to_json().unwrap(), before);
+    }
+
     #[test]
     fn default_patch_numeric_export_matches_concrete_schema_defaults() {
         let params = document().to_project_params().unwrap();

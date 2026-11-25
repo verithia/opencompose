@@ -40,25 +40,105 @@ sample's linear read.
 | Field | Unit | Meaning |
 |---|---|---|
 | `sample` | path | decoded source (WAV or FLAC) |
-| `root_note` | MIDI note | note that plays the source at its recorded rate |
-| `density` | grains/s | spawn rate, clamped to 0..4096 |
+| `channel_mode` | `mono` or `stereo` | `mono` is the default source mix; `stereo` retains independent source channels |
+| `read_mode` | `linear` or `bandlimited` | `bandlimited` reduces aliasing when transposition or sample-rate differences speed up source reads |
+| `root_note` | MIDI note, 0..127 | note that plays the source at its recorded rate |
+| `density` | grains/s | spawn rate, validated in 0..4096 |
 | `grain_length` | seconds | base grain length, 0.002..10 |
-| `position` | seconds | start position of the playhead |
-| `loop_start`, `loop_end` | seconds | loop window; an empty window uses the whole sample |
+| `position` | seconds, 0..86400 | start position of the playhead |
+| `loop_start`, `loop_end` | seconds, 0..86400 | loop window; an empty window uses the whole sample |
+| `loop_grains` | bool | wrap the read position of each active grain inside the source loop |
 | `ping_pong` | bool | reflect at the loop edges instead of wrapping |
-| `scan_rate` | source durations/s | playhead speed; 0 holds |
+| `scan_rate` | source durations/s, -4096..4096 | playhead speed; 0 holds |
 | `window` | enum | grain window shape |
+| `envelope` | object | optional linear attack and release fractions, with a separate first-grain attack |
 | `window_param` | 0..1 | shape control (shoulder, decay, width) |
 | `window_skew` | -1..1 | moves the window peak |
-| `random_offset` | fraction of grain | position jitter |
-| `random_length` | fraction of grain | length jitter |
-| `random_pitch` | semitones | per-grain pitch jitter |
+| `random_offset` | fraction of grain, 0..1 | position jitter |
+| `random_length` | fraction of grain, 0..1 | length jitter |
+| `random_pitch` | semitones, 0..48 | per-grain pitch jitter |
 | `random_direction` | 0..1 | probability of a reversed grain |
-| `random_pan` | 0..1 | pan jitter |
+| `random_pan` | -1..1 | signed pan jitter |
 | `random_gain` | 0..1 | gain jitter |
 | `reverse` | bool | force every grain backwards |
 | `pitch_track` | bool | follow the played note |
+| `pitch_mode` | `spawn` or `follow` | sample note pitch at grain onset (default), or follow it throughout active grains |
 | `seed` | u64 | stream seed, derived from the preset name on import |
+
+Omitting `channel_mode` keeps the mono source mix and its existing PCM. In
+`stereo` mode, grains read both source channels at the same position through the
+same window. The existing linear grain pan gains apply independently: left is
+multiplied by `1 - pan`, right by `1 + pan`, with no crossfeed. Centre preserves
+both channels at unity. A mono file remains mono in either mode. Stereo mode
+requires a mono or stereo input; it refuses a multichannel input rather than
+silently dropping channels. Spectral file loading keeps its mono source mix.
+
+Set `read_mode: "bandlimited"` in the same patch to prepare half-rate
+source levels before playback. Each grain selects a level from its current
+source rate. Forward and reverse reads use the same filtering. Fast reads
+between powers of two may use a lower bandwidth than strictly necessary.
+Unity and slower reads use the original interpolation. Omitting the field
+keeps the existing linear reader. Both source options require preparing the
+patch again.
+
+An envelope such as `{"attack": 0.25, "release": 0.25, "first_attack": 0.0}`
+starts the first grain at full level. Each following grain rises linearly
+during its first quarter, sustains in the middle and releases linearly over
+its last quarter. The first grain uses the same release. Each attack and
+release must fit within the grain duration. Omitting the envelope keeps the
+existing window and its shape controls.
+
+Set `loop_grains: true` to keep each active grain reading within the same
+sample loop. The bounds are rounded to source frames and the end is exclusive.
+A grain plays through the loop without restarting its envelope. A reversed
+grain wraps at the lower boundary. `ping_pong` controls the scan playhead.
+With the default `loop_grains: false`, grain reads stop at the edge of the
+sample. The bandlimited reader prepares levels from the whole source.
+
+
+Choose `pitch_mode: "follow"` in a granular slot of the native patch JSON to
+apply note-relative pitch curves, channel bends and vibrato to active grains.
+The same patch document serves agent edits, playback and export. `spawn` samples
+note pitch when each grain starts. Omitting the field selects `spawn` and omits
+it again when saving. Neither mode changes grain position, window age, random
+pitch or direction when note pitch changes. Constant note pitch produces the
+same PCM in both modes, including stereo sources. With `pitch_track: false`,
+notes do not change the source rate in either mode. The mode is a prepared patch
+choice, rather than a numeric automation control or a dedicated GUI picker.
+Note-relative `pitch_curve` points use quarters:cents and the shared finite
+range of -9600..9600 cents. They retain the original note key and target its
+voice identity, including release tails; they do not create another note.
+Curves contain at most 1024 ordered points and an explicit horizon of at most
+256 quarters. Values outside the range, including interpolation overshoot,
+are refused rather than clamped.
+
+Use `pitch_curve_mode="step"` to hold each point's value until the next authored
+point. For example, `pitch_curve="0:0,0.125:700,0.25:-500,1:0"` with that mode
+changes only at those quarter-note positions. Each boundary uses the project
+clock, including tempo changes, and is floored once to an output frame. Points
+that share a frame keep their written order; the last point on that frame wins.
+The note starts before its initial pitch update. An update at note-off targets
+the same voice's release tail. A final value holds without an extra update at
+the horizon. Reset and replay reconstruct the same events and audio.
+
+A uniform step ramp can use `pitch_curve="steps(16,5,0,-1200)"` with the same
+mode. The arguments are ticks per quarter note, step count, initial cents
+before the first step, and final cents. The example advances by −240 cents
+per step. The first advance is at note-on and the last is 0.25 quarter notes
+later. The same clock, horizon, and point limit apply.
+
+Omit the mode, or choose `linear`, for the continuous curve. Its existing
+200 Hz event raster and optional `pitch_curve_tension` Hermite shaping stay
+unchanged. Step mode schedules only authored points and refuses a tension
+modifier; it does not approximate their timing with that raster. All modes use
+the same 1024-point bound, pitch range, voice identities and horizon validation.
+
+All numeric grain settings must be finite and inside their physical domains.
+Patch admission rejects invalid settings before opening the source file. A direct
+runtime constructor disables an invalid source through the same logged failure
+path as a source that cannot decode. Playback folds the playhead in constant
+time, including when one sample crosses many loop boundaries. Nonfinite or
+overflowing travel leaves its previous finite position unchanged.
 
 ## Spectral engine
 
@@ -106,11 +186,11 @@ advance whenever the playhead was held, so it was removed.
 | Field | Unit | Meaning |
 |---|---|---|
 | `sample` | path | decoded source (WAV or FLAC) |
-| `root_note` | MIDI note | note that plays the source at its recorded rate |
+| `root_note` | MIDI note, 0..127 | note that plays the source at its recorded rate |
 | `position` | seconds | playhead position |
-| `loop_start`, `loop_end` | seconds | loop window; an empty window uses the whole sample |
+| `loop_start`, `loop_end` | seconds, 0..86400 | loop window; an empty window uses the whole sample |
 | `ping_pong` | bool | reflect at the loop edges |
-| `scan_rate` | source durations/s | playhead speed; 0 holds |
+| `scan_rate` | source durations/s, -4096..4096 | playhead speed; 0 holds |
 | `pitch_track` | bool | follow the played note |
 | `warp`, `morph` | enum, 0..1 | first warp and its depth |
 | `warp2`, `morph2` | enum, 0..1 | second warp and its depth |

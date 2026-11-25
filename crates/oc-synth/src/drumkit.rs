@@ -835,6 +835,34 @@ impl DrumKit {
     }
 
     /// Render one stereo frame, updating the sample rate when it changes.
+    /// Certify all possible decoded layers, including pads outside the render window.
+    pub fn channel_symmetry(
+        &self,
+        context: &oc_audio::ChannelSymmetryContext<'_>,
+    ) -> oc_audio::ChannelSymmetry {
+        use oc_audio::ChannelSymmetry;
+        if context.is_complete_and_centered()
+            && context.parameter_changes.is_empty()
+            && self.pads.iter().all(|pad| {
+                pad.pan == 0.0
+                    && pad.gain.is_finite()
+                    && pad.tune_ratio.is_finite()
+                    && pad.decay_coeff.is_finite()
+                    && pad.release.is_finite()
+                    && pad.layers.iter().all(|layer| {
+                        layer.gain.is_finite()
+                            && layer.sample.as_ref().is_none_or(|sample| {
+                                sample.channel_symmetry() == ChannelSymmetry::DualMono
+                            })
+                    })
+            })
+        {
+            ChannelSymmetry::DualMono
+        } else {
+            ChannelSymmetry::Unknown
+        }
+    }
+
     pub fn next_stereo(&mut self, sample_rate: u32) -> [f32; 2] {
         let sample_rate = sample_rate.max(1);
         if sample_rate != self.sample_rate {
@@ -1235,10 +1263,31 @@ pub fn try_render_track_with_warnings(
     sample_rate: u32,
     root: Option<&Path>,
 ) -> Result<(Vec<f32>, Vec<String>), String> {
+    try_render_track_with_symmetry(
+        params,
+        events,
+        total_samples,
+        sample_rate,
+        root,
+        &oc_audio::ChannelSymmetryContext::default(),
+    )
+    .map(|(audio, warnings, _)| (audio, warnings))
+}
+
+/// Render and certify the same prepared kit, without decoding resources twice.
+pub fn try_render_track_with_symmetry(
+    params: &[(String, ParamValue)],
+    events: &[&crate::MidiEvent],
+    total_samples: usize,
+    sample_rate: u32,
+    root: Option<&Path>,
+    context: &oc_audio::ChannelSymmetryContext<'_>,
+) -> Result<(Vec<f32>, Vec<String>, oc_audio::ChannelSymmetry), String> {
     if sample_rate == 0 || total_samples.checked_mul(2).is_none() {
         return Err("invalid drum-kit render size".into());
     }
     let mut kit = DrumKit::from_params(params, root, sample_rate)?;
+    let symmetry = kit.channel_symmetry(context);
     let warnings = kit.warnings().to_vec();
     let mut output = vec![0.0; total_samples * 2];
     let mut event_index = 0usize;
@@ -1257,7 +1306,7 @@ pub fn try_render_track_with_warnings(
         output[frame * 2] = left;
         output[frame * 2 + 1] = right;
     }
-    Ok((output, warnings))
+    Ok((output, warnings, symmetry))
 }
 
 /// One-line summary for logs and the plugin index.
@@ -1298,6 +1347,102 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn symmetry_certificate_checks_all_prepared_layers_and_future_controls() {
+        use oc_audio::{ChannelSymmetry, ChannelSymmetryContext, MidiInputMessage};
+        let temp = TempDir::new("symmetry");
+        let mono = temp.join("mono.wav");
+        write_dc(&mono, 800, 0.3, 8000);
+        let mut pad = default_pad("kick");
+        pad.layers = vec![Layer {
+            low: 0,
+            high: 127,
+            sample: mono,
+            gain: 1.0,
+        }];
+        let mut kit = Kit {
+            pads: vec![pad.clone()],
+            ..Kit::default()
+        };
+        let midi = [
+            MidiInputMessage::ProgramChange {
+                channel: 0,
+                program: 9,
+            },
+            MidiInputMessage::ControlChange {
+                channel: 0,
+                controller: 10,
+                value: 127,
+            },
+        ];
+        let context = ChannelSymmetryContext::complete(&[], &midi, &[]);
+        let mut runtime = DrumKit::from_kit(&kit, 8000).unwrap();
+        assert_eq!(
+            runtime.channel_symmetry(&context),
+            ChannelSymmetry::DualMono
+        );
+        for frame in 0..1200 {
+            if frame % 113 == 0 {
+                runtime.note_on(pad.note, (1 + frame / 113 * 31 % 127) as u8);
+            }
+            let audio = runtime.next_stereo(8000);
+            assert!(audio[0].is_finite());
+            assert_eq!(audio[0].to_bits(), audio[1].to_bits());
+        }
+        assert_eq!(
+            runtime.channel_symmetry(&ChannelSymmetryContext::default()),
+            ChannelSymmetry::Unknown
+        );
+        assert_eq!(
+            runtime.channel_symmetry(&ChannelSymmetryContext::complete(
+                &["pad.kick.pan"],
+                &[],
+                &[]
+            )),
+            ChannelSymmetry::Unknown
+        );
+        assert_eq!(
+            runtime.channel_symmetry(&ChannelSymmetryContext::complete(&[], &[], &[0.2])),
+            ChannelSymmetry::Unknown
+        );
+        // An untriggered later pad must still be checked.
+        pad.pan = 0.25;
+        kit.pads.push(pad);
+        assert_eq!(
+            DrumKit::from_kit(&kit, 8000)
+                .unwrap()
+                .channel_symmetry(&context),
+            ChannelSymmetry::Unknown
+        );
+        kit.pads.pop();
+        let stereo = temp.join("stereo.wav");
+        let mut writer = hound::WavWriter::create(
+            &stereo,
+            hound::WavSpec {
+                channels: 2,
+                sample_rate: 8000,
+                bits_per_sample: 16,
+                sample_format: hound::SampleFormat::Int,
+            },
+        )
+        .unwrap();
+        writer.write_sample(1000i16).unwrap();
+        writer.write_sample(-1000i16).unwrap();
+        writer.finalize().unwrap();
+        kit.pads[0].layers.push(Layer {
+            low: 127,
+            high: 127,
+            sample: stereo,
+            gain: 1.0,
+        });
+        assert_eq!(
+            DrumKit::from_kit(&kit, 8000)
+                .unwrap()
+                .channel_symmetry(&context),
+            ChannelSymmetry::Unknown
+        );
     }
 
     fn write_dc(path: &Path, frames: usize, amplitude: f32, rate: u32) {
