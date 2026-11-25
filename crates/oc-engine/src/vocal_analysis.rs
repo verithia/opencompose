@@ -39,6 +39,7 @@ pub struct VocalAnalysisKey {
     pub offset_frames: u64,
     /// Length of the analysed window in mono frames.
     pub length_frames: u64,
+    stereo_offset: [usize; 2],
     pub detector: DetectorParams,
 }
 
@@ -49,6 +50,7 @@ impl VocalAnalysisKey {
             stretch,
             offset_frames: 0,
             length_frames: 0,
+            stereo_offset: [0; 2],
             detector,
         }
     }
@@ -64,20 +66,27 @@ impl VocalAnalysisKey {
             stretch,
             offset_frames,
             length_frames,
+            stereo_offset: [0; 2],
             detector,
         }
     }
 
     /// Stable string used for the file name and the embedded key hash.
     pub fn stamp(&self) -> String {
-        format!(
+        let mut stamp = format!(
             "{}|{}|{}|{}|{:016x}",
             self.stretch.stamp(),
             self.offset_frames,
             self.length_frames,
             ANALYZER_VERSION,
             self.detector.hash()
-        )
+        );
+        if self.stereo_offset != [0; 2] {
+            use std::fmt::Write;
+            let [left, right] = self.stereo_offset;
+            let _ = write!(stamp, "|stereo_offset={left},{right}");
+        }
+        stamp
     }
 
     /// Cache file name.
@@ -179,15 +188,25 @@ pub fn clip_stereo_playback(
     if frames == 0 {
         return Err(format!("audio clip '{}': range is empty", clip.name));
     }
-    Ok((
-        VocalAnalysisKey::for_window(
-            stretch,
-            offset as u64,
-            frames as u64,
-            DetectorParams::default(),
-        ),
-        playback.window(offset..offset + frames)?,
-    ))
+    let mut key = VocalAnalysisKey::for_window(
+        stretch,
+        offset as u64,
+        frames as u64,
+        DetectorParams::default(),
+    );
+    key.stereo_offset = audio_clip::stereo_offset_frames(clip, target_rate)?;
+    if key.stereo_offset == [0; 2] {
+        return Ok((key, playback.window(offset..offset + frames)?));
+    }
+    let mut window = vec![0.0; frames * 2];
+    for (channel, delay) in key.stereo_offset.into_iter().enumerate() {
+        playback.visit_placement(offset, 0, 0..frames, delay, |start, samples| {
+            for (index, sample) in samples.chunks_exact(2).enumerate() {
+                window[(start + index) * 2 + channel] = sample[channel];
+            }
+        })?;
+    }
+    Ok((key, window))
 }
 
 /// Analyse one clip's playback buffer, reading and writing its `.ocn`.

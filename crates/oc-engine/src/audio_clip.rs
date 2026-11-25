@@ -5,7 +5,7 @@ use crate::clip_pcm::ClipPreparationError;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use oc_dsl::ast::{AudioClip, GainEnvelopePoint, Project};
+use oc_dsl::ast::{AudioClip, AudioFadeBezier, AudioFadeCurves, Project};
 use symphonia::core::audio::{Channels, SampleBuffer};
 use symphonia::core::codecs::DecoderOptions;
 use symphonia::core::errors::Error as SymphoniaError;
@@ -721,25 +721,16 @@ fn mix_window(
         length.min(media_frames - offset)
     };
     let gain = 10.0_f32.powf(clip.gain_db as f32 / 20.0) * if clip.invert { -1.0 } else { 1.0 };
-    let fade_in = (clip.fade_in_seconds * f64::from(sample_rate)).round() as usize;
-    let fade_out = (clip.fade_out_seconds * f64::from(sample_rate)).round() as usize;
+    let fades = ClipFades::new(clip, sample_rate);
+    let points = ClipGainEnvelope::new(clip);
     let (left, right) = pan.unwrap_or((1.0, 1.0));
-    let crossfade = (clip.crossfade_seconds * f64::from(sample_rate)).round() as usize;
 
     let buffer_end = buffer_start.saturating_add((buffer.len() / 2) as u64);
     let first = buffer_start.saturating_sub(start).min(frames as u64) as usize;
     let last = buffer_end.saturating_sub(start).min(frames as u64) as usize;
     for frame in first..last {
         let destination = (start + frame as u64 - buffer_start) as usize * 2;
-        let envelope = clip_gain(
-            gain,
-            fade_in,
-            fade_out,
-            crossfade,
-            frame,
-            frames,
-            &clip.gain_envelope,
-        );
+        let envelope = clip_gain(gain, fades, frame, frames, &points);
         let source = offset
             + if loop_frames > 0 {
                 frame % loop_frames
@@ -750,6 +741,26 @@ fn mix_window(
         buffer[destination + 1] += audio[source * 2 + 1] * envelope * right;
     }
     Ok(())
+}
+
+/// Signed media offset quantized once at the output sample rate.
+pub(crate) fn stereo_offset_frames(
+    clip: &AudioClip,
+    sample_rate: u32,
+) -> Result<[usize; 2], String> {
+    let seconds = clip.stereo_offset_seconds;
+    if !seconds.is_finite() {
+        return Err(format!(
+            "audio clip '{}': non-finite stereo offset",
+            clip.name
+        ));
+    }
+    let frames = (seconds.abs() * f64::from(sample_rate)).round() as usize;
+    Ok(if seconds.is_sign_negative() {
+        [0, frames]
+    } else {
+        [frames, 0]
+    })
 }
 
 /// Frames in the loop region, or zero for a single pass.
@@ -769,71 +780,140 @@ pub(crate) fn loop_frames(
     frames.min(media_frames.saturating_sub(offset))
 }
 
-/// One frame of the clip envelope: gain, linear fades, the equal-power ends and
-/// the optional point envelope.
-///
-/// The head and tail use a quarter-wave sine; coincident ends square to one.
-pub(crate) fn clip_gain(
-    gain: f32,
+#[derive(Clone, Copy, Default)]
+pub(crate) struct ClipFades {
     fade_in: usize,
     fade_out: usize,
     crossfade: usize,
-    frame: usize,
-    frames: usize,
-    points: &[GainEnvelopePoint],
-) -> f32 {
-    let mut envelope = gain;
-    if fade_in > 0 && frame < fade_in {
-        envelope *= frame as f32 / fade_in as f32;
-    }
-    if fade_out > 0 && frame + fade_out >= frames {
-        envelope *= (frames - frame - 1) as f32 / fade_out as f32;
-    }
-    if crossfade > 0 {
-        if frame < crossfade {
-            let phase = (frame as f32 + 0.5) / crossfade as f32;
-            envelope *= (phase * std::f32::consts::FRAC_PI_2).sin();
-        }
-        if frame + crossfade >= frames {
-            let distance = (frames - frame - 1) as f32 + 0.5;
-            let phase = distance / crossfade as f32;
-            envelope *= (phase * std::f32::consts::FRAC_PI_2).sin();
-        }
-    }
-    envelope * point_gain(points, frame, frames)
+    curves: AudioFadeCurves,
 }
 
-/// Linear gain of a clip's point envelope at `frame / frames`, clamped before
-/// the first point and after the last. An empty envelope is unity.
-fn point_gain(points: &[GainEnvelopePoint], frame: usize, frames: usize) -> f32 {
-    let Some(first) = points.first() else {
-        return 1.0;
+impl ClipFades {
+    pub(crate) fn new(clip: &AudioClip, sample_rate: u32) -> Self {
+        let frames = |seconds: f64| (seconds * f64::from(sample_rate)).round() as usize;
+        Self {
+            fade_in: frames(clip.fade_in_seconds),
+            fade_out: frames(clip.fade_out_seconds),
+            crossfade: frames(clip.crossfade_seconds),
+            curves: clip.fade_curves,
+        }
+    }
+}
+
+/// Evaluate a unit cubic Bézier by inverting its monotone time axis.
+fn eased_gain(phase: f64, [x1, y1, x2, y2]: AudioFadeBezier) -> f32 {
+    if phase == 0.0 || phase == 1.0 {
+        return phase as f32;
+    }
+    let cubic = |u: f64, a: f64, b: f64| {
+        let v = 1.0 - u;
+        ((3.0 * a * v + 3.0 * b * u) * v + u * u) * u
     };
-    let last = points.last().unwrap_or(first);
-    let position = if frames == 0 {
-        0.0
-    } else {
-        frame as f64 / frames as f64
-    };
-    let db = if position <= first.position {
-        first.gain_db
-    } else if position >= last.position {
-        last.gain_db
-    } else {
-        points
-            .windows(2)
-            .find(|pair| position <= pair[1].position)
-            .map_or(last.gain_db, |pair| {
-                let span = pair[1].position - pair[0].position;
-                let blend = if span > 0.0 {
-                    (position - pair[0].position) / span
-                } else {
+    let mut lo = 0.0;
+    let mut hi = 1.0;
+    for _ in 0..25 {
+        let u = (lo + hi) * 0.5;
+        if cubic(u, x1, x2) < phase {
+            lo = u;
+        } else {
+            hi = u;
+        }
+    }
+    cubic((lo + hi) * 0.5, y1, y2) as f32
+}
+
+/// One frame of the clip envelope: gain, fades, the equal-power ends and
+/// the optional point envelope.
+/// The head and tail use a quarter-wave sine; coincident ends square to one.
+pub(crate) fn clip_gain(
+    gain: f32,
+    fades: ClipFades,
+    frame: usize,
+    frames: usize,
+    points: &ClipGainEnvelope,
+) -> f32 {
+    let mut envelope = gain;
+    if frame < fades.fade_in {
+        envelope *= fades.curves.fade_in.map_or_else(
+            || frame as f32 / fades.fade_in as f32,
+            |handles| eased_gain(frame as f64 / fades.fade_in as f64, handles),
+        );
+    }
+    let distance = frames - frame - 1;
+    if distance < fades.fade_out {
+        let span = fades.fade_out - 1;
+        envelope *= fades.curves.fade_out.map_or_else(
+            || distance as f32 / fades.fade_out as f32,
+            |handles| {
+                if distance == 0 {
                     0.0
-                };
-                pair[0].gain_db + (pair[1].gain_db - pair[0].gain_db) * blend
-            })
-    };
-    10.0_f32.powf(db as f32 / 20.0)
+                } else {
+                    1.0 - eased_gain((span - distance) as f64 / span as f64, handles)
+                }
+            },
+        );
+    }
+    if fades.crossfade > 0 {
+        if frame < fades.crossfade {
+            let phase = (frame as f32 + 0.5) / fades.crossfade as f32;
+            envelope *= (phase * std::f32::consts::FRAC_PI_2).sin();
+        }
+        if distance < fades.crossfade {
+            let phase = (distance as f32 + 0.5) / fades.crossfade as f32;
+            envelope *= (phase * std::f32::consts::FRAC_PI_2).sin();
+        }
+    }
+    envelope * points.factor(frame, frames)
+}
+
+/// Clip envelope prepared in its interpolation domain before mixing samples.
+#[derive(Default)]
+pub(crate) struct ClipGainEnvelope {
+    points: Vec<(f64, f64)>,
+    interpolation: oc_dsl::ast::ClipGainInterpolation,
+}
+
+impl ClipGainEnvelope {
+    pub(crate) fn new(clip: &AudioClip) -> Self {
+        let interpolation = clip.gain_envelope_interpolation;
+        Self {
+            points: clip
+                .gain_envelope
+                .iter()
+                .map(|point| (point.position, interpolation.point_value(point.gain_db)))
+                .collect(),
+            interpolation,
+        }
+    }
+
+    fn factor(&self, frame: usize, frames: usize) -> f32 {
+        let Some(first) = self.points.first() else {
+            return 1.0;
+        };
+        let position = frame as f64 / frames.max(1) as f64;
+        let value = if position <= first.0 {
+            first.1
+        } else {
+            let last = self.points.last().unwrap_or(first);
+            self.points
+                .windows(2)
+                .find(|pair| position <= pair[1].0)
+                .map_or(last.1, |pair| {
+                    let (left, right) = (pair[0], pair[1]);
+                    let span = right.0 - left.0;
+                    let blend = if span > 0.0 {
+                        (position - left.0) / span
+                    } else {
+                        1.0
+                    };
+                    left.1 + (right.1 - left.1) * blend
+                })
+        };
+        match self.interpolation {
+            oc_dsl::ast::ClipGainInterpolation::Decibels => 10.0_f32.powf(value as f32 / 20.0),
+            oc_dsl::ast::ClipGainInterpolation::LinearAmplitude => value as f32,
+        }
+    }
 }
 
 fn downmix(output: &mut Vec<f32>, interleaved: &[f32], channels: Channels) -> Result<(), String> {
@@ -909,6 +989,131 @@ fn downmix_weights(channel: Channels) -> (f32, f32) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn shaped_fades_round_trip_and_use_amplitude_easing() {
+        use super::{ClipFades, clip_gain};
+
+        let text = r#"@project "Clip fades"
+@audio_clip pulse [1:1 - 2:1] | track: tape
+  file: "pulse.wav"
+  fade_in: 10ms
+  fade_out: 11ms
+  fade_in_curve: bezier(0.3333333333333333, 0, 0.6666666666666666, 0.3333333333333333)
+  fade_out_curve: bezier(0.3333333333333333, 0, 0.6666666666666666, 0.3333333333333333)
+@track tape | instrument: audio/clip
+"#;
+        let project = oc_dsl::parse(text).unwrap();
+        oc_dsl::validate(&project).unwrap();
+        let serialized = oc_dsl::serializer::serialize(&project);
+        assert_eq!(oc_dsl::parse(&serialized).unwrap(), project);
+        let clip = project.audio_clip(0).unwrap();
+        let fades = ClipFades::new(clip, 1_000);
+        let gain = |frame| clip_gain(1.0, fades, frame, 100, &Default::default());
+        assert_eq!(gain(0), 0.0);
+        assert!((gain(5) - 0.25).abs() < 1e-6);
+        assert_eq!(gain(12), 1.0);
+        assert_eq!(gain(89), 1.0);
+        assert!((gain(94) - 0.75).abs() < 1e-6);
+        assert_eq!(gain(99), 0.0);
+
+        let mut invalid = project;
+        invalid.audio_clip_mut(0).unwrap().fade_curves.fade_out = Some([0.0, 0.0, 1.2, 1.0]);
+        assert!(oc_dsl::validate(&invalid).is_err());
+    }
+
+    #[test]
+    fn stereo_offset_precedes_trim_loop_and_clip_fade_even_after_seek() {
+        use super::mix_into_track;
+
+        const RATE: u32 = 48_000;
+        let directory = tempfile::tempdir().unwrap();
+        let media: Vec<f32> = (0..28_000).map(|i| (i % 671 + 1) as f32 / 1024.0).collect();
+        let mut wav = hound::WavWriter::create(
+            directory.path().join("hit.wav"),
+            hound::WavSpec {
+                channels: 2,
+                sample_rate: RATE,
+                bits_per_sample: 32,
+                sample_format: hound::SampleFormat::Float,
+            },
+        )
+        .unwrap();
+        for &sample in &media {
+            wav.write_sample(sample).unwrap();
+        }
+        wav.finalize().unwrap();
+
+        for (seconds, delayed, trim, loop_frames) in [
+            ("1ms", 0, 0, 0),
+            ("-1ms", 1, 24, 4_800),
+            ("1ms", 0, 72, 4_800),
+        ] {
+            let project = oc_dsl::parse(&format!(
+                "@project \"Test\"\n  tempo: 120\n\
+                 @audio_clip hit [1:1 - 2:1] | track: tape\n  file: \"hit.wav\"\n  \
+                 stereo_offset: {seconds}\n  offset: {}s\n  loop: {}s\n  \
+                 placement_end: -1.8s\n  fade_out: 2ms\n\
+                 @track tape | instrument: audio/clip\n",
+                trim as f64 / f64::from(RATE),
+                loop_frames as f64 / f64::from(RATE),
+            ))
+            .unwrap();
+            oc_dsl::validate(&project).unwrap();
+            let reopened = oc_dsl::parse(&oc_dsl::serializer::serialize(&project)).unwrap();
+            assert_eq!(project, reopened);
+            let clip = reopened.audio_clip(0).unwrap();
+            let mut mixed = vec![0.0; 9_600 * 2];
+            mix_into_track(&mut mixed, &reopened, clip, RATE, Some(directory.path())).unwrap();
+
+            let lane =
+                crate::clip_lane::ClipLanes::load(&reopened, RATE, Some(directory.path())).unwrap();
+            let mut tracks = [vec![0.0; 105 * 2]];
+            lane.mix_into(9_500, &mut tracks).unwrap();
+            assert_eq!(tracks[0][..200], mixed[19_000..]);
+            assert_eq!(tracks[0][200..], [0.0; 10]);
+
+            let (key, analysis_audio) = crate::vocal_analysis::clip_stereo_playback(
+                &reopened,
+                clip,
+                RATE,
+                Some(directory.path()),
+            )
+            .unwrap();
+            let mut unshifted = clip.clone();
+            unshifted.stereo_offset_seconds = 0.0;
+            let (unshifted_key, _) = crate::vocal_analysis::clip_stereo_playback(
+                &reopened,
+                &unshifted,
+                RATE,
+                Some(directory.path()),
+            )
+            .unwrap();
+            assert_ne!(key.hash(), unshifted_key.hash());
+            for (frame, pair) in mixed.chunks_exact(2).enumerate() {
+                let source = trim
+                    + if loop_frames == 0 {
+                        frame
+                    } else {
+                        frame % loop_frames
+                    };
+                let fade = (((9_599 - frame) as f32) / 96.0).min(1.0);
+                for (channel, &sample) in pair.iter().enumerate() {
+                    let delay = if channel == delayed { 48 } else { 0 };
+                    let expected = source
+                        .checked_sub(delay)
+                        .map_or(0.0, |source| media[source * 2 + channel] * fade);
+                    assert_eq!(sample, expected, "frame {frame}, channel {channel}");
+                    if frame < loop_frames || loop_frames == 0 {
+                        let dry = source
+                            .checked_sub(delay)
+                            .map_or(0.0, |source| media[source * 2 + channel]);
+                        assert_eq!(analysis_audio[frame * 2 + channel], dry);
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn compressed_passages_match_full_pcm_and_report_eof_only_when_reached() {
         for fixture in ["sf3-tone-22050.ogg", "sampler/tone.flac"] {
@@ -1170,12 +1375,12 @@ mod tests {
 
     /// Constant media turns every output sample into the clip's gain, so the
     /// shape of the envelope is readable straight from the buffer.
-    fn render_envelope(envelope: Option<&str>) -> Vec<f32> {
+    fn render_envelope(envelope: Option<&str>, interpolation: &str) -> Vec<f32> {
         let line = envelope
             .map(|points| format!("  gain_envelope: {points}\n"))
             .unwrap_or_default();
         let text = format!(
-            "@project \"Envelope\"\n  tempo: 120\n@audio_clip clip [1:1 - 2:1] | track: tape\n  file: \"clip.wav\"\n{line}@track tape | instrument: audio/clip\n"
+            "@project \"Envelope\"\n  tempo: 120\n@audio_clip clip [1:1 - 2:1] | track: tape\n  file: \"clip.wav\"\n{line}{interpolation}@track tape | instrument: audio/clip\n"
         );
         let project = oc_dsl::parse(&text).unwrap();
         let clip = project.audio_clip(0).unwrap();
@@ -1190,7 +1395,7 @@ mod tests {
 
     #[test]
     fn a_gain_envelope_renders_quieter_in_the_middle_than_at_the_ends() {
-        let mixed = render_envelope(Some("0:0dB, 0.5:-6dB, 1:0dB"));
+        let mixed = render_envelope(Some("0:0dB, 0.5:-6dB, 1:0dB"), "");
         let frames = mixed.len() / 2;
         let head = mixed[0];
         let middle = mixed[(frames / 2) * 2];
@@ -1207,15 +1412,34 @@ mod tests {
     }
 
     #[test]
+    fn linear_amplitude_gain_envelope_renders_a_linear_ramp() {
+        let points = Some("0:-24.082399653118497dB, 1:0dB");
+        let linear = render_envelope(points, "  gain_envelope_interpolation: linear_amplitude\n");
+        let decibels = render_envelope(points, "");
+        let midpoint = linear.len() / 2;
+        assert!((linear[0] - 0.03125).abs() < 1e-6);
+        assert!((linear[midpoint] - 0.265625).abs() < 1e-6);
+        assert!((decibels[midpoint] - 0.125).abs() < 1e-6);
+    }
+
+    #[test]
     fn an_empty_gain_envelope_leaves_the_static_gain_alone() {
-        let mixed = render_envelope(None);
+        let mixed = render_envelope(None, "");
         assert!(
             mixed
                 .iter()
                 .all(|sample| sample.to_bits() == 0.5_f32.to_bits())
         );
         assert!(
-            clip_gain(1.0, 0, 0, 0, 123, 1000, &[]).to_bits() == 1.0_f32.to_bits(),
+            clip_gain(
+                1.0,
+                super::ClipFades::default(),
+                123,
+                1000,
+                &Default::default()
+            )
+            .to_bits()
+                == 1.0_f32.to_bits(),
             "an empty envelope is unity gain"
         );
     }

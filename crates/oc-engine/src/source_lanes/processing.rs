@@ -1,6 +1,7 @@
 //! Source insert preparation and offline latency alignment.
 
 use oc_dsl::ast::{Project, Track};
+use std::path::Path;
 
 /// Build only the preset and pattern inserts owned by one source. Sidechain
 /// dependencies belong on the hosting mixer track, after sources are summed.
@@ -9,8 +10,21 @@ pub fn effect_chain(
     lane: &Track,
     sample_rate: u32,
 ) -> Result<crate::graph::EffectChain, String> {
-    let chain =
-        crate::graph::EffectChain::try_from_effects(&super::effects(project, lane), sample_rate)?;
+    effect_chain_with_resources(project, lane, sample_rate, None)
+}
+
+/// Build source inserts with paths relative to the project that owns the lane.
+pub fn effect_chain_with_resources(
+    project: &Project,
+    lane: &Track,
+    sample_rate: u32,
+    resource_root: Option<&Path>,
+) -> Result<crate::graph::EffectChain, String> {
+    let chain = crate::graph::EffectChain::try_from_effects_with_resources(
+        &super::effects(project, lane),
+        sample_rate,
+        resource_root,
+    )?;
     if chain.has_sidechain() {
         return Err("Source effect sidechains must be placed on the parent mixer track".into());
     }

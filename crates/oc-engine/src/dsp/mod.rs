@@ -7,31 +7,39 @@
 //! Users can also load VST3/CLAP plugins via the plugin bridge.
 
 pub use oc_dsp::{
-    biquad, breath_split, chorus, compressor, crossover, deesser, delay, detector, distortion,
-    doubler, ducked_send, dynamic_eq, eq, exciter, fet, flanger, gate, iron, leveler, limiter,
-    multiband, opto, passive_eq, phaser, plosive, resonance, reverb, reverb_fdn, saturator, schema,
-    stereo_width, tuner,
+    allpass, biquad, breath_split, chorus, compressor, crossover, deesser, delay, detector,
+    distortion, doubler, ducked_send, dynamic_eq, eq, exciter, fet, flanger, frequency_shift, gate,
+    iron, leveler, limiter, multiband, opto, passive_eq, phaser, plosive, resonance, reverb,
+    reverb_fdn, saturator, schema, stereo_matrix, stereo_width, tuner, vocoder,
 };
 
 pub mod control_source;
 pub mod schema_bridge;
+mod transfer_curve;
 
 pub use schema_bridge::{
     ResolvedEffect, device_for_effect, legacy_warnings, resolve_effect, validate_param,
-    validate_static_param,
+    validate_static_param, validate_static_value,
 };
 
 use std::collections::HashMap;
+use std::path::Path;
 
 /// All built-in effects process stereo interleaved f32 in-place.
 pub use oc_audio::AudioEffect;
 
-/// Exact linear utility gain; zero is a silent routing sink.
-struct LinearGain(f64);
+/// A dry/wet gain blend reduces to one scalar, with no intermediate audio buffer.
+struct LinearGain {
+    factor: f64,
+    mix: f64,
+}
 
 #[test]
 fn utility_gain_is_exact_and_zero_silences() {
-    let mut gain = LinearGain(0.5);
+    let mut gain = LinearGain {
+        factor: 0.5,
+        mix: 1.0,
+    };
     let mut samples = [1.0, -1.0, 0.25, -0.25];
     gain.process(&mut samples, 48000);
     assert_eq!(samples, [0.5, -0.5, 0.125, -0.125]);
@@ -41,16 +49,26 @@ fn utility_gain_is_exact_and_zero_silences() {
 }
 
 impl AudioEffect for LinearGain {
+    fn preserves_channel_equality(&self) -> bool {
+        true
+    }
     fn process(&mut self, buffer: &mut [f32], _sample_rate: u32) {
-        oc_dsp::simd::apply_uniform_gain(buffer, self.0 as f32);
+        let gain = self.factor * self.mix + (1.0 - self.mix);
+        oc_dsp::simd::apply_uniform_gain(buffer, gain as f32);
     }
     fn set_param(&mut self, name: &str, value: f64) {
-        if name == "factor" && value.is_finite() && value >= 0.0 {
-            self.0 = value;
+        match name {
+            "factor" if value.is_finite() && value >= 0.0 => self.factor = value,
+            "mix" if (0.0..=1.0).contains(&value) => self.mix = value,
+            _ => {}
         }
     }
     fn get_param(&self, name: &str) -> Option<f64> {
-        (name == "factor").then_some(self.0)
+        match name {
+            "factor" => Some(self.factor),
+            "mix" => Some(self.mix),
+            _ => None,
+        }
     }
     fn reset(&mut self) {}
     fn name(&self) -> &str {
@@ -61,7 +79,7 @@ impl AudioEffect for LinearGain {
 #[test]
 fn fractional_mix_keeps_static_percentage_and_automation_contexts_distinct() {
     use oc_dsl::ast::{EffectType as E, ParamValue as P};
-    for effect in [E::Compression, E::Multiband] {
+    for effect in [E::Gain, E::Compression, E::Multiband] {
         let device = device_for_effect(&effect).unwrap();
         assert_eq!(
             validate_static_param(device, "mix", &P::Percentage(40.0)),
@@ -657,6 +675,63 @@ fn typed_stereo_delay_times_reach_both_channels() {
 }
 
 #[test]
+fn flanger_stack_values_round_trip_from_dsl_into_the_native_insert() {
+    use oc_dsl::ast::{EffectType as E, ParamValue as P};
+    let project = oc_dsl::parse(
+        "@project\n@track example\n  effects:\n    - flanger: voices=7, delay=14ms, spread=60%, stereo_cross=-40%, dry_gain=160%, wet_gain=-120%\n",
+    ).unwrap();
+    let effect = &project.tracks[0].effects[0];
+    let device = try_create_effect(&effect.effect_type, &effect.params, 48_000).unwrap();
+    for (param, expected) in [
+        ("voices", 7.0),
+        ("delay", 14.0),
+        ("spread", 60.0),
+        ("stereo_cross", -40.0),
+        ("dry_gain", 160.0),
+        ("wet_gain", -120.0),
+    ] {
+        assert_eq!(device.get_param(param), Some(expected), "{param}");
+    }
+    assert!(try_create_effect(&E::Flanger, &[("voices".into(), P::Number(2.5))], 48_000).is_err());
+    assert!(try_create_effect(&E::Flanger, &[("delay".into(), P::Time(0.05))], 48_000).is_err());
+}
+
+#[test]
+fn typed_stereo_delay_controls_reach_the_dsp_and_reject_bad_values() {
+    use oc_dsl::ast::{EffectType as E, ParamValue as P};
+    let accepted = [
+        ("routing", P::String("ping_pong".into()), 3.0),
+        ("tempo_sync", P::Bool(true), 1.0),
+        ("quarters_l", P::Number(0.25), 0.25),
+        ("quarters_r", P::Number(0.5), 0.5),
+        ("dry_gain", P::Percentage(130.0), 130.0),
+        ("wet_gain", P::Percentage(80.0), 80.0),
+        ("feedback_filter", P::String("high_pass".into()), 2.0),
+        ("feedback_cutoff", P::Frequency(1800.0), 1800.0),
+    ];
+    let params = accepted
+        .iter()
+        .map(|(name, value, _)| (name.to_string(), value.clone()))
+        .collect::<Vec<_>>();
+    let effect = try_create_effect(&E::Delay, &params, 48_000).unwrap();
+    for (name, _, wanted) in accepted {
+        assert_eq!(effect.get_param(name), Some(wanted), "{name}");
+    }
+    for (name, value) in [
+        ("routing", P::String("unknown".into())),
+        ("feedback_filter", P::Number(1.5)),
+        ("feedback_cutoff", P::Frequency(30_000.0)),
+        ("quarters_l", P::Number(0.0)),
+        ("dry_gain", P::Percentage(201.0)),
+    ] {
+        assert!(
+            try_create_effect(&E::Delay, &[(name.into(), value)], 48_000).is_err(),
+            "{name}"
+        );
+    }
+}
+
+#[test]
 fn checked_builtin_factory_control_matrix() {
     use oc_dsl::ast::{EffectType as E, ParamValue as P};
     // Non-default values: a dropped factory assignment must fail this test.
@@ -1213,6 +1288,20 @@ fn checked_builtin_factory_control_matrix() {
         ),
         (E::Limiter, "link", P::Percentage(37.0), "link", 37.0),
         (
+            E::FrequencyShift,
+            "shift",
+            P::Frequency(-150.0),
+            "shift",
+            -150.0,
+        ),
+        (
+            E::FrequencyShift,
+            "sideband_left",
+            P::Percentage(-75.0),
+            "sideband_left",
+            -75.0,
+        ),
+        (
             E::ReverbFdn,
             "decay_band1_freq",
             P::Frequency(700.0),
@@ -1264,6 +1353,30 @@ pub(crate) fn typed_builtin_value(
 ) -> Option<f64> {
     use oc_dsl::ast::{EffectType as E, ParamValue as P};
     match (effect_type, name, value) {
+        (
+            E::Delay,
+            "routing" | "tempo_sync" | "quarters_l" | "quarters_r" | "dry_gain" | "wet_gain"
+            | "feedback_filter" | "feedback_cutoff",
+            value,
+        ) => {
+            let device = schema_bridge::device_for_effect(effect_type)?;
+            schema_bridge::validate_param(device, name, value).ok()
+        }
+        (E::StereoMatrix | E::Vocoder, name, value) => {
+            let device = schema_bridge::device_for_effect(effect_type)?;
+            schema_bridge::validate_param(device, name, value).ok()
+        }
+        (E::FrequencyShift, name, value) => {
+            let parameter = schema::frequency_shift::PARAMS
+                .iter()
+                .find(|p| p.id == name)?;
+            match (parameter.unit, value) {
+                (_, P::Number(value))
+                | (schema::ParamUnit::Hz, P::Frequency(value))
+                | (schema::ParamUnit::Percent, P::Percentage(value)) => Some(*value),
+                _ => None,
+            }
+        }
         (E::Compression, "ratio", P::String(ratio)) => ratio.split_once(':').and_then(|(a, b)| {
             let a = a.trim().parse::<f64>().ok()?;
             let b = b.trim().parse::<f64>().ok()?;
@@ -1275,6 +1388,7 @@ pub(crate) fn typed_builtin_value(
             _ => None,
         },
         (E::Compression, "auto_makeup" | "auto_release", P::Bool(on))
+        | (E::Delay, "interpolate", P::Bool(on))
         | (E::Limiter, "true_peak", P::Bool(on)) => Some(if *on { 1.0 } else { 0.0 }),
         (E::Limiter, "release_mode", P::String(mode)) => match mode.to_ascii_lowercase().as_str() {
             "fast" => Some(0.0),
@@ -1343,7 +1457,13 @@ pub(crate) fn typed_builtin_value(
         (E::Reverb, "predelay", P::Time(seconds))
         | (E::ReverbFdn, "decay" | "predelay", P::Time(seconds))
         | (E::Delay, "time" | "time_l" | "time_r", P::Time(seconds))
-        | (E::Chorus | E::Flanger, "depth", P::Time(seconds)) => Some(seconds * 1000.0),
+        | (E::Chorus | E::Flanger, "depth", P::Time(seconds))
+        | (E::Flanger, "delay", P::Time(seconds)) => Some(seconds * 1000.0),
+        (
+            E::Flanger,
+            "spread" | "stereo_cross" | "dry_gain" | "wet_gain",
+            P::Percentage(percent),
+        ) => Some(*percent),
         (
             E::ReverbFdn,
             "mix" | "damping" | "stereo_width" | "character" | "modulation" | "brightness"
@@ -1432,6 +1552,9 @@ pub(crate) fn typed_builtin_value(
         (E::DynamicEq, name, P::String(kind)) if dynamic_eq::type_param(name) => {
             dynamic_eq::BandKind::from_name(kind).map(|kind| kind.code())
         }
+        (E::DynamicEq, name, P::String(slope)) if dynamic_eq::slope_param(name) => {
+            schema::dynamic_eq_cut_slope_code(slope).map(|code| code as f64)
+        }
         (E::DynamicEq, name, P::String(target)) if dynamic_eq::channel_param(name) => {
             dynamic_eq::ChannelTarget::from_name(target).map(|target| target.code())
         }
@@ -1519,7 +1642,8 @@ pub(crate) fn typed_builtin_value(
             | E::Tuner
             | E::BreathSplit
             | E::Plosive
-            | E::StereoWidth,
+            | E::StereoWidth
+            | E::AllPass,
             _,
             _,
         ) => None,
@@ -1610,6 +1734,13 @@ enum PluginEffectError {
     Refused(String),
 }
 
+/// Project context that some effects need while they are built.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct EffectResources<'a> {
+    /// Directory that project-relative assets resolve against.
+    pub root: Option<&'a Path>,
+}
+
 pub fn try_create_effect(
     effect_type: &oc_dsl::ast::EffectType,
     params: &[(String, oc_dsl::ast::ParamValue)],
@@ -1627,6 +1758,22 @@ pub fn try_create_effect_at(
     params: &[(String, oc_dsl::ast::ParamValue)],
     sample_rate: u32,
     place: &str,
+) -> Result<Box<dyn AudioEffect>, String> {
+    try_create_effect_with_resources(
+        effect_type,
+        params,
+        sample_rate,
+        place,
+        EffectResources::default(),
+    )
+}
+
+pub(crate) fn try_create_effect_with_resources(
+    effect_type: &oc_dsl::ast::EffectType,
+    params: &[(String, oc_dsl::ast::ParamValue)],
+    sample_rate: u32,
+    place: &str,
+    resources: EffectResources<'_>,
 ) -> Result<Box<dyn AudioEffect>, String> {
     // `bypass` is the effect's own field; a parameter of that name would be a
     // second meaning, so it is refused instead of reaching any device.
@@ -1658,6 +1805,9 @@ pub fn try_create_effect_at(
         let resolved = schema_bridge::resolve_effect(effect_type, &params);
         let effect_type = &resolved.effect_type;
         let params = resolved.params.as_slice();
+        if matches!(effect_type, EffectType::TransferShaper) {
+            return transfer_curve::create(params, resources.root);
+        }
         if !matches!(
             effect_type,
             EffectType::Gain
@@ -1689,6 +1839,10 @@ pub fn try_create_effect_at(
                 | EffectType::Resonance
                 | EffectType::Tuner
                 | EffectType::StereoWidth
+                | EffectType::StereoMatrix
+                | EffectType::FrequencyShift
+                | EffectType::Vocoder
+                | EffectType::AllPass
         ) {
             return Err(format!(
                 "built-in effect {effect_type:?} has no implemented DSP; refusing passthrough"
@@ -1749,6 +1903,10 @@ pub fn try_create_effect_at(
                 | E::Resonance
                 | E::Tuner
                 | E::StereoWidth
+                | E::StereoMatrix
+                | E::FrequencyShift
+                | E::Vocoder
+                | E::AllPass
         ) {
             let mut seen = std::collections::HashSet::new();
             for (name, value) in params {
@@ -1793,6 +1951,15 @@ pub fn create_effect(
     params: &[(String, oc_dsl::ast::ParamValue)],
     sample_rate: u32,
 ) -> Box<dyn AudioEffect> {
+    create_effect_with_resources(effect_type, params, sample_rate, EffectResources::default())
+}
+
+pub(crate) fn create_effect_with_resources(
+    effect_type: &oc_dsl::ast::EffectType,
+    params: &[(String, oc_dsl::ast::ParamValue)],
+    sample_rate: u32,
+    resources: EffectResources<'_>,
+) -> Box<dyn AudioEffect> {
     use oc_dsl::ast::EffectType;
 
     let resolved = schema_bridge::resolve_effect(effect_type, params);
@@ -1806,7 +1973,10 @@ pub fn create_effect(
         .collect();
 
     match effect_type {
-        EffectType::Gain => Box::new(LinearGain(param_map.get("factor").copied().unwrap_or(1.0))),
+        EffectType::Gain => Box::new(LinearGain {
+            factor: param_map.get("factor").copied().unwrap_or(1.0),
+            mix: param_map.get("mix").copied().unwrap_or(1.0),
+        }),
         EffectType::Saturator => {
             let mut fx = saturator::Saturator::new();
             for name in ["drive", "mix"] {
@@ -2096,19 +2266,18 @@ pub fn create_effect(
         }
         EffectType::Delay => {
             let mut fx = delay::StereoDelay::new(sample_rate);
+            if let Some(&interpolate) = param_map.get("interpolate") {
+                fx.set_param("interpolate", interpolate);
+            }
             if let Some(&t) = param_map.get("time") {
                 fx.set_param("time", t);
             }
-            for name in ["time_l", "time_r"] {
-                if let Some(&time) = param_map.get(name) {
-                    fx.set_param(name, time);
+            for param in schema::delay::PARAMS {
+                if param.id != "interpolate"
+                    && let Some(&value) = param_map.get(param.id)
+                {
+                    fx.set_param(param.id, value);
                 }
-            }
-            if let Some(&fb) = param_map.get("feedback") {
-                fx.set_param("feedback", fb);
-            }
-            if let Some(&m) = param_map.get("mix") {
-                fx.set_param("mix", m);
             }
             Box::new(fx)
         }
@@ -2153,9 +2322,9 @@ pub fn create_effect(
         }
         EffectType::Flanger => {
             let mut fx = flanger::Flanger::new(sample_rate);
-            for name in ["rate", "depth", "feedback", "mix"] {
-                if let Some(&value) = param_map.get(name) {
-                    fx.set_param(name, value);
+            for parameter in schema::flanger::PARAMS {
+                if let Some(&value) = param_map.get(parameter.id) {
+                    fx.set_param(parameter.id, value);
                 }
             }
             Box::new(fx)
@@ -2182,6 +2351,37 @@ pub fn create_effect(
             let mut fx = stereo_width::StereoWidth::new();
             if let Some(&value) = param_map.get("amount") {
                 fx.set_param("amount", value);
+            }
+            Box::new(fx)
+        }
+        EffectType::StereoMatrix => {
+            let mut fx = stereo_matrix::StereoMatrix::new(sample_rate);
+            for (name, value) in param_map {
+                fx.set_param(name, value);
+            }
+            Box::new(fx)
+        }
+        EffectType::FrequencyShift => {
+            let mut fx = frequency_shift::FrequencyShifter::default();
+            for (name, value) in param_map {
+                fx.set_param(name, value);
+            }
+            Box::new(fx)
+        }
+        EffectType::Vocoder => {
+            let mut fx = vocoder::Vocoder::new(sample_rate);
+            for (name, value) in param_map {
+                fx.set_param(name, value);
+            }
+            Box::new(fx)
+        }
+        EffectType::TransferShaper => {
+            transfer_curve::create(params, resources.root).unwrap_or_else(transfer_curve::failed)
+        }
+        EffectType::AllPass => {
+            let mut fx = allpass::AllPass::default();
+            if let Some(&value) = param_map.get("coefficient") {
+                fx.set_param("coefficient", value);
             }
             Box::new(fx)
         }

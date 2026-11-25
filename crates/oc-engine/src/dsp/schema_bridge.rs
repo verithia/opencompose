@@ -263,6 +263,11 @@ fn effect_for_device(id: &str) -> Option<EffectType> {
         "phaser" => EffectType::Phaser,
         "gate" => EffectType::Gate,
         "stereo-width" => EffectType::StereoWidth,
+        "stereo-matrix" => EffectType::StereoMatrix,
+        "frequency-shift" => EffectType::FrequencyShift,
+        "vocoder" => EffectType::Vocoder,
+        "allpass" => EffectType::AllPass,
+        "transfer-shaper" => EffectType::TransferShaper,
         _ => return None,
     })
 }
@@ -460,6 +465,30 @@ fn parse_ratio(text: &str) -> Option<f64> {
     let denominator = denominator.trim().parse::<f64>().ok()?;
     (numerator.is_finite() && denominator.is_finite() && numerator > 0.0 && denominator > 0.0)
         .then_some(numerator / denominator)
+}
+
+/// Validate either a numeric device control or its inline typed asset.
+pub fn validate_static_value(
+    device: &DeviceSchema,
+    id: &str,
+    value: &ParamValue,
+) -> Result<(), String> {
+    if device.id == "transfer-shaper" && id == "curve_file" {
+        return match value {
+            ParamValue::String(path) if !path.trim().is_empty() => Ok(()),
+            _ => Err("curve_file expects a file path".into()),
+        };
+    }
+    if device.id == "transfer-shaper" && id == "curve" {
+        let ParamValue::String(text) = value else {
+            return Err("curve expects inline JSON text".into());
+        };
+        oc_dsp::schema::transfer_curve::TransferCurve::decode(text)
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    } else {
+        validate_static_param(device, id, value).map(|_| ())
+    }
 }
 
 #[cfg(test)]

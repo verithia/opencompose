@@ -1995,6 +1995,7 @@ fn baked_project(
         .ok_or_else(|| format!("audio clip '{clip_name}' disappeared"))?;
     clip.file = file.to_string();
     clip.offset_seconds = 0.0;
+    clip.stereo_offset_seconds = 0.0;
     clip.stretch = 1.0;
     clip.stretch_mode = StretchMode::Off;
     clip.tempo_follow = false;
@@ -2190,6 +2191,7 @@ mod tests {
         AudioClip {
             name: "lead".to_string(),
             track: "vocal".to_string(),
+            playlist_lane: None,
             file: "take.wav".to_string(),
             time_range: oc_dsl::ast::TimeRange {
                 start: BarBeat {
@@ -2205,9 +2207,11 @@ mod tests {
             },
             placement: Default::default(),
             offset_seconds: 0.0,
+            stereo_offset_seconds: 0.0,
             gain_db: 0.0,
             fade_in_seconds: 0.0,
             fade_out_seconds: 0.0,
+            fade_curves: Default::default(),
             invert: false,
             crossfade_seconds: 0.0,
             stretch: 1.0,
@@ -2223,6 +2227,7 @@ mod tests {
             take: None,
             muted: false,
             gain_envelope: Vec::new(),
+            gain_envelope_interpolation: Default::default(),
         }
     }
 

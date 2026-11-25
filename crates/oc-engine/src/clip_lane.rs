@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
-use oc_dsl::ast::{AudioClip, GainEnvelopePoint, Project};
+use oc_dsl::ast::{AudioClip, Project};
 
 use crate::clip_pcm::{ClipCancellation, ClipPcm, ClipPreparationError, PlaybackPin};
 use crate::derived_cache::{DerivedCache, StretchKey};
@@ -28,12 +28,11 @@ pub struct ClipLane {
     offset: usize,
     /// Frames repeated by the loop region; zero plays the media once.
     loop_frames: usize,
+    stereo_offset: [usize; 2],
     gain: f32,
-    fade_in: usize,
-    fade_out: usize,
-    crossfade: usize,
+    fades: crate::audio_clip::ClipFades,
     /// Optional point envelope over the clip length.
-    points: Vec<GainEnvelopePoint>,
+    points: crate::audio_clip::ClipGainEnvelope,
     /// Project-rate interleaved stereo owned for the whole project load.
     samples: ClipPcm,
     playback_pin: Option<Arc<PlaybackPin>>,
@@ -84,11 +83,10 @@ impl ClipLane {
             frames: playable as usize,
             offset,
             loop_frames,
+            stereo_offset: crate::audio_clip::stereo_offset_frames(clip, sample_rate)?,
             gain: 10.0_f32.powf(clip.gain_db as f32 / 20.0) * if clip.invert { -1.0 } else { 1.0 },
-            fade_in: (clip.fade_in_seconds * f64::from(sample_rate)).round() as usize,
-            fade_out: (clip.fade_out_seconds * f64::from(sample_rate)).round() as usize,
-            crossfade: (clip.crossfade_seconds * f64::from(sample_rate)).round() as usize,
-            points: clip.gain_envelope.clone(),
+            fades: crate::audio_clip::ClipFades::new(clip, sample_rate),
+            points: crate::audio_clip::ClipGainEnvelope::new(clip),
             samples,
             playback_pin: None,
             media: Some(media),
@@ -105,11 +103,10 @@ impl ClipLane {
             frames: 0,
             offset: 0,
             loop_frames: 0,
+            stereo_offset: [0; 2],
             gain: 1.0,
-            fade_in: 0,
-            fade_out: 0,
-            crossfade: 0,
-            points: Vec::new(),
+            fades: Default::default(),
+            points: Default::default(),
             samples: ClipPcm::Resident(Arc::new(Vec::new())),
             playback_pin: None,
             media: None,
@@ -142,25 +139,43 @@ impl ClipLane {
             return Ok(());
         }
         let range = (first - self.start) as usize..(last - self.start) as usize;
-        self.samples
-            .visit_placement(self.offset, self.loop_frames, range, |start, samples| {
-                for (index, sample) in samples.chunks_exact(2).enumerate() {
-                    let frame = start + index;
-                    let envelope = crate::audio_clip::clip_gain(
-                        self.gain,
-                        self.fade_in,
-                        self.fade_out,
-                        self.crossfade,
-                        frame,
-                        self.frames,
-                        &self.points,
-                    );
-                    let destination = ((self.start + frame as u64 - chunk_start) as usize) * 2;
-                    output[destination] += sample[0] * envelope;
-                    output[destination + 1] += sample[1] * envelope;
-                }
-            })
-            .map_err(|error| format!("Audio clip '{}': {error}", self.name))
+        let envelope = |frame| {
+            crate::audio_clip::clip_gain(self.gain, self.fades, frame, self.frames, &self.points)
+        };
+        let destination = |frame| ((self.start + frame as u64 - chunk_start) as usize) * 2;
+        let error = |error| format!("Audio clip '{}': {error}", self.name);
+        if self.stereo_offset == [0; 2] {
+            return self
+                .samples
+                .visit_placement(self.offset, self.loop_frames, range, 0, |start, samples| {
+                    for (index, sample) in samples.chunks_exact(2).enumerate() {
+                        let frame = start + index;
+                        let gain = envelope(frame);
+                        let target = destination(frame);
+                        output[target] += sample[0] * gain;
+                        output[target + 1] += sample[1] * gain;
+                    }
+                })
+                .map_err(error);
+        }
+        for (channel, delay) in self.stereo_offset.into_iter().enumerate() {
+            self.samples
+                .visit_placement(
+                    self.offset,
+                    self.loop_frames,
+                    range.clone(),
+                    delay,
+                    |start, samples| {
+                        for (index, sample) in samples.chunks_exact(2).enumerate() {
+                            let frame = start + index;
+                            output[destination(frame) + channel] +=
+                                sample[channel] * envelope(frame);
+                        }
+                    },
+                )
+                .map_err(error)?;
+        }
+        Ok(())
     }
 }
 

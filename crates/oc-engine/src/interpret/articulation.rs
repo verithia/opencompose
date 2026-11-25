@@ -72,6 +72,7 @@ pub(super) fn emit_note_expression_events(
     let onset_sample = events[voice_indices.0].time_samples;
     let note_off_sample = events[voice_indices.1].time_samples;
 
+    let curve_mode = oc_synth::note_pitch_curve::mode(&note_event.modifiers)?;
     let curve_tension = oc_synth::note_pitch_curve::interpolation(&note_event.modifiers)?;
     let points = oc_synth::note_pitch_curve::parse(&note_event.modifiers, duration_beats)?;
     if points.is_some()
@@ -114,39 +115,61 @@ pub(super) fn emit_note_expression_events(
             .checked_add(declared_last - declared_first)
             .ok_or("curve horizon overflow")?;
         let token = voice_indices.0 as u64;
-        let stride = (settings.sample_rate / 200).max(1) as u64;
-        if (last - first) / stride > 120000 {
-            return Err("pitch_curve exceeds bounded duration".into());
-        }
-        // A span with one tempo is linear in samples; a mapped span asks the
-        // clock for each frame's quarter position.
-        let constant_tempo = !clock.has_tempo_change_between(start_beat, start_beat + horizon);
-        for sample in (first..last)
-            .step_by(stride as usize)
-            .chain(std::iter::once(last))
-        {
-            let relative = if sample == last {
-                horizon
-            } else if constant_tempo {
-                (sample - first) as f64 / (last - first).max(1) as f64 * horizon
-            } else {
-                (clock.quarter_at_seconds(sample as f64 / f64::from(settings.sample_rate))?
-                    - start_beat)
-                    .clamp(0.0, horizon)
-            };
-            let cents = oc_synth::note_pitch_curve::value_at(&points, relative, curve_tension);
-            if !cents.is_finite() || cents.abs() > oc_synth::note_pitch_curve::MAX_SEMITONES * 100.0
-            {
-                return Err("pitch_curve interpolation exceeds native range".into());
+        if curve_mode == oc_synth::note_pitch_curve::PitchCurveMode::Step {
+            // Floor each absolute score boundary once, then apply the same
+            // onset offset as the voice. Stable event ordering retains authored
+            // point order when several points land on one frame.
+            for (quarter, cents) in points {
+                let declared =
+                    clock.sample_at_quarter(start_beat + quarter, settings.sample_rate)?;
+                let time_samples = first
+                    .checked_add(declared - declared_first)
+                    .ok_or("curve point sample overflow")?;
+                events.push(MidiEvent {
+                    time_samples,
+                    track_index,
+                    event: MidiMessage::NativeVoice(oc_synth::synth::NativeVoiceEvent::Pitch {
+                        token,
+                        semitones: cents / 100.0,
+                    }),
+                });
             }
-            events.push(MidiEvent {
-                time_samples: sample,
-                track_index,
-                event: MidiMessage::NativeVoice(oc_synth::synth::NativeVoiceEvent::Pitch {
-                    token,
-                    semitones: cents / 100.0,
-                }),
-            });
+        } else {
+            let stride = (settings.sample_rate / 200).max(1) as u64;
+            if (last - first) / stride > 120000 {
+                return Err("pitch_curve exceeds bounded duration".into());
+            }
+            // A span with one tempo is linear in samples; a mapped span asks the
+            // clock for each frame's quarter position.
+            let constant_tempo = !clock.has_tempo_change_between(start_beat, start_beat + horizon);
+            for sample in (first..last)
+                .step_by(stride as usize)
+                .chain(std::iter::once(last))
+            {
+                let relative = if sample == last {
+                    horizon
+                } else if constant_tempo {
+                    (sample - first) as f64 / (last - first).max(1) as f64 * horizon
+                } else {
+                    (clock.quarter_at_seconds(sample as f64 / f64::from(settings.sample_rate))?
+                        - start_beat)
+                        .clamp(0.0, horizon)
+                };
+                let cents = oc_synth::note_pitch_curve::value_at(&points, relative, curve_tension);
+                if !cents.is_finite()
+                    || cents.abs() > oc_synth::note_pitch_curve::MAX_SEMITONES * 100.0
+                {
+                    return Err("pitch_curve interpolation exceeds native range".into());
+                }
+                events.push(MidiEvent {
+                    time_samples: sample,
+                    track_index,
+                    event: MidiMessage::NativeVoice(oc_synth::synth::NativeVoiceEvent::Pitch {
+                        token,
+                        semitones: cents / 100.0,
+                    }),
+                });
+            }
         }
     }
 

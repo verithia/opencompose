@@ -20,12 +20,15 @@ fn checked_builtin_sidechain_drives_compressor_and_rejects_ignored_keys() {
         &[],
         &[],
         EffectChainBuild {
+            project: None,
             sample_rate: 48000,
             checked: true,
             properties: &Default::default(),
             owner: "",
             place: "",
             touch: None,
+            resource_root: None,
+            linked_lanes: &[],
         },
     )
     .unwrap();
@@ -40,12 +43,15 @@ fn checked_builtin_sidechain_drives_compressor_and_rejects_ignored_keys() {
         &[],
         &[],
         EffectChainBuild {
+            project: None,
             sample_rate: 48000,
             checked: true,
             properties: &Default::default(),
             owner: "",
             place: "",
             touch: None,
+            resource_root: None,
+            linked_lanes: &[],
         },
     )
     .err()
@@ -79,12 +85,15 @@ fn checked_dynamic_eq_sidechain_routes_the_key_into_the_detector() {
         &[],
         &[],
         EffectChainBuild {
+            project: None,
             sample_rate: 48000,
             checked: true,
             properties: &Default::default(),
             owner: "",
             place: "",
             touch: None,
+            resource_root: None,
+            linked_lanes: &[],
         },
     )
     .unwrap();
@@ -789,6 +798,130 @@ fn blocks(seen: &Arc<Mutex<Vec<SeenBlock>>>) -> Vec<SeenBlock> {
 }
 
 #[test]
+fn fractional_delay_curves_preserve_continuous_read_time_across_blocks() {
+    let project = oc_dsl::parse(
+        "@project\n  tempo: 120\n@track tone | instrument: piano/acoustic_grand\n  effects:\n    - delay: time_l=1ms, time_r=1ms, feedback=0%, mix=100%, interpolate=true\n  automation: fx1.time_l {1:1=1ms, 1:2=126ms}\n",
+    )
+    .unwrap();
+    let rate = 8000;
+    let input: Vec<f32> = (0..1000)
+        .flat_map(|frame| {
+            let value = frame as f32 / 1000.0;
+            [value, -value]
+        })
+        .collect();
+    let process = |project: &Project, block_frames: usize| {
+        let mut graph =
+            AudioGraph::try_from_project_with_source_latencies(project, rate, &[]).unwrap();
+        let mut audio = input.clone();
+        let chain = &mut graph.track_chains[0];
+        chain.prepare_block(block_frames).unwrap();
+        for (index, block) in audio.chunks_mut(block_frames * 2).enumerate() {
+            let stamp = mapped_transport(project, (index * block_frames) as u64, rate);
+            chain.process_with_transport(block, rate, Some(stamp));
+        }
+        audio
+    };
+    let audio = process(&project, 73);
+    assert_eq!(audio, process(&project, 512));
+    let mut legacy = project.clone();
+    legacy.tracks[0].effects[0]
+        .params
+        .retain(|(key, _)| key != "interpolate");
+    let legacy = process(&legacy, 73);
+    for frame in 24..1000 {
+        // Left tap moves by 0.25 frames per frame. Right tap stays at 8 frames.
+        let read = frame as f32 - (8.0 + frame as f32 * 0.25);
+        assert!((audio[frame * 2] - read / 1000.0).abs() < 1e-6);
+        assert!((legacy[frame * 2] - read.ceil() / 1000.0).abs() < 1e-6);
+        assert_eq!(audio[frame * 2 + 1], input[(frame - 8) * 2 + 1]);
+    }
+}
+
+#[test]
+fn a_rhythmic_gain_jump_keeps_its_sample_across_blocks_tempo_changes_and_seek() {
+    let project = oc_dsl::parse(
+        r#"@project
+  tempo: 120
+  tempo_map:
+    1:3 = 60 bpm
+@track carrier | instrument: audio/clip
+  effects:
+    - gain: factor=1
+  automation: fx1.factor [1:1:3 - 3:1] mode=lfo speed=1/2 discontinuities {1:1=1, 1:2=0, 1:2=0.75, 1:3=1}
+"#,
+    )
+    .unwrap();
+    let rate = 8000;
+    let render = |start: u64, count: usize, block_frames: usize| {
+        let mut graph =
+            AudioGraph::try_from_project_with_source_latencies(&project, rate, &[]).unwrap();
+        let chain = &mut graph.track_chains[0];
+        chain.prepare_block(block_frames).unwrap();
+        let mut pcm = vec![1.0f32; count * 2];
+        for (index, block) in pcm.chunks_mut(block_frames * 2).enumerate() {
+            let cursor = start + (index * block_frames) as u64;
+            chain.process_with_transport(
+                block,
+                rate,
+                Some(mapped_transport(&project, cursor, rate)),
+            );
+        }
+        pcm
+    };
+    let pcm = render(0, 24_000, 73);
+    assert_eq!(pcm, render(0, 24_000, 512));
+    assert!((pcm[3001 * 2] - 0.99975).abs() < 1e-6);
+    for jump in [7000, 22000] {
+        let expected = &pcm[(jump - 2) * 2..(jump + 2) * 2];
+        assert!(expected[2] < 0.001);
+        assert_eq!(expected[4], 0.75);
+        assert_eq!(render(jump as u64 - 2, 4, 17), expected);
+    }
+}
+
+#[test]
+fn a_rhythmic_gain_and_its_depth_automate_independently() {
+    let project = oc_dsl::parse(
+        r#"@project
+  tempo: 120
+@track carrier | instrument: audio/clip
+  effects:
+    - gain: factor=0.25, mix=0%
+  automation: fx1.factor mode=lfo speed=1/2 {1:1=0.25 curve=stairs, 1:2=0.5 curve=stairs, 1:3=0.25}
+  automation: fx1.mix {1:1=0 curve=stairs, 1:2=0.5 curve=stairs, 1:3=1 curve=stairs, 1:4=0}
+"#,
+    )
+    .unwrap();
+    oc_dsl::validator::validate(&project).unwrap();
+    let rate = 8000;
+    let render = |start: u64, count: usize, block_frames: usize| {
+        let mut graph =
+            AudioGraph::try_from_project_with_source_latencies(&project, rate, &[]).unwrap();
+        let chain = &mut graph.track_chains[0];
+        chain.prepare_block(block_frames).unwrap();
+        let mut pcm = [0.5, -0.25].repeat(count);
+        for (index, block) in pcm.chunks_mut(block_frames * 2).enumerate() {
+            let cursor = start + (index * block_frames) as u64;
+            chain.process_with_transport(
+                block,
+                rate,
+                Some(mapped_transport(&project, cursor, rate)),
+            );
+        }
+        pcm
+    };
+    let pcm = render(0, 16_000, 73);
+    assert_eq!(pcm, render(0, 16_000, 512));
+    for (quarter, gain) in [1.0, 0.75, 0.25, 1.0].into_iter().enumerate() {
+        let begin = quarter * 4000;
+        let expected = [0.5 * gain, -0.25 * gain].repeat(4000);
+        assert_eq!(pcm[begin * 2..(begin + 4000) * 2], expected);
+        assert_eq!(render(begin as u64 + 97, 31, 17), expected[..62]);
+    }
+}
+
+#[test]
 fn mapped_effect_splits_mid_block_at_a_tempo_change() {
     let project =
         oc_dsl::parse("@project\n  tempo: 120\n  tempo_map:\n    1:3 = 60 bpm\n").unwrap();
@@ -1095,6 +1228,100 @@ fn sidechain_wrapper_aligns_detector_impulse_to_main_path_latency() {
 
     assert_eq!(*seen.lock().unwrap(), Some((4, 4)));
     assert_eq!(effect.latency_samples(), 0);
+}
+
+#[test]
+fn sidechain_alignment_applies_at_a_nested_bus_and_the_master() {
+    let project = oc_dsl::parse(
+        "@project\n\
+         @track detector | instrument: keys/piano\n  mix: output=zkey\n\
+         @track carrier | instrument: keys/piano\n  mix: output=source\n\
+         @bus zkey\n  routes: [sink]\n\
+         @bus sink\n  routes: [master]\n  effects:\n    - gain: factor=0\n\
+         @bus source\n  routes: [receiver]\n\
+         @bus receiver\n  routes: [mixdown]\n\
+         @bus mixdown\n  routes: [master]\n",
+    )
+    .unwrap();
+    for key in ["detector", "zkey"] {
+        for at_master in [false, true] {
+            for delayed_track in [0, 1] {
+                let mut graph = AudioGraph::from_project(&project, 48_000);
+                graph.track_chains[delayed_track]
+                    .effects
+                    .push(Box::new(LatencyEffect::new(5)));
+                let receiver = if at_master {
+                    &mut graph.master_chain
+                } else {
+                    &mut graph.bus_chains.get_mut("receiver").unwrap().chain
+                };
+                let seen = [Arc::new(Mutex::new(None)), Arc::new(Mutex::new(None))];
+                for capture in &seen {
+                    receiver.effects.push(Box::new(SidechainEffect::new(
+                        Box::new(SidechainCaptureEffect {
+                            seen: capture.clone(),
+                        }),
+                        key.into(),
+                    )));
+                }
+                graph.prepare(32).unwrap();
+                let mut impulse = vec![0.0; 64];
+                impulse[6] = 1.0;
+                let mut input = [impulse.clone(), impulse];
+                let mut output = [0.0; 64];
+                graph
+                    .process_into(&mut input, None, &HashMap::new(), &mut output)
+                    .unwrap();
+                for capture in seen {
+                    assert_eq!(
+                        *capture.lock().unwrap(),
+                        Some((8, 8)),
+                        "{key} {at_master} {delayed_track}"
+                    );
+                }
+                assert_eq!(output[16], 1.0, "{key} {at_master} {delayed_track}");
+            }
+        }
+    }
+}
+
+#[test]
+fn an_insert_rebuild_preserves_unchanged_route_delay_history() {
+    let base =
+        "@project\n@track early | instrument: keys/piano\n@track late | instrument: keys/piano\n";
+    let previous = oc_dsl::parse(base).unwrap();
+    let next = oc_dsl::parse(&format!("{base}  effects:\n    - gain: factor=0.5\n")).unwrap();
+    let mut graph =
+        AudioGraph::try_from_project_with_source_latencies(&previous, 48_000, &[0, 4]).unwrap();
+    let opening = graph.mix_processed(&mut [vec![1.0, -1.0], vec![0.0; 2]], None);
+    assert_eq!(opening, [0.0; 2]);
+    assert!(matches!(
+        graph.patch_chains(&previous, &next, None, false).unwrap(),
+        ChainPatch::Patched { chains: 1 }
+    ));
+    let later = graph.mix_processed(&mut [vec![0.0; 8], vec![0.0; 8]], None);
+    assert_eq!(&later[6..], &[1.0, -1.0]);
+}
+
+#[test]
+fn sidechain_alignment_does_not_replay_old_samples_after_reset() {
+    for (main_latency, key_latency) in [(4, 0), (0, 4)] {
+        let seen = Arc::new(Mutex::new(None));
+        let mut effect = SidechainEffect::new(
+            Box::new(KeyProbe {
+                seen: seen.clone(),
+                source: "detector",
+            }),
+            "detector".into(),
+        );
+        effect.configure_sidechain_alignment(main_latency, key_latency);
+        effect.process_with_sidechain(&mut [1.0; 2], &[1.0; 2], 48_000, None);
+        effect.reset();
+        let mut silence = [0.0; 16];
+        effect.process_with_sidechain(&mut silence, &[0.0; 16], 48_000, None);
+        assert_eq!(silence, [0.0; 16]);
+        assert_eq!(*seen.lock().unwrap(), Some(0.0));
+    }
 }
 
 /// A subset window leaves unselected track buffers empty; routing treats
@@ -1551,6 +1778,7 @@ fn effect_chain_sums_reported_latency_safely() {
 #[test]
 fn pdc_aligns_unequal_direct_track_latencies() {
     let mut graph = AudioGraph {
+        resource_root: None,
         track_chains: vec![
             EffectChain::new(),
             EffectChain {
@@ -1608,6 +1836,8 @@ fn pdc_aligns_unequal_direct_track_latencies() {
         control_gains: vec![None],
         control_only: Vec::new(),
         key_plan: KeyPlan::default(),
+        live_controls: None,
+        preset_macros: None,
         prepared: None,
         control_fresh: Vec::new(),
     };
@@ -1663,6 +1893,7 @@ fn pdc_aligns_dry_and_send_return_paths() {
         },
     );
     let mut graph = AudioGraph {
+        resource_root: None,
         track_chains: vec![EffectChain::new()],
         bus_chains: buses,
         master_chain: EffectChain::new(),
@@ -1707,6 +1938,8 @@ fn pdc_aligns_dry_and_send_return_paths() {
         control_gains: vec![None],
         control_only: Vec::new(),
         key_plan: KeyPlan::default(),
+        live_controls: None,
+        preset_macros: None,
         prepared: None,
         control_fresh: Vec::new(),
     };
@@ -1752,6 +1985,7 @@ fn nested_bus_routes_process_source_before_target_with_pdc_and_tails() {
         },
     );
     let mut graph = AudioGraph {
+        resource_root: None,
         track_chains: vec![EffectChain::new()],
         bus_chains: buses,
         master_chain: EffectChain {
@@ -1800,6 +2034,8 @@ fn nested_bus_routes_process_source_before_target_with_pdc_and_tails() {
         control_gains: vec![None],
         control_only: Vec::new(),
         key_plan: KeyPlan::default(),
+        live_controls: None,
+        preset_macros: None,
         prepared: None,
         control_fresh: Vec::new(),
     };
@@ -1907,6 +2143,7 @@ fn bus_sidechain_dependency_runs_key_before_target_and_delivers_audio() {
         },
     );
     let mut graph = AudioGraph {
+        resource_root: None,
         track_chains: vec![EffectChain::new(), EffectChain::new()],
         bus_chains: buses,
         master_chain: EffectChain::new(),
@@ -1967,6 +2204,8 @@ fn bus_sidechain_dependency_runs_key_before_target_and_delivers_audio() {
         control_gains: vec![None],
         control_only: Vec::new(),
         key_plan: KeyPlan::default(),
+        live_controls: None,
+        preset_macros: None,
         prepared: None,
         control_fresh: Vec::new(),
     };
@@ -1983,6 +2222,7 @@ fn bus_sidechain_dependency_runs_key_before_target_and_delivers_audio() {
 fn stable_latency_plan_preserves_streaming_delay_history() {
     let latency = Arc::new(AtomicU32::new(2));
     let mut graph = AudioGraph {
+        resource_root: None,
         track_chains: vec![
             EffectChain::new(),
             EffectChain {
@@ -2040,6 +2280,8 @@ fn stable_latency_plan_preserves_streaming_delay_history() {
         control_gains: vec![None],
         control_only: Vec::new(),
         key_plan: KeyPlan::default(),
+        live_controls: None,
+        preset_macros: None,
         prepared: None,
         control_fresh: Vec::new(),
     };
@@ -2057,6 +2299,7 @@ fn stable_latency_plan_preserves_streaming_delay_history() {
 fn changed_effect_latency_invalidates_compensation_plan() {
     let latency = Arc::new(AtomicU32::new(2));
     let mut graph = AudioGraph {
+        resource_root: None,
         track_chains: vec![
             EffectChain::new(),
             EffectChain {
@@ -2116,6 +2359,8 @@ fn changed_effect_latency_invalidates_compensation_plan() {
         control_gains: vec![None],
         control_only: Vec::new(),
         key_plan: KeyPlan::default(),
+        live_controls: None,
+        preset_macros: None,
         prepared: None,
         control_fresh: Vec::new(),
     };
@@ -2132,6 +2377,7 @@ fn changed_effect_latency_invalidates_compensation_plan() {
 #[test]
 fn pdc_aligns_instrument_source_latency_before_insert_effects() {
     let mut graph = AudioGraph {
+        resource_root: None,
         track_chains: vec![EffectChain::new(), EffectChain::new()],
         bus_chains: HashMap::new(),
         master_chain: EffectChain::new(),
@@ -2182,6 +2428,8 @@ fn pdc_aligns_instrument_source_latency_before_insert_effects() {
         control_gains: vec![None],
         control_only: Vec::new(),
         key_plan: KeyPlan::default(),
+        live_controls: None,
+        preset_macros: None,
         prepared: None,
         control_fresh: Vec::new(),
     };
@@ -2436,6 +2684,45 @@ fn detected_width_promotes_mono_to_stereo_and_sticks() {
 }
 
 #[test]
+fn first_stereo_audio_after_silent_blocks_uses_balance_at_unity() {
+    let project = oc_dsl::parse("@project\n@track stem | instrument: audio/clip\n").unwrap();
+    let mut graph = AudioGraph::from_project(&project, 48_000);
+    let frames = 512;
+    graph.prepare(frames).unwrap();
+    let mut output = vec![0.0; frames * 2];
+    let mut input = vec![vec![0.0; frames * 2]];
+    let aux = HashMap::new();
+    let process = |graph: &mut AudioGraph, input: &mut [Vec<f32>], output: &mut [f32]| {
+        graph
+            .process_prepared(PreparedGraphBlock {
+                tracks: input,
+                transport: None,
+                aux: &aux,
+                output,
+            })
+            .unwrap();
+    };
+    process(&mut graph, &mut input, &mut output);
+    assert!(output.iter().all(|&sample| sample == 0.0));
+    assert_eq!(graph.track_widths(), &[SourceWidth::Mono]);
+
+    let mut stereo = vec![0.0; frames * 2];
+    for frame in stereo[140 * 2..].chunks_exact_mut(2) {
+        frame.copy_from_slice(&[0.5, -0.25]);
+    }
+    input[0].copy_from_slice(&stereo);
+    process(&mut graph, &mut input, &mut output);
+    assert_eq!(&output[140 * 2..142 * 2], &[0.5, -0.25, 0.5, -0.25]);
+
+    graph.reset();
+    input[0].fill(0.0);
+    process(&mut graph, &mut input, &mut output);
+    input[0].copy_from_slice(&stereo);
+    process(&mut graph, &mut input, &mut output);
+    assert_eq!(output, stereo);
+}
+
+#[test]
 fn explicit_balance_keeps_dual_mono_at_unity_from_the_first_block() {
     let project =
         oc_dsl::parse("@project\n@track stem | instrument: audio/clip\n  mix: pan_law=balance\n")
@@ -2480,6 +2767,7 @@ fn staged_graph(
     routing: Vec<TrackRouting>,
 ) -> AudioGraph {
     AudioGraph {
+        resource_root: None,
         track_chains: latencies
             .iter()
             .map(|latency| chain_with_latency(*latency))
@@ -2501,6 +2789,8 @@ fn staged_graph(
         control_gains: Vec::new(),
         control_only: Vec::new(),
         key_plan: KeyPlan::default(),
+        live_controls: None,
+        preset_macros: None,
         prepared: None,
         pre_master_latency_samples: 0,
         direct_delays: vec![],

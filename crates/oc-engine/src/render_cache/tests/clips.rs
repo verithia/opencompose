@@ -119,6 +119,33 @@ fn fingerprint_covers_every_stretch_field() {
 }
 
 #[test]
+fn fingerprint_covers_clip_placement_fades_and_gain_law() {
+    let project = clip_project();
+    let base = track_clip_fingerprint(&project, &project.tracks[0], 48_000, None);
+    let edits: [fn(&mut oc_dsl::ast::AudioClip); 5] = [
+        |clip| {
+            clip.placement.start_quantization = oc_dsl::ast::AudioClipStartQuantization::Nearest;
+        },
+        |clip| clip.fade_curves.fade_in = Some([0.1, 0.0, 0.9, 1.0]),
+        |clip| clip.fade_curves.fade_out = Some([0.1, 0.0, 0.9, 1.0]),
+        |clip| clip.stereo_offset_seconds = 0.002,
+        |clip| {
+            clip.gain_envelope_interpolation = oc_dsl::ast::ClipGainInterpolation::LinearAmplitude;
+        },
+    ];
+    let mut seen = vec![base];
+    for edit in edits {
+        let mut edited = project.clone();
+        edit(edited.audio_clip_mut(0).unwrap());
+        let fingerprint = track_clip_fingerprint(&edited, &edited.tracks[0], 48_000, None);
+        // Each field changes the rendered clip, so it must reach the cache key
+        // on its own and not collide with another field's edit.
+        assert!(!seen.contains(&fingerprint));
+        seen.push(fingerprint);
+    }
+}
+
+#[test]
 fn fingerprint_covers_the_harmony_voice() {
     let mut project = clip_project();
     let base = track_clip_fingerprint(&project, &project.tracks[0], 48_000, None);
@@ -177,6 +204,7 @@ fn audio_clip_placement_invalidates_cache_and_extends_render() {
     project.audio_clip_mut(0).unwrap().placement = oc_dsl::ast::AudioClipPlacement {
         start_offset_seconds: 1.0 / 48_000.0,
         end_offset_seconds: 1.0 / 48_000.0,
+        ..Default::default()
     };
     assert_eq!(
         crate::audio_clip::project_end_frame(&project, 48_000).unwrap(),
@@ -190,4 +218,31 @@ fn audio_clip_placement_invalidates_cache_and_extends_render() {
     assert!(second[2].abs() > 0.1);
     assert_eq!(second.len(), first.len() + 2);
     std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn audio_clip_start_quantization_updates_cached_pcm() {
+    let root = tempfile::tempdir().unwrap();
+    write_constant_wav(&root.path().join("hit.wav"), 48_000, 0.5);
+    let mut project = clip_project();
+    project.properties.tempo = 137.0;
+    project.audio_clip_mut(0).unwrap().time_range.start = oc_dsl::ast::BarBeat::new(1, 2, 0);
+    let mut cache = RenderCache::new();
+    cache.set_resource_root(Some(root.path().to_path_buf()));
+    let mut plugins = HashMap::new();
+    let first = cache
+        .render_incremental(&project, Path::new("unused.sf2"), 48_000, &mut plugins)
+        .unwrap();
+    let grid_floor = (48_000.0_f64 * 60.0 / 137.0).floor() as usize;
+    assert!(first[grid_floor * 2] > 0.1);
+    project
+        .audio_clip_mut(0)
+        .unwrap()
+        .placement
+        .start_quantization = oc_dsl::ast::AudioClipStartQuantization::Nearest;
+    let rounded = cache
+        .render_incremental(&project, Path::new("unused.sf2"), 48_000, &mut plugins)
+        .unwrap();
+    assert_eq!(&rounded[grid_floor * 2..grid_floor * 2 + 2], &[0.0, 0.0]);
+    assert_eq!(rounded[(grid_floor + 1) * 2], first[grid_floor * 2]);
 }
