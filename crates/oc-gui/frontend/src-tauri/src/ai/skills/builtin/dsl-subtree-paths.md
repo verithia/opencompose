@@ -32,6 +32,12 @@ Names match exactly; a name with a dot cannot be addressed, since the split on
 - `track:<ref>.automation` takes that track's `automation:` lines only.
 - `project.properties` takes only the `key: value` lines, no header.
 
+A single-node replacement contains only that node. Track, preset, bus, pattern
+and phrase names match a named selector. Rename tracks with the dedicated
+operation or an index selector. Extra sibling nodes or unrelated fields are
+refused. Use several focused edits inside a transaction when multiple nodes
+change; do not send a large whole-project replacement for a small edit.
+
 A path that fits none of these fails with `Unsupported replace path` or
 `Invalid track child for replace`.
 

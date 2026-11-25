@@ -41,6 +41,7 @@ that log. `ocp` prints the log path on stderr.
 | `plugin-params` | Dump a VST3 or VST2 plugin's parameter inventory. |
 | `plugin-preset import` | Import a `.ffp` preset into a VST3 plugin instance. |
 | `plugin install` | Resolve, download, verify and install one catalog entry. |
+| `plugin migrate-vst2` | Convert an opaque VST2 FXB bank to a VST3 preset. |
 | `plugin conformance` | Run the VST3 conformance battery over every installed bundle. |
 | `compile-project` | Compile a complete project AST JSON to canonical OCP. |
 | `plugin-index` | Build, verify or key-sign the remote plugin index. |
@@ -122,6 +123,10 @@ ocp render song.ocp -o /tmp/song.wav --reruns 3 --require-identical
 | `--require-identical` | Fail unless every rerun is byte-identical. |
 | `--pre-roll S` | Silent wall-clock warm-up per plugin instance (0 to 600 s, default 4). |
 | `--stems DIR` | Also write one pre-master file per track and bus, plus `stems.json`. |
+| `--stem-bus NAME` | With `--stems`, keep only the named bus stems; repeat it for several buses. The whole graph still runs. |
+| `--no-track-stems` | With `--stems`, leave out the track stems. |
+| `--stem-pre-master` | With `--stems`, also write the signal before the master effects and fader. |
+| `--no-stem-analysis` | With `--stems`, skip the peak, RMS and LUFS analysis in `stems.json`; those fields are `null`. The audio and the project's loudness normalization do not change. |
 | `--no-loudness-normalisation` | Ignore `loudness:` on the master. |
 | `--sample-format`, `--bit-depth` | WAV or FLAC sample depth. |
 | `--flac-level`, `--mp3-bitrate`, `--mp3-vbr` | FLAC compression and MP3 rate settings. |
@@ -135,14 +140,37 @@ ocp render song.ocp -o /tmp/song.wav --reruns 3 --require-identical
 `--report` measures the file after it is written. With `--stems` it reports the
 mix; with `--reruns` it reports the run that was kept.
 
+To write a few diagnostic stems without track stems or metering:
+
+```sh
+ocp render song.ocp -o mix.wav --stems taps \
+  --stem-bus drums --stem-bus music --no-track-stems \
+  --stem-pre-master --no-stem-analysis
+```
+
+The named buses must exist before any built-in device loads. The full routing,
+sidechains and master processing still run. The selected stems may not add up
+to the full mix, and `pre_master` already contains everything, so never add it
+to other stems.
+
+A stem export encodes and checks every file, including the mix, in temporary
+storage before it replaces the published files. If a stem is refused, the
+previous files stay as they were. If replacing a file fails, the replacements
+are undone; other files in the folder are left alone.
+
 Containers, bit depths, dither and the MP3 rate and bitrate tables are in
 [Export format](../export-format.md). The flags override the project's export
 settings.
 
 A plugin that loads its content asynchronously can render silence if a note
-starts before the content is ready. `--pre-roll` waits in wall-clock time; it
-does not add rendered silence. `--reruns N --require-identical` proves that the
-output is reproducible. It does not prove that a load finished. See
+starts before the content is ready. `--pre-roll` waits in wall-clock time.
+AudioUnit instruments and Intel VST2 instruments running under Rosetta first
+receive one block without MIDI, whose output is discarded. The process that
+owns the plugin answers its loading callbacks, and the instrument is reset
+before the score starts. Other formats only wait and render no silence, so
+free-running oscillators keep their phase. `--pre-roll 0` turns the warm-up
+off. `--reruns N --require-identical` proves that the output is reproducible.
+It does not prove that a load finished. See
 [Troubleshooting](troubleshooting.md).
 
 ## Bounce
@@ -277,6 +305,7 @@ ocp plugin-params "/Library/Audio/Plug-Ins/VST3/Example.vst3"
 ocp plugin-params "/Library/Audio/Plug-Ins/VST/Example.vst"
 ocp plugin-params "org.example.eq" --json
 ocp plugin-preset import "org.example.eq" preset.ffp
+ocp plugin migrate-vst2 old.fxb --source-name Example --plugin Example.vst3 -o new.vstpreset
 ocp plugin conformance
 ocp plugin conformance --plugin "/Library/Audio/Plug-Ins/VST3/Example.vst3" --format json
 ```
@@ -291,8 +320,10 @@ plugin devices. Legacy effect shorthand is expanded and reported as a warning
 (see [DSL compatibility](../dsl-compat.md)).
 
 `resolve-plugin` expects exactly one match across VST3, VST2, CLAP, LV2 and the
-built-in devices, and prints the match's metadata as JSON. It does not look up
-AudioUnits.
+built-in devices, and prints the match's metadata as JSON. On macOS, an
+AudioUnit component id (such as `aufx:lpas:appl`), a bundle path or `au:Name`
+is looked up in the system's AudioUnit registry. A match found by id or name
+has an empty path.
 
 `plugin-params` loads a VST3 or VST2 plugin and prints every parameter. For a
 VST3 plugin the table shows id, name, unit, range, default, step count and
@@ -304,6 +335,16 @@ also installed, pass the `.vst` path to select the VST2 build.
 to the named VST3 plugin. It reports how many parameters it parsed, mapped and
 applied, and lists the unmapped, rejected and read-back-mismatched ones.
 `--json` emits the report.
+
+`plugin migrate-vst2` turns a VST2 FXB bank into a VST3 preset. The bank must
+be opaque, with its first program active. Give the original VST2 plugin's name,
+from which the VST3 class id is derived, and the installed VST3 bundle. The
+command picks the matching class, or a replacement the bundle declares when
+there is exactly one. It writes a new `.vstpreset` once a fresh instance has
+loaded the converted state; name that file in `vst3_state_file`. It fails if
+the bundle has no matching class, the state does not check out, or the output
+file exists. The conversion runs in a separate process with a ten-second
+limit.
 
 `plugin conformance` runs one child process per VST3 bundle and prints the
 per-step results as a table, JSON or Markdown. The battery and the JSON schema

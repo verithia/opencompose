@@ -17,8 +17,8 @@ pub const MAX_TRACK_METERS: usize = 256;
 pub const MAX_BUS_METERS: usize = 64;
 /// Maximum meters for effects.
 pub const MAX_EFFECT_METERS: usize = 32;
-/// Most bands any built-in device meters individually (dynamic EQ has six).
-pub const MAX_EFFECT_BANDS: usize = 8;
+/// Capacity for individually metered bands, sized for the largest device.
+pub const MAX_EFFECT_BANDS: usize = oc_engine::dsp::dynamic_eq::BAND_COUNT;
 
 /// Points in one goniometer frame; each point is one left/right pair.
 pub const GONIOMETER_POINTS: usize = 64;
@@ -986,6 +986,29 @@ mod tests {
 
     fn set_master(hub: &MeterHub, level: Level) {
         hub.master.set_chain(0.0, 0.0, level, 0);
+    }
+
+    #[test]
+    fn dynamic_eq_publishes_gain_reduction_for_the_last_band() {
+        use oc_engine::dsp::AudioEffect;
+        use oc_engine::dsp::dynamic_eq::{BAND_COUNT, DynamicEq};
+
+        let mut eq = DynamicEq::new(RATE);
+        let prefix = format!("band{BAND_COUNT}");
+        eq.set_param(&format!("{prefix}_enabled"), 1.0);
+        eq.set_param(&format!("{prefix}_dynamic"), 1.0);
+        eq.set_param(&format!("{prefix}_freq"), 1_000.0);
+        eq.process(&mut sine(0.5, 0.25, RATE), RATE);
+        let mut chain = EffectChain::new();
+        chain.effects.push(Box::new(eq));
+        let hub = hub();
+        hub.master
+            .apply(&NodeValues::capture(&chain, 0.5, Level::default(), false));
+
+        let bands = hub.master.band_snapshot(1);
+        assert_eq!(bands[0].len(), BAND_COUNT);
+        assert!(bands[0][..BAND_COUNT - 1].iter().all(|&gain| gain == 0.0));
+        assert!(bands[0][BAND_COUNT - 1] < -3.0);
     }
 
     #[test]

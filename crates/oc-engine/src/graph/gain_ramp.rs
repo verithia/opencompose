@@ -14,7 +14,7 @@ use std::collections::HashMap;
 
 use oc_dsp::simd;
 
-use super::{BusNode, SendRoute, TrackRouting};
+use super::{BusNode, SendRoute, SourceWidth, TrackRouting};
 
 /// Duration a fader, pan, send, return or master change travels over.
 pub(super) const RAMP_MS: f64 = 10.0;
@@ -172,7 +172,21 @@ impl TrackRamps {
     }
 
     /// Apply the fader and pan; both channels move on their own ramp.
-    pub(super) fn fader_block(&mut self, gains: (f32, f32), buffer: &mut [f32], frames: u32) {
+    pub(super) fn fader_block(
+        &mut self,
+        gains: (f32, f32),
+        width: SourceWidth,
+        buffer: &mut [f32],
+        frames: u32,
+    ) {
+        // Silence does not establish the detected pan law. Wait until the
+        // first signal or a known stereo width to seed both channel ramps.
+        if !self.fader.left.started
+            && width == SourceWidth::Mono
+            && buffer.iter().all(|&sample| sample == 0.0)
+        {
+            return;
+        }
         self.fader.set_target(gains.0, gains.1, frames);
         self.fader.apply(buffer);
     }

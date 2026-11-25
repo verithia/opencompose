@@ -24,6 +24,7 @@ pub const PLUGIN_ID: &str = "builtin.open_synth";
 pub const LOUDNESS_TRIM_PARAM: &str = "output.loudness_trim_db";
 /// Allocation-free arpeggiator lanes.
 pub mod arpeggiator;
+mod channel_symmetry;
 /// Portable patch documents.
 pub mod document;
 /// Filter identifier mapping.
@@ -4824,7 +4825,7 @@ impl OpenSynth {
             if settings.sample.as_os_str().is_empty() {
                 continue;
             }
-            match granular::SourceSample::load(&settings.sample) {
+            match granular::SourceSample::load_for_patch(settings) {
                 Ok(source) => *slot_source = Some(Arc::new(source)),
                 Err(error) => {
                     log::warn!("OpenSynth granular source disabled: {error}");

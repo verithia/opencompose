@@ -9,6 +9,7 @@ fn take_clip(take: u32) -> AudioClip {
     AudioClip {
         name: format!("vox take {take}"),
         track: "vox".into(),
+        playlist_lane: None,
         file: format!("media/take-vox-{take}.wav"),
         time_range: TimeRange {
             start: BarBeat::new(1, 1, 0),
@@ -16,9 +17,11 @@ fn take_clip(take: u32) -> AudioClip {
         },
         placement: Default::default(),
         offset_seconds: 0.0,
+        stereo_offset_seconds: 0.0,
         gain_db: 0.0,
         fade_in_seconds: 0.0,
         fade_out_seconds: 0.0,
+        fade_curves: Default::default(),
         invert: false,
         crossfade_seconds: 0.0,
         stretch: 1.0,
@@ -34,6 +37,7 @@ fn take_clip(take: u32) -> AudioClip {
         take: Some(take),
         muted: take != 3,
         gain_envelope: Vec::new(),
+        gain_envelope_interpolation: Default::default(),
     }
 }
 

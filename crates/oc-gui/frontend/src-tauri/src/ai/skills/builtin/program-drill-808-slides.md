@@ -3,19 +3,26 @@ id: program-drill-808-slides
 title: Program trap and drill 808 slides
 when: Tuning a sampled 808, designing glide or retriggered bass phrases, and fitting them around kick attacks in trap or drill.
 category: production
-version: 1
-tools: [devices_catalog, presets_list, presets_set_params, project_extract, edit_subtree, project_validate, analyze_notes, audition_range, audio_analyze]
+version: 2
+tools: [read_skill, devices_catalog, presets_list, presets_set_params, project_extract, edit_subtree, project_validate, analyze_notes, audition_range, audio_analyze]
 ---
 Start with a steady note from the source. On a sampled 808, estimate the root
 from the sustained part after the initial pitch fall, then check it against
 a known note. Distortion can make a harmonic look like the root. Recheck a
 cleaner section or source when the octave is ambiguous.
+On a melodic sampler, first play its assigned root key to hear the file at its base rate.
+That trigger number need not name the audible pitch: a low 808 assigned to root 60 still plays low on key 60.
+For a new mapped instrument, set the root for the measured source before writing concert-pitch notes.
+When repairing an existing phrase, preserve its ratios: a root change needs the same note-number shift to keep the old sound.
+Drum-pad numbers can instead select sounds without transposing them; establish which receiver is in use.
 
 ## Write the landing notes
 
 - Place the stable bass notes against the chord changes and kick first.
   Compare shorter note lengths and rests before adding sidechain processing.
   The kick needs a clear attack and the bass still needs enough sustain.
+  Check the source mode: one-shot tails can overlap across pitches even when drawn note ends meet.
+  Compare a gated short release with the retained one-shot; read map-a-multisampled-instrument before using a self-choke.
 - Test an isolated note, two separated notes and an overlapping pair. Use
   the actual preset envelope and mono settings. Confirm whether a transition
   carries the old voice or restarts the attack, since this changes the groove.

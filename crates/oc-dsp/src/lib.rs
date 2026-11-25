@@ -9,6 +9,7 @@
 
 pub use oc_audio::{AudioEffect, AudioProcessContext, AudioProcessInput};
 
+pub mod allpass;
 pub mod biquad;
 pub mod breath_split;
 pub mod chorus;
@@ -45,10 +46,14 @@ pub mod resonance;
 pub mod reverb;
 pub mod reverb_fdn;
 pub mod saturator;
+pub mod transfer_shaper;
 pub use oc_device_schema as schema;
+pub mod frequency_shift;
 pub mod simd;
+pub mod stereo_matrix;
 pub mod stereo_width;
 pub mod tuner;
+pub mod vocoder;
 pub mod vocal_analysis;
 pub mod vocal_shift;
 

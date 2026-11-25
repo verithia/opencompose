@@ -5,6 +5,7 @@
  * token with the same label, so one table owns both.
  */
 import type { EffectType } from "../types/project";
+import { DEVICE_CATALOG } from "../data/deviceCatalog.gen";
 
 /** Every built-in effect family: the string members of EffectType. */
 export type BuiltinEffectType = Exclude<EffectType, { Plugin: string }>;
@@ -38,7 +39,12 @@ export const BUILTIN_EFFECT_TYPES = [
   "Gate",
   "Saturator",
   "StereoWidth",
+  "StereoMatrix",
+  "FrequencyShift",
+  "Vocoder",
   "Gain",
+  "AllPass",
+  "TransferShaper",
 ] as const satisfies readonly BuiltinEffectType[];
 
 export const EFFECT_LABELS: Record<BuiltinEffectType, string> = {
@@ -69,7 +75,12 @@ export const EFFECT_LABELS: Record<BuiltinEffectType, string> = {
   Flanger: "Flanger",
   Phaser: "Phaser",
   StereoWidth: "Stereo width",
+  StereoMatrix: "Stereo Matrix",
+  FrequencyShift: "Frequency Shifter",
+  Vocoder: DEVICE_CATALOG.devices.find((device) => device.id === "vocoder")?.name ?? "vocoder",
   Gain: "Gain",
+  AllPass: "All-pass",
+  TransferShaper: "Transfer Shaper",
 };
 
 /** A built-in effect's display label; a plugin keeps its own id. */

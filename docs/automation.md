@@ -9,9 +9,150 @@ time. There are three lane forms, and they differ in what they drive:
 | `automation:` effect lane | track, bus, master | one parameter of one effect in that owner's chain | per-block graph wrapper |
 | `gain_automation:` clip | track, bus, master | post-insert linear gain | sample-accurate gain stage |
 
+For a scoped `automation:` clip, `playlist_lane=3` shows the clip in playlist
+row 3. A `gain_automation:` clip takes the same attribute after its time range.
+The clip keeps its track, bus or master target.
+
 Most of this page is about effect lanes. Control lanes are described in
 [The .ocp file](manual/dsl.md) and gain clips in
 [Mixer routing](mixer-routing.md).
+
+## Insert controls
+
+Every track, bus and master insert has its own wet level, from zero to full
+wet. Set the starting level with `slot/wet` in the effect declaration. A lane
+can drive the same control with normalized values or percentages. The insert
+mixes the effect output with a latency-aligned copy of its input, so the
+device's own Mix parameter remains independently adjustable.
+
+```ocp
+@bus motion
+  effects:
+    - gain: factor=2, slot/wet=25%, bypass=true
+  automation: fx1.slot/enabled {1:2=true, 3:1=false}
+  automation: fx1.slot/wet {1:2=25%, 2:1=100%}
+```
+
+The enable lane holds each switch value until the next anchor. An animated
+insert keeps its device running when it outputs dry audio. This preserves its
+history and keeps compensation fixed as the switch moves. A static
+`bypass=true` without an active enable lane leaves the device unloaded.
+
+## Compact exponential segments
+
+A segment can store its analytic curvature instead of a dense list of linear
+samples. Its coefficient belongs to its outgoing anchor:
+
+```ocp
+@bus motion
+  effects:
+    - gain: factor=1
+  automation: gain.factor {1:1=0.2 curve=exponential curvature=-4, 3:1=0.8}
+```
+
+For progress `u` in `[0,1]`, the shape is
+`E(k,u) = expm1(k*u) / expm1(k)`. At `k=0`, it is exactly `u`.
+Positive coefficients accelerate towards the destination; negative coefficients
+move earlier. The schema owns the finite coefficient range, currently `[-64,64]`.
+The existing `smooth` curve and its `tension` retain their previous meaning.
+An omitted curvature is zero; supplying curvature on another curve is invalid.
+
+A mirrored exponential uses three anchors: one at each endpoint and one at the
+midpoint. Give the first half coefficient `k` and the second half `-k`.
+Restriction to a fraction `[a,b]` of an exponential segment is exact with the
+sampled endpoint values and coefficient `k*(b-a)`; a crop crossing a mirrored
+midpoint keeps that midpoint. No stored phase window or dense approximation is
+needed. Source-format importers must translate incoming/outgoing anchor
+conventions before storing these segments.
+
+Effect lanes and encoded hosted-instrument parameter lanes support exponential
+segments. Other instrument/MIDI lanes refuse them. A `gain_automation:` clip
+requires the explicit `segments` interpolation described below; legacy `linear`
+and `step` gain modes retain their previous behavior.
+
+### Explicit discontinuities
+
+An envelope or repeating LFO lane can opt into `discontinuities` before its points. Coincident
+knots retain their authored order: the first knot is the preceding segment's
+left limit and the final knot is the value written at that sample. This stores
+an instantaneous jump without adding another lane or a fictitious one-tick ramp.
+The renderer selects the rightmost knot at an exact sample and never divides by
+a zero-length segment. Without the flag, existing lane behavior is unchanged.
+Use a repeating lane to store one cycle of rhythmic gain:
+
+```ocp
+@bus rhythm
+  effects:
+    - gain: factor=1
+  automation: fx1.factor [1:1 - 9:1] mode=lfo speed=1/2 discontinuities {1:1=1, 1:2=0, 1:2=1, 1:3=1}
+```
+
+Here each half note repeats the same fade and jump. You can change the rhythm
+by editing the four cycle points once. The cycle follows tempo changes and
+keeps the same phase when you seek. An exclusive clip-end reset still needs an
+explicit write at that boundary; the flag does not extend a clip's write span.
+
+Automate the Gain device's `mix` to vary the cycle's depth independently.
+At `mix=0` the input passes through unchanged. At `mix=1` the full gain
+applies. Intermediate values blend the two linearly. Gain defaults to full
+mix, so existing projects retain their levels.
+
+### Analytic post-insert gain clips
+
+`gain_automation: segments` explicitly selects the same prepared segment evaluator
+for a post-insert gain stage. Existing `linear` and `step` clips keep their legacy
+interpretation and refuse mappings or the discontinuity flag.
+
+```ocp
+@bus level
+  gain_automation: segments ppq=48 [1:1 - 3:1] discontinuities mapping(exponential, curvature=2, input_quantization_steps=128) {1:1=0.2 curve=exponential curvature=-3, 2:1=0.8, 2:1=0.4, 3:1=1}
+```
+
+The clip multiplies audio after its insert effects and before the separate static
+fader. It returns unity outside its exclusive range. Original anchors outside a
+segment clip's range remain interpolation context, not additional writes. Without
+a mapping its numeric anchors are physical linear gains; with one they are raw
+receiver inputs and the mapped result must remain in the gain owner's range.
+The device catalog owns that range. Touch arbitration, seek and block partition
+semantics are unchanged; no dense control-point table is prepared.
+
+### Numeric receiver mappings
+
+An optional `input_quantization_steps=N` maps the transfer input to
+`floor(value*N)/N` before the transfer. The schema permits positive integer steps
+from 1 to 1,000,000. Negative inputs use mathematical floor without clamping.
+Preparation rejects nonfinite products and transformed values outside the target
+range. Omit this field for the previous continuous-input behavior.
+
+An effect lane can apply one compact value transfer after interpolation and
+any LFO depth. The transfer produces a value in the recipient's unit before
+the lane's smoother runs.
+
+```ocp
+@bus blend
+  effects:
+    - gain: factor=1
+  automation: gain.factor mapping(linear, scale=-1, offset=1) {1:1=0, 3:1=1}
+```
+
+`mapping(linear, scale=s, offset=o)` computes `o+s*v`.
+`mapping(exponential, curvature=k, scale=s, offset=o)` computes `o+s*E(k,v)`.
+Defaults are linear, zero curvature, unit scale, and zero offset. Negative scale
+supports complementary controls; zero scale is a valid constant transfer but
+cannot be inverted by a point-drag gesture.
+
+Mapped lanes require unitless numeric anchors and effect recipients. The curve
+interpolates the raw anchors, then applies the mapping to produce values such
+as Hz or dB. The prepared curve validates finite mapped extrema, including LFO
+depth, against the recipient's range. The schema bounds exponential arguments
+and reports overflows or unsupported inputs as errors.
+
+Splitting a mapped lane samples its **unmapped** seam anchor and retains the
+mapping on both halves. Exponential coefficients are restricted with each half's
+fraction, so mapping is applied once. Time remains governed by ProjectClock's
+sample quantization; no arbitrary timing shift is introduced. Ranged clips
+still stop writing at their exclusive end, and duplicate sample positions retain
+the final authored write rather than creating a fabricated interpolated ramp.
 
 ## Effect lanes
 
@@ -60,6 +201,67 @@ plugin effect, the plugin matches the parameter name with case and punctuation
 ignored, and the value is passed in the plugin's plain domain, the same domain
 the `effects:` entry uses. A plugin parameter that does not exist or cannot be
 automated produces no change.
+
+### Moving delay read positions
+
+Enable `interpolate=true` on a delay when a time curve should scan its
+buffer continuously. This is useful for tape slowdown, pitch sweeps, and
+moving between earlier beats of an input loop. Set both channels to the same
+curve for stereo-linked motion and set feedback to zero when you only want
+to replay the input. For example:
+
+```ocp
+@bus motion
+  effects:
+    - delay: time_l=1ms, time_r=1ms, feedback=0%, mix=100%, interpolate=true
+  automation: fx1.time_l {1:1=1ms, 1:2=126ms}
+  automation: fx1.time_r {1:1=1ms, 1:2=126ms}
+```
+
+The delay holds up to two seconds of audio. A jump between taps jumps in the
+audio too, so use a short ramp when that transition should be smooth. Use
+`gain_automation:` for a separate rhythmic level curve. Existing delay
+patches keep integer-sample taps by default.
+
+For tempo-synced echoes, set `tempo_sync=true` and write `quarters_l` and
+`quarters_r` as fractions of a quarter note. The taps follow tempo changes.
+Each tap holds at most two seconds. A delay used without a transport assumes
+120 BPM.
+
+```ocp
+@bus echoes
+  effects:
+    - delay: tempo_sync=true, quarters_l=0.75, quarters_r=0.75, routing=ping_pong, feedback=45%, feedback_filter=low_pass, feedback_cutoff=2400Hz, mix=100%
+```
+
+Stereo keeps independent channels. Mono averages the input before the two
+taps. Swapped exchanges the wet outputs. Ping Pong exchanges the feedback
+channels, so the first echo stays on its input side and later echoes alternate.
+The feedback filter shapes later echoes after the first tap. Use `dry_gain`
+and `wet_gain` to scale their respective Mix outputs. For independently set
+dry and wet levels, start at `mix=50%` and set each gain to twice its desired
+output level.
+
+## Saved plugin effect state
+
+An external insert accepts `state_hex` (or the format-specific
+`vst3_state_hex`, `vst2_state_hex`, `clap_state_hex`, `au_state_hex` or
+`lv2_state_hex`) as a quoted hexadecimal string. It restores the plugin's
+opaque state before applying numeric control overrides. This preserves settings
+that the plugin does not expose as numeric parameters, such as custom curves.
+State aliases share one last-write-wins value. The instrument preset's bounded
+decoder and identity/integrity envelope checks also apply to inserts.
+
+Use `state_file` or the corresponding format-specific `*_state_file` to keep a
+large state in a separate file. Relative paths resolve from the project
+directory. Save As collects these files with the other project media. Missing
+files, corrupt state, and native restore failures stop the render and identify
+the affected insert.
+
+For VST3, `vst3_state_file` also accepts a `.vstpreset` file for the selected
+plugin class. OpenCompose restores its processor state before applying the
+project's parameter overrides. A plugin that supports separate controller state
+also receives its saved controller settings.
 
 ## Time and value domain
 
@@ -308,15 +510,16 @@ Rules for each gesture:
   within 64 bars of the request, or another lane drives the target over the
   whole timeline, the copy is refused and the message names that window.
 - Split needs a position strictly inside the span and at least one block grid
-  step (a 16th note) from either edge. The left lane keeps the head and gets a
-  closing point at the seam that holds the value the whole clip wrote there. The
-  right lane starts at the seam with that same value as its first point, so the
-  curve stays continuous. The right lane keeps every point at or after the seam,
-  the left lane keeps every point before it, and the right lane is inserted
-  directly after the left one. The seam value is interpolated in the point
-  list's units, because those are the units a point carries. A waveform
-  (`mode=lfo`) lane is refused: its points describe one cycle, and each half
-  would restart that cycle at its own head.
+  step (a 16th note) from either edge. Both halves keep every original point,
+  unit and coefficient, including points that share a position; only their
+  spans change. The left span ends at the seam and the right span starts there,
+  so every sample keeps its value at any sample rate and through tempo changes,
+  and no point is added at the seam. Points outside a half's span still shape
+  its curve. The right lane is inserted directly after the left one. Moving a
+  half is refused, with nothing changed, if it would push one of its points
+  before the start of the project; no point is dropped or resampled. A waveform
+  (`mode=lfo`) lane is refused: each half would restart its cycle at its own
+  head.
 - Delete removes a lane that has a span. A whole-timeline lane is not a clip, so
   the clip gestures refuse it and say why. To delete it, use
   `remove_automation_lane`, which removes either form as one undo entry.
@@ -387,22 +590,73 @@ formula and its own smoothing time.
   from: cc(74)
   -> track: lead param: filter.cutoff formula: midi_unit smoothing: 8ms
   -> track: lead param: output.gain formula: exponential
-
-@control_link pad_macro
-  from: macro(3)
-  -> track: pad param: filter.resonance formula: logarithmic smoothing: 40ms
 ```
 
 `from:` accepts three sources:
 
 - `cc(controller[, channel])`, with a one-based channel that defaults to 1;
-- `macro(index)`, with an index from 1 to 8;
+- `macro(index, preset)`, macro 1 to 8 of a named OpenSynth preset;
 - `lane(track, param)`, which reads the normalized value of one registered
   automation lane.
 
 A target names a `track` and a `param`. `param` is an engine parameter key or a
 hosted plugin parameter name; quote it when it contains spaces. `smoothing:` is
 optional and in milliseconds.
+
+In a lane link, `param: fx1.ParameterName` targets a mixer effect, and
+`track:` names the track or bus that owns it. One recorded motion can, for
+example, drive inserts on two parallel returns:
+
+```ocp
+@control_link echo_feedback
+  from: lane(feedback_control, "fx1.factor")
+  -> track: echo_left param: fx1.Feedback formula: linear
+  -> track: echo_right param: fx1.Feedback formula: linear
+```
+
+The target receives a value in its effect's automation range: 0 to 1 for
+hosted effects. For a built-in parameter in a physical unit, add the same
+`mapping(...)` an automation lane takes. The mapping runs after the formula
+and before the target's smoothing. This link spans an EQ's frequency range:
+
+```ocp
+@control_link brightness
+  from: lane(brightness_control, "fx1.factor")
+  -> track: return param: fx1.high_cut_freq formula: linear mapping(exponential, curvature=6.907755278982137, scale=19980, offset=20)
+```
+
+A destination takes either one link or its own automation, not both. The graph
+checks the mapped range and refuses a second writer.
+
+During desktop playback, a CC from a MIDI input can drive the same mixer
+controls. Here CC 74 on channel 2 raises the first insert's gain on `lead`
+while lowering it on `return`:
+
+```ocp
+@control_link crossfade
+  from: cc(74, 2)
+  -> track: lead param: fx1.factor formula: midi_unit
+  -> track: return param: fx1.factor formula: inverted
+```
+
+A named OpenSynth preset can hold the controls for a rack. The link reads the
+preset's saved macro, including inherited values and patch files:
+
+```ocp
+@preset RackControls
+  source: builtin
+  plugin: "builtin.open_synth"
+  params: {macro.8: 0.25}
+
+@control_link feedback
+  from: macro(8, RackControls)
+  -> track: echo_left param: fx1.Feedback formula: linear
+  -> track: echo_right param: fx1.Feedback formula: linear
+```
+
+To change the value, edit the macro in that preset or in its `params:`. For a
+control that changes over time, use a `lane(track, param)` source. A
+`macro(index)` link without a preset still loads and keeps its spelling.
 
 The single-target spelling `target: track: ...` still parses and loads as a
 link with one target. A JSON `target` field is merged into `targets` in the same
@@ -428,16 +682,17 @@ normalized position, which for a CC is `raw / 127`.
 
 ### Smoothing
 
-Each target is smoothed on its own by a one-pole filter over the block:
+Each target is smoothed on its own by a one-pole filter. Effect lane links
+move the target every sample, after the source lane's smoothing and the
+target's formula:
 
 ```
 coefficient = 1 - exp(-frames / (seconds * sample_rate))
 value += (goal - value) * coefficient
 ```
 
-At `0 ms` the coefficient is 1, so the value jumps straight to the goal, and a
-link without smoothing steps like a lane without smoothing. One time constant
-covers 63.2% of the remaining distance.
+At `0 ms` the coefficient is 1, so the target takes the mapped value at once.
+One time constant covers 63.2% of the remaining distance.
 
 ### Learn and last tweaked
 
@@ -450,11 +705,20 @@ last, so **+ last** binds it to an existing control in one action, and
 
 ### Limits
 
-- Links are headless data with a runtime in `oc-engine::control_link`. Live
-  MIDI CC input is not yet dispatched into the playback graph.
-- A target's smoothing runs at the rate the caller advances it. The runtime is
-  block-based, so the smoothing time does not depend on the block size.
-- Link rows are not exported to MIDI and do not create automation lanes.
+- Effect lane links run in both export and playback. The source stays one
+  editable lane.
+- While the desktop app monitors a MIDI input, a CC link can drive track and
+  bus insert parameters. Each block reads each controller once for all
+  targets. The written value holds until the first matching CC arrives, and
+  each target can smooth the changes after it. Offline renders use the written
+  values and automation.
+- Named preset macros run in desktop playback and export. During playback,
+  dragging a macro previews the linked values; releasing saves the value as one
+  edit, and cancelling restores it. Saving a preset that only serves as a rack
+  control keeps the playing graph, with its delay and reverb tails. Export
+  always reads the saved preset. Per-voice modulation stays inside the synth.
+- Link rows are not exported to MIDI and do not create automation lanes; MIDI
+  export takes its events from the written MIDI and automation lanes.
 
 ## Touch override
 

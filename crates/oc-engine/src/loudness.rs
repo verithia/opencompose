@@ -385,6 +385,12 @@ fn rms_dbfs(buffer: &[f32]) -> Option<f64> {
 /// Content digest of a preset: every field that can move its level, and
 /// nothing else. The name and `extends` are browsing or resolution identity,
 /// so two projects that carry the same patch share one measurement.
+/// The authoritative calibration identity without measuring or loading a patch.
+/// Render plans use the same identity as the trim owner, including preset FX.
+pub(crate) fn normalization_identity(preset: &PresetDef) -> [u8; 16] {
+    preset_key(preset)
+}
+
 fn preset_key(preset: &PresetDef) -> TrimKey {
     fn text(hash: &mut Md5, value: &str) {
         hash.update((value.len() as u64).to_le_bytes());

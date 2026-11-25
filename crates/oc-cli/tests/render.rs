@@ -26,5 +26,8 @@ mod render_format;
 #[path = "suite/project_snapshots.rs"]
 mod project_snapshots;
 
+#[path = "suite/render_stages.rs"]
+mod render_stages;
+
 #[path = "suite/simd_identity.rs"]
 mod simd_identity;

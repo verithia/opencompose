@@ -22,6 +22,7 @@ schemars = { version = "0.8.22", optional = true }
 
 [features]
 json-schema = ["dep:schemars"]
+perf-tests = []
 
 [[example]]
 name = "pgen_project_schema"

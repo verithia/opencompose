@@ -121,6 +121,22 @@ describe("ControlLinkEditor", () => {
     expect(container.querySelector(".control-link-source")?.textContent).toBe("CC 74");
   });
 
+  it("identifies the source preset for a named macro and offers normalized formulas", async () => {
+    project.properties.control_links = [{
+      name: "feedback",
+      source: { kind: "preset_macro", preset: "Lead", index: 8 },
+      targets: [{ track: "Lead", param: "fx1.factor", formula: "linear", smoothing_ms: 10 }],
+    }];
+    await store.initProject();
+    const { container } = renderEditor();
+    expand(container);
+    expect(container.querySelector(".control-link-source")?.textContent).toBe("Lead · Macro 8");
+    const formulas = [...container.querySelectorAll(".control-link-row select option")]
+      .map((option) => (option as HTMLOptionElement).value);
+    expect(formulas).toContain("inverted");
+    expect(formulas).not.toContain("midi_unit");
+  });
+
   it("retunes one row's formula and smoothing without touching the other", async () => {
     const { container } = renderEditor();
     expand(container);

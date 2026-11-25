@@ -580,12 +580,14 @@ fn ramp(
         .iter()
         .zip(positions.iter())
         .map(|(beat, position)| AutomationPoint {
+            curvature: None,
             position: *position,
             value: gain((beat - mark.beat) / (end - mark.beat)),
             curve: crate::ast::Curve::Linear,
             tension: None,
         })
         .chain(std::iter::once(AutomationPoint {
+            curvature: None,
             position: end_position,
             value: gain(1.0),
             curve: crate::ast::Curve::Linear,
@@ -593,6 +595,9 @@ fn ramp(
         }))
         .collect();
     Ok(GainAutomation {
+        playlist_lane: None,
+        value_mapping: None,
+        preserve_discontinuities: false,
         time_range: TimeRange {
             start: positions[0],
             end: *positions.last().expect("a ramp has an end"),

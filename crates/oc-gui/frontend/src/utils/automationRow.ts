@@ -10,6 +10,7 @@ import type {
   AutomationCurve,
   AutomationLane,
   AutomationPoint,
+  AutomationValueMapping,
   BarBeat,
   Effect,
   ParamValue,
@@ -117,7 +118,10 @@ export function laneDomain(lane: AutomationLane, effects?: Effect[]): LaneDomain
   const target = laneTargetDomain(lane, effects);
   if (target) return target;
   const values = lane.points
-    .map((point) => pointValue(point.value))
+    .map((point) => {
+      const value = pointValue(point.value);
+      return value === null ? null : mappedAutomationValue(value, lane.value_mapping);
+    })
     .filter((value): value is number => value !== null);
   if (values.length === 0) return { min: 0, max: 1 };
   const low = Math.min(...values);
@@ -150,11 +154,55 @@ export function pointXY(
   pxPerBeat: number,
   domain: LaneDomain,
   height: number,
+  mapping?: AutomationValueMapping,
 ): { x: number; y: number } {
   return {
     x: quarterAt(point.position) * pxPerBeat,
-    y: valueToY(pointValue(point.value) ?? domain.min, domain, height),
+    y: valueToY(mappedAutomationValue(pointValue(point.value) ?? domain.min, mapping), domain, height),
   };
+}
+
+/** The mathematical coefficient belongs to the authored segment, not its units. */
+export function exponentialShape(position: number, curvature: number): number {
+  if (curvature === 0 || position === 0 || position === 1) return position;
+  // Relative factors preserve the result when the exponent product underflows.
+  if (Math.abs(curvature) < Number.MIN_VALUE / Number.EPSILON) {
+    const argument = curvature * position;
+    const relative = argument === 0 ? 1 : Math.expm1(argument) / argument;
+    return position * relative * (curvature / Math.expm1(curvature));
+  }
+  return Math.expm1(curvature * position) / Math.expm1(curvature);
+}
+
+/** A lane transfers the interpolated recipient-domain value, not its anchors. */
+export function mappedAutomationValue(value: number, mapping?: AutomationValueMapping): number {
+  if (!mapping) return value;
+  const input = mapping.input_quantization_steps === undefined ? value : Math.floor(value * mapping.input_quantization_steps) / mapping.input_quantization_steps;
+  const shaped = mapping.curve === "exponential" ? exponentialShape(input, mapping.curvature ?? 0) : input;
+  return (mapping.offset ?? 0) + (mapping.scale ?? 1) * shaped;
+}
+
+/** Invert a displayed mapped height before writing the authored anchor. */
+export function unmappedAutomationValue(value: number, mapping?: AutomationValueMapping): number | null {
+  if (!mapping) return value;
+  if (mapping.input_quantization_steps !== undefined) return null;
+  const scale = mapping.scale ?? 1;
+  if (scale === 0) return null;
+  const shaped = (value - (mapping.offset ?? 0)) / scale;
+  const curvature = mapping.curvature ?? 0;
+  let result = shaped;
+  if (mapping.curve === "exponential" && curvature !== 0 && shaped !== 0 && shaped !== 1) {
+    const denominator = Math.expm1(curvature);
+    // The inverse uses log1p-relative factors for the same subnormal domain.
+    if (Math.abs(curvature) < Number.MIN_VALUE / Number.EPSILON) {
+      const argument = shaped * denominator;
+      const relative = argument === 0 ? 1 : Math.log1p(argument) / argument;
+      result = shaped * relative * (denominator / curvature);
+    } else {
+      result = Math.log1p(shaped * denominator) / curvature;
+    }
+  }
+  return Number.isFinite(result) ? result : null;
 }
 
 /**
@@ -162,8 +210,10 @@ export function pointXY(
  * segment holds its value, a half sine is a half-sine ease, and a smooth
  * segment blends towards a smoothstep by `tension` (1 by default).
  */
-function segmentShape(curve: AutomationCurve, tension: number, position: number): number {
+function segmentShape(curve: AutomationCurve, tension: number, position: number, curvature: number): number {
   switch (curve) {
+    case "exponential":
+      return exponentialShape(position, curvature);
     case "stairs":
       return 0;
     case "half_sine":
@@ -185,11 +235,12 @@ interface LaneVertex {
   value: number | null;
   curve: AutomationCurve;
   tension: number;
+  curvature: number;
 }
 
 /** The lane's points as drawn vertices, ordered by x. */
 function laneVertices(
-  lane: AutomationLane,
+  lane: Pick<AutomationLane, "points" | "value_mapping">,
   quarterAt: (position: BarBeat) => number,
   pxPerBeat: number,
   domain: LaneDomain,
@@ -200,10 +251,11 @@ function laneVertices(
       const value = pointValue(point.value);
       return {
         x: quarterAt(point.position) * pxPerBeat,
-        y: valueToY(value ?? domain.min, domain, height),
+        y: valueToY(mappedAutomationValue(value ?? domain.min, lane.value_mapping), domain, height),
         value,
         curve: point.curve ?? "linear",
         tension: point.tension ?? 1,
+        curvature: point.curvature ?? 0,
       };
     })
     .sort((a, b) => a.x - b.x);
@@ -216,7 +268,7 @@ function laneVertices(
  * folds back on itself.
  */
 export function lanePolyline(
-  lane: AutomationLane,
+  lane: Pick<AutomationLane, "points" | "value_mapping">,
   quarterAt: (position: BarBeat) => number,
   pxPerBeat: number,
   domain: LaneDomain,
@@ -230,18 +282,52 @@ export function lanePolyline(
     const next = vertices[index + 1];
     // A missing neighbour or a non-numeric height leaves a straight segment.
     if (!next || point.value === null || next.value === null) continue;
-    if (point.curve === "linear" || next.x <= point.x) continue;
+    if (next.x <= point.x) continue;
+    if (point.curve === "linear" && lane.value_mapping?.curve !== "exponential" && lane.value_mapping?.input_quantization_steps === undefined) continue;
     if (point.curve === "stairs") {
       // Hold the value across the segment, then jump at its end.
       push(next.x, point.y);
       continue;
     }
+    const quantization = lane.value_mapping?.input_quantization_steps;
+    if (quantization !== undefined && next.value !== point.value) {
+      const first = Math.floor(Math.min(point.value, next.value) * quantization) + 1;
+      const last = Math.floor(Math.max(point.value, next.value) * quantization);
+      // Draw resolvable quantizer transitions without persisting sampled knots.
+      if (last - first < 512) {
+        const thresholds = Array.from({length: Math.max(0, last - first + 1)}, (_,i)=>first+i);
+        if (next.value < point.value) thresholds.reverse();
+        const mapping = {...lane.value_mapping!, input_quantization_steps: undefined};
+        const descending = next.value < point.value;
+        if (descending && Number.isInteger(point.value * quantization)) {
+          push(point.x, valueToY(mappedAutomationValue((point.value * quantization - 1) / quantization, mapping), domain, height));
+        }
+        for (const threshold of thresholds) {
+          const ratio = (threshold / quantization - point.value) / (next.value - point.value);
+          if (!(ratio > 0 && ratio < 1)) continue;
+          let lo = 0, hi = 1;
+          for (let iteration = 0; iteration < 40; iteration++) {
+            const middle = (lo + hi) * .5;
+            if (segmentShape(point.curve, point.tension, middle, point.curvature) < ratio) lo = middle;
+            else hi = middle;
+          }
+          const x = point.x + (next.x - point.x) * (lo + hi) * .5;
+          const before = (threshold - (next.value > point.value ? 1 : 0)) / quantization;
+          const after = (threshold - (next.value > point.value ? 0 : 1)) / quantization;
+          push(x, valueToY(mappedAutomationValue(before, mapping), domain, height));
+          push(x, valueToY(mappedAutomationValue(after, mapping), domain, height));
+        }
+        const endBucket = Math.floor(next.value * quantization) - (!descending && Number.isInteger(next.value * quantization) ? 1 : 0);
+        push(next.x, valueToY(mappedAutomationValue(endBucket / quantization, mapping), domain, height));
+        continue;
+      }
+    }
     for (let sample = 1; sample < CURVE_SEGMENT_SAMPLES; sample += 1) {
       const progress = sample / CURVE_SEGMENT_SAMPLES;
       const value =
         point.value +
-        (next.value - point.value) * segmentShape(point.curve, point.tension, progress);
-      push(point.x + (next.x - point.x) * progress, valueToY(value, domain, height));
+        (next.value - point.value) * segmentShape(point.curve, point.tension, progress, point.curvature);
+      push(point.x + (next.x - point.x) * progress, valueToY(mappedAutomationValue(value, lane.value_mapping), domain, height));
     }
   }
   return drawn.join(" ");

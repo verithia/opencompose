@@ -83,6 +83,36 @@ fn an_effect_lane_answers_the_device_value_at_the_beat() {
 }
 
 #[test]
+fn mapped_cutoff_edits_store_raw_anchors_and_show_hertz() {
+    let mut inner = playing(
+        "@project\n  tempo: 120\n@track tone | instrument: synth/lead\n  effects:\n    - dynamic_eq: band12_enabled=true\n  automation: fx1.band12_freq mapping(linear, scale=1000, offset=20) {1:1=0, 1:2=1}\n",
+    );
+    let lane = "fx1.band12_freq";
+    let (value, domain, _) = driven(&readout(&inner, "track:0", lane, 0.5));
+    assert_eq!(value, 520.0);
+    assert_eq!(domain, AutomationDomain::Device);
+
+    crate::commands::fx::apply_add_point(&mut inner.project, "track:0", lane, None, 0.5, 0.25)
+        .unwrap();
+    let (value, _, _) = driven(&readout(&inner, "track:0", lane, 0.5));
+    assert_eq!(value, 270.0);
+    let original = inner.project.tracks[0]
+        .automation()
+        .next()
+        .unwrap()
+        .points
+        .clone();
+    assert!(
+        crate::commands::fx::apply_add_point(&mut inner.project, "track:0", lane, None, 0.75, -1.0)
+            .is_err()
+    );
+    assert_eq!(
+        inner.project.tracks[0].automation().next().unwrap().points,
+        original
+    );
+}
+
+#[test]
 fn a_synth_lane_answers_the_normalized_position() {
     let inner = playing(&format!(
         "@project \"auto\"\n  tempo: 120\n@preset synth\n  source: builtin\n  plugin: \"builtin.open_synth\"\n@track lead | preset: synth, instrument: synth/lead\n  automation: {} {{1:1:0=0.2, 1:2:0=0.8}}\n",
@@ -527,4 +557,162 @@ fn a_point_outside_the_device_range_is_refused_with_the_range() {
         ast::ParamValue::Db(-6.0),
         "a dB lane keeps its unit"
     );
+}
+
+#[test]
+fn exponential_coefficient_edit_rejects_invalid_input_without_losing_previous_shape() {
+    let mut project=oc_dsl::parse("@project\n@track t | instrument: synth/keys\n  effects:\n    - gain: factor=1\n  automation: gain.factor {1:1=0 curve=exponential curvature=-4, 2:1=1}\n").unwrap();
+    let before = project.clone();
+    assert!(
+        crate::commands::fx::apply_lane_point_curve_with_curvature(
+            &mut project,
+            "track:0",
+            "gain.factor",
+            Some(0),
+            0,
+            crate::commands::fx::PointCurveShape {
+                curve: ast::Curve::Exponential,
+                tension: None,
+                curvature: Some(f64::NAN),
+            }
+        )
+        .is_err()
+    );
+    assert_eq!(project, before);
+    crate::commands::fx::apply_lane_point_curve_with_curvature(
+        &mut project,
+        "track:0",
+        "gain.factor",
+        Some(0),
+        0,
+        crate::commands::fx::PointCurveShape {
+            curve: ast::Curve::Exponential,
+            tension: None,
+            curvature: Some(3.0),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        project.tracks[0].automation().next().unwrap().points[0].curvature,
+        Some(3.0)
+    );
+    crate::commands::fx::apply_lane_point_curve(
+        &mut project,
+        "track:0",
+        "gain.factor",
+        Some(0),
+        0,
+        "linear",
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        project.tracks[0].automation().next().unwrap().points[0].curvature,
+        None
+    );
+}
+
+const HIGH_PPQ: &str = "@project\n  time_signature: 7/8\n  time_sig_map:\n    3:1 = 3/4\n@track t | instrument: synth/keys\n  effects:\n    - gain: factor=1\n  automation: gain.factor [ppq=96000] {1:1=0, 1:1:24000=0.25 curve=exponential curvature=-4, 1:2=0.5, 1:2:24000=0.75}\n";
+
+#[test]
+fn high_ppq_point_add_orders_on_ticks_and_move_preserves_original_index_across_meter() {
+    let mut inner = state(HIGH_PPQ);
+    let before = inner.project.clone();
+    add_automation_point_inner(&mut inner, "track:0", EFFECT_LANE, Some(0), 0.625, 0.6).unwrap();
+    let points = &lane(&inner, 0).points;
+    assert_eq!(points[3].position, ast::BarBeat::new(1, 2, 12_000));
+    assert_eq!(
+        points[1],
+        before.tracks[0].automation().next().unwrap().points[1]
+    );
+    assert_eq!(inner.undo.undo_entries().len(), 1);
+
+    let before_move = inner.project.clone();
+    move_automation_point_inner(
+        &mut inner,
+        "track:0",
+        EFFECT_LANE,
+        Some(0),
+        1,
+        7.0 + 48_001.0 / 96_000.0,
+        0.4,
+    )
+    .unwrap();
+    let points = &lane(&inner, 0).points;
+    assert_eq!(points[1].position, ast::BarBeat::new(3, 1, 48_001));
+    assert_eq!(points[1].curvature, Some(-4.0));
+    for index in [0, 2, 3, 4] {
+        assert_eq!(
+            points[index],
+            before_move.tracks[0].automation().next().unwrap().points[index]
+        );
+    }
+    assert_eq!(inner.undo.undo_entries().len(), 2);
+    inner.undo.undo(&mut inner.project).unwrap();
+    assert_eq!(inner.project, before_move);
+    inner.undo.undo(&mut inner.project).unwrap();
+    assert_eq!(inner.project, before);
+}
+
+#[test]
+fn high_ppq_point_refusals_keep_project_and_undo_atomic() {
+    for add in [true, false] {
+        let mut inner = state(HIGH_PPQ);
+        let before = inner.project.clone();
+        let quarter = 1.0 / (96_000.0 * 3.0);
+        let result = if add {
+            add_automation_point_inner(&mut inner, "track:0", EFFECT_LANE, Some(0), quarter, 0.5)
+        } else {
+            move_automation_point_inner(
+                &mut inner,
+                "track:0",
+                EFFECT_LANE,
+                Some(0),
+                1,
+                quarter,
+                0.5,
+            )
+        };
+        assert!(result.is_err());
+        assert_eq!(inner.project, before);
+        assert!(inner.undo.undo_entries().is_empty());
+    }
+}
+
+#[test]
+fn add_after_cross_neighbor_move_keeps_original_relative_order_and_jump_right_limit() {
+    let mut inner = state(
+        "@project\n  tempo: 120\n@track t | instrument: synth/keys\n  effects:\n    - gain: factor=1\n  automation: gain.factor discontinuities {1:1=0, 1:2=0.25, 1:3=0.5, 2:1=1}\n",
+    );
+    // The point keeps its identity while moving beyond its original neighbour.
+    move_automation_point_inner(&mut inner, "track:0", EFFECT_LANE, Some(0), 1, 3.0, 0.25).unwrap();
+    let moved = lane(&inner, 0).points.clone();
+    assert_eq!(moved[1].position, ast::BarBeat::new(1, 4, 0));
+    assert_eq!(moved[2].position, ast::BarBeat::new(1, 3, 0));
+
+    add_automation_point_inner(&mut inner, "track:0", EFFECT_LANE, Some(0), 3.0, 0.9).unwrap();
+    let updated = lane(&inner, 0);
+    assert_eq!(updated.points[1].position, ast::BarBeat::new(1, 4, 0));
+    assert_eq!(updated.points[1].value, ast::ParamValue::Number(0.9));
+    let original_order: Vec<_> = updated
+        .points
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| *index != 1)
+        .map(|(_, point)| point.clone())
+        .collect();
+    assert_eq!(original_order, moved);
+
+    let clock = oc_dsl::timing::ProjectClock::new(&inner.project.properties).unwrap();
+    let curve = oc_dsl::automation::LaneCurve::new(updated, &clock, 100, |value| {
+        value.as_f64().ok_or_else(|| "not numeric".to_string())
+    })
+    .unwrap();
+    // At 120 BPM/100 Hz, quarter3 is sample150: the new knot is the left
+    // limit, while the authored coincident knot retains the rightmost write.
+    assert!((curve.envelope_value(150.0 - 1e-6).unwrap() - 0.9).abs() < 1e-6);
+    assert_eq!(curve.envelope_value(150.0), Some(0.25));
+    assert_eq!(inner.undo.undo_entries().len(), 2);
+    inner.undo.undo(&mut inner.project).unwrap();
+    assert_eq!(lane(&inner, 0).points, moved);
 }

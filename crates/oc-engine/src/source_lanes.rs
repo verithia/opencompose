@@ -8,10 +8,14 @@
 //! for live input, and performance command streams remain atomic.
 
 mod processing;
+#[cfg(feature = "plugin-host")]
+mod source_inserts;
+#[cfg(feature = "plugin-host")]
+pub(crate) use source_inserts::{SourceInsertLanes, SourceInsertOptions, process_source_inserts};
 
 #[cfg(feature = "plugin-host")]
 pub(crate) use processing::align;
-pub use processing::effect_chain;
+pub use processing::{effect_chain, effect_chain_with_resources};
 
 use std::borrow::Cow;
 
@@ -49,7 +53,7 @@ pub fn plan(project: &Project) -> Result<LanePlan<'_>, String> {
         let start = tracks.len();
         let mut base = track.clone();
         base.effects.clear();
-        if track.performance.is_some() {
+        if track.performance.is_some() || track.instrument.is_midi_only() {
             tracks.push(base);
             targets.push(target);
             continue;
@@ -200,6 +204,9 @@ pub fn effects(project: &Project, lane: &Track) -> Vec<Effect> {
 /// Refuse missing authored presets before allocating source audio. Injected
 /// factory defaults are inherited host choices and are not authored references.
 pub fn validate(project: &Project) -> Result<(), String> {
+    for track in &project.tracks {
+        oc_dsl::instruments::validate_midi_only_source(project, track)?;
+    }
     for pattern in project.patterns.iter().chain(
         project
             .tracks

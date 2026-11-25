@@ -38,6 +38,11 @@ export const DEVICE_IDS = {
   Gate: "gate",
   Saturator: "saturator",
   StereoWidth: "stereo_width",
+  StereoMatrix: "stereo-matrix",
+  FrequencyShift: "frequency-shift",
+  Vocoder: "vocoder",
+  AllPass: "allpass",
+  TransferShaper: "transfer-shaper",
 } as const satisfies Record<BuiltinEffectType, string>;
 
 export type DeviceId = (typeof DEVICE_IDS)[BuiltinEffectType];

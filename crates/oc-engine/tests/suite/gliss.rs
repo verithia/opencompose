@@ -340,10 +340,22 @@ fn a_slide_on_a_hosted_instrument_names_the_way_out() {
 }
 
 #[test]
-fn a_slide_past_two_octaves_is_refused_rather_than_clipped() {
-    let project = project("    C4 q mf gliss=C7\n    G4 q mf\n");
-    let error = try_interpret(&project, &settings()).unwrap_err();
-    assert!(error.contains("more than two octaves"), "{error}");
+fn a_slide_uses_the_full_note_relative_pitch_range() {
+    let limit = oc_synth::note_pitch_curve::MAX_SEMITONES;
+    let events =
+        try_interpret(&project("    C0 q mf gliss=C8\n    G4 q mf\n"), &settings()).unwrap();
+    assert!(events.iter().any(|event| matches!(
+        event.event,
+        MidiMessage::NativeVoice(NativeVoiceEvent::Pitch { semitones, .. })
+            if f64::from(semitones) == limit
+    )));
+
+    let beyond_limit = project("    C0 q mf gliss=C#8\n    G4 q mf\n");
+    let error = try_interpret(&beyond_limit, &settings()).unwrap_err();
+    assert!(
+        error.contains(&format!("limit of {limit} semitones")),
+        "{error}"
+    );
     assert!(error.contains("gliss=run"), "{error}");
 }
 

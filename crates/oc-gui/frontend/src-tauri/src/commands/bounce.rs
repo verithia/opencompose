@@ -602,6 +602,7 @@ pub(crate) fn capture_consolidate_snapshot(
         start_offset_seconds: from_seconds
             - clock.seconds_at_quarter(clock.quarter_notes_at(&from)?)?,
         end_offset_seconds: to_seconds - clock.seconds_at_quarter(clock.quarter_notes_at(&to)?)?,
+        ..Default::default()
     };
     // New anchors can change whether a boundary uses legacy floor or explicit
     // rounding. Keep the exact frame interval the selected clips actually sound.
@@ -661,6 +662,7 @@ fn bounce_clip(name: &str, track: &str, file: &str, from: BarBeat, to: BarBeat) 
     AudioClip {
         name: name.to_string(),
         track: track.to_string(),
+        playlist_lane: None,
         file: format!("{MEDIA_DIR}/{file}"),
         time_range: TimeRange {
             start: from,
@@ -668,9 +670,11 @@ fn bounce_clip(name: &str, track: &str, file: &str, from: BarBeat, to: BarBeat) 
         },
         placement: ast::AudioClipPlacement::default(),
         offset_seconds: 0.0,
+        stereo_offset_seconds: 0.0,
         gain_db: 0.0,
         fade_in_seconds: 0.0,
         fade_out_seconds: 0.0,
+        fade_curves: Default::default(),
         invert: false,
         crossfade_seconds: 0.0,
         stretch: 1.0,
@@ -686,6 +690,7 @@ fn bounce_clip(name: &str, track: &str, file: &str, from: BarBeat, to: BarBeat) 
         take: None,
         muted: false,
         gain_envelope: Vec::new(),
+        gain_envelope_interpolation: Default::default(),
     }
 }
 

@@ -12,10 +12,28 @@
 
 use serde::Serialize;
 
+pub use dynamic_eq::{
+    DYNAMIC_EQ_CENTER_FREQUENCIES, DYNAMIC_EQ_CUT_SLOPES, DYNAMIC_EQ_OUTPUT_GAIN_DB_RANGE,
+    dynamic_eq_cut_slope_code,
+};
+
+pub mod allpass;
+pub mod automation_curves;
+pub mod delay;
+mod dynamic_eq;
+pub mod effect_slot;
+pub mod flanger;
+pub mod frequency_shift;
 pub mod frontend;
 pub mod gm;
+pub mod granular;
+pub mod note_expression;
+pub mod sampler;
+pub mod stereo_matrix;
 pub mod synth;
+pub mod transfer_curve;
 pub mod units;
+pub mod vocoder;
 pub use units::Unit as ParamUnit;
 
 /// Option labels shared by the tuner device and its parameter schema.
@@ -215,24 +233,11 @@ pub struct DeviceCatalog {
     pub version: u32,
     pub units: &'static [units::UnitDefinition],
     pub devices: &'static [DeviceSchema],
+    pub assets: &'static [transfer_curve::CurveAssetSchema],
 }
 
 use ParamCurve::{Linear, Log};
 use ParamUnit::{Db, Fraction, Hz, Ms, Percent, Ratio};
-
-/// Filter shapes in `BandKind` code order.
-const BAND_TYPES: [&str; 7] = [
-    "Bell",
-    "Low Shelf",
-    "High Shelf",
-    "Low Cut",
-    "High Cut",
-    "Notch",
-    "Band Pass",
-];
-
-/// Channel targets in `ChannelTarget` code order.
-const CHANNEL_TARGETS: [&str; 5] = ["Stereo", "Mid", "Side", "Left", "Right"];
 
 const DEESSER_MODES: [&str; 2] = ["Wide Band", "Split Band"];
 const DEESSER_THRESHOLD_MODES: [&str; 2] = ["Absolute", "Relative"];
@@ -370,15 +375,10 @@ pub static DEVICES: &[DeviceSchema] = &[
         id: "gain",
         name: "Gain",
         category: DeviceCategory::Utility,
-        params: &[param(
-            "factor",
-            "Gain",
-            ParamUnit::None,
-            0.0,
-            16.0,
-            1.0,
-            Linear,
-        )],
+        params: &[
+            param("factor", "Gain", ParamUnit::None, 0.0, 16.0, 1.0, Linear),
+            param("mix", "Mix", Fraction, 0.0, 1.0, 1.0, Linear),
+        ],
         ports: AUDIO_IN,
     },
     DeviceSchema {
@@ -498,270 +498,7 @@ pub static DEVICES: &[DeviceSchema] = &[
         id: "dynamic-eq",
         name: "Dynamic EQ",
         category: DeviceCategory::Eq,
-        // Six dynamic bands plus low/high cuts; ids match `dynamic_eq.rs`.
-        params: &[
-            bool_param("band1_enabled", "Band 1 Enabled", false),
-            bool_param("band1_solo", "Band 1 Solo", false),
-            enum_param("band1_channel", "Band 1 Channel", &CHANNEL_TARGETS, 0),
-            enum_param("band1_type", "Band 1 Type", &BAND_TYPES, 0),
-            param(
-                "band1_freq",
-                "Band 1 Frequency",
-                Hz,
-                20.0,
-                20_000.0,
-                100.0,
-                Log,
-            ),
-            param("band1_q", "Band 1 Q", ParamUnit::None, 0.1, 20.0, 1.0, Log),
-            param("band1_gain", "Band 1 Gain", Db, -24.0, 24.0, 0.0, Linear),
-            bool_param("band1_dynamic", "Band 1 Dynamic", false),
-            bool_param("band1_sidechain", "Band 1 Sidechain", false),
-            param(
-                "band1_threshold",
-                "Band 1 Threshold",
-                Db,
-                -60.0,
-                0.0,
-                -30.0,
-                Linear,
-            ),
-            param("band1_range", "Band 1 Range", Db, -24.0, 24.0, -6.0, Linear),
-            param("band1_attack", "Band 1 Attack", Ms, 0.1, 200.0, 10.0, Log),
-            param(
-                "band1_release",
-                "Band 1 Release",
-                Ms,
-                5.0,
-                2_000.0,
-                100.0,
-                Log,
-            ),
-            bool_param("band2_enabled", "Band 2 Enabled", false),
-            bool_param("band2_solo", "Band 2 Solo", false),
-            enum_param("band2_channel", "Band 2 Channel", &CHANNEL_TARGETS, 0),
-            enum_param("band2_type", "Band 2 Type", &BAND_TYPES, 0),
-            param(
-                "band2_freq",
-                "Band 2 Frequency",
-                Hz,
-                20.0,
-                20_000.0,
-                250.0,
-                Log,
-            ),
-            param("band2_q", "Band 2 Q", ParamUnit::None, 0.1, 20.0, 1.0, Log),
-            param("band2_gain", "Band 2 Gain", Db, -24.0, 24.0, 0.0, Linear),
-            bool_param("band2_dynamic", "Band 2 Dynamic", false),
-            bool_param("band2_sidechain", "Band 2 Sidechain", false),
-            param(
-                "band2_threshold",
-                "Band 2 Threshold",
-                Db,
-                -60.0,
-                0.0,
-                -30.0,
-                Linear,
-            ),
-            param("band2_range", "Band 2 Range", Db, -24.0, 24.0, -6.0, Linear),
-            param("band2_attack", "Band 2 Attack", Ms, 0.1, 200.0, 10.0, Log),
-            param(
-                "band2_release",
-                "Band 2 Release",
-                Ms,
-                5.0,
-                2_000.0,
-                100.0,
-                Log,
-            ),
-            bool_param("band3_enabled", "Band 3 Enabled", false),
-            bool_param("band3_solo", "Band 3 Solo", false),
-            enum_param("band3_channel", "Band 3 Channel", &CHANNEL_TARGETS, 0),
-            enum_param("band3_type", "Band 3 Type", &BAND_TYPES, 0),
-            param(
-                "band3_freq",
-                "Band 3 Frequency",
-                Hz,
-                20.0,
-                20_000.0,
-                500.0,
-                Log,
-            ),
-            param("band3_q", "Band 3 Q", ParamUnit::None, 0.1, 20.0, 1.0, Log),
-            param("band3_gain", "Band 3 Gain", Db, -24.0, 24.0, 0.0, Linear),
-            bool_param("band3_dynamic", "Band 3 Dynamic", false),
-            bool_param("band3_sidechain", "Band 3 Sidechain", false),
-            param(
-                "band3_threshold",
-                "Band 3 Threshold",
-                Db,
-                -60.0,
-                0.0,
-                -30.0,
-                Linear,
-            ),
-            param("band3_range", "Band 3 Range", Db, -24.0, 24.0, -6.0, Linear),
-            param("band3_attack", "Band 3 Attack", Ms, 0.1, 200.0, 10.0, Log),
-            param(
-                "band3_release",
-                "Band 3 Release",
-                Ms,
-                5.0,
-                2_000.0,
-                100.0,
-                Log,
-            ),
-            bool_param("band4_enabled", "Band 4 Enabled", false),
-            bool_param("band4_solo", "Band 4 Solo", false),
-            enum_param("band4_channel", "Band 4 Channel", &CHANNEL_TARGETS, 0),
-            enum_param("band4_type", "Band 4 Type", &BAND_TYPES, 0),
-            param(
-                "band4_freq",
-                "Band 4 Frequency",
-                Hz,
-                20.0,
-                20_000.0,
-                1_000.0,
-                Log,
-            ),
-            param("band4_q", "Band 4 Q", ParamUnit::None, 0.1, 20.0, 1.0, Log),
-            param("band4_gain", "Band 4 Gain", Db, -24.0, 24.0, 0.0, Linear),
-            bool_param("band4_dynamic", "Band 4 Dynamic", false),
-            bool_param("band4_sidechain", "Band 4 Sidechain", false),
-            param(
-                "band4_threshold",
-                "Band 4 Threshold",
-                Db,
-                -60.0,
-                0.0,
-                -30.0,
-                Linear,
-            ),
-            param("band4_range", "Band 4 Range", Db, -24.0, 24.0, -6.0, Linear),
-            param("band4_attack", "Band 4 Attack", Ms, 0.1, 200.0, 10.0, Log),
-            param(
-                "band4_release",
-                "Band 4 Release",
-                Ms,
-                5.0,
-                2_000.0,
-                100.0,
-                Log,
-            ),
-            bool_param("band5_enabled", "Band 5 Enabled", false),
-            bool_param("band5_solo", "Band 5 Solo", false),
-            enum_param("band5_channel", "Band 5 Channel", &CHANNEL_TARGETS, 0),
-            enum_param("band5_type", "Band 5 Type", &BAND_TYPES, 0),
-            param(
-                "band5_freq",
-                "Band 5 Frequency",
-                Hz,
-                20.0,
-                20_000.0,
-                2_000.0,
-                Log,
-            ),
-            param("band5_q", "Band 5 Q", ParamUnit::None, 0.1, 20.0, 1.0, Log),
-            param("band5_gain", "Band 5 Gain", Db, -24.0, 24.0, 0.0, Linear),
-            bool_param("band5_dynamic", "Band 5 Dynamic", false),
-            bool_param("band5_sidechain", "Band 5 Sidechain", false),
-            param(
-                "band5_threshold",
-                "Band 5 Threshold",
-                Db,
-                -60.0,
-                0.0,
-                -30.0,
-                Linear,
-            ),
-            param("band5_range", "Band 5 Range", Db, -24.0, 24.0, -6.0, Linear),
-            param("band5_attack", "Band 5 Attack", Ms, 0.1, 200.0, 10.0, Log),
-            param(
-                "band5_release",
-                "Band 5 Release",
-                Ms,
-                5.0,
-                2_000.0,
-                100.0,
-                Log,
-            ),
-            bool_param("band6_enabled", "Band 6 Enabled", false),
-            bool_param("band6_solo", "Band 6 Solo", false),
-            enum_param("band6_channel", "Band 6 Channel", &CHANNEL_TARGETS, 0),
-            enum_param("band6_type", "Band 6 Type", &BAND_TYPES, 0),
-            param(
-                "band6_freq",
-                "Band 6 Frequency",
-                Hz,
-                20.0,
-                20_000.0,
-                8_000.0,
-                Log,
-            ),
-            param("band6_q", "Band 6 Q", ParamUnit::None, 0.1, 20.0, 1.0, Log),
-            param("band6_gain", "Band 6 Gain", Db, -24.0, 24.0, 0.0, Linear),
-            bool_param("band6_dynamic", "Band 6 Dynamic", false),
-            bool_param("band6_sidechain", "Band 6 Sidechain", false),
-            param(
-                "band6_threshold",
-                "Band 6 Threshold",
-                Db,
-                -60.0,
-                0.0,
-                -30.0,
-                Linear,
-            ),
-            param("band6_range", "Band 6 Range", Db, -24.0, 24.0, -6.0, Linear),
-            param("band6_attack", "Band 6 Attack", Ms, 0.1, 200.0, 10.0, Log),
-            param(
-                "band6_release",
-                "Band 6 Release",
-                Ms,
-                5.0,
-                2_000.0,
-                100.0,
-                Log,
-            ),
-            bool_param("auto_gain", "Auto Gain", false),
-            bool_param("low_cut_enabled", "Low Cut Enabled", false),
-            param(
-                "low_cut_freq",
-                "Low Cut Frequency",
-                Hz,
-                20.0,
-                20_000.0,
-                20.0,
-                Log,
-            ),
-            param(
-                "low_cut_q",
-                "Low Cut Q",
-                ParamUnit::None,
-                0.1,
-                20.0,
-                0.707,
-                Log,
-            ),
-            bool_param("high_cut_enabled", "High Cut Enabled", false),
-            param(
-                "high_cut_freq",
-                "High Cut Frequency",
-                Hz,
-                20.0,
-                20_000.0,
-                20_000.0,
-                Log,
-            ),
-            param(
-                "high_cut_q",
-                "High Cut Q",
-                ParamUnit::None,
-                0.1,
-                20.0,
-                0.707,
-                Log,
-            ),
-        ],
+        params: dynamic_eq::PARAMS,
         ports: AUDIO_KEY,
     },
     DeviceSchema {
@@ -2299,15 +2036,7 @@ pub static DEVICES: &[DeviceSchema] = &[
         id: "delay",
         name: "Delay",
         category: DeviceCategory::Time,
-        params: &[
-            with_aliases(
-                param("time_l", "Left Time", Ms, 1.0, 2_000.0, 375.0, Log),
-                &["time"],
-            ),
-            param("time_r", "Right Time", Ms, 1.0, 2_000.0, 250.0, Log),
-            param("feedback", "Feedback", Percent, 0.0, 95.0, 35.0, Linear),
-            param("mix", "Mix", Percent, 0.0, 100.0, 30.0, Linear),
-        ],
+        params: delay::PARAMS,
         ports: AUDIO_IN,
     },
     DeviceSchema {
@@ -2579,12 +2308,7 @@ pub static DEVICES: &[DeviceSchema] = &[
         id: "flanger",
         name: "Flanger",
         category: DeviceCategory::Time,
-        params: &[
-            param("rate", "Rate", Hz, 0.05, 10.0, 0.5, Log),
-            param("depth", "Depth", Ms, 0.1, 20.0, 3.0, Log),
-            param("feedback", "Feedback", Percent, 0.0, 95.0, 50.0, Linear),
-            param("mix", "Mix", Percent, 0.0, 100.0, 50.0, Linear),
-        ],
+        params: flanger::PARAMS,
         ports: AUDIO_IN,
     },
     DeviceSchema {
@@ -2613,12 +2337,47 @@ pub static DEVICES: &[DeviceSchema] = &[
         ports: AUDIO_IN,
     },
     DeviceSchema {
+        id: "frequency-shift",
+        name: "Frequency Shifter",
+        category: DeviceCategory::Color,
+        params: frequency_shift::PARAMS,
+        ports: AUDIO_IN,
+    },
+    DeviceSchema {
+        id: "vocoder",
+        name: "Vocoder",
+        category: DeviceCategory::Color,
+        params: vocoder::PARAMS,
+        ports: AUDIO_KEY,
+    },
+    DeviceSchema {
         id: "stereo-width",
         name: "Stereo Width",
         category: DeviceCategory::Utility,
         params: &[param(
             "amount", "Amount", Percent, 0.0, 200.0, 100.0, Linear,
         )],
+        ports: AUDIO_IN,
+    },
+    DeviceSchema {
+        id: "stereo-matrix",
+        name: "Stereo Matrix",
+        category: DeviceCategory::Utility,
+        params: stereo_matrix::PARAMS,
+        ports: AUDIO_IN,
+    },
+    DeviceSchema {
+        id: "allpass",
+        name: "All-pass",
+        category: DeviceCategory::Utility,
+        params: &[allpass::COEFFICIENT],
+        ports: AUDIO_IN,
+    },
+    DeviceSchema {
+        id: "transfer-shaper",
+        name: "Transfer Shaper",
+        category: DeviceCategory::Color,
+        params: transfer_curve::PARAMS,
         ports: AUDIO_IN,
     },
 ];
@@ -2981,6 +2740,7 @@ pub fn catalog() -> DeviceCatalog {
         version: DEVICE_CATALOG_VERSION,
         units: units::DEFINITIONS,
         devices: DEVICES,
+        assets: transfer_curve::ASSETS,
     }
 }
 
@@ -3078,7 +2838,10 @@ pub const PRIMARY_PARAMS: &[(&str, &[&str])] = &[
             "stereo_width",
         ],
     ),
-    ("delay", &["time_l", "time_r", "feedback", "mix"]),
+    (
+        "delay",
+        &["time_l", "time_r", "feedback", "mix", "interpolate"],
+    ),
     ("chorus", &["rate", "depth", "mix"]),
     ("saturator", &["drive", "mix"]),
     ("iron", &["drive", "bias", "ceiling", "output"]),
@@ -3114,7 +2877,24 @@ pub const PRIMARY_PARAMS: &[(&str, &[&str])] = &[
     ("flanger", &["rate", "depth", "feedback", "mix"]),
     ("phaser", &["rate", "depth", "feedback", "mix"]),
     ("gate", &["threshold", "attack", "hold", "release", "range"]),
+    (
+        "frequency-shift",
+        &["shift", "sideband_left", "sideband_right", "mix"],
+    ),
     ("stereo-width", &["amount"]),
+    (
+        "stereo-matrix",
+        &[
+            "left_from_left",
+            "left_from_right",
+            "right_from_left",
+            "right_from_right",
+            "offset",
+            "delay_before_matrix",
+        ],
+    ),
+    ("allpass", &["coefficient"]),
+    ("transfer-shaper", &["pre_gain", "dry_gain", "wet_gain"]),
 ];
 
 /// The primary parameters of one device, or an empty slice for a device this
@@ -3550,6 +3330,7 @@ mod tests {
         assert_eq!(
             fractions,
             [
+                ("gain", "mix", 0.0, 1.0, 1.0),
                 ("compression", "mix", 0.0, 1.0, 1.0),
                 ("multiband", "mix", 0.0, 1.0, 1.0)
             ]
@@ -3594,14 +3375,14 @@ mod tests {
     }
 
     #[test]
-    fn dynamic_eq_exposes_six_bands_and_both_cuts() {
+    fn dynamic_eq_exposes_parametric_bands_and_both_cuts() {
         let device = find_device("dynamic-eq").unwrap();
-        assert_eq!(device.params.len(), 85);
         let fields = [
             "enabled",
             "solo",
             "channel",
             "type",
+            "slope",
             "freq",
             "q",
             "gain",
@@ -3612,14 +3393,21 @@ mod tests {
             "attack",
             "release",
         ];
-        for band in 1..=6 {
+        assert_eq!(
+            device.params.len(),
+            DYNAMIC_EQ_CENTER_FREQUENCIES.len() * fields.len() + 12
+        );
+        for (index, frequency) in DYNAMIC_EQ_CENTER_FREQUENCIES.iter().enumerate() {
+            let band = index + 1;
             for field in fields {
                 let id = format!("band{band}_{field}");
                 assert!(device.param(&id).is_some(), "missing {id}");
             }
+            let id = format!("band{band}_freq");
+            assert_eq!(device.param(&id).unwrap().default, *frequency);
         }
         for cut in ["low", "high"] {
-            for field in ["enabled", "freq", "q"] {
+            for field in ["enabled", "freq", "q", "slope"] {
                 let id = format!("{cut}_cut_{field}");
                 assert!(device.param(&id).is_some(), "missing {id}");
             }
@@ -3631,6 +3419,15 @@ mod tests {
         assert_eq!(device.param("band1_dynamic").unwrap().default, 0.0);
         assert_eq!(device.param("band1_sidechain").unwrap().default, 0.0);
         assert_eq!(device.param("auto_gain").unwrap().default, 0.0);
+        assert_eq!(device.param("oversample").unwrap().default, 0.0);
+        assert_eq!(device.param("oversample_fir").unwrap().default, 0.0);
+        let output_gain = device.param("output_gain").unwrap();
+        assert_eq!(output_gain.default, 0.0);
+        assert_eq!(
+            (output_gain.min, output_gain.max),
+            DYNAMIC_EQ_OUTPUT_GAIN_DB_RANGE
+        );
+        assert_eq!(output_gain.unit, ParamUnit::Db);
         assert_eq!(device.param("band1_release").unwrap().default, 100.0);
         assert_eq!(device.param("band1_range").unwrap().default, -6.0);
         assert_eq!(device.param("band6_freq").unwrap().default, 8_000.0);

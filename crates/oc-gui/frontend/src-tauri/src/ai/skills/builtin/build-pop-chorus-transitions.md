@@ -3,7 +3,7 @@ id: build-pop-chorus-transitions
 title: Build a pop chorus transition
 when: Arranging a pop pre-chorus and chorus entry, using gaps, fills and register changes to lift the hook without masking it.
 category: arrangement
-version: 1
+version: 2
 tools: [sections_list, project_extract, edit_subtree, project_validate, audition_range, audio_analyze]
 ---
 Read the actual section ranges and find the hook pickup. Listen across the
@@ -23,6 +23,11 @@ register, a fuller bass return or a change of harmony.
   earlier when a long snare, riser or reverb tail blurs the first consonant.
   If you have a prepared reverse swell, place its end against the audible
   word and listen for the edit rather than assuming a bar line is the target.
+
+For a snare build, compare a fixed subdivision with rising hit strength against a constant-strength acceleration.
+Check that the loaded source responds to velocity; a drawn crescendo is not an audible one automatically.
+At the fastest repeat, shorten a masking tail or choose a shorter source before boosting the roll.
+Hear an omitted final accent against a continuous roll, preserving the hook's pickup in both versions.
 
 ## Check the handover
 

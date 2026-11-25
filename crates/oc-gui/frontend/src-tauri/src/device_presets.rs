@@ -148,15 +148,14 @@ fn validate_param(
     value: &Value,
     path: &str,
 ) -> Result<(), String> {
-    if device.param(param).is_none() {
+    if device.param(param).is_none() && !(device.id == "transfer-shaper" && param == "curve") {
         return Err(format!(
             "{path}: device '{}' has no parameter '{param}'",
             device.id
         ));
     }
     let value = param_value(value, path)?;
-    oc_engine::dsp::validate_static_param(device, param, &value)
-        .map(|_| ())
+    oc_engine::dsp::validate_static_value(device, param, &value)
         .map_err(|error| format!("{path}: {error}"))
 }
 

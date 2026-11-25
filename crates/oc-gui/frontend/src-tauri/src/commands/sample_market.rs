@@ -561,13 +561,16 @@ pub(super) fn plain_audio_clip(
     AudioClip {
         name,
         track,
+        playlist_lane: None,
         file,
         time_range,
         placement: Default::default(),
         offset_seconds: 0.0,
+        stereo_offset_seconds: 0.0,
         gain_db: 0.0,
         fade_in_seconds: 0.0,
         fade_out_seconds: 0.0,
+        fade_curves: Default::default(),
         invert: false,
         crossfade_seconds: 0.0,
         stretch: 1.0,
@@ -583,6 +586,7 @@ pub(super) fn plain_audio_clip(
         take: None,
         muted: false,
         gain_envelope: Vec::new(),
+        gain_envelope_interpolation: Default::default(),
     }
 }
 
@@ -881,6 +885,7 @@ mod tests {
             .add_audio_clip(AudioClip {
                 name: "Snare".into(),
                 track: "Samples".into(),
+                playlist_lane: None,
                 file: "media/samples/snare.wav".into(),
                 time_range: TimeRange {
                     start: BarBeat::new(1, 1, 0),
@@ -888,9 +893,11 @@ mod tests {
                 },
                 placement: Default::default(),
                 offset_seconds: 0.0,
+                stereo_offset_seconds: 0.0,
                 gain_db: 0.0,
                 fade_in_seconds: 0.0,
                 fade_out_seconds: 0.0,
+                fade_curves: Default::default(),
                 invert: false,
                 crossfade_seconds: 0.0,
                 stretch: 1.0,
@@ -906,6 +913,7 @@ mod tests {
                 take: None,
                 muted: false,
                 gain_envelope: Vec::new(),
+                gain_envelope_interpolation: Default::default(),
             })
             .unwrap();
         assert_eq!(unique_clip_name(&project, "Snare"), "Snare 2");

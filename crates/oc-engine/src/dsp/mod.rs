@@ -7,31 +7,43 @@
 //! Users can also load VST3/CLAP plugins via the plugin bridge.
 
 pub use oc_dsp::{
-    biquad, breath_split, chorus, compressor, crossover, deesser, delay, detector, distortion,
-    doubler, ducked_send, dynamic_eq, eq, exciter, fet, flanger, gate, iron, leveler, limiter,
-    multiband, opto, passive_eq, phaser, plosive, resonance, reverb, reverb_fdn, saturator, schema,
-    stereo_width, tuner,
+    allpass, biquad, breath_split, chorus, compressor, crossover, deesser, delay, detector,
+    distortion, doubler, ducked_send, dynamic_eq, eq, exciter, fet, flanger, frequency_shift, gate,
+    iron, leveler, limiter, multiband, opto, passive_eq, phaser, plosive, resonance, reverb,
+    reverb_fdn, saturator, schema, stereo_matrix, stereo_width, tuner, vocoder,
 };
 
 pub mod control_source;
+#[cfg(feature = "plugin-host")]
+mod plugin_sidechain;
+#[cfg(feature = "plugin-host")]
+mod plugin_state;
 pub mod schema_bridge;
+mod transfer_curve;
 
 pub use schema_bridge::{
     ResolvedEffect, device_for_effect, legacy_warnings, resolve_effect, validate_param,
-    validate_static_param,
+    validate_static_param, validate_static_value,
 };
 
 use std::collections::HashMap;
+use std::path::Path;
 
 /// All built-in effects process stereo interleaved f32 in-place.
 pub use oc_audio::AudioEffect;
 
-/// Exact linear utility gain; zero is a silent routing sink.
-struct LinearGain(f64);
+/// A dry/wet gain blend reduces to one scalar, with no intermediate audio buffer.
+struct LinearGain {
+    factor: f64,
+    mix: f64,
+}
 
 #[test]
 fn utility_gain_is_exact_and_zero_silences() {
-    let mut gain = LinearGain(0.5);
+    let mut gain = LinearGain {
+        factor: 0.5,
+        mix: 1.0,
+    };
     let mut samples = [1.0, -1.0, 0.25, -0.25];
     gain.process(&mut samples, 48000);
     assert_eq!(samples, [0.5, -0.5, 0.125, -0.125]);
@@ -41,16 +53,26 @@ fn utility_gain_is_exact_and_zero_silences() {
 }
 
 impl AudioEffect for LinearGain {
+    fn preserves_channel_equality(&self) -> bool {
+        true
+    }
     fn process(&mut self, buffer: &mut [f32], _sample_rate: u32) {
-        oc_dsp::simd::apply_uniform_gain(buffer, self.0 as f32);
+        let gain = self.factor * self.mix + (1.0 - self.mix);
+        oc_dsp::simd::apply_uniform_gain(buffer, gain as f32);
     }
     fn set_param(&mut self, name: &str, value: f64) {
-        if name == "factor" && value.is_finite() && value >= 0.0 {
-            self.0 = value;
+        match name {
+            "factor" if value.is_finite() && value >= 0.0 => self.factor = value,
+            "mix" if (0.0..=1.0).contains(&value) => self.mix = value,
+            _ => {}
         }
     }
     fn get_param(&self, name: &str) -> Option<f64> {
-        (name == "factor").then_some(self.0)
+        match name {
+            "factor" => Some(self.factor),
+            "mix" => Some(self.mix),
+            _ => None,
+        }
     }
     fn reset(&mut self) {}
     fn name(&self) -> &str {
@@ -61,7 +83,7 @@ impl AudioEffect for LinearGain {
 #[test]
 fn fractional_mix_keeps_static_percentage_and_automation_contexts_distinct() {
     use oc_dsl::ast::{EffectType as E, ParamValue as P};
-    for effect in [E::Compression, E::Multiband] {
+    for effect in [E::Gain, E::Compression, E::Multiband] {
         let device = device_for_effect(&effect).unwrap();
         assert_eq!(
             validate_static_param(device, "mix", &P::Percentage(40.0)),
@@ -657,6 +679,63 @@ fn typed_stereo_delay_times_reach_both_channels() {
 }
 
 #[test]
+fn flanger_stack_values_round_trip_from_dsl_into_the_native_insert() {
+    use oc_dsl::ast::{EffectType as E, ParamValue as P};
+    let project = oc_dsl::parse(
+        "@project\n@track example\n  effects:\n    - flanger: voices=7, delay=14ms, spread=60%, stereo_cross=-40%, dry_gain=160%, wet_gain=-120%\n",
+    ).unwrap();
+    let effect = &project.tracks[0].effects[0];
+    let device = try_create_effect(&effect.effect_type, &effect.params, 48_000).unwrap();
+    for (param, expected) in [
+        ("voices", 7.0),
+        ("delay", 14.0),
+        ("spread", 60.0),
+        ("stereo_cross", -40.0),
+        ("dry_gain", 160.0),
+        ("wet_gain", -120.0),
+    ] {
+        assert_eq!(device.get_param(param), Some(expected), "{param}");
+    }
+    assert!(try_create_effect(&E::Flanger, &[("voices".into(), P::Number(2.5))], 48_000).is_err());
+    assert!(try_create_effect(&E::Flanger, &[("delay".into(), P::Time(0.05))], 48_000).is_err());
+}
+
+#[test]
+fn typed_stereo_delay_controls_reach_the_dsp_and_reject_bad_values() {
+    use oc_dsl::ast::{EffectType as E, ParamValue as P};
+    let accepted = [
+        ("routing", P::String("ping_pong".into()), 3.0),
+        ("tempo_sync", P::Bool(true), 1.0),
+        ("quarters_l", P::Number(0.25), 0.25),
+        ("quarters_r", P::Number(0.5), 0.5),
+        ("dry_gain", P::Percentage(130.0), 130.0),
+        ("wet_gain", P::Percentage(80.0), 80.0),
+        ("feedback_filter", P::String("high_pass".into()), 2.0),
+        ("feedback_cutoff", P::Frequency(1800.0), 1800.0),
+    ];
+    let params = accepted
+        .iter()
+        .map(|(name, value, _)| (name.to_string(), value.clone()))
+        .collect::<Vec<_>>();
+    let effect = try_create_effect(&E::Delay, &params, 48_000).unwrap();
+    for (name, _, wanted) in accepted {
+        assert_eq!(effect.get_param(name), Some(wanted), "{name}");
+    }
+    for (name, value) in [
+        ("routing", P::String("unknown".into())),
+        ("feedback_filter", P::Number(1.5)),
+        ("feedback_cutoff", P::Frequency(30_000.0)),
+        ("quarters_l", P::Number(0.0)),
+        ("dry_gain", P::Percentage(201.0)),
+    ] {
+        assert!(
+            try_create_effect(&E::Delay, &[(name.into(), value)], 48_000).is_err(),
+            "{name}"
+        );
+    }
+}
+
+#[test]
 fn checked_builtin_factory_control_matrix() {
     use oc_dsl::ast::{EffectType as E, ParamValue as P};
     // Non-default values: a dropped factory assignment must fail this test.
@@ -1213,6 +1292,20 @@ fn checked_builtin_factory_control_matrix() {
         ),
         (E::Limiter, "link", P::Percentage(37.0), "link", 37.0),
         (
+            E::FrequencyShift,
+            "shift",
+            P::Frequency(-150.0),
+            "shift",
+            -150.0,
+        ),
+        (
+            E::FrequencyShift,
+            "sideband_left",
+            P::Percentage(-75.0),
+            "sideband_left",
+            -75.0,
+        ),
+        (
             E::ReverbFdn,
             "decay_band1_freq",
             P::Frequency(700.0),
@@ -1264,6 +1357,30 @@ pub(crate) fn typed_builtin_value(
 ) -> Option<f64> {
     use oc_dsl::ast::{EffectType as E, ParamValue as P};
     match (effect_type, name, value) {
+        (
+            E::Delay,
+            "routing" | "tempo_sync" | "quarters_l" | "quarters_r" | "dry_gain" | "wet_gain"
+            | "feedback_filter" | "feedback_cutoff",
+            value,
+        ) => {
+            let device = schema_bridge::device_for_effect(effect_type)?;
+            schema_bridge::validate_param(device, name, value).ok()
+        }
+        (E::StereoMatrix | E::Vocoder, name, value) => {
+            let device = schema_bridge::device_for_effect(effect_type)?;
+            schema_bridge::validate_param(device, name, value).ok()
+        }
+        (E::FrequencyShift, name, value) => {
+            let parameter = schema::frequency_shift::PARAMS
+                .iter()
+                .find(|p| p.id == name)?;
+            match (parameter.unit, value) {
+                (_, P::Number(value))
+                | (schema::ParamUnit::Hz, P::Frequency(value))
+                | (schema::ParamUnit::Percent, P::Percentage(value)) => Some(*value),
+                _ => None,
+            }
+        }
         (E::Compression, "ratio", P::String(ratio)) => ratio.split_once(':').and_then(|(a, b)| {
             let a = a.trim().parse::<f64>().ok()?;
             let b = b.trim().parse::<f64>().ok()?;
@@ -1275,6 +1392,7 @@ pub(crate) fn typed_builtin_value(
             _ => None,
         },
         (E::Compression, "auto_makeup" | "auto_release", P::Bool(on))
+        | (E::Delay, "interpolate", P::Bool(on))
         | (E::Limiter, "true_peak", P::Bool(on)) => Some(if *on { 1.0 } else { 0.0 }),
         (E::Limiter, "release_mode", P::String(mode)) => match mode.to_ascii_lowercase().as_str() {
             "fast" => Some(0.0),
@@ -1343,7 +1461,13 @@ pub(crate) fn typed_builtin_value(
         (E::Reverb, "predelay", P::Time(seconds))
         | (E::ReverbFdn, "decay" | "predelay", P::Time(seconds))
         | (E::Delay, "time" | "time_l" | "time_r", P::Time(seconds))
-        | (E::Chorus | E::Flanger, "depth", P::Time(seconds)) => Some(seconds * 1000.0),
+        | (E::Chorus | E::Flanger, "depth", P::Time(seconds))
+        | (E::Flanger, "delay", P::Time(seconds)) => Some(seconds * 1000.0),
+        (
+            E::Flanger,
+            "spread" | "stereo_cross" | "dry_gain" | "wet_gain",
+            P::Percentage(percent),
+        ) => Some(*percent),
         (
             E::ReverbFdn,
             "mix" | "damping" | "stereo_width" | "character" | "modulation" | "brightness"
@@ -1432,6 +1556,9 @@ pub(crate) fn typed_builtin_value(
         (E::DynamicEq, name, P::String(kind)) if dynamic_eq::type_param(name) => {
             dynamic_eq::BandKind::from_name(kind).map(|kind| kind.code())
         }
+        (E::DynamicEq, name, P::String(slope)) if dynamic_eq::slope_param(name) => {
+            schema::dynamic_eq_cut_slope_code(slope).map(|code| code as f64)
+        }
         (E::DynamicEq, name, P::String(target)) if dynamic_eq::channel_param(name) => {
             dynamic_eq::ChannelTarget::from_name(target).map(|target| target.code())
         }
@@ -1519,7 +1646,8 @@ pub(crate) fn typed_builtin_value(
             | E::Tuner
             | E::BreathSplit
             | E::Plosive
-            | E::StereoWidth,
+            | E::StereoWidth
+            | E::AllPass,
             _,
             _,
         ) => None,
@@ -1610,6 +1738,13 @@ enum PluginEffectError {
     Refused(String),
 }
 
+#[derive(Clone, Copy, Default)]
+#[cfg_attr(not(feature = "plugin-host"), allow(dead_code))]
+pub(crate) struct EffectResources<'a> {
+    pub root: Option<&'a Path>,
+    pub transport: Option<&'a oc_audio::PluginTransport>,
+}
+
 pub fn try_create_effect(
     effect_type: &oc_dsl::ast::EffectType,
     params: &[(String, oc_dsl::ast::ParamValue)],
@@ -1628,6 +1763,22 @@ pub fn try_create_effect_at(
     sample_rate: u32,
     place: &str,
 ) -> Result<Box<dyn AudioEffect>, String> {
+    try_create_effect_with_resources(
+        effect_type,
+        params,
+        sample_rate,
+        place,
+        EffectResources::default(),
+    )
+}
+
+pub(crate) fn try_create_effect_with_resources(
+    effect_type: &oc_dsl::ast::EffectType,
+    params: &[(String, oc_dsl::ast::ParamValue)],
+    sample_rate: u32,
+    place: &str,
+    resources: EffectResources<'_>,
+) -> Result<Box<dyn AudioEffect>, String> {
     // `bypass` is the effect's own field; a parameter of that name would be a
     // second meaning, so it is refused instead of reaching any device.
     if params.iter().any(|(name, _)| name == "bypass") {
@@ -1637,11 +1788,8 @@ pub fn try_create_effect_at(
         );
     }
     if let oc_dsl::ast::EffectType::Plugin(id) = effect_type {
-        let values = params
-            .iter()
-            .filter_map(|(k, v)| v.as_f64().map(|f| (k.as_str(), f)))
-            .collect();
-        create_plugin_effect(id, &values, sample_rate, place).map_err(|error| match error {
+        create_plugin_effect(id, params, sample_rate, place, resources).map_err(|error| match error
+        {
             PluginEffectError::Unavailable => {
                 format!("external effect '{id}' could not be loaded; refusing bypassed render")
             }
@@ -1658,6 +1806,9 @@ pub fn try_create_effect_at(
         let resolved = schema_bridge::resolve_effect(effect_type, &params);
         let effect_type = &resolved.effect_type;
         let params = resolved.params.as_slice();
+        if matches!(effect_type, EffectType::TransferShaper) {
+            return transfer_curve::create(params);
+        }
         if !matches!(
             effect_type,
             EffectType::Gain
@@ -1689,6 +1840,10 @@ pub fn try_create_effect_at(
                 | EffectType::Resonance
                 | EffectType::Tuner
                 | EffectType::StereoWidth
+                | EffectType::StereoMatrix
+                | EffectType::FrequencyShift
+                | EffectType::Vocoder
+                | EffectType::AllPass
         ) {
             return Err(format!(
                 "built-in effect {effect_type:?} has no implemented DSP; refusing passthrough"
@@ -1749,6 +1904,10 @@ pub fn try_create_effect_at(
                 | E::Resonance
                 | E::Tuner
                 | E::StereoWidth
+                | E::StereoMatrix
+                | E::FrequencyShift
+                | E::Vocoder
+                | E::AllPass
         ) {
             let mut seen = std::collections::HashSet::new();
             for (name, value) in params {
@@ -1793,6 +1952,15 @@ pub fn create_effect(
     params: &[(String, oc_dsl::ast::ParamValue)],
     sample_rate: u32,
 ) -> Box<dyn AudioEffect> {
+    create_effect_with_resources(effect_type, params, sample_rate, EffectResources::default())
+}
+
+pub(crate) fn create_effect_with_resources(
+    effect_type: &oc_dsl::ast::EffectType,
+    params: &[(String, oc_dsl::ast::ParamValue)],
+    sample_rate: u32,
+    resources: EffectResources<'_>,
+) -> Box<dyn AudioEffect> {
     use oc_dsl::ast::EffectType;
 
     let resolved = schema_bridge::resolve_effect(effect_type, params);
@@ -1806,7 +1974,10 @@ pub fn create_effect(
         .collect();
 
     match effect_type {
-        EffectType::Gain => Box::new(LinearGain(param_map.get("factor").copied().unwrap_or(1.0))),
+        EffectType::Gain => Box::new(LinearGain {
+            factor: param_map.get("factor").copied().unwrap_or(1.0),
+            mix: param_map.get("mix").copied().unwrap_or(1.0),
+        }),
         EffectType::Saturator => {
             let mut fx = saturator::Saturator::new();
             for name in ["drive", "mix"] {
@@ -2096,19 +2267,18 @@ pub fn create_effect(
         }
         EffectType::Delay => {
             let mut fx = delay::StereoDelay::new(sample_rate);
+            if let Some(&interpolate) = param_map.get("interpolate") {
+                fx.set_param("interpolate", interpolate);
+            }
             if let Some(&t) = param_map.get("time") {
                 fx.set_param("time", t);
             }
-            for name in ["time_l", "time_r"] {
-                if let Some(&time) = param_map.get(name) {
-                    fx.set_param(name, time);
+            for param in schema::delay::PARAMS {
+                if param.id != "interpolate"
+                    && let Some(&value) = param_map.get(param.id)
+                {
+                    fx.set_param(param.id, value);
                 }
-            }
-            if let Some(&fb) = param_map.get("feedback") {
-                fx.set_param("feedback", fb);
-            }
-            if let Some(&m) = param_map.get("mix") {
-                fx.set_param("mix", m);
             }
             Box::new(fx)
         }
@@ -2153,9 +2323,9 @@ pub fn create_effect(
         }
         EffectType::Flanger => {
             let mut fx = flanger::Flanger::new(sample_rate);
-            for name in ["rate", "depth", "feedback", "mix"] {
-                if let Some(&value) = param_map.get(name) {
-                    fx.set_param(name, value);
+            for parameter in schema::flanger::PARAMS {
+                if let Some(&value) = param_map.get(parameter.id) {
+                    fx.set_param(parameter.id, value);
                 }
             }
             Box::new(fx)
@@ -2185,47 +2355,41 @@ pub fn create_effect(
             }
             Box::new(fx)
         }
+        EffectType::StereoMatrix => {
+            let mut fx = stereo_matrix::StereoMatrix::new(sample_rate);
+            for (name, value) in param_map {
+                fx.set_param(name, value);
+            }
+            Box::new(fx)
+        }
+        EffectType::FrequencyShift => {
+            let mut fx = frequency_shift::FrequencyShifter::default();
+            for (name, value) in param_map {
+                fx.set_param(name, value);
+            }
+            Box::new(fx)
+        }
+        EffectType::Vocoder => {
+            let mut fx = vocoder::Vocoder::new(sample_rate);
+            for (name, value) in param_map {
+                fx.set_param(name, value);
+            }
+            Box::new(fx)
+        }
+        EffectType::TransferShaper => {
+            transfer_curve::create(params).unwrap_or_else(transfer_curve::failed)
+        }
+        EffectType::AllPass => {
+            let mut fx = allpass::AllPass::default();
+            if let Some(&value) = param_map.get("coefficient") {
+                fx.set_param("coefficient", value);
+            }
+            Box::new(fx)
+        }
         EffectType::Plugin(plugin_id) => {
-            create_plugin_effect(plugin_id, &param_map, sample_rate, "")
+            create_plugin_effect(plugin_id, params, sample_rate, "", resources)
                 .unwrap_or_else(|_| Box::new(Passthrough))
         }
-    }
-}
-
-/// Effect parameter that selects a declared sidechain input by index.
-#[cfg(feature = "plugin-host")]
-const SIDECHAIN_INPUT: &str = "sidechain_input";
-
-#[cfg(feature = "plugin-host")]
-fn sidechain_input_index(params: &HashMap<&str, f64>) -> Option<usize> {
-    params
-        .get(SIDECHAIN_INPUT)
-        .map(|value| value.max(0.0) as usize)
-}
-
-#[cfg(feature = "plugin-host")]
-fn apply_sidechain_input(
-    params: &HashMap<&str, f64>,
-    instance: &mut oc_host::clap_instance::ClapInstance,
-) {
-    let Some(index) = sidechain_input_index(params) else {
-        return;
-    };
-    if index < instance.sidechain_input_count() {
-        instance.set_sidechain_input_index(index);
-    }
-}
-
-#[cfg(feature = "plugin-host")]
-fn apply_sidechain_input_vst3(
-    params: &HashMap<&str, f64>,
-    instance: &mut oc_host::vst3_instance::Vst3Instance,
-) {
-    let Some(index) = sidechain_input_index(params) else {
-        return;
-    };
-    if index < instance.sidechain_input_count() {
-        instance.set_sidechain_input_index(index);
     }
 }
 
@@ -2272,45 +2436,70 @@ fn count_noun(count: usize, one: &str, many: &str) -> String {
 #[cfg(feature = "plugin-host")]
 fn create_plugin_effect(
     plugin_id: &str,
-    params: &HashMap<&str, f64>,
+    authored_params: &[(String, oc_dsl::ast::ParamValue)],
     sample_rate: u32,
     place: &str,
+    resources: EffectResources<'_>,
 ) -> Result<Box<dyn AudioEffect>, PluginEffectError> {
-    let (required_format, plugin_id) = if let Some(id) = plugin_id.strip_prefix("clap.") {
-        (Some(oc_audio::PluginFormat::Clap), id)
-    } else if let Some(id) = plugin_id.strip_prefix("vst3.") {
-        (Some(oc_audio::PluginFormat::Vst3), id)
-    } else if let Some(id) = plugin_id.strip_prefix("au.") {
-        (Some(oc_audio::PluginFormat::Au), id)
-    } else if let Some(id) = plugin_id.strip_prefix("lv2.") {
-        (Some(oc_audio::PluginFormat::Lv2), id)
-    } else if let Some(id) = plugin_id.strip_prefix("vst2.") {
-        (Some(oc_audio::PluginFormat::Vst2), id)
-    } else {
-        (None, plugin_id)
-    };
+    let resource_root = resources.root;
+    let (required_format, plugin_id) = oc_host::effect_plugin_selector(plugin_id);
     // In-process fake components are never installed as bundles.
     #[cfg(any(test, feature = "test-support"))]
     if required_format.is_none_or(|format| format == oc_audio::PluginFormat::Vst3)
         && let Some(mut instance) =
             oc_host::vst3_instance::test_support::fake_instance_for_id(plugin_id, 512)
     {
+        let inputs = plugin_state::prepare(
+            oc_host::PluginFormat::Vst3,
+            plugin_id,
+            place,
+            authored_params,
+            resource_root,
+        )
+        .map_err(PluginEffectError::Refused)?;
+        let state = inputs.state;
+        let params = &inputs.controls;
+        plugin_state::apply(&state, |bytes| instance.set_state_bytes(bytes))
+            .map_err(PluginEffectError::Refused)?;
         refuse_instrument_insert(
             instance.name(),
             oc_host::ports::BusTopology::new(instance.input_ports(), instance.output_ports()),
             place,
         )?;
-        for (name, value) in params.iter().filter(|(name, _)| **name != SIDECHAIN_INPUT) {
+        if let Some(selection) = inputs.sidechain {
+            selection
+                .apply(instance.sidechain_input_count(), |index| {
+                    instance.set_sidechain_input_index(index);
+                })
+                .map_err(PluginEffectError::Refused)?;
+        }
+        for (name, value) in params {
             instance.set_param(name, *value);
         }
+        instance
+            .prepare_restored_insert(resources.transport)
+            .map_err(PluginEffectError::Refused)?;
         return Ok(Box::new(instance));
     }
     if required_format == Some(oc_audio::PluginFormat::Au) {
         #[cfg(target_os = "macos")]
         {
+            let inputs = plugin_state::prepare(
+                oc_host::PluginFormat::Au,
+                plugin_id,
+                place,
+                authored_params,
+                resource_root,
+            )
+            .map_err(PluginEffectError::Refused)?;
+            let state = inputs.state;
+            let params = &inputs.controls;
             let mut instance = oc_host::au_instance::AuInstance::load(plugin_id, sample_rate, 512)
-                .ok()
-                .ok_or(PluginEffectError::Unavailable)?;
+                .map_err(|error| {
+                    PluginEffectError::Refused(format!("Audio Unit effect '{plugin_id}': {error}"))
+                })?;
+            plugin_state::apply(&state, |bytes| instance.set_state_bytes(bytes))
+                .map_err(PluginEffectError::Refused)?;
             refuse_instrument_insert(
                 instance.name(),
                 oc_host::ports::BusTopology::new(instance.input_ports(), instance.output_ports()),
@@ -2322,7 +2511,7 @@ fn create_plugin_effect(
                     instance.component_name()
                 ));
             }
-            for (name, value) in params.iter().filter(|(name, _)| **name != SIDECHAIN_INPUT) {
+            for (name, value) in params {
                 instance.set_param_by_name(name, *value);
             }
             return Ok(Box::new(instance));
@@ -2332,26 +2521,43 @@ fn create_plugin_effect(
             return Err(PluginEffectError::Unavailable);
         }
     }
-    let info = if required_format == Some(oc_audio::PluginFormat::Lv2) {
-        oc_host::find_plugin_info(plugin_id, oc_audio::PluginFormat::Lv2)
-    } else {
-        oc_host::cached_plugins()
-            .iter()
-            .find(|plugin| {
-                matches!(
-                    plugin.format,
-                    oc_audio::PluginFormat::Clap
-                        | oc_audio::PluginFormat::Vst3
-                        | oc_audio::PluginFormat::Lv2
-                        | oc_audio::PluginFormat::Vst2
-                ) && required_format.is_none_or(|format| plugin.format == format)
-                    && (plugin.id == plugin_id
-                        || plugin.name == plugin_id
-                        || plugin.path == plugin_id)
-            })
-            .cloned()
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    if required_format == Some(oc_audio::PluginFormat::Vst2)
+        && oc_host::vst2_bridge::bridge_mode().is_some()
+        && std::path::Path::new(plugin_id).is_absolute()
+        && oc_host::vst2_bridge::needs_translation(std::path::Path::new(plugin_id))
+    {
+        return create_bridged_vst2_insert(
+            plugin_id,
+            plugin_id,
+            authored_params,
+            sample_rate,
+            place,
+            resources,
+        );
     }
-    .ok_or(PluginEffectError::Unavailable)?;
+    let info = oc_host::find_effect_plugin(required_format, plugin_id)
+        .ok_or(PluginEffectError::Unavailable)?;
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    if info.format == oc_audio::PluginFormat::Vst2
+        && oc_host::vst2_bridge::bridge_mode().is_some()
+        && oc_host::vst2_bridge::needs_translation(std::path::Path::new(&info.path))
+    {
+        return create_bridged_vst2_insert(
+            &info.path,
+            &info.id,
+            authored_params,
+            sample_rate,
+            place,
+            resources,
+        );
+    }
+    let inputs =
+        plugin_state::prepare(info.format, &info.id, place, authored_params, resource_root)
+            .map_err(PluginEffectError::Refused)?;
+    let state = inputs.state;
+    let params = &inputs.controls;
+    let sidechain = inputs.sidechain;
 
     match info.format {
         oc_audio::PluginFormat::Clap => {
@@ -2365,17 +2571,19 @@ fn create_plugin_effect(
                 sample_rate,
                 512,
                 move |instance| {
+                    plugin_state::apply(&state, |bytes| instance.set_state_bytes(bytes))?;
                     let borrowed: HashMap<&str, f64> = owned_params
                         .iter()
                         .map(|(name, value)| (name.as_str(), *value))
                         .collect();
-                    for (name, value) in borrowed
-                        .iter()
-                        .filter(|(name, _)| **name != SIDECHAIN_INPUT)
-                    {
+                    if let Some(selection) = sidechain {
+                        selection.apply(instance.sidechain_input_count(), |index| {
+                            instance.set_sidechain_input_index(index);
+                        })?;
+                    }
+                    for (name, value) in &borrowed {
                         instance.set_param(name, *value);
                     }
-                    apply_sidechain_input(&borrowed, instance);
                     Ok(())
                 },
             )
@@ -2391,24 +2599,64 @@ fn create_plugin_effect(
             Ok(Box::new(instance))
         }
         oc_audio::PluginFormat::Vst3 => {
-            let mut instance = oc_host::vst3_instance::Vst3Instance::load(
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            if let Some(mode) = oc_host::vst2_bridge::bridge_mode()
+                && oc_host::vst2_bridge::needs_vst3_translation(std::path::Path::new(&info.path))
+            {
+                let instance = oc_host::vst2_bridge::BridgedVst3Insert::load(
+                    oc_host::vst2_bridge::Vst3InsertSetup {
+                        path: std::path::Path::new(&info.path),
+                        class_name: &info.name,
+                        sample_rate,
+                        state: state.as_deref(),
+                        parameters: params
+                            .iter()
+                            .map(|(name, value)| ((*name).into(), *value))
+                            .collect(),
+                        sidechain_input: sidechain.map(plugin_sidechain::Selection::index),
+                        transport: resources.transport,
+                    },
+                    mode,
+                )
+                .map_err(|error| {
+                    PluginEffectError::Refused(format!("VST3 effect '{}': {error}", info.name))
+                })?;
+                return Ok(Box::new(instance));
+            }
+
+            let mut instance = oc_host::vst3_instance::Vst3Instance::load_class(
                 std::path::Path::new(&info.path),
+                &info.name,
                 sample_rate,
                 512,
             )
-            .ok()
-            .ok_or(PluginEffectError::Unavailable)?;
+            .map_err(|error| {
+                PluginEffectError::Refused(format!("VST3 effect '{}': {error}", info.name))
+            })?;
+            plugin_state::apply(&state, |bytes| instance.set_state_bytes(bytes))
+                .map_err(PluginEffectError::Refused)?;
             refuse_instrument_insert(
                 &info.name,
                 oc_host::ports::BusTopology::new(instance.input_ports(), instance.output_ports()),
                 place,
             )?;
 
-            for (name, value) in params.iter().filter(|(name, _)| **name != SIDECHAIN_INPUT) {
+            if let Some(selection) = sidechain {
+                selection
+                    .apply(instance.sidechain_input_count(), |index| {
+                        instance.set_sidechain_input_index(index);
+                    })
+                    .map_err(PluginEffectError::Refused)?;
+            }
+            for (name, value) in params {
                 instance.set_param(name, *value);
             }
-            apply_sidechain_input_vst3(params, &mut instance);
 
+            instance
+                .prepare_restored_insert(resources.transport)
+                .map_err(|error| {
+                    PluginEffectError::Refused(format!("VST3 effect '{}': {error}", info.name))
+                })?;
             Ok(Box::new(instance))
         }
         oc_audio::PluginFormat::Lv2 => {
@@ -2420,13 +2668,15 @@ fn create_plugin_effect(
             )
             .ok()
             .ok_or(PluginEffectError::Unavailable)?;
+            plugin_state::apply(&state, |bytes| instance.set_state_bytes(bytes))
+                .map_err(PluginEffectError::Refused)?;
             refuse_instrument_insert(
                 &info.name,
                 oc_host::ports::BusTopology::new(instance.input_ports(), instance.output_ports()),
                 place,
             )?;
 
-            for (name, value) in params.iter().filter(|(name, _)| **name != SIDECHAIN_INPUT) {
+            for (name, value) in params {
                 instance.set_param(name, *value);
             }
 
@@ -2440,27 +2690,154 @@ fn create_plugin_effect(
             )
             .ok()
             .ok_or(PluginEffectError::Unavailable)?;
+            plugin_state::apply(&state, |bytes| instance.set_state_bytes(bytes))
+                .map_err(PluginEffectError::Refused)?;
+            for (name, value) in params {
+                instance.set_param(name, *value);
+            }
+            if state.is_some() || !params.is_empty() {
+                instance
+                    .prepare_restored_insert(resources.transport)
+                    .map_err(|error| {
+                        PluginEffectError::Refused(format!("VST2 '{}': {error}", info.name))
+                    })?;
+            } else {
+                instance.prepare_block_buffers(512).map_err(|error| {
+                    PluginEffectError::Refused(format!(
+                        "VST2 '{}' preparation failed: {error:?}",
+                        info.name
+                    ))
+                })?;
+            }
             refuse_instrument_insert(
                 &info.name,
                 oc_host::ports::BusTopology::new(instance.input_ports(), instance.output_ports()),
                 place,
             )?;
 
-            for (name, value) in params.iter().filter(|(name, _)| **name != SIDECHAIN_INPUT) {
-                instance.set_param(name, *value);
-            }
-
             Ok(Box::new(instance))
         }
         _ => Err(PluginEffectError::Unavailable),
     }
 }
+
+#[cfg(all(feature = "plugin-host", target_os = "macos", target_arch = "aarch64"))]
+fn create_bridged_vst2_insert(
+    path: &str,
+    identity: &str,
+    authored_params: &[(String, oc_dsl::ast::ParamValue)],
+    sample_rate: u32,
+    place: &str,
+    resources: EffectResources<'_>,
+) -> Result<Box<dyn AudioEffect>, PluginEffectError> {
+    let inputs = plugin_state::prepare(
+        oc_audio::PluginFormat::Vst2,
+        identity,
+        place,
+        authored_params,
+        resources.root,
+    )
+    .map_err(PluginEffectError::Refused)?;
+    let parameters = inputs
+        .controls
+        .into_iter()
+        .map(|(name, value)| (name.into(), value))
+        .collect();
+    let effect = oc_host::vst2_bridge::BridgedVst2::load_insert(
+        std::path::Path::new(path),
+        sample_rate,
+        inputs.state.as_deref(),
+        parameters,
+        resources.transport,
+    )
+    .map_err(|error| PluginEffectError::Refused(format!("effect '{identity}' {place}: {error}")))?;
+    Ok(Box::new(effect))
+}
+
+#[cfg(all(test, feature = "plugin-host"))]
+mod plugin_resolution_tests {
+    use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn unavailable_audio_unit_insert_reports_the_registry_error() {
+        let result = try_create_effect(
+            &oc_dsl::ast::EffectType::Plugin("au.aufx:ocNO:ocNO".into()),
+            &[],
+            48_000,
+        );
+        let error = result.err().expect("unregistered component");
+        assert!(
+            error.contains("Audio Unit effect 'aufx:ocNO:ocNO'"),
+            "{error}"
+        );
+        assert!(error.contains("no registered AudioUnit matches"), "{error}");
+    }
+
+    #[test]
+    fn insert_sidechain_selection_refuses_invalid_or_absent_native_inputs() {
+        use oc_dsl::ast::{EffectType, ParamValue};
+        for plugin in ["test.fake.effect", "vst2.test.fixture.vst2.gain"] {
+            for value in [-1.0, 0.5, 0.0, 9.0] {
+                let effect = try_create_effect(
+                    &EffectType::Plugin(plugin.into()),
+                    &[("sidechain_input".into(), ParamValue::Number(value))],
+                    48_000,
+                );
+                assert!(effect.is_err(), "{plugin}: sidechain_input={value}");
+            }
+            assert!(try_create_effect(&EffectType::Plugin(plugin.into()), &[], 48_000).is_ok());
+        }
+    }
+
+    #[test]
+    fn native_insert_restores_inline_state_before_numeric_overrides() {
+        use oc_dsl::ast::{EffectType, ParamValue};
+        let state: Vec<u8> = b"OCF2"
+            .iter()
+            .copied()
+            .chain(0.25f32.to_le_bytes())
+            .chain(0.5f32.to_le_bytes())
+            .collect();
+        let hex: String = state.iter().map(|byte| format!("{byte:02x}")).collect();
+        for (override_gain, expected) in [(None, [0.225, 0.025]), (Some(0.75), [0.425, -0.175])] {
+            let mut params = vec![("vst2_state_hex".into(), ParamValue::String(hex.clone()))];
+            if let Some(gain) = override_gain {
+                params.push(("Gain".into(), ParamValue::Number(gain)));
+            }
+            let mut effect = try_create_effect(
+                &EffectType::Plugin("vst2.test.fixture.vst2.gain".into()),
+                &params,
+                48_000,
+            )
+            .unwrap();
+            let mut audio = [0.2, -0.2];
+            effect.process(&mut audio, 48_000);
+            assert!((audio[0] - expected[0]).abs() < 1e-6, "{audio:?}");
+            assert!((audio[1] - expected[1]).abs() < 1e-6, "{audio:?}");
+        }
+    }
+
+    #[test]
+    fn format_qualified_insert_resolves_outside_the_browser_inventory() {
+        let mut effect = try_create_effect(
+            &oc_dsl::ast::EffectType::Plugin("vst2.test.fixture.vst2.gain".into()),
+            &[("Gain".into(), oc_dsl::ast::ParamValue::Number(0.25))],
+            48_000,
+        )
+        .expect("an explicitly requested module does not require a browser scan");
+        let mut audio = [0.2f32, -0.2, 0.4, -0.4];
+        effect.process(&mut audio, 48_000);
+        assert_eq!(audio, [0.1, -0.1, 0.2, -0.2]);
+    }
+}
 #[cfg(not(feature = "plugin-host"))]
 fn create_plugin_effect(
     _plugin_id: &str,
-    _params: &HashMap<&str, f64>,
+    _params: &[(String, oc_dsl::ast::ParamValue)],
     _sample_rate: u32,
     _place: &str,
+    _resources: EffectResources<'_>,
 ) -> Result<Box<dyn AudioEffect>, PluginEffectError> {
     Err(PluginEffectError::Unavailable)
 }

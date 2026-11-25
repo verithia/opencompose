@@ -242,15 +242,23 @@ pub(crate) trait LiveSink: Send + 'static {
     fn route(&mut self, event: LiveEvent);
 }
 
-/// Push live events into the active OpenSynth audition producer slot, and into
-/// the take capture when one is open.
+/// Route live events to the mixer, audition producer, and active take capture.
 pub(crate) struct LiveInputSink {
     pub(crate) route: live_synth::Route,
     pub(crate) capture: Arc<crate::midi_record::MidiCapture>,
+    pub(crate) midi_cc: Arc<oc_engine::control_link::MidiControlInput>,
 }
 
 impl LiveSink for LiveInputSink {
     fn route(&mut self, event: LiveEvent) {
+        if let LiveEvent::ControlChange {
+            channel,
+            controller,
+            value,
+        } = event
+        {
+            self.midi_cc.publish(channel, controller, value);
+        }
         self.capture.record(event);
         let mut route = self.route.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(producer) = route.as_mut() {
@@ -704,6 +712,7 @@ pub fn set_midi_config(
     let sink = LiveInputSink {
         route: inner.audio.live_input_route(),
         capture: Arc::clone(&inner.audio.midi_recorder.capture),
+        midi_cc: Arc::clone(&inner.audio.midi_cc),
     };
     let mut view = inner
         .midi_live

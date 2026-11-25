@@ -143,14 +143,20 @@ audio_clip_track_prop = { "track:" ~ name }
 
 audio_clip_content = {
     audio_clip_file_prop |
+    playlist_lane_prop |
     audio_clip_placement_start_prop |
+    audio_clip_placement_start_quantization_prop |
     audio_clip_placement_end_prop |
     audio_clip_offset_prop |
+    audio_clip_stereo_offset_prop |
     audio_clip_loop_prop |
     audio_clip_gain_prop |
     audio_clip_gain_envelope_prop |
+    audio_clip_gain_interpolation_prop |
     audio_clip_fade_in_prop |
     audio_clip_fade_out_prop |
+    audio_clip_fade_in_curve_prop |
+    audio_clip_fade_out_curve_prop |
     audio_clip_invert_prop |
     audio_clip_crossfade_prop |
     audio_clip_stretch_prop |
@@ -167,16 +173,25 @@ audio_clip_content = {
 }
 
 audio_clip_file_prop     = { "file:" ~ string_literal }
+playlist_lane_prop = { "playlist_lane:" ~ integer }
 audio_clip_placement_start_prop = { "placement_start:" ~ signed_time_value }
+audio_clip_placement_start_quantization_prop = { "placement_start_quantization:" ~ audio_clip_start_quantization }
+audio_clip_start_quantization = { "nearest" | "offset_aware" }
 audio_clip_placement_end_prop = { "placement_end:" ~ signed_time_value }
 signed_time_value = ${ signed_number ~ unit_gap ~ ("ms" | "s") ~ unit_end }
 audio_clip_offset_prop   = { "offset:" ~ time_value }
+audio_clip_stereo_offset_prop = { "stereo_offset:" ~ signed_time_value }
 audio_clip_loop_prop     = { "loop:" ~ time_value }
 audio_clip_gain_prop     = { "gain:" ~ db_value }
 audio_clip_gain_envelope_prop = { "gain_envelope:" ~ gain_envelope_point ~ ("," ~ gain_envelope_point)* }
+audio_clip_gain_interpolation_prop = { "gain_envelope_interpolation:" ~ audio_clip_gain_interpolation }
+audio_clip_gain_interpolation = { "decibels" | "linear_amplitude" }
 gain_envelope_point      = { number ~ ":" ~ db_value }
 audio_clip_fade_in_prop  = { "fade_in:" ~ time_value }
 audio_clip_fade_out_prop = { "fade_out:" ~ time_value }
+audio_clip_fade_in_curve_prop = { "fade_in_curve:" ~ audio_clip_bezier }
+audio_clip_fade_out_curve_prop = { "fade_out_curve:" ~ audio_clip_bezier }
+audio_clip_bezier = { "bezier" ~ "(" ~ signed_number ~ "," ~ signed_number ~ "," ~ signed_number ~ "," ~ signed_number ~ ")" }
 audio_clip_invert_prop    = { "invert:" ~ boolean }
 audio_clip_crossfade_prop = { "crossfade:" ~ time_value }
 audio_clip_stretch_prop  = { "stretch:" ~ number }
@@ -250,7 +265,7 @@ control_link_block = {
 control_link_source = { "from" ~ ":" ~ control_link_source_value }
 control_link_source_value = { control_link_cc | control_link_macro | control_link_lane }
 control_link_cc = { "cc" ~ "(" ~ integer ~ ("," ~ integer)? ~ ")" }
-control_link_macro = { "macro" ~ "(" ~ integer ~ ")" }
+control_link_macro = { "macro" ~ "(" ~ integer ~ ("," ~ name)? ~ ")" }
 control_link_lane = { "lane" ~ "(" ~ name ~ "," ~ name ~ ")" }
 
 // `->` is the fan-out row; `target:` is the legacy single-target spelling and
@@ -265,6 +280,7 @@ control_link_target_body = {
     "track" ~ ":" ~ name ~
     "param" ~ ":" ~ control_link_param ~
     "formula" ~ ":" ~ control_link_formula ~
+    automation_value_mapping? ~
     control_link_smoothing?
 }
 control_link_param = { string_literal | control_link_param_key }
@@ -614,14 +630,15 @@ effect_param = {
 }
 
 effect_param_name = @{
-    (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")*
+    "slot/wet" | ((ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")*)
 }
 
 // Effect param values are lenient — any non-whitespace chars up to comma/end
 // This handles: -2dB@10kHz, 2:1, hall, 100%, 30Hz, 3.2s, etc.
 effect_param_value = @{
-    (!("," | "\r\n" | "\n" | "\r" | " " | "\t") ~ ANY)+
+    effect_quoted_value | (!("," | "\r\n" | "\n" | "\r" | " " | "\t" | "\"") ~ ANY)+
 }
+effect_quoted_value = { "\"" ~ ("\\" ~ ANY | !("\"" | "\r" | "\n") ~ ANY)* ~ "\"" }
 
 // === Phrase ===
 
@@ -631,7 +648,7 @@ phrase_block = {
 }
 
 phrase_header = {
-    "@phrase" ~ name ~ time_range? ~ ("|" ~ channel_prop)?
+    "@phrase" ~ name ~ time_range? ~ ("|" ~ (channel_prop ~ ("," ~ playlist_lane_prop)? | playlist_lane_prop))?
 }
 
 // A phrase event is a note, rest, pedal mark or bar line.
@@ -917,9 +934,11 @@ automation_line = {
 automation_target = @{ identifier ~ ("." ~ identifier)? }
 
 automation_attr = _{
+    automation_playlist_lane |
     automation_ppq |
     automation_time_range |
     automation_muted |
+    automation_discontinuities |
     automation_smoothing |
     automation_mode |
     automation_speed |
@@ -927,9 +946,11 @@ automation_attr = _{
     automation_pw |
     automation_skew |
     automation_tension |
-    automation_amount
+    automation_amount |
+    automation_value_mapping
 }
 
+automation_playlist_lane = { "playlist_lane=" ~ integer }
 automation_ppq = { "[" ~ "ppq=" ~ integer ~ "]" }
 
 // `[start - end]` makes the lane a clip that writes only inside the span.
@@ -938,6 +959,7 @@ automation_time_range = { "[" ~ bar_beat ~ "-" ~ bar_beat ~ "]" }
 
 // A flag, like `linear`/`step` on `gain_automation:`: no `=` and no value.
 automation_muted = { "muted" }
+automation_discontinuities = { "discontinuities" }
 
 automation_smoothing = { "smoothing=" ~ time_value }
 
@@ -968,7 +990,14 @@ automation_tension = { "tension=" ~ number }
 
 automation_amount = { "amount=" ~ number }
 
-curve_name = { "linear" | "stairs" | "half_sine" | "half-sine" | "smooth" }
+automation_curvature = { "curvature=" ~ signed_number }
+automation_value_mapping = { "mapping(" ~ mapping_curve ~ ("," ~ mapping_attribute)* ~ ")" }
+mapping_curve = { "linear" | "exponential" }
+mapping_attribute = _{ automation_curvature | mapping_scale | mapping_offset | mapping_quantization }
+mapping_quantization = { "input_quantization_steps=" ~ integer }
+mapping_scale = { "scale=" ~ signed_number }
+mapping_offset = { "offset=" ~ signed_number }
+curve_name = { "linear" | "stairs" | "half_sine" | "half-sine" | "smooth" | "exponential" }
 
 // === Clip (pattern reference on track) ===
 
@@ -994,11 +1023,11 @@ automation_points = {
 }
 
 automation_point = {
-    bar_beat ~ "=" ~ automation_point_value ~ automation_curve? ~ automation_tension?
+    bar_beat ~ "=" ~ automation_point_value ~ automation_curve? ~ automation_tension? ~ automation_curvature?
 }
 
 // An attribute keyword is never the point value, so `1:2=curve` can name one.
-automation_point_value = _{ !(("curve" | "tension") ~ "=") ~ param_value }
+automation_point_value = _{ !(("curve" | "tension" | "curvature") ~ "=") ~ param_value }
 
 // === Bus ===
 
@@ -1041,7 +1070,7 @@ routes_line = {
 route_line = {
     "route:" ~ route_kind? ~ name ~ "->" ~ route_target
 }
-route_kind = @{ "audio" | "control" }
+route_kind = @{ "audio" | "control" | "midi" }
 route_target = @{ identifier }
 
 // === Master ===
@@ -1064,9 +1093,9 @@ loudness_line = { "loudness:" ~ db_value }
 master_volume_line = { "volume:" ~ db_value }
 
 gain_automation_line = {
-    "gain_automation:" ~ gain_interpolation ~ gain_ppq? ~ time_range ~ "{" ~ automation_points ~ "}"
+    "gain_automation:" ~ gain_interpolation ~ gain_ppq? ~ time_range ~ automation_playlist_lane? ~ automation_discontinuities? ~ automation_value_mapping? ~ "{" ~ automation_points ~ "}"
 }
-gain_interpolation = { "linear" | "step" }
+gain_interpolation = { "linear" | "step" | "segments" }
 gain_ppq = { "ppq=" ~ integer }
 
 // === Section ===
@@ -1137,13 +1166,15 @@ percentage  = ${ number ~ unit_gap ~ "%" ~ unit_end }
 freq_value  = ${ number ~ unit_gap ~ "Hz" ~ unit_end }
 cents_value = ${ number ~ unit_gap ~ "ct" ~ unit_end }
 time_value  = ${ number ~ unit_gap ~ ("ms" | "s") ~ unit_end }
+signed_percentage = ${ signed_number ~ unit_gap ~ "%" ~ unit_end }
+signed_freq_value = ${ signed_number ~ unit_gap ~ "Hz" ~ unit_end }
 
 param_value = {
     db_value |
-    percentage |
-    freq_value |
-    cents_value |
-    time_value |
+    signed_percentage |
+    signed_freq_value |
+    signed_cents_value |
+    signed_time_value |
     array_value |
     signed_number |
     string_literal |

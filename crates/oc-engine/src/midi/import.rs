@@ -1705,6 +1705,7 @@ fn notes_to_phrase(
     let end_bar = enclosing_bar(clock, last_quarter)
         .map_err(|message| MidiError::InvalidEvent { offset: 0, message })?;
     Ok(Phrase {
+        playlist_lane: None,
         name,
         channel: None,
         pedals: Vec::new(),
@@ -1825,6 +1826,7 @@ fn automation_point(
         value,
         curve: Curve::Linear,
         tension: None,
+        curvature: None,
     })
 }
 

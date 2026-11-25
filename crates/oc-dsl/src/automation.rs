@@ -8,6 +8,11 @@ use crate::ast::{
     MAX_LFO_MULT, MIN_LFO_SPEED_HZ, ParamValue,
 };
 use crate::timing::ProjectClock;
+mod compact;
+pub use compact::{
+    PreparedMapping, authored_mapped_bounds, exponential_shape, map_value, segment_shape,
+    track_uses_builtin_synth, validate_encoded_parameter_curve, validate_mapped_bounds,
+};
 
 impl AutomationLane {
     /// Effect target and parameter name when this is an effect-parameter lane.
@@ -71,9 +76,18 @@ pub fn decode_plugin_automation_param(lane: &str) -> Option<String> {
     if encoded.is_empty() || encoded.len() % 2 != 0 {
         return None;
     }
-    let bytes = (0..encoded.len())
-        .step_by(2)
-        .map(|index| u8::from_str_radix(&encoded[index..index + 2], 16).ok())
+    let nibble = |byte: u8| match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    };
+    // Decode bytes rather than slicing a UTF-8 string at arbitrary offsets.
+    // Each pair must be ASCII hex; malformed Unicode cannot panic admission.
+    let bytes = encoded
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| Some((nibble(pair[0])? << 4) | nibble(pair[1])?))
         .collect::<Option<Vec<_>>>()?;
     String::from_utf8(bytes).ok()
 }
@@ -174,6 +188,12 @@ fn target_names(effects: &[Effect]) -> String {
 /// Check that a built-in effect exposes `param`; plugin parameters are the
 /// plugin's own contract and are accepted here.
 pub fn validate_device_param(effect: &Effect, param: &str) -> Result<(), String> {
+    if effect.effect_type.parameter_changes_latency(param) {
+        return Err("FIR oversampling changes latency. Set it on the effect so the mixer can prepare compensation.".into());
+    }
+    if oc_device_schema::effect_slot::SlotControl::from_id(param).is_some() {
+        return Ok(());
+    }
     let Some(device) = effect
         .effect_type
         .device_id()
@@ -196,6 +216,55 @@ pub fn validate_device_param(effect: &Effect, param: &str) -> Result<(), String>
     ))
 }
 
+/// Validate and convert an insert control without consulting its device.
+pub fn slot_point_value(
+    control: oc_device_schema::effect_slot::SlotControl,
+    value: &ParamValue,
+) -> Result<f64, String> {
+    use oc_device_schema::effect_slot::SlotControl;
+    match (control, value) {
+        (SlotControl::Wet, ParamValue::Number(value))
+            if (SlotControl::WET_MIN..=SlotControl::WET_MAX).contains(value) =>
+        {
+            Ok(*value)
+        }
+        (SlotControl::Wet, ParamValue::Percentage(value))
+            if (100.0 * SlotControl::WET_MIN..=100.0 * SlotControl::WET_MAX).contains(value) =>
+        {
+            Ok(value / 100.0)
+        }
+        (SlotControl::Enabled, ParamValue::Bool(value)) => Ok(if *value { 1.0 } else { 0.0 }),
+        (SlotControl::Enabled, ParamValue::Number(value @ (0.0 | 1.0))) => Ok(*value),
+        (SlotControl::Wet, _) => Err("slot/wet requires 0..1 or 0%..100%".into()),
+        (SlotControl::Enabled, _) => Err("slot/enabled requires true, false, 0 or 1".into()),
+    }
+}
+
+/// The enable lane is a sequence of switch writes.
+pub fn validate_slot_lane(
+    lane: &AutomationLane,
+    control: oc_device_schema::effect_slot::SlotControl,
+) -> Result<(), String> {
+    use oc_device_schema::effect_slot::SlotControl;
+    if control == SlotControl::Enabled
+        && (lane.is_lfo()
+            || lane.smoothing_ms != 0.0
+            || lane.value_mapping.is_some()
+            || lane
+                .points
+                .iter()
+                .any(|p| !matches!(p.curve, Curve::Linear | Curve::Stairs)))
+    {
+        return Err("slot/enabled accepts stepped anchors only".into());
+    }
+    if lane.value_mapping.is_none() {
+        for point in &lane.points {
+            slot_point_value(control, &point.value)?;
+        }
+    }
+    Ok(())
+}
+
 // ============================================================================
 // Compiled lanes and the one evaluator
 // ============================================================================
@@ -210,6 +279,8 @@ pub struct LanePoint {
     pub curve: Curve,
     /// Segment tension in 0..1, already defaulted to `1.0`.
     pub tension: f64,
+    pub curvature: f64,
+    curvature_scale: f64,
 }
 
 /// The cycle controls of an LFO lane, with the shape's midpoint and origin.
@@ -239,6 +310,7 @@ struct LfoShape {
 /// belongs to whoever renders, not to this stateless value.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LaneCurve {
+    value_mapping: Option<PreparedMapping>,
     points: Vec<LanePoint>,
     mode: LaneMode,
     lfo: Option<LfoShape>,
@@ -256,6 +328,7 @@ struct RawLanePoint {
     value: f64,
     curve: Curve,
     tension: f64,
+    curvature: f64,
 }
 
 /// A clip's span: where it starts in both coordinates and where it stops.
@@ -320,15 +393,27 @@ impl LaneCurve {
             }
             None => None,
         };
+        let switch = lane.effect_lane().is_some_and(|(_, parameter)| {
+            parameter == oc_device_schema::effect_slot::SlotControl::ENABLED_ID
+        });
         let mut raw = Vec::with_capacity(lane.points.len());
         for point in &lane.points {
+            if !oc_device_schema::automation_curves::valid_curvature(point.curvature.unwrap_or(0.0))
+                || (point.curvature.is_some() && point.curve != Curve::Exponential)
+            {
+                return Err("automation curvature requires curve=exponential and the supported finite range".into());
+            }
+            if lane.value_mapping.is_some() && !matches!(point.value, ParamValue::Number(_)) {
+                return Err("mapped automation currently requires numeric anchors".into());
+            }
             let quarter = lane_quarter(clock, lane, &point.position)?;
             raw.push(RawLanePoint {
                 quarter,
                 sample: clock.sample_at_quarter(quarter, sample_rate)?,
                 value: value_of(&point.value)?,
-                curve: point.curve,
+                curve: if switch { Curve::Stairs } else { point.curve },
                 tension: point.tension.unwrap_or(1.0),
+                curvature: point.curvature.unwrap_or(0.0),
             });
         }
         let (points, lfo) = if lane.is_lfo() {
@@ -338,18 +423,54 @@ impl LaneCurve {
                 &lane.lfo,
                 clip.as_ref()
                     .map(|clip| (clip.start_quarter, clip.start_sample)),
+                lane.preserve_discontinuities,
             )
         } else {
-            (envelope_points(raw), None)
+            (envelope_points(raw, lane.preserve_discontinuities), None)
         };
-        Ok(Self {
+        let mut prepared = Self {
+            value_mapping: None,
             points,
             mode: lane.mode,
             lfo,
             smoothing_ms: lane.smoothing_ms,
             sample_rate,
             span: clip.map(|clip| (clip.start_sample as f64, clip.end_sample as f64)),
-        })
+        };
+        if let Some(mapping) = lane.value_mapping {
+            let (low, high) = prepared
+                .value_bounds()
+                .ok_or("mapped automation requires finite anchors")?;
+            prepared.value_mapping = Some(PreparedMapping::new(mapping, low, high)?);
+        }
+        Ok(prepared)
+    }
+
+    /// Conservative analytic extrema, including LFO depth and post-value transfer.
+    /// Monotone segments cannot exceed their anchors; affine maps may reverse order.
+    pub fn value_bounds(&self) -> Option<(f64, f64)> {
+        if self.points.is_empty() || self.points.iter().any(|point| !point.value.is_finite()) {
+            return None;
+        }
+        let mut low = self
+            .points
+            .iter()
+            .map(|p| p.value)
+            .fold(f64::INFINITY, f64::min);
+        let mut high = self
+            .points
+            .iter()
+            .map(|p| p.value)
+            .fold(f64::NEG_INFINITY, f64::max);
+        if let Some(lfo) = self.lfo {
+            low = lfo.center + (low - lfo.center) * lfo.amount;
+            high = lfo.center + (high - lfo.center) * lfo.amount;
+        }
+        if let Some(mapping) = self.value_mapping {
+            low = mapping.apply(low);
+            high = mapping.apply(high);
+        }
+        (low.is_finite() && high.is_finite()).then_some((low.min(high), low.max(high)))
     }
 
     /// True when the lane repeats one cycle instead of holding an envelope.
@@ -360,6 +481,11 @@ impl LaneCurve {
     /// The lane's automation mode.
     pub fn mode(&self) -> LaneMode {
         self.mode
+    }
+
+    /// Exclusive sample limit for a scoped clip.
+    pub fn end_sample_exclusive(&self) -> Option<u64> {
+        self.span.map(|(_, end)| end as u64)
     }
 
     /// The compiled points, in evaluation order.
@@ -395,6 +521,40 @@ impl LaneCurve {
         }
     }
 
+    /// Leading samples whose envelope target is absent, bounded by `frames`.
+    /// Skipping these samples advances only the renderer's cursor: no target
+    /// reaches its smoother or parameter writer. LFO clocks remain per-sample.
+    pub fn inactive_envelope_prefix(&self, start: u64, frames: u64) -> u64 {
+        if self.is_lfo() || frames == 0 {
+            return 0;
+        }
+        // Envelope evaluation compares f64 sample positions. Beyond exact
+        // integer precision, retain that evaluator rather than infer a boundary.
+        if start
+            .checked_add(frames)
+            .is_none_or(|end| end > (1_u64 << 53))
+        {
+            return 0;
+        }
+        let Some(first) = self.points.first() else {
+            return frames;
+        };
+        let sample = start as f64;
+        let head = if let Some((head, end)) = self.span {
+            if sample >= end {
+                return frames;
+            }
+            head
+        } else {
+            first.position
+        };
+        if sample < head {
+            ((head - sample).ceil() as u64).min(frames)
+        } else {
+            0
+        }
+    }
+
     /// Envelope value at an absolute sample.
     ///
     /// `None` means the lane writes nothing: outside a clip's span, or before
@@ -410,11 +570,15 @@ impl LaneCurve {
         {
             return None;
         }
-        match point_value(&self.points, sample, 0.0) {
+        let value = match point_value(&self.points, sample, 0.0) {
             Some(value) => Some(value),
             None if self.span.is_some() => self.points.first().map(|point| point.value),
             None => None,
-        }
+        };
+        value.map(|value| {
+            self.value_mapping
+                .map_or(value, |mapping| mapping.apply(value))
+        })
     }
 
     /// Cycle count of an LFO at `sample`; `None` where the lane writes nothing.
@@ -444,7 +608,11 @@ impl LaneCurve {
         let lfo = self.lfo.as_ref()?;
         let phase = warped_phase(cycles.max(0.0), lfo.skew, lfo.pulse_width);
         let value = point_value(&self.points, phase, lfo.tension)?;
-        Some(lfo.center + (value - lfo.center) * lfo.amount)
+        let value = lfo.center + (value - lfo.center) * lfo.amount;
+        Some(
+            self.value_mapping
+                .map_or(value, |mapping| mapping.apply(value)),
+        )
     }
 }
 
@@ -498,11 +666,27 @@ fn point_value(points: &[LanePoint], position: f64, ease: f64) -> Option<f64> {
     } else {
         progress + (progress * progress * (3.0 - 2.0 * progress) - progress) * ease
     };
-    Some(point.value + (next.value - point.value) * shape(point.curve, point.tension, progress))
+    Some(
+        point.value
+            + (next.value - point.value)
+                * if point.curve == Curve::Exponential
+                    && point.curvature != 0.0
+                    && progress != 0.0
+                    && progress != 1.0
+                {
+                    if point.curvature_scale.is_finite() {
+                        (point.curvature * progress).exp_m1() * point.curvature_scale
+                    } else {
+                        exponential_shape(point.curvature, progress)
+                    }
+                } else {
+                    segment_shape(point.curve, point.tension, point.curvature, progress)
+                },
+    )
 }
 
 /// Envelope points: absolute samples, one value per sample position.
-fn envelope_points(mut raw: Vec<RawLanePoint>) -> Vec<LanePoint> {
+fn envelope_points(mut raw: Vec<RawLanePoint>, preserve_discontinuities: bool) -> Vec<LanePoint> {
     raw.sort_by_key(|point| point.sample);
     let mut unique: Vec<LanePoint> = Vec::with_capacity(raw.len());
     for point in raw {
@@ -511,9 +695,17 @@ fn envelope_points(mut raw: Vec<RawLanePoint>) -> Vec<LanePoint> {
             value: point.value,
             curve: point.curve,
             tension: point.tension,
+            curvature: point.curvature,
+            curvature_scale: if point.curvature == 0.0 {
+                1.0
+            } else {
+                1.0 / point.curvature.exp_m1()
+            },
         };
         match unique.last_mut() {
-            Some(last) if last.position == point.position => *last = point,
+            Some(last) if !preserve_discontinuities && last.position == point.position => {
+                *last = point
+            }
             _ => unique.push(point),
         }
     }
@@ -523,6 +715,8 @@ fn envelope_points(mut raw: Vec<RawLanePoint>) -> Vec<LanePoint> {
 /// LFO points and cycle controls: each point's musical distance from the first
 /// is its phase, and the shape scales around the authored values' midpoint.
 ///
+/// Coincident knots retain their order when the lane opts into discontinuities.
+///
 /// `cycle_origin` moves the phase origin without moving the shape: a clip
 /// passes its head, so the cycle restarts there while the authored points still
 /// span one cycle.
@@ -530,29 +724,32 @@ fn lfo_parts(
     mut raw: Vec<RawLanePoint>,
     lfo: &LaneLfo,
     cycle_origin: Option<(f64, u64)>,
+    preserve_discontinuities: bool,
 ) -> (Vec<LanePoint>, Option<LfoShape>) {
     raw.sort_by(|a, b| a.quarter.total_cmp(&b.quarter));
-    let mut unique: Vec<RawLanePoint> = Vec::with_capacity(raw.len());
+    let mut ordered: Vec<RawLanePoint> = Vec::with_capacity(raw.len());
     for point in raw {
-        match unique.last_mut() {
-            Some(last) if last.quarter == point.quarter => *last = point,
-            _ => unique.push(point),
+        match ordered.last_mut() {
+            Some(last) if !preserve_discontinuities && last.quarter == point.quarter => {
+                *last = point
+            }
+            _ => ordered.push(point),
         }
     }
-    let first_quarter = unique.first().map_or(0.0, |point| point.quarter);
-    let first_sample = unique.first().map_or(0, |point| point.sample);
-    let span = unique.last().map_or(0.0, |point| point.quarter) - first_quarter;
+    let first_quarter = ordered.first().map_or(0.0, |point| point.quarter);
+    let first_sample = ordered.first().map_or(0, |point| point.sample);
+    let span = ordered.last().map_or(0.0, |point| point.quarter) - first_quarter;
     let (mut low, mut high) = (f64::INFINITY, f64::NEG_INFINITY);
-    for point in &unique {
+    for point in &ordered {
         low = low.min(point.value);
         high = high.max(point.value);
     }
-    let center = if unique.is_empty() {
+    let center = if ordered.is_empty() {
         0.0
     } else {
         0.5 * (low + high)
     };
-    let points = unique
+    let points = ordered
         .into_iter()
         .map(|point| LanePoint {
             position: if span > 0.0 {
@@ -563,6 +760,12 @@ fn lfo_parts(
             value: point.value,
             curve: point.curve,
             tension: point.tension,
+            curvature: point.curvature,
+            curvature_scale: if point.curvature == 0.0 {
+                1.0
+            } else {
+                1.0 / point.curvature.exp_m1()
+            },
         })
         .collect();
     let (cycle_quarters, hz) = match lfo.speed {
@@ -589,10 +792,33 @@ fn lfo_parts(
     )
 }
 
+#[cfg(test)]
+#[test]
+fn a_repeating_lane_keeps_the_left_limit_and_the_jump() {
+    let project = crate::parse(
+        "@project\n  tempo: 120\n@bus drums\n  effects:\n    - gain: factor=1\n  automation: fx1.factor [1:1 - 2:1] mode=lfo speed=1/2 discontinuities {1:1=1, 1:2=0, 1:2=0.75, 1:3=1}\n",
+    )
+    .unwrap();
+    crate::validate(&project).unwrap();
+    assert_eq!(crate::parse(&crate::serialize(&project)).unwrap(), project);
+    let lane = &project.buses[0].automation[0];
+    let clock = ProjectClock::new(&project.properties).unwrap();
+    let compile = |lane: &AutomationLane| {
+        LaneCurve::new(lane, &clock, 8_000, |value| Ok(value.as_f64().unwrap())).unwrap()
+    };
+    let curve = compile(lane);
+    assert_eq!(curve.lfo_value(0.25), Some(0.5));
+    assert_eq!(curve.lfo_value(0.5), Some(0.75));
+    assert_eq!(curve.lfo_value(1.25), Some(0.5));
+    let mut legacy = lane.clone();
+    legacy.preserve_discontinuities = false;
+    assert_eq!(compile(&legacy).lfo_value(0.25), Some(0.875));
+}
+
 /// Segment shape at `position` in 0..1, from this point to the next.
 pub fn shape(curve: Curve, tension: f64, position: f64) -> f64 {
     match curve {
-        Curve::Linear => position,
+        Curve::Linear | Curve::Exponential => position,
         Curve::Stairs => 0.0,
         Curve::HalfSine => 0.5 - 0.5 * (std::f64::consts::PI * position).cos(),
         Curve::Smooth => {
@@ -658,6 +884,86 @@ pub fn smooth_step(previous: f64, target: f64, alpha: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn encoded_parameter_names_reject_malformed_bytes_without_utf8_slicing() {
+        for suffix in [
+            "",
+            "0",
+            "0g",
+            "aéx",
+            "\u{feff}0",
+            "ff",
+            "c0af",
+            "ed a0 80",
+            "eda080",
+            "f4908080",
+        ] {
+            assert_eq!(
+                decode_plugin_automation_param(&format!("pluginparam_{suffix}")),
+                None,
+                "{suffix:?}"
+            );
+        }
+        assert_eq!(
+            decode_plugin_automation_param("\u{feff}pluginparam_41"),
+            None
+        );
+        for name in ["filter.cutoff", "Gain", "音量", "\u{feff}Gain"] {
+            assert_eq!(
+                decode_plugin_automation_param(&encode_plugin_automation_param(name)).as_deref(),
+                Some(name)
+            );
+        }
+        assert_eq!(
+            decode_plugin_automation_param("pluginparam_4A"),
+            Some("J".into())
+        );
+    }
+
+    #[test]
+    fn inactive_envelope_prefix_agrees_with_every_skipped_sample() {
+        let curve = |span, points, mode| LaneCurve {
+            value_mapping: None,
+            points,
+            mode,
+            lfo: None,
+            smoothing_ms: 5.0,
+            sample_rate: 48_000,
+            span,
+        };
+        let point = LanePoint {
+            position: 20.0,
+            value: 0.7,
+            curve: Curve::Linear,
+            tension: 1.0,
+            curvature: 0.0,
+            curvature_scale: 1.0,
+        };
+        let curves = [
+            curve(Some((10.0, 30.0)), vec![point], LaneMode::Envelope),
+            curve(None, vec![point], LaneMode::Envelope),
+            curve(None, Vec::new(), LaneMode::Envelope),
+        ];
+        for curve in &curves {
+            for start in 0..50 {
+                for frames in [1, 7, 60] {
+                    let skipped = curve.inactive_envelope_prefix(start, frames);
+                    assert!(skipped <= frames);
+                    for sample in start..start + skipped {
+                        assert_eq!(curve.envelope_value(sample as f64), None);
+                    }
+                    if skipped < frames {
+                        assert!(curve.envelope_value((start + skipped) as f64).is_some());
+                    }
+                }
+            }
+            assert_eq!(curve.inactive_envelope_prefix(1_u64 << 53, 1), 0);
+            assert_eq!(curve.inactive_envelope_prefix(u64::MAX, 1), 0);
+        }
+        let lfo = curve(Some((10.0, 30.0)), vec![point], LaneMode::Lfo);
+        assert_eq!(lfo.inactive_envelope_prefix(0, 100), 0);
+    }
     use crate::ast::{EffectType, ParamValue};
 
     fn effect(effect_type: EffectType) -> Effect {
@@ -713,8 +1019,9 @@ mod tests {
     fn built_in_parameters_come_from_the_device_schema() {
         let gain = effect(EffectType::Gain);
         assert!(validate_device_param(&gain, "factor").is_ok());
-        let error = validate_device_param(&gain, "mix").unwrap_err();
-        assert!(error.contains("has no parameter 'mix'"), "{error}");
+        assert!(validate_device_param(&gain, "mix").is_ok());
+        let error = validate_device_param(&gain, "cutoff").unwrap_err();
+        assert!(error.contains("has no parameter 'cutoff'"), "{error}");
         assert!(error.contains("factor"), "{error}");
     }
 
@@ -731,6 +1038,7 @@ mod tests {
             ppq: 0,
             smoothing_ms: 0.0,
             points: vec![crate::ast::AutomationPoint {
+                curvature: None,
                 position: crate::ast::BarBeat::new(1, 1, 0),
                 value: ParamValue::Db(-24.0),
                 curve: crate::ast::Curve::Linear,
@@ -769,6 +1077,7 @@ mod tests {
             points: points
                 .iter()
                 .map(|(beat, value)| crate::ast::AutomationPoint {
+                    curvature: None,
                     position: BarBeat::new(1, *beat, 0),
                     value: ParamValue::Number(*value),
                     curve: Curve::Linear,
@@ -968,6 +1277,7 @@ mod tests {
             points: [(BarBeat::new(2, 2, 0), 0.2), (BarBeat::new(2, 4, 0), 0.8)]
                 .into_iter()
                 .map(|(position, value)| crate::ast::AutomationPoint {
+                    curvature: None,
                     position,
                     value: ParamValue::Number(value),
                     curve: Curve::Linear,
@@ -1003,6 +1313,7 @@ mod tests {
         let points = [(BarBeat::new(1, 1, 0), 0.0), (BarBeat::new(2, 1, 0), 1.0)]
             .into_iter()
             .map(|(position, value)| crate::ast::AutomationPoint {
+                curvature: None,
                 position,
                 value: ParamValue::Number(value),
                 curve: Curve::Linear,

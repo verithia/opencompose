@@ -67,3 +67,8 @@ impl ToolArguments for EffectsSetBypassArgs {
     const ID: ToolId = ToolId::EffectsSetBypass;
     const FIELD_ORDER: &'static [&'static str] = &["target", "index", "bypass"];
 }
+
+impl ToolArguments for crate::commands::CurveImportRequest {
+    const ID: ToolId = ToolId::EffectsImportCurve;
+    const FIELD_ORDER: &'static [&'static str] = &["target", "index", "path", "expected_revision"];
+}

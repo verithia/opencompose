@@ -1,6 +1,8 @@
 //! Both source engines must render without touching the heap.
 
-use oc_synth::synth::granular::{GrainWindow, GranularPatch, GranularVoice, SourceSample};
+use oc_synth::synth::granular::{
+    GrainEnvelope, GrainWindow, GranularPatch, GranularVoice, ReadMode, SourceSample,
+};
 use oc_synth::synth::spectral;
 use oc_synth::synth::spectral::{SpectralPatch, SpectralVoice, SpectralWarp};
 use oc_synth::synth::{OpenSynth, SynthPatch, Waveform};
@@ -37,9 +39,17 @@ fn source_engines_render_without_allocating() {
         std::process::id()
     ));
     write_tone(&path);
-    let sample = SourceSample::load(&path).unwrap();
 
     let granular_patch = GranularPatch {
+        channel_mode: Default::default(),
+        pitch_mode: Default::default(),
+        read_mode: ReadMode::Bandlimited,
+        loop_grains: true,
+        envelope: Some(GrainEnvelope {
+            attack: 0.25,
+            release: 0.25,
+            first_attack: Some(0.0),
+        }),
         sample: path.clone(),
         root_note: 60.0,
         density: 80.0,
@@ -62,12 +72,13 @@ fn source_engines_render_without_allocating() {
         pitch_track: true,
         seed: 9,
     };
+    let sample = SourceSample::load_for_patch(&granular_patch).unwrap();
     let mut grain_voice = GranularVoice::new(granular_patch.seed);
     let mut granular_peak = 0.0f64;
     let granular_allocations = measure(|| {
         for _ in 0..4_096 {
             let (left, _right) =
-                grain_voice.render(&sample, &granular_patch, 1.0, 0.0, 0.0, 48_000.0);
+                grain_voice.render(&sample, &granular_patch, 4.0, 0.0, 0.0, 48_000.0);
             granular_peak = granular_peak.max(left.abs());
         }
     });
@@ -136,6 +147,11 @@ fn source_patch(waveform: Waveform, sample: &std::path::Path) -> SynthPatch {
     match waveform {
         Waveform::Granular => {
             patch.granular[0] = Some(GranularPatch {
+                channel_mode: Default::default(),
+                pitch_mode: Default::default(),
+                read_mode: Default::default(),
+                loop_grains: false,
+                envelope: None,
                 sample: sample.to_path_buf(),
                 root_note: 60.0,
                 density: 60.0,
@@ -216,4 +232,98 @@ fn source_note_on_does_not_allocate() {
         assert!(peak > 1.0e-4, "{waveform:?} note-on was silent");
     }
     let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn source_native_pitch_extremes_reset_and_replay_without_heap_operations() {
+    use oc_synth::synth::{NativeVoiceEvent, granular::PitchMode};
+    let root = oc_test_support::temp_dir("oc-source-pitch", "bounded-expression");
+    let path = root.join("carrier.wav");
+    write_tone(&path);
+    for waveform in [Waveform::Granular, Waveform::Spectral] {
+        let mut patch = source_patch(waveform, &path);
+        if let Some(granular) = &mut patch.granular[0] {
+            granular.pitch_mode = PitchMode::Follow;
+            granular.read_mode = ReadMode::Bandlimited;
+        }
+        let mut synth = OpenSynth::new(patch);
+        let mut finite = true;
+        let allocations = measure(|| {
+            for note in [0, 127] {
+                synth
+                    .send_native_voice(&NativeVoiceEvent::On {
+                        token: 1,
+                        channel: 0,
+                        note,
+                        velocity: 100,
+                    })
+                    .unwrap();
+                for semitones in [-96.0, 96.0, 0.0] {
+                    synth
+                        .send_native_voice(&NativeVoiceEvent::Pitch {
+                            token: 1,
+                            semitones,
+                        })
+                        .unwrap();
+                    for _ in 0..1_024 {
+                        finite &= synth.next_stereo(48_000).iter().all(|v| v.is_finite());
+                    }
+                }
+                synth
+                    .send_native_voice(&NativeVoiceEvent::Off { token: 1 })
+                    .unwrap();
+                synth.reset();
+            }
+            synth
+                .send_native_voice(&NativeVoiceEvent::On {
+                    token: 1,
+                    channel: 0,
+                    note: 60,
+                    velocity: 100,
+                })
+                .unwrap();
+            synth
+                .send_native_voice(&NativeVoiceEvent::Pitch {
+                    token: 1,
+                    semitones: -37.0,
+                })
+                .unwrap();
+            let mut before = [0.0; 2];
+            for _ in 0..1_024 {
+                before = synth.next_stereo(48_000);
+            }
+            synth.reset();
+            synth
+                .send_native_voice(&NativeVoiceEvent::On {
+                    token: 1,
+                    channel: 0,
+                    note: 60,
+                    velocity: 100,
+                })
+                .unwrap();
+            synth
+                .send_native_voice(&NativeVoiceEvent::Pitch {
+                    token: 1,
+                    semitones: -37.0,
+                })
+                .unwrap();
+            let mut after = [0.0; 2];
+            for _ in 0..1_024 {
+                after = synth.next_stereo(48_000);
+            }
+            assert_eq!(
+                before, after,
+                "reset and replay must reproduce the cursor frame"
+            );
+            synth.reset();
+        });
+        assert_eq!(
+            allocations, 0,
+            "{waveform:?} native controls/render/reset touched the heap"
+        );
+        assert!(
+            finite,
+            "{waveform:?} produced nonfinite audio at a pitch boundary"
+        );
+    }
 }

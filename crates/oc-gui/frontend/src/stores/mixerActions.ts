@@ -1,5 +1,6 @@
+import { i18n } from "./i18n";
 import { isParameterRequestOwner, type ParameterRequestOwner } from "./parameterAdmission";
-import type { AutomationMode, BarBeat, LaneLfo, PluginPortInfo, Project, ProjectSnapshot } from "../types/project";
+import type { AutomationMode, BarBeat, GainAutomation, ParameterTargetStamp, LaneLfo, PluginPortInfo, Project, ProjectSnapshot } from "../types/project";
 import * as api from "./api";
 
 export function createMixerActions(
@@ -8,6 +9,15 @@ export function createMixerActions(
   setError: (message: string) => void,
   requestOwner: () => ParameterRequestOwner,
 ) {
+  async function replaceGainAutomation(target: string, index: number, expected: GainAutomation, replacement: GainAutomation, expectedStamp: ParameterTargetStamp, expectedRevision: number) {
+    const owner = requestOwner();
+    owner.requireStamp();
+    const snapshot = await api.replaceGainAutomation(target, index, expected, replacement, expectedStamp, expectedRevision);
+    if (!owner()) throw new Error(i18n.t("gainEditor.stale"));
+    applyWithUndo(snapshot);
+    return snapshot;
+  }
+
   async function updateMasterVolume(volumeDb: number) {
     try {
       const snap = await api.setMasterVolume(volumeDb);
@@ -144,9 +154,9 @@ export function createMixerActions(
     }
   }
 
-  async function setTrackOutputPort(trackIndex: number, port: number): Promise<boolean> {
+  async function setTrackOutputPort(trackIndex: number, port: number, pair?: number): Promise<boolean> {
     try {
-      applyWithUndo(await api.setTrackOutputPort(trackIndex, port));
+      applyWithUndo(await api.setTrackOutputPort(trackIndex, port, pair));
       return true;
     } catch (e) { setError(String(e)); return false; }
   }
@@ -307,9 +317,10 @@ export function createMixerActions(
     curve: string,
     tension: number | null,
     laneIndex: number | null = null,
+    curvature?: number | null,
   ) {
     try {
-      applyWithUndo(await api.setAutomationPointCurve(target, laneParam, pointIndex, curve, tension, laneIndex));
+      applyWithUndo(await api.setAutomationPointCurve(target, laneParam, pointIndex, curve, tension, laneIndex, curvature));
     } catch (e) { setError(String(e)); }
   }
 
@@ -520,6 +531,7 @@ export function createMixerActions(
   }
 
   return {
+    replaceGainAutomation,
     updateMasterVolume,
     updateTrackMix,
     toggleMute,

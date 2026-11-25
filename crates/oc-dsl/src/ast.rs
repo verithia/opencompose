@@ -688,12 +688,63 @@ pub struct GainEnvelopePoint {
     pub gain_db: f64,
 }
 
+/// Interpolation between the decibel-valued points of an audio clip envelope.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum ClipGainInterpolation {
+    #[default]
+    Decibels,
+    LinearAmplitude,
+}
+
+impl ClipGainInterpolation {
+    pub fn is_decibels(&self) -> bool {
+        *self == Self::Decibels
+    }
+
+    pub fn point_value(self, gain_db: f64) -> f64 {
+        match self {
+            Self::Decibels => gain_db,
+            Self::LinearAmplitude => 10.0_f64.powf(gain_db / 20.0),
+        }
+    }
+
+    pub fn interpolate_db(self, left: f64, right: f64, blend: f64) -> f64 {
+        let left = self.point_value(left);
+        let right = self.point_value(right);
+        let value = left + (right - left) * blend;
+        match self {
+            Self::Decibels => value,
+            Self::LinearAmplitude => 20.0 * value.log10(),
+        }
+    }
+}
+
 /// An anchor from source-media seconds to processed-media seconds.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 #[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 pub struct AudioWarpMarker {
     pub source_seconds: f64,
     pub target_seconds: f64,
+}
+
+/// Conversion from the clip's effective start time to a render frame.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+pub enum AudioClipStartQuantization {
+    /// Floor grid anchors and round starts with fine placement.
+    #[default]
+    OffsetAware,
+    /// Round to the nearest frame even with no fine placement offset.
+    Nearest,
+}
+
+impl AudioClipStartQuantization {
+    fn is_default(&self) -> bool {
+        *self == Self::OffsetAware
+    }
 }
 
 /// Fine placement relative to the clip's musical start and end anchors.
@@ -705,12 +756,40 @@ pub struct AudioClipPlacement {
     pub start_offset_seconds: f64,
     #[serde(default)]
     pub end_offset_seconds: f64,
+    #[serde(
+        default,
+        skip_serializing_if = "AudioClipStartQuantization::is_default"
+    )]
+    pub start_quantization: AudioClipStartQuantization,
 }
 
 impl AudioClipPlacement {
+    fn is_default(&self) -> bool {
+        self.is_zero() && self.start_quantization.is_default()
+    }
+
     /// Whether both offsets are zero.
     pub fn is_zero(&self) -> bool {
         self.start_offset_seconds == 0.0 && self.end_offset_seconds == 0.0
+    }
+}
+
+/// Cubic ease from zero to one. Control points are in the unit square.
+pub type AudioFadeBezier = [f64; 4];
+
+/// Optional curves. Absent curves retain the linear fade law.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+pub struct AudioFadeCurves {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fade_in: Option<AudioFadeBezier>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fade_out: Option<AudioFadeBezier>,
+}
+
+impl AudioFadeCurves {
+    fn is_linear(&self) -> bool {
+        self.fade_in.is_none() && self.fade_out.is_none()
     }
 }
 
@@ -722,14 +801,20 @@ pub struct AudioClip {
     pub name: String,
     /// Destination track name; the clip inherits its mix, sends and effects.
     pub track: String,
+    /// One-based row in the playlist view, independent of the mix destination.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub playlist_lane: Option<std::num::NonZeroU16>,
     /// Media path relative to the project file.
     pub file: String,
     pub time_range: TimeRange,
-    #[serde(default, skip_serializing_if = "AudioClipPlacement::is_zero")]
+    #[serde(default, skip_serializing_if = "AudioClipPlacement::is_default")]
     pub placement: AudioClipPlacement,
     /// Seconds trimmed from the start of the stretched media.
     #[serde(default)]
     pub offset_seconds: f64,
+    /// Relative channel delay on the media: positive delays left, negative delays right.
+    #[serde(default, skip_serializing_if = "zero_f64")]
+    pub stereo_offset_seconds: f64,
     /// Clip gain in dB, matching `mix: vol`.
     #[serde(default)]
     pub gain_db: f64,
@@ -738,6 +823,8 @@ pub struct AudioClip {
     pub fade_in_seconds: f64,
     #[serde(default)]
     pub fade_out_seconds: f64,
+    #[serde(default, skip_serializing_if = "AudioFadeCurves::is_linear")]
+    pub fade_curves: AudioFadeCurves,
     /// Reverse the clip's polarity at mix time.
     #[serde(default)]
     pub invert: bool,
@@ -788,6 +875,9 @@ pub struct AudioClip {
     /// Optional point envelope on top of `gain_db`; empty means none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub gain_envelope: Vec<GainEnvelopePoint>,
+    /// Domain in which consecutive gain envelope points interpolate.
+    #[serde(default, skip_serializing_if = "ClipGainInterpolation::is_decibels")]
+    pub gain_envelope_interpolation: ClipGainInterpolation,
 }
 
 impl AudioClip {
@@ -1491,6 +1581,10 @@ pub struct InstrumentPath {
 }
 
 impl InstrumentPath {
+    /// A score source that emits MIDI without creating an audio instrument.
+    pub fn is_midi_only(&self) -> bool {
+        self.category == "midi" && self.name == "out"
+    }
     /// Build an instrument path from category and name.
     pub fn new(category: &str, name: &str) -> Self {
         Self {
@@ -1523,6 +1617,8 @@ pub enum RouteKind {
     Audio,
     /// A `@control_source` reading into a device's control input.
     Control,
+    /// A score track's channel messages into a device's MIDI input.
+    Midi,
 }
 
 impl RouteKind {
@@ -1531,6 +1627,7 @@ impl RouteKind {
         match self {
             Self::Audio => "audio",
             Self::Control => "control",
+            Self::Midi => "midi",
         }
     }
 }
@@ -1733,7 +1830,7 @@ impl SendSource {
 pub struct Effect {
     pub effect_type: EffectType,
     pub params: Vec<(String, ParamValue)>,
-    /// Takes the effect out of the chain: no processing and no latency.
+    /// Takes the effect out of the chain unless an enable lane drives the slot.
     #[serde(default, skip_serializing_if = "is_false")]
     pub bypass: bool,
     /// Optional sidechain input source (track or bus name)
@@ -1793,8 +1890,15 @@ pub enum EffectType {
     Gate,
     Saturator,
     StereoWidth,
+    StereoMatrix,
+    FrequencyShift,
+    /// Synthesis filter bank shaped by the input or an external modulator.
+    Vocoder,
     /// External plugin effect (CLAP/VST2/VST3). Holds the plugin ID.
     Plugin(String),
+    /// Causal first-order all-pass phase section.
+    AllPass,
+    TransferShaper,
 }
 
 impl EffectType {
@@ -1817,6 +1921,9 @@ impl EffectType {
 #[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 pub struct Phrase {
     pub name: String,
+    /// One-based playlist row, independent of the instrument track.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub playlist_lane: Option<std::num::NonZeroU16>,
     pub time_range: Option<TimeRange>,
     pub events: Vec<NoteEvent>,
     /// Sustain-pedal marks; a pedal spans notes, so it is not a note modifier.
@@ -2622,6 +2729,8 @@ pub enum ControlLinkSource {
     },
     /// One of the eight OpenSynth macros, 1-based.
     Macro { index: u8 },
+    /// A saved macro on the named OpenSynth preset.
+    PresetMacro { preset: String, index: u8 },
     /// An automation lane on a track; its normalized value is the control.
     Lane { track: String, param: String },
 }
@@ -2634,6 +2743,22 @@ impl ControlLinkSource {
     /// True when the source emits raw 7-bit MIDI values instead of 0..1.
     pub fn is_midi(&self) -> bool {
         matches!(self, ControlLinkSource::MidiCc { .. })
+    }
+
+    /// Resolve an explicitly named macro's preset through the same inheritance
+    /// rules as instrument playback.
+    pub fn resolve_macro_preset(&self, project: &Project) -> Result<Option<PresetDef>, String> {
+        let ControlLinkSource::PresetMacro { preset, index } = self else {
+            return Ok(None);
+        };
+        if !(1..=8).contains(index) {
+            return Err(format!("macro index {index} is outside 1..8"));
+        }
+        let resolved = crate::preset::resolve_preset(&project.presets, preset)?;
+        if resolved.plugin.as_deref() != Some("builtin.open_synth") {
+            return Err(format!("preset '{preset}' is not an OpenSynth preset"));
+        }
+        Ok(Some(resolved))
     }
 }
 
@@ -2748,15 +2873,48 @@ impl std::str::FromStr for LinkFormula {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 pub struct ControlLinkTarget {
-    /// Track that owns the parameter.
+    /// Track that owns the parameter, or a bus for an effect lane link.
     pub track: String,
     /// Parameter key: an engine parameter or a hosted plugin parameter name.
     pub param: String,
     #[serde(default)]
     pub formula: LinkFormula,
+    /// Transfer the formula's normalized output to a mixer effect's units.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value_mapping: Option<AutomationValueMapping>,
     /// One-pole smoothing time in milliseconds; 0 disables smoothing.
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub smoothing_ms: u32,
+}
+
+impl ControlLinkTarget {
+    /// Whether a link can drive an effect on a track or bus.
+    pub fn is_mixer_effect_target(&self, source: &ControlLinkSource) -> bool {
+        matches!(
+            source,
+            ControlLinkSource::Lane { .. }
+                | ControlLinkSource::MidiCc { .. }
+                | ControlLinkSource::PresetMacro { .. }
+        ) && crate::automation::effect_lane(&self.param).is_some()
+    }
+
+    /// Validate a target transfer independently of its current lane content.
+    pub fn validate_value_mapping(&self, source: &ControlLinkSource) -> Result<(), String> {
+        use oc_device_schema::effect_slot::SlotControl;
+        let Some(mapping) = self.value_mapping else {
+            return Ok(());
+        };
+        if !self.is_mixer_effect_target(source)
+            || !crate::automation::effect_lane(&self.param)
+                .is_some_and(|(_, param)| param != SlotControl::ENABLED_ID)
+        {
+            return Err(
+                "value mapping requires a control source for a numeric mixer effect parameter"
+                    .into(),
+            );
+        }
+        crate::automation::PreparedMapping::new(mapping, 0.0, 1.0).map(|_| ())
+    }
 }
 
 fn is_zero_u32(value: &u32) -> bool {
@@ -2790,7 +2948,16 @@ impl ControlLink {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 pub struct AutomationLane {
+    /// Retain coincident envelope knots as an explicit left-limit/right-write jump.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub preserve_discontinuities: bool,
+    /// Value transfer after conversion to the recipient domain and interpolation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value_mapping: Option<AutomationValueMapping>,
     pub param: String, // parameter name
+    /// Original arrangement row of a scoped automation clip.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub playlist_lane: Option<std::num::NonZeroU16>,
     /// Span of a clip; `None` drives the whole timeline from its first point on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub time_range: Option<TimeRange>,
@@ -2949,6 +3116,9 @@ impl LaneLfo {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 pub struct AutomationPoint {
+    /// Signed exponential coefficient; absent is the linear limit, zero.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub curvature: Option<f64>,
     pub position: BarBeat,
     pub value: ParamValue,
     /// Shape of the segment from this point to the next one.
@@ -2961,6 +3131,50 @@ pub struct AutomationPoint {
 
 fn is_zero(value: &f64) -> bool {
     *value == 0.0
+}
+
+/// The shape of a numeric receiver transfer, applied after interpolation.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+pub enum ValueMappingCurve {
+    #[default]
+    Linear,
+    Exponential,
+}
+
+/// `offset + scale * shape(value)`, in the compiled recipient numeric domain.
+/// Negative scale supports complementary wet/dry controls without point expansion.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+pub struct AutomationValueMapping {
+    /// Floor the mapping input to a uniform grid before its value transfer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_quantization_steps: Option<u32>,
+    #[serde(default)]
+    pub curve: ValueMappingCurve,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub curvature: Option<f64>,
+    #[serde(default = "default_control_scale", skip_serializing_if = "is_one")]
+    pub scale: f64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub offset: f64,
+}
+
+impl Default for AutomationValueMapping {
+    fn default() -> Self {
+        Self {
+            input_quantization_steps: None,
+            curve: ValueMappingCurve::Linear,
+            curvature: None,
+            scale: 1.0,
+            offset: 0.0,
+        }
+    }
+}
+fn is_one(value: &f64) -> bool {
+    *value == 1.0
 }
 
 /// Upper bound for a lane's smoothing time; longer than any musical gesture.
@@ -2980,6 +3194,8 @@ pub enum Curve {
     HalfSine,
     /// Smoothstep from this value to the next, blended by `tension`.
     Smooth,
+    /// Normalized exponential, shaped by the point’s signed curvature.
+    Exponential,
 }
 
 impl Curve {
@@ -2995,6 +3211,7 @@ impl Curve {
             Curve::Stairs => "stairs",
             Curve::HalfSine => "half_sine",
             Curve::Smooth => "smooth",
+            Curve::Exponential => "exponential",
         }
     }
 
@@ -3005,6 +3222,7 @@ impl Curve {
             "stairs" => Some(Curve::Stairs),
             "half_sine" | "half-sine" => Some(Curve::HalfSine),
             "smooth" => Some(Curve::Smooth),
+            "exponential" => Some(Curve::Exponential),
             _ => None,
         }
     }
@@ -3018,9 +3236,16 @@ impl Curve {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 pub struct GainAutomation {
+    /// One-based arrangement row, independent of the post-insert gain owner.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub playlist_lane: Option<std::num::NonZeroU16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value_mapping: Option<AutomationValueMapping>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub preserve_discontinuities: bool,
     pub time_range: TimeRange,
     pub interpolation: GainInterpolation,
-    /// Subdivision units per beat within this clip only; legacy OCP uses four.
+    /// Subdivision ticks per quarter within this clip; legacy OCP uses four.
     #[serde(default = "default_gain_ppq")]
     pub ppq: u32,
     /// Absolute project positions; values are linear gain factors.
@@ -3028,7 +3253,7 @@ pub struct GainAutomation {
 }
 
 fn default_gain_ppq() -> u32 {
-    4
+    oc_device_schema::automation_curves::DEFAULT_GAIN_PPQ
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -3037,6 +3262,8 @@ fn default_gain_ppq() -> u32 {
 pub enum GainInterpolation {
     Step,
     Linear,
+    /// Explicit opt-in to point shapes and recipient-domain mappings.
+    Segments,
 }
 
 /// A bus groups multiple tracks for shared processing.

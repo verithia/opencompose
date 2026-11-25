@@ -16,9 +16,8 @@ use oc_dsl::timing::ProjectClock;
 use super::params::*;
 use crate::render_control::InstrumentProfile;
 
-/// A note-relative curve spans at most two octaves; the same bound as the
-/// primitive it lowers to.
-const MAX_CURVE_CENTS: f64 = oc_synth::note_pitch_curve::MAX_SEMITONES * 100.0;
+/// Slides use the same pitch interval as their note-relative curve.
+const MAX_CURVE_SEMITONES: f64 = oc_synth::note_pitch_curve::MAX_SEMITONES;
 
 /// What the track's notes play through, when that source cannot hold a shape
 /// over the pitch.
@@ -139,9 +138,9 @@ fn slide(
     }
     let gate = gate_beats(event, context)?;
     let cents = interval_cents(event.pitch, destination);
-    if cents.abs() > MAX_CURVE_CENTS {
+    if cents.abs() > MAX_CURVE_SEMITONES * 100.0 {
         return Err(format!(
-            "{} at @{} in track '{}': {} to {} is more than two octaves, which a slide cannot span — write gliss=run, or slide in two steps",
+            "{} at @{} in track '{}': {} to {} exceeds the slide limit of {MAX_CURVE_SEMITONES} semitones — write gliss=run, or use shorter slides",
             mark.spelling(),
             beat_text(event.start_beat),
             event.pitch.to_text(),

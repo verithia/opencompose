@@ -6,6 +6,7 @@ import {
   decodePeakBytes,
   fadeEnvelope,
   gainLinear,
+  gainEnvelopeDb,
   loopedColumnRanges,
   mediaFrameRange,
   paintWaveform,
@@ -135,6 +136,16 @@ describe("per-pixel columns", () => {
 });
 
 describe("clip envelope", () => {
+  it("displays a linear-amplitude ramp in the correct decibel position", () => {
+    const points = [
+      { position: 0, gain_db: 20 * Math.log10(0.0625) },
+      { position: 1, gain_db: 0 },
+    ];
+    const displayed = gainEnvelopeDb(points, 0.5, "linear_amplitude");
+    expect(10 ** (displayed / 20)).toBeCloseTo(0.53125, 12);
+    expect(10 ** (gainEnvelopeDb(points, 0.5) / 20)).toBeCloseTo(0.25, 12);
+  });
+
   it("applies linear fades and gain", () => {
     expect(fadeEnvelope(0, 4, 1, 0)).toBe(0);
     expect(fadeEnvelope(0.5, 4, 1, 0)).toBe(0.5);
@@ -142,6 +153,10 @@ describe("clip envelope", () => {
     expect(fadeEnvelope(3, 4, 0, 1)).toBe(1);
     expect(fadeEnvelope(3.5, 4, 0, 1)).toBe(0.5);
     expect(fadeEnvelope(4, 4, 0, 1)).toBe(0);
+    const quadratic: [number, number, number, number] = [1 / 3, 0, 2 / 3, 1 / 3];
+    expect(fadeEnvelope(0.5, 4, 1, 0, { fade_in: quadratic })).toBeCloseTo(0.25, 6);
+    expect(fadeEnvelope(3.5, 4, 0, 1, { fade_out: quadratic })).toBeCloseTo(0.75, 6);
+    expect(fadeEnvelope(4, 4, 0, 1, { fade_out: quadratic })).toBe(0);
     expect(gainLinear(0)).toBe(1);
     expect(gainLinear(-6)).toBeCloseTo(0.501187, 5);
   });

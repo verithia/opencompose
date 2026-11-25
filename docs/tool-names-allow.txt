@@ -9,6 +9,7 @@ plugin_output_pair   a plugin auxiliary output pair, not a tool
 sample_rate          the audio-frame rate of a sample or render, not a tool
 sample_format        the encoded sample format of a WAV, not a tool
 audio_input          the catalogue's audio-input capability block, not a tool
+read_mode            granular oscillator patch field
 
 # Source identifiers used in architecture and component chapters.
 audio_clip                               Rust module, not an agent tool

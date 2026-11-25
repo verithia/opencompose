@@ -9,6 +9,7 @@ use oc_dsl::ast;
 use oc_engine::touch;
 
 use crate::audio::PlaybackState;
+use crate::render_thread::RenderCommand;
 use crate::state::{AppState, ParameterTargetStamp};
 
 use super::shared::{Target, parse_target};
@@ -336,4 +337,110 @@ pub(crate) fn end_owned_effect_param_touch_inner(
             &token.native,
         )
     })
+}
+
+fn macro_can_preview(inner: &crate::state::AppStateInner, preset: &str, index: u8) -> bool {
+    inner.audio.playback_state == PlaybackState::Playing
+        && inner.audio.render_thread.is_some()
+        && inner.project.properties.control_links.iter().any(|link| {
+            matches!(&link.source, ast::ControlLinkSource::PresetMacro {
+                preset: name, index: slot
+            } if name == preset && *slot == index)
+        })
+}
+
+/// Open a temporary mixer macro read for a guarded pointer gesture.
+#[tauri::command]
+pub fn begin_preset_macro_preview(
+    preset: String,
+    index: u8,
+    expected_stamp: ParameterTargetStamp,
+    state: State<AppState>,
+) -> Result<Option<EffectTouchToken>, String> {
+    begin_preset_macro_preview_inner(&state.lock_inner(), &preset, index, expected_stamp)
+}
+
+pub(crate) fn begin_preset_macro_preview_inner(
+    inner: &crate::state::AppStateInner,
+    preset: &str,
+    index: u8,
+    expected_stamp: ParameterTargetStamp,
+) -> Result<Option<EffectTouchToken>, String> {
+    super::shared::require_parameter_admission(inner, &expected_stamp)?;
+    if !macro_can_preview(inner, preset, index) {
+        return Ok(None);
+    }
+    let native = inner
+        .audio
+        .preset_macros
+        .begin(preset, index)
+        .map_err(|error| error.to_string())?;
+    Ok(native.map(|native| EffectTouchToken {
+        native,
+        stamp: expected_stamp,
+    }))
+}
+
+/// Move the held control without changing the project.
+#[tauri::command]
+pub fn update_preset_macro_preview(
+    preset: String,
+    index: u8,
+    value: f64,
+    token: EffectTouchToken,
+    state: State<AppState>,
+) -> bool {
+    update_preset_macro_preview_inner(&state.lock_inner(), &preset, index, value, &token)
+}
+
+pub(crate) fn update_preset_macro_preview_inner(
+    inner: &crate::state::AppStateInner,
+    preset: &str,
+    index: u8,
+    value: f64,
+    token: &EffectTouchToken,
+) -> bool {
+    if super::shared::require_parameter_admission(inner, &token.stamp).is_err()
+        || !macro_can_preview(inner, preset, index)
+    {
+        inner.audio.preset_macros.end(preset, index, &token.native);
+        return false;
+    }
+    inner
+        .audio
+        .preset_macros
+        .update(preset, index, &token.native, value)
+}
+
+/// Cancel now, or retire the temporary value after the saved edit is loaded.
+#[tauri::command]
+pub fn end_preset_macro_preview(
+    preset: String,
+    index: u8,
+    token: EffectTouchToken,
+    committed: bool,
+    state: State<AppState>,
+) {
+    end_preset_macro_preview_inner(&state.lock_inner(), &preset, index, &token, committed);
+}
+
+pub(crate) fn end_preset_macro_preview_inner(
+    inner: &crate::state::AppStateInner,
+    preset: &str,
+    index: u8,
+    token: &EffectTouchToken,
+    committed: bool,
+) {
+    if committed
+        && super::shared::require_parameter_admission(inner, &token.stamp).is_ok()
+        && let Some(thread) = inner.audio.render_thread.as_ref()
+    {
+        thread.send(RenderCommand::EndPresetMacroPreview {
+            preset: preset.to_string(),
+            index,
+            token: token.native.clone(),
+        });
+    } else {
+        inner.audio.preset_macros.end(preset, index, &token.native);
+    }
 }

@@ -137,6 +137,7 @@ export type LinkFormula =
 export type ControlLinkSource =
   | { kind: "midi_cc"; channel: number; controller: number }
   | { kind: "macro"; index: number }
+  | { kind: "preset_macro"; preset: string; index: number }
   | { kind: "lane"; track: string; param: string };
 
 /** One parameter a link drives, with its own formula and smoothing. */
@@ -144,6 +145,7 @@ export interface ControlLinkTarget {
   track: string;
   param: string;
   formula: LinkFormula;
+  value_mapping?: AutomationValueMapping;
   /** One-pole smoothing time in milliseconds; 0 disables smoothing. */
   smoothing_ms: number;
 }
@@ -169,24 +171,42 @@ export interface AudioWarpMarker {
   target_seconds: number;
 }
 
+export type AudioFadeBezier = [number, number, number, number];
+export type ClipGainInterpolation = "decibels" | "linear_amplitude";
+
+export interface AudioFadeCurves {
+  fade_in?: AudioFadeBezier;
+  fade_out?: AudioFadeBezier;
+}
+
 export interface AudioClip {
   /** Fine endpoint placement relative to the musical anchors, in seconds. */
-  placement?: { start_offset_seconds: number; end_offset_seconds: number };
+  placement?: {
+    start_offset_seconds: number;
+    end_offset_seconds: number;
+    start_quantization?: "offset_aware" | "nearest";
+  };
   name: string;
   track: string;
+  /** One-based arrangement row, independent of the mix destination. */
+  playlist_lane?: number;
   /** Media path relative to the project file. */
   file: string;
   time_range: TimeRange;
   /** Seconds trimmed from the decoded media start. */
   offset_seconds: number;
+  /** Signed media channel delay in seconds. Positive delays left. */
+  stereo_offset_seconds?: number;
   /** Clip gain in dB. */
   gain_db: number;
   fade_in_seconds: number;
   fade_out_seconds: number;
+  fade_curves?: AudioFadeCurves;
   /** Equal-power crossfade at the clip head and tail, in seconds. */
   crossfade_seconds?: number;
   /** Optional point envelope layered on top of `gain_db`; absent means none. */
   gain_envelope?: GainEnvelopePoint[];
+  gain_envelope_interpolation?: ClipGainInterpolation;
   /** Output duration is media duration x stretch; 1.0 bypasses the stretcher. */
   stretch?: number;
   stretch_mode?: "off" | "percussive" | "musical" | "varispeed";
@@ -242,6 +262,7 @@ export interface Track {
   inline_patterns: PatternDef[];
   clips: Clip[];
   automation: AutomationLane[];
+  gain_automation?: GainAutomation[];
   engine_params: [string, ParamValue][] | null;
   performance?: { events: PerformanceEvent[] } | null;
   /** Instrument output port this track takes; absent is port 0. */
@@ -253,7 +274,7 @@ export interface Track {
 }
 
 /** What a device input route carries: audio (default) or a control signal. */
-export type RouteKind = "audio" | "control";
+export type RouteKind = "audio" | "control" | "midi";
 
 /**
  * One route into a device input. `target` addresses an effect the way
@@ -367,8 +388,13 @@ export type EffectType =
   | "Gate"
   | "Saturator"
   | "StereoWidth"
+  | "StereoMatrix"
+  | "FrequencyShift"
+  | "Vocoder"
   | "Gain"
-  | { Plugin: string };
+  | { Plugin: string }
+  | "AllPass"
+  | "TransferShaper";
 
 // ============================================================================
 // Phrase (pitched instruments)
@@ -376,6 +402,7 @@ export type EffectType =
 
 export interface Phrase {
   name: string;
+  playlist_lane?: number;
   time_range: TimeRange | null;
   events: NoteEvent[];
   /** Sustain-pedal marks, in beats from the phrase start; absent when empty. */
@@ -652,7 +679,7 @@ export type DrumArticulation =
 // ============================================================================
 
 /** Shape of one automation segment; `tension` only applies to `smooth`. */
-export type AutomationCurve = "linear" | "stairs" | "half_sine" | "smooth";
+export type AutomationCurve = "linear" | "stairs" | "half_sine" | "smooth" | "exponential";
 
 /** Envelope anchors, or one cycle of a repeating waveform. */
 export type AutomationMode = "envelope" | "lfo";
@@ -677,8 +704,18 @@ export interface LaneLfo {
   amount?: number;
 }
 
+export interface AutomationValueMapping {
+  curve: "linear" | "exponential";
+  input_quantization_steps?: number;
+  curvature?: number;
+  scale?: number;
+  offset?: number;
+}
+
 export interface AutomationLane {
   param: string;
+  /** One-based display row for a scoped automation clip. */
+  playlist_lane?: number;
   /** Span of a clip; absent drives the whole timeline from its first point on. */
   time_range?: TimeRange;
   /** A muted lane writes nothing, so the target keeps its declared value. */
@@ -690,6 +727,10 @@ export interface AutomationLane {
   /** Absent means envelope. */
   mode?: AutomationMode;
   lfo?: LaneLfo;
+  /** Transfer after interpolation in the recipient numeric domain. */
+  value_mapping?: AutomationValueMapping;
+  /** Keep coincident authored knots as ordered jumps in an envelope. */
+  preserve_discontinuities?: boolean;
   points: AutomationPoint[];
 }
 
@@ -700,6 +741,8 @@ export interface AutomationPoint {
   curve?: AutomationCurve;
   /** Blend of the smooth curve in 0..1; absent means 1. */
   tension?: number | null;
+  /** Signed exponential coefficient; absent means a straight segment. */
+  curvature?: number | null;
 }
 
 export interface Bus {
@@ -717,9 +760,15 @@ export interface Bus {
 }
 
 export interface GainAutomation {
+  /** One-based display row, independent of the gain owner. */
+  playlist_lane?: number;
   time_range: TimeRange;
   ppq?: number;
-  interpolation: "Step" | "Linear";
+  interpolation: "Step" | "Linear" | "Segments";
+  /** Transfer after interpolation in the recipient numeric domain. */
+  value_mapping?: AutomationValueMapping;
+  /** Keep coincident authored knots as ordered jumps in an envelope. */
+  preserve_discontinuities?: boolean;
   points: AutomationPoint[];
 }
 

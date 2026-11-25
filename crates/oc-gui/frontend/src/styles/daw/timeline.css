@@ -1490,6 +1490,16 @@ button.tempo-point {
   cursor: not-allowed;
 }
 
+.playlist-automation-lane {
+  position: absolute;
+  left: 0;
+  pointer-events: none;
+}
+
+.playlist-automation-lane :is(.automation-span, .automation-point) {
+  pointer-events: auto;
+}
+
 /* A whole-timeline lane writes from its first point on, so it has no block:
    a dashed leading edge stands in for the missing clip head. */
 .automation-lane.whole-timeline::before {
@@ -1644,4 +1654,29 @@ button.tempo-point {
   background: var(--accent-cool);
   color: var(--bg-void);
   border-color: var(--accent-cool);
+}
+
+/* Pattern-owned sounds remain legible in the existing single-line label. */
+.clip-sound-override {
+  min-width: 0;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--clip-text-muted);
+  font-weight: 400;
+}
+
+.playlist-note-layer {
+  position: absolute;
+  inset-inline: 0;
+}
+
+.playlist-note-group {
+  top: 1px;
+  bottom: 1px;
+  height: auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  text-align: start;
 }

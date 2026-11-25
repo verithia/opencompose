@@ -107,6 +107,7 @@ const BUNDLED: &[(&str, &str)] = bundled_skills![
     "capture-algorithmic-patterns",
     "capture-constrained-sound-variations",
     "check-stereo-balance-and-mono",
+    "choose-and-fit-a-sample",
     "choose-and-shape-reverb",
     "chop-jungle-breaks",
     "comp-vocal-takes",
@@ -116,10 +117,13 @@ const BUNDLED: &[(&str, &str)] = bundled_skills![
     "design-delay-feedback-and-ducking",
     "design-dnb-and-halftime-bass",
     "design-future-bass-wobble",
+    "design-transfer-curve",
     "design-hard-dance-kicks",
     "design-wave-and-hardwave-layers",
+    "develop-a-sampled-hook",
     "develop-melodic-phrases",
     "diagnose-a-sound",
+    "diagnose-staged-bass-processing",
     "dsl-subtree-paths",
     "edit-audio-clip-seams",
     "edit-hyperpop-vocals",
@@ -175,6 +179,7 @@ const BUNDLED: &[(&str, &str)] = bundled_skills![
     "select-samples-by-role",
     "separated-vocal-mixing",
     "sequence-trance-and-psytrance",
+    "shape-ducked-effect-returns",
     "shape-electroacoustic-depth",
     "shape-rock-guitar-tracks",
     "shape-transients-and-decay",
@@ -546,6 +551,7 @@ mod tests {
         let ids = ids(&skills);
         for expected in [
             "design-future-bass-wobble",
+            "design-transfer-curve",
             "design-and-verify-supersaw",
             "separated-vocal-mixing",
             "audition-and-listen",
@@ -958,7 +964,7 @@ mod tests {
     #[test]
     fn the_automation_skill_teaches_the_lane_line() {
         let skill = read("write-mix-automation").expect("the bundled skill reads");
-        assert_eq!(skill.version, 3);
+        assert_eq!(skill.version, 5);
         for anchor in [
             "automation: volume",
             "{4:1=-6dB, 4:4=0dB}",

@@ -5,7 +5,7 @@
 //! wrapper and the GUI's `automation_value_at` command convert through these
 //! functions, so a knob and the audio read the same number for the same point.
 
-use oc_dsl::ast::{Effect, ParamValue, Project, Track};
+use oc_dsl::ast::{AutomationLane, Effect, ParamValue, Project, Track};
 use oc_dsp::schema::DeviceSchema;
 
 use crate::dsp::{device_for_effect, validate_param};
@@ -41,6 +41,9 @@ pub fn point_value(
     value: &ParamValue,
     device: Option<&DeviceSchema>,
 ) -> Result<f64, String> {
+    if let Some(control) = oc_dsp::schema::effect_slot::SlotControl::from_id(parameter) {
+        return oc_dsl::automation::slot_point_value(control, value);
+    }
     match device {
         Some(device) => validate_param(device, parameter, value),
         None => plugin_value(parameter, value),
@@ -54,6 +57,23 @@ pub fn effect_point_value(
     value: &ParamValue,
 ) -> Result<f64, String> {
     point_value(parameter, value, device_for_effect(&effect.effect_type))
+}
+
+/// Convert a point for effect-curve evaluation. Mapped lanes carry raw numeric
+/// inputs, with recipient bounds applied to the mapped output instead.
+pub fn effect_curve_point_value(
+    lane: &AutomationLane,
+    parameter: &str,
+    value: &ParamValue,
+    device: Option<&DeviceSchema>,
+) -> Result<f64, String> {
+    if lane.value_mapping.is_none() {
+        return point_value(parameter, value, device);
+    }
+    match value {
+        ParamValue::Number(value) if value.is_finite() => Ok(*value),
+        _ => Err("mapped automation requires finite numeric anchors".into()),
+    }
 }
 
 /// Convert one patch or hosted-plugin lane point into normalized 0..1.

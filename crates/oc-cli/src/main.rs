@@ -13,6 +13,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 mod conformance;
 mod midi;
 mod play;
+mod plugin_migration;
 mod sample;
 
 use oc_cli::plugin_index;
@@ -220,6 +221,22 @@ enum Commands {
         #[arg(long, value_name = "DIR")]
         stems: Option<PathBuf>,
 
+        /// Retain only these bus taps; repeat for multiple buses (full graph still runs)
+        #[arg(long, value_name = "NAME", requires = "stems")]
+        stem_bus: Vec<String>,
+
+        /// Omit track tap files and their PCM copies
+        #[arg(long, requires = "stems")]
+        no_track_stems: bool,
+
+        /// Also retain the signal before master effects and fader
+        #[arg(long, requires = "stems")]
+        stem_pre_master: bool,
+
+        /// Omit manifest peak/RMS/LUFS analysis (does not disable normalization)
+        #[arg(long, requires = "stems")]
+        no_stem_analysis: bool,
+
         /// Render without the master loudness limiter and target trim
         #[arg(long)]
         no_loudness_normalisation: bool,
@@ -425,7 +442,7 @@ enum Commands {
         command: PluginIndexCommand,
     },
 
-    /// Search a sample catalogue and pull one sample
+    /// Find samples or prepare editable sampler slices
     Sample {
         #[command(subcommand)]
         command: sample::SampleCommand,
@@ -434,6 +451,22 @@ enum Commands {
 
 #[derive(Subcommand)]
 enum PluginCommand {
+    /// Convert an opaque VST2 FXB bank through the VST3 plugin's compatibility reader
+    MigrateVst2 {
+        /// Original FXB bank
+        #[arg(value_name = "FXB")]
+        input: PathBuf,
+        /// Original VST2 processor name used in the legacy class ID
+        #[arg(long, value_name = "NAME")]
+        source_name: String,
+        /// Explicit VST3 bundle to use for conversion
+        #[arg(long, value_name = "BUNDLE")]
+        plugin: PathBuf,
+        /// New .vstpreset file to publish after verifying it reopens
+        #[arg(short, long, value_name = "VSTPRESET")]
+        output: PathBuf,
+    },
+
     /// Resolve, download, verify, and install one catalog entry
     Install {
         /// Catalog entry id, e.g. asb2m10.dexed
@@ -835,6 +868,14 @@ fn main() {
 }
 
 fn run() -> Result<()> {
+    let mut worker = std::env::args_os().skip(1);
+    if worker
+        .next()
+        .is_some_and(|arg| arg == oc_host::vst3_instance::VST2_BANK_WORKER_ARG)
+    {
+        return oc_host::vst3_instance::run_vst2_bank_worker(&worker.collect::<Vec<_>>())
+            .map_err(|error| anyhow::anyhow!("VST2 bank migration: {error}"));
+    }
     // `ocp` doubles as the isolated scan helper when no dedicated helper
     // binary sits beside it, so intercept that mode before clap parses argv.
     let args: Vec<String> = std::env::args().collect();
@@ -864,6 +905,17 @@ fn run() -> Result<()> {
     match cli.command {
         Commands::ResolvePlugin { id } => {
             use oc_host::{PluginFormat, find_plugin_info};
+            #[cfg(target_os = "macos")]
+            {
+                let (format, selector) = oc_host::effect_plugin_selector(&id);
+                if format == Some(PluginFormat::Au)
+                    || oc_host::au_instance::is_component_id(selector)
+                {
+                    let info = oc_host::au_instance::resolve_plugin_metadata(selector)?;
+                    println!("{}", serde_json::to_string(&info)?);
+                    return Ok(());
+                }
+            }
             let found = [
                 PluginFormat::Vst3,
                 PluginFormat::Vst2,
@@ -906,42 +958,39 @@ fn run() -> Result<()> {
             }
         }
         Commands::PluginParams { id, json } => {
-            use oc_host::vst3_instance::Vst3Instance;
+            use oc_host::scanner::{PluginParameterInventory, inspect_plugin_parameters};
             use oc_host::{PluginFormat, find_plugin_info};
-            let Some(info) = find_plugin_info(&id, PluginFormat::Vst3) else {
-                let Some(info) = find_plugin_info(&id, PluginFormat::Vst2) else {
-                    anyhow::bail!("No VST3 or VST2 plugin matched {id}");
-                };
-                let instance =
-                    oc_host::vst2::Vst2Instance::load(std::path::Path::new(&info.path), 48000, 512)
-                        .map_err(anyhow::Error::msg)?;
-                let params = instance.get_params();
-                if json {
-                    println!("{}", serde_json::to_string_pretty(&params)?);
+            let info = find_plugin_info(&id, PluginFormat::Vst3)
+                .or_else(|| find_plugin_info(&id, PluginFormat::Vst2))
+                .ok_or_else(|| anyhow::anyhow!("No VST3 or VST2 plugin matched {id}"))?;
+            let inventory = inspect_plugin_parameters(&info).map_err(anyhow::Error::msg)?;
+            let params = match inventory {
+                PluginParameterInventory::Vst3(params) => params,
+                PluginParameterInventory::Vst2(params) => {
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&params)?);
+                        return Ok(());
+                    }
+                    println!("{} — {} parameters", info.name, params.len());
+                    println!("{}", info.path);
+                    println!(
+                        "{:>6}  {:<44} {:<8} {:>10} {:>10}",
+                        "index", "name", "label", "default", "current"
+                    );
+                    for param in params {
+                        println!(
+                            "{:>6}  {:<44} {:<8} {:>10.4} {:>10.4}  {}",
+                            param.index,
+                            param.name,
+                            param.label,
+                            param.default,
+                            param.value,
+                            param.display
+                        );
+                    }
                     return Ok(());
                 }
-                println!("{} — {} parameters", info.name, params.len());
-                println!("{}", info.path);
-                println!(
-                    "{:>6}  {:<44} {:<8} {:>10} {:>10}",
-                    "index", "name", "label", "default", "current"
-                );
-                for param in params {
-                    println!(
-                        "{:>6}  {:<44} {:<8} {:>10.4} {:>10.4}  {}",
-                        param.index,
-                        param.name,
-                        param.label,
-                        param.default,
-                        param.value,
-                        param.display
-                    );
-                }
-                return Ok(());
             };
-            let instance = Vst3Instance::load(std::path::Path::new(&info.path), 48000, 512)
-                .map_err(anyhow::Error::msg)?;
-            let params = instance.get_param_details();
             if json {
                 println!("{}", serde_json::to_string_pretty(&params)?);
                 return Ok(());
@@ -992,8 +1041,13 @@ fn run() -> Result<()> {
                 })?;
                 let info = find_plugin_info(&plugin, PluginFormat::Vst3)
                     .ok_or_else(|| anyhow::anyhow!("No VST3 plugin matched {plugin}"))?;
-                let mut instance = Vst3Instance::load(std::path::Path::new(&info.path), 48000, 512)
-                    .map_err(anyhow::Error::msg)?;
+                let mut instance = Vst3Instance::load_class(
+                    std::path::Path::new(&info.path),
+                    &info.name,
+                    48000,
+                    512,
+                )
+                .map_err(anyhow::Error::msg)?;
                 let report =
                     plugin_preset::apply_to_instance(&mut instance, &preset).map_err(|error| {
                         anyhow::anyhow!("Failed to import {}: {error}", file.display())
@@ -1299,6 +1353,10 @@ fn run() -> Result<()> {
             require_identical,
             pre_roll,
             stems,
+            stem_bus,
+            no_track_stems,
+            stem_pre_master,
+            no_stem_analysis,
             no_loudness_normalisation,
             sample_format,
             flac_level,
@@ -1326,6 +1384,15 @@ fn run() -> Result<()> {
             }
             oc_dsl::validate(&project)
                 .map_err(|e| anyhow::anyhow!("Semantic validation failed: {:?}", e))?;
+            let selective_stems = !stem_bus.is_empty() || no_track_stems || stem_pre_master;
+            let stem_selection = oc_engine::graph::StemCaptureSelection {
+                tracks: !no_track_stems,
+                buses: (!stem_bus.is_empty()).then_some(stem_bus),
+                pre_master: stem_pre_master,
+            };
+            stem_selection
+                .validate(&project)
+                .map_err(|error| anyhow::anyhow!(error))?;
             // The flag wins, then the project header, then the historical WAV.
             let container = format
                 .or_else(|| project.properties.export.map(|export| export.container))
@@ -1451,21 +1518,36 @@ fn run() -> Result<()> {
                 }
                 let mut plugin_instances = load_project_clap_instances(&project, sample_rate)
                     .map_err(|e| anyhow::anyhow!("{}", e))?;
-                let export = oc_engine::render::render_with_stems(
-                    &project,
-                    &soundfont,
+                let options = oc_engine::render::RenderOptions {
                     sample_rate,
-                    &mut plugin_instances,
-                    input.parent(),
+                    output_gain_db: 0.0,
+                    resource_root: input.parent(),
                     minimum_duration_seconds,
-                    pre_roll,
-                )
-                .map_err(|e| anyhow::anyhow!("Render error: {}", e))?;
+                    pre_roll_seconds: pre_roll,
+                    cancel: None,
+                    progress: None,
+                    workers: oc_engine::render_parallel::RenderWorkerOptions::default(),
+                };
+                let rendered = if selective_stems {
+                    oc_engine::render::render_with_selected_stems_with_options(
+                        &project,
+                        &soundfont,
+                        &mut plugin_instances,
+                        options,
+                        stem_selection,
+                    )
+                } else {
+                    oc_engine::render::render_with_stems_with_options(
+                        &project,
+                        &soundfont,
+                        &mut plugin_instances,
+                        options,
+                    )
+                };
+                let export = rendered.map_err(|e| anyhow::anyhow!("Render error: {}", e))?;
                 for warning in oc_engine::render_warnings::take() {
                     eprintln!("warning: {warning}");
                 }
-                let mix_report = oc_engine::encode::encode_to_file(&output, &spec, &export.mix)
-                    .map_err(|e| anyhow::anyhow!("Render error: {}", e))?;
                 let song = project
                     .name
                     .clone()
@@ -1476,9 +1558,20 @@ fn run() -> Result<()> {
                             .map(|stem| stem.to_string_lossy().to_string())
                             .unwrap_or_else(|| "untitled".into())
                     });
-                let manifest =
-                    oc_engine::render::write_stems_export(&project, stem_dir, &song, &export, spec)
-                        .map_err(|e| anyhow::anyhow!("Stems export error: {}", e))?;
+                let publication = oc_engine::render::write_stems_export_batch(
+                    &project,
+                    stem_dir,
+                    &song,
+                    &export,
+                    spec,
+                    oc_engine::render::StemPublicationOptions {
+                        manifest: oc_engine::render::StemManifestOptions {
+                            analyze_levels: !no_stem_analysis,
+                        },
+                        mix_output: Some(&output),
+                    },
+                )
+                .map_err(|e| anyhow::anyhow!("Stems export error: {}", e))?;
                 for warning in oc_engine::render_warnings::take() {
                     eprintln!("warning: {warning}");
                 }
@@ -1487,16 +1580,20 @@ fn run() -> Result<()> {
                     export.stems.len(),
                     sample_rate,
                     export.mix.len() / 2,
-                    manifest.display()
+                    publication.manifest.display()
                 );
-                exported = Some(mix_report);
+                exported = Some(publication.mix_report);
             } else {
                 let render_once =
                     |target: &std::path::Path| -> Result<oc_engine::encode::EncodeReport, String> {
                         if plugin_path {
                             let mut plugin_instances =
                                 load_project_clap_instances(&project, sample_rate)?;
-                            oc_engine::stage_log::begin();
+                            let capture_stages =
+                                collect_stages || std::env::var_os("OCP_RENDER_STAGES").is_some();
+                            if capture_stages {
+                                oc_engine::stage_log::begin();
+                            }
                             let rendered = oc_engine::render::render_to_wav_per_track_with_plugins_at_minimum_duration_with_pre_roll(
                         &project,
                         &soundfont,
@@ -1508,7 +1605,13 @@ fn run() -> Result<()> {
                         pre_roll,
                         spec,
                     );
-                            print_stage_table(&oc_engine::stage_log::take());
+                            if capture_stages {
+                                let stages = oc_engine::stage_log::take();
+                                print_stage_table(&stages);
+                                if collect_stages {
+                                    log_stage_table(&stages);
+                                }
+                            }
                             rendered
                         } else {
                             oc_engine::render::render_to_wav(&project, &soundfont, target, spec)
@@ -1891,6 +1994,12 @@ fn run() -> Result<()> {
         }
         Commands::Sample { command } => sample::run(command)?,
         Commands::Plugin { command } => match command {
+            PluginCommand::MigrateVst2 {
+                input,
+                source_name,
+                plugin,
+                output,
+            } => plugin_migration::run(&input, &source_name, &plugin, &output)?,
             PluginCommand::Install {
                 id,
                 index,
@@ -3087,7 +3196,7 @@ fn print_stage_table(stages: &[oc_engine::stage_log::StageTiming]) {
 /// Mirror the render stages into the diagnostics log under `--perf`.
 fn log_stage_table(stages: &[oc_engine::stage_log::StageTiming]) {
     for line in stage_lines(stages) {
-        oc_diag::log::info!("render stage {line}");
+        oc_diag::log::info!(target: "oc_cli::render", "render stage {line}");
     }
 }
 
@@ -3541,6 +3650,49 @@ mod tests {
             }
             _ => panic!("expected render"),
         }
+    }
+
+    #[test]
+    fn selective_stems_flags_require_export_and_preserve_repeated_bus_names() {
+        let cli = super::Cli::try_parse_from([
+            "ocp",
+            "render",
+            "song.ocp",
+            "--stems",
+            "taps",
+            "--stem-bus",
+            "first",
+            "--stem-bus",
+            "second",
+            "--no-track-stems",
+            "--stem-pre-master",
+            "--no-stem-analysis",
+        ])
+        .unwrap();
+        match cli.command {
+            super::Commands::Render {
+                stem_bus,
+                no_track_stems,
+                stem_pre_master,
+                no_stem_analysis,
+                ..
+            } => {
+                assert_eq!(stem_bus, ["first", "second"]);
+                assert!(no_track_stems && stem_pre_master && no_stem_analysis);
+            }
+            _ => panic!("expected render"),
+        }
+        for flag in [
+            "--no-track-stems",
+            "--stem-pre-master",
+            "--no-stem-analysis",
+        ] {
+            assert!(super::Cli::try_parse_from(["ocp", "render", "song.ocp", flag]).is_err());
+        }
+        assert!(
+            super::Cli::try_parse_from(["ocp", "render", "song.ocp", "--stem-bus", "first"])
+                .is_err()
+        );
     }
 
     #[test]

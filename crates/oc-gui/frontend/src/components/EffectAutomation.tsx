@@ -18,11 +18,14 @@ import type {
   LfoSpeed,
   ParamValue,
 } from "../types/project";
+import { supportsExponentialAutomation } from "../utils/automationTarget";
+import { AUTOMATION_CURVES } from "../data/automationCurves.gen";
+import { mappedAutomationValue, pointValue } from "../utils/automationRow";
 import { store } from "../stores/project";
 import { i18n, type I18nKey } from "../stores/i18n";
 import { automationLaneLabel, automationTargetKind } from "../utils/automationRow";
 
-const CURVES: AutomationCurve[] = ["linear", "stairs", "half_sine", "smooth"];
+const CURVES: AutomationCurve[] = ["linear", "stairs", "half_sine", "smooth", "exponential"];
 const MAX_SMOOTHING_MS = 60_000;
 
 const DEFAULT_LFO: Required<LaneLfo> = {
@@ -128,8 +131,9 @@ export function EffectAutomation(props: { target: string }) {
     pointIndex: number,
     curve: string,
     tension: number | null,
+    curvature?: number | null,
   ) {
-    void store.setAutomationPointCurve(props.target, laneParam, pointIndex, curve, tension, laneIndex);
+    void store.setAutomationPointCurve(props.target, laneParam, pointIndex, curve, tension, laneIndex, curvature);
   }
 
   return (
@@ -162,6 +166,7 @@ function LaneRow(props: {
     pointIndex: number,
     curve: string,
     tension: number | null,
+    curvature?: number | null,
   ) => void;
   onSmoothing: (laneParam: string, laneIndex: number, raw: string) => void;
 }) {
@@ -440,7 +445,7 @@ function LaneRow(props: {
             return (
               <span class="effect-automation-point">
                 <span class="effect-automation-pos">{formatPosition(point.position)}</span>
-                <span class="effect-automation-value">{formatValue(point.value)}</span>
+                <span class="effect-automation-value">{formatValue(point.value)}<Show when={props.lane.value_mapping && pointValue(point.value) !== null}> → {mappedAutomationValue(pointValue(point.value)!, props.lane.value_mapping).toPrecision(4)}</Show></span>
                 <select
                   class="effect-automation-curve"
                   value={curve()}
@@ -454,17 +459,29 @@ function LaneRow(props: {
                       index(),
                       next,
                       next === "smooth" ? (point.tension ?? 1) : null,
+                      next === "exponential" ? (point.curvature ?? AUTOMATION_CURVES.curvature.default) : undefined,
                     );
                   }}
                 >
                   <For each={CURVES}>
                     {(name) => (
-                      <option value={name}>
+                      <option value={name} disabled={name === "exponential" && !supportsExponentialAutomation(props.lane)} title={name === "exponential" && !supportsExponentialAutomation(props.lane) ? i18n.t("device.automation.exponentialUnavailable") : undefined}>
                         {i18n.t(`device.automation.curve.${name}`)}
                       </option>
                     )}
                   </For>
                 </select>
+                <Show when={curve() === "exponential"}>
+                  <input class="effect-automation-curvature" type="number"
+                    min={AUTOMATION_CURVES.curvature.min} max={AUTOMATION_CURVES.curvature.max} step="0.1"
+                    value={point.curvature ?? AUTOMATION_CURVES.curvature.default}
+                    aria-label={i18n.t("device.automation.curvature")} title={i18n.t("device.automation.curvature.hint")}
+                    onChange={(event) => {
+                      const curvature = Number(event.currentTarget.value);
+                      if (!Number.isFinite(curvature) || curvature < AUTOMATION_CURVES.curvature.min || curvature > AUTOMATION_CURVES.curvature.max) return;
+                      props.onCurve(props.lane.param, props.laneIndex, index(), "exponential", null, curvature);
+                    }} />
+                </Show>
                 <Show when={curve() === "smooth"}>
                   <input
                     class="effect-automation-tension"

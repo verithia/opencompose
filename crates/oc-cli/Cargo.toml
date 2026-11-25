@@ -50,6 +50,7 @@ sha2.workspace = true
 ring.workspace = true
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
 oc-market = { path = "../oc-market" }
+tempfile.workspace = true
 
 [dev-dependencies]
 oc-test-support = { path = "../oc-test-support" }

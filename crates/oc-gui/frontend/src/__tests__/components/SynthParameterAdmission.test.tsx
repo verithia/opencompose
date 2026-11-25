@@ -61,6 +61,9 @@ beforeEach(async () => {
       const token = `synth-owner-${++nextToken}`; members.add(token); return token;
     }
     if (command === "end_owned_undo_gesture") return members.delete(String(args?.token));
+    if (command === "begin_preset_macro_preview") return "macro-preview-1";
+    if (command === "update_preset_macro_preview") return true;
+    if (command === "end_preset_macro_preview") return undefined;
     if (command === "set_preset_param_owned") {
       if (!members.has(String(args?.token))) throw new Error("Expired owner");
       setParameter(String(args?.paramName), String(args?.paramValue)); return current;
@@ -77,6 +80,40 @@ beforeEach(async () => {
 afterEach(() => { cleanup(); resetAutomationWriteForTests(); });
 
 describe("synth discrete parameter admission", () => {
+  it.each(["pointerup", "pointercancel"] as const)(
+    "previews a linked macro until %s and saves only on release", async event => {
+      current = { ...current, revision: current.revision + 1, project: { ...current.project,
+        properties: { ...current.project.properties, control_links: [{
+          name: "echo", source: { kind: "preset_macro", preset: "Lead", index: 8 },
+          targets: [{ track: "Lead", param: "fx1.factor", formula: "linear", smoothing_ms: 0 }],
+        }] } } };
+      await store.initProject();
+      expect(store.project.properties.control_links?.[0].source.kind).toBe("preset_macro");
+      mount();
+      fireEvent.click(screen.getByRole("button", { name: /open.*mod/i }));
+      const knob = document.getElementById("open-synth-macro-8-button")!;
+      const pointer = (target: HTMLElement | Window, type: string, clientY: number) => {
+        const event = new MouseEvent(type, { bubbles: true, button: 0, clientY });
+        Object.defineProperty(event, "pointerId", { value: 7 });
+        fireEvent(target, event);
+      };
+      pointer(knob, "pointerdown", 100);
+      expect(calls("begin_preset_macro_preview")).toHaveLength(1);
+      pointer(window, "pointermove", 20);
+      await vi.waitFor(() => expect(calls("update_preset_macro_preview")).toHaveLength(1));
+      expect(calls("update_preset_macro_preview")[0][1])
+        .toMatchObject({ preset: "Lead", index: 8, value: 0.5, token: "macro-preview-1" });
+      expect(calls("set_preset_param_owned")).toHaveLength(0);
+      pointer(window, event, 20);
+      await vi.waitFor(() => expect(calls("end_preset_macro_preview")).toHaveLength(1));
+      const committed = event === "pointerup";
+      expect(calls("end_preset_macro_preview")[0][1]).toMatchObject({ committed });
+      expect(calls("set_preset_param_owned")).toHaveLength(committed ? 1 : 0);
+      expect(current.project.presets[0].params)
+        .toEqual(committed ? [["macro.8", { Number: 0.5 }]] : []);
+    },
+  );
+
   it.each(["osc.a.waveform", "osc.b.unison"])("retains the menu-open owner for %s and permits a fresh choice", async key => {
     mount();
     const button = trigger(key); const original = button.textContent;

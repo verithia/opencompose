@@ -8,6 +8,7 @@ import { COLOUR_PALETTE } from "../utils/colourPalette";
 import { openContextMenu } from "./ContextMenu";
 import { ask } from "@tauri-apps/plugin-dialog";
 import type { Track } from "../types/project";
+import { trackDisplayName } from "../utils/trackLabel";
 
 export interface TrackMenuOptions {
   x: number;
@@ -45,7 +46,7 @@ async function deleteTrack(track: Track, trackIndex: number): Promise<void> {
     return;
   }
   const confirmed = await ask(
-    i18n.t("menu.track.deleteConfirm", { name: track.name, count: clips }),
+    i18n.t("menu.track.deleteConfirm", { name: trackDisplayName(track), count: clips }),
     { title: i18n.t("menu.track.deleteTitle"), kind: "warning" },
   );
   if (confirmed) void store.removeTrack(trackIndex);
@@ -56,7 +57,7 @@ export function openTrackContextMenu(options: TrackMenuOptions) {
   const track = store.project.tracks[options.trackIndex];
   if (!track) return;
 
-  const items: ContextMenuItem[] = [{ type: "heading", label: track.name }];
+  const items: ContextMenuItem[] = [{ type: "heading", label: trackDisplayName(track) }];
   if (options.onCreatePattern) {
     items.push(
       { label: i18n.t("menu.track.createPattern"), onSelect: options.onCreatePattern },

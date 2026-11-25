@@ -1,5 +1,68 @@
 use super::*;
 
+#[test]
+fn saving_a_rack_macro_uses_the_playing_graph_and_one_undo_entry() {
+    use std::{collections::HashMap, sync::atomic::Ordering, time::Duration};
+
+    let state = AppState::new();
+    let mut inner = state.lock_inner();
+    inner.audio.enable_simulated_output();
+    inner.audio.set_automatic_preload(true);
+    let score = r#"@project
+  tempo: 120
+@preset rack
+  source: builtin
+  plugin: "builtin.open_synth"
+  params: {macro.8: 0.3}
+@preset tone
+  source: builtin
+  plugin: "builtin.test_tone"
+@track lead | preset: tone, instrument: synth/lead
+  effects:
+    - gain: factor=1
+  @phrase p [1:1 - 9:1]
+    C4 w
+@control_link gain
+  from: macro(8, rack)
+  -> track: lead param: fx1.factor formula: linear
+"#;
+    crate::commands::open_project(&mut inner, score, None).unwrap();
+    let project = inner.project.clone();
+    inner.audio.play(&project, &mut HashMap::new()).unwrap();
+    let thread = inner.audio.render_thread.as_ref().unwrap();
+    let budget = Duration::from_secs(3);
+    thread.wait_project_loaded(budget).unwrap();
+    let playback = thread.playback.clone();
+    let loads = playback.project_loads.load(Ordering::Acquire);
+    let opens = playback.instrument_instantiations.load(Ordering::Acquire);
+    let undo = inner.undo.undo_entries().len();
+
+    apply_single_parameter(
+        &mut inner,
+        "rack".into(),
+        "macro.8".into(),
+        Some("0.75".into()),
+    )
+    .unwrap();
+    inner
+        .audio
+        .render_thread
+        .as_ref()
+        .unwrap()
+        .wait_project_loaded(budget)
+        .unwrap();
+
+    assert_eq!(playback.project_loads.load(Ordering::Acquire), loads);
+    assert_eq!(
+        playback.instrument_instantiations.load(Ordering::Acquire),
+        opens
+    );
+    assert_eq!(inner.undo.undo_entries().len(), undo + 1);
+    assert_eq!(inner.project.presets[0].params[0].1.as_f64(), Some(0.75));
+    assert!(inner.dsl_source.contains("macro.8: 0.75"));
+    inner.audio.stop();
+}
+
 fn source(title: &str, gain: f64) -> String {
     format!(
         "@project \"{title}\"\n@preset Lead\n  source: builtin\n  plugin: \"builtin.open_synth\"\n  params: {{output.gain: {gain}}}\n@track Lead | instrument: synth/lead_saw, preset: Lead\n"

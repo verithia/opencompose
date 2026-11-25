@@ -3,7 +3,7 @@ id: production-curriculum
 title: Production exercises by genre and technique
 when: Find a genre, subgenre, scene, or production exercise with a concrete DAW comparison and listening check.
 category: production
-version: 2
+version: 3
 tools: [read_skill, project_extract, render_range, audition_range]
 ---
 Pass a genre, scene, field or technique as the topic argument to read_skill

@@ -16,6 +16,7 @@ use oc_dsp::AudioEffect;
 use oc_dsp::biquad::{BiquadCoefficients, BiquadState};
 use oc_dsp::compander::{Compander, lookahead_samples};
 use oc_dsp::fft::{Complex, Fft};
+use oc_dsp::frequency_shift::StereoQuadrature;
 use oc_dsp::kernel::{HALF_BAND_CENTER, HALF_BAND_TAPS, half_band_kernel, kaiser, sinc};
 use oc_dsp::multiband::MultibandCompressor;
 use serde::{Deserialize, Serialize};
@@ -3126,23 +3127,6 @@ impl CrossoverState {
     }
 }
 
-/// Linear-phase Hilbert FIR used by the Bode frequency shifter.
-const BODE_HILBERT_TAPS: usize = 63;
-const BODE_HILBERT_CENTER: usize = BODE_HILBERT_TAPS / 2;
-
-fn bode_hilbert_coefficients() -> [f64; BODE_HILBERT_TAPS] {
-    let mut coefficients = [0.0; BODE_HILBERT_TAPS];
-    for (index, coefficient) in coefficients.iter_mut().enumerate() {
-        let offset = index as i32 - BODE_HILBERT_CENTER as i32;
-        if offset == 0 || offset % 2 == 0 {
-            continue;
-        }
-        let window = 0.54 - 0.46 * (TAU * index as f64 / (BODE_HILBERT_TAPS - 1) as f64).cos();
-        *coefficient = 2.0 / (PI * offset as f64) * window;
-    }
-    coefficients
-}
-
 /// Feedback delay shared by the Bode instances (two preallocated slots).
 struct BodeDelay {
     left: Box<[f64]>,
@@ -3179,49 +3163,16 @@ impl BodeDelay {
     }
 }
 
+#[derive(Default)]
 struct BodeState {
-    coefficients: [f64; BODE_HILBERT_TAPS],
-    history: [[f64; BODE_HILBERT_TAPS]; 2],
-    write: usize,
+    quadrature: StereoQuadrature,
     phase: f64,
-}
-
-impl Default for BodeState {
-    fn default() -> Self {
-        Self {
-            coefficients: bode_hilbert_coefficients(),
-            history: [[0.0; BODE_HILBERT_TAPS]; 2],
-            write: 0,
-            phase: 0.0,
-        }
-    }
 }
 
 impl BodeState {
     fn reset(&mut self) {
-        self.history.fill([0.0; BODE_HILBERT_TAPS]);
-        self.write = 0;
+        self.quadrature.reset();
         self.phase = 0.0;
-    }
-
-    fn shift_channel(&mut self, channel: usize, input: f64) -> (f64, f64) {
-        let write = self.write;
-        let history = &mut self.history[channel];
-        history[write] = input;
-        let mut quadrature = 0.0;
-        for (tap, coefficient) in self.coefficients.iter().enumerate() {
-            quadrature +=
-                coefficient * history[(write + BODE_HILBERT_TAPS - tap) % BODE_HILBERT_TAPS];
-        }
-        let delayed =
-            history[(write + BODE_HILBERT_TAPS - BODE_HILBERT_CENTER) % BODE_HILBERT_TAPS];
-        let (sine, cosine) = self.phase.sin_cos();
-        // The two single-sideband outputs; mix 0 sums them back into ring
-        // modulation, which is what the preset stores at the knob centre.
-        (
-            delayed * cosine + quadrature * sine,
-            delayed * cosine - quadrature * sine,
-        )
     }
 
     fn process(
@@ -3250,13 +3201,21 @@ impl BodeState {
         let (delayed_left, delayed_right) = delay.read(delay_time, sr);
         let fed_left = input_left + feedback * delayed_left;
         let fed_right = input_right + feedback * delayed_right;
-        let (mut down_left, mut up_left) = self.shift_channel(0, fed_left);
-        let (mut down_right, mut up_right) = self.shift_channel(1, fed_right);
+        let (sine, cosine) = self.phase.sin_cos();
+        // Combining the two sidebands at their midpoint yields ring modulation.
+        let [[mut down_left, mut up_left], [mut down_right, mut up_right]] = self
+            .quadrature
+            .push([fed_left, fed_right])
+            .map(|[direct, quadrature]| {
+                [
+                    direct * cosine + quadrature * sine,
+                    direct * cosine - quadrature * sine,
+                ]
+            });
         if values[BODE_SWAP_AB] >= 0.5 {
             std::mem::swap(&mut down_left, &mut up_left);
             std::mem::swap(&mut down_right, &mut up_right);
         }
-        self.write = (self.write + 1) % BODE_HILBERT_TAPS;
         let dry = 1.0 - output_mix.abs();
         let mid_left = down_left * (1.0 - output_mix) * 0.5 + up_left * (1.0 + output_mix) * 0.5;
         let mid_right = down_right * (1.0 - output_mix) * 0.5 + up_right * (1.0 + output_mix) * 0.5;

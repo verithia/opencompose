@@ -38,7 +38,9 @@ mod saved_completion;
 use access_token::make_token;
 mod audition_media;
 mod dispatch_policy;
-use dispatch_policy::InstallPolicy;
+mod mutation_reply;
+use dispatch_policy::{DispatchOptions, InstallPolicy};
+use mutation_reply::ReplyProjection;
 mod separator_process;
 
 const DEFAULT_PORT: u16 = 38642;
@@ -1414,8 +1416,18 @@ pub fn dispatch(
     args: &Value,
     caller: &str,
 ) -> Result<Value, ToolError> {
-    dispatch_with_policy(app, tool, args, caller, InstallPolicy::External, false)
-        .map(|dispatched| dispatched.value)
+    dispatch_with_policy(
+        app,
+        tool,
+        args,
+        caller,
+        DispatchOptions {
+            install_policy: InstallPolicy::External,
+            attach_changes: false,
+            reply_projection: ReplyProjection::Snapshot,
+        },
+    )
+    .map(|dispatched| dispatched.value)
 }
 
 /// The panel's installation authority is selected by its trusted entry point,
@@ -1426,8 +1438,18 @@ pub(crate) fn dispatch_panel(
     args: &Value,
     caller: &str,
 ) -> Result<crate::ai::agent_loop::Dispatched, String> {
-    dispatch_with_policy(app, tool, args, caller, InstallPolicy::Panel, true)
-        .map_err(|error| error.message)
+    dispatch_with_policy(
+        app,
+        tool,
+        args,
+        caller,
+        DispatchOptions {
+            install_policy: InstallPolicy::Panel,
+            attach_changes: true,
+            reply_projection: ReplyProjection::AgentReceipt,
+        },
+    )
+    .map_err(|error| error.message)
 }
 
 /// The document a call starts from. A batch commit leaves the document as it
@@ -1513,15 +1535,21 @@ fn dispatch_with_policy(
     tool: &str,
     args: &Value,
     caller: &str,
-    install_policy: InstallPolicy,
-    attach_changes: bool,
+    options: DispatchOptions,
 ) -> Result<crate::ai::agent_loop::Dispatched, ToolError> {
     let tool = tool.replace('.', "_");
     let state = state(app);
     guard_mutation(&state, &tool, args, caller)?;
-    let baseline = changes_baseline(&state, &tool, attach_changes);
+    let baseline = changes_baseline(&state, &tool, options.attach_changes);
     let acting = crate::edit_history::act_as(crate::edit_history::Author::from_caller(caller));
-    let mut result = dispatch_tool(app, &tool, args, caller, install_policy)?;
+    let mut result = dispatch_tool(
+        app,
+        &tool,
+        args,
+        caller,
+        options.install_policy,
+        options.reply_projection,
+    )?;
     drop(acting);
     let published = published_revision(&result);
     let changes = tool_changes(&state, baseline.as_ref(), published);
@@ -2866,6 +2894,7 @@ fn dispatch_tool(
     args: &Value,
     caller: &str,
     install_policy: InstallPolicy,
+    reply_projection: ReplyProjection,
 ) -> Result<Value, ToolError> {
     let id = ToolId::parse(tool).ok_or_else(|| format!("unknown tool '{tool}'"))?;
     match id {
@@ -3281,12 +3310,7 @@ fn dispatch_tool(
             use crate::tool_registry::arguments::ToolArguments;
             let request = crate::agent_tools::tracks::TracksMixArgs::decode(args)
                 .map_err(|error| error.to_string())?;
-            to_value(commands::update_track_mix(
-                request.index,
-                request.volume_db,
-                request.pan,
-                state(app),
-            )?)
+            mutation_reply::tracks_mix(app, request, reply_projection)
         }
         ToolId::TracksMute => {
             use crate::tool_registry::arguments::ToolArguments;
@@ -3955,6 +3979,11 @@ fn dispatch_tool(
             .map_err(|error| error.to_string())?;
             effects_set_bypass(state(app).inner(), &request, guard.expected(), caller)
                 .map_err(ToolError::from)
+        }
+        ToolId::EffectsImportCurve => {
+            let request = crate::commands::CurveImportRequest::decode(args)
+                .map_err(|error| error.to_string())?;
+            to_value(commands::import_effect_curve(request, state(app))?)
         }
         ToolId::EffectsSetParam => {
             let request = crate::agent_tools::effects::EffectsSetParamArgs::decode(args)

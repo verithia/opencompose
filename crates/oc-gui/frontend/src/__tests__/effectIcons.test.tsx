@@ -14,6 +14,7 @@ import {
   hasEffectGlyph,
 } from "../components/effectIcons";
 import type { EffectType } from "../types/project";
+import { DEVICE_IDS } from "../devices/effectIds";
 
 const PLUGIN: EffectType = { Plugin: "Acme.BusComp" };
 
@@ -27,7 +28,7 @@ const LATE_FAMILIES: { id: string; type: EffectType }[] = [
 
 describe("effect glyphs", () => {
   it("covers every built-in EffectType member with a non-fallback glyph", () => {
-    expect(BUILTIN_EFFECT_TYPES.length).toBe(28);
+    expect([...BUILTIN_EFFECT_TYPES].sort()).toEqual(Object.keys(DEVICE_IDS).sort());
     const plug = effectGlyph(PLUGIN);
     for (const type of BUILTIN_EFFECT_TYPES) {
       expect(hasEffectGlyph(type), `${type} has no glyph`).toBe(true);

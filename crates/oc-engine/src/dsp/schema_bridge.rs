@@ -263,6 +263,11 @@ fn effect_for_device(id: &str) -> Option<EffectType> {
         "phaser" => EffectType::Phaser,
         "gate" => EffectType::Gate,
         "stereo-width" => EffectType::StereoWidth,
+        "stereo-matrix" => EffectType::StereoMatrix,
+        "frequency-shift" => EffectType::FrequencyShift,
+        "vocoder" => EffectType::Vocoder,
+        "allpass" => EffectType::AllPass,
+        "transfer-shaper" => EffectType::TransferShaper,
         _ => return None,
     })
 }
@@ -725,5 +730,23 @@ mod tests {
                 assert!(device.param(&id).is_some(), "missing schema id {id}");
             }
         }
+    }
+}
+
+/// Validate either a numeric device control or its inline typed asset.
+pub fn validate_static_value(
+    device: &DeviceSchema,
+    id: &str,
+    value: &ParamValue,
+) -> Result<(), String> {
+    if device.id == "transfer-shaper" && id == "curve" {
+        let ParamValue::String(text) = value else {
+            return Err("curve expects inline JSON text".into());
+        };
+        oc_dsp::schema::transfer_curve::TransferCurve::decode(text)
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    } else {
+        validate_static_param(device, id, value).map(|_| ())
     }
 }

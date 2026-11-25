@@ -23,12 +23,12 @@ interface Span {
   index: number;
 }
 
-function project(clips: readonly { time_range: TimeRange | null }[], clock: ProjectClock): Span[] {
+function project(clips: readonly { time_range: TimeRange | null; ppq?: number }[], clock: ProjectClock): Span[] {
   const spans: Span[] = [];
   for (let index = 0; index < clips.length; index++) {
     const range = clips[index].time_range;
     if (!range) continue;
-    spans.push({ start: clock.quarterAt(range.start), end: clock.quarterAt(range.end), index });
+    spans.push({ start: clock.quarterAt(range.start, clips[index].ppq ?? 0), end: clock.quarterAt(range.end, clips[index].ppq ?? 0), index });
   }
   return spans;
 }
@@ -65,7 +65,7 @@ function sweep(spans: Span[]): Set<number> {
 
 /** Clip indices of one lane that overlap another clip of that lane. */
 export function overlappingClips(
-  clips: readonly { time_range: TimeRange | null }[],
+  clips: readonly { time_range: TimeRange | null; ppq?: number }[],
   clock: ProjectClock,
 ): Set<number> {
   stats.scans += 1;
@@ -74,7 +74,7 @@ export function overlappingClips(
 
 /** One overlap set per track: the whole arrangement in a single scan. */
 export function overlapsByTrack(
-  tracks: readonly { clips: readonly { time_range: TimeRange | null }[] }[],
+  tracks: readonly { clips: readonly { time_range: TimeRange | null; ppq?: number }[] }[],
   clock: ProjectClock,
 ): Set<number>[] {
   stats.scans += 1;

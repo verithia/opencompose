@@ -585,6 +585,9 @@ pub fn catalog() -> Vec<ToolSpec> {
         arguments::tool::<crate::agent_tools::effects::EffectsSetBypassArgs>(
             "Bypass or enable an existing effect without changing its parameters or removing the insert. The index is zero-based within the target's effects chain.",
         ),
+        arguments::tool::<crate::commands::CurveImportRequest>(
+            "Import a transfer-shaper curve JSON file by path as one atomic undoable edit. Read current revision first. The validated curve is retained inline in project/session snapshots; result includes hash/count/domain, not sample data. Do not put large sample arrays in tool arguments.",
+        ),
         arguments::tool::<crate::agent_tools::effects::EffectsSetParamArgs>(
             "Set an effect parameter.",
         ),

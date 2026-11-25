@@ -1620,7 +1620,7 @@ fn bode_zero_shift_is_a_neutral_delay() {
         input.push(sample);
         output.push(chain.process(sample, sample, 48_000.0));
     }
-    let latency = BODE_HILBERT_CENTER;
+    let latency = oc_dsp::frequency_shift::QUADRATURE_LATENCY;
     for index in latency..input.len() {
         assert!((output[index][0] - input[index - latency]).abs() < 1e-9);
         assert!((output[index][1] - input[index - latency]).abs() < 1e-9);

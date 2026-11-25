@@ -264,14 +264,24 @@ export function automationLaneName(key: string): string {
 export function automationLaneKey(lane: string): string | null {
   if (!lane.startsWith(LANE_PREFIX)) return null;
   const encoded = lane.slice(LANE_PREFIX.length);
-  if (encoded.length === 0 || encoded.length % 2 !== 0) return null;
+  if (!/^(?:[0-9a-fA-F]{2})+$/.test(encoded)) return null;
   const bytes = new Uint8Array(encoded.length / 2);
   for (let index = 0; index < bytes.length; index += 1) {
     const byte = Number.parseInt(encoded.slice(index * 2, index * 2 + 2), 16);
     if (!Number.isInteger(byte)) return null;
     bytes[index] = byte;
   }
-  return new TextDecoder().decode(bytes);
+  try {
+    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+  } catch {
+    return null;
+  }
+}
+
+/** Match the analytic recipient paths; ordinary MIDI controls keep legacy curves. */
+export function supportsExponentialAutomation(lane: Pick<AutomationLane, "param" | "value_mapping">): boolean {
+  if (lane.param.startsWith(LANE_PREFIX)) return !lane.value_mapping && automationLaneKey(lane.param) !== null;
+  return effectLaneTarget(lane.param) !== null;
 }
 
 const MOD_FIELD_LABELS: Record<string, string> = {

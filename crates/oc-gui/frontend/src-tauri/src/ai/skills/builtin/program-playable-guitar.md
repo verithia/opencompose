@@ -3,12 +3,16 @@ id: program-playable-guitar
 title: Program playable guitar riffs and strums
 when: Write a sampled acoustic, nylon or electric guitar part that needs plausible voicings, picking, muted strokes or slides.
 category: instruments
-version: 2
+version: 3
 tools: [presets_list, tracks_list, project_extract, edit_subtree, project_validate, render_compat_report, audition_range, audio_analyze]
 ---
 Pick a gesture and patch, then test one note at soft and hard velocities. Keep one sounding note per
 string in a reachable shape. For fingerpicking, separate thumb bass from upper-note timing. For strums,
 stagger explicit `@<beats>` onsets and reverse the order where an upstroke fits.
+Shape the ending separately: equal note lengths make later attacks ring past earlier ones.
+Compare those endings with shorter later notes that release together before the next chord.
+Keep voicing and velocity fixed first, then vary the attack spread, common release and accent contour separately.
+Hear the instrument's actual release tail with the next chord; written note-offs alone do not establish a clean gap.
 
 Verify documented keyswitches and controllers on the current host. If the patch cannot switch between
 mute and sustain, use distinct presets. Shortening a note changes its gate and can leave the same attack.

@@ -1,12 +1,13 @@
-import { createEffect, createMemo, createSignal, For, Index, onCleanup, Show } from "solid-js";
+import { createEffect, createMemo, createSignal, For, Index, onCleanup, onMount, Show } from "solid-js";
 import type { AudioClip, BarBeat } from "../types/project";
 import { store } from "../stores/project";
 import { i18n } from "../stores/i18n";
 import { themeStore } from "../stores/theme";
-import { loadPeaks, peaksFor, peaksMissing, peaksVersion } from "../stores/audioPeaks";
+import { loadPeaks, peaksFor, peaksMissing } from "../stores/audioPeaks";
 import { blockStepQuarters, gridDivision, snapBlockQuarter } from "../stores/grid";
 import { audioClipBounds } from "../utils/audioClipPlacement";
 import { projectClock } from "../utils/projectClock";
+import type { TimelineViewport } from "../utils/timelineViewport";
 import {
   CLIP_GAIN_MAX_DB,
   CLIP_GAIN_MIN_DB,
@@ -48,7 +49,7 @@ function readCanvasColor(canvas: HTMLCanvasElement, value: string): [number, num
  * theme text colour. Dark themes get a light waveform, light themes a dark
  * one; the accent only supplies a hue. No color-mix() reaches Canvas 2D.
  */
-function waveformColors(canvas: HTMLCanvasElement): {
+function waveformColors(canvas: HTMLCanvasElement, accent: string): {
   waveform: string;
   envelope: string;
   halo: string | undefined;
@@ -60,7 +61,7 @@ function waveformColors(canvas: HTMLCanvasElement): {
     : undefined;
   if (!inkChannels) return { waveform: "#d8c7b3", envelope: "#d8c7b3", halo };
   const ink = `rgb(${inkChannels[0]}, ${inkChannels[1]}, ${inkChannels[2]})`;
-  const accentChannels = readCanvasColor(canvas, "var(--clip-accent)");
+  const accentChannels = readCanvasColor(canvas, accent);
   if (!accentChannels) return { waveform: ink, envelope: ink, halo };
   const mix = (weight: number) => {
     const channels = accentChannels.map((channel, index) =>
@@ -119,6 +120,7 @@ interface DragSession {
 }
 
 export interface AudioClipBlockProps {
+  viewport?: TimelineViewport;
   clip: AudioClip;
   index: number;
   color: string;
@@ -168,6 +170,10 @@ function roundSlip(seconds: number): number {
 export function AudioClipBlock(props: AudioClipBlockProps) {
   let canvasRef: HTMLCanvasElement | undefined;
   let blockRef: HTMLDivElement | undefined;
+  const [visible, setVisible] = createSignal(!props.viewport?.supported);
+  onMount(() => {
+    if (blockRef && props.viewport) props.viewport.observe(blockRef, setVisible);
+  });
   const [session, setSession] = createSignal<DragSession | null>(null);
   const tooltip = useTooltip(() => props.tooltipContent());
 
@@ -255,7 +261,6 @@ export function AudioClipBlock(props: AudioClipBlockProps) {
 
   /// Stretched media length in seconds: the span a slip can move through.
   const contentSeconds = () => {
-    peaksVersion();
     const pyramid = peaksFor(props.clip.file);
     if (!pyramid) return 0;
     const media = pyramid.frames / pyramid.sample_rate;
@@ -367,14 +372,29 @@ export function AudioClipBlock(props: AudioClipBlockProps) {
   });
 
   createEffect(() => {
+    if (!visible()) return;
     const file = props.clip.file;
     if (!peaksFor(file)) void loadPeaks(file);
   });
 
-  // Repaint on zoom, width, peak arrival, envelope changes and trim previews.
+  // Colours depend on theme/accent, not waveform data, size, or peak arrivals.
+  // Keep CSS resolution out of repeated canvas paints: changing style and then
+  // reading computed style forces layout in a large arrangement.
+  let cachedColors: ReturnType<typeof waveformColors> | undefined;
+  let cachedTheme: string | undefined;
+  let cachedAccent: string | undefined;
+
+  // Repaint on zoom, width, this file's peak arrival, envelope and trim previews.
   createEffect(() => {
+    if (!visible()) {
+      // Retain the semantic block and its controls, but release the large
+      // backing store while its waveform is outside the shared viewport.
+      if (canvasRef) { canvasRef.width = 1; canvasRef.height = 1; }
+      return;
+    }
     // The waveform ink comes from theme tokens, so a theme switch must repaint.
-    themeStore.cssTheme();
+    const theme = themeStore.cssTheme();
+    const accent = props.color;
     const canvas = canvasRef;
     if (!canvas) return;
     const width = Math.max(1, Math.min(MAX_CANVAS_WIDTH, Math.round(widthPx())));
@@ -386,7 +406,6 @@ export function AudioClipBlock(props: AudioClipBlockProps) {
     if (canvas.height !== pixelHeight) canvas.height = pixelHeight;
     const context = canvas.getContext("2d");
     if (!context) return;
-    peaksVersion();
     const pyramid = peaksFor(props.clip.file);
     const range = preview();
     const duration = durationSeconds();
@@ -420,7 +439,12 @@ export function AudioClipBlock(props: AudioClipBlockProps) {
     context.setTransform(dpr, 0, 0, dpr, 0, 0);
     // Canvas 2D never sees a color-mix() expression: resolve the theme ink and
     // the track accent to rgb() first, then blend them.
-    const { waveform: waveformColor, envelope: envelopeColor, halo } = waveformColors(canvas);
+    if (!cachedColors || cachedTheme !== theme || cachedAccent !== accent) {
+      cachedColors = waveformColors(canvas, accent);
+      cachedTheme = theme;
+      cachedAccent = accent;
+    }
+    const { waveform: waveformColor, envelope: envelopeColor, halo } = cachedColors;
     paintWaveform(context, {
       pyramid,
       startFrame: mediaStart,
@@ -433,8 +457,10 @@ export function AudioClipBlock(props: AudioClipBlockProps) {
       gainDb: gainDb(),
       fadeInSeconds: fadeIn(),
       fadeOutSeconds: fadeOut(),
+      fadeCurves: props.clip.fade_curves,
       crossfadeSeconds: props.clip.crossfade_seconds ?? 0,
       gainEnvelope: props.clip.gain_envelope ?? [],
+      gainEnvelopeInterpolation: props.clip.gain_envelope_interpolation,
       width,
       height,
       color: waveformColor,

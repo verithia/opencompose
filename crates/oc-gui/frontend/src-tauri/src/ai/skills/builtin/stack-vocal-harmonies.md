@@ -3,7 +3,7 @@ id: stack-vocal-harmonies
 title: Arrange vocal stacks and harmonies
 when: Building pop, indie, R&B or gospel-influenced backing parts around a lead, including doubles, held vowels and responses.
 category: production
-version: 2
+version: 3
 tools: [tracks_list, project_extract, edit_subtree, project_validate, tracks_mix, audition_range, read_skill]
 ---
 Name each backing role: unison texture, chord voice, held vowel, response or
@@ -32,6 +32,13 @@ and identical chains are options, not universal requirements.
 A group compressor responds to the sum differently from per-take inserts.
 Do not feed several simultaneous notes into a monophonic tuner by default.
 
+## Shape a phrase handoff
+Try holding one backing vowel while the lead starts its next line, then compare a version that releases before the entry.
+Check the actual held notes against each incoming chord and lead note, rather than judging overlap from clip rectangles.
+Keep pitches and levels fixed while changing the held tail; adjust its register or interval in a separate pass.
+If the first consonant blurs, shorten or lower that tail before lifting the whole lead or widening the stack.
+If the handoff loses support, preserve part of the vowel decay and thin a competing accompaniment attack.
+
 ## Sketch a derived harmony
 An @vocal_harmony block derives one voice per source clip. Use a monophonic
 lead and confirm the active key. Its interval counts diatonic steps in the
@@ -41,7 +48,16 @@ Use a separate recorded or programmed line where the sketch lands awkwardly.
 The block's level and pan blend that voice on the lead track; inspect the
 actual generated behavior before describing an independent backing track.
 
+An @vocal_harmony block can derive one voice per source clip. Use a monophonic
+lead and confirm the active key. The interval counts diatonic steps in an active
+scale, with a warning and semitone fallback when no scale is active.
+The voice follows the scale and detected melody. Check it against actual chords,
+especially altered harmony and passing tones. Use a separate recorded or
+programmed part where the sketch chooses an awkward note.
+Use the block's level and pan to blend the derived voice on the lead track.
+
 Audition lead and backs over their entry, full phrase and final cutoff.
 Check loud/quiet vowels, intelligibility and balance in mono and stereo.
+Repeat the handoff to check that its expression and release still fit.
 Reduce density, shorten backing sustain or darken its role before repeatedly
 raising the lead. Validate edits and preserve the intended lead identity.

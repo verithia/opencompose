@@ -92,11 +92,11 @@ pub(crate) fn rename_preset_inner(
 ) -> Result<ProjectSnapshot, String> {
     let old_project = inner.project.clone();
     rename_preset_in_project(&mut inner.project, name, new_name)?;
-    resync_with_undo(
-        inner,
-        old_project,
-        UndoEdit::new("preset rename", UndoScope::Preset),
-    )?;
+    let mut edit = UndoEdit::new("preset rename", UndoScope::Preset);
+    if old_project.properties.control_links != inner.project.properties.control_links {
+        edit = edit.with_scope(UndoScope::Automation);
+    }
+    resync_with_undo(inner, old_project, edit)?;
     Ok(snapshot(inner))
 }
 
@@ -268,6 +268,13 @@ pub(crate) fn rename_preset_in_project(
         .ok_or_else(|| format!("Preset '{name}' not found"))?;
     project.presets[index].name = new_name.clone();
     reassign_references(project, name, &new_name);
+    for link in &mut project.properties.control_links {
+        if let ast::ControlLinkSource::PresetMacro { preset, .. } = &mut link.source
+            && preset == name
+        {
+            preset.clone_from(&new_name);
+        }
+    }
     for preset in &mut project.presets {
         if preset.extends.as_deref() == Some(name) {
             preset.extends = Some(new_name.clone());

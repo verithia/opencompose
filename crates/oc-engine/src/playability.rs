@@ -20,7 +20,7 @@ pub fn unplayable_reason(
 ) -> Option<String> {
     let track = project.tracks.get(track_index)?;
     // An audio/clip host has no instrument of its own.
-    if track.instrument.category == "audio" {
+    if track.instrument.category == "audio" || track.instrument.is_midi_only() {
         return None;
     }
 

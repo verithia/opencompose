@@ -406,6 +406,53 @@ struct AffectedInfo {
     routing: bool,
 }
 
+/// A single-node edit cannot discard any declaration outside its target block.
+fn parse_single_root(
+    project: &Project,
+    fragment: &str,
+    owner: crate::source_map::SourceOwner,
+) -> Result<Project, String> {
+    use crate::source_map::{SourceLimits, SourcePart, SourceSubject};
+    let prefix = format!(
+        "@project\n  tempo: {}\n  time_signature: {}/{}\n\n",
+        project.properties.tempo,
+        project.properties.time_signature.numerator,
+        project.properties.time_signature.denominator,
+    );
+    let source = format!("{prefix}{fragment}");
+    let document = parser::parse_document(&source, SourceLimits::default())
+        .map_err(|error| format!("Parse error: {error}"))?;
+    let span = document
+        .span(SourceSubject {
+            owner,
+            part: SourcePart::Whole,
+        })
+        .ok_or("Replacement must contain exactly one block of the selected kind")?;
+    if span.start() < prefix.len()
+        || !only_trivia(&source[prefix.len()..span.start()])
+        || !only_trivia(&source[span.end()..])
+    {
+        return Err("Replacement must contain exactly one block of the selected kind".into());
+    }
+    Ok(document.into_project())
+}
+
+fn only_trivia(text: &str) -> bool {
+    text.lines().all(|line| {
+        let line = line.trim();
+        line.is_empty() || line.starts_with("//")
+    })
+}
+
+fn check_replacement_name(actual: &str, expected: &str) -> Result<(), String> {
+    if actual != expected {
+        return Err(format!(
+            "Replacement name '{actual}' does not match target '{expected}'"
+        ));
+    }
+    Ok(())
+}
+
 fn replace_node(
     project: &mut Project,
     segments: &[PathSegment],
@@ -429,19 +476,16 @@ fn replace_node(
             })
         }
         PathSegment::Pattern(item_ref) => {
-            let wrapper = format!(
-                "@project\n  tempo: {}\n  time_signature: {}/{}\n\n{}",
-                project.properties.tempo,
-                project.properties.time_signature.numerator,
-                project.properties.time_signature.denominator,
-                new_dsl
-            );
-            let parsed = parser::parse(&wrapper).map_err(|e| format!("Parse error: {}", e))?;
+            let parsed =
+                parse_single_root(project, new_dsl, crate::source_map::SourceOwner::Pattern(0))?;
             let pattern = parsed
                 .patterns
                 .into_iter()
                 .next()
                 .ok_or("New DSL contains no pattern")?;
+            if let ItemRef::Name(expected) = item_ref {
+                check_replacement_name(&pattern.name, expected)?;
+            }
             let name = pattern.name.clone();
             match item_ref {
                 ItemRef::Index(idx) => {
@@ -486,19 +530,22 @@ fn replace_node(
             let (idx, _) = resolve_track(project, track_ref)?;
 
             if segments.len() == 1 {
-                // Replace entire track — parse new_dsl as a full project, take the first track
-                let wrapper = format!(
-                    "@project\n  tempo: {}\n  time_signature: {}/{}\n\n{}",
-                    project.properties.tempo,
-                    project.properties.time_signature.numerator,
-                    project.properties.time_signature.denominator,
-                    new_dsl
-                );
-                let parsed = parser::parse(&wrapper).map_err(|e| format!("Parse error: {}", e))?;
-                if parsed.tracks.is_empty() {
-                    return Err("New DSL contains no track".into());
+                let parsed =
+                    parse_single_root(project, new_dsl, crate::source_map::SourceOwner::Track(0))?;
+                let mut replacement = parsed.tracks.into_iter().next().unwrap();
+                if let TrackRef::Name(expected) = track_ref {
+                    check_replacement_name(&replacement.name, expected)?;
                 }
-                project.tracks[idx] = parsed.tracks.into_iter().next().unwrap();
+                // Audio declarations live outside the track block. Retain their
+                // document order when substituting the track's authored body.
+                for clip in &project.tracks[idx].clips {
+                    if let Some(audio) = clip.as_audio() {
+                        let mut audio = audio.clone();
+                        audio.track.clone_from(&replacement.name);
+                        replacement.clips.push_audio_at(clip.order, audio);
+                    }
+                }
+                project.tracks[idx] = replacement;
                 Ok(AffectedInfo {
                     tracks: vec![idx],
                     properties: false,
@@ -509,12 +556,9 @@ fn replace_node(
             }
         }
         PathSegment::Preset(name) => {
-            // Parse as a full project, extract the first preset
-            let wrapper = format!(
-                "@project\n  tempo: 120\n  time_signature: 4/4\n\n{}",
-                new_dsl
-            );
-            let parsed = parser::parse(&wrapper).map_err(|e| format!("Parse error: {}", e))?;
+            let parsed =
+                parse_single_root(project, new_dsl, crate::source_map::SourceOwner::Preset(0))?;
+            check_replacement_name(&parsed.presets[0].name, name)?;
             if let Some(new_preset) = parsed.presets.into_iter().next() {
                 if let Some(existing) = project.presets.iter_mut().find(|p| p.name == *name) {
                     *existing = new_preset;
@@ -529,11 +573,9 @@ fn replace_node(
             })
         }
         PathSegment::Bus(name) => {
-            let wrapper = format!(
-                "@project\n  tempo: 120\n  time_signature: 4/4\n\n{}",
-                new_dsl
-            );
-            let parsed = parser::parse(&wrapper).map_err(|e| format!("Parse error: {}", e))?;
+            let parsed =
+                parse_single_root(project, new_dsl, crate::source_map::SourceOwner::Bus(0))?;
+            check_replacement_name(&parsed.buses[0].name, name)?;
             if let Some(new_bus) = parsed.buses.into_iter().next() {
                 if let Some(existing) = project.buses.iter_mut().find(|b| b.name == *name) {
                     *existing = new_bus;
@@ -548,11 +590,8 @@ fn replace_node(
             })
         }
         PathSegment::Master => {
-            let wrapper = format!(
-                "@project\n  tempo: 120\n  time_signature: 4/4\n\n{}",
-                new_dsl
-            );
-            let parsed = parser::parse(&wrapper).map_err(|e| format!("Parse error: {}", e))?;
+            let parsed =
+                parse_single_root(project, new_dsl, crate::source_map::SourceOwner::Master)?;
             project.master = parsed.master;
             Ok(AffectedInfo {
                 tracks: vec![],
@@ -563,8 +602,19 @@ fn replace_node(
         PathSegment::Properties => {
             // Parse properties from key: value lines
             let wrapper = format!("@project\n  {}\n", new_dsl.replace('\n', "\n  "));
-            let parsed = parser::parse(&wrapper).map_err(|e| format!("Parse error: {}", e))?;
-            project.properties = parsed.properties;
+            use crate::source_map::{SourceLimits, SourceOwner, SourcePart, SourceSubject};
+            let document = parser::parse_document(&wrapper, SourceLimits::default())
+                .map_err(|error| format!("Parse error: {error}"))?;
+            let header = document
+                .span(SourceSubject {
+                    owner: SourceOwner::Project,
+                    part: SourcePart::Whole,
+                })
+                .ok_or("Replacement contains no project properties")?;
+            if !only_trivia(&wrapper[header.end()..]) {
+                return Err("Properties replacement contains other declarations".into());
+            }
+            project.properties = document.into_project().properties;
             let all: Vec<usize> = (0..project.tracks.len()).collect();
             Ok(AffectedInfo {
                 tracks: all,
@@ -582,85 +632,69 @@ fn replace_track_child(
     segments: &[PathSegment],
     new_dsl: &str,
 ) -> Result<AffectedInfo, String> {
-    let track = &mut project.tracks[track_idx];
-
+    if segments.len() != 1 {
+        return Err("Invalid track child path".into());
+    }
+    let header = "@track _tmp | instrument: piano/acoustic_grand\n";
+    let fragment = format!("{header}{}", new_dsl);
+    let parsed = parse_single_root(project, &fragment, crate::source_map::SourceOwner::Track(0))?;
+    let mut candidate = parsed
+        .tracks
+        .into_iter()
+        .next()
+        .ok_or("New DSL contains no track child")?;
+    let baseline = parse_single_root(project, header, crate::source_map::SourceOwner::Track(0))?
+        .tracks
+        .into_iter()
+        .next()
+        .unwrap();
+    // Only the selected payload may differ from the empty wrapping track.
+    // Every other field is rejected before the document is touched.
+    let mut residue = candidate.clone();
     match &segments[0] {
         PathSegment::Phrase(item_ref) => {
-            let phrase_idx = resolve_phrase_idx(track, item_ref)?;
-            // Parse phrase from DSL — wrap in a minimal track context
-            let wrapper = format!(
-                "@project\n  tempo: {}\n  time_signature: {}/{}\n\n@track _tmp | instrument: piano/acoustic_grand\n  {}",
-                project.properties.tempo,
-                project.properties.time_signature.numerator,
-                project.properties.time_signature.denominator,
-                new_dsl.replace('\n', "\n  ")
-            );
-            let parsed = parser::parse(&wrapper).map_err(|e| format!("Parse error: {}", e))?;
-            let new_phrase = parsed
-                .tracks
-                .into_iter()
-                .next()
-                .and_then(|t| t.phrases.into_iter().next())
-                .ok_or("New DSL contains no phrase")?;
-            track.phrases[phrase_idx] = new_phrase;
-            Ok(AffectedInfo {
-                tracks: vec![track_idx],
-                properties: false,
-                routing: false,
-            })
+            let phrase_idx = resolve_phrase_idx(&project.tracks[track_idx], item_ref)?;
+            if candidate.phrases.len() != 1 {
+                return Err("Replacement must contain exactly one phrase".into());
+            }
+            residue.phrases.clear();
+            if residue != baseline {
+                return Err("Phrase replacement contains other track content".into());
+            }
+            let phrase = candidate.phrases.remove(0);
+            if let ItemRef::Name(expected) = item_ref {
+                check_replacement_name(&phrase.name, expected)?;
+            }
+            project.tracks[track_idx].phrases[phrase_idx] = phrase;
         }
         PathSegment::Mix => {
-            // Parse mix line
-            let wrapper = format!(
-                "@project\n  tempo: 120\n  time_signature: 4/4\n\n@track _tmp | instrument: piano/acoustic_grand\n  {}",
-                new_dsl.trim()
-            );
-            let parsed = parser::parse(&wrapper).map_err(|e| format!("Parse error: {}", e))?;
-            if let Some(t) = parsed.tracks.into_iter().next() {
-                track.mix = t.mix;
+            residue.mix = baseline.mix.clone();
+            if residue != baseline {
+                return Err("Mix replacement contains other track content".into());
             }
-            Ok(AffectedInfo {
-                tracks: vec![track_idx],
-                properties: false,
-                routing: false,
-            })
+            project.tracks[track_idx].mix = candidate.mix;
         }
         PathSegment::Effects => {
-            let wrapper = format!(
-                "@project\n  tempo: 120\n  time_signature: 4/4\n\n@track _tmp | instrument: piano/acoustic_grand\n  {}",
-                new_dsl.replace('\n', "\n  ")
-            );
-            let parsed = parser::parse(&wrapper).map_err(|e| format!("Parse error: {}", e))?;
-            if let Some(t) = parsed.tracks.into_iter().next() {
-                track.effects = t.effects;
+            residue.effects.clear();
+            if residue != baseline {
+                return Err("Effects replacement contains other track content".into());
             }
-            Ok(AffectedInfo {
-                tracks: vec![track_idx],
-                properties: false,
-                routing: false,
-            })
+            project.tracks[track_idx].effects = candidate.effects;
         }
         PathSegment::Automation => {
-            let wrapper = format!(
-                "@project\n  tempo: 120\n  time_signature: 4/4\n\n@track _tmp | instrument: piano/acoustic_grand\n  {}",
-                new_dsl.replace('\n', "\n  ")
-            );
-            let parsed = parser::parse(&wrapper).map_err(|e| format!("Parse error: {}", e))?;
-            let lanes = parsed
-                .tracks
-                .into_iter()
-                .next()
-                .map(|t| t.automation().cloned().collect::<Vec<_>>())
-                .unwrap_or_default();
-            track.set_automation_lanes(lanes);
-            Ok(AffectedInfo {
-                tracks: vec![track_idx],
-                properties: false,
-                routing: false,
-            })
+            residue.set_automation_lanes([]);
+            if residue != baseline {
+                return Err("Automation replacement contains other track content".into());
+            }
+            project.tracks[track_idx].set_automation_lanes(candidate.automation().cloned());
         }
-        _ => Err("Invalid track child for replace".into()),
+        _ => return Err("Invalid track child for replace".into()),
     }
+    Ok(AffectedInfo {
+        tracks: vec![track_idx],
+        properties: false,
+        routing: false,
+    })
 }
 
 // ============================================================================
@@ -849,6 +883,182 @@ mod tests {
         // The clip on `drums` places it, so that track is dirty.
         assert_eq!(read.affected_tracks, vec![0]);
         assert!(extract(&project(), "pattern:missing").is_err());
+    }
+
+    #[test]
+    fn single_node_replacements_reject_extra_or_mismatched_roots_atomically() {
+        let mut project = project();
+        let before = serializer::serialize(&project);
+        for (path, fragment) in [
+            (
+                "track:lead",
+                "@track lead | instrument: synth/lead_saw\n@track extra | instrument: synth/lead_saw\n",
+            ),
+            (
+                "track:lead",
+                "@track lead | instrument: synth/lead_saw\n@bus extra\n",
+            ),
+            (
+                "track:lead",
+                "@track different | instrument: synth/lead_saw\n",
+            ),
+            (
+                "preset:local",
+                "@preset local\n  plugin: \"builtin.sampler\"\n@preset extra\n  plugin: \"builtin.sampler\"\n",
+            ),
+            ("preset:local", "@bus extra\n"),
+            (
+                "preset:local",
+                "@preset different\n  plugin: \"builtin.sampler\"\n",
+            ),
+            ("bus:drums_bus", "@bus drums_bus\n@bus extra\n"),
+            ("bus:drums_bus", "@bus different\n"),
+            ("master", "@master\n@master\n"),
+            (
+                "pattern:beat",
+                "@pattern beat | instrument: drums/acoustic_kit\n@pattern extra | instrument: drums/acoustic_kit\n",
+            ),
+        ] {
+            assert!(
+                replace(&mut project, path, fragment).is_err(),
+                "{path}: {fragment}"
+            );
+            assert_eq!(
+                serializer::serialize(&project),
+                before,
+                "{path} mutated the project"
+            );
+        }
+    }
+
+    #[test]
+    fn a_single_node_fragment_allows_comments_and_quoted_root_text() {
+        let mut project = project();
+        replace(&mut project, "preset:local", "// @track ignored\n@preset local\n  plugin: \"builtin.sampler\"\n  params: {label: \"@bus extra // text\"}\n// @preset ignored\n").unwrap();
+        assert!(project.presets.iter().any(|preset| preset.name == "local"));
+        replace(
+            &mut project,
+            "track:1",
+            "@track renamed | instrument: synth/lead_saw\n",
+        )
+        .unwrap();
+        assert_eq!(project.tracks[1].name, "renamed");
+    }
+
+    #[test]
+    fn list_and_property_edits_keep_multiple_entries() {
+        let mut project = project();
+        replace(
+            &mut project,
+            "properties",
+            "tempo: 140\ntime_signature: 3/4",
+        )
+        .unwrap();
+        assert_eq!(project.properties.tempo, 140.0);
+        assert_eq!(project.properties.time_signature.numerator, 3);
+        replace(
+            &mut project,
+            "track:lead.automation",
+            "automation: brightness {1:1=0%, 2:1=100%}\nautomation: dynamics {1:1=20%, 2:1=80%}\n",
+        )
+        .unwrap();
+        assert_eq!(project.tracks[1].automation_count(), 2);
+        replace(
+            &mut project,
+            "track:lead.effects",
+            "effects:\n - reverb: mix=20%\n - delay: mix=10%\n",
+        )
+        .unwrap();
+        assert_eq!(project.tracks[1].effects.len(), 2);
+        replace(&mut project, "track:lead.mix", "mix: vol=-6dB, pan=0.2\n").unwrap();
+    }
+
+    #[test]
+    fn child_fragments_refuse_discarded_siblings_and_other_content_atomically() {
+        let mut project = project();
+        let before = serde_json::to_value(&project).unwrap();
+        for (path, fragment) in [
+            ("properties", "tempo: 140\n@bus unwanted\n"),
+            (
+                "track:lead.phrase:main",
+                "@phrase main\n C4 q mf\n@phrase extra\n D4 q mf\n",
+            ),
+            (
+                "track:lead.phrase:main",
+                "@phrase main\n C4 q mf\nmix: vol=-6dB\n",
+            ),
+            (
+                "track:lead.phrase:main",
+                "@phrase main\n C4 q mf\n@track extra | instrument: synth/lead_saw\n",
+            ),
+            ("track:lead.phrase:main", "@phrase other\n C4 q mf\n"),
+            ("track:lead.mix", "mix: vol=-6dB\n@phrase extra\n D4 q mf\n"),
+            ("track:lead.mix", "mix: vol=-6dB\n@bus extra\n"),
+            (
+                "track:lead.effects",
+                "effects:\n - reverb: room=20%\nmix: vol=-6dB\n",
+            ),
+            (
+                "track:lead.automation",
+                "automation: brightness {1:1=0%, 2:1=100%}\nmix: vol=-6dB\n",
+            ),
+        ] {
+            assert!(
+                replace(&mut project, path, fragment).is_err(),
+                "{path}: {fragment}"
+            );
+            assert_eq!(
+                serde_json::to_value(&project).unwrap(),
+                before,
+                "{path} mutated the project"
+            );
+        }
+        replace(
+            &mut project,
+            "track:lead.phrase:main",
+            "@phrase main [1:1 - 2:1]\n E4 q mf\n",
+        )
+        .unwrap();
+        assert_eq!(project.tracks[1].phrases.len(), 1);
+    }
+
+    #[test]
+    fn replacing_track_body_preserves_top_level_audio_clips_in_document_order() {
+        let mut project = parser::parse(
+            "@project\n\
+             @track tape | instrument: audio/clip\n\
+             @track other | instrument: audio/clip\n\
+             @audio_clip first [1:1 - 2:1] | track: tape\n  file: \"first.wav\"\n\
+             @audio_clip middle [2:1 - 3:1] | track: other\n  file: \"middle.wav\"\n\
+             @audio_clip last [3:1 - 4:1] | track: tape\n  file: \"last.wav\"\n  offset: 0.15s\n",
+        )
+        .unwrap();
+        let prior: Vec<_> = project.audio_clips().into_iter().cloned().collect();
+        let edit = replace(
+            &mut project,
+            "track:tape",
+            "@track tape | instrument: audio/clip\n  mix: vol=-6dB\n",
+        )
+        .unwrap();
+        assert_eq!(edit.affected_tracks, vec![0]);
+        assert_eq!(project.tracks[0].mix.volume_db, -6.0);
+        assert!(project.audio_clips().into_iter().eq(prior.iter()));
+        assert_eq!(parser::parse(&edit.dsl_text).unwrap(), project);
+
+        replace(
+            &mut project,
+            "track:0",
+            "@track renamed | instrument: audio/clip\n",
+        )
+        .unwrap();
+        let mut expected = prior;
+        expected[0].track = "renamed".into();
+        expected[2].track = "renamed".into();
+        assert!(project.audio_clips().into_iter().eq(expected.iter()));
+        assert_eq!(
+            parser::parse(&serializer::serialize(&project)).unwrap(),
+            project
+        );
     }
 
     #[test]

@@ -50,3 +50,18 @@ describe("project clock contract", () => {
     expect(() => clock.meterAtBar(0)).toThrow("Invalid bar");
   });
 });
+
+describe("automation PPQ clock positions", () => {
+  it("uses quarter-note ticks across a mixed-meter boundary while ordinary subdivisions stay strict", () => {
+    const clock = createProjectClock(properties());
+    expect(clock.quarterAt({bar:2,beat:7,subdivision:47999},96000)).toBeCloseTo(7-1/96000,12);
+    expect(clock.quarterAt({bar:3,beat:1,subdivision:48001},96000)).toBeCloseTo(7.500010416666667,12);
+    expect(clock.quarterAt({bar:2,beat:7,subdivision:3})).toBe(6.875);
+    expect(() => clock.quarterAt({bar:2,beat:7,subdivision:48000},96000)).toThrow("Invalid beat/subdivision");
+    expect(() => clock.quarterAt({bar:3,beat:1,subdivision:96000},96000)).toThrow("Invalid beat/subdivision");
+    expect(() => clock.quarterAt({bar:3,beat:1,subdivision:4})).toThrow("Invalid beat/subdivision");
+    for (const ppq of [-1,0.5,96001,Number.NaN,Number.POSITIVE_INFINITY]) {
+      expect(() => clock.quarterAt({bar:1,beat:1,subdivision:0},ppq)).toThrow("Invalid PPQ");
+    }
+  });
+});

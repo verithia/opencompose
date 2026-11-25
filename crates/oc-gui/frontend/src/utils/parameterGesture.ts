@@ -8,13 +8,21 @@ import {
 } from "../stores/automationWrite";
 import { isSecondaryClick } from "../stores/gesture";
 
+type Commit = (value: number) => void | Promise<boolean | void>;
+
+export interface ParameterGesturePreview {
+  update(value: number): void;
+  finish(committed: boolean): void;
+}
+
 interface ParameterGestureOptions {
   value(): number;
   draft(value: number): void;
   clearDraft(): void;
-  commit(value: number): void;
+  commit: Commit;
   /** Capture ordinary edit admission before closing another interaction. */
-  captureCommit?(): (value: number) => void;
+  captureCommit?(): Commit;
+  capturePreview?(): ParameterGesturePreview | null;
   surface(): AutomationWriteSurface | null;
   quarter(): number;
   opened?(handle: AutomationWriteHandle): void;
@@ -28,7 +36,8 @@ interface Interaction {
   value: number;
   changed: boolean;
   ended: boolean;
-  commit(value: number): void;
+  commit: Commit;
+  preview: ParameterGesturePreview | null;
   removeListeners(): void;
 }
 
@@ -64,10 +73,18 @@ export function createParameterGesture(options: ParameterGestureOptions) {
     interaction.ended = true;
     interaction.removeListeners();
     const handle = interaction.handle;
+    const preview = interaction.preview;
     closeHandle(interaction);
-    if (disposed || current !== interaction) return;
-    if (canceled || handle) options.clearDraft();
-    else if (interaction.changed) interaction.commit(interaction.value);
+    if (disposed || current !== interaction || canceled || handle || !interaction.changed) {
+      preview?.finish(false);
+      if (!disposed && current === interaction && (canceled || handle)) options.clearDraft();
+      return;
+    }
+    const committed = interaction.commit(interaction.value);
+    if (preview) void Promise.resolve(committed).then(
+      saved => preview.finish(saved === true),
+      () => preview.finish(false),
+    );
   };
   const open = (kind: Interaction["kind"], pointerId = 0, started = 0): Interaction | null => {
     if (disposed) return null;
@@ -86,7 +103,7 @@ export function createParameterGesture(options: ParameterGestureOptions) {
     if (!admitted()) return null;
     const interaction: Interaction = {
       kind, pointerId, started, handle: null, value, changed: false,
-      ended: false, commit, removeListeners: () => {},
+      ended: false, commit, preview: null, removeListeners: () => {},
     };
     current = interaction;
     interaction.handle = surface ? openAutomationWrite(surface) : null;
@@ -101,6 +118,11 @@ export function createParameterGesture(options: ParameterGestureOptions) {
     if (!accepted()) return abandon();
     if (interaction.handle) options.opened?.(interaction.handle);
     if (!accepted()) return abandon();
+    if (!surface && kind !== "keyboard") interaction.preview = options.capturePreview?.() ?? null;
+    if (!accepted()) {
+      interaction.preview?.finish(false);
+      return abandon();
+    }
     return interaction;
   };
   const input = (value: number) => {
@@ -112,7 +134,10 @@ export function createParameterGesture(options: ParameterGestureOptions) {
     interaction.value = value;
     interaction.changed = true;
     options.draft(value);
-    if (owns(interaction)) sample(interaction);
+    if (owns(interaction)) {
+      interaction.preview?.update(value);
+      sample(interaction);
+    }
     return interaction;
   };
   const matches = (interaction: Interaction, event: PointerEvent) => {

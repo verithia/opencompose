@@ -75,6 +75,18 @@ effect_identities! {
     Gate => ("gate", "gate", []),
     Saturator => ("saturator", "saturator", []),
     StereoWidth => ("stereo-width", "stereo_width", []),
+    StereoMatrix => ("stereo-matrix", "stereo_matrix", []),
+    FrequencyShift => ("frequency-shift", "frequency_shift", []),
+    Vocoder => ("vocoder", "vocoder", []),
+    AllPass => ("allpass", "allpass", []),
+    TransferShaper => ("transfer-shaper", "transfer_shaper", []),
+}
+
+impl EffectType {
+    /// A change to this setting requires a new latency-compensation plan.
+    pub fn parameter_changes_latency(&self, name: &str) -> bool {
+        matches!(self, Self::DynamicEq) && name == "oversample_fir"
+    }
 }
 
 #[cfg(test)]
@@ -113,7 +125,7 @@ mod tests {
             let json = serde_json::to_string(effect).unwrap();
             assert_eq!(serde_json::from_str::<EffectType>(&json).unwrap(), *effect);
         }
-        assert_eq!(devices.len(), 29);
+        assert_eq!(devices.len(), 33);
     }
 
     #[test]

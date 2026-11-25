@@ -17,13 +17,15 @@
  */
 import { For, Show, createMemo, createSignal, onCleanup } from "solid-js";
 
+import { AUTOMATION_CURVES } from "../data/automationCurves.gen";
 import type { AutomationCurve, AutomationLane, BarBeat } from "../types/project";
 import { store } from "../stores/project";
 import { i18n, type I18nKey } from "../stores/i18n";
 import { BLOCK_POSITION_QUARTERS, gridDivision, snapBlockQuarter } from "../stores/grid";
 import { beginBlockGesture, endBlockGesture, isSecondaryClick } from "../stores/gesture";
-import { createProjectClock } from "../utils/projectClock";
-import { ownerEffects } from "../utils/automationTarget";
+import { projectClock } from "../utils/projectClock";
+import type { TimelineViewport } from "../utils/timelineViewport";
+import { ownerEffects, supportsExponentialAutomation } from "../utils/automationTarget";
 import {
   AUTOMATION_ROW_HEIGHT,
   automationLaneLabel,
@@ -33,10 +35,11 @@ import {
   laneSpan,
   pointXY,
   yToValue,
+  unmappedAutomationValue,
 } from "../utils/automationRow";
 import { openContextMenu, type ContextMenuItem } from "./ContextMenu";
 
-const CURVES: AutomationCurve[] = ["linear", "stairs", "half_sine", "smooth"];
+const CURVES: AutomationCurve[] = ["linear", "stairs", "half_sine", "smooth", "exponential"];
 
 /** Height of the strip that names a bus or master group. */
 export const AUTOMATION_OWNER_STRIP_HEIGHT = 18;
@@ -136,7 +139,10 @@ export function AutomationOwnerStrip(props: { label: string }) {
 
 export interface AutomationLaneRowProps {
   lane: AutomationLane;
+  viewport?: TimelineViewport;
   laneIndex: number;
+  /** Vertical position of a scoped clip sharing an arrangement row. */
+  playlistTop?: number;
   /** Panel target that owns the lane, so its effects can name a range. */
   owner?: string;
   pxPerBeat: number;
@@ -147,7 +153,7 @@ export interface AutomationLaneRowProps {
   onAddPoint: (positionBeats: number, value: number) => void;
   onMovePoint: (pointIndex: number, positionBeats: number, value: number) => void;
   onDeletePoint: (pointIndex: number) => void;
-  onCurve: (pointIndex: number, curve: AutomationCurve, tension: number | null) => void;
+  onCurve: (pointIndex: number, curve: AutomationCurve, tension: number | null, curvature?: number | null) => void;
   /** Ask for a tension value; the dialog lives with the timeline. */
   onTension: (pointIndex: number) => void;
   onToggleMute: () => void;
@@ -169,11 +175,12 @@ export function AutomationLaneRow(props: AutomationLaneRowProps) {
   let element: HTMLDivElement | undefined;
   const [ghost, setGhost] = createSignal<{ index: number; x: number; y: number } | null>(null);
 
+  const [visible, setVisible] = createSignal(!props.viewport?.supported);
   const height = AUTOMATION_ROW_HEIGHT;
   // One clock per project revision; every x on the row goes through it, so a
   // point sits over the same beat the clips use.
-  const clock = createMemo(() => createProjectClock(store.project.properties));
-  const quarterAt = (position: BarBeat): number => clock().quarterAt(position);
+  const clock = createMemo(() => projectClock(store.project.properties));
+  const quarterAt = (position: BarBeat): number => clock().quarterAt(position, props.lane.ppq ?? 0);
   // The target's own range, so a point can be authored anywhere the target
   // accepts; the owner names the chain that holds the device.
   const domain = createMemo(() =>
@@ -183,10 +190,16 @@ export function AutomationLaneRow(props: AutomationLaneRowProps) {
     ),
   );
   const points = createMemo(() =>
-    props.lane.points.map((point) => pointXY(point, quarterAt, props.pxPerBeat, domain(), height)),
+    visible() ? props.lane.points.map((point) => pointXY(point, quarterAt, props.pxPerBeat, domain(), height, props.lane.value_mapping)) : [],
   );
   const span = createMemo(() => laneSpan(props.lane, quarterAt, props.pxPerBeat));
   const muted = () => Boolean(props.lane.muted);
+  const pointValuesEditable = () => !props.lane.value_mapping || (
+    props.lane.value_mapping.input_quantization_steps === undefined
+    && (props.lane.value_mapping.scale ?? 1) !== 0
+    && props.lane.points.every((point) => Object.keys(point.value)[0] === "Number")
+  );
+  const authoredValueAtY = (y: number) => unmappedAutomationValue(yToValue(y, domain(), height), props.lane.value_mapping);
 
   // ── Clip block gestures ──
   // The block and its two edge handles share one session. The ghost follows the
@@ -355,10 +368,10 @@ export function AutomationLaneRow(props: AutomationLaneRowProps) {
   }
 
   /** A snapped quarter-note position and the value under a y coordinate. */
-  function positionAt(x: number, y: number): { quarter: number; value: number } {
+  function positionAt(x: number, y: number): { quarter: number; value: number | null } {
     return {
       quarter: snapBlockQuarter(x / props.pxPerBeat, gridDivision()),
-      value: yToValue(y, domain(), height),
+      value: authoredValueAtY(y),
     };
   }
 
@@ -372,6 +385,8 @@ export function AutomationLaneRow(props: AutomationLaneRowProps) {
     quarter: number;
     y: number;
     moved: boolean;
+    startClientX: number;
+    originalQuarter: number;
   } | null = null;
 
   /** Drop the point drag and its listeners; idempotent, never writes. */
@@ -393,7 +408,8 @@ export function AutomationLaneRow(props: AutomationLaneRowProps) {
     if (!session || event.pointerId !== session.pointerId) return;
     session.moved = true;
     const at = pointerAt(event);
-    session.quarter = positionAt(at.x, at.y).quarter;
+    session.quarter = event.clientX === session.startClientX
+      ? session.originalQuarter : positionAt(at.x, at.y).quarter;
     session.y = at.y;
     setGhost({ index: session.index, x: session.quarter * props.pxPerBeat, y: at.y });
   };
@@ -404,7 +420,8 @@ export function AutomationLaneRow(props: AutomationLaneRowProps) {
     const { index, moved, quarter, y } = session;
     endPointDrag();
     if (!moved) return;
-    props.onMovePoint(index, quarter, yToValue(y, domain(), height));
+    const value = authoredValueAtY(y);
+    if (value !== null) props.onMovePoint(index, quarter, value);
   };
 
   const handlePointCancel = (event: PointerEvent) => {
@@ -425,7 +442,7 @@ export function AutomationLaneRow(props: AutomationLaneRowProps) {
     event.stopPropagation();
     endPointDrag();
     props.onSelectPoint(index);
-    if (muted()) return;
+    if (muted() || !pointValuesEditable()) return;
     const at = pointerAt(event);
     pointSession = {
       pointerId: event.pointerId,
@@ -434,6 +451,8 @@ export function AutomationLaneRow(props: AutomationLaneRowProps) {
       quarter: positionAt(at.x, at.y).quarter,
       y: at.y,
       moved: false,
+      startClientX: event.clientX,
+      originalQuarter: quarterAt(props.lane.points[index].position),
     };
     document.addEventListener("pointermove", handlePointMove);
     document.addEventListener("pointerup", handlePointUp);
@@ -460,14 +479,15 @@ export function AutomationLaneRow(props: AutomationLaneRowProps) {
       ...CURVES.map((name): ContextMenuItem => ({
         label: curveLabel(name),
         checked: curve === name,
-        disabled: muted(),
-        hint: refusal,
-        onSelect: () =>
-          props.onCurve(index, name, name === "smooth" ? (point.tension ?? 1) : null),
+        disabled: muted() || (name === "exponential" && !supportsExponentialAutomation(props.lane)),
+        hint: name === "exponential" && !supportsExponentialAutomation(props.lane) ? i18n.t("device.automation.exponentialUnavailable") : refusal,
+        onSelect: () => name === "exponential"
+          ? props.onCurve(index, name, null, point.curvature ?? AUTOMATION_CURVES.curvature.default)
+          : props.onCurve(index, name, name === "smooth" ? (point.tension ?? 1) : null),
       })),
       { type: "separator" },
       {
-        label: i18n.t("timeline.automation.tension"),
+        label: i18n.t(curve === "exponential" ? "device.automation.curvature" : "timeline.automation.tension"),
         disabled: muted(),
         hint: refusal,
         onSelect: () => props.onTension(index),
@@ -492,20 +512,24 @@ export function AutomationLaneRow(props: AutomationLaneRowProps) {
 
   return (
     <div
-      ref={element}
+      ref={(node) => { element = node; props.viewport?.observe(node, setVisible); }}
       class="automation-lane"
-      classList={{ "whole-timeline": span() === null, muted: muted() }}
+      classList={{ "whole-timeline": span() === null, muted: muted(), "playlist-automation-lane": props.playlistTop !== undefined }}
       data-lane={props.lane.param}
       data-lane-index={props.laneIndex}
       data-span={span() === null ? "whole" : "clip"}
-      style={{ height: `${height}px`, width: `${props.width}px` }}
+      style={{
+        height: `${height}px`,
+        width: `${props.width}px`,
+        top: props.playlistTop === undefined ? undefined : `${props.playlistTop}px`,
+      }}
       onDblClick={(event) => {
         const target = event.target as HTMLElement;
         if (target.closest(".automation-point, .automation-resize-handle")) return;
-        if (muted()) return;
+        if (muted() || !pointValuesEditable()) return;
         const at = pointerAt(event);
         const { quarter, value } = positionAt(at.x, at.y);
-        props.onAddPoint(quarter, value);
+        if (value !== null) props.onAddPoint(quarter, value);
       }}
       onPointerDown={(event) => {
         const target = event.target as HTMLElement;
@@ -518,6 +542,7 @@ export function AutomationLaneRow(props: AutomationLaneRowProps) {
         openBlockMenu(event);
       }}
     >
+      <Show when={visible()}>
       <Show when={span()}>
         {(block) => (
           <div
@@ -559,12 +584,21 @@ export function AutomationLaneRow(props: AutomationLaneRowProps) {
       <svg class="automation-curve" width={props.width} height={height} aria-hidden="true">
         <polyline class="automation-polyline" points={lanePolyline(props.lane, quarterAt, props.pxPerBeat, domain(), height)} />
       </svg>
-      <span class="automation-row-name" title={laneTitle(props.lane)}>
+      <span class="automation-row-name" title={laneTitle(props.lane)} style={
+        props.playlistTop !== undefined && span()
+          ? { left: `${span()!.left + 6}px`, "max-width": `${Math.max(0, span()!.width - 12)}px` }
+          : undefined
+      }>
         {automationLaneLabel(props.lane)}
       </span>
-      <Show when={muted()}>
+      <Show when={muted() && props.playlistTop === undefined}>
         <span class="automation-muted-note" role="note">
           {i18n.t("timeline.automation.muted")}
+        </span>
+      </Show>
+      <Show when={!pointValuesEditable() && props.playlistTop === undefined}>
+        <span class="automation-muted-note" role="note" aria-label={i18n.t("timeline.automation.mappingReadOnly")} title={i18n.t("timeline.automation.mappingReadOnly")}>
+          {i18n.t("device.automation.mapping")}
         </span>
       </Show>
       <For each={points()}>
@@ -597,6 +631,7 @@ export function AutomationLaneRow(props: AutomationLaneRowProps) {
             aria-hidden="true"
           />
         )}
+      </Show>
       </Show>
     </div>
   );

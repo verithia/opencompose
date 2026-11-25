@@ -29,6 +29,8 @@ import {
   MIN_FADE_SECONDS,
   formatClipGain,
   formatClipSeconds,
+  gainEnvelopeDb,
+  interpolateGainDb,
 } from "../utils/waveform";
 import type { AudioClip, GainEnvelopePoint } from "../types/project";
 
@@ -48,22 +50,6 @@ function dbToPercent(db: number): number {
 
 function percentToDb(percent: number): number {
   return ENVELOPE_MAX_DB - (clamp(percent, 0, 100) / 100) * ENVELOPE_SPAN_DB;
-}
-
-function gainAt(points: GainEnvelopePoint[], position: number): number {
-  if (points.length === 0) return 0;
-  if (position <= points[0].position) return points[0].gain_db;
-  for (let index = 1; index < points.length; index++) {
-    const previous = points[index - 1];
-    const next = points[index];
-    if (position <= next.position) {
-      const span = next.position - previous.position;
-      if (span <= 0) return next.gain_db;
-      const t = (position - previous.position) / span;
-      return previous.gain_db + (next.gain_db - previous.gain_db) * t;
-    }
-  }
-  return points[points.length - 1].gain_db;
 }
 
 function ParamSlider(props: {
@@ -268,9 +254,10 @@ function EnvelopeTab(props: { clip: AudioClip }) {
     const bounds = plot?.getBoundingClientRect();
     if (!bounds || bounds.width <= 0 || bounds.height <= 0) return;
     const position = clamp((event.clientX - bounds.left) / bounds.width, 0.01, 0.99);
+    const gainDb = gainEnvelopeDb(draft(), position, props.clip.gain_envelope_interpolation);
     const next = [
       ...draft(),
-      { position, gain_db: Math.round(gainAt(draft(), position) * 10) / 10 },
+      { position, gain_db: Math.round(gainDb * 10) / 10 },
     ].sort((left, right) => left.position - right.position);
     setDraft(next);
     void commit(next);
@@ -292,8 +279,26 @@ function EnvelopeTab(props: { clip: AudioClip }) {
     void commit(next);
   };
 
-  const polyline = () =>
-    draft().map((point) => `${point.position * 100},${dbToPercent(point.gain_db)}`).join(" ");
+  const polyline = () => {
+    const points = draft();
+    const interpolation = props.clip.gain_envelope_interpolation;
+    const coordinate = (position: number, db: number) =>
+      `${position * 100},${dbToPercent(db)}`;
+    return points.flatMap((point, index) => {
+      const next = points[index + 1];
+      const first = coordinate(point.position, point.gain_db);
+      if (!next || interpolation !== "linear_amplitude") return [first];
+      const span = next.position - point.position;
+      const steps = Math.ceil(span * 64);
+      const coordinates = [first];
+      for (let step = 1; step < steps; step++) {
+        const fraction = step / steps;
+        const db = interpolateGainDb(point.gain_db, next.gain_db, fraction, interpolation);
+        coordinates.push(coordinate(point.position + span * fraction, db));
+      }
+      return coordinates;
+    }).join(" ");
+  };
 
   return (
     <Show

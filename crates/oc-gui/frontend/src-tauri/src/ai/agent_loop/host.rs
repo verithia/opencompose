@@ -403,10 +403,7 @@ impl Host for AppHost {
         let result = result
             .map_err(|error| refusal(&error))?
             .map_err(|error| refusal(&error));
-        if result
-            .as_ref()
-            .is_ok_and(|dispatched| dispatched.value["revision"].is_u64())
-        {
+        if publishes_revision(&result) {
             self.publish();
         }
         result
@@ -1548,4 +1545,11 @@ mod tests {
         drop(guard);
         assert!(pending_questions("asked-guard-turn").is_empty());
     }
+}
+
+/// Mutation replies carry publication authority independently of their payload size.
+pub(crate) fn publishes_revision(result: &Result<Dispatched, Value>) -> bool {
+    result
+        .as_ref()
+        .is_ok_and(|dispatched| dispatched.value["revision"].is_u64())
 }

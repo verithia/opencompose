@@ -523,6 +523,14 @@ editor writes), and so is a percentage. A continuous parameter ramps from one
 point to the next, so a lane from `200Hz` to `8000Hz` sweeps the filter. A
 discrete parameter such as `filter.model` steps at each point.
 
+Hosted instruments use the same `pluginparam_<hex>` lane names, with values
+from 0 to 1 or percentages. Read the parameter names after loading the
+instrument's state, because a preset can rename its controls. Linear and curved
+lanes send the values between their points; `curve=stairs` holds each value
+until the next point. A clipped lane follows the original curve inside its
+range. Its end point shapes the sweep, but nothing is written at or after the
+clip's end.
+
 To automate an effect parameter, name the effect and the parameter. Tracks,
 buses and the master all accept these lanes:
 
@@ -537,10 +545,16 @@ chain has exactly one effect of that type, or by its one-based chain position
 Built-in effects take a parameter name from the device schema; plugin
 parameters use the plugin's own names.
 
-Each point can carry `curve=` (`linear`, `stairs`, `half_sine` or `smooth`) for
-the segment to the next point, plus `tension=` for `smooth`. `linear` is the
-default, and `stairs` holds a step. A lane can add `smoothing=<time>` (default
-0 ms) to run its value through a one-pole low-pass.
+Each point can carry `curve=` (`linear`, `stairs`, `half_sine`, `smooth` or
+`exponential`) for the segment to the next point, plus `tension=` for `smooth`
+or a signed `curvature=` for `exponential`. `linear` is the default, and
+`stairs` holds a step. A curved segment is stored as its points and
+coefficients, not expanded into a table of straight segments, and
+`exponential` also works on hosted-instrument parameters. A lane can add
+`smoothing=<time>` (default 0 ms) to run its value through a one-pole low-pass,
+and an effect lane can apply a numeric `mapping(...)` to the value after
+interpolation. An envelope can set `discontinuities` to keep both values where
+two points share one position.
 
 A plugin receives each changed value as a parameter change at its sample within
 the render block. A built-in device is split at the same positions. Effect
@@ -671,6 +685,14 @@ The control is normalized once per block. Each target then applies its own
 formula and advances its own one-pole smoother. `midi_unit` and
 `midi_centered` read the raw 0…127 value, so a CC gesture and a macro gesture
 can drive the same parameter over the same range.
+
+A `lane(…)` link can also drive an effect on a track or bus, in playback and
+export. Give the owner's name in `track:` and pick the insert with
+`param: fxN.ParameterName`. The effect receives the shaped lane value at every
+sample and applies its own smoothing. Add `mapping(...)` after the formula to
+turn the 0 to 1 value into the parameter's unit. See
+[Control links](../automation.md#control-links) for the formulas and which
+targets are supported.
 
 ## Presets
 
@@ -882,6 +904,13 @@ parameter is read as the same field.
 `@audio_clip` places a decoded media file on a track. The track's mix, sends
 and effects apply to it exactly as they do to notes.
 
+`playlist_lane:` shows a clip in a numbered row of the playlist. One row can
+hold clips from different mixer tracks. Editing a clip in that row still edits
+the original clip, and moving it in time keeps its mixer track. A placed phrase
+can use the same row through its header, for example
+`@phrase theme [1:1 - 2:1] | playlist_lane: 7`. Instrument parts with the same
+name in the same place share one block; choose a part to edit its notes.
+
 ```ocp
 @audio_clip intro [1:1 - 5:1] | track: tape
   file: "media/intro.flac"       // relative to the .ocp file
@@ -909,6 +938,7 @@ and effects apply to it exactly as they do to notes.
 | Field | Meaning | Default |
 |---|---|---|
 | `file:` | media path relative to the project; absolute paths are rejected | required |
+| `playlist_lane:` | one-based audio playlist row; does not change the mixer track | absent |
 | `offset:` | seconds trimmed from the start of the (stretched) media | 0 |
 | `gain:` | clip gain in dB | 0 |
 | `gain_envelope:` | optional `position:gain` points, normalised to the clip and relative to `gain:`; first position 0, last 1 | absent |

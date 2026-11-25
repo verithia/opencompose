@@ -2,7 +2,9 @@
 
 use tauri::State;
 
+mod curve_import;
 mod owned_gestures;
+pub use curve_import::*;
 pub use owned_gestures::*;
 
 use oc_dsl::ast;
@@ -394,7 +396,7 @@ pub(crate) fn validate_builtin_effect_param(
     value: &ast::ParamValue,
 ) -> Result<(), String> {
     match oc_engine::dsp::device_for_effect(&effect.effect_type) {
-        Some(device) => oc_engine::dsp::validate_static_param(device, name, value).map(|_| ()),
+        Some(device) => oc_engine::dsp::validate_static_value(device, name, value),
         None => Ok(()),
     }
 }
@@ -710,6 +712,14 @@ fn check_effect_value(
     };
     let effect_index = oc_dsl::automation::resolve_effect(effects, effect_target)
         .map_err(|error| format!("automation lane '{}': {error}", lane.param))?;
+    if let Some(mapping) = lane.value_mapping {
+        let mapped = oc_dsl::automation::map_value(mapping, value)?;
+        return oc_dsl::automation::validate_mapped_bounds(
+            parameter,
+            effects[effect_index].effect_type.device_id(),
+            Some((mapped, mapped)),
+        );
+    }
     oc_engine::automation::effect_point_value(
         &effects[effect_index],
         parameter,
@@ -763,6 +773,30 @@ pub(crate) fn apply_lane_lfo(
     Ok(())
 }
 
+/// Shape written by one point edit; parsing stays at the command boundary.
+#[derive(Clone, Copy)]
+pub(crate) struct PointCurveShape {
+    pub(crate) curve: ast::Curve,
+    pub(crate) tension: Option<f64>,
+    pub(crate) curvature: Option<f64>,
+}
+
+impl PointCurveShape {
+    fn from_keyword(
+        curve: &str,
+        tension: Option<f64>,
+        curvature: Option<f64>,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            curve: ast::Curve::from_keyword(curve)
+                .ok_or_else(|| format!("Unknown curve '{curve}'"))?,
+            tension,
+            curvature,
+        })
+    }
+}
+
+#[cfg(test)]
 pub(crate) fn apply_lane_point_curve(
     project: &mut ast::Project,
     target: &str,
@@ -772,8 +806,29 @@ pub(crate) fn apply_lane_point_curve(
     curve: &str,
     tension: Option<f64>,
 ) -> Result<(), String> {
-    let curve =
-        ast::Curve::from_keyword(curve).ok_or_else(|| format!("Unknown curve '{curve}'"))?;
+    apply_lane_point_curve_with_curvature(
+        project,
+        target,
+        lane_param,
+        lane_index,
+        point_index,
+        PointCurveShape::from_keyword(curve, tension, None)?,
+    )
+}
+
+pub(crate) fn apply_lane_point_curve_with_curvature(
+    project: &mut ast::Project,
+    target: &str,
+    lane_param: &str,
+    lane_index: Option<usize>,
+    point_index: usize,
+    shape: PointCurveShape,
+) -> Result<(), String> {
+    let PointCurveShape {
+        curve,
+        tension,
+        curvature,
+    } = shape;
     let lane = lane_mut_at(project, target, lane_param, lane_index)?;
     let point = lane
         .points
@@ -789,9 +844,31 @@ pub(crate) fn apply_lane_point_curve(
     } else {
         None
     };
+    let curvature = if curve == ast::Curve::Exponential {
+        let curvature = curvature.or(point.curvature).unwrap_or(0.0);
+        if !oc_device_schema::automation_curves::valid_curvature(curvature) {
+            return Err("Curvature exceeds the supported finite range".into());
+        }
+        Some(curvature)
+    } else {
+        None
+    };
     point.curve = curve;
+    point.curvature = curvature;
     point.tension = tension;
     Ok(())
+}
+
+fn point_position(
+    clock: &oc_dsl::timing::ProjectClock,
+    lane: &ast::AutomationLane,
+    quarter: f64,
+) -> Result<ast::BarBeat, String> {
+    if lane.ppq == 0 {
+        clock.bar_beat_at_quarter(quarter)
+    } else {
+        clock.bar_beat_at_quarter_ppq(quarter, lane.ppq)
+    }
 }
 
 /// Add one point at a quarter-note position, keeping the list in musical order.
@@ -809,18 +886,23 @@ pub(crate) fn apply_add_point(
     check_point(position_beats, value)?;
     check_effect_value(project, target, lane_param, lane_index, value)?;
     let clock = oc_dsl::timing::ProjectClock::new(&project.properties)?;
-    let position = clock.bar_beat_at_quarter(position_beats)?;
-    let quarter = clock.quarter_notes_at(&position)?;
     let lane = lane_mut_at(project, target, lane_param, lane_index)?;
     if lane.muted {
         return Err(MUTED_LANE.into());
     }
+    let position = point_position(&clock, lane, position_beats)?;
+    let quarter = oc_dsl::automation::lane_quarter(&clock, lane, &position)?;
     let value = lane_unit_value(lane, value);
-    let at = lane.points.partition_point(|point| {
-        clock
-            .quarter_notes_at(&point.position)
-            .is_ok_and(|existing| existing < quarter)
-    });
+    // Point moves keep authored indices, so the stored list need not be sorted.
+    // Insert before the first tie to retain the original jump's rightmost knot.
+    let at = lane
+        .points
+        .iter()
+        .position(|point| {
+            oc_dsl::automation::lane_quarter(&clock, lane, &point.position)
+                .is_ok_and(|existing| existing >= quarter)
+        })
+        .unwrap_or(lane.points.len());
     lane.points.insert(
         at,
         ast::AutomationPoint {
@@ -828,6 +910,7 @@ pub(crate) fn apply_add_point(
             value,
             curve: ast::Curve::default(),
             tension: None,
+            curvature: None,
         },
     );
     Ok(())
@@ -869,7 +952,6 @@ pub(crate) fn apply_move_point(
     check_point(position_beats, value)?;
     check_effect_value(project, target, lane_param, lane_index, value)?;
     let clock = oc_dsl::timing::ProjectClock::new(&project.properties)?;
-    let position = clock.bar_beat_at_quarter(position_beats)?;
     let lane = lane_mut_at(project, target, lane_param, lane_index)?;
     if lane.muted {
         return Err(MUTED_LANE.into());
@@ -880,6 +962,7 @@ pub(crate) fn apply_move_point(
             lane.points.len()
         ));
     }
+    let position = point_position(&clock, lane, position_beats)?;
     let value = lane_unit_value(lane, value);
     let point = &mut lane.points[point_index];
     point.position = position;
@@ -930,18 +1013,16 @@ pub(crate) fn set_automation_point_curve_inner(
     lane_param: &str,
     lane_index: Option<usize>,
     point_index: usize,
-    curve: &str,
-    tension: Option<f64>,
+    shape: PointCurveShape,
 ) -> Result<(), String> {
     let old_project = inner.project.clone();
-    apply_lane_point_curve(
+    apply_lane_point_curve_with_curvature(
         &mut inner.project,
         target,
         lane_param,
         lane_index,
         point_index,
-        curve,
-        tension,
+        shape,
     )?;
     resync_effect_edit(
         inner,
@@ -1100,6 +1181,8 @@ pub fn set_automation_smoothing(
 
 /// Set the curve of one automation point.
 #[tauri::command]
+// These separate Tauri parameters preserve the frontend IPC field contract.
+#[allow(clippy::too_many_arguments)]
 pub fn set_automation_point_curve(
     target: String,
     lane_param: String,
@@ -1107,6 +1190,7 @@ pub fn set_automation_point_curve(
     point_index: usize,
     curve: String,
     tension: Option<f64>,
+    curvature: Option<f64>,
     state: State<AppState>,
 ) -> Result<ProjectSnapshot, String> {
     let mut inner = state.lock_inner();
@@ -1116,8 +1200,7 @@ pub fn set_automation_point_curve(
         &lane_param,
         lane_index,
         point_index,
-        &curve,
-        tension,
+        PointCurveShape::from_keyword(&curve, tension, curvature)?,
     )?;
     Ok(snapshot(&inner))
 }
@@ -1337,6 +1420,7 @@ pub(crate) fn upsert_effect_lane_point(
         value,
         curve: ast::Curve::Linear,
         tension: None,
+        curvature: None,
     };
     match lane
         .points

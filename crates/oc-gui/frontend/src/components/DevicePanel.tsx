@@ -8,7 +8,7 @@ import { For, Match, Show, Switch, createEffect, createSignal, on, onCleanup, on
 import type { Effect, ParamValue, Project } from "../types/project";
 import type { DeviceDef, DeviceParamDef, DevicePreset, DevicePresetParams } from "../types/devices";
 import { canonicalDeviceId, findParam } from "../devices/catalog";
-import { deviceDescription } from "../devices/labels";
+import { deviceDescription, deviceParameterName } from "../devices/labels";
 import { Dropdown } from "./Dropdown";
 import { TextPromptDialog } from "./TextPromptDialog";
 import { ownedParameterSurface } from "../stores/ownedParameterGesture";
@@ -31,6 +31,8 @@ import {
   GR_HISTORY_SECONDS,
   GrHistory,
 } from "../utils/grHistory";
+import { DEVICE_CATALOG } from "../data/deviceCatalog.gen";
+import { TransferCurveEditor } from "./TransferCurveEditor";
 import { EqCurveEditor } from "./EqCurveEditor";
 import { ParametricEqEditor } from "./ParametricEqEditor";
 import { PassiveEqCurve } from "./PassiveEqCurve";
@@ -117,6 +119,7 @@ export function DevicePanel(props: {
         device={props.device}
       />
 
+      <Show when={canonicalId() === "transfer-shaper"}><TransferCurveEditor target={props.target} index={props.index} effect={props.effect} /></Show>
       <Show when={canonicalId() === "eq"}>
         <EqCurveEditor
           target={props.target}
@@ -225,7 +228,7 @@ const PRESET_DERIVED_CONTROLS: Record<string, string[]> = {
 };
 
 /** What a saved preset carries: every owned control of the device, in its own unit. */
-function presetParams(device: DeviceDef, effect: Effect): DevicePresetParams {
+export function presetParams(device: DeviceDef, effect: Effect): DevicePresetParams {
   const params: DevicePresetParams = {};
   const derived = PRESET_DERIVED_CONTROLS[canonicalDeviceId(device.id)] ?? [];
   for (const def of device.params) {
@@ -234,6 +237,11 @@ function presetParams(device: DeviceDef, effect: Effect): DevicePresetParams {
     if (def.kind === "bool") params[def.id] = value >= 0.5;
     else if (def.kind === "enum") params[def.id] = toParamString(def, value);
     else params[def.id] = value;
+  }
+  for (const asset of DEVICE_CATALOG.assets ?? []) {
+    if (asset.device !== canonicalDeviceId(device.id)) continue;
+    const value = effect.params.find(([name]) => name === asset.param)?.[1];
+    params[asset.param] = value && "String" in value ? value.String : asset.default_json;
   }
   return params;
 }
@@ -533,6 +541,7 @@ function ParamControl(props: {
   device: DeviceDef;
   param: DeviceParamDef;
 }) {
+  const paramName = () => deviceParameterName(props.device, props.param);
   const [draft, setDraft] = createSignal<number | null>(null);
   /** True while a held touch owns this parameter instead of its lane. */
   const [touchOverride, setTouchOverride] = createSignal(false);
@@ -1119,9 +1128,9 @@ function ParamControl(props: {
         class="device-control-name"
         {...useTooltip(() => {
           const reason = laneReason();
-          return reason ? `${props.param.name} — ${reason}` : props.param.name;
+          return reason ? `${paramName()} — ${reason}` : paramName();
         })}
-      >{props.param.name}</span>
+      >{paramName()}</span>
       <Show when={driving()}>
         <span
           class="device-driven-badge"
@@ -1140,7 +1149,7 @@ function ParamControl(props: {
             tabIndex={0}
             data-param-id={props.param.id}
             data-control-kind="knob"
-            aria-label={`${props.device.name} ${props.param.name}`}
+            aria-label={`${props.device.name} ${paramName()}`}
             aria-valuemin={props.param.min}
             aria-valuemax={props.param.max}
             aria-valuenow={value()}
@@ -1173,7 +1182,7 @@ function ParamControl(props: {
             classList={{ on: value() >= 0.5 }}
             role="switch"
             aria-checked={value() >= 0.5}
-            aria-label={`${props.device.name} ${props.param.name}`}
+            aria-label={`${props.device.name} ${paramName()}`}
             data-param-id={props.param.id}
             data-control-kind="toggle"
             onPointerDown={beginTogglePointer}
@@ -1191,7 +1200,7 @@ function ParamControl(props: {
         </Match>
         <Match when={isSelect()}>
           <Dropdown
-            label={`${props.device.name} ${props.param.name}`}
+            label={`${props.device.name} ${paramName()}`}
             hideLabel
             class="device-select"
             triggerAttrs={{ "data-param-id": props.param.id, "data-control-kind": "select" }}
@@ -1218,7 +1227,7 @@ function ParamControl(props: {
             value={valueToNormalized(props.param, value())}
             data-param-id={props.param.id}
             data-control-kind="slider"
-            aria-label={`${props.device.name} ${props.param.name}`}
+            aria-label={`${props.device.name} ${paramName()}`}
             aria-valuetext={readout()}
             onPointerDown={beginSlider}
             onInput={(event) => {

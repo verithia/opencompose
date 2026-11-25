@@ -3,7 +3,7 @@ id: program-house-groove
 title: Program a house groove
 when: Build a four-on-the-floor house pocket with a kick, offbeat hats, syncopated bass, and room for chord stabs.
 category: production
-version: 2
+version: 3
 tools: [project_extract, edit_subtree, project_validate, audition_range, devices_catalog, audio_analyze]
 ---
 Start with a steady kick on all four quarter notes. Add a backbeat and one
@@ -23,7 +23,7 @@ choke the other. Keep the kick and backbeat fixed while changing the timing
 or velocity of a lighter percussion layer. Inspect the project's swing grid:
 the default is eighths; swing_subdivision: 16th moves alternate sixteenths.
 Patterns can override the swing amount, but share the project subdivision.
-Use explicit positions for independent timing; changing the grid affects other parts.
+Use explicit offsets for selected hits; changing the grid affects other parts.
 
 ## Keep space behind the beat
 Try a dedicated wet return for selected claps or stabs, with the dry track

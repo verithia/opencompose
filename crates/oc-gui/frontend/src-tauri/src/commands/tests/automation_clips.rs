@@ -291,6 +291,7 @@ fn duplicate_gives_up_when_the_window_has_no_room() {
 #[test]
 fn splitting_a_clip_keeps_the_value_at_the_seam() {
     let mut inner = state(ONE_CLIP);
+    let original_points = lanes(&inner)[0].points.clone();
     let before = written(&inner, 0, 4.0).expect("the whole clip writes at bar 2");
     assert!(
         (before - 0.4).abs() < 1e-12,
@@ -319,19 +320,9 @@ fn splitting_a_clip_keeps_the_value_at_the_seam() {
         span(right),
         (ast::BarBeat::new(2, 1, 0), ast::BarBeat::new(3, 1, 0))
     );
-    // Both halves open or close on the value the whole clip had at the seam.
-    let seam_left = left
-        .points
-        .last()
-        .expect("the left lane closes on the seam");
-    assert_eq!(seam_left.position, ast::BarBeat::new(2, 1, 0));
-    assert!(
-        (value(seam_left) - before).abs() < 1e-12,
-        "{:?}",
-        seam_left.value
-    );
-    assert!((value(&right.points[0]) - before).abs() < 1e-12);
-    assert_eq!(right.points[0].position, ast::BarBeat::new(2, 1, 0));
+    // The two independent copies retain the exact original curve anchors.
+    assert_eq!(left.points, original_points);
+    assert_eq!(right.points, original_points);
 
     // Numerically: the right lane writes the seam value there, and the left
     // lane approaches it from below.
@@ -340,18 +331,16 @@ fn splitting_a_clip_keeps_the_value_at_the_seam() {
     let before_seam = written(&inner, 0, 4.0 - 1.0 / 48_000.0).expect("the left lane writes");
     assert!((before_seam - before).abs() < 1e-4, "{before_seam}");
 
-    // Points stay on their side: the original anchors are split one each.
-    assert_eq!(left.points.len(), 2, "its own point plus the seam");
-    assert_eq!(right.points.len(), 2, "the seam plus its own point");
-    assert_eq!(right.points[1].position, ast::BarBeat::new(2, 2, 0));
-    assert_eq!(value(&right.points[1]), 0.25);
-
     // The document still passes the overlap rule.
     assert!(oc_dsl::validate(&inner.project).is_ok());
 
     inner.undo.undo(&mut inner.project).unwrap();
     assert_eq!(lanes(&inner).len(), 1);
-    assert_eq!(lanes(&inner)[0].points.len(), 2, "the seam point is gone");
+    assert_eq!(
+        lanes(&inner)[0].points.len(),
+        2,
+        "the original anchors remain"
+    );
 }
 
 #[test]
@@ -548,4 +537,214 @@ fn removing_a_clip_lane_also_leaves_the_other_lane_alone() {
         "the wrong lane was removed"
     );
     assert_eq!(inner.undo.undo_entries().len(), 1);
+}
+
+#[test]
+fn split_compact_exponential_keeps_original_anchors_and_applies_mapping_only_once() {
+    let source = "@project\n  tempo: 120\n@track t | instrument: synth/keys\n  effects:\n    - gain: factor=1\n  automation: gain.factor [1:1 - 3:1] mapping(exponential, curvature=2, scale=-1, offset=2) {1:1=0.2 curve=exponential curvature=-6, 3:1=0.8}\n";
+    let mut project = oc_dsl::parse(source).unwrap();
+    let original = project.tracks[0].automation().next().unwrap().clone();
+    crate::commands::automation_clips::apply_split_clip(
+        &mut project,
+        "track:0",
+        LANE,
+        Some(0),
+        &ast::BarBeat::new(2, 1, 0),
+    )
+    .unwrap();
+    let lanes: Vec<_> = project.tracks[0].automation().collect();
+    assert_eq!(lanes.len(), 2);
+    for lane in &lanes {
+        assert_eq!(lane.points, original.points);
+        assert_eq!(lane.value_mapping, original.value_mapping);
+    }
+    let clock = oc_dsl::timing::ProjectClock::new(&project.properties).unwrap();
+    for rate in [8_000, 44_100, 48_000, 96_000] {
+        let prepare = |lane: &ast::AutomationLane| {
+            oc_dsl::automation::LaneCurve::new(lane, &clock, rate, |value| {
+                value.as_f64().ok_or("numeric".into())
+            })
+            .unwrap()
+        };
+        let before = prepare(&original);
+        let left = prepare(lanes[0]);
+        let right = prepare(lanes[1]);
+        for frame in (0..rate * 4).step_by(37) {
+            let expected = before.envelope_value(frame as f64).unwrap();
+            let actual = left
+                .envelope_value(frame as f64)
+                .or_else(|| right.envelope_value(frame as f64))
+                .unwrap();
+            assert!(
+                (actual - expected).abs() < 2e-14,
+                "rate{rate}frame{frame}: {actual}!={expected}"
+            );
+        }
+    }
+}
+
+#[test]
+fn split_on_discontinuity_keeps_the_left_limit_and_right_write() {
+    let mut project=oc_dsl::parse("@project\n  tempo: 120\n@track t | instrument: synth/keys\n  effects:\n    - gain: factor=1\n  automation: gain.factor [1:1 - 2:1] discontinuities mapping(linear, scale=-1, offset=1) {1:1=0, 1:3=1, 1:3=0, 2:1=0}\n").unwrap();
+    let original = project.tracks[0].automation().next().unwrap().clone();
+    crate::commands::automation_clips::apply_split_clip(
+        &mut project,
+        "track:0",
+        LANE,
+        Some(0),
+        &ast::BarBeat::new(1, 3, 0),
+    )
+    .unwrap();
+    let lanes: Vec<_> = project.tracks[0].automation().collect();
+    assert_eq!(lanes[0].points, original.points);
+    assert_eq!(lanes[1].points, original.points);
+    let clock = oc_dsl::timing::ProjectClock::new(&project.properties).unwrap();
+    let prepare = |lane: &ast::AutomationLane| {
+        oc_dsl::automation::LaneCurve::new(lane, &clock, 48_000, |value| {
+            value.as_f64().ok_or("numeric".into())
+        })
+        .unwrap()
+    };
+    let before = prepare(&original);
+    let left = prepare(lanes[0]);
+    let right = prepare(lanes[1]);
+    for frame in [0.0, 24_000.0, 47_999.0, 48_000.0, 48_001.0, 95_999.0] {
+        assert_eq!(
+            before.envelope_value(frame),
+            left.envelope_value(frame)
+                .or_else(|| right.envelope_value(frame))
+        );
+    }
+}
+
+#[test]
+fn agent_subtree_edit_rejects_mapped_output_before_publishing_or_undo() {
+    use crate::commands::ai::{apply_edit_to_project, validate_edit_in_project};
+    let mut inner = state(WHOLE);
+    inner.dsl_source = oc_dsl::serialize(&inner.project);
+    let original_project = inner.project.clone();
+    let original_dsl = inner.dsl_source.clone();
+    let track = oc_dsl::ops::extract(&inner.project, "track:t")
+        .unwrap()
+        .dsl_text;
+    let maximum = oc_device_schema::find_device("gain")
+        .unwrap()
+        .param("factor")
+        .unwrap()
+        .max;
+    let edit = track.replace(
+        "automation: gain.factor",
+        &format!(
+            "automation: gain.factor mapping(linear, scale={})",
+            maximum + 1.0
+        ),
+    );
+    let preview = validate_edit_in_project(&inner, edit.clone(), "track:t".into());
+    assert!(!preview.valid);
+    assert!(
+        preview.errors.iter().any(|e| e.contains("recipient range")),
+        "{:?}",
+        preview.errors
+    );
+    let error = apply_edit_to_project(&mut inner, edit, "track:t".into(), original_dsl.clone())
+        .unwrap_err();
+    assert!(error.contains("recipient range"), "{error}");
+    assert_eq!(inner.project, original_project);
+    assert_eq!(inner.dsl_source, original_dsl);
+    assert_eq!(inner.undo.undo_entries().len(), 0);
+}
+
+#[test]
+fn split_preserves_all_curve_kinds_across_tempo_sample_rates_and_units() {
+    for curve in [
+        "linear",
+        "stairs",
+        "half_sine",
+        "smooth",
+        "exponential curvature=-4",
+    ] {
+        for units in [false, true] {
+            let (effect, parameter, points) = if units {
+                (
+                    "limiter: ceiling=-1dB",
+                    "limiter.ceiling",
+                    format!("1:1=-6dB curve={curve}, 2:1=-1dB"),
+                )
+            } else {
+                (
+                    "gain: factor=1",
+                    "gain.factor",
+                    format!("1:1=0.2 curve={curve}, 2:1=0.8"),
+                )
+            };
+            let source = format!(
+                "@project\n  tempo: 120\n  tempo_map:\n    1:2 = 60 bpm\n@track t | instrument: synth/keys\n  effects:\n    - {effect}\n  automation: {parameter} [1:1 - 2:1] {{{points}}}\n"
+            );
+            let mut project = oc_dsl::parse(&source).unwrap();
+            let original = project.tracks[0].automation().next().unwrap().clone();
+            crate::commands::automation_clips::apply_split_clip(
+                &mut project,
+                "track:0",
+                parameter,
+                Some(0),
+                &ast::BarBeat::new(1, 2, 0),
+            )
+            .unwrap();
+            let lanes: Vec<_> = project.tracks[0].automation().collect();
+            assert!(lanes.iter().all(|lane| lane.points == original.points));
+            let clock = oc_dsl::timing::ProjectClock::new(&project.properties).unwrap();
+            for rate in [8_000, 44_100, 48_000, 96_000] {
+                let prepare = |lane: &ast::AutomationLane| {
+                    oc_dsl::automation::LaneCurve::new(lane, &clock, rate, |value| {
+                        value.as_f64().ok_or("numeric".into())
+                    })
+                    .unwrap()
+                };
+                let before = prepare(&original);
+                let left = prepare(lanes[0]);
+                let right = prepare(lanes[1]);
+                let end = clock.sample_at_quarter(4.0, rate).unwrap();
+                let seam = clock.sample_at_quarter(1.0, rate).unwrap();
+                for frame in (0..=end)
+                    .step_by(113)
+                    .chain([seam - 1, seam, seam + 1, end - 1, end])
+                {
+                    assert_eq!(
+                        before.envelope_value(frame as f64),
+                        left.envelope_value(frame as f64)
+                            .or_else(|| right.envelope_value(frame as f64)),
+                        "{curve} units{units} rate{rate} frame{frame}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn moving_a_split_copy_before_its_original_anchor_fails_atomically() {
+    let mut inner = state(ONE_CLIP);
+    split_automation_clip_inner(
+        &mut inner,
+        "track:0",
+        LANE,
+        Some(0),
+        ast::BarBeat::new(2, 1, 0),
+    )
+    .unwrap();
+    remove_automation_lane_inner(&mut inner, "track:0", LANE, Some(0)).unwrap();
+    let before = inner.project.clone();
+    let undo = inner.undo.undo_entries().len();
+    assert!(
+        move_automation_clip_inner(
+            &mut inner,
+            "track:0",
+            LANE,
+            Some(0),
+            ast::BarBeat::new(1, 1, 0)
+        )
+        .is_err()
+    );
+    assert_eq!(inner.project, before);
+    assert_eq!(inner.undo.undo_entries().len(), undo);
 }

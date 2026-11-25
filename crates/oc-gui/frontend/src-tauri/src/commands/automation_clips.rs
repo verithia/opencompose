@@ -16,7 +16,7 @@ use oc_dsl::timing::ProjectClock;
 use crate::state::AppState;
 use crate::state::{UndoEdit, UndoScope};
 
-use super::fx::{lane_unit_value, owner_lanes, replace_owner_lanes, resolve_lane_index};
+use super::fx::{owner_lanes, replace_owner_lanes, resolve_lane_index};
 use super::shared::{ProjectSnapshot, resync_with_undo, snapshot};
 
 /// Quarter notes a split keeps clear of either clip edge. A block position is
@@ -26,10 +26,6 @@ const MIN_SPLIT_QUARTERS: f64 = 0.25;
 
 /// Bars a duplicate searches past the requested position before it gives up.
 const DUPLICATE_WINDOW_BARS: u32 = 64;
-
-/// Sample rate used to evaluate the curve at a seam. An envelope lane's points
-/// are sample-indexed, so the value at a quarter note does not depend on it.
-const PROBE_SAMPLE_RATE: u32 = 48_000;
 
 /// `bar:beat`, with the subdivision only when the position is off the beat.
 fn bar_beat_text(position: &ast::BarBeat) -> String {
@@ -359,72 +355,23 @@ pub(crate) fn apply_split_clip(
             lane.param
         ));
     }
-    // The seam value in the lane's own units, which is what a point carries.
-    let mut probe = lane.clone();
-    probe.muted = false;
-    let seam_value =
-        oc_dsl::automation::value_at(&probe, &clock, PROBE_SAMPLE_RATE, split, |value| {
-            value
-                .as_f64()
-                .ok_or_else(|| "automation point value is not a number".to_string())
-        })?
-        .ok_or_else(|| {
-            format!(
-                "The clip {} writes no value at {}; there is nothing to split",
-                span_text(lane.time_range),
-                bar_beat_text(at)
-            )
-        })?;
-    let seam = lane_unit_value(lane, seam_value);
-    let mut left_points = Vec::with_capacity(lane.points.len() + 1);
-    let mut right_points = Vec::with_capacity(lane.points.len() + 1);
-    // The segment that ends at the seam keeps its curve on the right lane's
-    // first point, so both halves draw the shape the whole clip drew.
-    let mut seam_curve = ast::Curve::Linear;
-    let mut seam_tension = None;
-    for point in &lane.points {
-        if clock.quarter_notes_at(&point.position)? < split {
-            seam_curve = point.curve;
-            seam_tension = point.tension;
-            left_points.push(point.clone());
-        } else {
-            right_points.push(point.clone());
-        }
+    if lane.points.is_empty() {
+        return Err(format!("Lane '{}' has no curve to split", lane.param));
     }
-    left_points.push(ast::AutomationPoint {
-        position: *at,
-        value: seam.clone(),
-        curve: ast::Curve::Linear,
-        tension: None,
-    });
-    let opens_on_the_seam = match right_points.first() {
-        Some(point) => clock.quarter_notes_at(&point.position)? <= split,
-        None => false,
-    };
-    if !opens_on_the_seam {
-        right_points.insert(
-            0,
-            ast::AutomationPoint {
-                position: *at,
-                value: seam,
-                curve: seam_curve,
-                tension: seam_tension,
-            },
-        );
-    }
+    // Retain each defining anchor and its original clock coordinate in both
+    // independent copies. Only their write spans change. Sampling a new seam
+    // would depend on sample rounding, tempo and the recipient's unit conversion.
     let range = lane.time_range.expect("clip_span proved a span");
     let mut left = lane.clone();
     left.time_range = Some(ast::TimeRange {
         start: range.start,
         end: *at,
     });
-    left.points = left_points;
     let mut right = lane.clone();
     right.time_range = Some(ast::TimeRange {
         start: *at,
         end: range.end,
     });
-    right.points = right_points;
     lanes.insert(index + 1, right);
     lanes[index] = left;
     replace_owner_lanes(project, owner, lanes)?;

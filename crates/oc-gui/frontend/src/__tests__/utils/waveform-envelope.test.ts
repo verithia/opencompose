@@ -112,6 +112,16 @@ describe("clip envelope paint", () => {
     expect(path[3]).toEqual({ op: "lineTo", x: 100, y: 40 });
   });
 
+  it("uses the shaped fade in the arrangement overlay", () => {
+    const path = lastPath(paint({
+      fadeOutSeconds: 2,
+      fadeCurves: { fade_out: [1 / 3, 0, 2 / 3, 1 / 3] },
+    }));
+    expect(path.find(({ x }) => x === 50)?.y).toBeCloseTo(20, 6);
+    expect(path.find(({ x }) => x === 75)?.y).toBeCloseTo(25, 6);
+    expect(path.at(-1)).toEqual({ op: "lineTo", x: 100, y: 40 });
+  });
+
   it("puts the gain line above the middle for a boost", () => {
     const path = lastPath(paint({ gainDb: 6 }));
     expect(path[0].y).toBeCloseTo(16, 6);

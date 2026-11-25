@@ -112,6 +112,34 @@ fn try_interpret_with_setup(
     resource_root: Option<&std::path::Path>,
     setup: TrackSetup,
 ) -> Result<Vec<MidiEvent>, String> {
+    for track in &project.tracks {
+        for lane in track.automation() {
+            let compact_curve = lane.points.iter().any(|point| {
+                point.curve == oc_dsl::ast::Curve::Exponential || point.curvature.is_some()
+            });
+            let effect_target = lane.effect_lane().is_some();
+            let encoded_parameter =
+                oc_dsl::automation::decode_plugin_automation_param(&lane.param).is_some();
+            if encoded_parameter
+                && lane.points.iter().any(|point| {
+                    !matches!(
+                        point.curve,
+                        oc_dsl::ast::Curve::Linear | oc_dsl::ast::Curve::Stairs
+                    ) || point.curvature.is_some()
+                })
+            {
+                oc_dsl::automation::validate_encoded_parameter_curve(
+                    lane,
+                    oc_dsl::automation::track_uses_builtin_synth(project, track)?,
+                )?;
+            }
+            if (lane.value_mapping.is_some() && !effect_target)
+                || (compact_curve && !effect_target && !encoded_parameter)
+            {
+                return Err("compact curves require an effect or encoded plugin parameter; value mappings require an effect-parameter lane".into());
+            }
+        }
+    }
     project
         .properties
         .checked_automation_normalization()
@@ -165,14 +193,15 @@ fn try_interpret_with_setup(
             .preset
             .as_deref()
             .and_then(|name| project.presets.iter().find(|p| p.name == name));
-        let native_score = matches!(setup, TrackSetup::NativeRender)
-            && preset.is_some_and(|p| {
-                p.source.as_deref() == Some("vst3")
-                    || (p.source.as_deref() == Some("sample")
-                        && p.plugin
-                            .as_deref()
-                            .is_some_and(|name| name.eq_ignore_ascii_case("sfizz")))
-            });
+        let native_score = track.instrument.is_midi_only()
+            || (matches!(setup, TrackSetup::NativeRender)
+                && preset.is_some_and(|p| {
+                    p.source.as_deref() == Some("vst3")
+                        || (p.source.as_deref() == Some("sample")
+                            && p.plugin
+                                .as_deref()
+                                .is_some_and(|name| name.eq_ignore_ascii_case("sfizz")))
+                }));
         // Export retains the GM initialization contract. Native score playback
         // keeps explicit program selection but has no implicit GM fallback.
         if !native_score || preset.is_some_and(|p| p.program.is_some()) {
@@ -487,3 +516,6 @@ fn curve_pitches(track: &Track, project: &Project) -> std::collections::HashSet<
     }
     pitches
 }
+
+#[cfg(test)]
+mod compact_curve_tests;

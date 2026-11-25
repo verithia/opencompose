@@ -8,6 +8,51 @@
 
 use crate::smoothing::one_pole_alpha;
 use oc_dsl::ast::{ControlLink, ControlLinkSource, LinkFormula, LinkFormulaInput};
+use std::sync::atomic::{AtomicU8, Ordering};
+
+const CC_COUNT: usize = 16 * 128;
+pub(crate) const CC_UNSET: u8 = 128;
+
+/// Latest live MIDI CC readings. Publishing does not depend on the render
+/// thread or on whether a project is open.
+pub struct MidiControlInput {
+    values: [AtomicU8; CC_COUNT],
+}
+
+impl Default for MidiControlInput {
+    fn default() -> Self {
+        Self {
+            values: [const { AtomicU8::new(CC_UNSET) }; CC_COUNT],
+        }
+    }
+}
+
+impl MidiControlInput {
+    /// Publish a wire-channel CC value. Channels are zero-based at MIDI input.
+    pub fn publish(&self, channel: u8, controller: u8, value: u8) {
+        if let Some(index) = cc_index(channel, controller).filter(|_| value < CC_UNSET) {
+            self.values[index].store(value, Ordering::Relaxed);
+        }
+    }
+
+    pub(crate) fn read(&self, index: usize) -> u8 {
+        self.values[index].load(Ordering::Relaxed)
+    }
+}
+
+pub(crate) fn cc_index(channel: u8, controller: u8) -> Option<usize> {
+    (channel < 16 && controller < 128)
+        .then_some(usize::from(channel) * 128 + usize::from(controller))
+}
+
+pub(crate) fn apply_midi_formula(formula: LinkFormula, raw: f64) -> f64 {
+    let input = match formula.input() {
+        LinkFormulaInput::Normalized if raw.is_finite() => raw / 127.0,
+        LinkFormulaInput::Normalized => 0.0,
+        LinkFormulaInput::Midi7Bit => raw,
+    };
+    formula.apply(input)
+}
 
 /// One target's formula and smoother state, in link order.
 struct TargetState {
@@ -62,11 +107,14 @@ impl ControlLinkRuntime {
         self.targets
             .iter_mut()
             .map(|target| {
-                let input = match target.formula.input() {
-                    LinkFormulaInput::Normalized => normalized,
-                    LinkFormulaInput::Midi7Bit => raw,
+                let goal = if self.source.is_midi() {
+                    apply_midi_formula(target.formula, raw)
+                } else {
+                    target.formula.apply(match target.formula.input() {
+                        LinkFormulaInput::Normalized => normalized,
+                        LinkFormulaInput::Midi7Bit => raw,
+                    })
                 };
-                let goal = target.formula.apply(input);
                 let coefficient =
                     one_pole_alpha(f64::from(target.smoothing_ms), frames as f64, sample_rate);
                 target.value += (goal - target.value) * coefficient;
@@ -90,7 +138,9 @@ pub fn normalize_control(source: &ControlLinkSource, raw: f64) -> f64 {
     }
     match source {
         ControlLinkSource::MidiCc { .. } => (raw / 127.0).clamp(0.0, 1.0),
-        ControlLinkSource::Macro { .. } | ControlLinkSource::Lane { .. } => raw.clamp(0.0, 1.0),
+        ControlLinkSource::Macro { .. }
+        | ControlLinkSource::PresetMacro { .. }
+        | ControlLinkSource::Lane { .. } => raw.clamp(0.0, 1.0),
     }
 }
 
@@ -104,6 +154,7 @@ mod tests {
             track: "Lead".into(),
             param: param.into(),
             formula,
+            value_mapping: None,
             smoothing_ms,
         }
     }

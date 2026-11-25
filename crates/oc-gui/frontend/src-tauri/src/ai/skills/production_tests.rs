@@ -141,6 +141,7 @@ fn taught_detector_routes_parse_into_distinct_silent_device_inputs() {
         let (source_name, port_kind) = match edge.kind {
             RouteKind::Audio => ("vocal", PortKind::Audio),
             RouteKind::Control => ("env", PortKind::Control),
+            RouteKind::Midi => unreachable!("the skill teaches audio and control keys only"),
         };
         assert_eq!(edge.source, source_name);
         assert_eq!(edge.target, "compression");

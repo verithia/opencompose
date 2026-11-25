@@ -58,6 +58,7 @@ export interface DevicesCatalog {
   version?: number;
   units?: UnitDefinition[];
   devices: DeviceDef[];
+  assets?: { device: string; param: string; encoding: string; version: number; domains: string[]; max_bytes: number; max_samples: number; max_level: number; default_json: string }[];
 }
 
 /** Values in the device's declared unit: switches are bools, enums are names. */

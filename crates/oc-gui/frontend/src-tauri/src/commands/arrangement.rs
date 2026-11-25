@@ -1346,6 +1346,7 @@ pub(crate) fn trim_audio_clip_edge_inner(
         clip.fade_out_seconds = fade_out_seconds;
         clip.gain_envelope = trim_gain_envelope(
             &clip.gain_envelope,
+            clip.gain_envelope_interpolation,
             old_start_seconds,
             old_end_seconds,
             start_seconds,
@@ -1371,6 +1372,7 @@ pub(crate) fn trim_audio_clip_edge_inner(
 /// instead of stretching the curve.
 fn trim_gain_envelope(
     points: &[GainEnvelopePoint],
+    interpolation: ast::ClipGainInterpolation,
     old_start: f64,
     old_end: f64,
     new_start: f64,
@@ -1388,7 +1390,7 @@ fn trim_gain_envelope(
     let offset = (old_start - new_start) / new_span;
     let value_at_new = |position: f64| {
         let old_position = (position - offset) / scale;
-        envelope_gain_at(points, old_position)
+        envelope_gain_at(points, old_position, interpolation)
     };
     let mut next: Vec<GainEnvelopePoint> = vec![GainEnvelopePoint {
         position: 0.0,
@@ -1416,7 +1418,11 @@ fn trim_gain_envelope(
 }
 
 /// Gain of a relative envelope at a normalised clip position.
-fn envelope_gain_at(points: &[GainEnvelopePoint], position: f64) -> f64 {
+fn envelope_gain_at(
+    points: &[GainEnvelopePoint],
+    position: f64,
+    interpolation: ast::ClipGainInterpolation,
+) -> f64 {
     let Some(first) = points.first() else {
         return 0.0;
     };
@@ -1429,8 +1435,11 @@ fn envelope_gain_at(points: &[GainEnvelopePoint], position: f64) -> f64 {
             if span <= 0.0 {
                 return pair[1].gain_db;
             }
-            return pair[0].gain_db
-                + (pair[1].gain_db - pair[0].gain_db) * ((position - pair[0].position) / span);
+            return interpolation.interpolate_db(
+                pair[0].gain_db,
+                pair[1].gain_db,
+                (position - pair[0].position) / span,
+            );
         }
     }
     points.last().map_or(0.0, |point| point.gain_db)
@@ -1443,12 +1452,13 @@ fn envelope_gain_at(points: &[GainEnvelopePoint], position: f64) -> f64 {
 fn split_gain_envelope(
     points: &[GainEnvelopePoint],
     ratio: f64,
+    interpolation: ast::ClipGainInterpolation,
 ) -> (Vec<GainEnvelopePoint>, Vec<GainEnvelopePoint>) {
     if points.is_empty() {
         return (Vec::new(), Vec::new());
     }
     let ratio = ratio.clamp(1e-6, 1.0 - 1e-6);
-    let seam = envelope_gain_at(points, ratio);
+    let seam = envelope_gain_at(points, ratio, interpolation);
     let mut left: Vec<GainEnvelopePoint> = points
         .iter()
         .filter(|point| point.position < ratio)
@@ -1592,11 +1602,16 @@ fn split_audio_clip_at(
     } else {
         0.5
     };
-    let (left_envelope, right_envelope) = split_gain_envelope(&clip.gain_envelope, split_ratio);
+    let (left_envelope, right_envelope) = split_gain_envelope(
+        &clip.gain_envelope,
+        split_ratio,
+        clip.gain_envelope_interpolation,
+    );
     let name = unique_audio_clip_name(project, &clip.name);
     let second = ast::AudioClip {
         name,
         track: clip.track.clone(),
+        playlist_lane: clip.playlist_lane,
         file: clip.file.clone(),
         time_range: ast::TimeRange {
             start: at,
@@ -1605,11 +1620,17 @@ fn split_audio_clip_at(
         placement: ast::AudioClipPlacement {
             start_offset_seconds: 0.0,
             end_offset_seconds: clip.placement.end_offset_seconds,
+            ..Default::default()
         },
         offset_seconds: right_offset,
+        stereo_offset_seconds: clip.stereo_offset_seconds,
         gain_db: clip.gain_db,
         fade_in_seconds: 0.0,
         fade_out_seconds: clip.fade_out_seconds.min(right_seconds),
+        fade_curves: ast::AudioFadeCurves {
+            fade_in: None,
+            fade_out: clip.fade_curves.fade_out,
+        },
         invert: clip.invert,
         crossfade_seconds: 0.0,
         stretch: clip.stretch,
@@ -1625,6 +1646,7 @@ fn split_audio_clip_at(
         take: clip.take,
         muted: clip.muted,
         gain_envelope: right_envelope,
+        gain_envelope_interpolation: clip.gain_envelope_interpolation,
     };
     {
         let left = project.audio_clip_mut(clip_index).unwrap();
@@ -1636,6 +1658,7 @@ fn split_audio_clip_at(
         clip.gain_envelope = left_envelope;
         clip.fade_in_seconds = clip.fade_in_seconds.min(left_seconds);
         clip.fade_out_seconds = 0.0;
+        clip.fade_curves.fade_out = None;
         clip.crossfade_seconds = 0.0;
         clip.loop_seconds = left_loop;
     }

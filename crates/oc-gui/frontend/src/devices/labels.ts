@@ -3,7 +3,7 @@
  * descriptions remain UI copy so they can be translated.
  */
 import { i18n } from "../stores/i18n";
-import type { DeviceCategory, DeviceDef } from "../types/devices";
+import type { DeviceCategory, DeviceDef, DeviceParamDef } from "../types/devices";
 import { canonicalDeviceId } from "./catalog";
 
 type TranslationKey = Parameters<typeof i18n.t>[0];
@@ -17,6 +17,8 @@ const CATEGORY_KEYS: Record<DeviceCategory, TranslationKey> = {
 };
 
 const DESCRIPTION_KEYS: Record<string, TranslationKey> = {
+  "transfer-shaper": "device.description.transferShaper",
+  allpass: "device.desc.allpass",
   gain: "device.desc.gain",
   eq: "device.desc.eq",
   compression: "device.desc.compression",
@@ -40,6 +42,7 @@ const DESCRIPTION_KEYS: Record<string, TranslationKey> = {
   flanger: "device.desc.flanger",
   phaser: "device.desc.phaser",
   stereo_width: "device.desc.stereo_width",
+  "stereo-matrix": "device.desc.stereo_matrix",
 };
 
 export function categoryLabel(category: DeviceCategory): string {
@@ -50,6 +53,20 @@ export function deviceDescription(device: DeviceDef): string {
   if (device.description) return device.description;
   const key = DESCRIPTION_KEYS[canonicalDeviceId(device.id)];
   return key ? i18n.t(key) : "";
+}
+
+const FLANGER_PARAMETER_KEYS: Partial<Record<string, TranslationKey>> = {
+  voices: "device.flanger.voices",
+  delay: "device.flanger.delay",
+  spread: "device.flanger.spread",
+  stereo_cross: "device.flanger.stereoCross",
+  dry_gain: "device.flanger.dryGain",
+  wet_gain: "device.flanger.wetGain",
+};
+
+export function deviceParameterName(device: DeviceDef, parameter: DeviceParamDef): string {
+  const key = canonicalDeviceId(device.id) === "flanger" ? FLANGER_PARAMETER_KEYS[parameter.id] : undefined;
+  return key ? i18n.t(key) : parameter.name;
 }
 
 const FORMAT_LABELS: Record<string, string> = {

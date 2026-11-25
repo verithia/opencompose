@@ -917,20 +917,28 @@ impl ClipPcm {
         offset: usize,
         loop_frames: usize,
         range: std::ops::Range<usize>,
+        delay: usize,
         mut visit: impl FnMut(usize, &[f32]),
     ) -> Result<(), String> {
+        let mut visit_span = |frame, source: usize, count: usize| {
+            let silence = delay.saturating_sub(source).min(count);
+            if silence == count {
+                return Ok(());
+            }
+            self.visit(
+                source + silence - delay,
+                count - silence,
+                |start, samples| visit(frame + silence + start, samples),
+            )
+        };
         if loop_frames == 0 {
-            return self.visit(offset + range.start, range.len(), |start, samples| {
-                visit(range.start + start, samples);
-            });
+            return visit_span(range.start, offset + range.start, range.len());
         }
         let mut frame = range.start;
         while frame < range.end {
             let within_loop = frame % loop_frames;
             let count = (loop_frames - within_loop).min(range.end - frame);
-            self.visit(offset + within_loop, count, |start, samples| {
-                visit(frame + start, samples)
-            })?;
+            visit_span(frame, offset + within_loop, count)?;
             frame += count;
         }
         Ok(())

@@ -449,7 +449,10 @@ pub(crate) fn warm_preload_later(app: &tauri::AppHandle, revision: u64) {
 pub(crate) fn warm_preload_if_current(state: &AppState, revision: u64) -> bool {
     let mut inner = state.lock_inner();
     // Play may already have queued the current graph.
-    if inner.revision != revision || !inner.audio.render_dirty {
+    if inner.revision != revision
+        || !inner.audio.render_dirty
+        || !inner.audio.automatic_preload_allowed()
+    {
         return false;
     }
     let project = inner.project.clone();
