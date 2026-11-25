@@ -39,7 +39,18 @@ impl BiquadCoefficients {
         gain_db: f64,
         sample_rate: f64,
     ) -> Self {
-        let freq = freq.clamp(20.0, sample_rate * 0.45);
+        Self::design_with_ceiling(filter_type, freq, q, gain_db, sample_rate, 0.45)
+    }
+
+    pub(crate) fn design_with_ceiling(
+        filter_type: FilterType,
+        freq: f64,
+        q: f64,
+        gain_db: f64,
+        sample_rate: f64,
+        rate_fraction: f64,
+    ) -> Self {
+        let freq = freq.clamp(20.0, sample_rate * rate_fraction);
         let q = q.max(0.1);
         let w0 = 2.0 * PI * freq / sample_rate;
         let cos_w0 = w0.cos();
@@ -199,6 +210,28 @@ impl BiquadState {
     pub fn reset(&mut self) {
         self.z1 = 0.0;
         self.z2 = 0.0;
+    }
+}
+
+/// One channel of a biquad whose coefficients can change between samples.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct BiquadHistory {
+    input: [f64; 2],
+    output: [f64; 2],
+}
+
+impl BiquadHistory {
+    #[inline]
+    pub(crate) fn process(&mut self, coefficients: &BiquadCoefficients, input: f64) -> f64 {
+        // Direct form I keeps histories independent of the coefficients, so a
+        // retune uses the actual preceding samples with the new response.
+        // Pair corresponding terms so a unity response stays transparent.
+        let first = coefficients.b1 * self.input[0] - coefficients.a1 * self.output[0];
+        let second = coefficients.b2 * self.input[1] - coefficients.a2 * self.output[1];
+        let output = coefficients.b0 * input + (first + second);
+        self.input = [input, self.input[0]];
+        self.output = [output, self.output[0]];
+        output
     }
 }
 

@@ -63,6 +63,9 @@ impl ParametricEq {
 }
 
 impl AudioEffect for ParametricEq {
+    fn preserves_channel_equality(&self) -> bool {
+        true
+    }
     fn process(&mut self, buffer: &mut [f32], _sample_rate: u32) {
         self.low.process_stereo(buffer);
         self.mid.process_stereo(buffer);

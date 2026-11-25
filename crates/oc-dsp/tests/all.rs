@@ -8,3 +8,18 @@ mod devices;
 
 #[path = "plosive_alloc.rs"]
 mod plosive_alloc;
+
+#[path = "allpass.rs"]
+mod allpass;
+
+#[path = "delay.rs"]
+mod delay;
+
+#[path = "transfer_shaper.rs"]
+mod transfer_shaper;
+
+#[path = "frequency_shift.rs"]
+mod frequency_shift;
+
+#[path = "vocoder.rs"]
+mod vocoder;

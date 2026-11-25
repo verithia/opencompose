@@ -1,4 +1,4 @@
-//! Dynamic EQ — six parametric bands plus low/high cuts.
+//! Dynamic EQ with serial parametric bands and dedicated low/high cuts.
 //!
 //! Bands run in series as RBJ biquads. Each dynamic band detects its own
 //! filtered output, or an external key's band-filtered input when its
@@ -6,15 +6,22 @@
 //! output power and applies a matching makeup so loudness stays neutral.
 
 use super::AudioEffect;
-use super::biquad::{BiquadCoefficients, BiquadState, FilterType};
+use super::biquad::{BiquadCoefficients, FilterType};
 use super::kweight::KWeightChannel;
+use super::oversampler::fir::{FIR_2X_LATENCY, Fir2x};
+use super::oversampler::polyphase::Polyphase2x;
+use oc_device_schema::{DYNAMIC_EQ_CENTER_FREQUENCIES, DYNAMIC_EQ_OUTPUT_GAIN_DB_RANGE};
+
+mod cut_slope;
+use cut_slope::{CutSlope, ExtraSections, FilterState};
 
 /// Number of dynamic EQ bands.
-pub const BAND_COUNT: usize = 6;
+pub const BAND_COUNT: usize = DYNAMIC_EQ_CENTER_FREQUENCIES.len();
 /// Lowest band frequency.
 pub const MIN_FREQ: f64 = 20.0;
 /// Highest band frequency.
 pub const MAX_FREQ: f64 = 20_000.0;
+const FILTER_RATE_CEILING: f64 = 0.49;
 /// Lowest band Q.
 pub const MIN_Q: f64 = 0.1;
 /// Highest band Q.
@@ -169,6 +176,7 @@ struct DynamicBand {
     solo: bool,
     channel_target: ChannelTarget,
     kind: BandKind,
+    slope: CutSlope,
     freq: f64,
     q: f64,
     gain_db: f64,
@@ -186,10 +194,11 @@ struct DynamicBand {
     envelope: f64,
     offset_db: f64,
     coefficients: BiquadCoefficients,
+    extra_sections: ExtraSections,
     target: BiquadCoefficients,
     step: BiquadCoefficients,
-    states: [BiquadState; 2],
-    side_states: [BiquadState; 2],
+    states: [FilterState; 2],
+    side_states: [FilterState; 2],
     designed_gain_db: f64,
     control_countdown: u32,
     dirty: bool,
@@ -197,22 +206,15 @@ struct DynamicBand {
 
 impl DynamicBand {
     fn new(index: usize, sample_rate: u32) -> Self {
-        let defaults = [
-            (100.0, 1.0),
-            (250.0, 1.0),
-            (500.0, 1.0),
-            (1_000.0, 1.0),
-            (2_000.0, 1.0),
-            (8_000.0, 1.0),
-        ];
-        let (freq, q) = defaults[index];
+        let freq = DYNAMIC_EQ_CENTER_FREQUENCIES[index];
         let mut band = Self {
             enabled: false,
             solo: false,
             channel_target: ChannelTarget::Stereo,
             kind: BandKind::Bell,
+            slope: CutSlope::default(),
             freq,
-            q,
+            q: 1.0,
             gain_db: 0.0,
             dynamic: false,
             sidechain: false,
@@ -228,10 +230,11 @@ impl DynamicBand {
             envelope: 0.0,
             offset_db: 0.0,
             coefficients: BiquadCoefficients::default(),
+            extra_sections: ExtraSections::default(),
             target: BiquadCoefficients::default(),
             step: BiquadCoefficients::default(),
-            states: [BiquadState::default(); 2],
-            side_states: [BiquadState::default(); 2],
+            states: [FilterState::default(); 2],
+            side_states: [FilterState::default(); 2],
             designed_gain_db: 0.0,
             control_countdown: 0,
             dirty: true,
@@ -241,12 +244,15 @@ impl DynamicBand {
     }
 
     fn reset_runtime(&mut self) {
-        self.states = [BiquadState::default(); 2];
-        self.side_states = [BiquadState::default(); 2];
+        self.states = [FilterState::default(); 2];
+        self.reset_detector();
+        self.control_countdown = 0;
+    }
+
+    fn reset_detector(&mut self) {
+        self.side_states = [FilterState::default(); 2];
         self.envelope = 0.0;
         self.offset_db = 0.0;
-        self.control_countdown = 0;
-        self.step = BiquadCoefficients::default();
     }
 
     fn update_detector(&mut self) {
@@ -259,22 +265,27 @@ impl DynamicBand {
     fn prepare(&mut self, sample_rate: f64) {
         if (self.sample_rate - sample_rate).abs() > 0.5 {
             self.sample_rate = sample_rate;
+            self.update_detector();
+            self.reset_runtime();
             self.dirty = true;
         }
         if !self.dirty {
             return;
         }
-        self.update_detector();
-        self.reset_runtime();
-        self.coefficients = BiquadCoefficients::design(
+        // Retuning keeps the delay and detector states, including when
+        // automation supplies a different cutoff at every sample.
+        let gain_db = (self.gain_db + self.offset_db).clamp(MIN_GAIN_DB, MAX_GAIN_DB);
+        (self.coefficients, self.extra_sections) = ExtraSections::design(
             self.kind.filter_type(),
             self.freq,
             self.q,
-            self.gain_db,
+            gain_db,
             sample_rate,
+            self.slope,
         );
         self.target = self.coefficients;
-        self.designed_gain_db = self.gain_db;
+        self.designed_gain_db = gain_db;
+        self.control_countdown = 0;
         self.dirty = false;
     }
 
@@ -316,7 +327,22 @@ impl DynamicBand {
                     return false;
                 }
                 self.kind = kind;
+                self.reset_runtime();
                 true
+            }
+            "slope" => {
+                let Some(slope) = CutSlope::from_parameter(value) else {
+                    return false;
+                };
+                if self.slope == slope {
+                    return false;
+                }
+                self.slope = slope;
+                if matches!(self.kind, BandKind::LowCut | BandKind::HighCut) {
+                    self.reset_runtime();
+                    return true;
+                }
+                false
             }
             "freq" => {
                 let freq = value.clamp(MIN_FREQ, MAX_FREQ);
@@ -348,7 +374,7 @@ impl DynamicBand {
                     return false;
                 }
                 self.dynamic = dynamic;
-                self.offset_db = 0.0;
+                self.reset_detector();
                 true
             }
             "sidechain" => {
@@ -357,9 +383,7 @@ impl DynamicBand {
                     return false;
                 }
                 self.sidechain = sidechain;
-                self.side_states = [BiquadState::default(); 2];
-                self.envelope = 0.0;
-                self.offset_db = 0.0;
+                self.reset_detector();
                 true
             }
             "threshold" => {
@@ -407,6 +431,7 @@ impl DynamicBand {
             "solo" => Some(if self.solo { 1.0 } else { 0.0 }),
             "channel" => Some(self.channel_target.code()),
             "type" => Some(self.kind.code()),
+            "slope" => Some(self.slope.parameter()),
             "freq" => Some(self.freq),
             "q" => Some(self.q),
             "gain" => Some(self.gain_db),
@@ -425,25 +450,29 @@ impl DynamicBand {
     fn detector_frame(&mut self, left: f64, right: f64) -> (f64, f64) {
         match self.channel_target {
             ChannelTarget::Stereo => (
-                self.side_states[0].process(&self.coefficients, left),
-                self.side_states[1].process(&self.coefficients, right),
+                self.side_states[0].process(&self.coefficients, &self.extra_sections, left),
+                self.side_states[1].process(&self.coefficients, &self.extra_sections, right),
             ),
             ChannelTarget::Left => {
-                let out = self.side_states[0].process(&self.coefficients, left);
+                let out =
+                    self.side_states[0].process(&self.coefficients, &self.extra_sections, left);
                 (out, out)
             }
             ChannelTarget::Right => {
-                let out = self.side_states[0].process(&self.coefficients, right);
+                let out =
+                    self.side_states[0].process(&self.coefficients, &self.extra_sections, right);
                 (out, out)
             }
             ChannelTarget::Mid => {
                 let mid = (left + right) * 0.5;
-                let out = self.side_states[0].process(&self.coefficients, mid);
+                let out =
+                    self.side_states[0].process(&self.coefficients, &self.extra_sections, mid);
                 (out, out)
             }
             ChannelTarget::Side => {
                 let side = (left - right) * 0.5;
-                let out = self.side_states[0].process(&self.coefficients, side);
+                let out =
+                    self.side_states[0].process(&self.coefficients, &self.extra_sections, side);
                 (out, out)
             }
         }
@@ -452,28 +481,30 @@ impl DynamicBand {
     fn process_frame(&mut self, left: f64, right: f64, key: Option<(f64, f64)>) -> (f64, f64) {
         let (next_left, next_right, detected) = match self.channel_target {
             ChannelTarget::Stereo => {
-                let left_out = self.states[0].process(&self.coefficients, left);
-                let right_out = self.states[1].process(&self.coefficients, right);
+                let left_out =
+                    self.states[0].process(&self.coefficients, &self.extra_sections, left);
+                let right_out =
+                    self.states[1].process(&self.coefficients, &self.extra_sections, right);
                 (left_out, right_out, (left_out, right_out))
             }
             ChannelTarget::Left => {
-                let out = self.states[0].process(&self.coefficients, left);
+                let out = self.states[0].process(&self.coefficients, &self.extra_sections, left);
                 (out, right, (out, out))
             }
             ChannelTarget::Right => {
-                let out = self.states[0].process(&self.coefficients, right);
+                let out = self.states[0].process(&self.coefficients, &self.extra_sections, right);
                 (left, out, (out, out))
             }
             ChannelTarget::Mid => {
                 let mid = (left + right) * 0.5;
                 let side = (left - right) * 0.5;
-                let out = self.states[0].process(&self.coefficients, mid);
+                let out = self.states[0].process(&self.coefficients, &self.extra_sections, mid);
                 (out + side, out - side, (out, out))
             }
             ChannelTarget::Side => {
                 let mid = (left + right) * 0.5;
                 let side = (left - right) * 0.5;
-                let out = self.states[0].process(&self.coefficients, side);
+                let out = self.states[0].process(&self.coefficients, &self.extra_sections, side);
                 (mid + out, mid - out, (out, out))
             }
         };
@@ -510,15 +541,22 @@ impl DynamicBand {
         };
         self.offset_db = self.range_db * amount;
 
+        // Cut gain does not change with the detector. Its first section keeps
+        // the Q chosen for the full cascade.
+        if matches!(self.kind, BandKind::LowCut | BandKind::HighCut) {
+            return;
+        }
+
         if self.control_countdown == 0 {
             let total = (self.gain_db + self.offset_db).clamp(MIN_GAIN_DB, MAX_GAIN_DB);
             if (total - self.designed_gain_db).abs() > 1e-9 {
-                self.target = BiquadCoefficients::design(
+                self.target = BiquadCoefficients::design_with_ceiling(
                     self.kind.filter_type(),
                     self.freq,
                     self.q,
                     total,
                     sample_rate,
+                    FILTER_RATE_CEILING,
                 );
                 self.designed_gain_db = total;
             }
@@ -538,8 +576,10 @@ struct Cut {
     freq: f64,
     q: f64,
     filter_type: FilterType,
+    slope: CutSlope,
     coefficients: BiquadCoefficients,
-    states: [BiquadState; 2],
+    extra_sections: ExtraSections,
+    states: [FilterState; 2],
     dirty: bool,
 }
 
@@ -550,46 +590,73 @@ impl Cut {
             freq,
             q: 0.707,
             filter_type,
-            coefficients: BiquadCoefficients::design(
+            slope: CutSlope::default(),
+            coefficients: BiquadCoefficients::design_with_ceiling(
                 filter_type,
                 freq,
                 0.707,
                 0.0,
                 sample_rate as f64,
+                FILTER_RATE_CEILING,
             ),
-            states: [BiquadState::default(); 2],
+            extra_sections: ExtraSections::default(),
+            states: [FilterState::default(); 2],
             dirty: false,
         }
     }
 
     fn prepare(&mut self, sample_rate: f64) {
         if self.dirty {
-            self.coefficients =
-                BiquadCoefficients::design(self.filter_type, self.freq, self.q, 0.0, sample_rate);
+            (self.coefficients, self.extra_sections) = ExtraSections::design(
+                self.filter_type,
+                self.freq,
+                self.q,
+                0.0,
+                sample_rate,
+                self.slope,
+            );
             self.dirty = false;
         }
     }
 
     fn process_pair(&mut self, left: f64, right: f64) -> (f64, f64) {
         (
-            self.states[0].process(&self.coefficients, left),
-            self.states[1].process(&self.coefficients, right),
+            self.states[0].process(&self.coefficients, &self.extra_sections, left),
+            self.states[1].process(&self.coefficients, &self.extra_sections, right),
         )
     }
 
     fn reset(&mut self) {
-        self.states = [BiquadState::default(); 2];
+        self.states = [FilterState::default(); 2];
         self.dirty = true;
+    }
+
+    fn set_slope(&mut self, value: f64) {
+        if let Some(slope) = CutSlope::from_parameter(value)
+            && self.slope != slope
+        {
+            self.slope = slope;
+            self.reset();
+        }
     }
 }
 
-/// Six dynamic bands plus low/high cuts with optional auto-gain.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SamplingMode {
+    ProjectRate,
+    Polyphase,
+    Fir,
+}
+
+/// Dynamic bands plus low/high cuts with optional auto-gain.
 pub struct DynamicEq {
     bands: [DynamicBand; BAND_COUNT],
     low_cut: Cut,
     high_cut: Cut,
     sample_rate: f64,
     bypass: bool,
+    output_gain_db: f64,
+    output_gain_lin: f64,
     auto_gain: bool,
     auto_gain_lin: f64,
     auto_gain_db: f64,
@@ -600,10 +667,14 @@ pub struct DynamicEq {
     auto_power_coeff: f64,
     auto_smooth_coeff: f64,
     auto_dirty: bool,
+    oversample: bool,
+    oversample_fir: bool,
+    polyphase: Polyphase2x,
+    fir: Fir2x,
 }
 
 impl DynamicEq {
-    /// Prepare six bands and the low/high cuts at the sample rate.
+    /// Prepare the parametric bands and the low/high cuts at the sample rate.
     pub fn new(sample_rate: u32) -> Self {
         Self {
             bands: std::array::from_fn(|index| DynamicBand::new(index, sample_rate)),
@@ -611,6 +682,8 @@ impl DynamicEq {
             high_cut: Cut::new(FilterType::LowPass, MAX_FREQ, sample_rate),
             sample_rate: sample_rate as f64,
             bypass: false,
+            output_gain_db: 0.0,
+            output_gain_lin: 1.0,
             auto_gain: false,
             auto_gain_lin: 1.0,
             auto_gain_db: 0.0,
@@ -621,6 +694,10 @@ impl DynamicEq {
             auto_power_coeff: 0.0,
             auto_smooth_coeff: 0.0,
             auto_dirty: true,
+            oversample: false,
+            oversample_fir: false,
+            polyphase: Polyphase2x::new(),
+            fir: Fir2x::new(),
         }
     }
 
@@ -668,8 +745,10 @@ impl DynamicEq {
     fn prepare(&mut self, sample_rate: f64) {
         if (self.sample_rate - sample_rate).abs() > 0.5 {
             self.sample_rate = sample_rate;
-            self.low_cut.dirty = true;
-            self.high_cut.dirty = true;
+            self.polyphase.reset();
+            self.fir.reset();
+            self.low_cut.reset();
+            self.high_cut.reset();
             self.auto_dirty = true;
         }
         self.low_cut.prepare(sample_rate);
@@ -707,44 +786,99 @@ impl DynamicEq {
             .map(|band| band.dynamic && band.sidechain)
     }
 
+    fn sampling_mode(&self) -> SamplingMode {
+        match (self.oversample_fir, self.oversample) {
+            (true, _) => SamplingMode::Fir,
+            (false, true) => SamplingMode::Polyphase,
+            (false, false) => SamplingMode::ProjectRate,
+        }
+    }
+
     fn process_inner(&mut self, buffer: &mut [f32], sample_rate: u32, sidechain: Option<&[f32]>) {
         if self.bypass {
             return;
         }
-        let sample_rate = sample_rate as f64;
-        self.prepare(sample_rate);
+        let rate = f64::from(sample_rate);
+        let mode = self.sampling_mode();
+        let rate = if mode == SamplingMode::ProjectRate {
+            rate
+        } else {
+            2.0 * rate
+        };
+        self.prepare(rate);
         let solo_active = self.bands.iter().any(|band| band.enabled && band.solo);
-        for (frame_index, frame) in buffer.as_chunks_mut::<2>().0.iter_mut().enumerate() {
-            let input_left = frame[0] as f64;
-            let input_right = frame[1] as f64;
-            let mut left = input_left;
-            let mut right = input_right;
-
-            if self.low_cut.enabled {
-                (left, right) = self.low_cut.process_pair(left, right);
+        let mut active = [0; BAND_COUNT];
+        let mut count = 0;
+        for (index, band) in self.bands.iter().enumerate() {
+            if band.enabled && (!solo_active || band.solo) {
+                active[count] = index;
+                count += 1;
             }
-            let key = sidechain.and_then(|key| {
-                let index = frame_index * 2;
-                Some((*key.get(index)? as f64, *key.get(index + 1)? as f64))
-            });
-            for band in &mut self.bands {
-                if !band.enabled || (solo_active && !band.solo) {
-                    continue;
-                }
-                let (next_left, next_right) = band.process_frame(left, right, key);
-                left = next_left;
-                right = next_right;
-            }
-            if self.high_cut.enabled {
-                (left, right) = self.high_cut.process_pair(left, right);
-            }
-            if self.auto_gain {
-                (left, right) = self.apply_auto_gain(input_left, input_right, left, right);
-            }
-
-            frame[0] = left as f32;
-            frame[1] = right as f32;
         }
+        let active = &active[..count];
+        let key_at = |frame_index: usize| -> Option<[f64; 2]> {
+            let index = frame_index * 2;
+            let key = sidechain?.get(index..index + 2)?;
+            Some([f64::from(key[0]), f64::from(key[1])])
+        };
+        let frames = buffer.as_chunks_mut::<2>().0;
+        if mode != SamplingMode::ProjectRate {
+            let use_key = self
+                .bands
+                .iter()
+                .any(|band| band.enabled && band.dynamic && band.sidechain);
+            for (index, frame) in frames.iter_mut().enumerate() {
+                let input = frame.map(f64::from);
+                let key = if use_key { key_at(index) } else { None };
+                let (input, key) = if mode == SamplingMode::Fir {
+                    (Fir2x::interpolate(input), key.map(Fir2x::interpolate))
+                } else {
+                    (
+                        self.polyphase.interpolate(input),
+                        key.map(|key| self.polyphase.interpolate_key(key)),
+                    )
+                };
+                let filtered = std::array::from_fn(|phase| {
+                    self.process_frame(input[phase], key.map(|pair| pair[phase]), active)
+                });
+                let output = if mode == SamplingMode::Fir {
+                    self.fir.decimate(filtered)
+                } else {
+                    self.polyphase.decimate(filtered)
+                };
+                *frame = output.map(|sample| sample as f32);
+            }
+        } else {
+            for (index, frame) in frames.iter_mut().enumerate() {
+                *frame = self
+                    .process_frame(frame.map(f64::from), key_at(index), active)
+                    .map(|sample| sample as f32);
+            }
+        }
+    }
+
+    fn process_frame(
+        &mut self,
+        input: [f64; 2],
+        key: Option<[f64; 2]>,
+        active: &[usize],
+    ) -> [f64; 2] {
+        let [input_left, input_right] = input;
+        let (mut left, mut right) = (input_left, input_right);
+        if self.low_cut.enabled {
+            (left, right) = self.low_cut.process_pair(left, right);
+        }
+        let key = key.map(|[left, right]| (left, right));
+        for &index in active {
+            (left, right) = self.bands[index].process_frame(left, right, key);
+        }
+        if self.high_cut.enabled {
+            (left, right) = self.high_cut.process_pair(left, right);
+        }
+        if self.auto_gain {
+            (left, right) = self.apply_auto_gain(input_left, input_right, left, right);
+        }
+        [left * self.output_gain_lin, right * self.output_gain_lin]
     }
 
     fn apply_auto_gain(
@@ -811,6 +945,25 @@ impl AudioEffect for DynamicEq {
         }
         match name {
             "bypass" => self.bypass = value >= 0.5,
+            "oversample" | "oversample_fir" => {
+                let before = self.sampling_mode();
+                if name == "oversample_fir" {
+                    self.oversample_fir = value >= 0.5;
+                } else {
+                    self.oversample = value >= 0.5;
+                }
+                if self.sampling_mode() != before {
+                    self.reset();
+                }
+            }
+            "output_gain" => {
+                let (min, max) = DYNAMIC_EQ_OUTPUT_GAIN_DB_RANGE;
+                let gain = value.clamp(min, max);
+                if gain != self.output_gain_db {
+                    self.output_gain_db = gain;
+                    self.output_gain_lin = db_to_linear(gain);
+                }
+            }
             "auto_gain" => {
                 let auto_gain = value >= 0.5;
                 if auto_gain != self.auto_gain {
@@ -839,6 +992,7 @@ impl AudioEffect for DynamicEq {
                     self.low_cut.dirty = true;
                 }
             }
+            "low_cut_slope" => self.low_cut.set_slope(value),
             "high_cut_enabled" => {
                 let enabled = value >= 0.5;
                 if enabled != self.high_cut.enabled {
@@ -860,6 +1014,7 @@ impl AudioEffect for DynamicEq {
                     self.high_cut.dirty = true;
                 }
             }
+            "high_cut_slope" => self.high_cut.set_slope(value),
             _ => {
                 let Some((index, field)) = band_param(name) else {
                     return;
@@ -875,12 +1030,17 @@ impl AudioEffect for DynamicEq {
         match name {
             "bypass" => Some(if self.bypass { 1.0 } else { 0.0 }),
             "auto_gain" => Some(if self.auto_gain { 1.0 } else { 0.0 }),
+            "oversample" => Some(f64::from(self.oversample)),
+            "oversample_fir" => Some(f64::from(self.oversample_fir)),
+            "output_gain" => Some(self.output_gain_db),
             "low_cut_enabled" => Some(if self.low_cut.enabled { 1.0 } else { 0.0 }),
             "low_cut_freq" => Some(self.low_cut.freq),
             "low_cut_q" => Some(self.low_cut.q),
+            "low_cut_slope" => Some(self.low_cut.slope.parameter()),
             "high_cut_enabled" => Some(if self.high_cut.enabled { 1.0 } else { 0.0 }),
             "high_cut_freq" => Some(self.high_cut.freq),
             "high_cut_q" => Some(self.high_cut.q),
+            "high_cut_slope" => Some(self.high_cut.slope.parameter()),
             _ => {
                 let (index, field) = band_param(name)?;
                 self.bands[index].get_field(field)
@@ -895,7 +1055,21 @@ impl AudioEffect for DynamicEq {
             band.reset_runtime();
             band.dirty = true;
         }
+        self.polyphase.reset();
+        self.fir.reset();
         self.reset_auto_gain();
+    }
+
+    fn latency_samples(&self) -> u32 {
+        if self.sampling_mode() == SamplingMode::Fir {
+            FIR_2X_LATENCY as u32
+        } else {
+            0
+        }
+    }
+
+    fn tail_samples(&self) -> u32 {
+        2 * self.latency_samples()
     }
 
     /// Positive dB of dynamic attenuation; boosts report zero.
@@ -937,6 +1111,7 @@ fn band_param(name: &str) -> Option<(usize, &str)> {
 pub(crate) enum ParamField {
     Switch,
     Type,
+    Slope,
     Channel,
     Frequency,
     Q,
@@ -948,8 +1123,14 @@ pub(crate) enum ParamField {
 }
 
 pub(crate) fn param_field(name: &str) -> Option<ParamField> {
-    if name == "bypass" || name == "auto_gain" {
+    if matches!(
+        name,
+        "bypass" | "auto_gain" | "oversample" | "oversample_fir"
+    ) {
         return Some(ParamField::Switch);
+    }
+    if name == "output_gain" {
+        return Some(ParamField::Gain);
     }
     if let Some(rest) = name
         .strip_prefix("low_cut_")
@@ -959,6 +1140,7 @@ pub(crate) fn param_field(name: &str) -> Option<ParamField> {
             "enabled" => Some(ParamField::Switch),
             "freq" => Some(ParamField::Frequency),
             "q" => Some(ParamField::Q),
+            "slope" => Some(ParamField::Slope),
             _ => None,
         };
     }
@@ -966,6 +1148,7 @@ pub(crate) fn param_field(name: &str) -> Option<ParamField> {
     match field {
         "enabled" | "dynamic" | "solo" | "sidechain" => Some(ParamField::Switch),
         "type" => Some(ParamField::Type),
+        "slope" => Some(ParamField::Slope),
         "channel" => Some(ParamField::Channel),
         "freq" => Some(ParamField::Frequency),
         "q" => Some(ParamField::Q),
@@ -978,12 +1161,17 @@ pub(crate) fn param_field(name: &str) -> Option<ParamField> {
     }
 }
 
+/// Whether the parameter selects the order of a low or high cut.
+pub fn slope_param(name: &str) -> bool {
+    matches!(param_field(name), Some(ParamField::Slope))
+}
+
 /// Whether a parameter id names a band frequency.
 pub fn frequency_param(name: &str) -> bool {
     matches!(param_field(name), Some(ParamField::Frequency))
 }
 
-/// Whether a parameter id names a band dB value.
+/// Whether a parameter id names a dB value.
 pub fn db_param(name: &str) -> bool {
     matches!(
         param_field(name),
@@ -1226,6 +1414,104 @@ mod tests {
     }
 
     #[test]
+    fn output_gain_scales_both_channels_after_auto_gain_and_survives_reset() {
+        let mut reference = two_band_eq(ChannelTarget::Left);
+        let mut trimmed = two_band_eq(ChannelTarget::Left);
+        reference.set_param("auto_gain", 1.0);
+        trimmed.set_param("auto_gain", 1.0);
+        trimmed.set_param("output_gain", -6.0);
+        trimmed.reset();
+        let signal: Vec<f32> = (0..2048).map(|i| (i as f32 * 0.17).sin() * 0.2).collect();
+        let mut expected = signal.clone();
+        let mut actual = signal.clone();
+        reference.process(&mut expected, SR);
+        trimmed.process(&mut actual, SR);
+        assert_eq!(trimmed.get_param("output_gain"), Some(-6.0));
+        assert_eq!(trimmed.auto_gain_db(), reference.auto_gain_db());
+        let scale = db_to_linear(-6.0) as f32;
+        for (actual, expected) in actual.into_iter().zip(expected) {
+            assert!((actual - expected * scale).abs() < 1e-6);
+        }
+        trimmed.set_param("bypass", 1.0);
+        let mut bypassed = signal.clone();
+        trimmed.process(&mut bypassed, SR);
+        assert_eq!(bypassed, signal);
+    }
+
+    #[test]
+    fn last_band_can_turn_on_without_changing_the_earlier_sections() {
+        let mut eq = DynamicEq::new(SR);
+        for index in 1..=BAND_COUNT {
+            eq.set_param(&format!("band{index}_freq"), 2_000.0);
+            eq.set_param(&format!("band{index}_gain"), 1.0);
+            if index < BAND_COUNT {
+                eq.set_param(&format!("band{index}_enabled"), 1.0);
+            }
+        }
+        let last = format!("band{BAND_COUNT}_enabled");
+        let baseline = (BAND_COUNT - 1) as f64;
+        assert_eq!(eq.get_param(&last), Some(0.0));
+        assert!((measured_gain_db(&mut eq, 2_000.0, 0.1) - baseline).abs() < 0.02);
+        eq.set_param(&last, 1.0);
+        assert!((measured_gain_db(&mut eq, 2_000.0, 0.1) - (baseline + 1.0)).abs() < 0.02);
+        eq.set_param(
+            &format!("band{BAND_COUNT}_channel"),
+            ChannelTarget::Right.code(),
+        );
+        assert!((measured_gain_db(&mut eq, 2_000.0, 0.1) - baseline).abs() < 0.02);
+        assert!(
+            (measured_gain_db_channel(&mut eq, 2_000.0, 0.1, 1) - (baseline + 1.0)).abs() < 0.02
+        );
+    }
+
+    #[test]
+    fn cut_slope_matches_butterworth_at_the_corner_and_in_the_stopband() {
+        use std::f64::consts::{FRAC_1_SQRT_2, PI};
+
+        let corner = 1000.0;
+        for (slot, kind, stop) in [
+            ("low_cut", BandKind::LowCut, 500.0),
+            ("high_cut", BandKind::HighCut, 2000.0),
+        ] {
+            for sections in 1..=oc_device_schema::DYNAMIC_EQ_CUT_SLOPES.len() {
+                let slope = (sections - 1) as f64;
+                for prefix in [slot, "band7"] {
+                    let mut eq = DynamicEq::new(SR);
+                    eq.set_param(&format!("{prefix}_enabled"), 1.0);
+                    eq.set_param(&format!("{prefix}_freq"), corner);
+                    eq.set_param(&format!("{prefix}_q"), FRAC_1_SQRT_2);
+                    eq.set_param(&format!("{prefix}_slope"), slope);
+                    if prefix == "band7" {
+                        eq.set_param("band7_type", kind.code());
+                    }
+                    for freq in [corner, stop] {
+                        let mut ratio =
+                            (PI * freq / f64::from(SR)).tan() / (PI * corner / f64::from(SR)).tan();
+                        if kind == BandKind::LowCut {
+                            ratio = ratio.recip();
+                        }
+                        let expected = -10.0 * (1.0 + ratio.powi(4 * sections as i32)).log10();
+                        let measured = measured_gain_db(&mut eq, freq, 0.2);
+                        assert!(
+                            (measured - expected).abs() < 0.02,
+                            "{prefix} {sections} at {freq} Hz: {measured:.3} != {expected:.3}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_stored_cut_slope_does_not_change_a_bell() {
+        let mut eq = two_band_eq(ChannelTarget::Stereo);
+        let original = measured_gain_db(&mut eq, 1000.0, 0.1);
+        eq.set_param("band1_slope", 3.0);
+        assert_eq!(eq.get_param("band1_slope"), Some(3.0));
+        assert_eq!(measured_gain_db(&mut eq, 1000.0, 0.1), original);
+    }
+
+    #[test]
     fn solo_restricts_processing_to_soloed_bands() {
         let mut eq = two_band_eq(ChannelTarget::Stereo);
         let band1_at_4k = reference_gain_db(BandKind::Bell, 1_000.0, 1.0, 12.0, 4_000.0);
@@ -1455,6 +1741,138 @@ mod tests {
     }
 
     #[test]
+    fn moving_a_cut_preserves_history_through_sample_rate_automation() {
+        let mut eq = DynamicEq::new(SR);
+        eq.set_param("band12_enabled", 1.0);
+        eq.set_param("band12_type", BandKind::HighCut.code());
+        let mut previous = [0.0; 2];
+        for frame in 0..480 {
+            let frequency = 600.0 + f64::from(frame) * 8.0;
+            let (sin, cos) = (TAU * frequency / f64::from(SR)).sin_cos();
+            let a0 = 1.0 + sin / 2.0;
+            let b0 = (1.0 - cos) / (2.0 * a0);
+            let a1 = -2.0 * cos / a0;
+            let a2 = (1.0 - sin / 2.0) / a0;
+            let input = if frame == 0 { 0.25 } else { 0.0 };
+            let feed = match frame {
+                0 | 2 => b0 * 0.25,
+                1 => 2.0 * b0 * 0.25,
+                _ => 0.0,
+            };
+            let expected = feed - a1 * previous[0] - a2 * previous[1];
+            previous = [expected, previous[0]];
+
+            let mut audio = [input as f32; 2];
+            eq.set_param("band12_freq", frequency);
+            eq.process(&mut audio, SR);
+            assert!(
+                (f64::from(audio[0]) - expected).abs() < 1e-8,
+                "frame {frame}"
+            );
+            assert_eq!(audio[0], audio[1]);
+        }
+    }
+
+    #[test]
+    fn retuning_does_not_discharge_a_dynamic_bands_detector() {
+        let mut eq = DynamicEq::new(SR);
+        eq.set_param("band1_enabled", 1.0);
+        eq.set_param("band1_dynamic", 1.0);
+        eq.set_param("band1_sidechain", 1.0);
+        let mut main = vec![0.0; 8_192];
+        let key = sine(1_000.0, 0.5, main.len() / 2);
+        eq.process_with_sidechain(&mut main, &key, SR, None);
+        let before = eq.band_envelope(0).unwrap();
+        assert!(before > 0.1);
+
+        eq.set_param("band1_freq", 1500.0);
+        eq.set_param("band1_q", 2.0);
+        eq.set_param("band1_gain", -3.0);
+        eq.process_with_sidechain(&mut [0.0; 2], &[0.0; 2], SR, None);
+        assert!(eq.band_envelope(0).unwrap() > before * 0.99);
+    }
+
+    #[test]
+    fn high_cut_preserves_the_authored_corner_at_44_1_khz() {
+        let rate = 44_100;
+        let mut eq = DynamicEq::new(rate);
+        eq.set_param("high_cut_enabled", 1.0);
+        eq.set_param("high_cut_freq", 20_000.0);
+        eq.set_param("high_cut_q", std::f64::consts::FRAC_1_SQRT_2);
+
+        let input: Vec<f32> = (0..rate / 5)
+            .flat_map(|frame| {
+                let phase = std::f64::consts::TAU * 20_000.0 * f64::from(frame) / f64::from(rate);
+                [0.25 * phase.sin() as f32; 2]
+            })
+            .collect();
+        let mut output = input.clone();
+        eq.process(&mut output, rate);
+
+        let power = |data: &[f32]| {
+            data[data.len() / 2..]
+                .iter()
+                .map(|&sample| f64::from(sample).powi(2))
+                .sum::<f64>()
+        };
+        assert!((power(&output) / power(&input) - 0.5).abs() < 1e-5);
+    }
+
+    #[test]
+    fn oversampled_eq_is_partition_invariant_and_resets_its_history() {
+        let make_eq = || {
+            let mut eq = DynamicEq::new(SR);
+            eq.set_param("oversample", 1.0);
+            eq.set_param("band1_enabled", 1.0);
+            eq.set_param("band1_freq", 13_000.0);
+            eq.set_param("band1_gain", -8.0);
+            eq
+        };
+        let mut fixture = sine(7_000.0, 0.25, 2048);
+        for frame in fixture.as_chunks_mut::<2>().0 {
+            frame[1] = 0.0;
+        }
+        let mut expected = fixture.clone();
+        let mut whole = make_eq();
+        whole.process(&mut expected, SR);
+        assert_ne!(expected, fixture);
+        assert_eq!(whole.latency_samples(), 0);
+        assert!(
+            expected
+                .iter()
+                .skip(1)
+                .step_by(2)
+                .all(|sample| *sample == 0.0)
+        );
+
+        let mut split = fixture.clone();
+        let mut partitioned = make_eq();
+        for block in split.chunks_mut(2 * 137) {
+            partitioned.process(block, SR);
+        }
+        assert_eq!(expected, split);
+        partitioned.reset();
+        partitioned.process(&mut fixture, SR);
+        assert_eq!(expected, fixture);
+    }
+
+    #[test]
+    fn oversampled_external_key_changes_the_detector_and_stays_out_of_the_output() {
+        let mut eq = dynamic_band(-40.0, -12.0, 5.0, 100.0);
+        eq.set_param("oversample", 1.0);
+        eq.set_param("band1_sidechain", 1.0);
+        let key = sine(1_000.0, 1.0, 8192);
+        let mut silent = vec![0.0; key.len()];
+        eq.process_with_sidechain(&mut silent, &key, SR, None);
+        assert!(silent.iter().all(|sample| *sample == 0.0));
+        assert!(eq.band_dynamic_gain_db(0).unwrap() < -11.5);
+
+        eq.set_param("oversample", 0.0);
+        assert_eq!(eq.band_dynamic_gain_db(0).unwrap(), 0.0);
+        assert_eq!(eq.get_param("oversample"), Some(0.0));
+    }
+
+    #[test]
     fn auto_gain_restores_a_tonal_level_within_half_a_db() {
         let frames = SR as usize * 6;
         let input = sine(1_000.0, 0.25, frames);
@@ -1535,7 +1953,7 @@ mod tests {
 
     #[test]
     #[ignore = "manual CPU sanity"]
-    fn six_band_dynamic_eq_cpu_sanity() {
+    fn fully_active_dynamic_eq_cpu_sanity() {
         let mut eq = DynamicEq::new(SR);
         for band in 1..=BAND_COUNT {
             let prefix = format!("band{band}");
@@ -1563,7 +1981,7 @@ mod tests {
         }
         let elapsed = start.elapsed().as_secs_f64();
         println!(
-            "6-band dynamic EQ: {:.3}x realtime, {:.2} ns/frame",
+            "{BAND_COUNT}-band dynamic EQ: {:.3}x realtime, {:.2} ns/frame",
             frames as f64 / SR as f64 / elapsed,
             elapsed * 1e9 / frames as f64
         );
