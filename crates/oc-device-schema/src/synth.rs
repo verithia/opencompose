@@ -371,6 +371,12 @@ pub const TUNING_REFERENCE_HZ: SynthNumericDomain = SynthNumericDomain {
     max: 480.0,
     default: 440.0,
 };
+/// Finite note-relative pitch offset, independent of channel bend range.
+pub const NATIVE_PITCH_OFFSET: SynthNumericDomain = SynthNumericDomain {
+    min: -96.0,
+    max: 96.0,
+    default: 0.0,
+};
 /// Transpose range in semitones.
 pub const TUNING_TRANSPOSE: SynthNumericDomain = SynthNumericDomain {
     min: -24.0,
