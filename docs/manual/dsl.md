@@ -72,6 +72,7 @@ four-bar phrase in 4/4 is `[1:1 - 5:1]`; `[1:1 - 4:4]` stops one beat short.
 | `tempo_map:` | `tempo_map: 9:1 = 90` | tempo change at a written position (also editable in the timeline tempo lane) |
 | `time_sig_map:` | `time_sig_map: 17:1 = 3/4` | meter change at a bar start (also editable in the timeline tempo lane) |
 | `key_map:` | `key_map: 17:1 = Db major` | key change |
+| `playlist_rows:` | `playlist_rows: 2 = "Drums" 8 = "Synth layer"` | caption of a numbered playlist row; it does not rename a mixer track |
 | `mpe:` | `mpe: {lower: 2-7, bend_range: 48}` | MPE zone layout |
 | `export:` | `export: {container: wav, wav: {depth: i24, dither: true}}` | export container, its per-container options and the sample rate for exports; the older flat `export: {format: i24, dither: true}` still loads (see [export format](../export-format.md)) |
 | `solo_mode:` | `solo_mode: upstream` | how a solo propagates: `both` (the default) keeps the whole graph neighbourhood, `upstream` keeps only the sources that feed the soloed channel |

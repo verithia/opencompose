@@ -53,6 +53,7 @@ OpenCompose 工程是一个扩展名为 `.ocp` 的 UTF-8 文本文件。语法�
 | `tempo_map:` | `tempo_map: 9:1 = 90` | 在指定位置改变速度（也可在时间线的速度轨道中编辑） |
 | `time_sig_map:` | `time_sig_map: 17:1 = 3/4` | 在小节起点改变拍号（也可在时间线的速度轨道中编辑） |
 | `key_map:` | `key_map: 17:1 = Db major` | 转调 |
+| `playlist_rows:` | `playlist_rows: 2 = "Drums" 8 = "Synth layer"` | 播放列表某个编号行的标题；不会重命名混音轨道 |
 | `mpe:` | `mpe: {lower: 2-7, bend_range: 48}` | MPE 分区布局 |
 | `export:` | `export: {container: wav, wav: {depth: i24, dither: true}}` | 导出容器、各容器的选项以及导出采样率；旧的扁平写法 `export: {format: i24, dither: true}` 仍可加载（见[导出格式](../export-format.md)） |
 | `solo_mode:` | `solo_mode: upstream` | 独奏的传播方式：`both`（默认）保留整个图中的相邻节点，`upstream` 只保留向被独奏通道供声的源 |
