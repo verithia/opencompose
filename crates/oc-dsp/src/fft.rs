@@ -1,6 +1,7 @@
 //! Allocation-free FFT execution using a precomputed radix-2 plan.
 
 use std::f64::consts::TAU;
+use std::hint::black_box;
 
 #[derive(Debug, Clone, Copy, Default)]
 /// A complex sample used by the in-house FFT.
@@ -76,7 +77,11 @@ impl Fft {
         let twiddles = (0..size / 2)
             .map(|index| {
                 let angle = -TAU * index as f64 / size as f64;
-                Complex::new(angle.cos(), angle.sin())
+                // Separate opaque reads keep `cos` and `sin` as two calls. An
+                // optimised build would otherwise fuse them into the platform
+                // `sincos`, which rounds some twiddles differently, so the
+                // shipped app would not match the references its tests pin.
+                Complex::new(black_box(angle).cos(), black_box(angle).sin())
             })
             .collect::<Vec<_>>()
             .into_boxed_slice();
@@ -130,6 +135,36 @@ impl Fft {
             for value in data {
                 value.re *= scale;
                 value.im *= scale;
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[inline(never)]
+    fn cosine(angle: f64) -> f64 {
+        black_box(angle).cos()
+    }
+
+    #[inline(never)]
+    fn sine(angle: f64) -> f64 {
+        black_box(angle).sin()
+    }
+
+    #[test]
+    fn twiddles_round_cosine_and_sine_separately_in_every_profile() {
+        for size in [1 << 10, 1 << 12, 1 << 13, 1 << 14, 1 << 15] {
+            let plan = Fft::new(size);
+            for (index, twiddle) in plan.twiddles.iter().enumerate() {
+                let angle = -TAU * index as f64 / size as f64;
+                assert_eq!(
+                    (twiddle.re.to_bits(), twiddle.im.to_bits()),
+                    (cosine(angle).to_bits(), sine(angle).to_bits()),
+                    "size {size} twiddle {index}"
+                );
             }
         }
     }
