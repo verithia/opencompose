@@ -1507,6 +1507,7 @@ mod tests {
         assert_eq!((report.scanned, report.reused, run_count()), (1, 0, 3));
     }
 
+    #[cfg(unix)]
     #[test]
     fn candidate_lookup_reuses_a_receipt_and_scans_a_replaced_binary() {
         let fixture = QuarantineFixture::new("candidate-reuse");
@@ -2278,6 +2279,7 @@ mod tests {
     }
 
     /// A temporary directory holding one bundle directory.
+    #[cfg(target_os = "macos")]
     fn bundle_root(tag: &str, bundle: &str) -> (PathBuf, PathBuf) {
         let base = std::env::temp_dir().join(format!(
             "ocp-scan-{tag}-{}-{}",
