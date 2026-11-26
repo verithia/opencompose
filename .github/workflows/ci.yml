@@ -142,15 +142,23 @@ jobs:
     # Every shard runs in both profiles. Debug keeps overflow checks and debug
     # assertions; release is what ships, and an optimised build may call
     # different math library routines, so the pinned references must hold there
-    # too.
+    # too. The release suite is quicker, so the dsp and engine packages share
+    # one release runner.
     name: Rust tests (${{ matrix.os }}, ${{ matrix.shard }}, ${{ matrix.profile }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [macos-latest, ubuntu-latest]
-        shard: [gui, dsp, engine, rest]
+        shard: [gui, dsp, engine, dsp-engine, rest]
         profile: [debug, release]
+        exclude:
+          - shard: dsp
+            profile: release
+          - shard: engine
+            profile: release
+          - shard: dsp-engine
+            profile: debug
         include:
           - shard: gui
             packages: -p oc-gui
@@ -158,6 +166,8 @@ jobs:
             packages: -p oc-dsp -p oc-synth-core -p oc-synth-fx
           - shard: engine
             packages: -p oc-engine
+          - shard: dsp-engine
+            packages: -p oc-dsp -p oc-synth-core -p oc-synth-fx -p oc-engine
           - shard: rest
             # Everything the other shards do not name.
             packages: >-
@@ -198,11 +208,27 @@ jobs:
         # The Linux runner has no Secret Service, so this test prints
         # "SKIP …: OS credential store unavailable" instead of passing as if it
         # had stored a key. --nocapture keeps that reason in the job log; macOS
-        # exercises the real login keychain here.
+        # exercises the real login keychain here. The binary is the one the
+        # step above built: Tauri's context macro writes into the build output
+        # while it compiles, so a second cargo invocation rebuilds oc-gui.
         if: matrix.shard == 'gui' && matrix.profile == 'debug'
+        working-directory: crates/oc-gui/frontend/src-tauri
         run: |
-          cargo test -p oc-gui --lib --locked \
-            a_saved_key_is_reported_as_present_and_never_returned -- --nocapture
+          "$(ls -t "$GITHUB_WORKSPACE"/target/debug/deps/oc_gui_lib-* | grep -v '\.d$' | head -n 1)" \
+            a_saved_key_is_reported_as_present_and_never_returned --nocapture
+
+      - name: First-block latency (serial)
+        # The latency contract is about the shipped app, so it is measured on
+        # the release profile, after the suite so no other test shares the
+        # runner. Hosted runners get the budget ratio from `TimingHost`
+        # (docs/playback-latency.md). It runs the binary the suite built, for
+        # the reason given in the credential store step, and runs even when
+        # the suite failed so both results are reported.
+        if: ${{ !cancelled() && matrix.shard == 'gui' && matrix.profile == 'release' }}
+        working-directory: crates/oc-gui/frontend/src-tauri
+        run: |
+          "$(ls -t "$GITHUB_WORKSPACE"/target/release/deps/oc_gui_lib-* | grep -v '\.d$' | head -n 1)" \
+            first_block_tests:: --ignored --test-threads=1 --skip review_
 
       - name: SIMD backends and bit identity
         # Pins the kernel tests and prints the backend this CPU selected, so an
@@ -223,51 +249,6 @@ jobs:
         if: matrix.shard == 'rest' && matrix.profile == 'debug'
         timeout-minutes: 10
         run: cargo test -p oc-host --test vst3_rt_alloc --features test-support --locked -- --owned-lifecycle
-
-  first-block:
-    # The timed first-block contract runs serially for minutes, so it gets its
-    # own job: the rest of the Rust checks do not wait behind it, and no
-    # other cargo work shares the runner while it measures.
-    name: First-block latency (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-latest, ubuntu-latest]
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.95.0
-
-      - name: Cache dependencies
-        uses: Swatinem/rust-cache@v2
-        with:
-          cache-on-failure: true
-
-      - name: Install system dependencies (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libdbus-1-dev \
-            libasound2-dev \
-            libgtk-3-dev \
-            libwebkit2gtk-4.1-dev \
-            libjavascriptcoregtk-4.1-dev \
-            libsoup-3.0-dev \
-            pkg-config
-
-      - name: Build the first-block tests
-        # The latency contract is about the shipped app, so it is measured on
-        # the release profile. Hosted runners get the budget ratio from
-        # `TimingHost` (docs/playback-latency.md). Compiled first so the timed
-        # step below measures playback, not rustc.
-        run: cargo test -p oc-gui --lib --release --locked --no-run
-
-      - name: First-block latency (serial)
-        run: |
-          cargo test -p oc-gui --lib --release --locked first_block_tests:: -- --ignored --test-threads=1 --skip review_
 
   windows:
     name: Rust check and clip cache tests (Windows)

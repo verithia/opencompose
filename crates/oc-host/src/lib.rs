@@ -175,6 +175,11 @@ pub(crate) fn mark_plugin_module_loaded() {
 /// true; otherwise it returns and the process shuts down normally. It forces
 /// status 0, so callers that need their own status use [`exit_process`] or call
 /// it before any plugin module is loaded.
+///
+/// A test executable's exit status is the test result, and `atexit` cannot see
+/// it, so in a test process the handler returns and the status survives. A test
+/// that exercises the guard itself starts its child with
+/// [`EXIT_GUARD_UNDER_TEST_ENV`] set.
 pub fn guard_plugin_teardown() {
     #[cfg(unix)]
     // SAFETY: `exit_guard` only flushes and calls `_exit`.
@@ -191,6 +196,9 @@ extern "C" fn exit_guard() {
         return;
     }
     if oc_audio::private_fs::running_under_test() {
+        if std::env::var_os(EXIT_GUARD_UNDER_TEST_ENV).is_none() {
+            return;
+        }
         oc_audio::private_fs::cleanup_test_root();
     }
     let _ = std::io::stdout().flush();
@@ -200,6 +208,10 @@ extern "C" fn exit_guard() {
     // destructors is the point of this handler.
     unsafe { libc::_exit(0) }
 }
+
+/// Arms [`guard_plugin_teardown`] in a test process, whose status it would
+/// otherwise mask. Only a child that exits with status 0 on purpose sets it.
+pub const EXIT_GUARD_UNDER_TEST_ENV: &str = "OCP_TEST_EXIT_GUARD";
 
 /// Whether a third-party plugin module is loaded in this process.
 pub fn plugin_module_loaded() -> bool {
@@ -891,6 +903,32 @@ pub(crate) fn mapped_transport_fixture() -> PluginTransport {
 
 #[cfg(test)]
 mod tests {
+    /// A failing test binary exits with 101 through `std::process::exit`; the
+    /// teardown guard must not turn that into a success.
+    #[cfg(unix)]
+    #[test]
+    fn teardown_guard_keeps_a_test_process_exit_status() {
+        const EXIT_STATUS_CHILD_ENV: &str = "OCP_EXIT_GUARD_STATUS_CHILD";
+        if std::env::var_os(EXIT_STATUS_CHILD_ENV).is_some() {
+            super::mark_plugin_module_loaded();
+            super::guard_plugin_teardown();
+            std::process::exit(101);
+        }
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "tests::teardown_guard_keeps_a_test_process_exit_status",
+                "--test-threads=1",
+            ])
+            .env(EXIT_STATUS_CHILD_ENV, "1")
+            .env_remove(super::EXIT_GUARD_UNDER_TEST_ENV)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .expect("spawn the exit-status child");
+        assert_eq!(status.code(), Some(101));
+    }
+
     #[test]
     fn immutable_fixture_lookup_resolves_vst2_without_external_discovery() {
         for (id, category) in [

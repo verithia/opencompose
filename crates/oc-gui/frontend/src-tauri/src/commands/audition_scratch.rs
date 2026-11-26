@@ -423,8 +423,15 @@ mod tests {
             std::thread::sleep(Duration::from_millis(2));
         };
         assert!(stage.is_file());
+        // `wait` closes the child's stdin before it reaps. A kill stops one
+        // thread first and the rest of the process after, so the writer thread
+        // can still read that EOF, return and drop its reservation cleanly.
+        // Holding stdin until the child is reaped leaves the kill as its only
+        // way out.
+        let stdin = child.stdin.take();
         child.kill().unwrap();
         child.wait().unwrap();
+        drop(stdin);
         assert!(stage.is_file(), "the crash left a partial file to reclaim");
         let next = ScratchRender::reserve_in(&dir, 100, 60, Duration::ZERO).unwrap();
         assert!(!stage.exists());
