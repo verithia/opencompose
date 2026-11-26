@@ -149,6 +149,7 @@ fn framework_exit_does_not_run_teardown() {
     let output = std::process::Command::new(exe)
         .args(["--nocapture", "framework_exit_child"])
         .env(FRAMEWORK_EXIT_ENV, "1")
+        .env(oc_host::EXIT_GUARD_UNDER_TEST_ENV, "1")
         .env("OCP_TEST_PLUGINS", "1")
         .env("OCP_TEST_VST3_PLUGIN", &bundle)
         .output()

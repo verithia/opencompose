@@ -100,5 +100,6 @@ CI (`.github/workflows/ci.yml`) must run, and fail on error:
   `scripts/check-licenses.py` and `scripts/third-party-licenses.py --check`
 
 Never hide a failure with `|| true`, `continue-on-error`, a longer timeout or a
-skipped assertion. Before claiming a green check proves a requirement, check
-what it actually covers.
+skipped assertion, and never let code in a test process replace the harness's
+exit status (an `atexit` handler that calls `_exit(0)`, for example). Before
+claiming a green check proves a requirement, check what it actually covers.
