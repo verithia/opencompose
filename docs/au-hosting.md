@@ -1,8 +1,7 @@
 # AudioUnit hosting
 
-OpenCompose hosts AudioUnit (AUv2) components in process for offline render on
-macOS. AU instruments and effects sit beside the CLAP and VST3 paths: same
-instance lifecycle, same MIDI and parameter plumbing, same render cache.
+OpenCompose hosts AudioUnit (AUv2) components in process for playback and
+offline render on macOS.
 
 ## What is hosted
 
@@ -54,6 +53,12 @@ name with case and punctuation ignored, so the unit's `Dry/Wet Mix` is written
 
 ## MIDI, transport and timing
 
+- An AU instrument accepts a track's authored `performance` timeline in
+  playback and export. MIDI channel, release velocity and same-time event
+  order are preserved. If the requested instrument or preset state fails to
+  load, OpenCompose reports an error for that performance track.
+  When you seek backward, the engine reloads the performance instrument before
+  replaying earlier MIDI events so later program changes and controls do not carry back.
 - Note, controller, program-change, pitch-bend and pressure events are queued
   per block and delivered with `MusicDeviceMIDIEvent`, so they stay
   sample-accurate inside a render block.

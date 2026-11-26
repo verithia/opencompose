@@ -36,11 +36,12 @@ that log. `ocp` prints the log path on stderr.
 | `generate-midi` | Generate synthetic MIDI files. |
 | `devices list` | List built-in devices and their parameter schemas. |
 | `validate-builtin-effects` | Build the mixer graph without rendering audio. |
-| `scan` | Scan installed plugin bundles; `--rescan` retries quarantined ones. |
+| `scan` | Scan installed plugin bundles; `--rescan` retries quarantined ones and `--bundle PATH` retries one bundle. |
 | `resolve-plugin` | Resolve a plugin id, name or path with the renderer's registry. |
 | `plugin-params` | Dump a VST3 or VST2 plugin's parameter inventory. |
 | `plugin-preset import` | Import a `.ffp` preset into a VST3 plugin instance. |
 | `plugin install` | Resolve, download, verify and install one catalog entry. |
+| `plugin migrate-vst2` | Convert an opaque VST2 FXB bank to a VST3 preset. |
 | `plugin conformance` | Run the VST3 conformance battery over every installed bundle. |
 | `compile-project` | Compile a complete project AST JSON to canonical OCP. |
 | `plugin-index` | Build, verify or key-sign the remote plugin index. |
@@ -140,9 +141,14 @@ Containers, bit depths, dither and the MP3 rate and bitrate tables are in
 settings.
 
 A plugin that loads its content asynchronously can render silence if a note
-starts before the content is ready. `--pre-roll` waits in wall-clock time; it
-does not add rendered silence. `--reruns N --require-identical` proves that the
-output is reproducible. It does not prove that a load finished. See
+starts before the content is ready. `--pre-roll` waits in wall-clock time.
+AudioUnit instruments and Intel VST2 instruments running under Rosetta first
+receive one block without MIDI, whose output is discarded. The process that
+owns the plugin answers its loading callbacks, and the instrument is reset
+before the score starts. Other formats only wait and render no silence, so
+free-running oscillators keep their phase. `--pre-roll 0` turns the warm-up
+off. `--reruns N --require-identical` proves that the output is reproducible.
+It does not prove that a load finished. See
 [Troubleshooting](troubleshooting.md).
 
 ## Bounce
@@ -277,6 +283,7 @@ ocp plugin-params "/Library/Audio/Plug-Ins/VST3/Example.vst3"
 ocp plugin-params "/Library/Audio/Plug-Ins/VST/Example.vst"
 ocp plugin-params "org.example.eq" --json
 ocp plugin-preset import "org.example.eq" preset.ffp
+ocp plugin migrate-vst2 old.fxb --source-name Example --plugin Example.vst3 -o new.vstpreset
 ocp plugin conformance
 ocp plugin conformance --plugin "/Library/Audio/Plug-Ins/VST3/Example.vst3" --format json
 ```
@@ -291,8 +298,10 @@ plugin devices. Legacy effect shorthand is expanded and reported as a warning
 (see [DSL compatibility](../dsl-compat.md)).
 
 `resolve-plugin` expects exactly one match across VST3, VST2, CLAP, LV2 and the
-built-in devices, and prints the match's metadata as JSON. It does not look up
-AudioUnits.
+built-in devices, and prints the match's metadata as JSON. On macOS, an
+AudioUnit component id (such as `aufx:lpas:appl`), a bundle path or `au:Name`
+is looked up in the system's AudioUnit registry. A match found by id or name
+has an empty path.
 
 `plugin-params` loads a VST3 or VST2 plugin and prints every parameter. For a
 VST3 plugin the table shows id, name, unit, range, default, step count and
@@ -304,6 +313,16 @@ also installed, pass the `.vst` path to select the VST2 build.
 to the named VST3 plugin. It reports how many parameters it parsed, mapped and
 applied, and lists the unmapped, rejected and read-back-mismatched ones.
 `--json` emits the report.
+
+`plugin migrate-vst2` turns a VST2 FXB bank into a VST3 preset. The bank must
+be opaque, with its first program active. Give the original VST2 plugin's name,
+from which the VST3 class id is derived, and the installed VST3 bundle. The
+command picks the matching class, or a replacement the bundle declares when
+there is exactly one. It writes a new `.vstpreset` once a fresh instance has
+loaded the converted state; name that file in `vst3_state_file`. It fails if
+the bundle has no matching class, the state does not check out, or the output
+file exists. The conversion runs in a separate process with a ten-second
+limit.
 
 `plugin conformance` runs one child process per VST3 bundle and prints the
 per-step results as a table, JSON or Markdown. The battery and the JSON schema

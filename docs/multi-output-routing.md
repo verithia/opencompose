@@ -79,6 +79,11 @@ A plugin effect's sidechain input is an index too: `sidechain_input=N` selects
 the N-th declared input after the main one (0 is the default). The host feeds
 that input bus only; every other declared input bus stays silent, so the
 plugin's process call still sees one buffer per port.
+VST3 and CLAP support this selection. An explicit selection must be a
+nonnegative integer below the plugin's declared sidechain input count.
+Unsupported host formats and unavailable inputs return an error; the host
+does not round the index or silently select a different bus. Omit the
+parameter to retain the host's default input selection.
 
 Sends without a source are channel sends. By default they tap post-fader and
 post-pan into a bus; `send(bus = <level>, pre)` taps before the fader and pan
@@ -216,7 +221,9 @@ messages. The prepared queue budget includes those releases and controller
 expansion. An excessive event burst or chase fails preparation instead of
 losing notes.
 
-A plugin without a MIDI input refuses the route. Voice expressions
+AU music effects and MIDI-capable VST2 effects expose this input. On Apple
+Silicon this includes Intel VST2 effects running through Rosetta. Other plugin
+backends and plugins without a MIDI input refuse the route. Voice expressions
 without a MIDI 1 projection and channel modes other than All Sound Off, Reset
 All Controllers and All Notes Off are refused. Sostenuto, Hold 2 and RPN/NRPN
 sequences are also refused until their seek state can be restored. Bank, volume,

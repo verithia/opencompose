@@ -556,3 +556,20 @@ the route. `AudioGraph::latency_readout()` reports three parts per track:
 
 The GUI inspector shows this readout for the selected track through the
 `track_latency_readout` command.
+
+## Plugin history on rewind
+
+Some hosted effects carry audio from before a jump back into the new pass. Set
+`host_recreate_on_rewind=true` on such an insert; track, bus and master inserts
+accept it. When playback returns to an earlier position, the render worker
+loads a fresh instance with the saved state and parameters.
+
+```ocp
+@bus wet
+  routes: [master]
+  effects:
+    - plugin:"vst2.vendor.effect": state_file="wet.fxb", host_recreate_on_rewind=true
+```
+
+Playback waits until the new instance is ready before it sends audio. Normal
+playback and forward seeks keep the current instance.
