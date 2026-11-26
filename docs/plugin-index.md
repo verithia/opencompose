@@ -914,10 +914,10 @@ The GUI Store, the agent tools (`plugin_search`, `plugin_pull`), and the CLI
 (`ocp plugin install`) all call that crate. A build one of them installs is the
 build the others install, and a refusal reads the same everywhere.
 
-Install URLs may be `https://` anywhere, or plain `http://` on loopback
-(`127.0.0.1`, `localhost`, `[::1]`). Loopback is the user's own machine and is
-how the install path is rehearsed without the public internet; a remote install
-source must still be TLS.
+Install URLs must be `https://`. A debug build also accepts plain `http://` on
+loopback (`127.0.0.1`, `localhost`, `[::1]`): loopback is the developer's own
+machine and is how the install path is rehearsed without the public internet.
+A release build refuses every plain `http://` install URL.
 
 ### Refusal vocabulary
 
@@ -1076,7 +1076,8 @@ in place.
 `oc_market::loopback::FixtureServer` is a tiny HTTP/1.1 server for tests. Serve a
 fixture archive and a fixture catalog on `127.0.0.1`, then drive the real
 downloader through `pull` or `plugin install`. No test reaches the public
-internet.
+internet. Release builds refuse loopback HTTP, so these tests report as ignored
+in a `--release` run.
 
 ```sh
 CARGO_TARGET_DIR=target/pluginflow-verify \

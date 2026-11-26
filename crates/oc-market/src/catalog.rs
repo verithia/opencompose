@@ -681,11 +681,21 @@ mod tests {
     }
 
     #[test]
-    fn install_urls_allow_https_and_loopback_http_only() {
+    fn install_urls_allow_https_and_debug_only_loopback_http() {
         assert!(is_install_url("https://github.com/x/y.zip"));
-        assert!(is_install_url("http://127.0.0.1:8080/a.zip"));
-        assert!(is_install_url("http://localhost:8080/a.zip"));
-        assert!(is_install_url("http://[::1]:8080/a.zip"));
+        // A release build downloads over TLS only, so the loopback rehearsal
+        // transport is refused there.
+        for loopback in [
+            "http://127.0.0.1:8080/a.zip",
+            "http://localhost:8080/a.zip",
+            "http://[::1]:8080/a.zip",
+        ] {
+            assert_eq!(
+                is_install_url(loopback),
+                cfg!(debug_assertions),
+                "{loopback}"
+            );
+        }
         assert!(!is_install_url("http://[::2]:8080/a.zip"));
         assert!(!is_install_url("http://example.com/a.zip"));
         assert!(!is_install_url("ftp://example.com/a.zip"));

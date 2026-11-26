@@ -663,6 +663,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        not(debug_assertions),
+        ignore = "loopback HTTP installs exist only in debug builds"
+    )]
     async fn separator_runtime_concurrent_installs_share_one_download() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 

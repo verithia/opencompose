@@ -65,6 +65,13 @@ performance-profile or all-toolchain guarantees. A compiler, math library or
 optimization change requires the same independent comparison and response-law
 validation before changing a reference.
 
+CI runs these tests in the release profile as well, so a reference must also
+hold in the build that ships. Code that feeds a pinned reference therefore
+avoids results that depend on how the optimizer lowers math calls: the FFT plan
+takes `cos` and `sin` of each twiddle angle as two opaque calls, because an
+optimised build would otherwise fuse them into the platform `sincos`, which
+rounds some twiddles differently.
+
 | Case | Original / macOS ARM64 | Linux GNU x86-64 | Windows MSVC x86-64 |
 |---|---|---|---|
 | DeEsser split | `495ef0f3cc1ad463` | `6a7e629a8d273eb9` | `630c6fd606f274fb` |

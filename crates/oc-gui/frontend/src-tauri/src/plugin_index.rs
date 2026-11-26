@@ -1841,16 +1841,28 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        not(debug_assertions),
+        ignore = "loopback HTTP installs exist only in debug builds"
+    )]
     fn selfhosted_rehearsal_serves_signed_index_over_plain_http() {
         rehearse_selfhosted("root", "/");
     }
 
     #[test]
+    #[cfg_attr(
+        not(debug_assertions),
+        ignore = "loopback HTTP installs exist only in debug builds"
+    )]
     fn selfhosted_rehearsal_serves_signed_index_under_a_path_prefix() {
         rehearse_selfhosted("prefix", "/plugin-index/");
     }
 
     #[test]
+    #[cfg_attr(
+        not(debug_assertions),
+        ignore = "loopback HTTP installs exist only in debug builds"
+    )]
     fn selfhosted_rehearsal_tampered_catalog_reports_catalog_hash() {
         let dir = TempDir::new("http-tampered-catalog");
         let (key, _, public_key) = rehearsal_key(&dir.0.join("signing"));
@@ -1884,6 +1896,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        not(debug_assertions),
+        ignore = "loopback HTTP installs exist only in debug builds"
+    )]
     fn selfhosted_rehearsal_tampered_manifest_reports_signature() {
         let dir = TempDir::new("http-tampered-manifest");
         let (key, _, public_key) = rehearsal_key(&dir.0.join("signing"));
@@ -1913,6 +1929,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        not(debug_assertions),
+        ignore = "loopback HTTP installs exist only in debug builds"
+    )]
     fn selfhosted_rehearsal_foreign_signature_reports_key_id() {
         let dir = TempDir::new("http-foreign-key");
         let (_, _, pinned_public_key) = rehearsal_key(&dir.0.join("pinned"));
@@ -1936,6 +1956,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        not(debug_assertions),
+        ignore = "loopback HTTP installs exist only in debug builds"
+    )]
     fn selfhosted_rehearsal_refuses_a_transfer_encoded_manifest() {
         let dir = TempDir::new("http-gzip-manifest");
         let (key, _, public_key) = rehearsal_key(&dir.0.join("signing"));
@@ -1962,6 +1986,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        not(debug_assertions),
+        ignore = "loopback HTTP installs exist only in debug builds"
+    )]
     fn selfhosted_rehearsal_missing_signature_keeps_last_good_cache() {
         let dir = TempDir::new("http-missing-signature");
         let (key, _, public_key) = rehearsal_key(&dir.0.join("signing"));
@@ -2012,6 +2040,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        not(debug_assertions),
+        ignore = "loopback HTTP installs exist only in debug builds"
+    )]
     fn selfhosted_rehearsal_404_reports_network() {
         let dir = TempDir::new("http-404");
         let (_, _, public_key) = rehearsal_key(&dir.0.join("signing"));
@@ -2033,6 +2065,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        not(debug_assertions),
+        ignore = "loopback HTTP installs exist only in debug builds"
+    )]
     fn another_client_publication_invalidates_fresh_gui_install_authority() {
         let dir = TempDir::new("held-view");
         let (key, _, public_key) = rehearsal_key(&dir.0.join("signing"));
@@ -2088,6 +2124,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        not(debug_assertions),
+        ignore = "loopback HTTP installs exist only in debug builds"
+    )]
     fn rollback_rejects_older_generated_at_and_accepts_fresh_republish() {
         let dir = TempDir::new("rollback");
         let (key, _, public_key) = rehearsal_key(&dir.0.join("signing"));
