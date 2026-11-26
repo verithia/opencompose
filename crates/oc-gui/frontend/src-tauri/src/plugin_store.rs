@@ -3648,6 +3648,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        not(debug_assertions),
+        ignore = "loopback HTTP installs exist only in debug builds"
+    )]
     fn pull_installs_a_pinned_archive_from_a_loopback_server() {
         let archive = build_stored_zip(&[
             ("Fixture.vst3/Contents/Info.plist", b"<plist/>"),
@@ -3687,6 +3691,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        not(debug_assertions),
+        ignore = "loopback HTTP installs exist only in debug builds"
+    )]
     fn pull_refuses_a_hash_mismatch_and_installs_nothing() {
         let archive = build_stored_zip(&[("Fixture.vst3/Contents/Info.plist", b"<plist/>")]);
         let server = oc_market::loopback::FixtureServer::start();
@@ -3718,6 +3726,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        not(debug_assertions),
+        ignore = "loopback HTTP installs exist only in debug builds"
+    )]
     fn pull_refuses_a_size_mismatch_and_installs_nothing() {
         let archive = build_stored_zip(&[("Fixture.vst3/Contents/Info.plist", b"<plist/>")]);
         let server = oc_market::loopback::FixtureServer::start();
