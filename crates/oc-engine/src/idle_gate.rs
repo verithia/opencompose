@@ -262,6 +262,10 @@ impl IdleGatedPlugin {
 }
 
 impl AudioEffect for IdleGatedPlugin {
+    fn configure_midi_input_latency(&mut self, samples: u32) {
+        self.inner.configure_midi_input_latency(samples);
+    }
+
     fn processing_failed(&self) -> bool {
         self.inner.processing_failed()
     }

@@ -382,6 +382,12 @@ fn rms_dbfs(buffer: &[f32]) -> Option<f64> {
     (power > 0.0).then(|| 10.0 * power.log10())
 }
 
+/// The authoritative calibration identity without measuring or loading a patch.
+/// Render plans use the same identity as the trim owner, including preset FX.
+pub(crate) fn normalization_identity(preset: &PresetDef) -> [u8; 16] {
+    preset_key(preset)
+}
+
 /// Content digest of a preset: every field that can move its level, and
 /// nothing else. The name and `extends` are browsing or resolution identity,
 /// so two projects that carry the same patch share one measurement.

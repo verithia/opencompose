@@ -8,6 +8,11 @@
 
 use super::*;
 
+pub(in crate::render_cache) mod bounded;
+pub(in crate::render_cache) mod mono_proof;
+pub(super) mod width;
+use width::{cold_track_width_is_final, cold_window_matches_full, has_unisolated_clap};
+
 /// Track buffers a window mixes instead of re-running their chains.
 pub(super) struct WindowMix<'a> {
     /// Widths the cached full mix classified, so the pan law cannot depend on
@@ -172,6 +177,7 @@ impl RenderCache {
         let mixed = self.mix_graph(
             project,
             GraphMixOptions {
+                purpose: GraphMixPurpose::Audio,
                 sample_rate,
                 total_samples: mix_end,
                 timeline_start: 0,
@@ -232,7 +238,6 @@ impl RenderCache {
             workers,
         } = pass;
         let guard = (f64::from(sample_rate) * COLD_WINDOW_GUARD_SECONDS).round() as u64;
-        let bounded_end = request.end_sample.saturating_add(guard);
         // Control feeds must be synthesised so the duck matches the full mix;
         // their own output is masked out of the pass.
         let control_only: Vec<usize> = project
@@ -249,15 +254,19 @@ impl RenderCache {
             .collect();
         let mut render_selection = selected.to_vec();
         render_selection.extend(control_only.iter().copied());
+        let bounded_end = (request.end_sample < authored_content_end_sample(project, sample_rate)?
+            && !has_unisolated_clap(project, &render_selection)?)
+        .then(|| request.end_sample.saturating_add(guard));
         let (first, master) = self.render_selection_scratch(
             project,
             soundfont_path,
             sample_rate,
             plugin_instances,
             ScratchRenderPass {
+                purpose: ScratchPurpose::Audio,
                 selected: &render_selection,
                 stems: request.stems,
-                window_end: Some(bounded_end),
+                window_end: bounded_end,
                 control_only: &control_only,
                 workers,
             },
@@ -268,16 +277,8 @@ impl RenderCache {
         // guard must also cover the master chain's latency. A control feed that
         // is outside the window selection forces the whole program, because the
         // follower's state at the window start depends on the audio before it.
-        let exact = control_only.is_empty()
-            && u64::from(first.master_latency_samples) <= guard
-            && selected.iter().all(|&index| {
-                first.full_mix_widths.get(index).copied() == Some(SourceWidth::Stereo)
-                    || first
-                        .track_buffers
-                        .get(index)
-                        .and_then(Option::as_deref)
-                        .is_none_or(is_silent)
-            });
+        let exact = bounded_end.is_none()
+            || cold_window_matches_full(&first, project, selected, guard, &control_only);
         let (scratch, master) = if exact {
             (first, master)
         } else {
@@ -287,6 +288,7 @@ impl RenderCache {
                 sample_rate,
                 plugin_instances,
                 ScratchRenderPass {
+                    purpose: ScratchPurpose::Audio,
                     selected: &render_selection,
                     stems: request.stems,
                     window_end: None,
@@ -307,7 +309,7 @@ impl RenderCache {
                 ));
             }
         }
-        Ok(RangeRenderOutput {
+        let output = RangeRenderOutput {
             audio: slice_stereo_range(&master, request.start_sample, frames),
             stems,
             sample_rate,
@@ -315,13 +317,106 @@ impl RenderCache {
             tracks: selected.to_vec(),
             cache_hit: false,
             window: Some(RangeWindowPath::Cold),
-        })
+        };
+        self.remember_bounded_prefix(
+            project,
+            soundfont_path,
+            request.end_sample,
+            Some(selected.to_vec()),
+            scratch,
+        );
+        Ok(output)
+    }
+
+    /// Try a cold full mix through the requested end without publishing a
+    /// partial timeline as a clean full cache. Ambiguous widths or insufficient
+    /// latency guard leave the caller on its ordinary full-render path.
+    pub(super) fn try_cold_full_window(
+        &mut self,
+        project: &Project,
+        soundfont_path: &Path,
+        sample_rate: u32,
+        plugin_instances: &mut HashMap<String, ClapInstance>,
+        pass: RangeRenderPass<'_>,
+    ) -> Result<Option<RangeRenderOutput>, String> {
+        // Capture consumers can inspect bus and master taps through the cache,
+        // so a partial scratch pass cannot replace their full-timeline capture.
+        if pass.request.stems || pass.request.tracks.is_some() || self.stem_capture.is_some() {
+            return Ok(None);
+        }
+        // A request beyond the authored program is cheaper and safer as a
+        // full render followed by padding; its offset must not size a prefix.
+        let content_end = authored_content_end_sample(project, sample_rate)?;
+        if pass.request.end_sample >= content_end {
+            return Ok(None);
+        }
+        let selected: Vec<_> = (0..project.tracks.len()).collect();
+        if has_unisolated_clap(project, &selected)? {
+            return Ok(None);
+        }
+        let guard = (f64::from(sample_rate) * COLD_WINDOW_GUARD_SECONDS).round() as u64;
+        let (scratch, master) = self.render_selection_scratch(
+            project,
+            soundfont_path,
+            sample_rate,
+            plugin_instances,
+            ScratchRenderPass {
+                purpose: ScratchPurpose::Audio,
+                selected: &selected,
+                stems: false,
+                window_end: Some(pass.request.end_sample.saturating_add(guard)),
+                control_only: &[],
+                workers: pass.workers,
+            },
+        )?;
+        if u64::from(scratch.master_latency_samples) > guard {
+            return Ok(None);
+        }
+        let ambiguous: Vec<_> = selected
+            .iter()
+            .copied()
+            .filter(|&index| !cold_track_width_is_final(&scratch, project, index))
+            .collect();
+        if !ambiguous.is_empty()
+            && !self.resolve_mono_widths(
+                project,
+                soundfont_path,
+                sample_rate,
+                plugin_instances,
+                &scratch,
+                &ambiguous,
+                pass.workers,
+            )?
+        {
+            return Ok(None);
+        }
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            self.counters.source_renders += scratch.counters.source_renders;
+        }
+        let output = RangeRenderOutput {
+            audio: slice_stereo_range(&master, pass.request.start_sample, pass.frames),
+            stems: Vec::new(),
+            sample_rate,
+            frames: pass.frames,
+            tracks: selected,
+            cache_hit: false,
+            window: None,
+        };
+        self.remember_bounded_prefix(
+            project,
+            soundfont_path,
+            pass.request.end_sample,
+            None,
+            scratch,
+        );
+        Ok(Some(output))
     }
 
     /// Render only `selected` in a fresh cache; `window_end` bounds the program
     /// (a window), `None` keeps the whole program.
     fn render_selection_scratch(
-        &self,
+        &mut self,
         project: &Project,
         soundfont_path: &Path,
         sample_rate: u32,
@@ -329,6 +424,7 @@ impl RenderCache {
         pass: ScratchRenderPass<'_>,
     ) -> Result<(RenderCache, Vec<f32>), String> {
         let ScratchRenderPass {
+            purpose,
             selected,
             stems,
             window_end,
@@ -358,24 +454,58 @@ impl RenderCache {
             tracks: Some(selected.to_vec()),
             stems,
         });
-        let scope = match &window {
-            Some(request) => RenderScope::Window(request),
-            None => RenderScope::Tracks(selected),
+        let scope = match purpose {
+            ScratchPurpose::TrackWidths { reference } => {
+                if window.is_some() {
+                    return Err("track-width pass cannot be a truncated window".into());
+                }
+                scratch.width_reference = Some(WidthReference {
+                    source_latencies: reference.track_source_latencies.clone(),
+                    source_tails: reference.track_source_tails.clone(),
+                });
+                RenderScope::TrackWidths(selected)
+            }
+            ScratchPurpose::Audio => match &window {
+                Some(request) => RenderScope::Window(request),
+                None => RenderScope::Tracks(selected),
+            },
         };
-        let master = match scratch.render_scoped(
+        scratch.progress = self.progress.take();
+        let rendered = scratch.render_scoped(
             project,
             soundfont_path,
             sample_rate,
             plugin_instances,
             RenderPass { scope, workers },
-        ) {
+        );
+        // The callback belongs to the caller even when preparation or
+        // cancellation refuses the scratch pass.
+        self.progress = scratch.progress.take();
+        let master = match rendered {
             Ok(master) => master,
             // An empty project is a valid silent range, not a render error.
             Err(error) if error == "No events to render" => Vec::new(),
-            Err(error) => return Err(error),
+            Err(error) => {
+                #[cfg(any(test, feature = "test-support"))]
+                {
+                    self.counters.source_renders += scratch.counters.source_renders;
+                }
+                return Err(error);
+            }
         };
         Ok((scratch, master))
     }
+}
+
+/// Reuse the project clock's metadata horizon without sizing a prefix from a
+/// possibly distant request offset. Requests in source/effect tails use the
+/// full selected program so no tail is replaced by assumed silence.
+fn authored_content_end_sample(project: &Project, sample_rate: u32) -> Result<u64, String> {
+    let clock = oc_dsl::timing::ProjectClock::new(&project.properties)?;
+    clock.sample_at_quarter(
+        oc_dsl::arrangement::content_end_quarter(project)?,
+        sample_rate,
+    )
 }
 
 /// A track is silent for these purposes when its pre-FX buffer never leaves 0.
@@ -417,6 +547,7 @@ mod worker_snapshot_tests {
                     12_000,
                     &mut HashMap::new(),
                     ScratchRenderPass {
+                        purpose: ScratchPurpose::Audio,
                         selected: &[0],
                         stems: false,
                         window_end,
@@ -438,6 +569,7 @@ mod worker_snapshot_tests {
             12_000,
             &mut HashMap::new(),
             ScratchRenderPass {
+                purpose: ScratchPurpose::Audio,
                 selected: &[0],
                 stems: false,
                 window_end: Some(2400),

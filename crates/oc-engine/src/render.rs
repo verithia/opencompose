@@ -20,6 +20,8 @@ use serde::Serialize;
 use crate::analysis;
 use crate::dsp::AudioEffect;
 use crate::dsp::limiter::Limiter;
+#[path = "render/stem_publication.rs"]
+mod stem_publication;
 use crate::encode::{self, EncodeReport, EncodeSpec};
 use crate::graph::AudioGraph;
 use crate::interpret::{self, InterpretSettings};
@@ -1111,10 +1113,11 @@ fn plays_notes(project: &Project, track: usize) -> bool {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-/// Whether a stem is a track tap or a bus return.
+/// A track tap, bus return or aggregate signal before master processing.
 pub enum StemRole {
     Track,
     Bus,
+    PreMaster,
 }
 
 #[derive(Debug, Clone)]
@@ -1203,6 +1206,39 @@ pub fn render_with_stems_with_options(
     plugin_instances: &mut HashMap<String, ClapInstance>,
     options: RenderOptions<'_>,
 ) -> Result<StemsExport, crate::render_cancel::RenderError> {
+    render_stems_selected(project, soundfont_path, plugin_instances, options, None)
+}
+
+/// Render the complete graph while retaining only the requested export taps.
+pub fn render_with_selected_stems_with_options(
+    project: &Project,
+    soundfont_path: &Path,
+    plugin_instances: &mut HashMap<String, ClapInstance>,
+    options: RenderOptions<'_>,
+    selection: crate::graph::StemCaptureSelection,
+) -> Result<StemsExport, crate::render_cancel::RenderError> {
+    selection
+        .validate(project)
+        .map_err(crate::render_cancel::RenderError::Message)?;
+    render_stems_selected(
+        project,
+        soundfont_path,
+        plugin_instances,
+        options,
+        Some(selection),
+    )
+}
+
+fn render_stems_selected(
+    project: &Project,
+    soundfont_path: &Path,
+    plugin_instances: &mut HashMap<String, ClapInstance>,
+    options: RenderOptions<'_>,
+    selection: Option<crate::graph::StemCaptureSelection>,
+) -> Result<StemsExport, crate::render_cancel::RenderError> {
+    #[cfg(all(feature = "plugin-host", target_os = "macos", target_arch = "aarch64"))]
+    let _bridge_scope =
+        oc_host::vst2_bridge::BridgeScope::enter(oc_host::vst2_bridge::BridgeMode::Offline);
     let RenderOptions {
         sample_rate,
         output_gain_db: _,
@@ -1224,7 +1260,7 @@ pub fn render_with_stems_with_options(
     cache
         .set_pre_roll_seconds(pre_roll_seconds)
         .map_err(RenderError::Message)?;
-    cache.capture_stems(true);
+    cache.capture_selected_stems(selection.unwrap_or_default());
     if let Some(token) = &cancel {
         cache.set_cancel_token(token.clone());
     }
@@ -1244,8 +1280,7 @@ pub fn render_with_stems_with_options(
         }
     };
     let capture = cache
-        .stems()
-        .cloned()
+        .take_stems()
         .ok_or_else(|| RenderError::Message("render completed without stem capture".into()))?;
     let loudness =
         normalise_loudness(project, &mut mix, sample_rate).map_err(RenderError::Message)?;
@@ -1255,7 +1290,9 @@ pub fn render_with_stems_with_options(
         .iter()
         .map(|(name, _)| name.clone())
         .collect();
-    let mut stems = Vec::with_capacity(capture.tracks.len() + capture.buses.len());
+    let mut stems = Vec::with_capacity(
+        capture.tracks.len() + capture.buses.len() + usize::from(capture.selection.pre_master),
+    );
     for (name, mut samples) in capture.tracks {
         samples.resize(frames, 0.0);
         samples.truncate(frames);
@@ -1268,7 +1305,16 @@ pub fn render_with_stems_with_options(
                     .and_then(|track| track.mix.output.clone())
                     .unwrap_or_else(|| "master".to_string()),
             ),
-            mix_sum_member: labels.contains(&format!("track:{name}")),
+            mix_sum_member: labels.contains(&format!("track:{name}"))
+                || (!capture.capture_master_inputs
+                    && project.tracks.iter().any(|track| {
+                        track.name == name
+                            && track
+                                .mix
+                                .output
+                                .as_deref()
+                                .is_none_or(|output| output == "master")
+                    })),
             name,
             role: StemRole::Track,
             samples,
@@ -1289,10 +1335,28 @@ pub fn render_with_stems_with_options(
                         bus.routes.join(",")
                     }
                 }),
-            mix_sum_member: labels.contains(&format!("bus:{name}")),
+            mix_sum_member: labels.contains(&format!("bus:{name}"))
+                || (!capture.capture_master_inputs
+                    && project.buses.iter().any(|bus| {
+                        bus.name == name
+                            && (bus.routes.is_empty()
+                                || bus.routes.iter().any(|route| route == "master"))
+                    })),
             name,
             role: StemRole::Bus,
             samples,
+        });
+    }
+    if capture.selection.pre_master {
+        let mut samples = capture.pre_master;
+        samples.resize(frames, 0.0);
+        samples.truncate(frames);
+        stems.push(StemExportBuffer {
+            name: "pre-master".into(),
+            role: StemRole::PreMaster,
+            samples,
+            output: Some("master".into()),
+            mix_sum_member: false,
         });
     }
     Ok(StemsExport {
@@ -1303,7 +1367,7 @@ pub fn render_with_stems_with_options(
     })
 }
 
-const STEM_ROUTING_POLICY: &str = "Track stems are post-fader, post-track-FX direct outputs before sends. Bus returns are separate stems. Only stems with mix_sum_member=true sum to the pre-master mix; a track feeding a bus is represented by the bus return, not by both. Stems are pre-master-fader and pre-loudness, so the exported mix equals their sum after the master fader and master effects.";
+const STEM_ROUTING_POLICY: &str = "Track stems are post-fader, post-track-FX direct outputs before sends. Bus returns are separate stems. Stems with mix_sum_member=true are pre-master contributors; a selective export may omit other contributors. A track feeding a bus is represented by the bus return, not by both. The pre_master tap is the aggregate before master processing, not another summand. Stems are pre-master-fader and pre-loudness; a complete contributor set reconstructs the mix after master effects, fader and loudness normalization.";
 
 #[derive(Serialize)]
 struct StemManifest {
@@ -1313,8 +1377,8 @@ struct StemManifest {
     output: Option<String>,
     mix_sum_member: bool,
     frames: usize,
-    peak_dbfs: f64,
-    rms_dbfs: f64,
+    peak_dbfs: Option<f64>,
+    rms_dbfs: Option<f64>,
     integrated_lufs: Option<f64>,
 }
 
@@ -1322,8 +1386,8 @@ struct StemManifest {
 struct MixManifest {
     file: String,
     frames: usize,
-    peak_dbfs: f64,
-    rms_dbfs: f64,
+    peak_dbfs: Option<f64>,
+    rms_dbfs: Option<f64>,
     integrated_lufs: Option<f64>,
     loudness_target_lufs: Option<f64>,
     applied_gain_db: Option<f64>,
@@ -1394,6 +1458,42 @@ fn level_fields(samples: &[f32], sample_rate: u32) -> (f64, f64, Option<f64>) {
     (levels.peak_dbfs, levels.rms_dbfs, levels.integrated_lufs)
 }
 
+/// Optional manifest metering; disabling it does not change exported PCM.
+#[derive(Debug, Clone, Copy)]
+pub struct StemManifestOptions {
+    pub analyze_levels: bool,
+}
+
+/// Outputs that commit together after all stem encoders have succeeded.
+pub struct StemPublicationOptions<'a> {
+    pub manifest: StemManifestOptions,
+    pub mix_output: Option<&'a Path>,
+}
+
+pub struct StemPublicationReceipt {
+    pub manifest: std::path::PathBuf,
+    pub mix_report: encode::EncodeReport,
+}
+
+impl Default for StemManifestOptions {
+    fn default() -> Self {
+        Self {
+            analyze_levels: true,
+        }
+    }
+}
+
+impl StemManifestOptions {
+    fn levels(&self, samples: &[f32], sample_rate: u32) -> (Option<f64>, Option<f64>, Option<f64>) {
+        if self.analyze_levels {
+            let (peak, rms, lufs) = level_fields(samples, sample_rate);
+            (Some(peak), Some(rms), lufs)
+        } else {
+            (None, None, None)
+        }
+    }
+}
+
 /// Write the mix, stems, and `stems.json` into `dir`. Returns the manifest path.
 ///
 /// Every stem gets a dither seed derived from its file name, so the set does
@@ -1405,6 +1505,53 @@ pub fn write_stems_export(
     export: &StemsExport,
     spec: EncodeSpec,
 ) -> Result<std::path::PathBuf, String> {
+    write_stems_export_with_options(
+        project,
+        dir,
+        song,
+        export,
+        spec,
+        StemManifestOptions::default(),
+    )
+}
+
+/// Write an export with explicit, optional manifest level analysis.
+pub fn write_stems_export_with_options(
+    project: &Project,
+    dir: &Path,
+    song: &str,
+    export: &StemsExport,
+    spec: EncodeSpec,
+    options: StemManifestOptions,
+) -> Result<std::path::PathBuf, String> {
+    write_stems_export_batch(
+        project,
+        dir,
+        song,
+        export,
+        spec,
+        StemPublicationOptions {
+            manifest: options,
+            mix_output: None,
+        },
+    )
+    .map(|receipt| receipt.manifest)
+}
+
+/// Stage the complete file set before publishing; failed encodes change no
+/// existing output. Publication errors restore colliding files from backups.
+pub fn write_stems_export_batch(
+    project: &Project,
+    dir: &Path,
+    song: &str,
+    export: &StemsExport,
+    spec: EncodeSpec,
+    publication: StemPublicationOptions<'_>,
+) -> Result<StemPublicationReceipt, String> {
+    let StemPublicationOptions {
+        manifest: options,
+        mix_output,
+    } = publication;
     spec.validate()?;
     if spec.sample_rate != export.sample_rate {
         return Err(format!(
@@ -1412,19 +1559,21 @@ pub fn write_stems_export(
             export.sample_rate, spec.sample_rate
         ));
     }
-    std::fs::create_dir_all(dir).map_err(|error| format!("{}: {error}", dir.display()))?;
+    let staged = stem_publication::StagedStemExport::new(dir)?;
+    let dir = staged.path();
     let song = sanitize_stem_component(song, "song");
     let extension = spec.extension();
     let mut used = HashSet::new();
     used.insert(format!("{song}-mix"));
     let mix_file = format!("{song}-mix.{extension}");
-    encode::encode_to_file(&dir.join(&mix_file), &spec, &export.mix)?;
+    let mix_report = encode::encode_to_file(&dir.join(&mix_file), &spec, &export.mix)?;
     let frames = export.mix.len() / 2;
     let mut stems = Vec::with_capacity(export.stems.len());
     for stem in &export.stems {
         let role_prefix = match stem.role {
             StemRole::Track => "",
             StemRole::Bus => "bus-",
+            StemRole::PreMaster => "",
         };
         let base = unique_stem_name(
             format!(
@@ -1439,13 +1588,14 @@ pub fn write_stems_export(
         let stem_spec = spec.with_dither_seed(encode::seed_for_name(spec.wav.dither_seed, &base));
         encode::encode_to_file(&dir.join(&file), &stem_spec, &stem.samples)?;
         let (peak_dbfs, rms_dbfs, integrated_lufs) =
-            level_fields(&stem.samples, export.sample_rate);
+            options.levels(&stem.samples, export.sample_rate);
         stems.push(StemManifest {
             file,
             name: stem.name.clone(),
             role: match stem.role {
                 StemRole::Track => "track",
                 StemRole::Bus => "bus",
+                StemRole::PreMaster => "pre_master",
             },
             output: stem.output.clone(),
             mix_sum_member: stem.mix_sum_member,
@@ -1455,7 +1605,7 @@ pub fn write_stems_export(
             integrated_lufs,
         });
     }
-    let (peak_dbfs, rms_dbfs, integrated_lufs) = level_fields(&export.mix, export.sample_rate);
+    let (peak_dbfs, rms_dbfs, integrated_lufs) = options.levels(&export.mix, export.sample_rate);
     let loudness = export.loudness.as_ref();
     let manifest = StemsManifest {
         format: "opencompose-stems-v1",
@@ -1493,11 +1643,19 @@ pub fn write_stems_export(
         serde_json::to_string_pretty(&manifest).map_err(|error| error.to_string())? + "\n",
     )
     .map_err(|error| format!("{}: {error}", manifest_path.display()))?;
-    Ok(manifest_path)
+    let manifest_path = staged.publish(
+        "stems.json",
+        mix_output.map(|path| (manifest.mix.file.as_str(), path)),
+    )?;
+    Ok(StemPublicationReceipt {
+        manifest: manifest_path,
+        mix_report,
+    })
 }
 
 #[cfg(test)]
 mod tests {
+    include!("render/selective_stems_tests.rs");
     use super::{
         bounce_tail_seconds, render_to_buffer_per_track, render_to_buffer_with_plugins,
         render_to_wav, render_track_post_fx_range, write_stems_export,
@@ -2674,8 +2832,16 @@ mod tests {
   mix: output=group
   @phrase held [1:1 - 2:1]
     E4 w mf
+@track delayed | preset: tone, instrument: synth/lead_square
+  mix: output=slow
+  @phrase held [1:1 - 2:1]
+    G4 w mf
 @bus group
+  routes: [master, master]
+@bus slow
   routes: [master]
+  effects:
+    - limiter: lookahead=10ms
 "#,
         )
         .unwrap();
@@ -2690,7 +2856,7 @@ mod tests {
         )
         .unwrap();
         assert!(export.loudness.is_none());
-        assert_eq!(export.stems.len(), 3);
+        assert_eq!(export.stems.len(), 5);
         let frames = export.mix.len();
         for stem in &export.stems {
             assert_eq!(stem.samples.len(), frames, "{}", stem.name);
@@ -2713,6 +2879,10 @@ mod tests {
         assert!(direct.mix_sum_member);
         assert!(!routed.mix_sum_member);
         assert!(bus.mix_sum_member);
+        assert!(direct.samples[..160].iter().all(|sample| *sample == 0.0));
+        assert!(bus.samples[..160].iter().all(|sample| *sample == 0.0));
+        assert!(direct.samples[160..].iter().any(|sample| *sample != 0.0));
+        assert!(bus.samples[160..].iter().any(|sample| *sample != 0.0));
         let mut sum = vec![0.0_f32; frames];
         for stem in export.stems.iter().filter(|stem| stem.mix_sum_member) {
             for (out, value) in sum.iter_mut().zip(&stem.samples) {
@@ -3004,6 +3174,45 @@ mod tests {
             "the insert output must reach the mix, peak {peak}"
         );
         assert_eq!(sample_hash(&audio), "0eba27cef4e6d945d4f772b5cb1f4b25");
+    }
+
+    #[test]
+    fn native_insert_large_offline_blocks_match_the_authored_gain() {
+        let dry = project_with_effect_line("");
+        let wet = project_with_effect_line(r#"- plugin:"vst2.test.fixture.vst2.gain": Gain=0.25"#);
+        let dry = render_to_buffer_per_track(&dry, Path::new("unused.sf2"), 48_000).unwrap();
+        let wet = render_to_buffer_per_track(&wet, Path::new("unused.sf2"), 48_000).unwrap();
+        assert!(dry.len() > 512 * 2);
+        assert!(dry.iter().any(|value| value.abs() > 0.01));
+        assert_eq!(wet.len(), dry.len());
+        for (wet, dry) in wet.iter().zip(dry) {
+            assert!((wet - dry * 0.5).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn invalid_inline_insert_state_preserves_an_existing_export() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("mix.wav");
+        for declaration in [
+            r#"state_hex="xx""#,
+            r#"state_hex=1"#,
+            r#"au_state_hex="00""#,
+            r#"state_file="unopened.bin""#,
+        ] {
+            let project =
+                project_with_effect_line(&format!("- plugin:\"test.fake.effect\": {declaration}"));
+            let original = b"existing reviewed export";
+            std::fs::write(&path, original).unwrap();
+            render_to_wav(
+                &project,
+                Path::new("unused.sf2"),
+                &path,
+                default_spec(48_000),
+            )
+            .expect_err("invalid state must refuse the render before publication");
+            assert_eq!(std::fs::read(&path).unwrap(), original);
+        }
     }
 
     #[test]

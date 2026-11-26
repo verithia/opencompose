@@ -56,7 +56,7 @@ fn same_preset_lanes_each_contribute_their_own_declared_tail() {
     later.engine_params = Some(vec![("gain_alias".into(), ParamValue::Number(0.9))]);
     original.tracks.push(later);
     let resolved = oc_dsl::preset::resolve(&original).unwrap();
-    let tail = project_instrument_tail_samples(
+    let tail = instrument_tails_by_lane(
         &resolved,
         &original.presets,
         &mut HashMap::new(),
@@ -70,7 +70,7 @@ fn same_preset_lanes_each_contribute_their_own_declared_tail() {
         },
     )
     .unwrap();
-    assert_eq!(tail, 9_000);
+    assert_eq!(tail.into_iter().max(), Some(9_000));
 }
 
 #[test]
@@ -85,7 +85,7 @@ fn a_fixture_preset_does_not_end_the_project_tail_reduction() {
     later.engine_params = Some(vec![("gain_alias".into(), ParamValue::Number(0.9))]);
     original.tracks.push(later);
     let resolved = oc_dsl::preset::resolve(&original).unwrap();
-    let tail = project_instrument_tail_samples(
+    let tail = instrument_tails_by_lane(
         &resolved,
         &original.presets,
         &mut HashMap::new(),
@@ -99,7 +99,7 @@ fn a_fixture_preset_does_not_end_the_project_tail_reduction() {
         },
     )
     .unwrap();
-    assert_eq!(tail, 9_000);
+    assert_eq!(tail.into_iter().max(), Some(9_000));
 }
 
 #[test]

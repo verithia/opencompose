@@ -213,7 +213,7 @@ fn project_tail(
     definitions: &[PresetDef],
     probe: Vst2TailProbe,
 ) -> Result<u64, String> {
-    project_instrument_tail_samples(
+    instrument_tails_by_lane(
         project,
         definitions,
         &mut HashMap::new(),
@@ -224,6 +224,7 @@ fn project_tail(
             vst2: probe,
         },
     )
+    .map(|tails| tails.into_iter().max().unwrap_or(0))
 }
 #[test]
 fn vst2_tail_same_preset_lanes_probe_their_own_overrides_and_cap_declared_tail() {
