@@ -343,6 +343,8 @@ automation: filter.resonance [3:1 - 5:1] muted {3:1=20%, 5:1=60%}
 
 音色补丁参数的点按参数自身的单位读取，也就是它在 `params:` 中使用的单位：截止频率用赫兹，包络时间用秒，失谐用音分。0 到 1 之间的裸数字是归一化位置（即音色补丁编辑器写入的值），百分比也表示位置。连续参数在点之间渐变，所以从 `200Hz` 到 `8000Hz` 的通道会扫过滤波器。`filter.model` 这类离散参数在每个点上阶跃。
 
+托管乐器使用同样的 `pluginparam_<hex>` 通道名，值为 0 到 1 或百分比。请在加载乐器状态之后再读取参数名，因为预设可能会重命名它的控制。线性和曲线通道发送点之间的值；`curve=stairs` 把每个值保持到下一个点。被裁剪的通道在其范围内沿用原来的曲线。它的终点影响扫频的形状，但在片段终点及之后不写入任何值。
+
 要自动化效果器参数，写出效果器和参数的名称。轨道、总线和主输出都接受这类通道：
 
 ```ocp
@@ -352,7 +354,7 @@ automation: fx2.Mix [ppq=480] {1:1=50%, 5:1=80%}
 
 当效果链中某类效果器恰好只有一个时，用类型名（`compression`、`eq`、`plugin` 等）指定它；否则用从 1 开始的链位置（`fx2`）。值使用与 `effects:` 条目中该参数相同的单位。内置效果器的参数名取自设备模式；插件参数使用插件自己的名称。
 
-每个点可以带 `curve=`（`linear`、`stairs`、`half_sine` 或 `smooth`），决定到下一个点的那一段；`smooth` 还可以加 `tension=`。默认是 `linear`，`stairs` 保持阶跃。通道可以加 `smoothing=<time>`（默认 0 ms），让值经过一个单极点低通。
+每个点可以带 `curve=`（`linear`、`stairs`、`half_sine`、`smooth` 或 `exponential`），决定到下一个点的那一段；`smooth` 还可以加 `tension=`，`exponential` 可以加带符号的 `curvature=`。默认是 `linear`，`stairs` 保持阶跃。曲线段以点和系数存储，不会展开成一张直线段表，`exponential` 也可用于托管乐器的参数。通道可以加 `smoothing=<time>`（默认 0 ms），让值经过一个单极点低通；效果器通道还可以在插值之后对值应用数值 `mapping(...)`。包络可以设置 `discontinuities`，在两个点位置相同时保留两个值。
 
 插件在渲染块内按采样位置收到每个变化的值，作为参数变更。内置设备在相同位置拆分处理。效果器通道与控制通道一样接受 `[start - end]` 范围和 `muted` 标志。加上范围后通道成为片段，LFO 通道的周期从片段开头开始。见[`docs/automation.md`](../automation.md)。
 
@@ -442,6 +444,8 @@ gain_automation: step ppq=480 [10:1 - 12:3] {10:1=0, 11:2=1}
 每个 `->` 行指定 `track:`、`param:` 和 `formula:`，可以再加 `smoothing:`。公式有 `linear`、`inverted`、`exponential`、`logarithmic`、`midi_unit` 和 `midi_centered`。平滑为零时直接跳到新值，所以没有 `smoothing:` 的行表现得像阶跃自动化。
 
 控制值每个块归一化一次。之后每个目标应用自己的公式，并推进自己的单极点平滑器。`midi_unit` 和 `midi_centered` 读取原始的 0…127 值，因此 CC 动作和宏动作可以在相同范围内驱动同一个参数。
+
+`lane(…)` 链接也可以在播放和导出中驱动轨道或总线上的效果器。在 `track:` 中写所属对象的名称，用 `param: fxN.ParameterName` 选择插入效果。效果器在每个采样上收到整形后的通道值，并应用自己的平滑。在公式之后加 `mapping(...)`，即可把 0 到 1 的值换算成参数的单位。公式和支持的目标见[控制链接](../automation.md#control-links)。
 
 ## 预设 {#presets}
 
@@ -590,6 +594,8 @@ effects:
 
 `@audio_clip` 把解码后的媒体文件放到轨道上。轨道的混音、发送和效果器对它的作用与对音符完全相同。
 
+`playlist_lane:` 把片段显示在播放列表的某个编号行中。一行可以容纳来自不同混音轨道的片段。在该行中编辑片段时，编辑的仍是原来的片段，在时间上移动它也不会改变它的混音轨道。放置的乐段可以在头部使用同一行，例如 `@phrase theme [1:1 - 2:1] | playlist_lane: 7`。同名的乐器声部如果位置相同，会共用一个块；选择一个声部即可编辑它的音符。
+
 ```ocp
 @audio_clip intro [1:1 - 5:1] | track: tape
   file: "media/intro.flac"       // relative to the .ocp file
@@ -617,6 +623,7 @@ effects:
 | 字段 | 含义 | 默认 |
 |---|---|---|
 | `file:` | 相对工程的媒体路径；不接受绝对路径 | 必填 |
+| `playlist_lane:` | 从 1 开始的音频播放列表行号；不改变混音轨道 | 无 |
 | `offset:` | 从（伸缩后的）媒体开头裁掉的秒数 | 0 |
 | `gain:` | 片段增益，单位 dB | 0 |
 | `gain_envelope:` | 可选的 `position:gain` 点，按片段归一化并相对于 `gain:`；第一个位置为 0，最后一个为 1 | 无 |

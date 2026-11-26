@@ -8,7 +8,85 @@
 | `automation:` 效果器自动化轨道 | 轨道、总线、主输出 | 该所属对象效果链中某个效果器的一个参数 | 按音频块的图包装器 |
 | `gain_automation:` 片段 | 轨道、总线、主输出 | 插入效果之后的线性增益 | 采样级精确的增益级 |
 
+带作用范围的 `automation:` 片段可以写 `playlist_lane=3`，在播放列表第 3 行显示。`gain_automation:` 片段在时间区间之后接受同一个属性。片段仍然属于原来的轨道、总线或主输出。
+
 本页主要讲效果器自动化轨道。控制自动化轨道见 [.ocp 文件](manual/dsl.md)，增益片段见[混音器路由](mixer-routing.md)。
+
+## 插入效果控制 {#insert-controls}
+
+每个轨道、总线和主输出的插入效果都有自己的湿声比例，从 0 到全湿。在效果器声明中用 `slot/wet` 设置初始比例。自动化轨道可以用归一化数值或百分比驱动同一个控件。插入效果把效果器输出与经过延迟对齐的输入副本混合，所以设备自己的 Mix 参数仍可单独调节。
+
+```ocp
+@bus motion
+  effects:
+    - gain: factor=2, slot/wet=25%, bypass=true
+  automation: fx1.slot/enabled {1:2=true, 3:1=false}
+  automation: fx1.slot/wet {1:2=25%, 2:1=100%}
+```
+
+开关自动化轨道把每个开关值保持到下一个节点。带动画的插入效果在输出干声时仍让设备运行，这样既保留设备的历史状态，开关切换时延迟补偿也保持不变。静态的 `bypass=true` 如果没有生效的开关自动化轨道，设备不会加载。
+
+## 紧凑的指数段 {#compact-exponential-segments}
+
+一段曲线可以存储它的解析曲率，而不是一长串线性采样。系数属于该段的起始节点：
+
+```ocp
+@bus motion
+  effects:
+    - gain: factor=1
+  automation: gain.factor {1:1=0.2 curve=exponential curvature=-4, 3:1=0.8}
+```
+
+对 `[0,1]` 内的进度 `u`，形状为 `E(k,u) = expm1(k*u) / expm1(k)`。`k=0` 时恰好等于 `u`。正系数向终点加速，负系数提前移动。有限的系数范围由参数表决定，目前为 `[-64,64]`。原有的 `smooth` 曲线及其 `tension` 含义不变。省略曲率即为 0；在其他曲线上给出曲率是无效的。
+
+镜像指数曲线用三个节点：两端各一个，中点一个。前半段系数为 `k`，后半段为 `-k`。把一段指数曲线截取到其中的 `[a,b]` 部分是精确的：使用采样得到的端点值和系数 `k*(b-a)`。跨过镜像中点的裁剪会保留该中点。不需要存储相位窗口，也不需要稠密近似。源格式导入器在存储这些段之前，必须先换算进出节点的约定。
+
+效果器自动化轨道和编码后的托管乐器参数自动化轨道支持指数段，其他乐器/MIDI 自动化轨道会拒绝。`gain_automation:` 片段需要下文所述的显式 `segments` 插值；旧的 `linear` 和 `step` 增益模式保持原有行为。
+
+### 显式不连续点 {#explicit-discontinuities}
+
+包络或重复的 LFO 自动化轨道可以在节点之前声明 `discontinuities`。位置相同的节点保持书写顺序：第一个是前一段的左极限，最后一个是该采样上写入的值。这样无需另加一条自动化轨道或虚构一个一 tick 长的斜坡，就能存储瞬时跳变。渲染器在恰好落在该位置的采样上取最右边的节点，绝不会除以长度为零的段。不加这个标志时，原有行为不变。用重复的自动化轨道存储一个周期的节奏增益：
+
+```ocp
+@bus rhythm
+  effects:
+    - gain: factor=1
+  automation: fx1.factor [1:1 - 9:1] mode=lfo speed=1/2 discontinuities {1:1=1, 1:2=0, 1:2=1, 1:3=1}
+```
+
+这里每个二分音符都重复同样的渐变和跳变。只要改一次周期中的四个节点，就能改变节奏。周期跟随速度变化，定位时保持同一相位。片段结尾处的独占重置仍需在该边界显式写入；这个标志不会延长片段的写入范围。
+
+自动化 Gain 设备的 `mix` 可以单独改变周期的深度。`mix=0` 时输入原样通过，`mix=1` 时应用完整增益，中间值在两者之间线性混合。Gain 默认是完全混合，所以已有工程的电平不变。
+
+### 解析式的插入后增益片段 {#analytic-post-insert-gain-clips}
+
+`gain_automation: segments` 显式地为插入后的增益级选用同一个预先准备的分段求值器。已有的 `linear` 和 `step` 片段保持旧的解释，并拒绝映射和不连续标志。
+
+```ocp
+@bus level
+  gain_automation: segments ppq=48 [1:1 - 3:1] discontinuities mapping(exponential, curvature=2, input_quantization_steps=128) {1:1=0.2 curve=exponential curvature=-3, 2:1=0.8, 2:1=0.4, 3:1=1}
+```
+
+片段在插入效果之后、独立的静态推子之前乘到音频上，在其独占范围之外返回单位增益。片段范围之外的原始节点仍作为插值上下文，不产生额外写入。没有映射时，数值节点是物理线性增益；有映射时，它们是接收端的原始输入，映射结果必须落在增益所属对象的范围内。这个范围由设备目录决定。触摸仲裁、定位和音频块划分的语义不变，也不会准备稠密的控制点表。
+
+### 数值接收映射 {#numeric-receiver-mappings}
+
+可选的 `input_quantization_steps=N` 在传递之前把输入映射为 `floor(value*N)/N`。参数表允许 1 到 1,000,000 的正整数步数。负输入按数学下取整，不做钳制。准备阶段会拒绝非有限的乘积，以及变换后超出目标范围的值。省略这个字段即为原来的连续输入行为。
+
+效果器自动化轨道可以在插值和 LFO 深度之后应用一次紧凑的数值传递。传递在自动化轨道的平滑器运行之前，产生接收端单位的值。
+
+```ocp
+@bus blend
+  effects:
+    - gain: factor=1
+  automation: gain.factor mapping(linear, scale=-1, offset=1) {1:1=0, 3:1=1}
+```
+
+`mapping(linear, scale=s, offset=o)` 计算 `o+s*v`。`mapping(exponential, curvature=k, scale=s, offset=o)` 计算 `o+s*E(k,v)`。默认是线性、零曲率、单位缩放和零偏移。负缩放适用于互补控制；零缩放是有效的常数传递，但无法被拖动节点的手势反推。
+
+带映射的自动化轨道要求无单位的数值节点，接收端必须是效果器。曲线对原始节点插值，然后应用映射，得到 Hz 或 dB 等值。准备好的曲线会按接收端的范围检查映射后的有限极值，包括 LFO 深度。参数表限定指数的参数范围，溢出或不支持的输入会报错。
+
+拆分带映射的自动化轨道时，会采样**未映射**的接缝节点，两半都保留映射。指数系数按每一半所占的比例截取，所以映射只应用一次。时间仍由 ProjectClock 的采样量化决定，不会引入任意的时间偏移。带区间的片段仍在独占的终点停止写入；同一采样位置上的多个节点保留最后书写的那次写入，而不会生成一段虚构的插值斜坡。
 
 ## 效果器自动化轨道 {#effect-lanes}
 
@@ -41,6 +119,30 @@
 自动化轨道寻址的是所属对象自己的 `effects:` 列表。来自预设的效果器无法从轨道寻址，预设本身也不带自动化。
 
 对内置效果器，参数必须是该设备参数表中的参数 id（`ocp devices list` 会打印出来）。数值按设备自己的单位和范围校验，与 `effects:` 条目中的同一参数相同。对插件效果器，参数名由插件匹配，忽略大小写和标点；数值按插件的原始取值域传递，与 `effects:` 条目所用的取值域相同。不存在或不可自动化的插件参数不会产生任何变化。
+
+### 移动延迟的读取位置 {#moving-delay-read-positions}
+
+希望时间曲线连续扫过延迟缓冲区时，在延迟上开启 `interpolate=true`。这适用于磁带减速、音高扫频，以及在输入循环的前几拍之间移动。要让立体声联动，把两个声道设成同一条曲线；只想重放输入时，把反馈设为零。例如：
+
+```ocp
+@bus motion
+  effects:
+    - delay: time_l=1ms, time_r=1ms, feedback=0%, mix=100%, interpolate=true
+  automation: fx1.time_l {1:1=1ms, 1:2=126ms}
+  automation: fx1.time_r {1:1=1ms, 1:2=126ms}
+```
+
+延迟最多保存两秒音频。抽头之间的跳变在音频中也是跳变，所以需要平滑过渡时，请用一段短斜坡。单独的节奏电平曲线请用 `gain_automation:`。已有的延迟设置默认仍使用整数采样抽头。
+
+要做速度同步的回声，设置 `tempo_sync=true`，并以四分音符的分数写 `quarters_l` 和 `quarters_r`。抽头跟随速度变化，每个抽头最多两秒。没有走带时使用的延迟按 120 BPM 计算。
+
+```ocp
+@bus echoes
+  effects:
+    - delay: tempo_sync=true, quarters_l=0.75, quarters_r=0.75, routing=ping_pong, feedback=45%, feedback_filter=low_pass, feedback_cutoff=2400Hz, mix=100%
+```
+
+Stereo 保持两个声道独立。Mono 在两个抽头之前把输入取平均。Swapped 交换两路湿声输出。Ping Pong 交换反馈声道，所以第一次回声留在输入所在的一侧，之后的回声左右交替。反馈滤波器在第一个抽头之后塑造后续回声。`dry_gain` 和 `wet_gain` 分别缩放 Mix 的两路输出。要分别设定干声和湿声电平，从 `mix=50%` 开始，把每个增益设为期望输出电平的两倍。
 
 ## 时间与取值域 {#time-and-value-domain}
 
@@ -85,6 +187,8 @@
 ### 片段写入什么 {#what-a-clip-writes}
 
 区间决定何时写入，节点列表决定写入什么。
+
+要导入已经录下的控制信号，在带作用范围的效果器自动化轨道上使用 `mode=recorded`。它的数值采样驱动与包络相同的插值。时间线把信号画成曲线，并作为片段保持可编辑，但单个采样没有节点编辑控件。
 
 - 区间之前，自动化轨道不写入，参数保持其 `effects:` 条目中声明的值。
 - 区间内、第一个节点之前，保持第一个节点的值。节点从片段开头之后才开始的片段，一开始就是这个值。
@@ -174,7 +278,7 @@ Nothing was recorded: automation write is off.
 - 移动：区间和每个节点平移同一个量，曲线形状和节点顺序都不变。如果新区间会与同一目标上的其他自动化轨道重叠，移动会被拒绝，报错信息给出两个区间。
 - 缩放：移动一侧边缘，另一侧边缘和所有节点保持不动。会越过另一侧边缘或与其他自动化轨道重叠的缩放会被拒绝，并说明原因。节点不会被改写，所以缩小后落在区间外的节点仍影响区间内的曲线，与任何书写在区间外的节点一样。
 - 复制：把区间长度、节点、静音标志和曲线控制复制到同一目标上的一条新自动化轨道，所有节点平移同一个量，并追加到所属对象的自动化轨道列表末尾。请求的位置被占用时，会越过每个阻挡的片段向右查找。如果在请求位置之后 64 小节内没有空位，或另一条自动化轨道在整条时间线上驱动该目标，复制会被拒绝，报错信息给出这个查找范围。
-- 拆分：位置必须严格位于区间内，且距两侧边缘至少一个网格步长（十六分音符）。左半部分保留开头，并在接缝处获得一个收尾节点，其值为整个片段在该处写入的值。右半部分从接缝开始，以同一个值作为第一个节点，所以曲线保持连续。右半部分保留接缝处及之后的所有节点，左半部分保留接缝之前的节点，右半部分紧跟在左半部分之后插入。接缝值按节点列表的单位插值，因为节点携带的就是这个单位。波形（`mode=lfo`）自动化轨道会被拒绝：它的节点描述一个周期，拆开后每一半都会从自己的开头重新开始这个周期。
+- 拆分：位置必须严格位于区间内，且距两侧边缘至少一个网格步长（十六分音符）。两半都保留每一个原始节点、单位和系数，包括位置相同的节点，只有区间改变。左半部分的区间在接缝处结束，右半部分从接缝处开始，所以在任何采样率下、经过速度变化，每个采样的值都不变，接缝处也不会新增节点。落在某一半区间之外的节点仍影响它的曲线。右半部分紧跟在左半部分之后插入。如果移动某一半会把它的某个节点推到工程开头之前，移动会被拒绝，不做任何改动；不会丢弃或重新采样节点。波形（`mode=lfo`）自动化轨道会被拒绝：拆开后每一半都会从自己的开头重新开始周期。
 - 删除：删除带区间的自动化轨道。整条时间线的自动化轨道不是片段，片段手势会拒绝它并说明原因。要删除它，请用 `remove_automation_lane`，它可以删除两种形式，并且是一个撤销步骤。
 - 五个手势都会拒绝使用自己 tick 网格（`[ppq=N]`）的自动化轨道。手势基于工程的记谱网格，而 tick 网格自动化轨道以 tick 存储位置。
 
@@ -216,19 +320,59 @@ Nothing was recorded: automation write is off.
   from: cc(74)
   -> track: lead param: filter.cutoff formula: midi_unit smoothing: 8ms
   -> track: lead param: output.gain formula: exponential
-
-@control_link pad_macro
-  from: macro(3)
-  -> track: pad param: filter.resonance formula: logarithmic smoothing: 40ms
 ```
 
 `from:` 接受三种来源：
 
 - `cc(controller[, channel])`，通道从 1 开始，默认为 1；
-- `macro(index)`，索引为 1 到 8；
+- `macro(index, preset)`，某个命名 OpenSynth 预设的第 1 到第 8 个宏；
 - `lane(track, param)`，读取一条已注册自动化轨道的归一化值。
 
 目标指定一个 `track` 和一个 `param`。`param` 是引擎参数键或托管插件参数名；含空格时要加引号。`smoothing:` 可选，单位为毫秒。
+
+在自动化轨道链接中，`param: fx1.ParameterName` 指向混音器上的效果器，`track:` 给出拥有它的轨道或总线。例如，一段录下的动作可以同时驱动两条并行返回总线上的插入效果：
+
+```ocp
+@control_link echo_feedback
+  from: lane(feedback_control, "fx1.factor")
+  -> track: echo_left param: fx1.Feedback formula: linear
+  -> track: echo_right param: fx1.Feedback formula: linear
+```
+
+目标收到的值位于其效果器的自动化范围内：托管效果器为 0 到 1。对使用物理单位的内置参数，加上与自动化轨道相同的 `mapping(...)`。映射在公式之后、目标平滑之前运行。下面这个链接覆盖 EQ 的整个频率范围：
+
+```ocp
+@control_link brightness
+  from: lane(brightness_control, "fx1.factor")
+  -> track: return param: fx1.high_cut_freq formula: linear mapping(exponential, curvature=6.907755278982137, scale=19980, offset=20)
+```
+
+一个目标只能接受一个链接或它自己的自动化，不能两者兼有。音频图会检查映射后的范围，并拒绝第二个写入者。
+
+桌面端播放时，来自 MIDI 输入的 CC 可以驱动同样的混音器控件。这里通道 2 上的 CC 74 在提高 `lead` 第一个插入效果增益的同时，降低 `return` 上的增益：
+
+```ocp
+@control_link crossfade
+  from: cc(74, 2)
+  -> track: lead param: fx1.factor formula: midi_unit
+  -> track: return param: fx1.factor formula: inverted
+```
+
+命名的 OpenSynth 预设可以保存一个效果架的控件。链接读取预设保存的宏，包括继承的值和音色文件：
+
+```ocp
+@preset RackControls
+  source: builtin
+  plugin: "builtin.open_synth"
+  params: {macro.8: 0.25}
+
+@control_link feedback
+  from: macro(8, RackControls)
+  -> track: echo_left param: fx1.Feedback formula: linear
+  -> track: echo_right param: fx1.Feedback formula: linear
+```
+
+要改变数值，编辑该预设或其 `params:` 中的宏。对随时间变化的控制，请用 `lane(track, param)` 来源。不带预设的 `macro(index)` 链接仍可加载，并保持原有写法。
 
 单目标写法 `target: track: ...` 仍然可以解析，加载为只有一个目标的链接。JSON 中的 `target` 字段也会以同样方式合并进 `targets`。
 
@@ -249,14 +393,14 @@ Nothing was recorded: automation write is off.
 
 ### 平滑 {#smoothing}
 
-每个目标各自用一个单极点滤波器按音频块平滑：
+每个目标各自用一个单极点滤波器平滑。效果器自动化轨道链接在来源自动化轨道的平滑和目标公式之后，逐采样移动目标：
 
 ```
 coefficient = 1 - exp(-frames / (seconds * sample_rate))
 value += (goal - value) * coefficient
 ```
 
-`0 ms` 时系数为 1，数值直接跳到目标，所以不带平滑的链接与不带平滑的自动化轨道一样是阶跃变化。一个时间常数覆盖剩余距离的 63.2%。
+`0 ms` 时系数为 1，目标立即取得映射后的值。一个时间常数覆盖剩余距离的 63.2%。
 
 ### 学习与最近调整 {#learn-and-last-tweaked}
 
@@ -264,9 +408,10 @@ value += (goal - value) * coefficient
 
 ### 限制 {#limits-1}
 
-- 链接是无界面的数据，运行时位于 `oc-engine::control_link`。实时 MIDI CC 输入目前还不会分派到播放音频图中。
-- 目标的平滑按调用方推进的速率运行。运行时基于音频块，所以平滑时间与块大小无关。
-- 链接行不导出到 MIDI，也不会创建自动化轨道。
+- 效果器自动化轨道链接在导出和播放中都会运行，来源仍是一条可编辑的自动化轨道。
+- 桌面应用监听 MIDI 输入时，CC 链接可以驱动轨道和总线插入效果的参数。每个音频块为所有目标只读取一次每个控制器。在第一个匹配的 CC 到达之前保持书写的值，之后每个目标都可以平滑这些变化。离线渲染使用书写的值和自动化。
+- 命名预设的宏在桌面播放和导出中都会运行。播放时，拖动宏会预览链接的值；松开时把数值保存为一次编辑，取消则恢复原值。保存一个只用作效果架控件的预设时，正在播放的音频图会保留，延迟和混响尾音也随之保留。导出始终读取保存的预设。逐音符的调制留在音色内部。
+- 链接行不导出到 MIDI，也不会创建自动化轨道；MIDI 导出从书写的 MIDI 和自动化轨道获取事件。
 
 ## 触摸接管 {#touch-override}
 

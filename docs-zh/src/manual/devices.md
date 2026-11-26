@@ -38,7 +38,7 @@ effects:
 | Gain | `gain` | 固定的线性增益（`factor`）。 | 只需要微调电平。 |
 | Parametric EQ | `eq` | 三段均衡器：低频搁架、中频峰值、高频搁架。 | 用固定布局快速塑造音色。 |
 | Passive EQ | `passive_eq` | 低频和高频段的峰值与搁架相互耦合，另有倾斜和空气感搁架。 | 想要控制相互耦合的节目均衡器。 |
-| Dynamic EQ | `dynamic_eq` | 六个频段加高低切，每个频段都可设为动态。 | 某个频段只在变响时才需要处理。 |
+| Dynamic EQ | `dynamic_eq` | 十二个频段加高低切，每个频段都可设为动态。 | 某个频段只在变响时才需要处理。 |
 | Compression | `compression` | 通用压缩器，带侧链输入和可滤波的检测器。 | 控制动态、粘合总线、跟随底鼓闪避。 |
 | Multiband Compander | `multiband` | 二到四个频段，每段独立压缩，可调分频点。 | 单个压缩器会让某个频段抽吸或发闷。 |
 | De-esser | `de_esser` | 分频或全频的齿音控制。 | 人声或镲片上有刺耳的 `s`、`sh` 音。 |
@@ -56,7 +56,9 @@ effects:
 | Chorus | `chorus` | 调制叠加。 | 给铺底、吉他或人声增加宽度和动感。 |
 | Flanger | `flanger` | 带反馈的短调制延迟。 | 扫频的喷气式音色。 |
 | Phaser | `phaser` | 调制的全通陷波。 | 比镶边更柔和的动感。 |
+| Vocoder | `vocoder` | 由输入或侧链的包络驱动的立体声滤波器组。 | 用语音、打击乐或音源自身的频谱塑造合成器声音。 |
 | Stereo Width | `stereo_width` | 中/侧宽度，100 % 时信号不变。 | 展宽立体声音源，或收成单声道。 |
+| Stereo Matrix | `stereo_matrix` | 四个带符号的声道增益，以及声道之间最多 500 ms 的偏移。 | 交叉混合、反相、交换两个声道，或让它们错开。 |
 | Doubler | `doubler` | 带聚焦高通的短失谐延迟声部。 | 加厚人声或吉他，同时低频保持单声道。 |
 | Air Exciter | `exciter` | 从已有的中高频内容合成空气感频段。 | 不用均衡搁架也能让声音更通透。 |
 | Ducked Send | `ducked_send` | 随干声压低的混响返回。 | 让空间感避开歌词。 |
@@ -66,6 +68,10 @@ effects:
 | Plosive | `plosive` | 低频爆破检测器驱动动态低频搁架。 | 去掉 `p`、`b`、`t`、`k` 的喷麦声，又不让元音变薄。 |
 
 `ocp devices list --json` 输出每个设备的完整参数列表。
+
+把声码器放在载波所在的轨道或总线上。指定侧链即可用另一条轨道作为调制信号；没有侧链时，输入同时提供两路信号。可以选择 12 到 48 个频段，用 Attack 和 Release 控制包络跟随调制信号的紧密程度。Mix 混入干的载波信号，Output Gain 调整湿声电平。
+
+Stereo Matrix 让每个输出都取自两个输入。两个直通增益默认为 100%，两个交叉增益默认为 0%。负增益会让该路贡献反相。负的 `offset` 延迟左声道，正的偏移延迟右声道。`delay_before_matrix=true` 会在混合之前延迟输入；默认延迟选定的输出。偏移取整到最近的采样帧，不会给另一个声道加延迟补偿。
 
 ## 动态
 
@@ -121,14 +127,14 @@ Passive EQ（`passive_eq`）包含以下部分：
 - 以 1 kHz 为中心的 `tilt`。
 - `air` 搁架（`air_freq`、`air`）。
 
-Dynamic EQ（`dynamic_eq`）有六个相同的频段槽位，外加专用的高低切。
+Dynamic EQ（`dynamic_eq`）有十二个相同的频段槽位，外加专用的高低切。
 
 - 每个频段有 `enabled`、`solo`、`channel`（`stereo`、`mid`、`side`、`left`、`right`）、`type`（`bell`、`low_shelf`、`high_shelf`、`low_cut`、`high_cut`、`notch`、`band_pass`）、`freq`、`q` 和 `gain`，还可以设置 `dynamic`、`threshold`、`range`、`attack`、`release` 和 `sidechain`。
 - 一个 `sidechain=` 源供给所有打开了 `sidechain` 开关的频段。频段的 `channel` 决定它处理哪一部分信号。
 - 切滤波器有 `low_cut_enabled`、`low_cut_freq` 和 `low_cut_q`，`high_cut` 也有同样三项。
 - `auto_gain` 补偿电平。
 
-在 GUI 中，这个设备打开后是完整的曲线编辑器（见[主窗口](gui.md)）。
+在 GUI 中，这个设备打开后是完整的曲线编辑器（见[主窗口](gui.md)）；**添加频段** 会启用另一个槽位。
 
 已停用的 `eq: high_shelf=…`/`low_cut=…`/`notch=…` 简写会展开到这个设备的静态频段和切滤波器上；参见 [DSL compatibility](../../dsl-compat.html)（英文）。
 
@@ -151,6 +157,8 @@ FDN Reverb（`reverb_fdn`）有六个实测衰减频段和一个六段输出均�
 设计和测量见 [FDN reverb](../../reverb-fdn.html)（英文）。
 
 Delay 有 `time_l`、`time_r`、`feedback` 和 `mix`。Chorus、Flanger 和 Phaser 都有 `rate`、`depth` 和 `mix`；Flanger 和 Phaser 另有 `feedback`。
+
+Flanger 最多可以平均八个调制声部。`delay` 设定扫频的下限，`spread` 让每个声部的延迟、深度和速率各不相同。`stereo_cross` 把一部分湿声送到另一个声道，负值会让这部分反相。`dry_gain` 和 `wet_gain` 是两路上带符号的微调，在 `mix` 设定两者电平之后应用。
 
 Stereo Width 的 `amount` 是百分比，范围 0 到 200 %。`100 %` 时信号不变，`0` 为单声道，`200 %` 时侧信号加倍。设备面板像显示其他控制一样显示它。`eq` 和 `passive_eq` 的曲线视图以及 `dynamic_eq` 的频谱分析仪见 [Parametric EQ curve editor](../../eq-editor.html)（英文）。
 
