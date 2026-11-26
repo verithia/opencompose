@@ -8,6 +8,10 @@
 //! for live input, and performance command streams remain atomic.
 
 mod processing;
+#[cfg(feature = "plugin-host")]
+mod source_inserts;
+#[cfg(feature = "plugin-host")]
+pub(crate) use source_inserts::{SourceInsertLanes, SourceInsertOptions, process_source_inserts};
 
 #[cfg(feature = "plugin-host")]
 pub(crate) use processing::align;

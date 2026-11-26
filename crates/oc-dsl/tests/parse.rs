@@ -22,3 +22,6 @@ mod parse_examples;
 
 #[path = "suite/production_examples_validate.rs"]
 mod production_examples_validate;
+
+#[path = "suite/large_scores.rs"]
+mod large_scores;

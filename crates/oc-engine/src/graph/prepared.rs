@@ -552,13 +552,21 @@ impl AudioGraph {
                 delay.process(routed);
             }
             if route.target == "master" {
-                if let Some(capture) = stems
-                    .as_deref_mut()
-                    .filter(|capture| capture.capture_master_inputs)
-                {
-                    capture
-                        .master_inputs
-                        .push((format!("bus:{}", plan.name), routed.clone()));
+                if let Some(capture) = stems.as_deref_mut() {
+                    if capture.capture_master_inputs {
+                        capture
+                            .master_inputs
+                            .push((format!("bus:{}", plan.name), routed.clone()));
+                    }
+                    if capture.align_master_exports && capture.selection.captures_bus(&plan.name) {
+                        if let Some((name, samples)) = capture.buses.last_mut()
+                            && *name == plan.name
+                        {
+                            sum_buffer(samples, routed, 1.0);
+                        } else {
+                            capture.buses.push((plan.name.clone(), routed.clone()));
+                        }
+                    }
                 }
                 sum_buffer(master, routed, 1.0);
             } else if let Some(target) = self.bus_chains.get_mut(&route.target) {

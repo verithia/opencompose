@@ -103,6 +103,10 @@ ocp render song.ocp -o /tmp/song.wav --reruns 3 --require-identical
 | `--require-identical` | 只要有一次重复渲染的字节不同就失败。 |
 | `--pre-roll S` | 每个插件实例按真实时间静默预热的时长（0 到 600 秒，默认 4）。 |
 | `--stems DIR` | 额外为每条轨道和每条总线写出一个母带前文件，并写出 `stems.json`。 |
+| `--stem-bus NAME` | 配合 `--stems`，只保留指定总线的分轨；可重复以指定多条总线。整个音频图仍然运行。 |
+| `--no-track-stems` | 配合 `--stems`，不写出轨道分轨。 |
+| `--stem-pre-master` | 配合 `--stems`，另外写出主输出效果器和推子之前的信号。 |
+| `--no-stem-analysis` | 配合 `--stems`，跳过 `stems.json` 中的峰值、RMS 和 LUFS 分析，这些字段为 `null`。音频和工程的响度标准化不受影响。 |
 | `--no-loudness-normalisation` | 忽略 master 上的 `loudness:`。 |
 | `--sample-format`、`--bit-depth` | WAV 或 FLAC 的采样位深。 |
 | `--flac-level`、`--mp3-bitrate`、`--mp3-vbr` | FLAC 压缩级别和 MP3 码率设置。 |
@@ -113,6 +117,18 @@ ocp render song.ocp -o /tmp/song.wav --reruns 3 --require-identical
 `--stems` 只做一次导出，不能与 `--reruns`、`--require-identical`、`--per-track-mix` 或 `--output-gain-db` 同时使用。
 
 `--report` 在文件写完之后测量。配合 `--stems` 时报告的是混音；配合 `--reruns` 时报告的是保留下来的那一次。
+
+只写出几条诊断用分轨、不要轨道分轨和测量：
+
+```sh
+ocp render song.ocp -o mix.wav --stems taps \
+  --stem-bus drums --stem-bus music --no-track-stems \
+  --stem-pre-master --no-stem-analysis
+```
+
+指定的总线必须在任何内置设备加载之前就已存在。完整的路由、侧链和主输出处理仍会运行。所选分轨相加未必等于完整混音，而 `pre_master` 已经包含全部内容，所以绝不要把它与其他分轨相加。
+
+分轨导出会先在临时存储中编码并检查每个文件（包括混音），再替换已发布的文件。如果某个分轨被拒绝，原有文件保持不变。如果替换某个文件失败，已做的替换会被撤销；文件夹中的其他文件不受影响。
 
 容器、位深、抖动以及 MP3 采样率和码率表见[导出格式](../export-format.md)。命令行参数会覆盖工程的导出设置。
 

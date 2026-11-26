@@ -11,7 +11,6 @@ use crate::process_lock::{LockError, ProcessLock};
 use crate::state::{AppState, AppStateInner};
 use crate::state::{UndoEdit, UndoScope};
 
-use super::arrangement::warm_audio_clip_peaks;
 use super::patch::clone_track_preset;
 use super::plugin_host::warm_transport_plugins;
 use super::shared::{ProjectSnapshot, project_root, resync_with_undo, run_blocking, snapshot};
@@ -285,7 +284,6 @@ pub async fn open_file(
     );
     // The document is on screen; the graph and the device open behind it.
     warm_preload_later(&app, snapshot.revision);
-    warm_audio_clip_peaks(&snapshot.project, Path::new(&path).parent());
     Ok(snapshot)
 }
 
@@ -1051,9 +1049,7 @@ pub fn parse_dsl(source: String) -> Result<ast::Project, String> {
 #[tauri::command]
 pub fn update_dsl(source: String, state: State<AppState>) -> Result<ProjectSnapshot, String> {
     let mut inner = state.lock_inner();
-    let (snapshot, root) = update_dsl_inner(source, &mut inner)?;
-    drop(inner);
-    warm_audio_clip_peaks(&snapshot.project, root.as_deref());
+    let (snapshot, _) = update_dsl_inner(source, &mut inner)?;
     Ok(snapshot)
 }
 

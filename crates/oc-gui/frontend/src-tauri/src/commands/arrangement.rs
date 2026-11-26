@@ -988,29 +988,6 @@ pub async fn audio_clip_transients(
     .map_err(|error| format!("Transient analysis failed: {error}"))?
 }
 
-/// Warm peaks for every clip in the background on open or DSL update.
-pub(crate) fn warm_audio_clip_peaks(project: &ast::Project, root: Option<&std::path::Path>) {
-    let mut seen = std::collections::HashSet::new();
-    let mut paths = Vec::new();
-    for clip in project.audio_clips() {
-        if let Ok(path) = oc_engine::audio_clip::resolve_path(&clip.file, root)
-            && seen.insert(path.clone())
-        {
-            paths.push(path);
-        }
-    }
-    if paths.is_empty() {
-        return;
-    }
-    tauri::async_runtime::spawn_blocking(move || {
-        for path in paths {
-            if let Err(error) = oc_engine::media_cache::shared().pyramid_bytes(&path) {
-                log::warn!("audio clip peaks: {}: {error}", path.display());
-            }
-        }
-    });
-}
-
 /// Move an audio clip to a new musical position.
 #[tauri::command]
 pub fn move_audio_clip(

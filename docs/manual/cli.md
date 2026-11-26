@@ -123,6 +123,10 @@ ocp render song.ocp -o /tmp/song.wav --reruns 3 --require-identical
 | `--require-identical` | Fail unless every rerun is byte-identical. |
 | `--pre-roll S` | Silent wall-clock warm-up per plugin instance (0 to 600 s, default 4). |
 | `--stems DIR` | Also write one pre-master file per track and bus, plus `stems.json`. |
+| `--stem-bus NAME` | With `--stems`, keep only the named bus stems; repeat it for several buses. The whole graph still runs. |
+| `--no-track-stems` | With `--stems`, leave out the track stems. |
+| `--stem-pre-master` | With `--stems`, also write the signal before the master effects and fader. |
+| `--no-stem-analysis` | With `--stems`, skip the peak, RMS and LUFS analysis in `stems.json`; those fields are `null`. The audio and the project's loudness normalization do not change. |
 | `--no-loudness-normalisation` | Ignore `loudness:` on the master. |
 | `--sample-format`, `--bit-depth` | WAV or FLAC sample depth. |
 | `--flac-level`, `--mp3-bitrate`, `--mp3-vbr` | FLAC compression and MP3 rate settings. |
@@ -135,6 +139,24 @@ ocp render song.ocp -o /tmp/song.wav --reruns 3 --require-identical
 
 `--report` measures the file after it is written. With `--stems` it reports the
 mix; with `--reruns` it reports the run that was kept.
+
+To write a few diagnostic stems without track stems or metering:
+
+```sh
+ocp render song.ocp -o mix.wav --stems taps \
+  --stem-bus drums --stem-bus music --no-track-stems \
+  --stem-pre-master --no-stem-analysis
+```
+
+The named buses must exist before any built-in device loads. The full routing,
+sidechains and master processing still run. The selected stems may not add up
+to the full mix, and `pre_master` already contains everything, so never add it
+to other stems.
+
+A stem export encodes and checks every file, including the mix, in temporary
+storage before it replaces the published files. If a stem is refused, the
+previous files stay as they were. If replacing a file fails, the replacements
+are undone; other files in the folder are left alone.
 
 Containers, bit depths, dither and the MP3 rate and bitrate tables are in
 [Export format](../export-format.md). The flags override the project's export

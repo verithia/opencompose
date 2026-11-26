@@ -182,9 +182,17 @@ fn graph_with_one_gain() -> AudioGraph {
 struct LatencyProbe {
     latency: Arc<AtomicU32>,
     calls: Arc<AtomicUsize>,
+    latency_on_prepare: Option<u32>,
 }
 
 impl AudioEffect for LatencyProbe {
+    fn prepare_block(&mut self, _max_frames: usize) -> Result<(), oc_audio::BlockPreparationError> {
+        if let Some(frames) = self.latency_on_prepare {
+            self.latency.store(frames, Ordering::Relaxed);
+        }
+        Ok(())
+    }
+
     fn process(&mut self, _buffer: &mut [f32], _rate: u32) {
         self.calls.fetch_add(1, Ordering::Relaxed);
     }
@@ -209,6 +217,7 @@ fn prepared_graph_refuses_capacity_shape_and_latency_changes_before_consuming_au
     graph.track_chains[0].effects.push(Box::new(LatencyProbe {
         latency: latency.clone(),
         calls: calls.clone(),
+        latency_on_prepare: None,
     }));
     let mut input = vec![vec![0.25; 32]];
     let original = input.clone();
@@ -244,6 +253,84 @@ fn prepared_graph_refuses_capacity_shape_and_latency_changes_before_consuming_au
     );
     assert_eq!(input, original);
     assert_eq!(calls.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn prepared_graph_plans_compensation_after_device_preparation() {
+    let mut graph = graph_with_one_gain();
+    graph.track_chains[0].effects.push(Box::new(LatencyProbe {
+        latency: Arc::new(AtomicU32::new(0)),
+        calls: Arc::new(AtomicUsize::new(0)),
+        latency_on_prepare: Some(7),
+    }));
+
+    assert_eq!(graph.pre_master_latency_samples(), 0);
+    graph.prepare(16).unwrap();
+    assert_eq!(graph.pre_master_latency_samples(), 7);
+}
+
+#[test]
+fn prepared_graph_aligns_a_fir_eq_return_with_its_dry_parallel_path() {
+    let project = oc_dsl::parse(
+        "@project\n@track pulse | instrument: synth/lead\n  mix: pan_law=balance, output=fork\n@bus fork\n  routes: [wet, master]\n@bus wet\n  routes: [master]\n  effects:\n    - dynamic_eq: oversample_fir=true\n",
+    )
+    .unwrap();
+    oc_dsl::validate(&project).unwrap();
+    let mut neutral = project.clone();
+    neutral.buses[1].effects[0].params[0].1 = oc_dsl::ast::ParamValue::Bool(false);
+    let mut graph =
+        AudioGraph::try_from_project_with_source_latencies(&neutral, RATE, &[0]).unwrap();
+    graph.prepare(32).unwrap();
+    assert_eq!(graph.pre_master_latency_samples(), 0);
+    assert!(matches!(
+        graph.patch_chains(&neutral, &project, None, true).unwrap(),
+        ChainPatch::Patched { chains: 1 }
+    ));
+    let latency = graph.pre_master_latency_samples() as usize;
+    assert_eq!(latency, 44);
+    graph.prepare(32).unwrap();
+    let aux = HashMap::new();
+    let mut input = [vec![0.0_f32; 64]];
+    let mut output = [0.0_f32; 64];
+    input[0][..2].copy_from_slice(&[0.125, -0.0625]);
+    let mut rendered = [[0.0_f32; 64]; 3];
+    for block in &mut rendered {
+        let mut result = Ok(());
+        assert_eq!(
+            crate::test_alloc::operations(|| {
+                result = graph.process_prepared(PreparedGraphBlock {
+                    tracks: &mut input,
+                    transport: None,
+                    aux: &aux,
+                    output: &mut output,
+                });
+            }),
+            0
+        );
+        assert_eq!(result, Ok(()));
+        *block = output;
+        input[0].fill(0.0);
+    }
+    for (index, [left, right]) in rendered
+        .as_flattened()
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .enumerate()
+    {
+        if index == latency {
+            assert!((*left - 0.25).abs() < 1e-4);
+            assert_eq!(*right, -0.5 * left);
+        } else {
+            assert_eq!((*left, *right), (0.0, 0.0));
+        }
+    }
+    assert!(matches!(
+        graph.patch_chains(&project, &neutral, None, true).unwrap(),
+        ChainPatch::Patched { chains: 1 }
+    ));
+    graph.prepare(32).unwrap();
+    assert_eq!(graph.pre_master_latency_samples(), 0);
 }
 
 #[test]

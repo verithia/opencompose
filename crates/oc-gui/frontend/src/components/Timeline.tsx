@@ -17,6 +17,7 @@ import { AUTOMATION_CURVES } from "../data/automationCurves.gen";
 import { effectivePatternSound, patternSoundLabel, patternSoundOrigin } from "../utils/patternSound";
 import { trackDisplayName } from "../utils/trackLabel";
 import { overlapsByTrack, packTimelineBands } from "../utils/timelineLayout";
+import { createTimelineViewport } from "../utils/timelineViewport";
 import { hitTimingOffset, hitWrittenQuarters, patternHitOnsets, swingOffsetQuarters } from "../utils/drumkit";
 import { barMarks } from "../utils/tempoLane";
 import { TempoLane, TempoLaneHeader } from "./TempoLane";
@@ -735,6 +736,7 @@ function audioClipTooltipContent(
 export function Timeline() {
   const [zoom, setZoom] = createSignal(24);
   const [trackHeight] = createSignal(64);
+  const viewport = createTimelineViewport(() => lanesRef);
   const [editingTrackIndex, setEditingTrackIndex] = createSignal<number | null>(null);
   const [renameValue, setRenameValue] = createSignal("");
   /** The in-app rename prompt; the webview has no `window.prompt`. */
@@ -2804,6 +2806,7 @@ export function Timeline() {
     playlist?: { start: number; containsY: (clientY: number) => boolean },
   ) => (
     <AudioClipBlock
+      viewport={playlist ? undefined : viewport}
       originQuarter={playlist?.start}
       clip={clip}
       index={clipIndex()}
@@ -2857,6 +2860,7 @@ export function Timeline() {
   );
 
   const renderPlaylistItem = (item: PlaylistItem, layer: number, containsY: (clientY: number) => boolean) => {
+    const [visible, setVisible] = createSignal(!viewport.supported);
     const [hovered, setHovered] = createSignal(false);
     const width = () => Math.max(2, (item.end - item.start) * pxPerBeat());
     const renderContent = () => {
@@ -2902,7 +2906,7 @@ export function Timeline() {
       }}
         data-playlist-label={item.kind === "audio" ? item.entry.clip.name
           : item.kind === "notes" ? item.group.name : undefined}
-        data-playlist-layer={layer}
+        data-playlist-layer={layer} ref={(element) => viewport.observe(element, setVisible, { deferHorizontal: true })}
         onMouseEnter={() => { if (item.kind === "audio" && width() < 8) setHovered(true); }}
         onMouseLeave={() => setHovered(false)}
         style={{
@@ -2911,7 +2915,7 @@ export function Timeline() {
           "--playlist-preview-color": item.kind === "audio" ? trackColor(item.entry.index)
             : item.kind === "notes" ? trackColor(item.group.parts[0].trackIndex) : "var(--accent-cool)",
         }}>
-        {renderContent()}
+        <Show when={visible()}>{renderContent()}</Show>
       </div>
     );
   };
@@ -3307,6 +3311,7 @@ export function Timeline() {
             <Show when={showPlaylist()}>
               <For each={playlistRows()}>
                 {({ lane, bands }) => {
+                  const [visible, setVisible] = createSignal(!viewport.supported);
                   let row: HTMLDivElement | undefined;
                   const containsY = (clientY: number) => {
                     const bounds = row?.getBoundingClientRect();
@@ -3314,13 +3319,18 @@ export function Timeline() {
                   };
                   return (
                     <div class="track-lane playlist-track-lane" data-playlist-lane={lane ?? "unassigned"}
-                      ref={row}
+                      ref={(element) => {
+                        row = element;
+                        viewport.observe(element, setVisible);
+                      }}
                       style={{ ...playlistRowStyle, width: `${totalWidth()}px` }}>
-                      <div class="playlist-band">
-                        <For each={bands}>
-                          {(band, layer) => <For each={band}>{(item) => renderPlaylistItem(item, layer(), containsY)}</For>}
-                        </For>
-                      </div>
+                      <Show when={visible()}>
+                        <div class="playlist-band">
+                          <For each={bands}>
+                            {(band, layer) => <For each={band}>{(item) => renderPlaylistItem(item, layer(), containsY)}</For>}
+                          </For>
+                        </div>
+                      </Show>
                     </div>
                   );
                 }}
@@ -3330,6 +3340,7 @@ export function Timeline() {
             {/* Track lanes */}
             <For each={store.project.tracks}>
               {(track, i) => {
+                const [contentVisible, setContentVisible] = createSignal(!viewport.supported);
                 const overlaps = () => overlapIndex()[i()] ?? EMPTY_OVERLAPS;
                 const dragGhost = createMemo(() => {
                   const preview = dragPreview();
@@ -3340,6 +3351,7 @@ export function Timeline() {
                 return (
                 <>
                 <div
+                  ref={(element) => viewport.observe(element, setContentVisible)}
                   class="track-lane"
                   classList={{
                     "clip-drop-target": dragPreview()?.targetTrack === i(),
@@ -3381,6 +3393,7 @@ export function Timeline() {
                     });
                   }}
                 >
+                  <Show when={contentVisible() || draggingClip()?.track === i() || resizePreview()?.track === i()}>
                   <Show when={track.performance?.events.length}>
                     <button class="clip-block performance-block"
                       aria-label={i18n.t("timeline.performanceBlockLabel", { name: trackDisplayName(track) })}
@@ -3636,6 +3649,7 @@ export function Timeline() {
                       );
                     }}
                   </For>
+                  </Show>
                 </div>
                 <Show when={automationShown(i())}>
                   <div
@@ -3650,6 +3664,7 @@ export function Timeline() {
                         {(lane, li) => (
                           <AutomationLaneRow
                             lane={lane}
+                            viewport={viewport}
                             laneIndex={li()}
                             pxPerBeat={pxPerBeat()}
                             width={totalWidth()}
@@ -3688,6 +3703,7 @@ export function Timeline() {
                       {(lane, li) => (
                         <AutomationLaneRow
                           lane={lane}
+                          viewport={viewport}
                           laneIndex={li()}
                           pxPerBeat={pxPerBeat()}
                           width={totalWidth()}
@@ -3703,7 +3719,7 @@ export function Timeline() {
 
             <For each={gainGroups()}>{group=><>
               <AutomationOwnerStrip label={i18n.t("timeline.automation.owner",{owner:group.target==="master"?i18n.t("mixer.master"):group.name})}/>
-              <For each={group.curves}>{(curve,index)=><GainAutomationPreview curve={curve} target={group.target} index={index()} width={totalWidth()} pxPerBeat={pxPerBeat()}/>}</For>
+              <For each={group.curves}>{(curve,index)=><GainAutomationPreview curve={curve} target={group.target} index={index()} width={totalWidth()} pxPerBeat={pxPerBeat()} viewport={viewport}/>}</For>
             </>}</For>
 
             </Show>

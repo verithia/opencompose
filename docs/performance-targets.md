@@ -38,6 +38,26 @@ Plugins are deliberately excluded: their cost belongs to the plugin, varies per
 install, and would make the gate machine-dependent. Plugin projects are measured
 by the same script with `OCP_BENCH_PROJECT`, but they are not the gate.
 
+### Cold ten-second window
+
+The range gate requests the first ten seconds of the complete reference mix
+with a fresh cache on every run. Its one-second budget includes project loading,
+source and effect preparation, processing, encoding and file publication. It
+checks the returned PCM against the same interval of a full render; returning
+silence, bypassing effects or timing an already rendered slice cannot pass.
+
+```sh
+OCP_RENDER_THREADS=4 taskpolicy -t 0 cargo test --release -p oc-engine \
+  --features perf-tests --test all \
+  synth::range_window_perf::cold_full_mix_ten_second_budget -- --exact --nocapture
+```
+
+`OCP_RANGE_PROJECT` and `OCP_SF2` select another project and resource bank;
+`OCP_RANGE_REPEAT` controls repetition. Report cold-window and warm-cache
+measurements separately. External plugins may add loading or readiness delays;
+those remain part of the measured cold duration and are not a passing result
+when the one-second budget is exceeded.
+
 ## Protocol
 
 ```sh
@@ -110,14 +130,25 @@ The timing/throughput harnesses are behind the `perf-tests` feature, so a plain
 `cargo test --workspace` neither compiles nor runs them; the default CI gate is
 the non-perf suite. The set is the two vocal CPU-budget unit tests,
 `range_window_perf`, `audio_clip_perf`, the six `synth_perf` harnesses and the
-two `device_cpu` profiles. Run the whole set explicitly through the `perf`
-profile, which inherits `dev` (line tables, debug assertions) and sets
-`opt-level = 2` for `oc-engine`, `oc-dsp`, `oc-synth-core`, `oc-synth-fx` and
-`oc-gui` (the crates the harnesses and the real-time path measure):
+two `device_cpu` profiles, plus the DSL score-growth check. Run the whole set
+explicitly through the `perf` profile, which inherits `dev` (line tables,
+debug assertions) and sets
+`opt-level = 2` for `oc-engine`, `oc-dsp`, `oc-host`, `oc-synth-core`,
+`oc-synth-fx` and `oc-gui` (the crates the harnesses and the real-time path
+measure):
 
 ```sh
 cargo test --workspace --features perf-tests --profile perf
 ```
+
+The DSL check parses 1,024 and 4,096 notes in both phrases and named patterns,
+including source-map construction. Four times the notes must take at most ten
+times the median parse time on the same machine. This catches repeated scans
+from the document start for each note location without imposing a CPU-speed
+requirement. Run it with
+`cargo test -p oc-dsl --features perf-tests --test all -- growing_scores`.
+The ordinary suite separately checks late Unicode/CRLF diagnostics and that
+every note survives a large parse.
 
 Build the GUI with `cargo build -p oc-gui --profile perf` to put it in
 `target/perf/oc-gui`; `target/debug/` holds the default build and test

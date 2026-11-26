@@ -62,6 +62,7 @@ pub(crate) use preset_state::{materialize_vst2_preset_state_at, vst2_bridge_para
 pub(crate) use vst2_runtime::encode_vst2_score;
 #[cfg(target_os = "macos")]
 pub(crate) use vst2_runtime::queue_translated_score;
+mod source_horizon;
 mod vst2_batch;
 mod vst2_group;
 mod vst2_prepare;
@@ -73,6 +74,7 @@ mod vst3_translated;
 #[cfg(target_os = "macos")]
 pub(crate) use vst3_translated::{load_streamed_vst3, queue_translated_vst3_score};
 mod window;
+use self::window::width::WidthReference;
 
 #[cfg(test)]
 mod tests;
@@ -88,6 +90,7 @@ pub(crate) use self::plugin_tracks::queue_au_performance_command;
 pub(crate) use self::plugin_tracks::queue_vst3_performance_command;
 use self::plugin_tracks::*;
 use self::preset_state::*;
+use self::source_horizon::{InstrumentTailProbes, instrument_tails_by_lane};
 use self::vst3_group::{Vst3GroupRenderOptions, render_tracks_via_vst3};
 use self::window::*;
 
@@ -121,10 +124,9 @@ pub struct RangeRenderRequest {
 }
 
 /// One range render result. `stems` is `(track_index, track_name, samples)`.
-/// `cache_hit` is true when the request was answered from an already clean
-/// cached render without re-synthesising any source: a full-mix slice, a
-/// snapshot or recomputed subset window, or silence past the cached horizon.
-/// Only a cold cache (no clean full render to cut from) reports false.
+/// `cache_hit` is true when qualified cached audio answers the request without
+/// re-synthesising a source: a complete timeline or a separately bounded prefix.
+/// A bounded entry never makes the complete render cache clean.
 #[derive(Debug)]
 pub struct RangeRenderOutput {
     pub audio: Vec<f32>,
@@ -142,7 +144,7 @@ pub struct RangeRenderOutput {
 /// slice; they differ only in how much was recomputed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RangeWindowPath {
-    /// Served from post-track-FX snapshots taken off the cached full render.
+    /// Served from a qualified rendered snapshot of the requested tracks.
     Snapshot,
     /// Track effects were re-processed for the selected tracks, bounded at the
     /// window end, because no snapshot covered it.
@@ -202,6 +204,8 @@ enum RenderScope<'a> {
     Full,
     /// Only these tracks; the program length is unchanged.
     Tracks(&'a [usize]),
+    /// Full source and post-track-FX history for width witnesses, without a mix.
+    TrackWidths(&'a [usize]),
     /// A time window of the timeline from silence; previews only.
     Window(&'a RangeRenderRequest),
 }
@@ -211,7 +215,7 @@ impl<'a> RenderScope<'a> {
     fn tracks(&self) -> Option<&'a [usize]> {
         match self {
             Self::Full => None,
-            Self::Tracks(tracks) => Some(tracks),
+            Self::Tracks(tracks) | Self::TrackWidths(tracks) => Some(tracks),
             Self::Window(request) => request.tracks.as_deref(),
         }
     }
@@ -226,6 +230,10 @@ impl<'a> RenderScope<'a> {
     fn is_full(&self) -> bool {
         matches!(self, Self::Full)
     }
+
+    fn widths_only(&self) -> bool {
+        matches!(self, Self::TrackWidths(_))
+    }
 }
 
 /// One source-render pass, carrying the request's worker snapshot through any
@@ -235,8 +243,16 @@ struct RenderPass<'a> {
     workers: crate::render_parallel::RenderWorkerOptions,
 }
 
+/// The offline graph stage a pass needs to complete.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum GraphMixPurpose {
+    Audio,
+    TrackWidths,
+}
+
 /// Timing and routing for a graph pass over cached source buffers.
 struct GraphMixOptions<'a> {
+    purpose: GraphMixPurpose,
     sample_rate: u32,
     total_samples: usize,
     timeline_start: u64,
@@ -252,7 +268,14 @@ struct RangeRenderPass<'a> {
     workers: crate::render_parallel::RenderWorkerOptions,
 }
 
+#[derive(Clone, Copy)]
+enum ScratchPurpose<'a> {
+    Audio,
+    TrackWidths { reference: &'a RenderCache },
+}
+
 struct ScratchRenderPass<'a> {
+    purpose: ScratchPurpose<'a>,
     selected: &'a [usize],
     stems: bool,
     window_end: Option<u64>,
@@ -314,6 +337,9 @@ pub struct RenderCache {
     /// Widths classified by the last full mix; a window reuses them so its pan
     /// law cannot depend on what the window happens to contain.
     full_mix_widths: Vec<SourceWidth>,
+    track_channel_symmetry: Vec<oc_audio::ChannelSymmetry>,
+    width_reference: Option<WidthReference>,
+    bounded_range: Option<window::bounded::BoundedPrefix>,
     /// Master chain latency of the last mix, in frames.
     master_latency_samples: u32,
     /// Tracks rendered for a control feed only; their output stays out of the mix.
@@ -399,6 +425,9 @@ impl RenderCache {
             post_fx_bytes: 0,
             post_fx_clock: 0,
             full_mix_widths: Vec::new(),
+            track_channel_symmetry: Vec::new(),
+            width_reference: None,
+            bounded_range: None,
             master_latency_samples: 0,
             control_only: Vec::new(),
             cancel: None,
@@ -512,12 +541,14 @@ impl RenderCache {
         if enabled && self.stem_capture.is_some() {
             return;
         }
+        self.bounded_range = None;
         self.stem_capture = enabled.then(crate::graph::StemCapture::default);
         self.mix_dirty = true;
     }
 
     /// Track/bus export without additional full-length master diagnostic taps.
     pub fn capture_export_stems(&mut self) {
+        self.bounded_range = None;
         self.stem_capture = Some(crate::graph::StemCapture {
             capture_master_inputs: false,
             ..Default::default()
@@ -525,9 +556,52 @@ impl RenderCache {
         self.mix_dirty = true;
     }
 
+    /// Select retained export taps without pruning any routing or processor.
+    pub fn capture_selected_stems(&mut self, selection: crate::graph::StemCaptureSelection) {
+        self.bounded_range = None;
+        self.stem_capture = Some(crate::graph::StemCapture {
+            selection,
+            capture_master_inputs: false,
+            align_master_exports: true,
+            ..Default::default()
+        });
+        self.mix_dirty = true;
+    }
+
+    /// Select a captured bus on the same frame origin as the graph's stem taps.
+    /// The complete graph establishes its PDC and control history first; this
+    /// read only slices its result and pads frames beyond the capture with zero.
+    pub fn captured_bus_range(
+        &self,
+        name: &str,
+        start_sample: u64,
+        frames: usize,
+    ) -> Result<Vec<f32>, String> {
+        let capture = self
+            .stems()
+            .ok_or("the range render captured no bus stems")?;
+        let buffer = capture
+            .buses
+            .iter()
+            .find(|(bus, _)| bus == name)
+            .map(|(_, samples)| samples.as_slice())
+            .ok_or_else(|| format!("bus '{name}' produced no returned signal"))?;
+        let samples = frames
+            .checked_mul(2)
+            .ok_or("bus range length exceeds platform size")?;
+        let mut output = Vec::new();
+        output
+            .try_reserve_exact(samples)
+            .map_err(|_| "bus range exceeds available memory")?;
+        output.resize(samples, 0.0);
+        copy_stereo_range(buffer, start_sample, &mut output);
+        Ok(output)
+    }
+
     /// Capture each track's post-insert, pre-fader chain output. Offline device
     /// analysis reads the signal an insert sees, before the pan law.
     pub fn capture_track_pre_fader(&mut self) {
+        self.bounded_range = None;
         self.stem_capture = Some(crate::graph::StemCapture {
             capture_master_inputs: false,
             pre_fader_tracks: true,
@@ -622,6 +696,15 @@ impl RenderCache {
         }
     }
 
+    /// Move completed taps to an export without duplicating their PCM buffers.
+    pub fn take_stems(&mut self) -> Option<crate::graph::StemCapture> {
+        if self.is_dirty() {
+            None
+        } else {
+            self.stem_capture.take()
+        }
+    }
+
     pub fn set_resource_root(&mut self, root: Option<PathBuf>) {
         if self.resource_root != root {
             self.resource_root = root;
@@ -649,6 +732,7 @@ impl RenderCache {
     /// Mark a pattern as dirty (needs re-render).
     /// Only marks tracks that actually reference this pattern via clips.
     pub fn mark_pattern_dirty(&mut self, name: &str) {
+        self.bounded_range = None;
         self.pattern_dirty.insert(name.to_string(), true);
         // Dirty only tracks that reference this pattern via clips
         if let Some(track_indices) = self.pattern_to_tracks.get(name).cloned() {
@@ -667,6 +751,7 @@ impl RenderCache {
 
     /// Mark a specific track as dirty (needs re-render).
     pub fn mark_track_dirty(&mut self, track_index: usize) {
+        self.bounded_range = None;
         if track_index < self.track_dirty.len() {
             self.track_dirty[track_index] = true;
         }
@@ -676,6 +761,7 @@ impl RenderCache {
 
     /// Mark all tracks as dirty (full re-render needed).
     pub fn mark_all_dirty(&mut self) {
+        self.bounded_range = None;
         for d in &mut self.track_dirty {
             *d = true;
         }
@@ -686,6 +772,7 @@ impl RenderCache {
 
     /// Mark only the mix as dirty (track buffers valid, but routing/effects changed).
     pub fn mark_mix_dirty(&mut self) {
+        self.bounded_range = None;
         self.mix_dirty = true;
     }
 

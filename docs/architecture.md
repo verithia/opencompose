@@ -123,6 +123,12 @@ Two caches make repeated renders cheap, and neither changes the result:
   releases the project lock, renders, and publishes afterwards, so a render
   never blocks an edit and an edit never lands inside a render.
 
+For a full cache render, each instrument's declared release extends from that
+source lane's last event. A later note or audio clip on another lane does not
+restart that release. The render also preserves the normal fallback tail,
+the arrangement end and any requested minimum duration; graph effect tails
+extend the resulting source horizon.
+
 ## Realtime rules
 
 The audio callback runs one graph instance on one thread:

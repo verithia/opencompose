@@ -1413,3 +1413,156 @@ fn a_bus_tap_renders_the_return_and_refuses_an_unknown_bus() {
     .expect_err("an unknown bus is refused");
     assert!(refused.contains("no bus named 'missing'"), "{refused}");
 }
+
+const BOUNDED_BUS_EVIDENCE: &str = r#"@ocp "0.2.0"
+@project "Bounded bus evidence"
+  tempo: 120
+  time_signature: 4/4
+  export: {format: f32}
+@preset tone
+  source: builtin
+  plugin: "builtin.test_tone"
+  params: {frequency: 330, amplitude: 0.08, waveform: 0}
+@bus return_bus
+  routes: [master]
+  effects:
+    - gain: factor=0.5
+@track voice | preset: tone, instrument: synth/lead_square
+  mix: send(return_bus=0dB)
+  @phrase early [1:1 - 2:1]
+    C4 q mf
+  @phrase late [3:1 - 4:1]
+    C5 q mf
+@master
+  effects:
+    - gain: factor=0.25
+"#;
+
+#[test]
+fn a_nonzero_bus_range_writes_exactly_the_reported_frames_and_pcm() {
+    let rate = 8000;
+    let state = app_state(BOUNDED_BUS_EVIDENCE, rate);
+    let project = state.lock_inner().project.clone();
+    let mut reference = oc_engine::render_cache::RenderCache::new();
+    reference.set_pattern_previews(false);
+    reference.capture_export_stems();
+    reference
+        .render_full(&project, Path::new("unused.sf2"), rate, &mut HashMap::new())
+        .unwrap();
+    let full_bus = &reference
+        .stems()
+        .unwrap()
+        .buses
+        .iter()
+        .find(|(name, _)| name == "return_bus")
+        .unwrap()
+        .1;
+    let start = 28000; // 3.5 seconds: silence before the late note at4 seconds.
+    let frames = 8000;
+    let mut expected = vec![0.0; frames * 2];
+    let available = full_bus.len().saturating_sub(start * 2).min(expected.len());
+    expected[..available].copy_from_slice(&full_bus[start * 2..start * 2 + available]);
+    assert!(expected[..4000 * 2].iter().all(|sample| *sample == 0.0));
+    assert!(expected[4000 * 2..].iter().any(|sample| *sample != 0.0));
+
+    let dir = TempDir::new("bounded-bus-evidence");
+    std::fs::create_dir_all(dir.path()).unwrap();
+    let result = render_range_for_agent(
+        dir.path().join("bus.wav").display().to_string(),
+        RangeRequest {
+            start_s: Some(3.5),
+            end_s: Some(4.5),
+            float_wav: true,
+            ..Default::default()
+        },
+        Some("return_bus".into()),
+        &state,
+    )
+    .unwrap();
+    let reader = hound::WavReader::open(&result.path).unwrap();
+    assert_eq!(result.frames, frames);
+    assert_eq!(
+        reader.duration() as usize,
+        result.frames,
+        "the bus file must contain exactly the range advertised to the model"
+    );
+    let (actual_rate, actual) = read_preview(&result.path);
+    assert_eq!(actual_rate, rate);
+    assert_eq!(
+        actual, expected,
+        "bus tap must select the same nonzero-start interval and bypass master effects"
+    );
+}
+
+#[test]
+fn a_bus_range_keeps_full_sidechain_history_and_latency() {
+    let source = BOUNDED_BUS_EVIDENCE.replace(
+        "    - gain: factor=0.5",
+        "    - compression: threshold=-40dB, ratio=20:1, attack=1ms, release=80ms, sidechain=key\n    - limiter: ceiling=-1dB, lookahead=5ms, true_peak=false",
+    ) + "\n@track key | preset: tone, instrument: synth/lead_square\n  @phrase key_hold [2:1 - 4:1]\n    C3 w mf\n";
+    let rate = 8000;
+    let state = app_state(&source, rate);
+    let project = state.lock_inner().project.clone();
+    let bus_reference = |project: &Project| {
+        let mut cache = oc_engine::render_cache::RenderCache::new();
+        cache.set_pattern_previews(false);
+        cache.capture_export_stems();
+        cache
+            .render_full(project, Path::new("unused.sf2"), rate, &mut HashMap::new())
+            .unwrap();
+        cache
+            .stems()
+            .unwrap()
+            .buses
+            .iter()
+            .find(|(name, _)| name == "return_bus")
+            .unwrap()
+            .1
+            .clone()
+    };
+    let start = 28000;
+    let frames = 8000;
+    let expected = slice_padded(&bus_reference(&project), start, frames);
+    let mut unkeyed = project.clone();
+    unkeyed.tracks.last_mut().unwrap().phrases.clear();
+    let unkeyed = slice_padded(&bus_reference(&unkeyed), start, frames);
+    assert!(
+        expected
+            .iter()
+            .zip(&unkeyed)
+            .any(|(a, b)| (*a - *b).abs() > 1e-5),
+        "the fixture must distinguish the active full-history sidechain"
+    );
+    let dir = TempDir::new("bus-range-history");
+    std::fs::create_dir_all(dir.path()).unwrap();
+    let result = render_range_for_agent(
+        dir.path().join("bus.wav").display().to_string(),
+        RangeRequest {
+            start_s: Some(3.5),
+            end_s: Some(4.5),
+            float_wav: true,
+            ..Default::default()
+        },
+        Some("return_bus".into()),
+        &state,
+    )
+    .unwrap();
+    assert_eq!(result.frames, frames);
+    assert_eq!(read_preview(&result.path).1, expected);
+
+    let padded = render_range_for_agent(
+        dir.path().join("tail.wav").display().to_string(),
+        RangeRequest {
+            start_s: Some(8.0),
+            end_s: Some(9.0),
+            float_wav: true,
+            ..Default::default()
+        },
+        Some("return_bus".into()),
+        &state,
+    )
+    .unwrap();
+    let actual = read_preview(&padded.path).1;
+    assert_eq!(actual.len(), frames * 2);
+    assert!(actual.iter().all(|sample| *sample == 0.0));
+}

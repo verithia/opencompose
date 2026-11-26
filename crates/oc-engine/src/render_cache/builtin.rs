@@ -27,12 +27,22 @@ pub(super) struct BuiltinTrackJob {
     pub(super) plugin_id: String,
     pub(super) preset_name: String,
     pub(super) params: Vec<(String, ParamValue)>,
+    pub(super) trim_preset: Option<PresetDef>,
     pub(super) events: Vec<MidiEvent>,
+    pub(super) full_program: Option<super::window::mono_proof::SourceProgram>,
     pub(super) performance: Option<Vec<oc_synth::performance::ScheduledCommand>>,
 }
 
 /// Slot for one built-in track's rendered buffer and latency.
-type BuiltinRender = Mutex<Option<Result<(Vec<f32>, u32), String>>>;
+#[derive(Debug)]
+pub(super) struct BuiltinTrackOutput {
+    pub(super) index: usize,
+    pub(super) audio: Vec<f32>,
+    pub(super) latency: u32,
+    pub(super) symmetry: oc_audio::ChannelSymmetry,
+}
+
+type BuiltinRender = Mutex<Option<Result<BuiltinTrackOutput, String>>>;
 
 /// Scheduling only: voice-seconds times unison width, which tracks the
 /// per-sample voice work. Never affects the rendered audio.
@@ -85,7 +95,7 @@ pub(super) struct BuiltinRenderContext<'a> {
 pub(super) fn render_builtin_tracks_parallel(
     jobs: Vec<BuiltinTrackJob>,
     context: BuiltinRenderContext<'_>,
-) -> Result<Vec<(usize, Vec<f32>, u32)>, String> {
+) -> Result<Vec<BuiltinTrackOutput>, String> {
     let BuiltinRenderContext {
         total_samples,
         start_sample,
@@ -128,16 +138,27 @@ pub(super) fn render_builtin_tracks_parallel(
                     };
                     let job = &jobs[index];
                     let started = std::time::Instant::now();
-                    let rendered = (|| -> Result<(Vec<f32>, u32), String> {
+                    let rendered = (|| -> Result<BuiltinTrackOutput, String> {
+                        let params = match &job.trim_preset {
+                            Some(preset) => {
+                                if !crate::loudness::can_prepare_in_parallel(preset) {
+                                    return Err("Preset normalization requires serial preparation".into());
+                                }
+                                let mut params = job.params.clone();
+                                crate::loudness::append_trim(&mut params, preset, resource_root);
+                                std::borrow::Cow::Owned(params)
+                            }
+                            None => std::borrow::Cow::Borrowed(&job.params),
+                        };
                         let events: Vec<&MidiEvent> = job.events.iter().collect();
                         if let Some(commands) = &job.performance {
                             if job.plugin_id != oc_synth::synth::PLUGIN_ID {
                                 return Err(format!("Built-in instrument '{}' cannot render native performance; expected builtin.open_synth", job.plugin_id));
                             }
                             let binding =
-                                oc_synth::native_performance::program_binding(&job.params)?;
+                                oc_synth::native_performance::program_binding(&params)?;
                             let patch =
-                                oc_synth::synth::load_project_patch(&job.params, resource_root)?;
+                                oc_synth::synth::load_project_patch(&params, resource_root)?;
                             let latency = patch.fx_latency_samples(sample_rate) as u32;
                             let buffer = oc_synth::native_performance::render(
                                 commands,
@@ -147,11 +168,11 @@ pub(super) fn render_builtin_tracks_parallel(
                                 binding,
                                 clock,
                             )?;
-                            Ok((buffer, latency))
+                            Ok(BuiltinTrackOutput { index: job.index, audio: buffer, latency, symmetry: oc_audio::ChannelSymmetry::Unknown })
                         } else {
-                            render_builtin_project_with_latency(
+                            render_builtin_project_with_symmetry(
                                 &job.plugin_id,
-                                Some(&job.params),
+                                Some(&params),
                                 &events,
                                 total_samples,
                                 start_sample,
@@ -160,7 +181,8 @@ pub(super) fn render_builtin_tracks_parallel(
                                 resource_root,
                                 Some(clock),
                                 cancel,
-                            )
+                                job.full_program.as_ref(),
+                            ).map(|mut result| { result.index = job.index; result })
                         }
                     })().map_err(|error| format!("Built-in plugin '{}' for preset '{}' on render lane {}: {error}", job.plugin_id, job.preset_name, job.index));
                     crate::stage_log::push_worker_track("builtin track", index, started);
@@ -176,11 +198,11 @@ pub(super) fn render_builtin_tracks_parallel(
 
     let mut output = Vec::with_capacity(jobs.len());
     for (job, slot) in jobs.iter().zip(results) {
-        let (buffer, latency) = slot
+        let rendered = slot
             .into_inner()
             .unwrap()
             .ok_or_else(|| format!("builtin track {} was not rendered", job.index))??;
-        output.push((job.index, buffer, latency));
+        output.push(rendered);
     }
     Ok(output)
 }
@@ -229,6 +251,43 @@ pub(super) fn render_builtin_project_with_latency(
     clock: Option<&oc_dsl::timing::ProjectClock>,
     cancel: Option<&crate::render_cancel::CancelToken>,
 ) -> Result<(Vec<f32>, u32), String> {
+    render_builtin_project_with_symmetry(
+        plugin_id,
+        params,
+        events,
+        total_samples,
+        start_sample,
+        sample_rate,
+        tempo,
+        resource_root,
+        clock,
+        cancel,
+        None,
+    )
+    .map(|result| (result.audio, result.latency))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_builtin_project_with_symmetry(
+    plugin_id: &str,
+    params: Option<&Vec<(String, oc_dsl::ast::ParamValue)>>,
+    events: &[&MidiEvent],
+    total_samples: usize,
+    start_sample: u64,
+    sample_rate: u32,
+    tempo: f64,
+    resource_root: Option<&Path>,
+    clock: Option<&oc_dsl::timing::ProjectClock>,
+    cancel: Option<&crate::render_cancel::CancelToken>,
+    full_program: Option<&super::window::mono_proof::SourceProgram>,
+) -> Result<BuiltinTrackOutput, String> {
+    let output = |audio, latency, symmetry| BuiltinTrackOutput {
+        index: 0,
+        audio,
+        latency,
+        symmetry,
+    };
+    use oc_audio::ChannelSymmetry::Unknown;
     if crate::render_cancel::stopped(cancel) {
         return Err(crate::render_cancel::cancelled());
     }
@@ -241,7 +300,7 @@ pub(super) fn render_builtin_project_with_latency(
         if crate::render_cancel::stopped(cancel) {
             return Err(crate::render_cancel::cancelled());
         }
-        return Ok((buffer, 0));
+        return Ok(output(buffer, 0, Unknown));
     }
     if plugin_id == oc_synth::sampler::PLUGIN_ID {
         let buffer = oc_synth::sampler::try_render_track(
@@ -254,29 +313,39 @@ pub(super) fn render_builtin_project_with_latency(
         if crate::render_cancel::stopped(cancel) {
             return Err(crate::render_cancel::cancelled());
         }
-        return Ok((buffer, 0));
+        return Ok(output(buffer, 0, Unknown));
     }
     if plugin_id == oc_synth::drumkit::PLUGIN_ID {
-        let (buffer, warnings) = oc_synth::drumkit::try_render_track_with_warnings(
-            params.map(Vec::as_slice).unwrap_or(&[]),
-            events,
-            total_samples,
-            sample_rate,
-            resource_root,
-        )?;
+        let render = |context: &oc_audio::ChannelSymmetryContext<'_>| {
+            oc_synth::drumkit::try_render_track_with_symmetry(
+                params.map(Vec::as_slice).unwrap_or(&[]),
+                events,
+                total_samples,
+                sample_rate,
+                resource_root,
+                context,
+            )
+        };
+        let (buffer, warnings, symmetry) = match full_program {
+            Some(program) => program.with_context(render),
+            None => render(&oc_audio::ChannelSymmetryContext::default()),
+        }?;
         for warning in warnings {
             crate::render_warnings::push(warning);
         }
         if crate::render_cancel::stopped(cancel) {
             return Err(crate::render_cancel::cancelled());
         }
-        return Ok((buffer, 0));
+        return Ok(output(buffer, 0, symmetry));
     }
     if plugin_id == oc_synth::synth::PLUGIN_ID {
         let patch = oc_synth::synth::load_project_patch(
             params.map(Vec::as_slice).unwrap_or(&[]),
             resource_root,
         )?;
+        let symmetry = full_program.map_or(Unknown, |program| {
+            program.with_context(|context| patch.channel_symmetry(context))
+        });
         let latency = patch.fx_latency_samples(sample_rate) as u32;
         let buffer = oc_synth::synth::try_render_track_with_patch_and_clock_cancellable(
             events,
@@ -290,7 +359,7 @@ pub(super) fn render_builtin_project_with_latency(
         if crate::render_cancel::stopped(cancel) {
             return Err(crate::render_cancel::cancelled());
         }
-        return Ok((buffer, latency));
+        return Ok(output(buffer, latency, symmetry));
     }
     if events
         .iter()
@@ -298,7 +367,7 @@ pub(super) fn render_builtin_project_with_latency(
     {
         return Err("native voice events require builtin.open_synth".into());
     }
-    Ok((
+    Ok(output(
         try_render_track_via_builtin(
             plugin_id,
             params,
@@ -309,6 +378,7 @@ pub(super) fn render_builtin_project_with_latency(
             cancel,
         )?,
         0,
+        Unknown,
     ))
 }
 

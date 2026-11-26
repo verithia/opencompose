@@ -118,7 +118,6 @@ pub async fn local_sample_add(
         })?;
         let (snapshot, track_name, file) =
             add_file(&state, &identity, &source, &root, track.as_deref())?;
-        super::arrangement::warm_audio_clip_peaks(&snapshot.project, Some(&root));
         Ok(json!({
             "status": "ok",
             "track": track_name,

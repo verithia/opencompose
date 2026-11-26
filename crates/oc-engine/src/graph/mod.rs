@@ -32,14 +32,18 @@ mod midi_input;
 mod prepared;
 mod process_boundary;
 mod rewind;
+mod stem_selection;
 pub use process_boundary::EffectChainProcessError;
 use process_boundary::ProcessBoundary;
+pub use stem_selection::StemCaptureSelection;
 #[cfg(test)]
 mod prepared_tests;
 pub use prepared::{PreparationError, PreparedGraphBlock};
 use prepared::{PreparedGraph, SignalLookup};
 #[cfg(test)]
 mod channel_equality_tests;
+#[cfg(test)]
+mod offline_bus_tests;
 #[cfg(test)]
 mod streaming_gate_tests;
 
@@ -69,12 +73,16 @@ fn service_offline_main() -> Result<(), String> {
 /// may be nonlinear, so none of these are independently mastered stems.
 #[derive(Clone)]
 pub struct StemCapture {
+    pub selection: StemCaptureSelection,
     pub tracks: Vec<(String, Vec<f32>)>,
     pub buses: Vec<(String, Vec<f32>)>,
     pub master_inputs: Vec<(String, Vec<f32>)>,
     pub pre_master: Vec<f32>,
     /// Full routing diagnostics are optional for track/bus-only ZIP exports.
     pub capture_master_inputs: bool,
+    /// Export master contributors after their final routing delay. Internal
+    /// bus taps stay at the node output for range and sidechain diagnostics.
+    pub align_master_exports: bool,
     /// Capture each track's post-insert, pre-fader chain output instead of the
     /// post-fader tap; offline device analysis reads what an insert sees.
     pub pre_fader_tracks: bool,
@@ -83,11 +91,13 @@ pub struct StemCapture {
 impl Default for StemCapture {
     fn default() -> Self {
         Self {
+            selection: StemCaptureSelection::default(),
             tracks: Vec::new(),
             buses: Vec::new(),
             master_inputs: Vec::new(),
             pre_master: Vec::new(),
             capture_master_inputs: true,
+            align_master_exports: false,
             pre_fader_tracks: false,
         }
     }
@@ -2927,8 +2937,8 @@ impl AudioGraph {
         self.mix_processed_with_workers(track_buffers, transport, stems, aux_buffers, 1)
     }
 
-    /// Offline variant: independent bus chains run on up to `bus_workers`
-    /// threads; the fan-in into master keeps the declared bus order.
+    /// Offline variant: ready bus chains run on up to `bus_workers` threads;
+    /// every routed fan-in keeps the same order as the serial graph.
     pub fn mix_processed_with_workers(
         &mut self,
         track_buffers: &mut [Vec<f32>],
@@ -2975,8 +2985,12 @@ impl AudioGraph {
         if let Some(capture) = stems.as_deref_mut() {
             let capture_master_inputs = capture.capture_master_inputs;
             let pre_fader_tracks = capture.pre_fader_tracks;
+            let align_master_exports = capture.align_master_exports;
+            let selection = std::mem::take(&mut capture.selection);
             *capture = StemCapture {
+                selection,
                 capture_master_inputs,
+                align_master_exports,
                 pre_fader_tracks,
                 ..StemCapture::default()
             };
@@ -3031,7 +3045,10 @@ impl AudioGraph {
             // nothing, so skip the gate, fader and send stages entirely;
             // stem capture still reports the track as silence.
             if track_buf.is_empty() {
-                if let Some(capture) = stems.as_deref_mut() {
+                if let Some(capture) = stems
+                    .as_deref_mut()
+                    .filter(|capture| capture.selection.tracks)
+                {
                     capture
                         .tracks
                         .push((self.track_names[i].clone(), vec![0.0; buf_len]));
@@ -3041,7 +3058,10 @@ impl AudioGraph {
 
             // A control-feed track was processed for its follower only.
             if self.control_only.get(i).copied().unwrap_or(false) {
-                if let Some(capture) = stems.as_deref_mut() {
+                if let Some(capture) = stems
+                    .as_deref_mut()
+                    .filter(|capture| capture.selection.tracks)
+                {
                     capture
                         .tracks
                         .push((self.track_names[i].clone(), vec![0.0; buf_len]));
@@ -3058,7 +3078,10 @@ impl AudioGraph {
                 None => route.mute,
             };
             if silent {
-                if let Some(capture) = stems.as_deref_mut() {
+                if let Some(capture) = stems
+                    .as_deref_mut()
+                    .filter(|capture| capture.selection.tracks)
+                {
                     capture
                         .tracks
                         .push((self.track_names[i].clone(), vec![0.0; buf_len]));
@@ -3071,6 +3094,7 @@ impl AudioGraph {
             // Offline device analysis reads the chain output before polarity,
             // routing, the fader and the pan law move it.
             if let Some(capture) = stems.as_deref_mut()
+                && capture.selection.tracks
                 && capture.pre_fader_tracks
             {
                 capture
@@ -3145,7 +3169,9 @@ impl AudioGraph {
                 ride.apply(track_buf, control);
             }
             if let Some(capture) = stems.as_deref_mut()
+                && capture.selection.tracks
                 && !capture.pre_fader_tracks
+                && !(capture.align_master_exports && route.direct_to_master)
             {
                 capture
                     .tracks
@@ -3220,13 +3246,20 @@ impl AudioGraph {
                 if let Some(delay) = self.direct_delays.get_mut(i) {
                     delay.process(track_buf);
                 }
-                if let Some(capture) = stems
-                    .as_deref_mut()
-                    .filter(|capture| capture.capture_master_inputs)
-                {
-                    capture
-                        .master_inputs
-                        .push((format!("track:{}", self.track_names[i]), track_buf.clone()));
+                if let Some(capture) = stems.as_deref_mut() {
+                    if capture.capture_master_inputs {
+                        capture
+                            .master_inputs
+                            .push((format!("track:{}", self.track_names[i]), track_buf.clone()));
+                    }
+                    if capture.align_master_exports
+                        && capture.selection.tracks
+                        && !capture.pre_fader_tracks
+                    {
+                        capture
+                            .tracks
+                            .push((self.track_names[i].clone(), track_buf.clone()));
+                    }
                 }
                 let min_len = track_buf.len().min(master_buf.len());
                 simd::accumulate_channel_gains(
@@ -3242,87 +3275,118 @@ impl AudioGraph {
         // Process buses source-before-target and fan each return into its
         // declared outgoing buses and/or the master output.
         let bus_stage = crate::stage_log::stage("bus chains");
-        if self.buses_can_run_in_parallel(bus_workers) {
-            let workers = bus_workers.min(self.bus_order.len()).max(1);
-            let mut sources: Vec<(String, BusNode)> = self
-                .bus_order
-                .iter()
-                .filter_map(|name| self.bus_chains.remove(name).map(|bus| (name.clone(), bus)))
-                .collect();
-            let group = sources.len().div_ceil(workers).max(1);
-            let sample_rate = self.sample_rate;
-            std::thread::scope(|scope| {
-                // Empty Vec does not allocate. Preserve the existing implicit
-                // scope joins outside the explicit CLI offline control scope.
-                let service_main = offline_main_is_active();
-                let mut main_owned_handles = Vec::new();
-                for chunk in sources.chunks_mut(group) {
-                    let sidechain_taps = &prepared.taps;
-                    let controls = &prepared.controls;
-                    let handle = scope.spawn(move || {
-                        for (_, bus) in chunk.iter_mut() {
-                            let _chain_stage = crate::stage_log::stage("bus chain");
-                            bus.chain.process_with_lookup(
-                                &mut bus.buffer,
-                                sidechain_taps,
-                                controls,
-                                sample_rate,
-                                transport,
-                            );
-                            bus.chain.end_processing();
+        if let Some(barriers) = self.parallel_bus_barriers(bus_workers) {
+            // Compute ready, independent chains ahead of the ordered routing
+            // cursor. Their buffers cannot receive any later input: every
+            // predecessor has already crossed the fan-out cursor.
+            let mut completed = vec![false; prepared.buses.len()];
+            let mut cursor = 0;
+            while cursor < prepared.buses.len() {
+                let mut sources: Vec<(usize, String, BusNode)> = prepared
+                    .buses
+                    .iter()
+                    .enumerate()
+                    .skip(cursor)
+                    .filter(|(index, _)| !completed[*index] && barriers[*index] <= cursor)
+                    .map(|(index, plan)| {
+                        let bus = self
+                            .bus_chains
+                            .remove(&plan.name)
+                            .expect("validated offline bus plan retains every node");
+                        (index, plan.name.clone(), bus)
+                    })
+                    .collect();
+                let workers = bus_workers.min(sources.len()).max(1);
+                let group = sources.len().div_ceil(workers).max(1);
+                let sample_rate = self.sample_rate;
+                std::thread::scope(|scope| {
+                    let service_main = offline_main_is_active();
+                    let mut main_owned_handles = Vec::new();
+                    for chunk in sources.chunks_mut(group) {
+                        let sidechain_taps = &prepared.taps;
+                        let controls = &prepared.controls;
+                        let handle = scope.spawn(move || {
+                            for (_, _, bus) in chunk.iter_mut() {
+                                let _chain_stage = crate::stage_log::stage("bus chain");
+                                bus.chain.process_with_lookup(
+                                    &mut bus.buffer,
+                                    sidechain_taps,
+                                    controls,
+                                    sample_rate,
+                                    transport,
+                                );
+                                // Release native per-thread state on its owner,
+                                // including a frontier containing just one bus.
+                                bus.chain.end_processing();
+                            }
+                        });
+                        if service_main {
+                            main_owned_handles.push(handle);
                         }
-                    });
-                    if service_main {
-                        main_owned_handles.push(handle);
                     }
-                }
-                let mut failed = None;
-                for handle in main_owned_handles {
-                    while !handle.is_finished() {
-                        if let Err(error) = service_offline_main() {
-                            log::warn!("CLAP bus main service: {error}");
+                    let mut failed = None;
+                    for handle in main_owned_handles {
+                        while !handle.is_finished() {
+                            if let Err(error) = service_offline_main() {
+                                log::warn!("CLAP bus main service: {error}");
+                            }
+                            std::thread::sleep(std::time::Duration::from_millis(1));
                         }
-                        std::thread::sleep(std::time::Duration::from_millis(1));
+                        if let Err(error) = handle.join() {
+                            failed.get_or_insert(error);
+                        }
                     }
-                    if let Err(error) = handle.join() {
-                        failed.get_or_insert(error);
+                    if let Some(error) = failed {
+                        std::panic::resume_unwind(error);
                     }
+                });
+                for (index, name, bus) in sources {
+                    completed[index] = true;
+                    self.bus_chains.insert(name, bus);
                 }
-                if let Some(error) = failed {
-                    std::panic::resume_unwind(error);
-                }
-            });
-            // Sum the returns in declaration order so the master mix keeps the
-            // same rounding as the serial path.
-            let fan_in_stage = crate::stage_log::stage("bus fan-in");
-            for (plan, (source_name, mut source)) in prepared.buses.iter().zip(sources) {
-                if prepared.taps.has(&source_name)
-                    && !self.track_names.iter().any(|name| name == &source_name)
-                {
-                    prepared.taps.set(&source_name, &source.buffer);
-                }
-                let live = Self::bus_gain_block(
-                    self.ramps.buses.get_mut(&source_name),
-                    &mut source,
-                    ramp_frames,
-                );
-                if let Some(capture) = stems.as_deref_mut() {
-                    capture
-                        .buses
-                        .push((source_name.clone(), source.buffer.clone()));
-                }
-                if live {
-                    self.route_prepared_bus(
-                        plan,
-                        &source.buffer,
-                        &mut prepared.routed,
-                        &mut master_buf,
-                        &mut stems,
+                // Never sum a later ready node ahead of an earlier dependent
+                // one. This keeps every destination's floating-point fan-in,
+                // PDC history, fader ramp and stem order identical to serial.
+                let _fan_in_stage = crate::stage_log::stage("bus fan-in");
+                while cursor < prepared.buses.len() && completed[cursor] {
+                    let plan = &prepared.buses[cursor];
+                    let mut source = self
+                        .bus_chains
+                        .remove(&plan.name)
+                        .expect("completed bus is retained until ordered fan-out");
+                    if prepared.taps.has(&plan.name)
+                        && !self.track_names.iter().any(|name| name == &plan.name)
+                    {
+                        prepared.taps.set(&plan.name, &source.buffer);
+                    }
+                    let live = Self::bus_gain_block(
+                        self.ramps.buses.get_mut(&plan.name),
+                        &mut source,
+                        ramp_frames,
                     );
+                    if let Some(capture) = stems.as_deref_mut().filter(|capture| {
+                        capture.selection.captures_bus(&plan.name)
+                            && !(live
+                                && capture.align_master_exports
+                                && plan.routes.iter().any(|route| route.target == "master"))
+                    }) {
+                        capture
+                            .buses
+                            .push((plan.name.clone(), source.buffer.clone()));
+                    }
+                    if live {
+                        self.route_prepared_bus(
+                            plan,
+                            &source.buffer,
+                            &mut prepared.routed,
+                            &mut master_buf,
+                            &mut stems,
+                        );
+                    }
+                    self.bus_chains.insert(plan.name.clone(), source);
+                    cursor += 1;
                 }
-                self.bus_chains.insert(source_name, source);
             }
-            drop(fan_in_stage);
         } else {
             for plan in &prepared.buses {
                 let Some(source) = self.bus_chains.get_mut(&plan.name) else {
@@ -3347,7 +3411,12 @@ impl AudioGraph {
                 }
                 let live =
                     Self::bus_gain_block(self.ramps.buses.get_mut(&plan.name), source, ramp_frames);
-                if let Some(capture) = stems.as_deref_mut() {
+                if let Some(capture) = stems.as_deref_mut().filter(|capture| {
+                    capture.selection.captures_bus(&plan.name)
+                        && !(live
+                            && capture.align_master_exports
+                            && plan.routes.iter().any(|route| route.target == "master"))
+                }) {
                     capture
                         .buses
                         .push((plan.name.clone(), source.buffer.clone()));
@@ -3369,7 +3438,9 @@ impl AudioGraph {
         drop(bus_stage);
         // Apply master effects
         let master_stage = crate::stage_log::stage("master chain");
-        if let Some(capture) = stems.filter(|capture| capture.capture_master_inputs) {
+        if let Some(capture) =
+            stems.filter(|capture| capture.capture_master_inputs || capture.selection.pre_master)
+        {
             capture.pre_master = master_buf.clone();
         }
         if self.spectrum_target.as_ref() == Some(&SpectrumTarget::Master)
@@ -3427,23 +3498,47 @@ impl AudioGraph {
         true
     }
 
-    /// Buses can chain concurrently only when each one returns straight to
-    /// master and none taps another bus, so the ordered fan-in stays exact.
-    fn buses_can_run_in_parallel(&self, bus_workers: usize) -> bool {
-        bus_workers > 1
-            && self.bus_order.len() > 1
-            && self.spectrum.is_none()
-            && self.bus_order.iter().all(|name| {
-                self.bus_chains.get(name).is_some_and(|bus| {
-                    effective_bus_routes(bus)
-                        .iter()
-                        .all(|target| target == "master")
-                        && bus
-                            .chain
-                            .sidechain_sources()
-                            .all(|source| !self.bus_chains.contains_key(source))
-                })
-            })
+    /// The ordered fan-out cursor must pass this many nodes before each bus
+    /// can compute. Audio, detector and control edges share this readiness rule.
+    /// Backwards or unsupported plans retain the serial fallback.
+    fn parallel_bus_barriers(&self, bus_workers: usize) -> Option<Vec<usize>> {
+        if bus_workers <= 1 || self.bus_order.len() <= 1 || self.spectrum.is_some() {
+            return None;
+        }
+        let indices: HashMap<&str, usize> = self
+            .bus_order
+            .iter()
+            .enumerate()
+            .map(|(index, name)| (name.as_str(), index))
+            .collect();
+        let mut barriers = vec![0; self.bus_order.len()];
+        for (source, name) in self.bus_order.iter().enumerate() {
+            let bus = self.bus_chains.get(name)?;
+            for target in effective_bus_routes(bus) {
+                if let Some(&target) = indices.get(target.as_str()) {
+                    if source >= target {
+                        return None;
+                    }
+                    barriers[target] = barriers[target].max(source + 1);
+                }
+            }
+            for key in bus
+                .chain
+                .sidechain_sources()
+                .chain(bus.chain.control_sources())
+            {
+                if key == name {
+                    continue;
+                }
+                if let Some(&predecessor) = indices.get(key) {
+                    if predecessor >= source {
+                        return None;
+                    }
+                    barriers[source] = barriers[source].max(predecessor + 1);
+                }
+            }
+        }
+        Some(barriers)
     }
 
     pub fn reset(&mut self) {

@@ -112,6 +112,105 @@ fn master_insert_sidecar_replacement_invalidates_cached_audio() {
     );
     assert!(cache.master_buffer().is_none());
 }
+
+#[test]
+fn early_sampler_release_does_not_extend_unrelated_later_sources() {
+    let root = tempfile::tempdir().unwrap();
+    let rate = 8_000;
+    let mut writer = hound::WavWriter::create(
+        root.path().join("tone.wav"),
+        hound::WavSpec {
+            channels: 1,
+            sample_rate: rate,
+            bits_per_sample: 32,
+            sample_format: hound::SampleFormat::Float,
+        },
+    )
+    .unwrap();
+    for frame in 0..rate {
+        writer
+            .write_sample((frame as f32 * 0.2).sin() * 0.2)
+            .unwrap();
+    }
+    writer.finalize().unwrap();
+    let early = r#"@project
+  tempo: 120
+@preset long_release
+  source: builtin
+  plugin: "builtin.sampler"
+  params: {sampler.sfz_text: "<region> sample=tone.wav key=60 loop_mode=loop_continuous ampeg_release=6"}
+@track early | preset: long_release, instrument: synth/lead
+  @phrase body [1:1 - 2:1]
+    C4 h
+"#;
+    let later_sources = [
+        "@preset later\n  source: builtin\n  plugin: \"builtin.test_tone\"\n@track later | preset: later, instrument: synth/lead\n  @phrase body [6:1 - 7:1]\n    C4 h\n",
+        "@track tape | instrument: audio/clip\n@audio_clip later [6:1 - 6:3] | track: tape\n  file: \"tone.wav\"\n",
+    ];
+    for later in later_sources {
+        let project = oc_dsl::parse(&format!("{early}{later}")).unwrap();
+        let mut cache = RenderCache::new();
+        cache.set_pattern_previews(false);
+        cache.set_resource_root(Some(root.path().to_owned()));
+        let audio = cache
+            .render_full(&project, Path::new("unused.sf2"), rate, &mut HashMap::new())
+            .unwrap();
+        let audible = |second: usize| {
+            audio[second * rate as usize * 2..(second + 1) * rate as usize * 2]
+                .iter()
+                .any(|sample| sample.abs() > 0.001)
+        };
+        assert!(audible(4), "the earlier sampler release must be retained");
+        assert!(audible(10), "the later source must remain audible");
+        assert_eq!(
+            audio.len(),
+            13 * rate as usize * 2,
+            "the six-second release belongs to the early note ending at one second, not the unrelated source ending at eleven seconds"
+        );
+    }
+    let reused = format!(
+        "{early}@track later | preset: long_release, instrument: synth/lead\n  @phrase body [6:1 - 7:1]\n    C4 h\n"
+    );
+    let mut cache = RenderCache::new();
+    cache.set_pattern_previews(false);
+    cache.set_resource_root(Some(root.path().to_owned()));
+    let audio = cache
+        .render_full(
+            &oc_dsl::parse(&reused).unwrap(),
+            Path::new("unused.sf2"),
+            rate,
+            &mut HashMap::new(),
+        )
+        .unwrap();
+    assert_eq!(audio.len(), 17 * rate as usize * 2);
+    assert!(
+        audio[15 * rate as usize * 2..16 * rate as usize * 2]
+            .iter()
+            .any(|sample| sample.abs() > 0.001),
+        "a reused preset retains the release after the later lane's note-off"
+    );
+
+    let overridden = format!(
+        "{early}@track later | preset: long_release, instrument: synth/lead\n  engine_params: {{sampler.sfz_text: \"<region> sample=tone.wav key=60 ampeg_release=0.1\"}}\n  @phrase body [6:1 - 7:1]\n    C4 h\n"
+    );
+    let mut cache = RenderCache::new();
+    cache.set_pattern_previews(false);
+    cache.set_resource_root(Some(root.path().to_owned()));
+    let audio = cache
+        .render_full(
+            &oc_dsl::parse(&overridden).unwrap(),
+            Path::new("unused.sf2"),
+            rate,
+            &mut HashMap::new(),
+        )
+        .unwrap();
+    assert_eq!(
+        audio.len(),
+        13 * rate as usize * 2,
+        "a later lane's short release override must not inherit the shared preset's six-second tail"
+    );
+}
+
 impl PluginMidiEventSink for TestSink {
     fn note_on(&mut self, channel: u8, note: u8, velocity: u8, sample_offset: i32) {
         self.0

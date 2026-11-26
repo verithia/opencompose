@@ -304,9 +304,12 @@ records the frame count of the mix and of each stem.
 
 Stems are exclusive. A track that feeds a bus appears only inside that bus's
 stem, not as a stem of its own as well. Only stems whose `mix_sum_member` is
-true sum to the pre-master mix. A manifest therefore never carries the same dry
-signal twice, and a receiving session can rebuild the mix from the marked stems
-without doubling a group and its children.
+true sum to the pre-master mix, and only when all of them are exported. Those
+stems include their final route delay to the master; every other stem is taken
+at its track or bus output, before its outgoing route delays. A manifest
+therefore never carries the same dry signal twice, and a receiving session can
+rebuild the mix from the marked stems without doubling a group and its
+children.
 
 ## The export dialog
 

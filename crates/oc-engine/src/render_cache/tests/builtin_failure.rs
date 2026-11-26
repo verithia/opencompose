@@ -127,6 +127,8 @@ fn unknown_builtin_live_source_and_native_performance_name_the_failed_plugin() {
     let clock = oc_dsl::timing::ProjectClock::new(&project.properties).unwrap();
     let error = render_builtin_tracks_parallel(
         vec![BuiltinTrackJob {
+            full_program: None,
+            trim_preset: None,
             index: 0,
             plugin_id: UNKNOWN.into(),
             preset_name: "lead_sound".into(),
@@ -150,4 +152,104 @@ fn unknown_builtin_live_source_and_native_performance_name_the_failed_plugin() {
         error.contains(UNKNOWN) && error.contains("lead_sound"),
         "{error}"
     );
+}
+
+#[test]
+fn worker_normalization_matches_authoritative_parameters_and_exact_pcm() {
+    let project = oc_dsl::parse(r#"@project
+  tempo: 120
+@preset measured
+  source: builtin
+  plugin: "builtin.open_synth"
+  params: {osc.a.waveform: 0, osc.b.level: 0, noise.level: 0, unison.voices: 1, output.gain: 0.217381, amp.release: 0.037s}
+@track lead | preset: measured, instrument: synth/keys
+"#).unwrap();
+    let preset = &project.presets[0];
+    let track = &project.tracks[0];
+    assert!(crate::loudness::can_prepare_in_parallel(preset));
+    let untrimmed = crate::preset::builtin_track_params_untrimmed(&project, Some(preset), track);
+    let events = events();
+    let clock = oc_dsl::timing::ProjectClock::new(&project.properties).unwrap();
+    let rendered = render_builtin_tracks_parallel(
+        vec![BuiltinTrackJob {
+            index: 0,
+            plugin_id: oc_synth::synth::PLUGIN_ID.into(),
+            preset_name: preset.name.clone(),
+            params: untrimmed,
+            trim_preset: Some(preset.clone()),
+            full_program: None,
+            events: events.clone(),
+            performance: None,
+        }],
+        BuiltinRenderContext {
+            total_samples: 1600,
+            start_sample: 0,
+            sample_rate: 8000,
+            tempo: 120.0,
+            resource_root: None,
+            clock: &clock,
+            cancel: None,
+            worker_options: crate::render_parallel::RenderWorkerOptions::default(),
+        },
+    )
+    .unwrap();
+    // The worker performs the first calibration; the ordinary parameter owner
+    // then retrieves exactly the same trim for the reference rendering path.
+    let authoritative = crate::preset::builtin_track_params_at(&project, Some(preset), track, None);
+    let refs: Vec<_> = events.iter().collect();
+    let (reference, latency) = render_builtin_project_with_latency(
+        oc_synth::synth::PLUGIN_ID,
+        Some(&authoritative),
+        &refs,
+        1600,
+        0,
+        8000,
+        120.0,
+        None,
+        Some(&clock),
+        None,
+    )
+    .unwrap();
+    assert_eq!(rendered[0].audio, reference);
+    assert_eq!(rendered[0].latency, latency);
+    assert!(reference.iter().any(|sample| *sample != 0.0));
+    assert!(
+        authoritative
+            .iter()
+            .any(|(key, _)| key == crate::loudness::TRIM_PARAM)
+    );
+}
+
+#[test]
+fn unsafe_normalization_cannot_enter_a_builtin_worker() {
+    let mut project = oc_dsl::parse(SOURCE).unwrap();
+    project.presets[0].plugin = Some(oc_synth::synth::PLUGIN_ID.into());
+    project.presets[0].params.push((
+        "open_synth_state_file".into(),
+        ParamValue::String("unreadable.json".into()),
+    ));
+    let clock = oc_dsl::timing::ProjectClock::new(&project.properties).unwrap();
+    let result = render_builtin_tracks_parallel(
+        vec![BuiltinTrackJob {
+            index: 0,
+            plugin_id: oc_synth::synth::PLUGIN_ID.into(),
+            preset_name: "unsafe".into(),
+            params: Vec::new(),
+            trim_preset: Some(project.presets[0].clone()),
+            full_program: None,
+            events: Vec::new(),
+            performance: None,
+        }],
+        BuiltinRenderContext {
+            total_samples: 1600,
+            start_sample: 0,
+            sample_rate: 8000,
+            tempo: 120.0,
+            resource_root: None,
+            clock: &clock,
+            cancel: None,
+            worker_options: crate::render_parallel::RenderWorkerOptions::default(),
+        },
+    );
+    assert!(result.unwrap_err().contains("requires serial preparation"));
 }
