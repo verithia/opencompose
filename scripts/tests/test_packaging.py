@@ -2,10 +2,49 @@
 
 import json
 import unittest
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 TAURI = ROOT / "crates/oc-gui/frontend/src-tauri"
+
+
+class ProjectFileAssociationTests(unittest.TestCase):
+    def setUp(self):
+        self.config = json.loads((TAURI / "tauri.conf.json").read_text())
+        self.bundle = self.config["bundle"]
+        (self.association,) = [item for item in self.bundle["fileAssociations"] if "ocp" in item["ext"]]
+
+    def test_macos_exports_its_project_document_type(self):
+        self.assertEqual(self.association["role"], "Editor")
+        self.assertEqual(self.association["rank"], "Owner")
+        exported = self.association["exportedType"]
+        self.assertEqual(exported["identifier"], f"{self.config['identifier']}.project")
+        self.assertEqual(set(exported["conformsTo"]), {"public.data", "public.content"})
+
+    def test_windows_uses_the_shared_installer_association(self):
+        override = json.loads((TAURI / "tauri.windows.conf.json").read_text())
+        self.assertNotIn("fileAssociations", override.get("bundle", {}))
+        self.assertEqual(self.association["name"], "OpenCompose Project")
+        self.assertEqual(self.association["ext"], ["ocp"])
+
+    def test_linux_bundle_payloads_map_ocp_to_the_launcher_mime_type(self):
+        linux = self.bundle["linux"]
+        destination = f"/usr/share/mime/packages/{self.config['identifier']}.xml"
+        namespace = {"m": "http://www.freedesktop.org/standards/shared-mime-info"}
+        for target in ("deb", "appimage"):
+            with self.subTest(target=target):
+                source = TAURI / linux[target]["files"][destination]
+                root = ET.parse(source).getroot()
+                entry = root.find("m:mime-type", namespace)
+                self.assertEqual(entry.attrib["type"], self.association["mimeType"])
+                self.assertIn({"pattern": "*.ocp"}, [glob.attrib for glob in entry.findall("m:glob", namespace)])
+        self.assertIn("shared-mime-info", linux["deb"]["depends"])
+
+    def test_linux_launcher_passes_one_file_to_the_existing_open_handler(self):
+        template = (TAURI / self.bundle["linux"]["deb"]["desktopTemplate"]).read_text()
+        self.assertIn("Exec={{exec}} %f", template.splitlines())
+        self.assertIn("MimeType={{mime_type}};", template.splitlines())
 
 
 class WindowsPackagingTests(unittest.TestCase):

@@ -1,0 +1,14 @@
+[Desktop Entry]
+Name={{name}}
+{{#if comment}}
+Comment={{comment}}
+{{/if}}
+Type=Application
+Exec={{exec}} %f
+Icon={{icon}}
+Terminal=false
+StartupWMClass={{exec}}
+Categories=AudioVideo;Audio;
+{{#if mime_type}}
+MimeType={{mime_type}};
+{{/if}}

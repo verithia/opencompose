@@ -125,6 +125,15 @@ jobs:
         working-directory: crates/oc-gui/frontend
         run: npm run tauri build -- --ci --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} -- --locked
 
+      - name: Check the packaged Intel plugin helper
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          helper="target/${{ matrix.target }}/release/bundle/macos/OpenCompose.app/Contents/MacOS/opencompose-vst2-bridge-x86_64"
+          test -x "$helper"
+          test "$(lipo -archs "$helper")" = "x86_64"
+
       - name: Check the bundle size budgets
         shell: bash
         run: |

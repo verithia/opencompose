@@ -66,9 +66,28 @@
         "name": "OpenCompose Project",
         "description": "OpenCompose music project",
         "role": "Editor",
-        "mimeType": "application/x-opencompose-project"
+        "rank": "Owner",
+        "mimeType": "application/x-opencompose-project",
+        "exportedType": {
+          "identifier": "com.opencompose.daw.project",
+          "conformsTo": ["public.data", "public.content"]
+        }
       }
     ],
+    "linux": {
+      "deb": {
+        "depends": ["shared-mime-info"],
+        "desktopTemplate": "linux/opencompose.desktop",
+        "files": {
+          "/usr/share/mime/packages/com.opencompose.daw.xml": "linux/opencompose-mime.xml"
+        }
+      },
+      "appimage": {
+        "files": {
+          "/usr/share/mime/packages/com.opencompose.daw.xml": "linux/opencompose-mime.xml"
+        }
+      }
+    },
     "windows": {
       "webviewInstallMode": {
         "type": "downloadBootstrapper"
