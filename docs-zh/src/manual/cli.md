@@ -31,11 +31,12 @@ cargo build --release -p oc-cli
 | `generate-midi` | 生成合成的 MIDI 文件。 |
 | `devices list` | 列出内置设备及其参数结构。 |
 | `validate-builtin-effects` | 构建混音器信号图，但不渲染音频。 |
-| `scan` | 扫描已安装的插件包；`--rescan` 会重试被隔离的插件包。 |
+| `scan` | 扫描已安装的插件包；`--rescan` 会重试被隔离的插件包，`--bundle PATH` 重试单个插件包。 |
 | `resolve-plugin` | 用渲染器的注册表解析插件 id、名称或路径。 |
 | `plugin-params` | 列出 VST3 或 VST2 插件的全部参数。 |
 | `plugin-preset import` | 把 `.ffp` 预设导入一个 VST3 插件实例。 |
 | `plugin install` | 解析、下载、校验并安装一个目录条目。 |
+| `plugin migrate-vst2` | 把不透明的 VST2 FXB 音色库转换为 VST3 预设。 |
 | `plugin conformance` | 对每个已安装的插件包运行 VST3 一致性测试。 |
 | `compile-project` | 把完整的工程 AST JSON 编译为规范的 OCP。 |
 | `plugin-index` | 构建、校验远程插件索引，或为其生成签名密钥。 |
@@ -115,7 +116,7 @@ ocp render song.ocp -o /tmp/song.wav --reruns 3 --require-identical
 
 容器、位深、抖动以及 MP3 采样率和码率表见[导出格式](../export-format.md)。命令行参数会覆盖工程的导出设置。
 
-异步加载内容的插件，如果音符在内容就绪前开始，可能渲染出静音。`--pre-roll` 按真实时间等待，并不会在渲染结果里加入静音。`--reruns N --require-identical` 能证明输出可复现，但不能证明加载已经完成。参见[故障排查](troubleshooting.md)。
+异步加载内容的插件，如果音符在内容就绪前开始，可能渲染出静音。`--pre-roll` 按真实时间等待。AudioUnit 乐器和在 Rosetta 下运行的 Intel VST2 乐器会先收到一个不带 MIDI 的音频块，其输出被丢弃。拥有插件的进程会响应它的加载回调，乐器在乐谱开始之前被重置。其他格式只是等待，不渲染静音，所以自由运行的振荡器保持相位。`--pre-roll 0` 关闭预热。`--reruns N --require-identical` 能证明输出可复现，但不能证明加载已经完成。参见[故障排查](troubleshooting.md)。
 
 ## 单轨渲染
 
@@ -210,6 +211,7 @@ ocp plugin-params "/Library/Audio/Plug-Ins/VST3/Example.vst3"
 ocp plugin-params "/Library/Audio/Plug-Ins/VST/Example.vst"
 ocp plugin-params "org.example.eq" --json
 ocp plugin-preset import "org.example.eq" preset.ffp
+ocp plugin migrate-vst2 old.fxb --source-name Example --plugin Example.vst3 -o new.vstpreset
 ocp plugin conformance
 ocp plugin conformance --plugin "/Library/Audio/Plug-Ins/VST3/Example.vst3" --format json
 ```
@@ -218,11 +220,13 @@ ocp plugin conformance --plugin "/Library/Audio/Plug-Ins/VST3/Example.vst3" --fo
 
 `validate-builtin-effects` 构建音频信号图作为 DSP 预检，但不渲染。它会跳过外部插件效果器，所以工程里可以混用内置设备和插件。旧的效果器简写会被展开并以警告报告，参见 [DSL 兼容性](../../dsl-compat.html)（英文）。
 
-`resolve-plugin` 要求在 VST3、VST2、CLAP、LV2 和内置设备中恰好匹配一个，并以 JSON 输出它的元数据。它不查找 AudioUnit。
+`resolve-plugin` 要求在 VST3、VST2、CLAP、LV2 和内置设备中恰好匹配一个，并以 JSON 输出它的元数据。在 macOS 上，AudioUnit 组件 id（例如 `aufx:lpas:appl`）、插件包路径或 `au:Name` 会在系统的 AudioUnit 注册表中查找。按 id 或名称找到的匹配，路径为空。
 
 `plugin-params` 加载一个 VST3 或 VST2 插件并列出全部参数。VST3 插件的表格显示 id、名称、单位、范围、默认值、步数和标志位；VST2 插件显示编号、名称、标签、默认值和当前值，VST2 的值归一化到 0..1。如果同时装有同名的 VST3，传入 `.vst` 路径即可选中 VST2 版本。
 
 `plugin-preset import` 读取 `.ffp` 预设，把其中的参数值应用到指定的 VST3 插件上。它报告解析、映射和应用的参数数量，并列出未映射、被拒绝以及回读不一致的参数。`--json` 以 JSON 输出报告。
+
+`plugin migrate-vst2` 把 VST2 FXB 音色库转换为 VST3 预设。音色库必须是不透明的，且当前程序为第一个。给出原 VST2 插件的名称（据此推导 VST3 类 id）和已安装的 VST3 插件包。命令选择匹配的类；如果插件包恰好声明了一个替代类，则选择它。新的实例加载转换后的状态后，命令写出一个新的 `.vstpreset`；在 `vst3_state_file` 中指定这个文件。插件包没有匹配的类、状态校验不通过或输出文件已存在时，命令失败。转换在单独的进程中运行，时限为十秒。
 
 `plugin conformance` 为每个 VST3 插件包启动一个子进程，以表格、JSON 或 Markdown 输出逐步骤的结果。测试项和 JSON 结构见 [VST3 一致性测试](../../vst3-conformance.html)（英文）。
 

@@ -361,3 +361,16 @@ delay(src -> dst) = max(0, latency(dst) - effective(src))
 - 对每个目标：用来比较的参考、在那里施加的补偿，以及存在时的诊断差值。
 
 界面的检查器通过 `track_latency_readout` 命令显示所选轨道的这份读数。
+
+## 回退时的插件历史 {#plugin-history-on-rewind}
+
+有些托管效果器会把跳回之前的音频带入新的一遍播放。在这样的插入效果上设置 `host_recreate_on_rewind=true`；轨道、总线和主输出的插入效果都接受它。播放回到更早的位置时，渲染工作线程会加载一个新的实例，并恢复保存的状态和参数。
+
+```ocp
+@bus wet
+  routes: [master]
+  effects:
+    - plugin:"vst2.vendor.effect": state_file="wet.fxb", host_recreate_on_rewind=true
+```
+
+播放会等新实例就绪后再发送音频。正常播放和向前定位保留当前实例。
