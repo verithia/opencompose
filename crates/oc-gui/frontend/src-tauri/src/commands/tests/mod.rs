@@ -40,6 +40,7 @@ mod pattern_rename;
 mod placement;
 mod playable;
 mod plugin_state;
+mod plugin_state_paths;
 mod preset_effects;
 mod preset_load;
 mod preset_load_probe;

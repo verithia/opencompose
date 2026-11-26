@@ -455,11 +455,10 @@ fn path_backward_seek_vst3() -> (FirstBlockSnapshot, u64, u64) {
     let project = four_vst3_project();
     let mut audio = test_audio(None);
     audio.preload_project(&project);
-    assert!(
-        wait_warm(&audio),
-        "the VST3 project never warmed up: {:?}",
-        audio.render_thread.as_ref().and_then(|rt| rt.load_error())
-    );
+    let render_thread = audio.render_thread.as_ref().expect("render thread");
+    render_thread
+        .wait_project_loaded(Duration::from_secs(5))
+        .expect("VST3 project loaded without rendering its opening");
     play_once(&mut audio, &project);
     let clock = oc_dsl::timing::ProjectClock::new(&project.properties).unwrap();
     let bar_eight = clock.sample_at_quarter(28.0, 48_000).unwrap();

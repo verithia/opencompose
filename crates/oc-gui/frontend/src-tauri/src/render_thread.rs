@@ -2353,10 +2353,10 @@ impl RenderState {
             let mut pos = chunk_start;
 
             while pos < source_end {
-                if self.renderers[track_idx].is_vst3()
+                if self.renderers[track_idx].supports_score_offsets()
                     || self.renderers[track_idx].performance_uses_offsets()
                 {
-                    // Same 128-frame VST3 processing quantum as offline export.
+                    // Same 128-frame hosted processing quantum as offline export.
                     // Keep sample offsets; chopping at each note changes plugin
                     // block-dependent envelopes and round-robin behavior.
                     let transport = self.transport.as_ref().unwrap().at_sample(pos);
@@ -2389,7 +2389,7 @@ impl RenderState {
                             break;
                         }
                         if let Err(error) = self.renderers[track_idx]
-                            .send_vst3_at(&ev.event, ev.time_samples.saturating_sub(pos) as i32)
+                            .send_score_at(&ev.event, ev.time_samples.saturating_sub(pos) as i32)
                         {
                             self.render_error = Some(format!("Track {track_idx}: {error}"));
                             return;
@@ -2894,8 +2894,12 @@ impl RenderState {
     /// A source that cannot restore its own DSP state is rebuilt alone; the
     /// other lanes keep their instances and plugin state.
     fn rewind_for_seek(&mut self) -> Result<(), String> {
+        let transport = self
+            .transport
+            .as_ref()
+            .map(|transport| transport.at_sample(self.dsp_cursor));
         for lane in 0..self.renderers.len() {
-            if self.renderers[lane].rewind() {
+            if self.renderers[lane].rewind_from(transport.clone()) {
                 continue;
             }
             self.rebuild_source(lane)?;
@@ -2903,8 +2907,11 @@ impl RenderState {
         for chain in &mut self.source_chains {
             chain.reset();
         }
-        if let Some(graph) = self.graph.as_mut() {
-            graph.reset();
+        if let (Some(graph), Some(project)) = (self.graph.as_mut(), self.project.as_ref())
+            && graph.rewind_mixer_for_seek(project, self.touch.as_ref(), CHUNK_FRAMES)?
+        {
+            publish_chain_latency(&self.chain_latency_frames, graph);
+            self.update_drain_frames();
         }
         for delay in &mut self.source_delays {
             for sample in delay.iter_mut() {
@@ -3290,6 +3297,9 @@ struct SourceBuilder {
 
 impl SourceBuilder {
     fn run(self) {
+        #[cfg(target_os = "macos")]
+        let _bridge_scope =
+            oc_host::vst2_bridge::BridgeScope::enter(oc_host::vst2_bridge::BridgeMode::Streaming);
         while let Ok(request) = self.requests.recv() {
             if self.shutdown.load(Ordering::Acquire) {
                 break;
@@ -3441,6 +3451,9 @@ fn render_loop(
     shutdown: Arc<AtomicBool>,
     build_tx: Sender<SourceBuildRequest>,
 ) {
+    #[cfg(target_os = "macos")]
+    let _bridge_scope =
+        oc_host::vst2_bridge::BridgeScope::enter(oc_host::vst2_bridge::BridgeMode::Streaming);
     let mut state = RenderState::new(sample_rate);
     let mut chunk = Vec::with_capacity(CHUNK_FRAMES * 2);
     state.meter_hub = Some(Arc::clone(&playback.meters));
@@ -3802,13 +3815,16 @@ fn render_loop(
                         .then_some(current_frame.min(state.total_frames));
                     invalidate_playback_buffer(&playback);
                     state.publish_ends(&playback);
-                    playback.project_loaded.store(true, Ordering::Release);
                     playback
                         .active_sources
                         .store(state.renderers.len() as u64, Ordering::Release);
-                    // Warm only a stopped project: a playing project is filled by
-                    // the consumer-driven loop and must not preroll twice.
-                    if warm && !was_playing {
+                    if warm
+                        && !was_playing
+                        && state
+                            .renderers
+                            .iter()
+                            .all(SmartSource::can_prefill_before_play)
+                    {
                         state.warm_fill = true;
                         warm_stage = false;
                         playback.warm_state.store(WARM_BUILDING, Ordering::Release);
@@ -3818,6 +3834,7 @@ fn render_loop(
                             warm_first = None;
                         }
                     }
+                    playback.project_loaded.store(true, Ordering::Release);
                     log::info!(
                         "[render_thread] Project loaded: {} tracks, {:.1}s duration",
                         state.num_tracks,
