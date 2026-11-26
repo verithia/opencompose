@@ -903,13 +903,12 @@ pub(crate) fn mapped_transport_fixture() -> PluginTransport {
 
 #[cfg(test)]
 mod tests {
-    const EXIT_STATUS_CHILD_ENV: &str = "OCP_EXIT_GUARD_STATUS_CHILD";
-
     /// A failing test binary exits with 101 through `std::process::exit`; the
     /// teardown guard must not turn that into a success.
     #[cfg(unix)]
     #[test]
     fn teardown_guard_keeps_a_test_process_exit_status() {
+        const EXIT_STATUS_CHILD_ENV: &str = "OCP_EXIT_GUARD_STATUS_CHILD";
         if std::env::var_os(EXIT_STATUS_CHILD_ENV).is_some() {
             super::mark_plugin_module_loaded();
             super::guard_plugin_teardown();
