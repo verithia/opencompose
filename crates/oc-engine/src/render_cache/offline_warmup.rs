@@ -10,6 +10,7 @@ pub(super) struct WarmupOptions<'a> {
 }
 
 impl WarmupOptions<'_> {
+    #[cfg(any(target_os = "macos", test))]
     fn check_cancel(self) -> Result<(), String> {
         if crate::render_cancel::stopped(self.cancel) {
             return Err(crate::render_cancel::cancelled());

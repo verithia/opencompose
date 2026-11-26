@@ -2278,6 +2278,7 @@ mod tests {
     }
 
     /// A temporary directory holding one bundle directory.
+    #[cfg(target_os = "macos")]
     fn bundle_root(tag: &str, bundle: &str) -> (PathBuf, PathBuf) {
         let base = std::env::temp_dir().join(format!(
             "ocp-scan-{tag}-{}-{}",
