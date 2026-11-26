@@ -240,6 +240,18 @@ fn native_vst2_tail_preparation_uses_the_cli_main_and_real_module() {
 }
 
 #[test]
+fn native_vst2_cold_start_initializes_before_publishing_the_first_note() {
+    let result = vst2_tail_render("Gain: 0.75, dc_offset: 1");
+    assert!(
+        result.output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.output.stderr)
+    );
+    assert_eq!(result.samples[0], result.samples[1]);
+    assert!(result.samples[0] > 0.1, "the note must sound in frame zero");
+}
+
+#[test]
 fn native_vst2_tail_preparation_refuses_unknown_parameters_before_output() {
     let result = vst2_tail_render("Gain: 0.75, missing_native_control: 0.25");
     let error = String::from_utf8_lossy(&result.output.stderr);
@@ -303,6 +315,45 @@ fn native_vst2_owned_audio_refuses_unknown_runtime_bindings_before_output() {
 }
 
 #[test]
+fn native_vst2_multi_output_routes_a_typed_pair_and_an_auxiliary_stem() {
+    let source = r#"@project
+  tempo: 120
+@preset voice
+  source: vst2
+  plugin: "test.fixture.vst2.multi"
+@track lead | preset: voice, instrument: synth/lead, pair: 1
+  mix: send(lead.out4->drums=100%)
+  @phrase held [1:1 - 1:2]
+    C4 q ff
+@bus drums
+  routes: [master]
+"#;
+    let result = component_render(source, true);
+    let error = String::from_utf8_lossy(&result.output.stderr);
+    assert!(result.output.status.success(), "{error}");
+    let main = &result.stems["lead"];
+    let aux = &result.stems["drums"];
+    assert!(main[0] > 0.01 && main[1] > main[0]);
+    assert!(aux[0] > main[0] && aux[1] > aux[0]);
+    assert!((aux[0] - main[0] - 4.0 * (main[1] - main[0])).abs() < 1e-6);
+    for ((master, main), aux) in result.samples.iter().zip(main).zip(aux).take(512) {
+        assert!((master - main - aux).abs() < 1e-6);
+    }
+
+    for (from, to, expected) in [
+        ("lead.out4", "lead.out5", "auxiliary output 5 was requested"),
+        ("pair: 1", "pair: 4", "requests output pair 5"),
+    ] {
+        let invalid = component_render(&source.replace(from, to), true);
+        let error = String::from_utf8_lossy(&invalid.output.stderr);
+        assert_eq!(invalid.output.status.code(), Some(1), "{error}");
+        assert!(error.contains(expected), "{error}");
+        assert!(!invalid.exists);
+        assert!(!invalid.stem_manifest_exists);
+    }
+}
+
+#[test]
 fn native_vst2_owned_audio_shares_declared_main_output_routing() {
     let prefix = "@project\n  tempo: 120\n@preset voice\n  source: vst2\n  plugin: \"test.fixture.vst2.tone\"\n  params: {Gain: 0.1, output_pair: 0}\n";
     let track = |name: &str| {
@@ -350,6 +401,20 @@ fn native_vst2_owned_audio_keeps_original_inherited_routing_alias_order() {
     );
     assert!(result.exists);
     assert!(result.samples.iter().any(|sample| sample.abs() > 0.01));
+}
+
+#[test]
+fn native_vst2_unchanged_io_notice_keeps_rendering_and_exports_stems() {
+    let source = "@project\n  tempo: 120\n@preset voice\n  source: vst2\n  plugin: \"test.fixture.vst2.tone\"\n@track lead | preset: voice, instrument: synth/lead\n  performance: { @0 ch0 note_on 60 100; @0 ch0 cc 119 126; @1 ch0 note_off 60 0; }\n";
+    let result = component_render(source, true);
+    assert!(
+        result.output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.output.stderr)
+    );
+    assert!(result.samples.iter().any(|sample| sample.abs() > 0.01));
+    assert!(result.stem_manifest_exists);
+    assert_eq!(result.stems.len(), 1);
 }
 
 #[test]

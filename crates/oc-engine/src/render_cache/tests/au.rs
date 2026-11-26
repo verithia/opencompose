@@ -86,6 +86,185 @@ fn system_au_instrument_renders_into_the_mix() {
     );
 }
 
+#[test]
+fn au_performance_keeps_controller_timing_in_export_and_streaming() {
+    use crate::block_source::{BlockSource, SmartSource, SourceOutput};
+    use oc_dsl::timing::ProjectClock;
+
+    if oc_host::au_instance::resolve_component("Apple: DLSMusicDevice").is_err() {
+        return;
+    }
+    const RATE: u32 = 48_000;
+    const BLOCK: usize = 128;
+    let project = |volume| {
+        oc_dsl::parse(&format!(
+            r#"@project
+  tempo: 120
+@preset piano
+  source: au
+  plugin: "Apple: DLSMusicDevice"
+@track play | preset: piano, instrument: keys/piano
+  performance: {{ @0 ch0 program 0; @0 ch0 cc 7 100; @0.01 ch0 note_on 60 100; @0.51 ch0 cc 7 {volume}; @2 ch0 note_off 60 37; }}
+"#
+        ))
+        .unwrap()
+    };
+    let loud = project(100);
+    let muted = project(0);
+    let offline = |project| {
+        RenderCache::new()
+            .render_full(project, Path::new("unused.sf2"), RATE, &mut HashMap::new())
+            .unwrap()
+    };
+    let streaming = |project: &Project| {
+        let clock = ProjectClock::new(&project.properties).unwrap();
+        let commands = oc_synth::performance::schedule(
+            project.tracks[0].performance.as_ref().unwrap(),
+            &clock,
+            RATE,
+        )
+        .unwrap();
+        let preset = &project.presets[0];
+        let source = BlockSource::new_performance(
+            Some(preset),
+            &preset.params,
+            Path::new("unused.sf2"),
+            RATE,
+            120.0,
+            &commands,
+            None,
+        )
+        .unwrap();
+        let mut source = SmartSource::new(source, RATE, false);
+        assert!(source.performance_uses_offsets());
+        assert!(
+            source
+                .send_performance_at(&commands[0], BLOCK as u32, BLOCK as u32)
+                .is_err()
+        );
+        let mut output = SourceOutput::new(0, &[]);
+        let frame_count = RATE as usize + 1_024;
+        let mut audio = Vec::with_capacity(frame_count * 2);
+        let mut next = 0;
+        for start in (0..frame_count).step_by(BLOCK) {
+            let end = (start + BLOCK).min(frame_count);
+            let transport = PluginTransport::new(start as u64, RATE, 120.0);
+            assert_eq!(
+                crate::test_alloc::operations(|| {
+                    while let Some(command) = commands.get(next) {
+                        if command.sample >= end as u64 {
+                            break;
+                        }
+                        source
+                            .send_performance_at(
+                                command,
+                                (command.sample - start as u64) as u32,
+                                (end - start) as u32,
+                            )
+                            .unwrap();
+                        next += 1;
+                    }
+                    source.render_into(end - start, RATE, transport, &mut output);
+                    audio.extend_from_slice(output.main());
+                }),
+                0
+            );
+        }
+        assert_eq!(next, commands.len());
+        assert!(
+            !source.rewind(),
+            "an AU performance lane must rebuild on rewind"
+        );
+        audio
+    };
+    let energy = |audio: &[f32], from, to| {
+        audio[from..to]
+            .iter()
+            .map(|&x| f64::from(x).powi(2))
+            .sum::<f64>()
+    };
+    for (loud, muted) in [
+        (offline(&loud), offline(&muted)),
+        (streaming(&loud), streaming(&muted)),
+    ] {
+        let early = 9_600..19_200;
+        assert_eq!(loud[early.clone()], muted[early.clone()]);
+        assert!(energy(&loud, early.start, early.end) > 1e-4);
+        let late = 43_200..76_800;
+        let unmuted = energy(&loud, late.start, late.end);
+        assert!(unmuted > 1e-4);
+        assert!(energy(&muted, late.start, late.end) < 0.1 * unmuted);
+    }
+}
+
+#[test]
+fn missing_au_performance_source_refuses_the_render() {
+    let project = oc_dsl::parse(
+        r#"@project
+@preset absent
+  source: au
+  plugin: "aumu:zzzz:zzzz"
+@track play | preset: absent, instrument: keys/piano
+  performance: { @0 ch0 note_on 60 100; @1 ch0 note_off 60 64; }
+"#,
+    )
+    .unwrap();
+    let error = RenderCache::new()
+        .render_full(
+            &project,
+            Path::new("unused.sf2"),
+            48_000,
+            &mut HashMap::new(),
+        )
+        .unwrap_err();
+    assert!(error.contains("AudioUnit performance preset 'absent'"));
+}
+
+#[test]
+fn au_score_streaming_keeps_note_offsets() {
+    use crate::block_source::{BlockSource, SmartSource, SourceOutput};
+
+    if oc_host::au_instance::resolve_component("Apple: DLSMusicDevice").is_err() {
+        return;
+    }
+    let project = au_project("Apple: DLSMusicDevice");
+    let preset = &project.presets[0];
+    let mut source = SmartSource::new(
+        BlockSource::new(
+            Some(preset),
+            &preset.params,
+            Path::new("unused.sf2"),
+            48_000,
+            120.0,
+            None,
+        )
+        .unwrap(),
+        48_000,
+        false,
+    );
+    assert!(source.supports_score_offsets());
+    source
+        .send_score_at(
+            &MidiMessage::NoteOn {
+                channel: 0,
+                note: 60,
+                velocity: 100,
+            },
+            79,
+        )
+        .unwrap();
+    let mut output = SourceOutput::new(0, &[]);
+    let transport = PluginTransport::new(0, 48_000, 120.0);
+    source.render_into(128, 48_000, transport, &mut output);
+    assert!(output.main()[..158].iter().all(|sample| *sample == 0.0));
+    assert!(
+        output.main()[158..]
+            .iter()
+            .any(|sample| sample.abs() > 1e-5)
+    );
+    assert!(source.rewind());
+}
+
 /// FNV-1a over the raw sample bits; any change in the AU render path shows up.
 fn sample_digest(audio: &[f32]) -> u64 {
     let mut hash = 0xcbf2_9ce4_8422_2325_u64;
@@ -118,6 +297,42 @@ fn au_project_renders_the_same_samples_after_a_fresh_lifecycle() {
         first, second,
         "a fresh AudioUnit lifecycle must not change the rendered samples"
     );
+}
+
+#[test]
+fn au_offline_warmup_keeps_the_first_authored_note_at_time_zero() {
+    let mut prepared = AuInstance::load("Apple: DLSMusicDevice", 48_000, 128)
+        .expect("system instrument for offline preparation");
+    let mut reference =
+        AuInstance::load("Apple: DLSMusicDevice", 48_000, 128).expect("fresh system instrument");
+    super::super::offline_warmup::prepare_au(
+        &mut prepared,
+        super::super::offline_warmup::WarmupOptions {
+            seconds: 0.001,
+            cancel: None,
+        },
+    )
+    .unwrap();
+    prepared.note_on_channel(0, 60, 0.9, 0);
+    reference.note_on_channel(0, 60, 0.9, 0);
+    let mut heard = false;
+    for offset in (0..4096).step_by(128) {
+        let mut actual = [0.0; 256];
+        let mut expected = [0.0; 256];
+        let transport = PluginTransport::new(offset, 48_000, 120.0);
+        prepared
+            .process_block_into(&mut actual, Some(&transport))
+            .unwrap();
+        reference
+            .process_block_into(&mut expected, Some(&transport))
+            .unwrap();
+        heard |= actual.iter().any(|value| value.abs() > 1e-6);
+        assert_eq!(
+            actual, expected,
+            "warm-up must not shift the note or its phase"
+        );
+    }
+    assert!(heard);
 }
 
 /// These guards count Rust host allocation and deallocation. AudioToolbox and

@@ -532,22 +532,10 @@ fn vst2_tail_routing_override_chain_is_claimed_only_for_final_main_pair() {
     );
 }
 #[test]
-fn vst2_tail_typed_track_nonmain_output_is_refused_without_synthetic_native_rows() {
+fn vst2_tail_typed_track_output_does_not_become_a_native_parameter() {
     let original = original();
     let mut resolved = oc_dsl::preset::resolve(&original).unwrap();
     resolved.tracks[0].output_pair = Some(1);
-    assert!(
-        instrument_tail(
-            &original.presets,
-            &resolved.presets[1],
-            &resolved.tracks[0],
-            48_000,
-            None,
-            |_| panic!("nonmain track routing must not dispatch")
-        )
-        .is_err()
-    );
-    resolved.tracks[0].output_pair = Some(0);
     let plan = instrument_request(
         &original.presets,
         &resolved.presets[1],

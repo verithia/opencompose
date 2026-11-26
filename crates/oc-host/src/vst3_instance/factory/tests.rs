@@ -2,6 +2,50 @@
 use super::super::native_fixture::factory_audit::FactoryFixture;
 use super::*;
 
+#[test]
+fn selects_the_requested_audio_class_from_a_shared_bundle() {
+    let fixture = FactoryFixture::new();
+    fixture.configure(0, 0, 1, false, false);
+    let synth = audio_class(
+        classes(&owner(&fixture), None).unwrap(),
+        Vst3ClassSelector::First,
+    )
+    .unwrap();
+    let mut effect = synth.clone();
+    effect.name = "Second audio class".into();
+    effect.cid = [8; 16];
+    let classes = vec![synth.clone(), effect.clone()];
+    assert_eq!(
+        audio_class(classes.clone(), Vst3ClassSelector::First)
+            .unwrap()
+            .cid,
+        [7; 16]
+    );
+    assert_eq!(
+        audio_class(classes.clone(), Vst3ClassSelector::Name(&effect.name))
+            .unwrap()
+            .cid,
+        effect.cid
+    );
+    assert!(audio_class(classes, Vst3ClassSelector::Name("Unknown audio class")).is_err());
+    let mut same_name = synth;
+    same_name.name = effect.name.clone();
+    let same_name_classes = vec![same_name, effect.clone()];
+    assert!(
+        audio_class(
+            same_name_classes.clone(),
+            Vst3ClassSelector::Name(&effect.name)
+        )
+        .is_err()
+    );
+    assert_eq!(
+        audio_class(same_name_classes, Vst3ClassSelector::Uid([8; 16]))
+            .unwrap()
+            .cid,
+        effect.cid
+    );
+}
+
 fn owner(fixture: &FactoryFixture) -> Vst3ForeignRef<IPluginFactory> {
     let raw = fixture.acquire().unwrap();
     // SAFETY: acquire transfers exactly one retained native factory reference.
@@ -39,14 +83,17 @@ pub fn audit_factory_owner() -> Result<FactoryOwnerAudit, String> {
     let factory = owner(&fixture);
     fixture.configure(0, 0, 0, false, false);
     assert!(classes(&factory, None)?.is_empty());
-    assert!(audio_class(classes(&factory, None)?).is_err());
+    assert!(audio_class(classes(&factory, None)?, Vst3ClassSelector::First).is_err());
     fixture.configure(0, 0, MAX_FACTORY_CLASSES, false, false);
     assert_eq!(classes(&factory, None)?.len(), MAX_FACTORY_CLASSES as usize);
     metadata_cases += 1;
     fixture.configure(0, 0, 1, false, false);
     let factory2 = factory.try_query::<IPluginFactory2>().unwrap().unwrap();
-    let plain = audio_class(classes(&factory, None)?)?;
-    let extended = audio_class(classes(&factory, Some(&factory2))?)?;
+    let plain = audio_class(classes(&factory, None)?, Vst3ClassSelector::First)?;
+    let extended = audio_class(
+        classes(&factory, Some(&factory2))?,
+        Vst3ClassSelector::First,
+    )?;
     assert_eq!(plain.name, "Native factory");
     assert_eq!(plain.cid, [7; 16]);
     assert_eq!(extended.cid, plain.cid);
@@ -55,7 +102,11 @@ pub fn audit_factory_owner() -> Result<FactoryOwnerAudit, String> {
     // Optional extended-metadata refusal falls back to the same bounded base info.
     fixture.configure(3, 4, 1, false, false);
     assert_eq!(
-        audio_class(classes(&factory, Some(&factory2))?)?.name,
+        audio_class(
+            classes(&factory, Some(&factory2))?,
+            Vst3ClassSelector::First
+        )?
+        .name,
         plain.name
     );
     assert!(!factory.failure.failed());

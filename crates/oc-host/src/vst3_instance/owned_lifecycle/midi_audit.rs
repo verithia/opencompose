@@ -446,6 +446,7 @@ pub fn audit_owned_midi_ingress(
     drop(fixture);
     for (case, (mode, budget, params)) in [
         (14, budget, vec![]),
+        (20, budget, vec![]),
         (
             11,
             Vst3ProcessingBudget {
@@ -485,7 +486,7 @@ pub fn audit_owned_midi_ingress(
             false,
             heap,
         );
-        if case == 0 {
+        if case < 2 {
             assert!(matches!(
                 result,
                 Err(Vst3ProcessLeaseError::UnsupportedMidi)
@@ -496,6 +497,12 @@ pub fn audit_owned_midi_ingress(
         assert_eq!(output, [81.0; 256]);
         assert_eq!(fixture.native.calls(1), before);
         atomic_refusals += 1;
+        if mode == 20 {
+            let (result, _) = submit(&mut fixture, &messages[..1], &[], false, heap);
+            assert!(result.is_ok());
+            assert_eq!(fixture.native.calls(1), before + 1);
+            assert_eq!(fixture.native.midi_word_for_test(0, 0, 0), 1);
+        }
     }
     let mut exact = Fixture::new(
         11,
@@ -631,7 +638,10 @@ pub fn audit_owned_midi_ingress(
         let (result, output) = submit(&mut fixture, &messages[..1], &[], false, heap);
         assert!(matches!(
             result,
-            Err(Vst3ProcessLeaseError::InventoryChanged)
+            Err(Vst3ProcessLeaseError::InventoryChanged {
+                pending_restart_flags,
+                during_block: false,
+            }) if pending_restart_flags & flags != 0
         ));
         assert_eq!(output, [81.0; 256]);
         assert_eq!(fixture.native.calls(1), before);
@@ -650,7 +660,10 @@ pub fn audit_owned_midi_ingress(
     );
     assert!(matches!(
         result,
-        Err(Vst3ProcessLeaseError::InventoryChanged)
+        Err(Vst3ProcessLeaseError::InventoryChanged {
+            pending_restart_flags,
+            during_block: true,
+        }) if pending_restart_flags & RestartFlags_::kNoteExpressionChanged != 0
     ));
     assert_eq!(
         output, [0.0; 256],
@@ -1045,7 +1058,10 @@ fn audit_latency_restart(heap: fn() -> OwnedHeapCounters) -> Result<(), Vst3Owne
     let (result, output) = submit(&mut fixture, &message, &[], false, heap);
     assert!(matches!(
         result,
-        Err(Vst3ProcessLeaseError::InventoryChanged)
+        Err(Vst3ProcessLeaseError::InventoryChanged {
+            pending_restart_flags,
+            during_block: true,
+        }) if pending_restart_flags & RestartFlags_::kLatencyChanged != 0
     ));
     assert_eq!(output, [0.0; 256], "latency-changed audio must not publish");
     assert_eq!(
@@ -1056,7 +1072,10 @@ fn audit_latency_restart(heap: fn() -> OwnedHeapCounters) -> Result<(), Vst3Owne
     let (result, output) = submit(&mut fixture, &message, &[], false, heap);
     assert!(matches!(
         result,
-        Err(Vst3ProcessLeaseError::InventoryChanged)
+        Err(Vst3ProcessLeaseError::InventoryChanged {
+            pending_restart_flags,
+            during_block: false,
+        }) if pending_restart_flags & RestartFlags_::kLatencyChanged != 0
     ));
     assert_eq!(output, [81.0; 256]);
     assert_eq!(

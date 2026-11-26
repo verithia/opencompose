@@ -1,5 +1,40 @@
 use super::*;
 
+#[test]
+fn restored_insert_publishes_latency_on_a_stopped_frame_at_the_project_origin() {
+    let control = Arc::new(test_support::FakeControl::default());
+    control.input_bus_count.store(1, Ordering::Relaxed);
+    control.latency_after_process.store(51, Ordering::Relaxed);
+    let mut plugin = test_support::fake_effect_instance(&control, 2, 128);
+    assert_eq!(plugin.latency_samples(), 0);
+    assert!(plugin.set_param_by_name(test_support::FAKE_PARAM_NAME, 0.25));
+
+    let clock = PluginTransport::new(512, 44_100, 156.0).with_time_signature(5, 4);
+    plugin.prepare_restored_insert(Some(&clock)).unwrap();
+    assert_eq!(plugin.latency_samples(), 51);
+    {
+        let contexts = control.contexts.lock().unwrap();
+        assert_eq!(contexts.len(), 1);
+        let stopped = contexts[0];
+        assert_eq!(stopped.num_samples, 1);
+        assert_eq!(stopped.project_time_samples, 512);
+        assert_eq!(stopped.tempo, 156.0);
+        assert_eq!(stopped.time_sig_numerator, 5);
+        assert!(!stopped.playing);
+        assert_eq!(*control.input_bus_peaks.lock().unwrap(), [0.0]);
+        let values = control.param_changes.lock().unwrap();
+        assert_eq!(values.len(), 1);
+        assert_eq!(values[0].sample_offset, 0);
+        assert_eq!(values[0].value, 0.25);
+    }
+
+    plugin.process_with_transport(&mut [0.1; 64], 44_100, Some(clock));
+    assert_eq!(plugin.latency_samples(), 51);
+    let contexts = control.contexts.lock().unwrap();
+    assert_eq!(contexts[1].project_time_samples, 512);
+    assert!(contexts[1].playing);
+}
+
 fn class_info(name: &str, vendor: &str) -> Vst3ClassInfo {
     Vst3ClassInfo {
         name: name.into(),
@@ -281,6 +316,30 @@ fn input_layout_reallocates_only_when_the_shape_changes() {
 }
 
 #[test]
+fn mono_vst3_ports_receive_both_source_channels_and_clear_disconnected_keys() {
+    let mut layout = Vst3InputLayout::new(vec![1, 1, 4], 2);
+    let main = [0.0, 0.5, 0.25, -0.25];
+    let key = [0.0, 0.75, 0.125, 0.125];
+
+    layout.write(&main, Some(&key), Some(1), 2);
+    assert_eq!(layout.channels[0][0], [0.25, 0.0]);
+    assert_eq!(layout.channels[1][0], [0.375, 0.125]);
+    assert!(
+        layout.channels[2]
+            .iter()
+            .flatten()
+            .all(|value| *value == 0.0)
+    );
+
+    layout.write(&main, Some(&key), Some(2), 2);
+    assert_eq!(layout.channels[1][0], [0.0; 2]);
+    assert_eq!(layout.channels[2][0], [0.0, 0.125]);
+    assert_eq!(layout.channels[2][1], [0.75, 0.125]);
+    assert_eq!(layout.channels[2][2], [0.0; 2]);
+    assert_eq!(layout.channels[2][3], [0.0; 2]);
+}
+
+#[test]
 fn a_plugin_that_throws_in_teardown_marks_the_instance_failed() {
     let control = std::sync::Arc::new(test_support::FakeControl::default());
     let mut instance = test_support::fake_instance(&control, 2, 512);
@@ -423,16 +482,18 @@ fn state_stream_reads_writes_and_seeks() {
 
 #[test]
 fn state_stream_rejects_overflowing_writes() {
-    let stream = Vst3StateStream::new(vec![]);
-    stream.position.set(usize::MAX);
-    let mut byte = 1u8;
-
-    assert_eq!(
-        // SAFETY: The live read-only stream receives one valid input byte and supports a null optional count pointer.
-        unsafe { stream.write(&mut byte as *mut u8 as *mut c_void, 1, ptr::null_mut()) },
-        -1
-    );
-    assert!(stream.data.borrow().is_empty());
+    for position in [crate::plugin_state_io::MAX_PLUGIN_STATE_BYTES, usize::MAX] {
+        let stream = Vst3StateStream::new(vec![]);
+        stream.position.set(position);
+        let mut byte = 1u8;
+        assert_eq!(
+            // SAFETY: The live stream receives one valid input byte and a null optional count pointer.
+            unsafe { stream.write(&mut byte as *mut u8 as *mut c_void, 1, ptr::null_mut()) },
+            -1
+        );
+        assert!(stream.overflowed.get());
+        assert!(stream.data.borrow().is_empty());
+    }
 }
 
 #[test]
@@ -553,6 +614,29 @@ fn declared_buses_are_reported_as_ports_with_default_pairs() {
 }
 
 #[test]
+fn inserts_supply_all_activated_outputs_and_mix_only_the_main_bus() {
+    let (mut instance, control) = test_support::fake_instance_with_buses(3, 1, 16);
+    let mut stereo = [0.25; 4];
+    instance.process_effect(&mut stereo, 48_000);
+    assert_eq!(
+        control
+            .last_process_output_buses
+            .load(std::sync::atomic::Ordering::Relaxed),
+        3
+    );
+    assert_eq!(stereo, [1.0, 1.5, 1.0, 1.5]);
+}
+
+#[test]
+fn mono_insert_main_output_is_copied_to_both_track_channels() {
+    let control = std::sync::Arc::new(test_support::FakeControl::default());
+    let mut instance = test_support::fake_instance(&control, 1, 16);
+    let mut stereo = [0.25; 4];
+    instance.process_effect(&mut stereo, 48_000);
+    assert_eq!(stereo, [1.0; 4]);
+}
+
+#[test]
 fn sidechain_audio_reaches_the_selected_input_bus() {
     let (mut instance, control) = test_support::fake_instance_with_buses(1, 3, 512);
     assert_eq!(instance.output_ports().len(), 1);
@@ -575,6 +659,15 @@ fn sidechain_audio_reaches_the_selected_input_bus() {
     assert!((peaks[0] - 0.1).abs() < 1e-6, "{peaks:?}");
     assert_eq!(peaks[1], 0.0, "unselected sidechain input stays silent");
     assert!((peaks[2] - 0.75).abs() < 1e-6, "{peaks:?}");
+}
+
+#[test]
+fn sidechain_index_skips_a_zero_channel_bus() {
+    let (mut instance, _) = test_support::fake_instance_with_buses(1, 3, 512);
+    instance.input_bus_channels[1] = 0;
+    assert_eq!(instance.sidechain_input_count(), 1);
+    assert_eq!(instance.sidechain_input_bus(0), Some(2));
+    assert_eq!(instance.sidechain_input_bus(1), None);
 }
 
 #[test]

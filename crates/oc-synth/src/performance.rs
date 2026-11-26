@@ -39,23 +39,32 @@ pub fn schedule(
 }
 
 impl ScheduledCommand {
-    /// Exact channel-voice MIDI1 bytes; no normalized value rounding.
-    pub fn midi_bytes(&self) -> Vec<u8> {
+    /// Exact channel-voice MIDI 1 bytes, padded to three bytes for native hosts.
+    pub fn midi_packet(&self) -> [u8; 3] {
         let ch = self.channel;
         match self.message {
-            ChannelCommand::NoteOn { note, velocity } => vec![0x90 | ch, note, velocity],
-            ChannelCommand::NoteOff { note, velocity } => vec![0x80 | ch, note, velocity],
-            ChannelCommand::ControlChange { controller, value } => {
-                vec![0xB0 | ch, controller, value]
-            }
-            ChannelCommand::ProgramChange { program } => vec![0xC0 | ch, program],
+            ChannelCommand::NoteOn { note, velocity } => [0x90 | ch, note, velocity],
+            ChannelCommand::NoteOff { note, velocity } => [0x80 | ch, note, velocity],
+            ChannelCommand::ControlChange { controller, value } => [0xB0 | ch, controller, value],
+            ChannelCommand::ProgramChange { program } => [0xC0 | ch, program, 0],
             ChannelCommand::PitchBend { value } => {
                 let raw = (i32::from(value) + 8192) as u16;
-                vec![0xE0 | ch, (raw & 127) as u8, (raw >> 7) as u8]
+                [0xE0 | ch, (raw & 127) as u8, (raw >> 7) as u8]
             }
-            ChannelCommand::ChannelPressure { pressure } => vec![0xD0 | ch, pressure],
-            ChannelCommand::PolyPressure { note, pressure } => vec![0xA0 | ch, note, pressure],
+            ChannelCommand::ChannelPressure { pressure } => [0xD0 | ch, pressure, 0],
+            ChannelCommand::PolyPressure { note, pressure } => [0xA0 | ch, note, pressure],
         }
+    }
+
+    /// Exact channel-voice MIDI 1 bytes with their wire length.
+    pub fn midi_bytes(&self) -> Vec<u8> {
+        let packet = self.midi_packet();
+        let length = if matches!(packet[0] & 0xf0, 0xc0 | 0xd0) {
+            2
+        } else {
+            3
+        };
+        packet[..length].to_vec()
     }
 }
 

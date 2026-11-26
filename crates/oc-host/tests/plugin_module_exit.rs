@@ -21,6 +21,35 @@ use std::path::PathBuf;
 const CHILD_ENV: &str = "OCP_PLUGIN_MODULE_EXIT_CHILD";
 const FRAMEWORK_EXIT_ENV: &str = "OCP_PLUGIN_FRAMEWORK_EXIT_CHILD";
 
+#[test]
+fn disposable_vst2_scan_reports_metadata_without_closing_the_plugin() {
+    let extension = if cfg!(target_os = "macos") {
+        "vst"
+    } else if cfg!(target_os = "windows") {
+        "dll"
+    } else {
+        "so"
+    };
+    let bundle = std::path::Path::new(env!("OC_VST2_FIXTURE_DIR"))
+        .join(format!("OpenCompose Exit on Close Fixture.{extension}"));
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_opencompose-plugin-scan-helper"))
+        .arg(oc_host::scanner::HELPER_MODE_ARG)
+        .args(["--format", "vst2", "--path"])
+        .arg(bundle)
+        .output()
+        .expect("run isolated scan");
+    assert!(
+        output.status.success(),
+        "scan failed with {}: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let plugins: Vec<oc_host::PluginInfo> =
+        serde_json::from_slice(&output.stdout).expect("plugin scan metadata");
+    assert_eq!(plugins.len(), 1);
+    assert_eq!(plugins[0].category, oc_host::PluginCategory::Effect);
+}
+
 fn configured_bundle() -> Option<PathBuf> {
     let path = std::env::var_os("OCP_TEST_VST3_PLUGIN").map(PathBuf::from)?;
     assert!(

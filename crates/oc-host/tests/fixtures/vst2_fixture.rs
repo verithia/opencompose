@@ -6,6 +6,7 @@
 //!
 //! Variants (selected with `--cfg`):
 //! * default      gain + DC offset effect, 2 in / 2 out, chunk state
+//! * program_bank gain + DC offset effect with three named parameter programs
 //! * instrument   note-driven tone, 0 in / 2 out, accumulating `process` only
 //! * broken       entry point returns no plugin
 //! * no_output    descriptor reports zero outputs
@@ -20,6 +21,7 @@ use std::os::raw::c_int;
 const EFFECT_MAGIC: i32 = 0x5673_7450;
 const FLAG_CAN_REPLACING: i32 = 1 << 4;
 const FLAG_PROGRAM_CHUNKS: i32 = 1 << 5;
+#[cfg(any(instrument_mode, multi_out_mode))]
 const FLAG_IS_SYNTH: i32 = 1 << 8;
 const MIDI_EVENT_TYPE: i32 = 1;
 
@@ -93,6 +95,10 @@ struct Fixture {
     host: HostCallback,
     effect: *mut AEffect,
     params: [f32; 2],
+    #[cfg(program_bank_mode)]
+    program_index: usize,
+    #[cfg(program_bank_mode)]
+    programs: [([f32; 2], [u8; 25]); 3],
     authored_name_mode: u32,
     authored_setter_action: u32,
     authored_setter_calls: usize,
@@ -100,8 +106,14 @@ struct Fixture {
     sample_rate: f32,
     block_size: i32,
     active: bool,
+    history_enabled: bool,
+    history: [f32; 8],
     note: Option<u8>,
     voice_amplitude: f32,
+    #[cfg(instrument_mode)]
+    has_processed: bool,
+    #[cfg(multi_out_mode)]
+    processed_blocks: u32,
     last_tempo: f64,
     last_ppq: f64,
     last_sample_pos: f64,
@@ -145,13 +157,31 @@ impl Fixture {
         (self.chunk.len(), self.chunk.as_mut_ptr() as *mut c_void)
     }
 
-    fn set_chunk(&mut self, bytes: *const u8, size: usize) -> isize {
+    fn set_chunk(&mut self, index: i32, bytes: *const u8, size: usize) -> isize {
         if bytes.is_null() || size < 12 {
             return 1;
         }
         let bytes = unsafe { std::slice::from_raw_parts(bytes, size) };
-        if &bytes[0..4] != b"OCF2" {
+        let signature = match index {
+            0 => b"OCF2",
+            1 => b"OCP2",
+            _ => return 1,
+        };
+        if &bytes[0..4] != signature {
             return 1;
+        }
+        #[cfg(stall_restore_mode)]
+        if bytes == b"OCF2stalling" {
+            use std::io::Write;
+            if let Some(marker) = std::env::var_os("OCP_TEST_VST2_RESTORE_MARKER") {
+                let mut trace = std::fs::OpenOptions::new()
+                    .append(true)
+                    .create(true)
+                    .open(marker)
+                    .unwrap();
+                writeln!(trace, "restore entered").unwrap();
+            }
+            std::thread::sleep(std::time::Duration::from_secs(30));
         }
         self.params[0] = f32::from_le_bytes(bytes[4..8].try_into().unwrap());
         self.params[1] = f32::from_le_bytes(bytes[8..12].try_into().unwrap());
@@ -176,6 +206,12 @@ impl Fixture {
             let status = event.midi_data[0] & 0xf0;
             match status {
                 0x90 if event.midi_data[1] > 0 => {
+                    // The tone fixture's unused DC knob enables a processor
+                    // which ignores notes received before its first block.
+                    #[cfg(instrument_mode)]
+                    if self.params[1] > 0.5 && !self.has_processed {
+                        continue;
+                    }
                     self.note = Some(event.midi_data[1]);
                     self.voice_amplitude = 0.5 * f32::from(event.midi_data[2]) / 127.0;
                 }
@@ -186,10 +222,14 @@ impl Fixture {
                 }
                 _ => {}
             }
-            // Explicit host-conformance trigger used by offline-publication
-            // tests: request a new I/O preparation while delivering MIDI.
-            if status == 0xb0 && event.midi_data[1] == 119 && event.midi_data[2] == 127 {
+            // Exercise unchanged notices and a real topology change at the
+            // same MIDI dispatch boundary.
+            if status == 0xb0 && event.midi_data[1] == 119 && event.midi_data[2] >= 126 {
+                // SAFETY: The fixture owns this live descriptor during MIDI dispatch.
                 unsafe {
+                    if event.midi_data[2] == 127 {
+                        (*self.effect).num_outputs = 1;
+                    }
                     (self.host)(
                         self.effect,
                         13, /* audioMasterIOChanged */
@@ -218,8 +258,10 @@ impl Fixture {
     }
 
     fn process(&mut self, inputs: *const *const f32, outputs: *mut *mut f32, frames: c_int) {
+        #[cfg(any(instrument_mode, multi_out_mode))]
+        let _ = inputs;
         let frames = frames.max(0) as usize;
-        let output_count = unsafe { (*self.effect).num_outputs }.clamp(0, 2) as usize;
+        let output_count = unsafe { (*self.effect).num_outputs }.clamp(0, 8) as usize;
         if !self.active {
             for channel in 0..output_count {
                 let output = unsafe { *outputs.add(channel) };
@@ -237,6 +279,15 @@ impl Fixture {
             self.last_sample_pos = info.sample_pos;
         }
         let gain = self.params[0] * 2.0;
+        #[cfg(instrument_mode)]
+        {
+            self.has_processed |= frames > 0;
+        }
+        #[cfg(multi_out_mode)]
+        {
+            self.processed_blocks = self.processed_blocks % 8 + 1;
+        }
+        #[cfg(not(any(instrument_mode, multi_out_mode)))]
         let dc = self.params[1] * 0.25;
         for channel in 0..output_count {
             let output = unsafe { *outputs.add(channel) };
@@ -244,12 +295,18 @@ impl Fixture {
                 continue;
             }
             let destination = unsafe { std::slice::from_raw_parts_mut(output, frames) };
-            #[cfg(instrument_mode)]
+            #[cfg(any(instrument_mode, multi_out_mode))]
             {
                 let amplitude = self.note.map_or(0.0, |_| self.voice_amplitude) * gain;
+                #[cfg(multi_out_mode)]
+                let amplitude = if channel == 7 && self.params[1] > 0.5 {
+                    f32::NAN
+                } else {
+                    amplitude * (channel as f32 / 8.0 + self.processed_blocks as f32 / 64.0)
+                };
                 destination.fill(amplitude);
             }
-            #[cfg(not(instrument_mode))]
+            #[cfg(not(any(instrument_mode, multi_out_mode)))]
             {
                 let input = if inputs.is_null() {
                     std::ptr::null()
@@ -260,8 +317,20 @@ impl Fixture {
                     destination.fill(dc);
                 } else {
                     let source = unsafe { std::slice::from_raw_parts(input, frames) };
+                    #[cfg(sidechain_mode)]
+                    let key =
+                        unsafe { std::slice::from_raw_parts(*inputs.add(channel + 2), frames) };
                     for frame in 0..frames {
-                        destination[frame] = source[frame] * gain + dc;
+                        #[cfg(sidechain_mode)]
+                        let signal = source[frame] + key[frame];
+                        #[cfg(not(sidechain_mode))]
+                        let signal = source[frame];
+                        let sample = if self.history_enabled {
+                            std::mem::replace(&mut self.history[channel], signal)
+                        } else {
+                            signal
+                        };
+                        destination[frame] = sample * gain + dc;
                     }
                 }
             }
@@ -280,12 +349,42 @@ unsafe extern "C" fn dispatcher(
     let fixture = unsafe { &mut *((*effect).object as *mut Fixture) };
     match opcode {
         0 => 1, // effOpen
+        #[cfg(exit_on_close_mode)]
+        1 => std::process::exit(79),
+        #[cfg(not(exit_on_close_mode))]
         1 => {
             // Controlled native lifecycle observation, ignored by ordinary hosts.
             unsafe { (fixture.host)(effect, 0x4f43_0002, 0, 0, std::ptr::null_mut(), 0.0) };
             drop(unsafe { Box::from_raw((*effect).object as *mut Fixture) });
             drop(unsafe { Box::from_raw(effect) });
             0
+        }
+        #[cfg(program_bank_mode)]
+        2 if (0..3).contains(&value) => {
+            fixture.programs[fixture.program_index].0 = fixture.params;
+            fixture.program_index = value as usize;
+            fixture.params = fixture.programs[fixture.program_index].0;
+            0
+        }
+        #[cfg(program_bank_mode)]
+        3 => fixture.program_index as isize,
+        #[cfg(program_bank_mode)]
+        4 if !ptr.is_null() => {
+            // SAFETY: The dispatcher's program name is a nul-terminated input
+            // and the fixture copies its bytes before returning.
+            let name = unsafe { CStr::from_ptr(ptr.cast::<c_char>()) }.to_bytes();
+            let text = &mut fixture.programs[fixture.program_index].1;
+            text.fill(0);
+            let length = name.len().min(text.len() - 1);
+            text[..length].copy_from_slice(&name[..length]);
+            0
+        }
+        #[cfg(program_bank_mode)]
+        5 => {
+            let text = &fixture.programs[fixture.program_index].1;
+            let name = CStr::from_bytes_until_nul(text).unwrap().to_string_lossy();
+            fixture.store_name(ptr, &name);
+            1
         }
         6 | 7 | 8 => {
             // param label / display / name
@@ -327,6 +426,11 @@ unsafe extern "C" fn dispatcher(
         }
         12 => {
             fixture.active = value != 0;
+            fixture.history.fill(0.0);
+            #[cfg(instrument_mode)]
+            {
+                fixture.has_processed = false;
+            }
             1
         }
         13 => 0, // no editor
@@ -336,7 +440,7 @@ unsafe extern "C" fn dispatcher(
             unsafe { *(ptr as *mut *mut c_void) = pointer };
             size as isize
         }
-        24 => fixture.set_chunk(ptr as *const u8, value as usize),
+        24 => fixture.set_chunk(index, ptr as *const u8, value as usize),
         25 => {
             unsafe { (fixture.host)(effect, 0x4f43_0004, 0, 0, std::ptr::null_mut(), 0.0) };
             fixture.handle_events(ptr as *const u8);
@@ -350,11 +454,11 @@ unsafe extern "C" fn dispatcher(
             }
         }
         35 => {
-            #[cfg(instrument_mode)]
+            #[cfg(any(instrument_mode, multi_out_mode))]
             {
                 2
             }
-            #[cfg(not(instrument_mode))]
+            #[cfg(not(any(instrument_mode, multi_out_mode)))]
             {
                 1
             }
@@ -411,6 +515,10 @@ unsafe extern "C" fn dispatcher(
         }
         10002 => fixture.authored_setter_calls as isize,
         10003 => fixture.authored_alternate_calls as isize,
+        10004 => {
+            fixture.history_enabled = value != 0;
+            1
+        }
         _ => 0,
     }
 }
@@ -505,7 +613,16 @@ pub unsafe extern "C" fn VSTPluginMain(host: HostCallback) -> *mut AEffect {
     effect.num_params = 2;
     effect.num_inputs = 2;
     effect.num_outputs = 2;
+    #[cfg(sidechain_mode)]
+    {
+        effect.num_inputs = 4;
+    }
     effect.flags = FLAG_PROGRAM_CHUNKS;
+    #[cfg(program_bank_mode)]
+    {
+        effect.flags &= !FLAG_PROGRAM_CHUNKS;
+        effect.num_programs = 3;
+    }
     #[cfg(not(instrument_mode))]
     {
         effect.flags |= FLAG_CAN_REPLACING;
@@ -522,6 +639,7 @@ pub unsafe extern "C" fn VSTPluginMain(host: HostCallback) -> *mut AEffect {
     }
     #[cfg(multi_out_mode)]
     {
+        effect.flags |= FLAG_IS_SYNTH;
         effect.num_inputs = 0;
         effect.num_outputs = 8;
     }
@@ -532,6 +650,10 @@ pub unsafe extern "C" fn VSTPluginMain(host: HostCallback) -> *mut AEffect {
         host,
         effect: effect_pointer,
         params: [0.5, 0.0],
+        #[cfg(program_bank_mode)]
+        program_index: 0,
+        #[cfg(program_bank_mode)]
+        programs: [([0.5, 0.0], [0; 25]); 3],
         authored_name_mode: 0,
         authored_setter_action: 0,
         authored_setter_calls: 0,
@@ -539,8 +661,14 @@ pub unsafe extern "C" fn VSTPluginMain(host: HostCallback) -> *mut AEffect {
         sample_rate: 44_100.0,
         block_size: 512,
         active: false,
+        history_enabled: false,
+        history: [0.0; 8],
         note: None,
         voice_amplitude: 0.0,
+        #[cfg(multi_out_mode)]
+        processed_blocks: 0,
+        #[cfg(instrument_mode)]
+        has_processed: false,
         last_tempo: 0.0,
         last_ppq: 0.0,
         last_sample_pos: 0.0,

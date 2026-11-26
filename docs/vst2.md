@@ -53,6 +53,14 @@ Windows loads the `.dll`, Linux the `.so`.
   name, case-insensitive name or `#index` in `params: { ... }` and automation.
 - State through `effGetChunk`/`effSetChunk` (bank chunk). Presets can carry a
   sidecar with `vst2_state_file` or an inline blob with `vst2_state_hex`.
+  These fields also accept `.fxb` parameter and opaque-state banks for the
+  matching plugin. A version 2 bank restores its saved program selection
+  when the plugin exposes programs. A version 1 bank supplies no selection.
+  A `.fxp` restores the current program's parameters or opaque program state
+  without selecting a different program.
+  A restored insert receives one silent frame with the transport stopped before
+  the mixer plans delay compensation. The host resets its processing history
+  before it receives project audio.
 - Host time through `audioMasterGetTime`: sample position, tempo at the start of
   the block, quarter-note position, bar start, meter and transport state. Tempo
   maps are honored the same way they are for VST3/CLAP.
@@ -74,10 +82,53 @@ synth flag as fallback) and a state fingerprint in `state_abi`.
 
 ## Streaming and offline rendering
 
-Both use the same backend. Offline projects render VST2 instrument groups and
-effect chains in process; streaming playback builds the same instance for a
-track. Instrument tracks with the same preset share one instance, like the
-other formats.
+Native-architecture VST2 plugins process in the host. A VST2 instrument with
+several outputs exposes one port containing consecutive channel pairs. A
+track's `pair: 1` selects the second pair as its main output. A mixer send
+such as `send(drums.out4->room=100%)` taps the fourth pair. Both are read
+from one processing call for the instrument block.
+
+An insert with one input channel receives the average of the track's left
+and right channels. A plugin with one output channel returns that signal
+on both track channels.
+
+On Apple Silicon, the translated helper discovers and processes Intel-only
+VST2 instruments and mono or stereo inserts in desktop playback and offline export.
+Projects can identify them by catalogue ID or absolute bundle path. The helper
+restores native state and processes stereo PCM with the score's MIDI and
+transport. For a four-input stereo effect, `route: kick -> fx1` sends the
+key to channels 3 and 4 of effect slot 1. Missing helpers, worker exits
+and failed control or audio requests surface as playback or export errors.
+Playback sends bounded blocks on its background renderer. The audio device
+callback consumes the same ring buffer it uses for native effects.
+
+The Intel VST2 and VST3 workers have one 10-second deadline for initialization
+and state restoration, including transferring the setup and reading its
+reply. Concurrent attempts for the same unproven setup wait for the first
+worker to respond. After a timeout, OpenCompose retires that worker and
+skips the same setup for one minute in the current process. Changing the
+plugin, worker binary or state allows a new attempt. **Rescan** clears
+completed startup timeouts so a repaired installation can be retried
+immediately. Working instances keep independent workers and the playback
+and export request timeouts retain their respective budgets.
+
+OpenCompose's npm/Tauri packaging command bundles the Intel worker in macOS
+packages that include Apple Silicon. Install the Intel Rust target before
+building one of those packages. At runtime macOS needs Rosetta to execute the
+worker.
+
+When running a standalone CLI from Cargo's build directory, build the helper
+from the same checkout and put it beside `ocp`:
+
+```sh
+CXX=clang++ cargo build --locked --release -p oc-host \
+  --target x86_64-apple-darwin --bin opencompose-vst2-bridge-x86_64
+cp target/x86_64-apple-darwin/release/opencompose-vst2-bridge-x86_64 target/release/
+```
+
+You can also set `OPENCOMPOSE_VST2_BRIDGE_HELPER` to an absolute helper path.
+The Intel worker accepts up to 64 native audio channels and sends the output
+pairs requested by the project.
 
 ## Limitations
 
@@ -85,11 +136,8 @@ other formats.
   known, but opening one needs a native child window and a run loop that cannot
   be exercised headless. `open_plugin_gui` returns a clean error for VST2, and
   the UI reports that the editor is unavailable.
-- **One stereo output pair.** Multi-output VST2 instruments are not wired; a
-  `send` that asks for an auxiliary output pair is rejected with an error.
-  Plugins with more than two output channels render their first pair only.
-- **No sidechain.** Extra input channels (a 4-input compressor, for example)
-  receive silence.
+- **One stereo sidechain.** Four-input effects can take a separate stereo
+  key on channels 3 and 4. Without a route that input receives silence.
 - **Float32 only.** The double-precision entry point is detected but not used.
 - **Shell plugins are unsupported.** One bundle is one plugin; the host reports
   no current shell id.

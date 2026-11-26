@@ -5,10 +5,13 @@
 //! payload stays the plugin's opaque chunk. Bare bytes written before envelopes
 //! existed have no magic prefix and load unchanged.
 
-use oc_dsl::ast::Project;
+use oc_dsl::ast::{ParamValue, Project};
+use oc_dsl::media::{PluginStateBackend, normalized_plugin_state_parameter};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::{HashMap, HashSet};
 
+use super::preset_parameters::host_parameter_key;
 use super::resolution::{PluginQuery, identifier_key, plugin_matches_query};
 use super::{PluginFormat, PluginInfo};
 
@@ -224,8 +227,7 @@ pub struct Vst2ToVst3Migration {
     pub preset: String,
     pub vst2_plugin: String,
     pub vst3_plugin: String,
-    /// State and qualification params that describe the VST2 plugin and are
-    /// dropped: a VST2 chunk cannot be handed to a VST3 instance.
+    /// Qualification metadata tied to the old binary.
     pub removed_params: Vec<String>,
 }
 
@@ -250,33 +252,103 @@ impl Vst2ToVst3MigrationPlan {
     }
 }
 
-/// Params that must not survive a change of plugin format.
-fn vst2_state_param(name: &str) -> bool {
+fn vst2_qualification_param(name: &str) -> bool {
     matches!(
-        identifier_key(name).as_str(),
-        "vst2statefile"
-            | "vst2statehex"
-            | "pluginstatefile"
-            | "pluginstatehex"
-            | "statefile"
-            | "statehex"
-            | "pluginversion"
-            | "pluginarchitecture"
-            | "pluginstateabi"
+        host_parameter_key(name).as_str(),
+        "pluginversion" | "pluginarchitecture" | "pluginstateabi"
     )
+}
+
+fn has_vst2_state(params: &[(String, ParamValue)]) -> bool {
+    params.iter().any(|(name, _)| {
+        matches!(
+            normalized_plugin_state_parameter(&host_parameter_key(name)),
+            Some((None | Some(PluginStateBackend::Vst2), _))
+        )
+    })
+}
+
+fn vst2_track_state_uses(project: &Project) -> HashMap<&str, &str> {
+    let mut uses = HashMap::new();
+    for track in project
+        .tracks
+        .iter()
+        .filter(|track| track.engine_params.as_deref().is_some_and(has_vst2_state))
+    {
+        let placed_patterns = track.pattern_clips().filter_map(|clip| {
+            project
+                .patterns
+                .iter()
+                .find(|pattern| pattern.name == clip.pattern)
+        });
+        let pattern_presets = placed_patterns
+            .chain(&track.inline_patterns)
+            .filter_map(|pattern| pattern.preset.as_deref());
+        for preset in track.preset.as_deref().into_iter().chain(pattern_presets) {
+            uses.insert(preset, track.name.as_str());
+        }
+    }
+    uses
+}
+
+/// Protect the source and plugin declarations on which saved VST2 state depends.
+fn vst2_state_owners(project: &Project) -> HashMap<&str, &str> {
+    let mut owners = HashMap::new();
+    let track_uses = vst2_track_state_uses(project);
+    if track_uses.is_empty()
+        && !project
+            .presets
+            .iter()
+            .any(|preset| has_vst2_state(&preset.params))
+    {
+        return owners;
+    }
+    for preset in &project.presets {
+        let track = track_uses.get(preset.name.as_str()).copied();
+        let used_by = track.unwrap_or(&preset.name);
+        if preset.extends.is_none() {
+            if preset.source.as_deref() == Some("vst2")
+                && (track.is_some() || has_vst2_state(&preset.params))
+            {
+                owners.insert(preset.name.as_str(), used_by);
+            }
+            continue;
+        }
+        let Ok(resolved) =
+            oc_dsl::preset::resolve_preset_with_layers(&project.presets, &preset.name)
+        else {
+            continue;
+        };
+        if resolved.preset.source.as_deref() != Some("vst2")
+            || (track.is_none() && !has_vst2_state(&resolved.preset.params))
+        {
+            continue;
+        }
+        for layer in [
+            resolved.layers.iter().rfind(|layer| layer.source.is_some()),
+            resolved.layers.iter().rfind(|layer| layer.plugin.is_some()),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            owners.insert(layer.name.as_str(), used_by);
+        }
+    }
+    owners
 }
 
 /// Find VST2 presets whose plugin no longer scans but whose VST3 twin does.
 ///
 /// Looks only at the inventories passed in, so it never scans or loads a
 /// plugin. A preset with no VST3 twin is left out: the existing missing-plugin
-/// diagnostic still covers it.
+/// diagnostic still covers it. Name matching alone cannot convert saved state.
 pub fn plan_vst2_to_vst3_migration(
     project: &Project,
     installed_vst2: &[PluginInfo],
     installed_vst3: &[PluginInfo],
 ) -> Vst2ToVst3MigrationPlan {
     let mut plan = Vst2ToVst3MigrationPlan::default();
+    let state_owners = vst2_state_owners(project);
     for preset in &project.presets {
         if preset.source.as_deref() != Some("vst2") {
             continue;
@@ -310,6 +382,15 @@ pub fn plan_vst2_to_vst3_migration(
             .collect();
         match candidates.as_slice() {
             [] => {}
+            [_] if state_owners.contains_key(preset.name.as_str()) => {
+                let dependent = state_owners[preset.name.as_str()];
+                plan.skipped.push(Vst2ToVst3Skip {
+                    preset: preset.name.clone(),
+                    reason: format!(
+                        "'{dependent}' uses saved VST2 state; a verified state conversion is required"
+                    ),
+                });
+            }
             [twin] => plan.migrations.push(Vst2ToVst3Migration {
                 preset: preset.name.clone(),
                 vst2_plugin: plugin_id.to_string(),
@@ -317,7 +398,7 @@ pub fn plan_vst2_to_vst3_migration(
                 removed_params: preset
                     .params
                     .iter()
-                    .filter(|(name, _)| vst2_state_param(name))
+                    .filter(|(name, _)| vst2_qualification_param(name))
                     .map(|(name, _)| name.clone())
                     .collect(),
             }),
@@ -339,12 +420,15 @@ pub fn apply_vst2_to_vst3_migration(
     project: &mut Project,
     plan: &Vst2ToVst3MigrationPlan,
 ) -> Result<usize, String> {
-    let mut applied = 0;
+    let state_owners = vst2_state_owners(project);
+    let mut edits = Vec::with_capacity(plan.migrations.len());
+    let mut edit_indices = HashSet::with_capacity(plan.migrations.len());
     for migration in &plan.migrations {
-        let Some(preset) = project
+        let Some((index, preset)) = project
             .presets
-            .iter_mut()
-            .find(|preset| preset.name == migration.preset)
+            .iter()
+            .enumerate()
+            .find(|(_, preset)| preset.name == migration.preset)
         else {
             return Err(format!(
                 "preset '{}' disappeared before the migration applied",
@@ -353,23 +437,25 @@ pub fn apply_vst2_to_vst3_migration(
         };
         if preset.source.as_deref() != Some("vst2")
             || preset.plugin.as_deref() != Some(migration.vst2_plugin.as_str())
+            || state_owners.contains_key(preset.name.as_str())
+            || !edit_indices.insert(index)
         {
             return Err(format!(
                 "preset '{}' changed before the migration applied",
                 migration.preset
             ));
         }
+        edits.push((index, migration));
+    }
+    for (index, migration) in edits {
+        let preset = &mut project.presets[index];
         preset.source = Some("vst3".to_string());
         preset.plugin = Some(migration.vst3_plugin.clone());
-        preset.params.retain(|(name, _)| {
-            !migration
-                .removed_params
-                .iter()
-                .any(|removed| removed == name)
-        });
-        applied += 1;
+        preset
+            .params
+            .retain(|(name, _)| !vst2_qualification_param(name));
     }
-    Ok(applied)
+    Ok(plan.migrations.len())
 }
 
 #[cfg(test)]
@@ -544,19 +630,76 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_vst2_with_a_vst3_twin_plans_joint_state_removal() {
-        let project = project_with_preset(vst2_preset());
+    fn a_name_match_preserves_inline_and_file_state() {
+        let vst3 = [plugin("vst3:halcyon_2", "Halcyon 2", PluginFormat::Vst3)];
+        for key in ["vst2_state_hex", "Plugin-State-File", "StateHex"] {
+            let mut preset = vst2_preset();
+            preset.params[0].0 = key.to_owned();
+            let project = project_with_preset(preset);
+
+            let plan = plan_vst2_to_vst3_migration(&project, &[], &vst3);
+
+            assert!(plan.is_empty());
+            assert_eq!(plan.skipped.len(), 1);
+            assert_eq!(plan.skipped[0].preset, "Halcyon");
+            assert!(plan.skipped[0].reason.contains("uses saved VST2 state"));
+        }
+    }
+
+    #[test]
+    fn state_on_a_derived_preset_protects_its_inherited_plugin() {
+        let mut parent = vst2_preset();
+        parent.params.clear();
+        let mut child = vst2_preset();
+        child.name = "Layer".to_string();
+        child.extends = Some(parent.name.clone());
+        child.source = None;
+        child.plugin = None;
+        let mut project = project_with_preset(parent);
+        project.presets.push(child);
         let vst3 = [plugin("vst3:halcyon_2", "Halcyon 2", PluginFormat::Vst3)];
 
         let plan = plan_vst2_to_vst3_migration(&project, &[], &vst3);
 
-        assert_eq!(plan.migrations.len(), 1);
-        let migration = &plan.migrations[0];
-        assert_eq!(migration.preset, "Halcyon");
-        assert_eq!(migration.vst3_plugin, "vst3:halcyon_2");
-        assert_eq!(
-            migration.removed_params,
-            vec!["vst2_state_hex".to_string(), "plugin_state_abi".to_string()]
+        assert!(plan.is_empty());
+        assert_eq!(plan.skipped[0].preset, "Halcyon");
+        assert!(
+            plan.skipped[0]
+                .reason
+                .contains("'Layer' uses saved VST2 state")
+        );
+    }
+
+    #[test]
+    fn track_state_protects_track_and_placed_pattern_presets() {
+        let project = oc_dsl::parse(
+            r#"@project
+  tempo: 120
+@preset TrackVoice
+  source: vst2
+  plugin: "vst2:halcyon_2"
+@preset PatternVoice
+  source: vst2
+  plugin: "vst2:halcyon_2"
+@pattern riff | preset: PatternVoice
+  events:
+    C4 q mf
+@track Main | preset: TrackVoice, instrument: synth/lead
+  engine_params: {state_file: "source.fxb"}
+  clip: riff [1:1 - 2:1]
+"#,
+        )
+        .unwrap();
+        let vst3 = [plugin("vst3:halcyon_2", "Halcyon 2", PluginFormat::Vst3)];
+
+        let plan = plan_vst2_to_vst3_migration(&project, &[], &vst3);
+
+        assert!(plan.is_empty());
+        assert_eq!(plan.skipped.len(), 2);
+        assert!(
+            plan.skipped
+                .iter()
+                .all(|item| item.reason.contains("'Main' uses saved VST2 state"))
         );
     }
 
@@ -581,11 +724,14 @@ mod tests {
     }
 
     #[test]
-    fn applying_the_plan_drops_vst2_state_and_keeps_other_params() {
-        let mut project = project_with_preset(vst2_preset());
+    fn migrating_without_state_replaces_the_plugin_and_keeps_other_params() {
+        let mut preset = vst2_preset();
+        preset.params.remove(0);
+        let mut project = project_with_preset(preset);
         let vst3 = [plugin("vst3:halcyon_2", "Halcyon 2", PluginFormat::Vst3)];
         let plan = plan_vst2_to_vst3_migration(&project, &[], &vst3);
 
+        assert_eq!(plan.migrations[0].removed_params, ["plugin_state_abi"]);
         let applied = apply_vst2_to_vst3_migration(&mut project, &plan).unwrap();
 
         assert_eq!(applied, 1);
@@ -599,14 +745,22 @@ mod tests {
     }
 
     #[test]
-    fn a_preset_that_changed_after_planning_is_not_migrated() {
-        let mut project = project_with_preset(vst2_preset());
+    fn stale_stateful_preset_rejects_the_entire_batch() {
+        let mut first = vst2_preset();
+        let state = first.params.remove(0);
+        let mut second = first.clone();
+        second.name = "Second".to_string();
+        let mut project = project_with_preset(first);
+        project.presets.push(second);
         let vst3 = [plugin("vst3:halcyon_2", "Halcyon 2", PluginFormat::Vst3)];
         let plan = plan_vst2_to_vst3_migration(&project, &[], &vst3);
-        project.presets[0].source = Some("vst3".to_string());
+        assert_eq!(plan.migrations.len(), 2);
+        project.presets[1].params.push(state);
+        let before = project.clone();
 
         let error = apply_vst2_to_vst3_migration(&mut project, &plan).unwrap_err();
 
         assert!(error.contains("changed before the migration applied"));
+        assert_eq!(project, before);
     }
 }

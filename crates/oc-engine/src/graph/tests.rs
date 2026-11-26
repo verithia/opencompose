@@ -3811,6 +3811,47 @@ fn a_parameter_patch_fades_instead_of_rebuilding_the_chain() {
     );
 }
 
+#[cfg(feature = "plugin-host")]
+#[test]
+fn a_missing_insert_sidecar_leaves_other_live_chains_unchanged() {
+    let root = tempfile::tempdir().unwrap();
+    let project = oc_dsl::parse(
+        r#"@project
+@track signal | instrument: synth/lead
+  effects:
+    - gain: factor=0.5
+@master
+  effects:
+    - gain: factor=1
+"#,
+    )
+    .unwrap();
+    let next = oc_dsl::parse(
+        r#"@project
+@track signal | instrument: synth/lead
+  effects:
+    - gain: factor=0.25
+@master
+  effects:
+    - plugin:"vst3.test.fake.effect": state_file="missing.bank"
+"#,
+    )
+    .unwrap();
+    let mut graph =
+        AudioGraph::try_from_project_with_resources(&project, 48_000, &[], Some(root.path()), None)
+            .unwrap();
+    let error = graph
+        .patch_chains(&project, &next, None, false)
+        .unwrap_err();
+    assert!(
+        error.contains("master") && error.contains("missing.bank"),
+        "{error}"
+    );
+    let mut audio = vec![vec![1.0_f32; 16]];
+    graph.process_track_effects(&mut audio, None);
+    assert_eq!(audio[0], vec![0.5; 16]);
+}
+
 #[test]
 fn a_parameter_patch_keeps_the_chain_dsp_state() {
     // The delay line must keep ringing: a rebuilt chain would start empty.

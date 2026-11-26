@@ -22,6 +22,7 @@ oc-synth = { path = "../oc-synth" }
 oc-dsl = { path = "../oc-dsl" }
 serde = { workspace = true, features = ["rc"] }
 serde_json.workspace = true
+json5.workspace = true
 thiserror.workspace = true
 log.workspace = true
 libc = "0.2"
@@ -30,6 +31,7 @@ vst3 = "0.3"
 rtrb.workspace = true
 plist = "1.9"
 sha2.workspace = true
+tempfile.workspace = true
 
 [dev-dependencies]
 oc-synth-import = { path = "../oc-synth-import" }

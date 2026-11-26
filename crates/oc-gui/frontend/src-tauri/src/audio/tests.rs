@@ -162,7 +162,7 @@ fn unsupported_performance_uses_checked_backend_admission_not_soundfont_preload(
     let error = state
         .render_for_playback(&project, &mut std::collections::HashMap::new())
         .unwrap_err();
-    assert!(error.contains("explicit CLAP preset"), "{error}");
+    assert!(error.contains("explicit instrument preset"), "{error}");
 }
 
 #[test]

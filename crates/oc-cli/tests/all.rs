@@ -10,6 +10,8 @@
 
 #[path = "pipeline.rs"]
 mod pipeline;
+#[path = "plugin_migration.rs"]
+mod plugin_migration;
 #[path = "plugin_render_exit.rs"]
 mod plugin_render_exit;
 #[path = "randomize.rs"]

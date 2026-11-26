@@ -194,7 +194,7 @@ pub struct Vst3NormalizedParameter {
     pub id: u32,
     pub value: f64,
 }
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 /// A normalized parameter event at a block offset.
 pub struct Vst3NormalizedEvent {
     pub id: u32,
@@ -204,7 +204,7 @@ pub struct Vst3NormalizedEvent {
 
 /// One source-ordered normalized parameter or MIDI event. Equal-offset order
 /// is retained even when MIDI maps to the same native parameter ID.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub enum Vst3OrderedEvent {
     Parameter(Vst3NormalizedEvent),
     Midi(Vst3MidiEvent),
@@ -251,6 +251,7 @@ impl Vst3OwnedLoadPlan {
             let prepared = preparation::prepare(
                 &token,
                 self.path,
+                None,
                 self.sample_rate,
                 self.max_frames,
                 self.component_state,

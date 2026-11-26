@@ -43,33 +43,33 @@ pub(crate) fn plugin_lookup_requests(
         }
         requests.push((plugin.to_string(), format));
     }
+    requests.extend(effect_plugin_refs(project).filter_map(|reference| {
+        let (format, selector) = oc_host::effect_plugin_selector(reference);
+        // AudioUnit selectors resolve through the OS registry.
+        let format = format.filter(|format| *format != oc_host::PluginFormat::Au)?;
+        Some((selector.to_string(), format))
+    }));
     requests
 }
 
-pub(crate) fn project_uses_plugin_effects(project: &ast::Project) -> bool {
-    let has_plugin_effect = |effects: &[ast::Effect]| {
-        effects
-            .iter()
-            .any(|effect| matches!(effect.effect_type, ast::EffectType::Plugin(_)))
-    };
+fn effect_plugin_refs(project: &ast::Project) -> impl Iterator<Item = &str> {
     project
         .tracks
         .iter()
-        .any(|track| has_plugin_effect(&track.effects))
-        || project
-            .buses
-            .iter()
-            .any(|bus| has_plugin_effect(&bus.effects))
-        || project
-            .master
-            .as_ref()
-            .is_some_and(|master| has_plugin_effect(&master.effects))
+        .flat_map(|track| &track.effects)
+        .chain(project.buses.iter().flat_map(|bus| &bus.effects))
+        .chain(project.master.iter().flat_map(|master| &master.effects))
+        .filter_map(|effect| match &effect.effect_type {
+            ast::EffectType::Plugin(reference) if !effect.bypass => Some(reference.as_str()),
+            _ => None,
+        })
 }
 
 /// Whether the press path needs the full inventory rather than one lookup:
-/// plugin effects are validated against it, CLAP instances are found in it.
+/// unqualified effects and CLAP instrument instances consult the inventory.
 pub(crate) fn project_needs_plugin_inventory(project: &ast::Project) -> bool {
-    project_uses_plugin_effects(project)
+    effect_plugin_refs(project)
+        .any(|reference| oc_host::effect_plugin_selector(reference).0.is_none())
         || project.presets.iter().any(|preset| {
             preset.source.as_deref() == Some("clap")
                 && preset
@@ -191,20 +191,17 @@ pub(crate) fn collect_plugin_render_warnings(project: &ast::Project) -> Vec<Stri
 
     let mut check_effects = |owner: &str, effects: &[ast::Effect]| {
         for effect in effects {
-            if let ast::EffectType::Plugin(plugin_id) = &effect.effect_type {
-                let bare_id = plugin_id
-                    .strip_prefix("clap.")
-                    .or_else(|| plugin_id.strip_prefix("vst3."))
-                    .or_else(|| plugin_id.strip_prefix("vst2."))
-                    .unwrap_or(plugin_id);
-                let is_renderable_plugin = oc_host::cached_plugins().iter().any(|plugin| {
-                    matches!(
-                        plugin.format,
-                        oc_host::PluginFormat::Clap
-                            | oc_host::PluginFormat::Vst3
-                            | oc_host::PluginFormat::Vst2
-                    ) && (plugin.id == bare_id || plugin.name == bare_id || plugin.path == bare_id)
-                });
+            if !effect.bypass
+                && let ast::EffectType::Plugin(plugin_id) = &effect.effect_type
+            {
+                let (format, selector) = oc_host::effect_plugin_selector(plugin_id);
+                let is_renderable_plugin = match format {
+                    #[cfg(target_os = "macos")]
+                    Some(oc_host::PluginFormat::Au) => {
+                        oc_host::au_instance::resolve_component(selector).is_ok()
+                    }
+                    _ => oc_host::find_effect_plugin(format, selector).is_some(),
+                };
                 if is_renderable_plugin {
                     continue;
                 }
@@ -430,6 +427,7 @@ pub(crate) fn plugin_load_plan(
 
 /// Instantiate the planned plugin; slow and therefore never called under the app lock.
 fn instantiate_plugin(plan: &PluginLoadPlan) -> Result<LoadedPlugin, String> {
+    let project_root = plan.file_path.as_deref().and_then(std::path::Path::parent);
     // An AudioUnit is addressed by its component name, not by a bundle path.
     #[cfg(target_os = "macos")]
     if plan.format == oc_host::PluginFormat::Au {
@@ -445,7 +443,7 @@ fn instantiate_plugin(plan: &PluginLoadPlan) -> Result<LoadedPlugin, String> {
             &mut instance,
             &plan.preset.params,
             &context,
-            None,
+            project_root,
         )
         .map_err(|error| error.to_string())?;
         oc_engine::render_cache::apply_au_preset_params(&mut instance, &plan.preset.params)?;
@@ -484,7 +482,7 @@ fn instantiate_plugin(plan: &PluginLoadPlan) -> Result<LoadedPlugin, String> {
             &mut instance,
             &plan.preset.params,
             &context,
-            None,
+            project_root,
         )?;
         oc_engine::render_cache::apply_vst2_preset_params(&mut instance, &plan.preset.params)?;
         let params = vst2_params_for_ui(&instance);
@@ -505,7 +503,7 @@ fn instantiate_plugin(plan: &PluginLoadPlan) -> Result<LoadedPlugin, String> {
             &mut instance,
             &plan.preset.params,
             &context,
-            None,
+            project_root,
         )?;
         oc_engine::render_cache::apply_lv2_preset_params(&mut instance, &plan.preset.params)?;
         let params = lv2_params_for_ui(&instance);
@@ -543,7 +541,7 @@ fn instantiate_plugin(plan: &PluginLoadPlan) -> Result<LoadedPlugin, String> {
         &mut instance,
         &plan.preset.params,
         &context,
-        None,
+        project_root,
     )?;
     oc_engine::render_cache::apply_vst3_preset_params(&mut instance, &plan.preset.params)?;
     // This instance owns the editor: it publishes editor edits into the preset
@@ -817,67 +815,11 @@ pub async fn preset_output_pairs(
     load: Option<bool>,
     app: tauri::AppHandle,
 ) -> Result<usize, String> {
-    let is_plugin = {
-        let state = app.state::<AppState>();
-        let inner = state.lock_inner();
-        let Some(preset) = inner
-            .project
-            .presets
-            .iter()
-            .find(|preset| preset.name == preset_name)
-        else {
-            return Ok(1);
-        };
-        matches!(
-            preset.source.as_deref(),
-            Some("clap") | Some("vst3") | Some("vst2") | Some("lv2") | Some("au")
-        ) && preset
-            .plugin
-            .as_deref()
-            .is_some_and(|id| !id.starts_with("builtin."))
-    };
-    if !is_plugin {
-        return Ok(1);
-    }
-    let needs_load = load.unwrap_or(true) && {
-        let state = app.state::<AppState>();
-        let inner = state.lock_inner();
-        !has_plugin_instance(&inner, &preset_name)
-    };
-    if needs_load {
-        load_preset_on_main(&app, &preset_name)?;
-    }
-    tauri::async_runtime::spawn_blocking(move || {
-        let state = app.state::<AppState>();
-        let inner = state.lock_inner();
-        Ok::<usize, String>(
-            inner
-                .plugin_instances
-                .get(&preset_name)
-                .map(|instance| instance.output_count())
-                .or_else(|| {
-                    inner
-                        .vst3_plugin_instances
-                        .get(&preset_name)
-                        .map(|instance| lock_vst3_preview(instance).output_count())
-                })
-                .or_else(|| {
-                    inner
-                        .vst2_plugin_instances
-                        .get(&preset_name)
-                        .map(|instance| instance.output_count())
-                })
-                .or_else(|| {
-                    inner
-                        .lv2_plugin_instances
-                        .get(&preset_name)
-                        .map(|instance| instance.output_count())
-                })
-                .unwrap_or(1),
-        )
-    })
-    .await
-    .map_err(|error| format!("Plugin output query failed: {error}"))?
+    Ok(preset_output_ports(preset_name, load, app)
+        .await?
+        .into_iter()
+        .map(|port| port.pairs)
+        .sum())
 }
 
 /// One declared output port of a preset's instrument.
@@ -935,6 +877,10 @@ pub async fn preset_output_ports(
         let inner = state.lock_inner();
         !has_plugin_instance(&inner, &preset_name)
     };
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    if needs_load && let Some(ports) = translated_preset_output_ports(&app, &preset_name).await? {
+        return Ok(port_infos(ports));
+    }
     if needs_load {
         load_preset_on_main(&app, &preset_name)?;
     }
@@ -965,6 +911,68 @@ pub async fn preset_output_ports(
             })
             .unwrap_or_else(|| vec![oc_host::ports::AudioPort::STEREO]);
         Ok::<Vec<PluginPortInfo>, String>(port_infos(ports))
+    })
+    .await
+    .map_err(|error| format!("Plugin port query failed: {error}"))?
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+async fn translated_preset_output_ports(
+    app: &tauri::AppHandle,
+    preset_name: &str,
+) -> Result<Option<Vec<oc_host::ports::AudioPort>>, String> {
+    let state = app.state::<AppState>();
+    let plan = plugin_load_plan(&state, preset_name)?;
+    if !matches!(
+        plan.format,
+        oc_host::PluginFormat::Vst2 | oc_host::PluginFormat::Vst3
+    ) {
+        return Ok(None);
+    }
+    let handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let Some(info) = plan
+            .plugin_info
+            .clone()
+            .or_else(|| oc_host::find_plugin_info(&plan.plugin_id, plan.format))
+        else {
+            return Ok(None);
+        };
+        let path = std::path::Path::new(&info.path);
+        let translated = if plan.format == oc_host::PluginFormat::Vst2 {
+            oc_host::vst2_bridge::needs_translation(path)
+        } else {
+            oc_host::vst2_bridge::needs_vst3_translation(path)
+        };
+        if !translated {
+            return Ok(None);
+        }
+        let source = oc_engine::block_source::BlockSource::new(
+            Some(&plan.preset),
+            &plan.preset.params,
+            std::path::Path::new(""),
+            plan.sample_rate,
+            120.0,
+            plan.file_path.as_deref().and_then(std::path::Path::parent),
+        )?;
+        let ports = source.output_ports();
+        let state = handle.state::<AppState>();
+        let epoch = state
+            .project_load_epoch
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let inner = state.lock_inner();
+        if inner.exit_ready
+            || *epoch != plan.load_epoch
+            || inner.revision != plan.revision
+            || inner.content_epoch != plan.content_epoch
+        {
+            return Err(format!(
+                "Preset '{}' or its document changed while its plugin loaded",
+                plan.preset_name,
+            ));
+        }
+        Ok(Some(ports))
     })
     .await
     .map_err(|error| format!("Plugin port query failed: {error}"))?
@@ -1624,7 +1632,7 @@ fn capture_plugin_state_bytes(
                 // processor state from before the drag.
                 instance.absorb_editor_edits();
                 instance.sync_processor_from_controller();
-                let bytes = instance.state_bytes().map_err(|err| {
+                let bytes = instance.portable_state_bytes().map_err(|err| {
                     format!(
                         "failed to capture live VST3 state for '{}': {}",
                         preset_name, err
@@ -1667,7 +1675,7 @@ fn capture_plugin_state_bytes(
             instance.bind_preset_edits(preset_name);
             instance.absorb_editor_edits();
             instance.sync_processor_from_controller();
-            let bytes = instance.state_bytes().map_err(|err| {
+            let bytes = instance.portable_state_bytes().map_err(|err| {
                 format!(
                     "failed to capture VST3 state for '{}': {}",
                     preset_name, err
@@ -2093,8 +2101,8 @@ pub(crate) fn encode_hex(bytes: &[u8]) -> String {
     output
 }
 
-/// Capture the live processor state for a separately hosted editor.
-async fn capture_vst3_state(app: &tauri::AppHandle, preset_name: &str) -> Option<Vec<u8>> {
+/// Capture live processor and controller state for a separately hosted editor.
+async fn capture_vst3_state(app: &tauri::AppHandle, preset_name: &str) -> Result<Vec<u8>, String> {
     let handle = app.clone();
     let name = preset_name.to_owned();
     let (tx, rx) = tokio::sync::oneshot::channel();
@@ -2105,17 +2113,19 @@ async fn capture_vst3_state(app: &tauri::AppHandle, preset_name: &str) -> Option
             inner.vst3_plugin_instances.get(&name).cloned()
         };
         let Some(preview) = preview else {
-            let _ = tx.send(None);
+            let _ = tx.send(Err(format!(
+                "VST3 preview for '{name}' is no longer loaded"
+            )));
             return;
         };
         let mut instance = lock_vst3_preview(&preview);
         instance.absorb_editor_edits();
         instance.sync_processor_from_controller();
-        let bytes = instance.state_bytes().ok();
-        let _ = tx.send(bytes);
+        let _ = tx.send(instance.portable_state_bytes());
     })
-    .ok()?;
-    rx.await.ok().flatten()
+    .map_err(|error| format!("Failed to dispatch VST3 editor state capture: {error}"))?;
+    rx.await
+        .map_err(|error| format!("VST3 editor state capture channel: {error}"))?
 }
 
 /// Whether this preset's VST3 editor has to run in the helper process.
@@ -2196,11 +2206,11 @@ pub async fn open_plugin_gui(
                 return Err(format!("Plugin editor '{preset_name}' is already open"));
             }
         }
-        let state_bytes = capture_vst3_state(&app, &preset_name).await;
+        let state_bytes = capture_vst3_state(&app, &preset_name).await?;
         let (helper, size) = crate::editor_helper::spawn(
             std::path::Path::new(&path),
             &preset_name,
-            state_bytes.as_deref(),
+            Some(&state_bytes),
         )?;
         state
             .lock_inner()
@@ -2708,9 +2718,9 @@ pub struct Vst2ToVst3MigrationReport {
     pub skipped: Vec<oc_host::plugin_state::Vst2ToVst3Skip>,
 }
 
-/// Explicit opt-in migration: a VST2 preset whose plugin no longer scans moves
-/// to the VST3 plugin with the same identity, dropping the incompatible VST2
-/// state. A dry run reports the plan without touching the project.
+/// Explicit opt-in replacement for VST2 presets without saved state.
+/// A dry run reports eligible replacements and stateful presets that need
+/// verified conversion without touching the project.
 #[tauri::command]
 pub fn migrate_vst2_presets_to_vst3(
     dry_run: bool,
@@ -3088,7 +3098,7 @@ fn select_from_vst3(
         .map_err(|error| format!("failed to apply program '{}': {error}", program.name))?;
     instance.sync_processor_from_controller();
     let state = instance
-        .state_bytes()
+        .portable_state_bytes()
         .map_err(|error| format!("failed to capture program '{}': {error}", program.name))?;
     Ok((program, state))
 }

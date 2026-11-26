@@ -505,7 +505,6 @@ fn first_press_does_not_scan_plugins_for_a_plugin_free_project() {
 fn plugin_projects_request_background_plugin_warm_up() {
     let plain = oc_dsl::parse("@project \"Plain\"\n").unwrap();
     assert!(plugin_lookup_requests(&plain).is_empty());
-    assert!(!project_uses_plugin_effects(&plain));
     assert!(!project_needs_plugin_inventory(&plain));
 
     let vst3 = oc_dsl::parse(
@@ -2117,6 +2116,24 @@ fn test_plugin_render_warnings_for_missing_plugin_effects() {
     assert_eq!(warnings.len(), 1);
     assert!(warnings[0].contains("not found as a renderable CLAP, VST2 or VST3 plugin"));
     assert!(warnings[0].contains("org.example.fx"));
+}
+
+#[test]
+fn render_preflight_resolves_qualified_inserts_and_ignores_bypassed_ones() {
+    let project = oc_dsl::parse(
+        "@project\n@bus fx\n  routes: [master]\n  effects:\n    - plugin:\"vst2.test.fixture.vst2.gain\"\n    - plugin:\"vst3.test.missing.effect\": bypass=true\n",
+    )
+    .unwrap();
+    let warnings = collect_plugin_render_warnings(&project);
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert_eq!(
+        plugin_lookup_requests(&project),
+        vec![(
+            "test.fixture.vst2.gain".to_string(),
+            oc_host::PluginFormat::Vst2
+        )]
+    );
+    assert!(!project_needs_plugin_inventory(&project));
 }
 
 #[test]

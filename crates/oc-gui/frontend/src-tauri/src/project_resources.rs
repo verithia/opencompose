@@ -713,6 +713,37 @@ mod tests {
     }
 
     #[test]
+    fn saved_insert_state_uses_the_new_project_directory() {
+        let f = Fixture::new();
+        let bytes = oc_host::encode_plugin_state(
+            oc_host::PluginFormat::Vst3,
+            "test.fake.effect",
+            &0.125_f64.to_le_bytes(),
+        );
+        let project = oc_dsl::parse(
+            r#"@project
+  tempo: 120
+@preset tone
+  source: builtin
+  plugin: "builtin.test_tone"
+@track lead | preset: tone, instrument: synth/lead
+  @phrase notes [1:1 - 2:1]
+    C4 q
+@master
+  effects:
+    - plugin:"vst3.test.fake.effect": state_file="insert.bank"
+"#,
+        )
+        .unwrap();
+        std::fs::write(f.old().join("insert.bank"), bytes).unwrap();
+        let original = render(&project, f.old());
+        let copied = f.save_as(&project);
+        std::fs::remove_file(f.old().join("insert.bank")).unwrap();
+        assert_eq!(render(&copied, f.new_dir()), original);
+        assert_eq!(&original[1024..1026], &[0.25, 0.375]);
+    }
+
+    #[test]
     fn collision_missing_and_escape_resources_fail_without_copying() {
         let f = Fixture::new();
         std::fs::write(f.old().join("voice.bin"), b"state").unwrap();

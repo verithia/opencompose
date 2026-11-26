@@ -68,6 +68,50 @@ fn declared_tail_budget_caps_infinite_plugins_and_preserves_finite_tails() {
     assert_eq!(bounded_tail_samples(u32::MAX, 48_000), 30_u64 * 48_000);
 }
 
+#[cfg(feature = "plugin-host")]
+#[test]
+fn master_insert_sidecar_replacement_invalidates_cached_audio() {
+    let root = tempfile::tempdir().unwrap();
+    let state = root.path().join("insert.bin");
+    let encode = |data: &[u8]| {
+        oc_host::encode_plugin_state(oc_host::PluginFormat::Vst3, "test.fake.effect", data)
+    };
+    std::fs::write(&state, encode(&0.125_f64.to_le_bytes())).unwrap();
+    let project = oc_dsl::parse(
+        r#"@project
+  tempo: 120
+@preset tone
+  source: builtin
+  plugin: "builtin.test_tone"
+@track lead | preset: tone, instrument: synth/lead
+  @phrase notes [1:1 - 2:1]
+    C4 q
+@master
+  effects:
+    - plugin:"vst3.test.fake.effect": vst3_state_file="insert.bin"
+"#,
+    )
+    .unwrap();
+    let mut cache = RenderCache::new();
+    cache.set_resource_root(Some(root.path().to_owned()));
+    let render = |cache: &mut RenderCache| {
+        cache.render_incremental(&project, Path::new("unused.sf2"), 8000, &mut HashMap::new())
+    };
+    let first = render(&mut cache).unwrap();
+    assert_eq!(&first[1024..1026], &[0.25, 0.375]);
+    let mut changed = 0.25_f64.to_le_bytes().to_vec();
+    changed.push(0); // Distinguish the replacement regardless of mtime resolution.
+    std::fs::write(&state, encode(&changed)).unwrap();
+    let second = render(&mut cache).unwrap();
+    assert_eq!(&second[1024..1026], &[0.5, 0.75]);
+    std::fs::remove_file(&state).unwrap();
+    let error = render(&mut cache).unwrap_err();
+    assert!(
+        error.contains("master") && error.contains("insert.bin"),
+        "{error}"
+    );
+    assert!(cache.master_buffer().is_none());
+}
 impl PluginMidiEventSink for TestSink {
     fn note_on(&mut self, channel: u8, note: u8, velocity: u8, sample_offset: i32) {
         self.0

@@ -1244,6 +1244,62 @@ mod tests {
     }
 
     #[test]
+    fn vst3_preset_file_restores_distinct_processor_and_controller_state() {
+        isolated(
+            "vst3_preset_file_restores_distinct_processor_and_controller_state",
+            || {
+                let mut fixture = NativeFixture::new(false);
+                let class = fixture.instance().class_info().cid;
+                let processor = 0.75f64.to_le_bytes();
+                let editor = 0.375f64.to_le_bytes();
+                let preset = super::preset_file::fixture(class, &processor, &editor);
+                fixture.instance_mut().set_state_bytes(&preset).unwrap();
+                assert_eq!(fixture.instance().state_bytes().unwrap(), processor);
+                assert_eq!(fixture.instance().controller_state_bytes().unwrap(), editor);
+                assert_eq!(fixture.instance().portable_state_bytes().unwrap(), preset);
+
+                let mut other_class = class;
+                other_class[15] ^= 1;
+                let wrong = super::preset_file::fixture(other_class, &editor, &processor);
+                assert!(
+                    fixture
+                        .instance_mut()
+                        .set_state_bytes(&wrong)
+                        .unwrap_err()
+                        .contains("different plugin class")
+                );
+                assert!(
+                    fixture
+                        .instance_mut()
+                        .set_state_bytes(&preset[..preset.len() - 1])
+                        .unwrap_err()
+                        .contains("invalid chunk list")
+                );
+                assert_eq!(fixture.instance().state_bytes().unwrap(), processor);
+                assert_eq!(fixture.instance().controller_state_bytes().unwrap(), editor);
+
+                // Legacy state blobs keep the original component-to-controller sync.
+                fixture.instance_mut().set_state_bytes(&processor).unwrap();
+                assert_eq!(
+                    fixture.instance().controller_state_bytes().unwrap(),
+                    processor
+                );
+
+                fixture.set_refusal(kNotImplemented);
+                fixture.set_fault(7, 4);
+                fixture.instance_mut().set_state_bytes(&preset).unwrap();
+                assert_eq!(fixture.instance().state_bytes().unwrap(), processor);
+                assert_eq!(
+                    fixture.instance().controller_state_bytes().unwrap(),
+                    processor
+                );
+                fixture.set_refusal(kResultFalse);
+                assert!(fixture.instance_mut().set_state_bytes(&preset).is_err());
+            },
+        );
+    }
+
+    #[test]
     fn native_state_roundtrips_and_caught_failures_retain_interfaces() {
         isolated(
             "native_state_roundtrips_and_caught_failures_retain_interfaces",
@@ -1348,6 +1404,84 @@ mod tests {
                     fixture.instance().state_bytes().unwrap(),
                     0.875f64.to_le_bytes()
                 );
+            },
+        );
+    }
+    #[test]
+    fn insert_reset_discards_history_and_reports_refusals() {
+        isolated("insert_reset_discards_history_and_reports_refusals", || {
+            use oc_audio::ProcessingFailureReport;
+
+            let mut fixture = NativeFixture::new(true);
+            fixture.configure_parameters_for_test(21);
+            let mut impulse = [1.0, -1.0];
+            let effect: &mut dyn AudioEffect = fixture.instance_mut();
+            effect.process(&mut impulse, 48_000);
+            assert_eq!(impulse, [0.0, 0.0]);
+            let mut tail = [0.0; 2];
+            effect.process(&mut tail, 48_000);
+            assert_eq!(tail, [0.25, -0.25]);
+
+            effect.process(&mut [1.0, -1.0], 48_000);
+            effect.reset();
+            assert!(!effect.processing_failed());
+            let mut opening = [0.0; 2];
+            effect.process(&mut opening, 48_000);
+            assert_eq!(opening, [0.0, 0.0]);
+
+            fixture.set_fault(3, 4);
+            let effect: &mut dyn AudioEffect = fixture.instance_mut();
+            effect.reset();
+            assert!(effect.processing_failed());
+            assert!(matches!(
+                effect.take_processing_failure(),
+                ProcessingFailureReport::Ready(message) if message.contains("setProcessing")
+            ));
+            assert_eq!(
+                effect.take_processing_failure(),
+                ProcessingFailureReport::Reported
+            );
+            fixture.retire();
+        });
+    }
+
+    #[test]
+    fn rewind_notifies_only_an_instrument_that_has_rendered_audio() {
+        isolated(
+            "rewind_notifies_only_an_instrument_that_has_rendered_audio",
+            || {
+                let mut fixture = NativeFixture::new(false);
+                let transport = super::super::PluginTransport::new(512, 48_000, 120.0);
+
+                assert!(fixture.instance_mut().reset_at_transport(transport.clone()));
+                assert_eq!(
+                    fixture.calls(1),
+                    0,
+                    "an unused instance needs no stop block"
+                );
+
+                let mut output = [Vec::with_capacity(1024)];
+                let instrument = fixture.instance_mut();
+                instrument.note_on(60, 1.0, 0);
+                instrument
+                    .process_block_outputs_into(32, Some(transport.clone()), &[0], &mut output)
+                    .unwrap();
+
+                let playing = u64::from(test_support::PLAYING_FLAG);
+                assert_ne!(fixture.delivery_for_test(4) & playing, 0);
+                let instrument = fixture.instance_mut();
+                instrument.note_on(72, 1.0, 0);
+                assert!(instrument.reset_at_transport(transport));
+                assert_eq!(instrument.note_ids.active_count(), 0);
+                assert!(instrument.pending_events.is_empty());
+                assert_eq!(
+                    fixture.calls(1),
+                    2,
+                    "one rendered block and one discarded stop block"
+                );
+                assert_eq!(fixture.delivery_for_test(3), 1);
+                assert_eq!(fixture.delivery_for_test(4) & playing, 0);
+                fixture.retire();
             },
         );
     }

@@ -31,6 +31,48 @@ fn numeric_parameter_assignments(
     Ok(assignments)
 }
 
+#[cfg(target_os = "macos")]
+pub(crate) fn vst2_bridge_parameters(
+    params: &[(String, ParamValue)],
+) -> Result<Vec<(String, f64)>, String> {
+    Ok(
+        numeric_parameter_assignments(oc_host::PluginFormat::Vst2, params)?
+            .into_iter()
+            .map(|(name, value)| (name.to_owned(), value))
+            .collect(),
+    )
+}
+
+pub(crate) fn streaming_vst2_request(
+    path: &Path,
+    params: &[(String, ParamValue)],
+    context: &PluginStateContext<'_>,
+    resource_root: Option<&Path>,
+    sample_rate: u32,
+    max_frames: u32,
+) -> Result<oc_host::vst2::Vst2OwnedAuthoredPlan, String> {
+    use oc_host::preset_parameters::ParameterWriteDomain;
+    use oc_host::vst2::{Vst2AuthoredClaim, Vst2AuthoredInput, Vst2OwnedAuthoredPlan};
+
+    let state = materialize_vst2_preset_state_at(params, context, resource_root)?;
+    let parameters = numeric_parameter_assignments(PluginFormat::Vst2, params)?
+        .into_iter()
+        .map(|(name, value)| Vst2AuthoredInput {
+            name: name.to_owned(),
+            native_value: Some(value),
+            domain: ParameterWriteDomain::Normalized,
+            claim: Vst2AuthoredClaim::NativeOnly,
+        })
+        .collect();
+    Ok(Vst2OwnedAuthoredPlan {
+        path: path.to_path_buf(),
+        sample_rate,
+        max_frames,
+        state,
+        parameters,
+    })
+}
+
 /// Apply plain preset parameters to a CLAP instance.
 pub fn apply_clap_preset_params(
     instance: &mut ClapInstance,
@@ -273,12 +315,12 @@ pub(super) fn resolve_state_file_path<'a>(
 
 /// A borrowed state declaration; decoding admits its size before allocating bytes.
 #[derive(Debug, Clone, Copy)]
-pub(super) enum PluginStateInput<'a> {
+pub(crate) enum PluginStateInput<'a> {
     Hex(&'a str),
     File(&'a str),
 }
 
-pub(super) fn materialize_plugin_state_input(
+pub(crate) fn materialize_plugin_state_input(
     input: Option<PluginStateInput<'_>>,
     context: &oc_host::PluginStateContext<'_>,
     resource_root: Option<&Path>,
@@ -325,7 +367,7 @@ pub(super) fn resolve_state_hex<'a>(
     None
 }
 
-pub(super) fn decode_plugin_state_hex(format: &str, hex: &str) -> Result<Vec<u8>, String> {
+pub(crate) fn decode_plugin_state_hex(format: &str, hex: &str) -> Result<Vec<u8>, String> {
     hex::decode(format, hex)
 }
 

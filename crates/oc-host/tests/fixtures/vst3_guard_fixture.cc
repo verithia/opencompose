@@ -177,6 +177,7 @@ struct Plugin {
   uint32_t parameter_mode = 0;
   uint32_t preparation_mutation = 0;
   uint64_t delivered_queues = 0, delivered_points = 0, delivered_digest = 0;
+  uint32_t process_frames = 0, transport_state = 0;
   uint64_t midi_words[64][6] = {}, midi_parameters[64][3] = {};
   uint32_t midi_events = 0, midi_points = 0;
   uint32_t restart_point = 0;
@@ -191,6 +192,7 @@ struct Plugin {
   int32_t not_implemented;
   double gain = 0.25;
   double controller_gain = 0.5;
+  float effect_history[2] = {};
   bool effect;
   int32_t channels = 2;
   bool active = true;
@@ -240,7 +242,12 @@ int32_t OC_VST3_CALL MidiMapping::getMidiControllerAssignment(int32_t bus,int16_
   const int32_t result=owner->enter(43); owner->parameter_callback(43); if(result!=0)return result;
   if(bus!=0 || channel<0 || channel>15)return owner->not_implemented;
   switch(controller) {
-    case 1:id=100;break; case 33:if(owner->parameter_mode==14)return owner->not_implemented;id=101;break; case 7:id=102;break;
+    case 1:id=100;break;
+    case 33:
+      if(owner->parameter_mode==14)return owner->not_implemented;
+      id=owner->parameter_mode==20 ? 111 : 101;
+      break;
+    case 7:id=102;break;
     case 128:id=103;break;case 129:id=104;break;case 130:id=107;break;
     default:return owner->not_implemented;
   }
@@ -331,6 +338,9 @@ int32_t OC_VST3_CALL Processor::setupProcessing(OcVst3ProcessSetup &setup) {
 }
 int32_t OC_VST3_CALL Processor::setProcessing(uint8_t state) {
   int32_t result = owner->enter(3); if (result != 0) return result;
+  if (state != 0 && owner->parameter_mode == 21) {
+    owner->effect_history[0] = owner->effect_history[1] = 0.0f;
+  }
   owner->processing = state != 0; return 0;
 }
 static double validate_delivery(Plugin *owner, void *raw) {
@@ -438,6 +448,10 @@ int32_t OC_VST3_CALL Processor::process(OcVst3ProcessData &data) {
       || (owner->parameter_mode==19 && data.outputs[1].numChannels!=2))
     throw std::runtime_error("native process ABI arguments changed");
   if (!owner->active || !owner->processing) throw std::runtime_error("native process while inactive");
+  owner->process_frames = uint32_t(data.numSamples);
+  owner->transport_state = 0;
+  // The process context starts with the SDK's uint32 transport state.
+  if (data.processContext) std::memcpy(&owner->transport_state, data.processContext, sizeof(uint32_t));
   if (data.numSamples > 0) data.outputs[0].buffers.channelBuffers32[0][0] = 777.0f;
   const int32_t result = owner->enter(1);
   owner->parameter_callback(1);
@@ -457,6 +471,11 @@ int32_t OC_VST3_CALL Processor::process(OcVst3ProcessData &data) {
         float input=static_cast<float>(flat_channel+1);
         if(owner->effect && data.numInputs>0 && data.inputs!=nullptr)
           input=data.inputs[0].buffers.channelBuffers32[channel][frame];
+        if (owner->parameter_mode == 21 && flat_channel < 2) {
+          const float previous = owner->effect_history[flat_channel];
+          owner->effect_history[flat_channel] = input;
+          input = previous;
+        }
         data.outputs[bus].buffers.channelBuffers32[channel][frame]=input*static_cast<float>(owner->gain);
       }
     }
@@ -600,9 +619,35 @@ extern "C" bool oc_vst3_fixture_last_call_on_ui(void *handle, uint32_t point) no
 
 extern "C" void oc_vst3_fixture_preparation_mutation(void *handle, uint32_t mode) noexcept { static_cast<Plugin *>(handle)->preparation_mutation=mode; }
 
-extern "C" uint64_t oc_vst3_fixture_delivery(void *handle,uint32_t field) noexcept { auto *owner=static_cast<Plugin *>(handle);return field==0 ? owner->delivered_queues : (field==1 ? owner->delivered_points : owner->delivered_digest); }
+extern "C" uint64_t oc_vst3_fixture_delivery(void *handle,uint32_t field) noexcept {
+  auto *owner = static_cast<Plugin *>(handle);
+  switch (field) {
+    case 0: return owner->delivered_queues;
+    case 1: return owner->delivered_points;
+    case 2: return owner->delivered_digest;
+    case 3: return owner->process_frames;
+    case 4: return owner->transport_state;
+    default: return 0;
+  }
+}
 
 namespace {
+struct CompatibilityFixture final : OcVst3Compatibility {
+  uint32_t mode = 0;
+  int32_t OC_VST3_CALL queryInterface(const char *, void **out) override {
+    *out = nullptr;
+    return -1;
+  }
+  uint32_t OC_VST3_CALL addRef() override { return 1; }
+  uint32_t OC_VST3_CALL release() override { return 1; }
+  int32_t OC_VST3_CALL getCompatibilityJSON(OcVst3Stream *stream) override {
+    if (mode == 1) throw std::runtime_error("compatibility query exception");
+    char bytes[] = "[]";
+    stream->write(bytes, sizeof(bytes) - 1, nullptr);
+    return 0;
+  }
+};
+
 struct FactoryFixture final : OcVst3Factory2 {
   uint32_t refs = 1, calls[16] = {};
   uint32_t point = 0, kind = 0;
@@ -654,6 +699,11 @@ bool fixture_module_entry(void *handle) { if(handle != symbol_factory)throw std:
 bool fixture_module_exit() { return symbol_factory->enter(6) == 0; }
 bool fixture_module_init() { return symbol_factory->enter(8) == 0; }
 uint8_t fixture_bundle_entry(void *bundle) { if(bundle != symbol_factory)throw std::runtime_error("bundle changed"); return symbol_factory->enter(9) == 0 ? 1 : 0; }
+}
+extern "C" OcVst3Compatibility *oc_vst3_compatibility_fixture(uint32_t mode) noexcept {
+  static thread_local CompatibilityFixture fixture;
+  fixture.mode = mode;
+  return &fixture;
 }
 extern "C" void *oc_vst3_factory_fixture_create() noexcept { return new FactoryFixture; }
 extern "C" void oc_vst3_factory_fixture_dispose(void *fixture) noexcept { auto *value=static_cast<FactoryFixture *>(fixture); if(symbol_factory==value)symbol_factory=nullptr; delete value; }

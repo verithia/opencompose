@@ -30,9 +30,10 @@ Two things can go wrong with that cache.
    `OCP_PLUGIN_SCAN_RECEIPTS=/tmp/receipts-<task>.json`.
 
 2. A timeout quarantined the bundle. A scan that runs out of time records
-   `timed_out`, and that hides the plugin. A stalled helper is retried once,
-   and a `timed_out` receipt stops quarantining after 24 hours. `crashed` and
-   `failed` receipts are permanent. To rescan a quarantined plugin by hand:
+   `timed_out`, which hides the plugin for 24 hours. A plugin that stalls is
+   not launched a second time, because it may be waiting on a dialog. `crashed`
+   and `failed` receipts hide the plugin until you rescan it or its file
+   changes. To rescan a quarantined plugin by hand:
 
    ```sh
    OCP_PLUGIN_RESCAN_QUARANTINED=1 ocp resolve-plugin "<plugin id or name>"
@@ -52,7 +53,11 @@ stays silent for its whole length.
 - `--reruns N --require-identical` proves that the render is reproducible. It
   does not prove that it is correct: two runs can both start too early and
   still be byte-identical. Check that the expected sample layer is audible.
-- `--pre-roll` sleeps for the given time before rendering. It renders no
+- AudioUnit instruments and Intel VST2 instruments running under Rosetta
+  receive one block without MIDI, whose output is discarded, so they start
+  loading their saved state. Their host answers loading callbacks during the
+  pre-roll and resets the instrument before the score starts.
+- For other formats, `--pre-roll` only waits for the given time. It renders no
   silence, so it does not advance the phase of free-running oscillators.
 
 ## Render fails on an effect parameter

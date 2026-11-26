@@ -1,6 +1,6 @@
 //! Typed physical and normalized domains for VST3 standard note expressions.
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 /// Standard VST3 note-expression types.
 pub enum Vst3StandardNoteExpression {
     Volume,
@@ -36,7 +36,7 @@ impl Vst3StandardNoteExpression {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 /// A note-expression value in its native domain.
 pub enum Vst3NoteExpressionValue {
     Normalized(f64),

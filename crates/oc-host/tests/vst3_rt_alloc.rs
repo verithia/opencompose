@@ -254,9 +254,10 @@ fn main() {
         assert!(audit.unroutable_sidechain_refused_before_native_call);
         let activation = oc_host::vst3_instance::audit_checked_owned_activation()
             .expect("checked owned activation audit");
-        assert_eq!(activation.ordinary_refusals, 2);
+        assert_eq!(activation.ordinary_refusals, 3);
         assert_eq!(activation.exceptions_quarantined, 2);
         assert!(activation.successful_activation_and_retirement);
+        assert!(activation.optional_processing_and_retirement);
         println!("{activation:?}");
         let preparation = oc_host::vst3_instance::audit_owned_initial_preparation()
             .expect("owned initial metadata preparation audit");
@@ -300,7 +301,7 @@ fn main() {
             .expect("bounded owned MIDI ingress and actual native payloads");
         assert_eq!(midi.native_event_payloads, 9);
         assert_eq!(midi.native_parameter_points, 6);
-        assert_eq!(midi.atomic_refusals, 20);
+        assert_eq!(midi.atomic_refusals, 21);
         assert_eq!(midi.metadata_refusals, 11);
         assert_eq!(midi.active_note_capacity, 2048);
         assert_eq!(midi.heap_operations, OwnedHeapCounters::default());
@@ -320,6 +321,7 @@ fn main() {
         assert!(
             oc_host::vst3_instance::Vst3OwnedAuthoredPlan {
                 path: "test.fake.one_bus".into(),
+                class_name: None,
                 sample_rate: 48_000,
                 max_frames: 512,
                 component_state: None,

@@ -242,6 +242,27 @@ and `wet_gain` to scale their respective Mix outputs. For independently set
 dry and wet levels, start at `mix=50%` and set each gain to twice its desired
 output level.
 
+## Saved plugin effect state
+
+An external insert accepts `state_hex` (or the format-specific
+`vst3_state_hex`, `vst2_state_hex`, `clap_state_hex`, `au_state_hex` or
+`lv2_state_hex`) as a quoted hexadecimal string. It restores the plugin's
+opaque state before applying numeric control overrides. This preserves settings
+that the plugin does not expose as numeric parameters, such as custom curves.
+State aliases share one last-write-wins value. The instrument preset's bounded
+decoder and identity/integrity envelope checks also apply to inserts.
+
+Use `state_file` or the corresponding format-specific `*_state_file` to keep a
+large state in a separate file. Relative paths resolve from the project
+directory. Save As collects these files with the other project media. Missing
+files, corrupt state, and native restore failures stop the render and identify
+the affected insert.
+
+For VST3, `vst3_state_file` also accepts a `.vstpreset` file for the selected
+plugin class. OpenCompose restores its processor state before applying the
+project's parameter overrides. A plugin that supports separate controller state
+also receives its saved controller settings.
+
 ## Time and value domain
 
 Points use the same positions as control lanes: `bar:beat:subdivision`, or

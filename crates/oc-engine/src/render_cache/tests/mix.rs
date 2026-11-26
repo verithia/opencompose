@@ -348,8 +348,8 @@ fn offline_failure_boundary_discards_failed_track_bus_master_and_post_fx_caches(
         let effect: Box<dyn oc_audio::AudioEffect> = if slot == "vst2" {
             let path = oc_host::vst2::test_support::fixture_path("OpenCompose Gain Fixture")
                 .expect("host fixture");
-            let plugin = Vst2Instance::load(&path, 8_000, 128).unwrap();
-            oc_host::vst2::test_support::notify_io_changed(&plugin);
+            let mut plugin = Vst2Instance::load(&path, 8_000, 128).unwrap();
+            oc_host::vst2::test_support::change_latency_and_notify(&mut plugin, 7);
             Box::new(plugin)
         } else {
             Box::new(Failure(std::sync::atomic::AtomicBool::new(false)))
@@ -431,6 +431,7 @@ fn offline_failure_boundary_vst2_source_refuses_warm_cache_stems_and_wav_publica
                 .iter()
                 .map(|_| vec![0.25; request.total_frames * 2])
                 .collect(),
+            aux: Default::default(),
             latency: 0,
         })
     }

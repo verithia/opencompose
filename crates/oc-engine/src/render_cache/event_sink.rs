@@ -2,6 +2,41 @@
 
 use super::*;
 
+pub(crate) fn vst3_performance_event(
+    command: &oc_synth::performance::ScheduledCommand,
+    sample_offset: u32,
+) -> oc_host::vst3_instance::Vst3MidiEvent {
+    use oc_dsl::performance::ChannelCommand;
+    use oc_host::vst3_instance::{Vst3MidiEvent, Vst3MidiMessage};
+    let message = match command.message {
+        ChannelCommand::NoteOn { note, velocity } => Vst3MidiMessage::NoteOn {
+            key: note,
+            velocity,
+        },
+        ChannelCommand::NoteOff { note, velocity } => Vst3MidiMessage::NoteOff {
+            key: note,
+            velocity,
+        },
+        ChannelCommand::ControlChange { controller, value } => {
+            Vst3MidiMessage::ControlChange { controller, value }
+        }
+        ChannelCommand::ProgramChange { program } => Vst3MidiMessage::ProgramChange { program },
+        ChannelCommand::PitchBend { value } => Vst3MidiMessage::PitchBend { value },
+        ChannelCommand::ChannelPressure { pressure } => {
+            Vst3MidiMessage::ChannelPressure { pressure }
+        }
+        ChannelCommand::PolyPressure { note, pressure } => Vst3MidiMessage::PolyPressure {
+            key: note,
+            pressure,
+        },
+    };
+    Vst3MidiEvent {
+        channel: command.channel,
+        sample_offset,
+        message,
+    }
+}
+
 pub(crate) trait PluginMidiEventSink {
     fn note_on(&mut self, channel: u8, note: u8, velocity: u8, sample_offset: i32);
     fn note_off(&mut self, channel: u8, note: u8, sample_offset: i32);

@@ -2,6 +2,8 @@
 use super::super::native_fixture::NativeFixture;
 use super::preparation::{self, InitialParameters, Vst3AuthoredInput};
 use super::*;
+use crate::application_main::{ApplicationOfflineMainScope, MainService, MainThreadToken};
+use crate::host_app::EditSink;
 use crate::preset_parameters::{ParameterErrorKind, ParameterWriteDomain};
 
 #[derive(Debug)]
@@ -192,6 +194,7 @@ pub fn audit_owned_authored_preparation() -> Result<Vst3AuthoredPreparationAudit
     drop(native);
     let synthetic = Vst3OwnedAuthoredPlan {
         path: super::super::test_support::FAKE_ONE_BUS_ID.into(),
+        class_name: None,
         sample_rate: 48000,
         max_frames: 512,
         component_state: None,
@@ -207,6 +210,7 @@ pub fn audit_owned_authored_preparation() -> Result<Vst3AuthoredPreparationAudit
             }),
         "Synthetic load bypassed actual production preparation",
     )?;
+    audit_deferred_restore_restart(&token)?;
     Ok(Vst3AuthoredPreparationAudit {
         tail_samples,
         latency_samples,
@@ -215,4 +219,71 @@ pub fn audit_owned_authored_preparation() -> Result<Vst3AuthoredPreparationAudit
         cleanup_failure_refused_success: true,
         synthetic_probe_used_actual_ui: true,
     })
+}
+
+struct DeferredRestoreRestart {
+    pending: AtomicBool,
+    edits: Arc<EditSink>,
+}
+
+impl MainService for DeferredRestoreRestart {
+    fn service_main(&self, _: &MainThreadToken<'_>) {
+        if self.pending.swap(false, Ordering::AcqRel) {
+            self.edits.restart(
+                RestartFlags_::kParamTitlesChanged
+                    | RestartFlags_::kParamValuesChanged
+                    | RestartFlags_::kParamIDMappingChanged,
+            );
+        }
+    }
+}
+
+fn audit_deferred_restore_restart(token: &UiThreadToken<'_>) -> Result<(), Vst3OwnedError> {
+    let (native, candidate) = fixture(token)?;
+    let edits = Arc::clone(candidate.native._host.as_ref().unwrap().edit_sink());
+    let initial_revision = edits.parameter_inventory_revision();
+    let notification: Arc<dyn MainService> = Arc::new(DeferredRestoreRestart {
+        pending: AtomicBool::new(true),
+        edits: Arc::clone(&edits),
+    });
+    token
+        .executor()
+        .register_service(Arc::downgrade(&notification));
+    let _offline = ApplicationOfflineMainScope::enter().map_err(Vst3OwnedError::Control)?;
+    let prepared = preparation::complete_candidate(
+        token,
+        candidate,
+        Some(0.2f64.to_le_bytes().to_vec()),
+        InitialParameters::Authored(vec![]),
+    )?;
+    require(
+        prepared.snapshot.inventory_revision == initial_revision + 1 && native.calls(1) == 0,
+        "Offline preparation published before the deferred restore notification",
+    )?;
+    let mut owned = preparation::publish_runtime(
+        token,
+        prepared,
+        Vst3ProcessingBudget {
+            events: 16,
+            points_per_parameter: 2,
+        },
+    )?;
+    owned
+        .processor
+        .process_stereo_into(Vst3OwnedProcessBlock {
+            frames: 128,
+            transport: None,
+            parameters: &[],
+            input: None,
+            sidechain: None,
+            output: &mut [0.0; 256],
+        })
+        .map_err(|error| Vst3OwnedError::Control(format!("{error:?}")))?;
+    require(
+        native.calls(1) == 1,
+        "First authored block did not reach the native processor",
+    )?;
+    drop(owned);
+    poll_owned_vst3_retirements()?;
+    Ok(())
 }

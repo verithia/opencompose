@@ -39,6 +39,9 @@ struct OcVst3Stream : OcVst3Unknown {
   virtual int32_t OC_VST3_CALL seek(int64_t position, int32_t mode, int64_t *result) = 0;
   virtual int32_t OC_VST3_CALL tell(int64_t *position) = 0;
 };
+struct OcVst3Compatibility : OcVst3Unknown {
+  virtual int32_t OC_VST3_CALL getCompatibilityJSON(OcVst3Stream *stream) = 0;
+};
 struct OcVst3PluginBase : OcVst3Unknown {
   virtual int32_t OC_VST3_CALL initialize(OcVst3Unknown *context) = 0;
   virtual int32_t OC_VST3_CALL terminate() = 0;

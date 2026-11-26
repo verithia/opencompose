@@ -20,8 +20,8 @@ use crate::startup::RunMode;
 
 /// The cache file under `~/.opencompose`.
 const CACHE_FILE: &str = "plugin-inventory.json";
-/// Bumped whenever the stored shape changes; an older file is ignored.
-const SCHEMA: &str = "opencompose_plugin_inventory_v1";
+/// Includes metadata semantics so obsolete plugin classifications refresh.
+const SCHEMA: &str = "opencompose_plugin_inventory_v2";
 /// A larger file is junk, not a cache.
 const MAX_CACHE_BYTES: u64 = 4 * 1024 * 1024;
 /// Emitted with the entry count after a refresh replaces the inventory.

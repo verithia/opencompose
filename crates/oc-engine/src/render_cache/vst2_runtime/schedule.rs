@@ -1,7 +1,7 @@
 //! Offline schedule compilation performs strings, sorting and packet expansion
 //! before a prepared native source or borrowed processing block is admitted.
 use super::super::{MidiEvent, MidiMessage, PluginTransport};
-use super::packets;
+use super::{BLOCK_FRAMES, packets};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Copy)]
@@ -132,7 +132,7 @@ impl Schedule {
         }
         let mut blocks = Vec::new();
         blocks
-            .try_reserve_exact(total_frames.div_ceil(128))
+            .try_reserve_exact(total_frames.div_ceil(BLOCK_FRAMES))
             .map_err(|error| format!("Could not reserve VST2 block plan: {error}"))?;
         let mut start = 0usize;
         while start < total_frames {
@@ -142,7 +142,7 @@ impl Schedule {
                 .ok_or("VST2 transport position overflow")?;
             let frames = transport
                 .at_sample(absolute)
-                .block_frames(128.min(total_frames - start));
+                .block_frames(BLOCK_FRAMES.min(total_frames - start));
             if frames == 0 {
                 return Err("VST2 transport produced an empty processing block".into());
             }

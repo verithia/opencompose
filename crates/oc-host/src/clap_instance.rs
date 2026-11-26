@@ -2523,28 +2523,21 @@ impl ClapInstance {
             .iter()
             .enumerate()
             .map(|(port_index, port)| {
+                let source = if port_index == 0 {
+                    Some(input)
+                } else {
+                    sidechain.filter(|_| sidechain_port == Some(port_index))
+                };
                 (0..port.channels as usize)
                     .map(|channel| {
                         let mut data = vec![0.0f32; frames];
-                        if port_index == 0 {
-                            let mono = port.channels == 1;
-                            for (frame, sample) in data.iter_mut().enumerate() {
-                                *sample = match (mono, channel) {
-                                    (true, 0) => 0.5 * (input[frame * 2] + input[frame * 2 + 1]),
-                                    (false, 0) => input[frame * 2],
-                                    (false, 1) => input[frame * 2 + 1],
-                                    _ => 0.0,
-                                };
-                            }
-                        } else if sidechain_port == Some(port_index)
-                            && let Some(sidechain) = sidechain
-                        {
-                            for (frame, sample) in data.iter_mut().enumerate() {
-                                if channel < 2 {
-                                    *sample =
-                                        sidechain.get(frame * 2 + channel).copied().unwrap_or(0.0);
-                                }
-                            }
+                        if let Some(source) = source {
+                            crate::ports::write_stereo_input(
+                                source,
+                                &mut data,
+                                port.channels as usize,
+                                channel,
+                            );
                         }
                         data
                     })
@@ -3354,6 +3347,7 @@ mod audio_port_contract_tests {
         outputs: Vec<u32>,
         seen_inputs: RefCell<Vec<u32>>,
         seen_outputs: RefCell<Vec<u32>>,
+        seen_key: Cell<Option<f32>>,
         processed: RefCell<usize>,
         params: Vec<FakeParam>,
         /// `get_info` calls, so a test can prove a name lookup is cached.
@@ -3610,6 +3604,18 @@ mod audio_port_contract_tests {
             .collect();
         *effect.processed.borrow_mut() += 1;
 
+        let key = if process.audio_inputs_count > 1 && process.frames_count > 0 {
+            // SAFETY: The process contract keeps the counted planes valid
+            // throughout the call, including the first frame of the key.
+            unsafe {
+                let port = &*process.audio_inputs.add(1);
+                (port.channel_count > 0).then(|| **port.data32)
+            }
+        } else {
+            None
+        };
+        effect.seen_key.set(key);
+
         if process.audio_inputs_count == 0 || process.audio_outputs_count == 0 {
             return CLAP_PROCESS_CONTINUE;
         }
@@ -3697,6 +3703,7 @@ mod audio_port_contract_tests {
             outputs,
             seen_inputs: RefCell::new(Vec::new()),
             seen_outputs: RefCell::new(Vec::new()),
+            seen_key: Cell::new(None),
             processed: RefCell::new(0),
             params: vec![FakeParam {
                 id: 7,
@@ -3829,18 +3836,32 @@ mod audio_port_contract_tests {
     }
 
     #[test]
-    fn mono_ports_are_declared_with_one_channel() {
+    fn mono_clap_ports_receive_both_source_channels() {
         let mut instance = fake_instance(vec![1], vec![1]);
         let mut input = vec![0.0f32; 128];
         for frame in 0..64 {
-            input[frame * 2] = 1.0;
+            input[frame * 2 + frame % 2] = 1.0;
         }
         let output = instance.process_effect_block(&input);
         let (inputs, outputs, _) = recorded(&instance);
         assert_eq!(inputs, vec![1]);
         assert_eq!(outputs, vec![1]);
-        assert!((output[0] - 0.5).abs() < 1e-6);
-        assert!((output[1] - 0.5).abs() < 1e-6);
+        assert!(output.iter().all(|sample| (*sample - 0.5).abs() < 1e-6));
+    }
+
+    #[test]
+    fn mono_clap_sidechain_receives_right_only_signal_and_clears_it_on_disconnect() {
+        let mut instance = fake_instance(vec![2, 1], vec![2]);
+        let main = [0.125, -0.125];
+        let key = [0.0, 0.5];
+        let output = instance.process_effect_block_with_sidechain(&main, Some(&key), None);
+        assert_eq!(output, main);
+        // SAFETY: The descriptor still owns the fixture and its observations
+        // are read on the same thread as the completed process call.
+        assert_eq!(unsafe { fake(instance.plugin) }.seen_key.get(), Some(0.25));
+        instance.process_effect_block(&main);
+        // SAFETY: The instance continues to own the fixture on this thread.
+        assert_eq!(unsafe { fake(instance.plugin) }.seen_key.get(), Some(0.0));
     }
 
     #[test]

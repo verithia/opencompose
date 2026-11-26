@@ -17,7 +17,11 @@ mod candidate;
 mod failure;
 mod guard;
 mod module_authority;
+mod outputs;
+mod prepared_parameters;
+pub(crate) mod program_bank;
 pub use failure::{Vst2Failure, Vst2FailureRecord, Vst2Operation};
+pub use outputs::Vst2OutputBlock;
 mod owned_lifecycle;
 pub use owned_lifecycle::*;
 #[cfg(test)]
@@ -43,9 +47,10 @@ use abi::plugin_op as op;
 /// Parameters beyond this are not exposed; real plugins stay far below it.
 const MAX_REPORTED_PARAMS: i32 = 4096;
 /// Channel counts above this are treated as a broken descriptor.
-const MAX_CHANNELS: i32 = 32;
+const MAX_CHANNELS: i32 = 64;
+pub(crate) const MAX_OUTPUT_PAIRS: usize = MAX_CHANNELS as usize / 2;
 /// Bounds native i32 frame arguments and the retained channel-plane budget.
-/// At the maximum 32 input and 32 output channels, audio scratch is at most 16 MiB.
+/// At the maximum 64 input and 64 output channels, audio scratch is at most 32 MiB.
 pub const MAX_PREPARED_BLOCK_FRAMES: usize = 65_536;
 
 fn checked_block_frames(frames: usize) -> Result<u32, oc_audio::BlockPreparationError> {
@@ -73,6 +78,8 @@ pub const MAX_PENDING_MIDI: usize = 1024;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Vst2ProcessError {
     IncompleteFrame,
+    InvalidAuxiliaryInput,
+    InvalidOutput,
     CapacityExceeded,
     EventCapacityExceeded,
     TopologyChanged,
@@ -80,12 +87,17 @@ pub enum Vst2ProcessError {
     UnavailableProcessor,
     CallbackAdmissionOverflow,
     NativeFault,
+    PreparedParameter(oc_audio::PreparedParameterError),
 }
 
 impl std::fmt::Display for Vst2ProcessError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(match self {
             Self::IncompleteFrame => "VST2 output must contain complete stereo frames",
+            Self::InvalidAuxiliaryInput => {
+                "VST2 key input requires a matching stereo block and four input channels"
+            }
+            Self::InvalidOutput => "VST2 output request does not match the declared stereo pairs",
             Self::CapacityExceeded => "VST2 block exceeds prepared frame capacity",
             Self::EventCapacityExceeded => "VST2 MIDI queue exceeds its prepared event capacity",
             Self::TopologyChanged => {
@@ -96,6 +108,9 @@ impl std::fmt::Display for Vst2ProcessError {
             }
             Self::UnavailableProcessor => "VST2 plugin has no supported process callback",
             Self::NativeFault => "VST2 native ownership is faulted",
+            Self::PreparedParameter(_) => {
+                "VST2 parameter binding is invalid; prepare automation outside processing"
+            }
             Self::CallbackAdmissionOverflow => {
                 "VST2 concurrent host callbacks exceeded their prepared capacity"
             }
@@ -105,7 +120,7 @@ impl std::fmt::Display for Vst2ProcessError {
 impl std::error::Error for Vst2ProcessError {}
 
 /// One automatable parameter as the host sees it.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Vst2Param {
     pub index: i32,
     pub name: String,
@@ -164,6 +179,9 @@ struct HostContext {
     tempo_bits: AtomicU64,
     time_info: time_info::TimeInfoPublisher,
     io_changed: AtomicBool,
+    midi_requested: AtomicBool,
+    prepared_io_signature: AtomicU64,
+    prepared_io_flags: AtomicI32,
     authored_inventory_revision: AtomicU64,
     idle_count: AtomicU32,
     failure: Arc<Vst2Failure>,
@@ -209,6 +227,9 @@ impl HostContext {
             tempo_bits: AtomicU64::new(120.0_f64.to_bits()),
             time_info: time_info::TimeInfoPublisher::new(sample_rate),
             io_changed: AtomicBool::new(false),
+            midi_requested: AtomicBool::new(false),
+            prepared_io_signature: AtomicU64::new(0),
+            prepared_io_flags: AtomicI32::new(0),
             authored_inventory_revision: AtomicU64::new(0),
             idle_count: AtomicU32::new(0),
             failure,
@@ -221,6 +242,32 @@ impl HostContext {
             #[cfg(any(test, feature = "test-support"))]
             audit_event_calls: AtomicU64::new(0),
         }
+    }
+
+    fn has_io_changed(&self) -> bool {
+        self.io_changed.load(Ordering::Acquire)
+    }
+
+    fn note_io_change(&self, changed: bool) {
+        self.authored_inventory_revision
+            .fetch_add(1, Ordering::AcqRel);
+        if changed {
+            self.io_changed.store(true, Ordering::Release);
+        }
+    }
+
+    fn matches_prepared_io(&self, descriptor: &abi::AEffect) -> bool {
+        let prepared = self.prepared_io_signature.load(Ordering::Acquire);
+        prepared != 0
+            && prepared
+                == io_signature(
+                    descriptor.num_inputs,
+                    descriptor.num_outputs,
+                    descriptor.initial_delay.max(0) as u32,
+                )
+            && descriptor.flags == self.prepared_io_flags.load(Ordering::Relaxed)
+            && descriptor.num_params == self.num_params.load(Ordering::Relaxed)
+            && self.prepared_io_signature.load(Ordering::Acquire) == prepared
     }
 
     fn value(&self, index: i32) -> Option<f32> {
@@ -271,6 +318,14 @@ impl HostContext {
     }
 }
 
+fn io_signature(inputs: i32, outputs: i32, latency: u32) -> u64 {
+    if (0..=MAX_CHANNELS).contains(&inputs) && (0..=MAX_CHANNELS).contains(&outputs) {
+        (1 << 63) | (u64::from(latency) << 16) | ((inputs as u64) << 8) | outputs as u64
+    } else {
+        0 // No admitted routing, including when preparation is in progress.
+    }
+}
+
 thread_local! {
     /// Host context for callbacks made before it can be stored on the plugin.
     static ENTRY_HOST: std::cell::Cell<*mut HostContext> = const {
@@ -298,6 +353,15 @@ unsafe extern "C" fn audio_master(
     let Some(context) = (unsafe { legacy_host_context(effect) }) else {
         return 0;
     };
+    if opcode == abi::host_op::IO_CHANGED {
+        let unchanged = !effect.is_null() && {
+            // SAFETY: For IO_CHANGED the native caller supplies its live AEffect
+            // with the admitted ABI scalars already published.
+            context.matches_prepared_io(unsafe { &*effect })
+        };
+        context.note_io_change(!unchanged);
+        return 1;
+    }
     host_opcode(context, opcode, index, ptr, opt)
 }
 
@@ -368,7 +432,11 @@ fn host_opcode(
             context.idle_count.fetch_add(1, Ordering::Relaxed);
             0
         }
-        host::WANT_MIDI => 1,
+        host::WANT_MIDI => {
+            // A plugin can request events during activation after capability discovery.
+            context.midi_requested.store(true, Ordering::Relaxed);
+            1
+        }
         host::GET_TIME => {
             // SAFETY: GET_TIME returns a read-only borrow on the requesting
             // native thread, until its next request or instance retirement.
@@ -383,10 +451,7 @@ fn host_opcode(
         host::GET_NUM_AUTOMATABLE_PARAMETERS => context.num_params.load(Ordering::Acquire) as isize,
         host::GET_PARAMETER_QUANTIZATION => 1,
         host::IO_CHANGED => {
-            context
-                .authored_inventory_revision
-                .fetch_add(1, Ordering::AcqRel);
-            context.io_changed.store(true, Ordering::Release);
+            context.note_io_change(true);
             1
         }
         host::NEED_IDLE => 1,
@@ -612,9 +677,12 @@ pub struct Vst2Instance {
     param_labels: Vec<String>,
     param_defaults: Vec<f64>,
     param_can_automate: Vec<bool>,
+    prepared_parameters: Option<oc_audio::PreparedParameterOwner>,
+    #[cfg(test)]
+    parameter_name_lookups: std::cell::Cell<usize>,
     sample_rate: u32,
     max_block_frames: u32,
-    accepts_midi: bool,
+    advertises_midi: bool,
     supports_double: bool,
     active: bool,
     pending_midi: Vec<PendingMidi>,
@@ -645,6 +713,37 @@ impl Vst2Instance {
             LoadActivation::Active,
         )
         .map(|candidate| candidate.into_legacy())
+    }
+
+    /// Open an insert and restore its state before transferring it to the
+    /// render worker. macOS plug-ins can call main-thread-only system APIs
+    /// during entry, activation, or state restoration even without an editor.
+    pub fn load_prepared_insert(
+        path: &Path,
+        sample_rate: u32,
+        max_frames: u32,
+        prepare: impl FnOnce(&mut Self) -> Result<(), String> + Send + 'static,
+    ) -> Result<Self, String> {
+        let path = path.to_path_buf();
+        let load = move || {
+            let mut insert = Self::load(&path, sample_rate, max_frames)?;
+            prepare(&mut insert)?;
+            Ok(insert)
+        };
+        #[cfg(target_os = "macos")]
+        {
+            let executor = crate::application_main::registered_ui_executor()
+                .map_err(|error| error.to_string())?;
+            executor
+                .dispatch_control(move || {
+                    crate::application_main::check_ui_authority()
+                        .map_err(|error| error.to_string())?;
+                    load()
+                })?
+                .wait()
+        }
+        #[cfg(not(target_os = "macos"))]
+        load()
     }
 
     fn load_owned(
@@ -890,9 +989,12 @@ impl Vst2Instance {
             param_labels: Vec::new(),
             param_defaults: Vec::new(),
             param_can_automate: Vec::new(),
+            prepared_parameters: oc_audio::PreparedParameterOwner::new(),
+            #[cfg(test)]
+            parameter_name_lookups: std::cell::Cell::new(0),
             sample_rate,
             max_block_frames: max_frames,
-            accepts_midi: false,
+            advertises_midi: false,
             supports_double: false,
             active: false,
             pending_midi: Vec::new(),
@@ -940,8 +1042,7 @@ impl Vst2Instance {
         if flags & abi::FLAG_IS_SYNTH != 0 {
             instance.category = PluginCategory::Instrument;
         }
-        instance.accepts_midi = instance.can_do(abi::can_do::RECEIVE_VST_MIDI_EVENT)
-            || instance.can_do(abi::can_do::RECEIVE_VST_EVENTS);
+        instance.refresh_midi_capabilities();
         instance.supports_double = instance.can_do(abi::can_do::SUPPORTS_DOUBLE_PRECISION);
 
         instance.read_param_metadata();
@@ -1003,6 +1104,16 @@ impl Vst2Instance {
         self.num_outputs
     }
 
+    pub(crate) fn supports_insert_layout(&self) -> bool {
+        !self.is_instrument()
+            && matches!(self.num_inputs(), 1 | 2 | 4)
+            && matches!(self.num_outputs(), 1 | 2)
+    }
+
+    pub(crate) fn is_bridge_instrument(&self) -> bool {
+        self.is_instrument() && self.accepts_midi() && self.num_outputs() > 0
+    }
+
     pub fn param_count(&self) -> i32 {
         self.num_params
     }
@@ -1011,8 +1122,14 @@ impl Vst2Instance {
         self.sample_rate
     }
 
+    /// Whether the plugin advertises or explicitly requests MIDI delivery.
     pub fn accepts_midi(&self) -> bool {
-        self.accepts_midi
+        self.advertises_midi || self.host.midi_requested.load(Ordering::Relaxed)
+    }
+
+    fn refresh_midi_capabilities(&mut self) {
+        self.advertises_midi = self.can_do(abi::can_do::RECEIVE_VST_MIDI_EVENT)
+            || self.can_do(abi::can_do::RECEIVE_VST_EVENTS);
     }
 
     pub fn supports_double_precision(&self) -> bool {
@@ -1045,22 +1162,25 @@ impl Vst2Instance {
         }
     }
 
-    /// VST2 has one stereo output pair; auxiliary pairs are a VST3 feature.
+    /// Consecutive channel pairs, including a mono final channel if declared.
     pub fn output_count(&self) -> usize {
-        1
+        (self.num_outputs as usize).div_ceil(2).max(1)
     }
 
-    /// Declared audio output ports; VST2 exposes the one stereo pair.
+    /// The flat VST2 channel list is exposed as one port.
     pub fn output_ports(&self) -> Vec<AudioPort> {
-        vec![AudioPort::STEREO]
+        if self.num_outputs == 0 {
+            return vec![AudioPort::STEREO];
+        }
+        super::ports::ports_from_unsigned(&[self.num_outputs as u32])
     }
 
-    /// Declared audio input ports; effects take the main stereo pair.
+    /// Declared insert input channels, exposed as one port for the flat VST2 list.
     pub fn input_ports(&self) -> Vec<AudioPort> {
-        if self.flags & abi::FLAG_IS_SYNTH == 0 {
-            vec![AudioPort::STEREO]
-        } else {
+        if self.flags & abi::FLAG_IS_SYNTH != 0 || self.num_inputs == 0 {
             Vec::new()
+        } else {
+            super::ports::ports_from_unsigned(&[self.num_inputs as u32])
         }
     }
 
@@ -1306,6 +1426,12 @@ impl Vst2Instance {
 
     /// Set a normalized 0..1 parameter by name, id or index.
     pub fn set_param_by_name(&mut self, name: &str, value: f64) -> bool {
+        if matches!(
+            self.process_error,
+            Some(Vst2ProcessError::PreparedParameter(_))
+        ) {
+            return false;
+        }
         if self.check_callback_route().is_err() {
             return false;
         }
@@ -1317,6 +1443,12 @@ impl Vst2Instance {
     }
 
     pub fn set_param_index(&mut self, index: i32, value: f64) {
+        if matches!(
+            self.process_error,
+            Some(Vst2ProcessError::PreparedParameter(_))
+        ) {
+            return;
+        }
         if self.check_callback_route().is_err() {
             return;
         }
@@ -1388,12 +1520,31 @@ impl Vst2Instance {
         self.check_callback_route()
             .map_err(|error| error.to_string())?;
         checked_state_chunk_size(bytes.len())?;
-        if self.flags & abi::FLAG_PROGRAM_CHUNKS == 0 {
-            return Err(format!(
-                "VST2 plugin '{}' does not expose program chunks",
-                self.name
-            ));
+        if program_bank::is_parameter_program(bytes) {
+            return self.restore_parameter_program(bytes);
         }
+        if program_bank::is_parameter_bank(bytes) {
+            return self.restore_parameter_bank(bytes);
+        }
+        if self.flags & abi::FLAG_PROGRAM_CHUNKS == 0 {
+            if program_bank::is_chunk_program(bytes) {
+                return Err("VST2 plugin does not support opaque program presets".into());
+            }
+            return self.restore_parameter_bank(bytes);
+        }
+        let chunk = {
+            // SAFETY: Exclusive state control owns the healthy native descriptor.
+            let effect = unsafe { &*self.effect };
+            program_bank::ChunkInput::parse(
+                bytes,
+                effect.unique_id as u32,
+                effect.num_programs.max(0) as usize,
+            )?
+        };
+        let (bytes, chunk_index, selected) = match chunk {
+            program_bank::ChunkInput::Bank(bytes, selected) => (bytes, 0, selected),
+            program_bank::ChunkInput::Program(bytes) => (bytes, 1, None),
+        };
         let input = if let Some(packet) = self.owned_scratch() {
             // SAFETY: Exclusive UI state control prepares a bounded retained
             // input copy before lending it, never a caller-owned temporary.
@@ -1403,20 +1554,16 @@ impl Vst2Instance {
         } else {
             bytes.as_ptr().cast_mut().cast()
         };
-        let result = self.dispatch(op::SET_CHUNK, 0, bytes.len() as isize, input);
+        // SET_CHUNK has no standardized success reply. Native faults and host
+        // callback failures still reject restoration through the guarded route.
+        self.invalidate_prepared_parameters();
+        self.dispatch(op::SET_CHUNK, chunk_index, bytes.len() as isize, input);
         self.check_callback_route()
             .map_err(|error| error.to_string())?;
-        if result != 0 {
-            return Err(format!(
-                "VST2 plugin '{}' rejected its state chunk",
-                self.name
-            ));
+        if let Some(index) = selected {
+            self.restore_chunk_bank_selection(index)?;
         }
-        // Keep the host mirror in step with the restored bank.
-        for index in 0..self.num_params {
-            self.host.store_value(index, self.read_param(index));
-        }
-        Ok(())
+        self.finish_parameter_restore()
     }
 
     pub fn note_on(&mut self, key: u8, velocity: f32, sample_offset: i32) {
@@ -1568,6 +1715,12 @@ impl Vst2Instance {
         &mut self,
         max_frames: usize,
     ) -> Result<(), oc_audio::BlockPreparationError> {
+        if matches!(
+            self.process_error,
+            Some(Vst2ProcessError::PreparedParameter(_))
+        ) {
+            return Err(oc_audio::BlockPreparationError::CapacityExceeded);
+        }
         if let Err(error) = self.check_callback_route() {
             self.note_process_error(error);
             return Err(oc_audio::BlockPreparationError::CapacityExceeded);
@@ -1576,9 +1729,19 @@ impl Vst2Instance {
         if max_frames > isize::MAX as usize / std::mem::size_of::<f32>() {
             return Err(oc_audio::BlockPreparationError::CapacityExceeded);
         }
-        if self.host.io_changed.swap(false, Ordering::AcqRel)
-            && let Err(error) = self.refresh_io()
-        {
+        self.host.prepared_io_signature.store(0, Ordering::Release);
+        let frames = frames.max(self.max_block_frames);
+        if frames > self.max_block_frames {
+            self.set_block_size(frames);
+            if let Err(error) = self.check_callback_route() {
+                self.note_process_error(error);
+                return Err(oc_audio::BlockPreparationError::CapacityExceeded);
+            }
+        }
+        // Activation, state restoration and block-size changes can update the
+        // descriptor before the plugin sends its first IO_CHANGED notification.
+        self.host.io_changed.swap(false, Ordering::AcqRel);
+        if let Err(error) = self.refresh_io() {
             self.host.io_changed.store(true, Ordering::Release);
             return Err(error);
         }
@@ -1598,7 +1761,6 @@ impl Vst2Instance {
             }
             Ok(())
         }
-        let frames = frames.max(self.max_block_frames);
         for channel in self
             .input_channels
             .iter_mut()
@@ -1614,19 +1776,56 @@ impl Vst2Instance {
             abi::VST_EVENTS_POINTER_OFFSET
                 + MAX_PENDING_MIDI * std::mem::size_of::<*mut abi::VstEvent>(),
         )?;
-        if frames > self.max_block_frames {
-            self.set_block_size(frames);
-        }
         if let Err(error) = self.check_callback_route() {
             self.note_process_error(error);
             return Err(oc_audio::BlockPreparationError::CapacityExceeded);
         }
+        self.host
+            .prepared_io_flags
+            .store(self.flags, Ordering::Relaxed);
+        self.host.prepared_io_signature.store(
+            io_signature(self.num_inputs, self.num_outputs, self.latency_samples()),
+            Ordering::Release,
+        );
         // Overflow means events were lost; only a reset can recover it.
-        if self.process_error != Some(Vst2ProcessError::EventCapacityExceeded) {
+        if !matches!(
+            self.process_error,
+            Some(Vst2ProcessError::EventCapacityExceeded | Vst2ProcessError::PreparedParameter(_))
+        ) {
             self.process_error = None;
             self.error_reported.set(false);
         }
         Ok(())
+    }
+
+    /// Let a restored insert publish its initial delay before the mixer uses it.
+    /// Call this before queuing MIDI or handing the instance to processing.
+    pub fn prepare_restored_insert(
+        &mut self,
+        transport: Option<&PluginTransport>,
+    ) -> Result<(), String> {
+        if !self.pending_midi.is_empty() {
+            return Err("VST2 insert must be prepared before queuing MIDI".into());
+        }
+        let prepare = |instance: &mut Self| {
+            instance
+                .prepare_block_buffers(instance.max_block_frames as usize)
+                .map_err(|error| format!("VST2 insert preparation failed: {error:?}"))
+        };
+        prepare(self)?;
+        let mut stopped = transport
+            .cloned()
+            .unwrap_or_else(|| PluginTransport::new(0, self.sample_rate, 120.0));
+        stopped.playing = false;
+        // A nonempty, silent call allows lazy native initialization without
+        // handing it project audio or advancing the project transport.
+        match self.process_effect_into(&mut [0.0; 2], self.sample_rate, Some(stopped)) {
+            Ok(()) | Err(Vst2ProcessError::TopologyChanged) => {}
+            Err(error) => return Err(error.to_string()),
+        }
+        // Clear the probe's signal history before exposing the instance.
+        self.reset();
+        prepare(self)
     }
 
     fn preflight_block(&self, samples: usize, sample_rate: u32) -> Result<(), Vst2ProcessError> {
@@ -1641,7 +1840,7 @@ impl Vst2Instance {
         if sample_rate != self.sample_rate {
             return Err(Vst2ProcessError::SampleRateChanged);
         }
-        if self.host.io_changed.load(Ordering::Acquire)
+        if self.pending_io_change_requires_preparation()
             || self.input_channels.len() != self.num_inputs.max(1) as usize
             || self.output_channels.len() != self.num_outputs.max(0) as usize
         {
@@ -1672,6 +1871,22 @@ impl Vst2Instance {
         Ok(())
     }
 
+    fn pending_io_change_requires_preparation(&self) -> bool {
+        if !self.host.has_io_changed() || !self.host.io_changed.swap(false, Ordering::AcqRel) {
+            return false;
+        }
+        // The owned callback records a notice without trusting a caller's
+        // descriptor pointer. Resolve it here using the instance's own source.
+        // SAFETY: The healthy instance retains the descriptor. The caller
+        // owns the prepared processing admission and checks callback faults
+        // before reading the ABI scalars published by IO_CHANGED.
+        let changed = !self.host.matches_prepared_io(unsafe { &*self.effect });
+        if changed {
+            self.host.io_changed.store(true, Ordering::Release);
+        }
+        changed
+    }
+
     /// Render one prepared block to caller-owned stereo storage. Rejection
     /// before processing preserves the destination, MIDI queue and plugin DSP.
     /// A topology change raised during processing discards that block instead
@@ -1681,7 +1896,25 @@ impl Vst2Instance {
         output: &mut [f32],
         transport: Option<PluginTransport>,
     ) -> Result<(), Vst2ProcessError> {
-        self.process_prepared(output, self.sample_rate, transport.as_ref(), false)
+        self.process_prepared(output, self.sample_rate, transport.as_ref(), false, None)
+    }
+
+    pub fn process_block_outputs_into(
+        &mut self,
+        mut output: Vst2OutputBlock<'_>,
+        transport: Option<&PluginTransport>,
+    ) -> Result<(), Vst2ProcessError> {
+        let samples = output.validate(self.output_count())?;
+        if let Err(error) = self.preflight_block(samples, self.sample_rate) {
+            self.note_process_error(error);
+            return Err(error);
+        }
+        if output.frames != 0 {
+            self.prepare(output.frames, transport);
+            self.process_audio_channels(output.frames, None, None)?;
+            output.append(self);
+        }
+        Ok(())
     }
 
     pub fn process_effect_into(
@@ -1690,7 +1923,23 @@ impl Vst2Instance {
         sample_rate: u32,
         transport: Option<PluginTransport>,
     ) -> Result<(), Vst2ProcessError> {
-        self.process_prepared(buffer, sample_rate, transport.as_ref(), true)
+        self.process_prepared(buffer, sample_rate, transport.as_ref(), true, None)
+    }
+
+    /// Process the main pair with the separate input pair on channels 3 and 4.
+    pub fn process_effect_with_key_into(
+        &mut self,
+        buffer: &mut [f32],
+        key: &[f32],
+        sample_rate: u32,
+        transport: Option<PluginTransport>,
+    ) -> Result<(), Vst2ProcessError> {
+        if key.len() != buffer.len() || !self.supports_sidechain() {
+            let error = Vst2ProcessError::InvalidAuxiliaryInput;
+            self.note_process_error(error);
+            return Err(error);
+        }
+        self.process_prepared(buffer, sample_rate, transport.as_ref(), true, Some(key))
     }
 
     fn process_prepared(
@@ -1699,6 +1948,7 @@ impl Vst2Instance {
         sample_rate: u32,
         transport: Option<&PluginTransport>,
         input: bool,
+        key: Option<&[f32]>,
     ) -> Result<(), Vst2ProcessError> {
         if let Err(error) = self.preflight_block(buffer.len(), sample_rate) {
             self.note_process_error(error);
@@ -1709,25 +1959,44 @@ impl Vst2Instance {
             return Ok(());
         }
         self.prepare(frames, transport);
-        self.process_audio(buffer, input)
+        self.process_audio_channels(frames, input.then_some(&*buffer), key)?;
+        self.read_output_pair(0, buffer);
+        Ok(())
     }
 
-    fn process_audio(&mut self, buffer: &mut [f32], input: bool) -> Result<(), Vst2ProcessError> {
-        let frames = buffer.len() / 2;
+    fn process_audio_channels(
+        &mut self,
+        frames: usize,
+        input: Option<&[f32]>,
+        key: Option<&[f32]>,
+    ) -> Result<(), Vst2ProcessError> {
         if let Err(error) = self.check_callback_route() {
             self.note_process_error(error);
             return Err(error);
         }
-        if self.host.io_changed.load(Ordering::Acquire) {
+        if self.pending_io_change_requires_preparation() {
             self.note_process_error(Vst2ProcessError::TopologyChanged);
             return Err(Vst2ProcessError::TopologyChanged);
         }
-        if input {
-            for frame in 0..frames {
-                self.input_channels[0][frame] = buffer[frame * 2];
-                if self.input_channels.len() > 1 {
-                    self.input_channels[1][frame] = buffer[frame * 2 + 1];
+        if let Some(buffer) = input {
+            if self.num_inputs == 1 {
+                super::ports::write_stereo_input(
+                    buffer,
+                    &mut self.input_channels[0][..frames],
+                    1,
+                    0,
+                );
+            } else if self.num_inputs >= 2 {
+                for (frame, sample) in buffer.chunks_exact(2).enumerate() {
+                    self.input_channels[0][frame] = sample[0];
+                    self.input_channels[1][frame] = sample[1];
                 }
+            }
+        }
+        if let Some(key) = key {
+            for (frame, sample) in key.chunks_exact(2).enumerate() {
+                self.input_channels[2][frame] = sample[0];
+                self.input_channels[3][frame] = sample[1];
             }
         }
         self.run_process(frames);
@@ -1735,11 +2004,10 @@ impl Vst2Instance {
             self.note_process_error(error);
             return Err(error);
         }
-        if self.host.io_changed.load(Ordering::Acquire) {
+        if self.pending_io_change_requires_preparation() {
             self.note_process_error(Vst2ProcessError::TopologyChanged);
             return Err(Vst2ProcessError::TopologyChanged);
         }
-        self.read_output(frames, buffer);
         Ok(())
     }
 
@@ -1791,18 +2059,31 @@ impl Vst2Instance {
         }
     }
 
-    /// Return the effect to its initial state: drop queued events and run the
-    /// suspend/resume cycle every VST2 host uses to reset a plugin.
+    /// Clear queued events and DSP history while retaining the live program.
     pub fn reset(&mut self) {
+        if matches!(
+            self.process_error,
+            Some(Vst2ProcessError::PreparedParameter(_))
+        ) {
+            return;
+        }
         if let Err(error) = self.check_callback_route() {
             self.note_process_error(error);
             return;
         }
-        self.process_error = None;
+        if !matches!(
+            self.process_error,
+            Some(Vst2ProcessError::PreparedParameter(_))
+        ) {
+            self.process_error = None;
+        }
         self.error_reported.set(false);
         self.pending_midi.clear();
         self.deactivate();
         self.activate();
+        for channel in &mut self.output_channels {
+            channel.fill(0.0);
+        }
     }
 
     fn activate(&mut self) {
@@ -1931,7 +2212,7 @@ impl Vst2Instance {
             self.event_list[offset..offset + std::mem::size_of::<usize>()]
                 .copy_from_slice(&(*pointer as usize).to_ne_bytes());
         }
-        if self.accepts_midi {
+        if self.accepts_midi() {
             let events = self.event_list.as_mut_ptr() as *mut c_void;
             self.dispatch(op::PROCESS_EVENTS, 0, 0, events);
         }
@@ -2056,24 +2337,20 @@ impl Vst2Instance {
             self.host
                 .latency
                 .store(latency.max(0) as u32, Ordering::Relaxed);
-            self.allocate_channels();
             Ok(())
         } else {
             Err(oc_audio::BlockPreparationError::CapacityExceeded)
         }
     }
 
-    fn read_output(&self, frames: usize, output: &mut [f32]) {
-        if self.output_channels.is_empty() {
-            output[..frames * 2].fill(0.0);
+    pub(crate) fn read_output_pair(&self, pair: usize, output: &mut [f32]) {
+        let Some(left) = self.output_channels.get(pair * 2) else {
+            output.fill(0.0);
             return;
-        }
-        let left = &self.output_channels[0];
-        let right = self.output_channels.get(1).unwrap_or(left);
-        let frames = frames.min(output.len() / 2);
-        for frame in 0..frames {
-            output[frame * 2] = left[frame];
-            output[frame * 2 + 1] = right[frame];
+        };
+        let right = self.output_channels.get(pair * 2 + 1).unwrap_or(left);
+        for (frame, samples) in output.chunks_exact_mut(2).enumerate() {
+            samples.copy_from_slice(&[left[frame], right[frame]]);
         }
     }
 
@@ -2103,6 +2380,7 @@ impl Vst2Instance {
     }
 
     fn read_param_metadata(&mut self) {
+        self.invalidate_prepared_parameters();
         self.param_names.clear();
         self.param_labels.clear();
         self.param_defaults.clear();
@@ -2187,6 +2465,9 @@ impl Vst2Instance {
     }
 
     fn param_index(&self, name: &str) -> Option<i32> {
+        #[cfg(test)]
+        self.parameter_name_lookups
+            .set(self.parameter_name_lookups.get() + 1);
         let name = name.trim();
         if let Some(index) = name
             .strip_prefix('#')
@@ -2281,6 +2562,34 @@ impl Drop for Vst2Instance {
 }
 
 impl AudioEffect for Vst2Instance {
+    fn midi_input_capacity(&self) -> usize {
+        if self.accepts_midi() {
+            MAX_PENDING_MIDI
+        } else {
+            0
+        }
+    }
+    fn queue_midi_input(
+        &mut self,
+        event: oc_audio::MidiInputEvent,
+    ) -> Result<(), oc_audio::MidiInputError> {
+        use oc_audio::MidiInputError;
+        if !self.accepts_midi() {
+            return Err(MidiInputError::Unsupported);
+        }
+        if self.check_callback_route().is_err() {
+            return Err(MidiInputError::ProcessorFailed);
+        }
+        let bytes = event.message.bytes()?;
+        if event.sample_offset >= self.max_block_frames {
+            return Err(MidiInputError::InvalidOffset);
+        }
+        if self.pending_midi.len() >= MAX_PENDING_MIDI {
+            return Err(MidiInputError::CapacityExceeded);
+        }
+        self.queue_midi(bytes[0], bytes[1], bytes[2], event.sample_offset as i32);
+        Ok(())
+    }
     fn prepare_block(&mut self, max_frames: usize) -> Result<(), oc_audio::BlockPreparationError> {
         self.prepare_block_buffers(max_frames)
     }
@@ -2314,8 +2623,34 @@ impl AudioEffect for Vst2Instance {
         let _ = self.process_effect_into(buffer, sample_rate, transport);
     }
 
+    fn supports_sidechain(&self) -> bool {
+        self.num_inputs() == 4 && !self.is_instrument()
+    }
+
+    fn process_with_sidechain(
+        &mut self,
+        buffer: &mut [f32],
+        key: &[f32],
+        sample_rate: u32,
+        transport: Option<PluginTransport>,
+    ) {
+        let _ = self.process_effect_with_key_into(buffer, key, sample_rate, transport);
+    }
+
     fn set_param(&mut self, name: &str, value: f64) {
         self.set_param_by_name(name, value);
+    }
+
+    fn prepare_parameter(&mut self, name: &str) -> Option<oc_audio::PreparedParameterHandle> {
+        self.prepare_parameter_binding(name)
+    }
+
+    fn set_prepared_parameter(
+        &mut self,
+        handle: oc_audio::PreparedParameterHandle,
+        value: f64,
+    ) -> oc_audio::PreparedParameterOutcome {
+        self.write_prepared_parameter(handle, value)
     }
 
     fn get_param(&self, name: &str) -> Option<f64> {
@@ -2323,16 +2658,7 @@ impl AudioEffect for Vst2Instance {
     }
 
     fn reset(&mut self) {
-        if let Err(error) = self.check_callback_route() {
-            self.note_process_error(error);
-            return;
-        }
-        self.process_error = None;
-        self.error_reported.set(false);
-        self.pending_midi.clear();
-        for channel in &mut self.output_channels {
-            channel.fill(0.0);
-        }
+        Vst2Instance::reset(self);
     }
 
     fn max_block_frames(&self) -> u32 {
@@ -2630,6 +2956,13 @@ mod tests;
 
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support {
+    /// Simulate a native latency change using the installed host callback.
+    pub fn change_latency_and_notify(instance: &mut super::Vst2Instance, frames: i32) {
+        // SAFETY: The fixture instance exclusively owns the live descriptor.
+        unsafe { (*instance.effect).initial_delay = frames };
+        notify_io_changed(instance);
+    }
+
     /// Exercise the actual host callback without a third-party plugin.
     pub fn notify_io_changed(instance: &super::Vst2Instance) {
         // SAFETY: a loaded instance retains this host context and AEffect for

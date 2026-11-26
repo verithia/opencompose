@@ -6,6 +6,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::thread::{self, ThreadId};
 
+#[cfg(target_os = "macos")]
+mod native_events;
+
 /// Work item dispatched to the application main thread.
 pub type ApplicationMainTask = Box<dyn FnOnce() + Send + 'static>;
 type Dispatch = dyn Fn(ApplicationMainTask) -> Result<(), String> + Send + Sync;
@@ -203,7 +206,13 @@ pub fn service_offline_main() -> Result<(), String> {
     if !offline_main_is_active() {
         return Ok(());
     }
-    ApplicationMainExecutor::registered()?.poll()
+    let executor = ApplicationMainExecutor::registered()?;
+    executor.poll()?;
+    #[cfg(target_os = "macos")]
+    if !executor.inner.polling.load(Ordering::Acquire) {
+        native_events::service()?;
+    }
+    Ok(())
 }
 
 /// Dropping an unstarted request cancels its queued work. A request already
