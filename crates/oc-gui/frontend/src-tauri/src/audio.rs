@@ -3740,6 +3740,45 @@ impl FigureVoice for oc_host::vst3_instance::Vst3Instance {
     }
 }
 
+/// Wall-clock pacing for the simulated devices: one block per period.
+///
+/// A real device pulls blocks on its own clock. A test thread that pulled one
+/// block per wake would slow down whenever the scheduler wakes it late, which
+/// on a loaded machine is most of the time, so the device catches up on the
+/// blocks it owes, a bounded burst per wake.
+#[cfg(test)]
+struct SimulatedDeviceClock {
+    started: std::time::Instant,
+    played: u64,
+}
+
+#[cfg(test)]
+impl SimulatedDeviceClock {
+    const BLOCK_PERIOD: std::time::Duration = std::time::Duration::from_millis(2);
+    /// Bounds one wake's work so `stop` is still observed promptly.
+    const MAX_BURST: u64 = 32;
+
+    fn start() -> Self {
+        Self {
+            started: std::time::Instant::now(),
+            played: 0,
+        }
+    }
+
+    /// Blocks to play now: those whose period has begun and that have not yet
+    /// been played, at most [`Self::MAX_BURST`].
+    fn due_blocks(&mut self) -> u64 {
+        let elapsed = self.started.elapsed().as_nanos() / Self::BLOCK_PERIOD.as_nanos();
+        let owed = u64::try_from(elapsed)
+            .unwrap_or(u64::MAX)
+            .saturating_add(1)
+            .saturating_sub(self.played);
+        let due = owed.min(Self::MAX_BURST);
+        self.played += due;
+        due
+    }
+}
+
 /// Test sink replaces only the physical device: real worker, commands, ring and
 /// production callback still run. Drop joins the sole consumer before replacement.
 #[cfg(test)]
@@ -3769,18 +3808,21 @@ impl SimulatedOutput {
         let thread = std::thread::spawn(move || {
             let mut block = [0.0; 256];
             let mut played = 0.0_f32;
+            let mut clock = SimulatedDeviceClock::start();
             while !halted.load(Ordering::Acquire) {
-                sink.fill(&mut block);
-                assert!(block.iter().all(|v| v.is_finite()));
-                if block.iter().any(|v| v.abs() > 1e-6) {
-                    heard.store(true, Ordering::Release);
-                    blocks.fetch_add(1, Ordering::Release);
+                for _ in 0..clock.due_blocks() {
+                    sink.fill(&mut block);
+                    assert!(block.iter().all(|v| v.is_finite()));
+                    if block.iter().any(|v| v.abs() > 1e-6) {
+                        heard.store(true, Ordering::Release);
+                        blocks.fetch_add(1, Ordering::Release);
+                    }
+                    for sample in &block {
+                        played = played.max(sample.abs());
+                    }
+                    loudest.store(played.to_bits(), Ordering::Release);
                 }
-                for sample in &block {
-                    played = played.max(sample.abs());
-                }
-                loudest.store(played.to_bits(), Ordering::Release);
-                std::thread::sleep(std::time::Duration::from_millis(2));
+                std::thread::sleep(SimulatedDeviceClock::BLOCK_PERIOD);
             }
         });
         Self {
@@ -3825,12 +3867,15 @@ impl SimulatedAuditionOutput {
         let blocks = heard_blocks.clone();
         let thread = std::thread::spawn(move || {
             let mut block = [0.0; 256];
+            let mut clock = SimulatedDeviceClock::start();
             while !halted.load(Ordering::Acquire) {
-                audio_callback(&mut block, &playback);
-                if block.iter().any(|v| v.abs() > 1e-6) {
-                    blocks.fetch_add(1, Ordering::Release);
+                for _ in 0..clock.due_blocks() {
+                    audio_callback(&mut block, &playback);
+                    if block.iter().any(|v| v.abs() > 1e-6) {
+                        blocks.fetch_add(1, Ordering::Release);
+                    }
                 }
-                std::thread::sleep(std::time::Duration::from_millis(2));
+                std::thread::sleep(SimulatedDeviceClock::BLOCK_PERIOD);
             }
         });
         Self {

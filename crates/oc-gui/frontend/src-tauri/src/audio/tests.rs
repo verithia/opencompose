@@ -487,6 +487,27 @@ fn note_taking_kinds_route_their_audition_through_the_figure() {
     assert_voice::<ProgramVoice<'static>>();
 }
 
+#[test]
+fn simulated_device_catches_up_on_blocks_a_late_wake_missed() {
+    let period = SimulatedDeviceClock::BLOCK_PERIOD;
+    let mut clock = SimulatedDeviceClock {
+        started: std::time::Instant::now() - period * 10,
+        played: 0,
+    };
+    // Ten whole periods have passed and the eleventh has begun.
+    let first = clock.due_blocks();
+    assert!((11..=12).contains(&first), "{first} blocks due");
+    assert!(clock.due_blocks() <= 1, "played blocks are not owed again");
+
+    let mut stalled = SimulatedDeviceClock {
+        started: std::time::Instant::now() - period * 1_000,
+        played: 0,
+    };
+    assert_eq!(stalled.due_blocks(), SimulatedDeviceClock::MAX_BURST);
+    assert_eq!(stalled.due_blocks(), SimulatedDeviceClock::MAX_BURST);
+    assert_eq!(stalled.played, 2 * SimulatedDeviceClock::MAX_BURST);
+}
+
 fn wait_for_audio(mut condition: impl FnMut() -> bool) {
     let start = std::time::Instant::now();
     while !condition() {
