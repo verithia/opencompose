@@ -257,6 +257,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        not(debug_assertions),
+        ignore = "loopback HTTP installs exist only in debug builds"
+    )]
     #[cfg(target_os = "macos")]
     fn gui_one_call_fetches_both_artifacts_and_honors_custom_plugin_directory() {
         let f = Fixture::new();
@@ -283,6 +287,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        not(debug_assertions),
+        ignore = "loopback HTTP installs exist only in debug builds"
+    )]
     #[cfg(target_os = "macos")]
     fn gui_bad_companion_preserves_primary_and_data_destinations() {
         let mut f = Fixture::new();
@@ -298,6 +306,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        not(debug_assertions),
+        ignore = "loopback HTTP installs exist only in debug builds"
+    )]
     fn selected_format_readiness_is_independent_of_catalog_and_inventory_order() {
         let mut f = Fixture::new();
         let mut clap = f.entries[0].installs[0].clone();

@@ -90,6 +90,11 @@ CI (`.github/workflows/ci.yml`) must run, and fail on error:
 - `npx tsc -b --noEmit` against the real project references, plus Vitest
 - `cargo fmt --check`, `cargo check`, `cargo test` and clippy with
   `-D warnings`, with undocumented unsafe blocks denied
+- `cargo test` in both the debug and the release profile: release is the build
+  that ships, and an optimised build can call different math routines. A test
+  that needs a debug-only seam, such as loopback HTTP installs, says so with
+  `#[cfg_attr(not(debug_assertions), ignore = "…")]` instead of failing or
+  disappearing in release
 - `ruff format --check`, `ruff check` and the `scripts/tests` regressions
 - `scripts/check-docs.sh`, `scripts/check-test-binaries.py`,
   `scripts/check-licenses.py` and `scripts/third-party-licenses.py --check`

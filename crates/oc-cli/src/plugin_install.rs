@@ -879,6 +879,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        not(debug_assertions),
+        ignore = "loopback HTTP installs exist only in debug builds"
+    )]
     fn signed_index_compatibility_and_rollback_fail_before_artifact_fetch() {
         let archive = fixture_archive();
         let fixture = published(
@@ -963,6 +967,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        not(debug_assertions),
+        ignore = "loopback HTTP installs exist only in debug builds"
+    )]
     fn remote_install_rechecks_publication_after_download_and_allows_exact_replay() {
         use std::io::{BufRead, BufReader};
         use std::net::TcpListener;
@@ -1051,6 +1059,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        not(debug_assertions),
+        ignore = "loopback HTTP installs exist only in debug builds"
+    )]
     fn remote_index_dry_run_verifies_but_never_writes_cache_or_watermark() {
         let archive = fixture_archive();
         let fixture = published(
@@ -1234,6 +1246,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        not(debug_assertions),
+        ignore = "loopback HTTP installs exist only in debug builds"
+    )]
     #[cfg(target_os = "macos")]
     fn companion_download_rechecks_authority_and_allows_exact_replay() {
         use std::io::{BufRead, BufReader};
@@ -1333,6 +1349,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        not(debug_assertions),
+        ignore = "loopback HTTP installs exist only in debug builds"
+    )]
     #[cfg(target_os = "macos")]
     fn one_cli_install_fetches_and_publishes_primary_and_companion_from_signed_catalog() {
         let content = companion_archive(&[
@@ -1377,6 +1397,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        not(debug_assertions),
+        ignore = "loopback HTTP installs exist only in debug builds"
+    )]
     #[cfg(target_os = "macos")]
     fn companion_integrity_failure_and_dry_run_never_publish_partial_cli_install() {
         let content = companion_archive(&[
@@ -1429,6 +1453,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        not(debug_assertions),
+        ignore = "loopback HTTP installs exist only in debug builds"
+    )]
     #[cfg(target_os = "macos")]
     fn missing_companion_download_leaves_existing_cli_install_untouched() {
         let content = companion_archive(&[
@@ -1482,6 +1510,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        not(debug_assertions),
+        ignore = "loopback HTTP installs exist only in debug builds"
+    )]
     fn installs_a_pinned_artifact_from_a_signed_index() {
         let archive = fixture_archive();
         let fixture = published(
@@ -1506,6 +1538,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        not(debug_assertions),
+        ignore = "loopback HTTP installs exist only in debug builds"
+    )]
     fn a_hash_mismatch_is_refused_and_installs_nothing() {
         let archive = fixture_archive();
         let fixture = published(&"0".repeat(64), archive.len() as u64, &archive);
@@ -1516,6 +1552,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        not(debug_assertions),
+        ignore = "loopback HTTP installs exist only in debug builds"
+    )]
     fn a_size_mismatch_is_refused_and_installs_nothing() {
         let archive = fixture_archive();
         let fixture = published(&oc_market::sha256_hex(&archive), 1, &archive);
@@ -1527,6 +1567,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        not(debug_assertions),
+        ignore = "loopback HTTP installs exist only in debug builds"
+    )]
     fn a_response_without_a_length_is_cut_off_at_the_store_limit() {
         let server = FixtureServer::start();
         // One chunk past the cap, then more than a socket buffer can absorb, so
@@ -1548,6 +1592,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        not(debug_assertions),
+        ignore = "loopback HTTP installs exist only in debug builds"
+    )]
     fn an_unsigned_index_is_refused_before_any_download() {
         let server = FixtureServer::start();
         let trust = TempDir::new("unsigned-index-trust");

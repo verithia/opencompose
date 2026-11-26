@@ -139,13 +139,18 @@ jobs:
   test:
     # The suite runs in package shards on separate runners: the test binaries
     # otherwise run one after another, and a few of them take minutes each.
-    name: Rust tests (${{ matrix.os }}, ${{ matrix.shard }})
+    # Every shard runs in both profiles. Debug keeps overflow checks and debug
+    # assertions; release is what ships, and an optimised build may call
+    # different math library routines, so the pinned references must hold there
+    # too.
+    name: Rust tests (${{ matrix.os }}, ${{ matrix.shard }}, ${{ matrix.profile }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [macos-latest, ubuntu-latest]
         shard: [gui, dsp, engine, rest]
+        profile: [debug, release]
         include:
           - shard: gui
             packages: -p oc-gui
@@ -167,7 +172,7 @@ jobs:
       - name: Cache dependencies
         uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.shard }}
+          key: ${{ matrix.shard }}-${{ matrix.profile }}
           cache-on-failure: true
 
       - name: Install system dependencies (Linux)
@@ -185,14 +190,16 @@ jobs:
 
       - name: Cargo test
         # Every failing test binary is reported, not only the first.
-        run: cargo test ${{ matrix.packages }} --locked --no-fail-fast
+        run: >-
+          cargo test ${{ matrix.packages }} --locked --no-fail-fast
+          ${{ matrix.profile == 'release' && '--release' || '' }}
 
       - name: Credential store round trip (skip reason stays visible)
         # The Linux runner has no Secret Service, so this test prints
         # "SKIP …: OS credential store unavailable" instead of passing as if it
         # had stored a key. --nocapture keeps that reason in the job log; macOS
         # exercises the real login keychain here.
-        if: matrix.shard == 'gui'
+        if: matrix.shard == 'gui' && matrix.profile == 'debug'
         run: |
           cargo test -p oc-gui --lib --locked \
             a_saved_key_is_reported_as_present_and_never_returned -- --nocapture
@@ -200,7 +207,7 @@ jobs:
       - name: SIMD backends and bit identity
         # Pins the kernel tests and prints the backend this CPU selected, so an
         # x86 runner exercises SSE2 (and AVX2 when the CPU advertises it).
-        if: matrix.shard == 'dsp' || matrix.shard == 'engine' || matrix.shard == 'rest'
+        if: matrix.profile == 'debug' && (matrix.shard == 'dsp' || matrix.shard == 'engine' || matrix.shard == 'rest')
         run: |
           case "${{ matrix.shard }}" in
             dsp)
@@ -213,7 +220,7 @@ jobs:
           esac
 
       - name: Owned VST3 lifecycle (CPU-only native fixture)
-        if: matrix.shard == 'rest'
+        if: matrix.shard == 'rest' && matrix.profile == 'debug'
         timeout-minutes: 10
         run: cargo test -p oc-host --test vst3_rt_alloc --features test-support --locked -- --owned-lifecycle
 
