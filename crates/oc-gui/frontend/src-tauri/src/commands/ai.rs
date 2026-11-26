@@ -71,7 +71,7 @@ pub fn validate_edit_in_project(
     let Ok(candidate) = oc_dsl::ai::candidate_project(&edit, &inner.project) else {
         return result;
     };
-    let introduced = introduced_engine_errors(&inner.project, &candidate);
+    let introduced = introduced_engine_errors(&inner.project, &candidate, root.as_deref());
     if !introduced.is_empty() {
         result.valid = false;
         result.parsed_dsl = None;
@@ -86,10 +86,11 @@ pub fn validate_edit_in_project(
 fn introduced_engine_errors(
     base: &oc_dsl::ast::Project,
     candidate: &oc_dsl::ast::Project,
+    root: Option<&std::path::Path>,
 ) -> Vec<String> {
-    let existing = oc_engine::graph::validate_effect_parameters(base, 48_000);
+    let existing = oc_engine::graph::validate_effect_parameters(base, 48_000, root);
     let mut introduced: Vec<String> =
-        oc_engine::graph::validate_effect_parameters(candidate, 48_000)
+        oc_engine::graph::validate_effect_parameters(candidate, 48_000, root)
             .into_iter()
             .filter(|error| !existing.contains(error))
             .collect();
@@ -115,7 +116,7 @@ pub fn introduced_by_change(
     };
     let root = super::shared::project_root(inner);
     let mut errors = oc_dsl::ai::introduced_errors(&base, &candidate, root.as_deref());
-    errors.extend(introduced_engine_errors(&base, &candidate));
+    errors.extend(introduced_engine_errors(&base, &candidate, root.as_deref()));
     Ok(errors)
 }
 

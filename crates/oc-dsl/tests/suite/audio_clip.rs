@@ -243,3 +243,27 @@ fn validation_rejects_invalid_media_parameters() {
             >= 2
     );
 }
+
+#[test]
+fn playlist_row_captions_roundtrip_without_renaming_mixer_tracks() {
+    let written = "@project\n  playlist_rows:\n    2 = \"采样\"\n    8 = \"Synth layer\"\n@track carrier | instrument: audio/clip\n";
+    let project = oc_dsl::parse(written).unwrap();
+    assert_eq!(project.tracks[0].name, "carrier");
+    assert_eq!(project.properties.playlist_rows.len(), 2);
+    assert_eq!(
+        oc_dsl::parse(&oc_dsl::serialize(&project)).unwrap(),
+        project
+    );
+    assert_eq!(
+        serde_json::from_str::<oc_dsl::ast::Project>(&serde_json::to_string(&project).unwrap())
+            .unwrap(),
+        project
+    );
+    for invalid in [
+        "@project\n  playlist_rows:\n    0 = \"Zero\"",
+        "@project\n  playlist_rows:\n    2 = \"First\"\n    2 = \"Duplicate\"",
+        "@project\n  playlist_rows:\n    2 = \"  \"",
+    ] {
+        assert!(oc_dsl::parse(invalid).is_err(), "{invalid}");
+    }
+}

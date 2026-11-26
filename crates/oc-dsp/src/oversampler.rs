@@ -1,4 +1,7 @@
-//! Shared 4x FIR oversampler for the nonlinear colour devices.
+//! Shared sample-rate conversion for built-in effects.
+
+pub(crate) mod fir;
+pub(crate) mod polyphase;
 
 /// Taps in the base-rate decimator.
 const TAPS: usize = 65;

@@ -74,89 +74,7 @@ pub(super) struct SynthLanes {
     pub(super) recalibrate_legacy: bool,
 }
 
-/// Sample step between events of a continuous patch-parameter lane.
-const PATCH_LANE_STEP_SAMPLES: u64 = 64;
-/// Upper bound on the events one lane segment emits.
-const PATCH_LANE_MAX_SEGMENT_EVENTS: u64 = 2048;
-
-/// Emit a ramp across each segment of a continuous patch-parameter lane.
-///
-/// The value is interpolated in the normalized position, which is the knob the
-/// host moves, so the curve and tension match what an effect lane draws.
-fn push_patch_lane_ramp(
-    param: &str,
-    lane: &AutomationLane,
-    clock: &oc_dsl::timing::ProjectClock,
-    settings: &InterpretSettings,
-    synth_lanes: SynthLanes,
-    track_index: usize,
-    events: &mut Vec<MidiEvent>,
-) -> Result<(), String> {
-    let normalization = crate::automation::PatchNormalization {
-        builtin: synth_lanes.builtin,
-        recalibrate_legacy: synth_lanes.recalibrate_legacy,
-    };
-    let mut points = Vec::with_capacity(lane.points.len());
-    for (time_samples, point) in lane_points(lane, clock, settings.sample_rate)? {
-        let Some(value) = crate::automation::patch_point_value(normalization, param, &point.value)
-        else {
-            continue;
-        };
-        points.push((
-            time_samples,
-            value,
-            point.curve,
-            point.tension.unwrap_or(1.0),
-        ));
-    }
-    points.sort_by_key(|point| point.0);
-    let Some(&(last_time, last_value, ..)) = points.last() else {
-        return Ok(());
-    };
-    let name = param.to_string();
-    for pair in points.windows(2) {
-        let (start, from, curve, tension) = pair[0];
-        let (end, to, ..) = pair[1];
-        if end <= start {
-            continue;
-        }
-        // A held step or an unchanged value needs one event, not a ramp.
-        if curve == Curve::Stairs || to == from {
-            events.push(MidiEvent {
-                time_samples: start,
-                event: MidiMessage::PluginParam {
-                    name: name.clone(),
-                    value: from,
-                },
-                track_index,
-            });
-            continue;
-        }
-        let span = end - start;
-        let steps = (span / PATCH_LANE_STEP_SAMPLES).clamp(1, PATCH_LANE_MAX_SEGMENT_EVENTS);
-        for step in 0..steps {
-            let position = step as f64 / steps as f64;
-            let value = from + (to - from) * oc_dsl::automation::shape(curve, tension, position);
-            events.push(MidiEvent {
-                time_samples: start + span * step / steps,
-                event: MidiMessage::PluginParam {
-                    name: name.clone(),
-                    value,
-                },
-                track_index,
-            });
-        }
-    }
-    events.push(MidiEvent {
-        time_samples: last_time,
-        event: MidiMessage::PluginParam {
-            name,
-            value: last_value,
-        },
-        track_index,
-    });
-    Ok(())
-}
+mod patch_lanes;
 
 pub(super) struct AutomationContext<'a> {
     pub channel: u8,
@@ -188,19 +106,23 @@ pub(super) fn interpret_automation(
         if lane.muted || lane.effect_lane().is_some() {
             continue;
         }
-        let patch_param = decode_plugin_automation_param(&lane.param)
+        let encoded_param = decode_plugin_automation_param(&lane.param);
+        let patch_param = encoded_param
+            .clone()
             .or_else(|| profile.control_param(&lane.param).map(str::to_string));
         if let Some(param_name) = &patch_param
-            && synth_lanes.builtin
-            && oc_synth::synth::patch_param_is_continuous(param_name)
+            && ((synth_lanes.builtin && oc_synth::synth::patch_param_is_continuous(param_name))
+                || (!synth_lanes.builtin && encoded_param.is_some()))
         {
-            push_patch_lane_ramp(
+            patch_lanes::push(
                 param_name,
                 lane,
-                clock,
-                settings,
-                synth_lanes,
-                track_index,
+                patch_lanes::RampContext {
+                    clock,
+                    settings,
+                    normalization,
+                    track_index,
+                },
                 events,
             )?;
             continue;

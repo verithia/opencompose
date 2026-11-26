@@ -34,10 +34,11 @@
 | `end` | 停止播放的帧。 |
 | `loop_start`、`loop_end` | 以帧为单位的循环点。不写时循环整个采样。 |
 | `loop_mode` | `no_loop`（默认）、`one_shot`、`loop_continuous`、`loop_sustain` 或 `loop_pingpong`（也接受 `pingpong`）。 |
-| `seq_position`、`seq_length` | 轮换位置和循环长度。 |
+| `seq_position`、`seq_length` | 轮换位置和循环长度；整个采样器所有区域共用一个序列。 |
 | `group`、`off_by` | 止音组。 |
 | `ampeg_attack`、`ampeg_decay`、`ampeg_release` | 振幅包络时间，单位为秒。释放默认 0.05 秒。 |
 | `ampeg_sustain` | 延音电平，取值为 0 到 1 的比例。大于 1 的值按 1 处理，所以像 `50` 这样的 SFZ 百分比会得到完全延音。 |
+| `ampeg_release_shape` | 释放曲线的弯曲程度，−20 到 20；默认 0，即直线淡出。 |
 
 解析器会把所有不支持的头部和操作码，以及所有无法使用的区域（没有 `sample`、找不到文件、区域上下颠倒）收集到 `SamplerPatch::diagnostics` 中，并在构建采样器时记入日志。它绝不会把不支持的操作码当作别的功能来解读。
 
@@ -59,13 +60,17 @@
 - `loop_sustain` 在按住琴键期间循环。音符关闭后循环停止，释放开始，采样从当前位置继续往后播放。
 - `loop_pingpong` 先正向播放到循环终点，再反向播放到循环起点，然后再正向播放。它和 `loop_continuous` 一样，音符关闭后仍继续循环，直到释放结束。
 
+循环可以结束在采样的最后一帧；省略 `loop_end` 时，循环结束在区域末尾。正在运行的循环在那里回绕或掉头，而不会结束声部；已释放的延音循环可以播放到末尾。
+
 除 `one_shot` 外，所有模式都在音符关闭或松开延音踏板时开始释放（`ampeg_release`）。
+
+`ampeg_release_shape` 弯曲释放曲线。为 0 时淡出是一条直线；负值开始时下降更快，正值更慢。释放过程中电平遵循 `1 - expm1(shape × progress) / expm1(shape)`，在 0 处退化为直线。它可以写在区域、组或全局头部中。
 
 轮换使用整个采样器共用的一个计数器，每次音符开启都会让它前进一步。在与某个音符匹配的区域中，循环长度取最大的 `seq_position` 或 `seq_length`。`seq_position` 等于计数器在该循环中所处位置的区域会发声，所有没有 `seq_position` 的匹配区域也一起发声。
 
 ## 止音与复音 {#choke-and-polyphony}
 
-`off_by` 用于止音：当某个音符的区域带有 `off_by = N` 时，所有区域为 `group = N` 的声部都会停止。停止是立即的，没有淡出。鼓组的 `choke` 字段则会淡出，参见[鼓组](drum-kit.md)。
+`off_by` 用于止音：当某个音符的区域带有 `off_by = N` 时，所有区域为 `group = N` 的声部都会停止。停止是立即的，没有淡出，所以可能产生咔嗒声。同一个音符触发的区域按顺序启动，所以当两个区域共用一个止音组时，一个区域可能止住同一音符较早的层。在区域止住自己所在的组之前，请检查分层映射。鼓组的 `choke` 字段则会淡出，参见[鼓组](drum-kit.md)。
 
 采样器有 64 个声部。全部占满时，新音符会替换最早的声部。
 
@@ -98,9 +103,19 @@
 
 导入的预设把它的 SFZ 文本保存在 `SamplerPatch::sfz` 中，所以没有原始预设文件也能重建映射后的音色补丁。它的采样路径相对于导入预设的内容文件夹及其多重采样文件夹解析。
 
+## 把带标记的 WAVE 文件作为切片播放 {#play-a-marked-wave-file-as-slices}
+
+在 WAVE 文件旁生成一个可编辑的 SFZ，然后把它用作预设的 `sampler.sfz_file`。
+
+```sh
+ocp sample slices media/loop.wav --first-key 60 > media/loop.sfz
+```
+
+命令按帧顺序为每个提示点分配一个琴键。每个切片结束于下一个提示点或文件末尾。用 `--gated` 让切片在音符关闭时释放，用 `--json` 查看琴键与帧的映射。编辑 SFZ 中每个 `offset` 和 `end` 即可微调切点，无需修改音频。
+
 ## 已知的导入缺口 {#known-import-gaps}
 
 - OpenSynth 支持[颗粒与频谱振荡器](../osc-granular-spectral.html)（英文）和[采样层齐奏](../synth-levels.html)（英文）。导入预设需要能访问采样文件：只含嵌入音频、没有文件路径的振荡器不受支持。
 - 采样层遵循所属声部的滤波器路由和振幅包络，然后送入合成器效果器架。
 - SFZ 滤波器、`pitch_keytrack`、键位切换、释放采样、`<master>` 和 `<effect>` 头部、超出单个共享计数器的轮换，以及力度层之间的交叉淡化都没有实现。
-- `ampeg_*` 包络的各段是线性的，不是 SFZ 的曲线形状。
+- 除 `ampeg_release_shape` 外，`ampeg_*` 包络的各段是线性的，不是 SFZ 的曲线形状。

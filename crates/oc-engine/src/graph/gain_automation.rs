@@ -6,6 +6,7 @@ use oc_dsl::ast::{BarBeat, GainAutomation, GainInterpolation, ParamValue, Projec
 use std::sync::Arc;
 
 struct Clip {
+    segments: Option<oc_dsl::automation::LaneCurve>,
     start: f64,
     end: f64,
     linear: bool,
@@ -70,22 +71,45 @@ impl GainEnvelope {
                 .iter()
                 .map(|c| {
                     Ok(Clip {
+                        segments: if c.interpolation == GainInterpolation::Segments {
+                            Some(oc_dsl::gain_automation::compile_segments(
+                                c,
+                                &clock,
+                                sample_rate,
+                            )?)
+                        } else {
+                            if c.value_mapping.is_some()
+                                || c.preserve_discontinuities
+                                || c.points.iter().any(|p| {
+                                    p.curvature.is_some()
+                                        || p.curve == oc_dsl::ast::Curve::Exponential
+                                })
+                            {
+                                return Err(
+                                    "compact gain fields require interpolation=Segments".into()
+                                );
+                            }
+                            None
+                        },
                         start: sample(&c.time_range.start, c.ppq)?,
                         end: sample(&c.time_range.end, c.ppq)?,
                         linear: c.interpolation == GainInterpolation::Linear,
-                        points: c
-                            .points
-                            .iter()
-                            .map(|p| {
-                                Ok((
-                                    sample(&p.position, c.ppq)?,
-                                    match p.value {
-                                        ParamValue::Number(v) => v,
-                                        _ => 1.0, // Public render admission validates numeric gain first.
-                                    },
-                                ))
-                            })
-                            .collect::<Result<_, String>>()?,
+                        points: if c.interpolation == GainInterpolation::Segments {
+                            Vec::new()
+                        } else {
+                            c.points
+                                .iter()
+                                .map(|p| {
+                                    Ok((
+                                        sample(&p.position, c.ppq)?,
+                                        match p.value {
+                                            ParamValue::Number(v) => v,
+                                            _ => 1.0, // Public render admission validates numeric gain first.
+                                        },
+                                    ))
+                                })
+                                .collect::<Result<_, String>>()?
+                        },
                     })
                 })
                 .collect::<Result<_, String>>()?,
@@ -111,6 +135,9 @@ impl GainEnvelope {
         else {
             return 1.0;
         };
+        if let Some(curve) = &clip.segments {
+            return curve.envelope_value(sample).unwrap_or(1.0);
+        }
         let index = clip
             .points
             .partition_point(|(position, _)| *position <= sample);
@@ -397,5 +424,32 @@ mod tests {
         actual.fill(1.0);
         chunked.process(&mut actual, 8);
         assert_eq!(actual, expected);
+    }
+    #[test]
+    fn analytic_gain_keeps_partition_seek_and_unity_outside_contracts() {
+        let p=oc_dsl::parse("@project\n  tempo: 120\n@bus b\n  gain_automation: segments [1:2 - 1:4] discontinuities mapping(exponential, curvature=2, input_quantization_steps=128) {1:1=0 curve=exponential curvature=-3, 1:3=1, 1:3=0.25, 2:1=0.5}\n").unwrap();
+        oc_dsl::validate(&p).unwrap();
+        for rate in [8_000, 44_100, 48_000, 96_000, 192_000] {
+            let clips = &p.buses[0].gain_automation;
+            let mut whole = GainEnvelope::new(clips, 120.0, rate);
+            let mut expected = vec![1.0; rate as usize * 4];
+            whole.process(&mut expected, rate);
+            let mut chunked = GainEnvelope::new(clips, 120.0, rate);
+            let mut actual = vec![1.0; expected.len()];
+            for block in actual.chunks_mut(62) {
+                chunked.process(block, rate);
+            }
+            assert_eq!(actual, expected);
+            assert_eq!(expected[0], 1.0);
+            assert_eq!(*expected.last().unwrap(), 1.0);
+            chunked.cursor = u64::from(rate);
+            let mut seek = vec![1.0; 200];
+            chunked.process(&mut seek, rate);
+            assert_eq!(seek, expected[rate as usize * 2..rate as usize * 2 + 200]);
+            chunked.reset();
+            actual.fill(1.0);
+            chunked.process(&mut actual, rate);
+            assert_eq!(actual, expected);
+        }
     }
 }

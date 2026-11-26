@@ -5,6 +5,7 @@
  * so the menu, the project text and the engine all name one curve the same way.
  */
 import type { ControlLinkSource, LinkFormula } from "../types/project";
+import { i18n } from "../stores/i18n";
 
 export type FormulaInput = "normalized" | "midi";
 
@@ -51,7 +52,9 @@ export function linkSourceLabel(source: ControlLinkSource): string {
         ? `CC ${source.controller}`
         : `CC ${source.controller} ch${source.channel}`;
     case "macro":
-      return `Macro ${source.index}`;
+      return i18n.t("synth.learn.macroOption", { n: source.index });
+    case "preset_macro":
+      return `${source.preset} · ${i18n.t("synth.learn.macroOption", { n: source.index })}`;
     case "lane":
       return `Lane ${source.param}`;
   }

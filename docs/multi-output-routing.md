@@ -187,3 +187,42 @@ badge. The main pair stays `Main` and is never rewritten by an aux send.
   stereo layout, and Kontakt's own output configuration must already be in the
   loaded state.
 - MIDI 2.0 / per-note MPE routing beyond the existing profile path.
+
+## MIDI input to an audio effect
+
+A MIDI-only score track keeps editable notes without loading an audio instrument:
+
+```ocp
+@track harmony | instrument: midi/out, channel: 2
+  @phrase chords [1:1 - 3:1]
+    @0 [C4 E4 G4] w
+    @4 [D4 F4 A4] w
+```
+
+On the track, bus or master that owns a MIDI-capable plugin, connect this score
+with `route: midi harmony -> fx1`. Replace `fx1` with the plugin's position in
+that owner's effect list. The route carries channel messages, not audio; it
+does not add the controller track to the audio mix. You can also route an
+existing audio track's score. Muting the source track stops its MIDI route;
+soloing an audio consumer preserves its MIDI dependency.
+
+The renderer interprets the source score with its authored tempo, meter, clips
+and channel overrides. It aligns MIDI with the audio arriving at the effect,
+rebases offsets when a native block is split, and restores held notes and
+controller state after a seek. The input queue is prepared outside processing.
+Discontinuities explicitly release each outstanding note before restoring the
+new cursor's state; cleanup does not depend on the plugin handling channel-mode
+messages. The prepared queue budget includes those releases and controller
+expansion. An excessive event burst or chase fails preparation instead of
+losing notes.
+
+A plugin without a MIDI input refuses the route. Voice expressions
+without a MIDI 1 projection and channel modes other than All Sound Off, Reset
+All Controllers and All Notes Off are refused. Sostenuto, Hold 2 and RPN/NRPN
+sequences are also refused until their seek state can be restored. Bank, volume,
+pan, program and other retained controls require an explicit initial value at
+sample zero when the score changes them; a backward seek never guesses a
+plugin's saved value. MIDI-only tracks cannot declare
+an audio preset, audio clip, effect chain or performance source. Configure this
+routing in the DSL editor; the routing diagram's dedicated MIDI controls are
+not yet available.

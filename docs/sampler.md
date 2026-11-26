@@ -44,10 +44,11 @@ Headers:
 | `end` | Last frame to play. |
 | `loop_start`, `loop_end` | Loop points in frames. Without them, a loop covers the whole sample. |
 | `loop_mode` | `no_loop` (default), `one_shot`, `loop_continuous`, `loop_sustain` or `loop_pingpong` (`pingpong` is also accepted). |
-| `seq_position`, `seq_length` | Round-robin position and cycle length. |
+| `seq_position`, `seq_length` | Round-robin position and cycle length; the sampler has one sequence for all regions. |
 | `group`, `off_by` | Choke groups. |
 | `ampeg_attack`, `ampeg_decay`, `ampeg_release` | Amplitude envelope times in seconds. Release defaults to 0.05 s. |
 | `ampeg_sustain` | Sustain level as a fraction from 0 to 1. Larger values count as 1, so an SFZ percentage such as `50` gives full sustain. |
+| `ampeg_release_shape` | Bend of the release curve, −20 to 20; default 0, a straight fade. |
 
 The parser collects every header and opcode it does not support, and every
 region it cannot use (no `sample`, a file that is not found, an inverted zone),
@@ -82,8 +83,18 @@ and All Notes Off (CC 123).
   and forward again. Like `loop_continuous`, it keeps looping after note-off
   until the release ends.
 
+A loop can end on the sample's last frame, and leaving out `loop_end` ends it
+at the region's end. A running loop wraps or turns around there instead of
+ending the voice; a released sustain loop can play to its end.
+
 All modes except `one_shot` start the release (`ampeg_release`) on note-off,
 or when the sustain pedal is lifted.
+
+`ampeg_release_shape` bends the release. At 0 the fade is a straight line;
+negative values fall faster at first and positive values slower. Over the
+release the level follows `1 - expm1(shape × progress) / expm1(shape)`, which
+becomes the straight line at 0. It can be set in a region, group or global
+header.
 
 Round-robin uses one counter for the whole sampler, which every note-on
 advances. Among the regions that match a note, the cycle length is the largest
@@ -94,8 +105,10 @@ has no `seq_position`.
 ## Choke and polyphony
 
 `off_by` chokes: a note whose region has `off_by = N` stops every voice whose
-region has `group = N`. The stop is immediate, with no fade. The drum kit's
-`choke` field does fade; see [Drum Kit](drum-kit.md).
+region has `group = N`. The stop is immediate, with no fade, so it can click. Regions triggered by one
+note start in order, so a region can choke an earlier layer of the same note
+when both share a choke group; check layered maps before a region chokes its
+own group. The drum kit's `choke` field does fade; see [Drum Kit](drum-kit.md).
 
 The sampler has 64 voices. When all are in use, a new note replaces the oldest
 voice.
@@ -141,6 +154,20 @@ An imported preset stores its SFZ text in `SamplerPatch::sfz`, so the mapped
 patch can be rebuilt without the original preset file. Its sample paths resolve
 against the imported preset's content folder and its multisample folders.
 
+## Play a marked WAVE file as slices
+
+Generate an editable SFZ beside the WAVE file, then use it as the preset's
+`sampler.sfz_file`.
+
+```sh
+ocp sample slices media/loop.wav --first-key 60 > media/loop.sfz
+```
+
+The command assigns a key to each cue in frame order. Each slice ends at
+the next cue or the end of the file. Use `--gated` to release slices on
+note-off or `--json` to inspect the key and frame map. Edit each SFZ
+`offset` and `end` to refine the cut without modifying the audio.
+
 ## Known import gaps
 
 - OpenSynth supports [granular and spectral oscillators](osc-granular-spectral.md)
@@ -152,4 +179,5 @@ against the imported preset's content folder and its multisample folders.
 - SFZ filters, `pitch_keytrack`, keyswitches, release samples, the `<master>`
   and `<effect>` headers, round-robin beyond one shared counter, and
   crossfades between velocity layers are not implemented.
-- The `ampeg_*` envelope segments are linear, not the SFZ curve shapes.
+- Apart from `ampeg_release_shape`, the `ampeg_*` envelope segments are
+  linear, not the SFZ curve shapes.

@@ -25,7 +25,7 @@ agent_api::dispatch  ◄──  POST /call, POST /mcp tools/call, panel calls
 
 ## 工具目录 {#the-catalog}
 
-<!-- tool-registry: mcp=127 panel=99 -->
+<!-- tool-registry: mcp=128 panel=100 -->
 
 工具目录中每个 MCP 工具对应一条记录。内置 AI 助手另外增加三个本地工具，它们的处理函数在智能体循环中，不在 `dispatch` 中：
 

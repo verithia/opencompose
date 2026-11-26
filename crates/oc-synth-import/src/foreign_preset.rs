@@ -1362,12 +1362,23 @@ fn granular_patch(
     }
     // Defaults when the preset leaves the control at its factory value.
     let density = plain_num(params, "kParamDensity")
-        .unwrap_or(20.0)
-        .clamp(0.0, 4096.0);
+        .unwrap_or(oc_device_schema::granular::DENSITY.default)
+        .clamp(
+            oc_device_schema::granular::DENSITY.min,
+            oc_device_schema::granular::DENSITY.max,
+        );
     let grain_length = plain_num(params, "kParamGrainLength")
-        .unwrap_or(0.1)
-        .clamp(0.002, 10.0);
+        .unwrap_or(oc_device_schema::granular::LENGTH.default)
+        .clamp(
+            oc_device_schema::granular::LENGTH.min,
+            oc_device_schema::granular::LENGTH.max,
+        );
     Some(GranularPatch {
+        channel_mode: Default::default(),
+        pitch_mode: Default::default(),
+        read_mode: Default::default(),
+        loop_grains: false,
+        envelope: None,
         sample,
         root_note,
         density,
@@ -1386,8 +1397,11 @@ fn granular_patch(
         random_offset: percent_param(params, "kParamRandomOffset"),
         random_length: percent_param(params, "kParamRandomGrainLength"),
         random_pitch: plain_num(params, "kParamRandomPitch")
-            .unwrap_or(0.0)
-            .clamp(0.0, 48.0),
+            .unwrap_or(oc_device_schema::granular::RANDOM_PITCH.default)
+            .clamp(
+                oc_device_schema::granular::RANDOM_PITCH.min,
+                oc_device_schema::granular::RANDOM_PITCH.max,
+            ),
         random_direction: percent_param(params, "kParamRandomDir"),
         random_pan: percent_param(params, "kParamRandomPan"),
         random_gain: percent_param(params, "kParamRandomGain"),

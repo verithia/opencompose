@@ -139,7 +139,7 @@ describe("clip tooltip detail", () => {
     expect(document.querySelector(".oc-tooltip")?.textContent).toContain("Double-click to edit");
   });
 
-  it("uses the track sound even when the pattern declares another preset", async () => {
+  it("shows the pattern's preset override instead of the track sound", async () => {
     const snapshot = snapshotWith({
       patterns: [{ ...makePattern("lead"), preset: "other_preset" }],
       tracks: [{
@@ -154,7 +154,7 @@ describe("clip tooltip detail", () => {
 
     await hover(view.container as HTMLElement, ".clip-block");
 
-    expect(tooltipRow("Sound")).toBe("Piano 1");
+    expect(tooltipRow("Sound")).toBe("other_preset (not found)");
   });
 
   it("shows a phrase's project sound and note count", async () => {

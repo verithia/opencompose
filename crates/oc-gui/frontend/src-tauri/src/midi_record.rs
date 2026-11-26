@@ -757,6 +757,7 @@ where
         let sink = crate::midi_live::LiveInputSink {
             route: inner.audio.live_input_route(),
             capture: Arc::clone(&inner.audio.midi_recorder.capture),
+            midi_cc: Arc::clone(&inner.audio.midi_cc),
         };
         if let Err(error) = inner
             .midi_live

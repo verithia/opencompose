@@ -72,6 +72,32 @@ describe("analyser axis mapping", () => {
 });
 
 describe("parametric EQ response vs the Rust table", () => {
+  it("draws the 20 kHz cutoff at its authored frequency at 44.1 kHz", () => {
+    const band = toBand({
+      slot: "band7",
+      shape: "high_cut",
+      freq: 20_000,
+      q: Math.SQRT1_2,
+      gain_db: 0,
+    });
+    expect(responseDb([band], 20_000, 44_100)).toBeCloseTo(-10 * Math.log10(2), 8);
+  });
+
+  it("draws the selected Butterworth cutoff slope for both cut shapes", () => {
+    const corner = 1000;
+    const rate = fixture.sample_rate;
+    for (const [shape, stop] of [["low_cut", 500], ["high_cut", 2000]] as const) {
+      for (const cutSections of [1, 2, 3, 4]) {
+        const band = { ...toBand({ slot: "band7", shape, freq: corner, q: Math.SQRT1_2, gain_db: 0 }), cutSections };
+        const factor = (frequency: number) => Math.tan(Math.PI * frequency / rate);
+        const ratio = shape === "low_cut" ? factor(corner) / factor(stop) : factor(stop) / factor(corner);
+        const expected = -10 * Math.log10(1 + Math.pow(ratio, 4 * cutSections));
+        expect(responseDb([band], stop, rate)).toBeCloseTo(expected, 2);
+        expect(responseDb([band], corner, rate)).toBeCloseTo(-10 * Math.log10(2), 2);
+      }
+    }
+  });
+
   it("covers 32 points from 20 Hz to 20 kHz", () => {
     expect(fixture.sample_rate).toBe(48000);
     expect(fixture.frequencies).toHaveLength(32);

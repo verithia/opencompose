@@ -2,14 +2,14 @@
 //!
 //! Only paths that a render actually opens are checked: a preset's `file:`
 //! (for a soundfont or sample source), the native-instrument state/wavetable/
-//! sample params, an audio clip's `file:`, and the instrument params a track
-//! overrides through `engine_params`. Drum-kit layer samples are declared as
+//! sample params, an audio clip's `file:`, instrument parameter overrides, and
+//! external insert state files. Drum-kit layer samples are declared as
 //! optional because the kit tolerates a missing layer and reports it instead
 //! of failing the render; Save As still collects the ones that are present.
 
 use std::path::{Path, PathBuf};
 
-use crate::ast::{ParamValue, PresetDef, Project};
+use crate::ast::{Effect, EffectType, ParamValue, PresetDef, Project};
 use crate::source_map::{SourceOwner, SourcePart, SourceSubject};
 
 /// How the engine reads a declared path.
@@ -56,17 +56,94 @@ fn normalized(key: &str) -> String {
         .collect()
 }
 
+/// A backend qualifier on an authored external plugin state parameter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PluginStateBackend {
+    Au,
+    Clap,
+    Lv2,
+    Vst2,
+    Vst3,
+}
+
+/// How a project specifies opaque plugin state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PluginStateEncoding {
+    File,
+    Hex,
+    ImportedVst3Resource,
+}
+
+/// Look up a parameter key after removing separators and applying ASCII lowercase.
+pub fn normalized_plugin_state_parameter(
+    key: &str,
+) -> Option<(Option<PluginStateBackend>, PluginStateEncoding)> {
+    use PluginStateBackend::{Au, Clap, Lv2, Vst2, Vst3};
+    use PluginStateEncoding::{File, Hex, ImportedVst3Resource};
+    Some(match key {
+        "statefile" | "pluginstatefile" => (None, File),
+        "statehex" | "pluginstatehex" => (None, Hex),
+        "clapstatefile" => (Some(Clap), File),
+        "clapstatehex" => (Some(Clap), Hex),
+        "vst3statefile" => (Some(Vst3), File),
+        "vst3statehex" => (Some(Vst3), Hex),
+        "vst2statefile" => (Some(Vst2), File),
+        "vst2statehex" => (Some(Vst2), Hex),
+        "austatefile" => (Some(Au), File),
+        "austatehex" => (Some(Au), Hex),
+        "lv2statefile" => (Some(Lv2), File),
+        "lv2statehex" => (Some(Lv2), Hex),
+        "serumfile" => (Some(Vst3), ImportedVst3Resource),
+        _ => return None,
+    })
+}
+
+/// The file used by this insert, after precedence across state aliases.
+fn effect_state_file(effect: &Effect) -> Option<&str> {
+    if !matches!(effect.effect_type, EffectType::Plugin(_)) {
+        return None;
+    }
+    let (encoding, value) = effect.params.iter().rev().find_map(|(key, value)| {
+        normalized_plugin_state_parameter(&normalized(key)).map(|(_, encoding)| (encoding, value))
+    })?;
+    match (encoding, value) {
+        (PluginStateEncoding::File, ParamValue::String(path)) if !path.trim().is_empty() => {
+            Some(path)
+        }
+        _ => None,
+    }
+}
+
+/// Sidecars that may be read by the project's effect chains.
+pub fn insert_state_files(project: &Project) -> impl Iterator<Item = &str> {
+    project
+        .presets
+        .iter()
+        .flat_map(|preset| &preset.effects)
+        .chain(project.tracks.iter().flat_map(|track| &track.effects))
+        .chain(project.patterns.iter().flat_map(|pattern| &pattern.effects))
+        .chain(project.buses.iter().flat_map(|bus| &bus.effects))
+        .chain(project.master.iter().flat_map(|master| &master.effects))
+        .filter(|effect| !effect.bypass)
+        .filter_map(effect_state_file)
+}
+
 /// How the engine reads one instrument parameter, or `None` when it never
 /// opens the value.
 fn param_kind(key: &str) -> Option<MediaKind> {
-    match normalized(key).as_str() {
-        "wavetablefile" | "samplersfzfile" | "samplersamplefile" | "clapstatefile"
-        | "vst3statefile" | "austatefile" | "lv2statefile" | "pluginstatefile" | "statefile" => {
-            Some(MediaKind::File)
-        }
+    let key = normalized(key);
+    match key.as_str() {
+        "wavetablefile" | "samplersfzfile" | "samplersamplefile" => Some(MediaKind::File),
         "audioregionstatefile" => Some(MediaKind::Document),
         "opensynthstatefile" => Some(MediaKind::SynthDocument),
         "samplerroot" => Some(MediaKind::Directory),
+        key if matches!(
+            normalized_plugin_state_parameter(key),
+            Some((_, PluginStateEncoding::File))
+        ) =>
+        {
+            Some(MediaKind::File)
+        }
         _ => None,
     }
 }
@@ -110,6 +187,41 @@ fn push_param(
     });
 }
 
+fn push_effect_assets(
+    out: &mut Vec<MediaDeclaration>,
+    owner: &str,
+    subject: SourceOwner,
+    effects: &[Effect],
+) {
+    for (index, effect) in effects.iter().enumerate() {
+        let path = if effect.effect_type == EffectType::TransferShaper {
+            effect
+                .params
+                .iter()
+                .find_map(|(key, value)| match (key.as_str(), value) {
+                    ("curve_file", ParamValue::String(path)) if !path.trim().is_empty() => {
+                        Some(path.as_str())
+                    }
+                    _ => None,
+                })
+        } else {
+            effect_state_file(effect)
+        };
+        if let Some(path) = path {
+            out.push(MediaDeclaration {
+                owner: format!("{owner} effect {}", index + 1),
+                subject: SourceSubject {
+                    owner: subject,
+                    part: SourcePart::Whole,
+                },
+                path: path.to_owned(),
+                kind: MediaKind::File,
+                optional: effect.bypass,
+            });
+        }
+    }
+}
+
 /// Every local media path the document declares, in document order.
 pub fn declarations(project: &Project) -> Vec<MediaDeclaration> {
     let mut out = Vec::new();
@@ -141,6 +253,12 @@ pub fn declarations(project: &Project) -> Vec<MediaDeclaration> {
                 value,
             );
         }
+        push_effect_assets(
+            &mut out,
+            &format!("preset '{}'", preset.name),
+            subject.owner,
+            &preset.effects,
+        );
     }
     for (index, track) in project.tracks.iter().enumerate() {
         let subject = SourceSubject {
@@ -156,6 +274,31 @@ pub fn declarations(project: &Project) -> Vec<MediaDeclaration> {
                 value,
             );
         }
+        push_effect_assets(
+            &mut out,
+            &format!("track '{}'", track.name),
+            subject.owner,
+            &track.effects,
+        );
+    }
+    for (index, pattern) in project.patterns.iter().enumerate() {
+        push_effect_assets(
+            &mut out,
+            &format!("pattern '{}'", pattern.name),
+            SourceOwner::Pattern(index),
+            &pattern.effects,
+        );
+    }
+    for (index, bus) in project.buses.iter().enumerate() {
+        push_effect_assets(
+            &mut out,
+            &format!("bus '{}'", bus.name),
+            SourceOwner::Bus(index),
+            &bus.effects,
+        );
+    }
+    if let Some(master) = &project.master {
+        push_effect_assets(&mut out, "master", SourceOwner::Master, &master.effects);
     }
     for (index, clip) in project.audio_clips().into_iter().enumerate() {
         out.push(MediaDeclaration {
@@ -263,6 +406,39 @@ mod tests {
         )
         .unwrap();
         assert!(declarations(&project).is_empty());
+    }
+
+    #[test]
+    fn insert_sidecars_follow_the_last_alias_and_report_their_owner() {
+        let mut project = crate::parse(
+            r#"@project
+@track vocal | instrument: audio/clip
+  effects:
+    - plugin:"vst2.fixture": vst2_state_file="track.bank"
+@bus mix
+  effects:
+    - plugin:"vst3.fixture": plugin_state_file="bus.bank"
+@master
+  effects:
+    - plugin:"clap.fixture": state_file="master.bank"
+"#,
+        )
+        .unwrap();
+        project.master.as_mut().unwrap().effects[0]
+            .params
+            .push(("state_hex".into(), ParamValue::String("00".into())));
+        let paths: Vec<_> = insert_state_files(&project).collect();
+        assert_eq!(paths, ["track.bank", "bus.bank"]);
+        let declarations = declarations(&project);
+        assert_eq!(declarations.len(), 2);
+        assert_eq!(declarations[0].subject.owner, SourceOwner::Track(0));
+        assert_eq!(declarations[1].subject.owner, SourceOwner::Bus(0));
+        project.buses[0].effects[0].bypass = true;
+        assert_eq!(
+            insert_state_files(&project).collect::<Vec<_>>(),
+            ["track.bank"]
+        );
+        assert!(super::declarations(&project)[1].optional);
     }
 
     #[test]

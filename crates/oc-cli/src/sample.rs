@@ -1,5 +1,4 @@
-//! `ocp sample`: search a sample market and pull one sample, from the same
-//! resolver and with the same refusal vocabulary as the agent tools.
+//! `ocp sample`: find samples and prepare editable sampler regions.
 //!
 //! The command is a client of other people's catalogues: it searches one market
 //! at a time and writes the file it pulls beside its licence and credit. The
@@ -14,12 +13,14 @@ use oc_sample::provider::SampleProvider;
 use oc_sample::registry::{self, ProviderKeys};
 use oc_sample::store::SampleStore;
 use oc_sample::{FREESOUND_KEY_ENV, provider_for};
+use oc_synth::sampler::wav_slices::{SlicePlayback, WaveSliceMap};
+use std::path::PathBuf;
 
 /// Keyed markets read their key from the environment in a headless session.
 const JAMENDO_KEY_ENV: &str = "JAMENDO_CLIENT_ID";
 const PIXABAY_KEY_ENV: &str = "PIXABAY_API_KEY";
 
-/// One sample-market subcommand.
+/// One sample subcommand.
 #[derive(Subcommand)]
 pub enum SampleCommand {
     /// Search one sample market (keyless by default)
@@ -100,9 +101,23 @@ pub enum SampleCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Map WAVE cue points to editable sampler regions
+    Slices {
+        #[arg(value_name = "WAVE")]
+        input: PathBuf,
+        /// MIDI key for the earliest cue
+        #[arg(long, default_value_t = 60, value_parser = clap::value_parser!(u8).range(0..=127))]
+        first_key: u8,
+        /// Use note length with the sampler's release envelope
+        #[arg(long)]
+        gated: bool,
+        /// Print sample-frame ranges as JSON instead of an SFZ patch
+        #[arg(long)]
+        json: bool,
+    },
 }
 
-/// Execute one sample-market subcommand.
+/// Execute one sample subcommand.
 pub fn run(command: SampleCommand) -> Result<()> {
     match command {
         SampleCommand::Search { .. } => {
@@ -117,6 +132,32 @@ pub fn run(command: SampleCommand) -> Result<()> {
             accept_licence,
         } => pull(&id, provider.as_deref(), &dest, json, accept_licence),
         SampleCommand::Providers { json } => providers(json),
+        SampleCommand::Slices {
+            input,
+            first_key,
+            gated,
+            json,
+        } => {
+            let slices = WaveSliceMap::from_wave(&input, first_key).map_err(anyhow::Error::msg)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&slices)?);
+            } else {
+                let sample = input
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .ok_or_else(|| anyhow::anyhow!("SFZ needs a UTF-8 sample filename"))?;
+                let mode = if gated {
+                    SlicePlayback::Gated
+                } else {
+                    SlicePlayback::OneShot
+                };
+                print!(
+                    "{}",
+                    slices.to_sfz(sample, mode).map_err(anyhow::Error::msg)?
+                );
+            }
+            Ok(())
+        }
     }
 }
 

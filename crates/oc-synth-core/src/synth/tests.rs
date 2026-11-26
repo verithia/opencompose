@@ -692,7 +692,7 @@ fn pitch_curve_rejects_invalid_direct_values_without_clamping() {
     let mut synth = OpenSynth::new(SynthPatch::default());
     synth.note_on(0, 60, 100);
     synth.set_note_expression(0, 60, "pitch_curve", -12.0);
-    for value in [25.0, -25.0, f64::NAN, f64::INFINITY] {
+    for value in [96.01, -96.01, f64::NAN, f64::INFINITY] {
         synth.set_note_expression(0, 60, "pitch_curve", value);
         assert_eq!(synth.voices[0].expression_tuning, -12.0);
     }
@@ -914,6 +914,11 @@ fn source_patch(waveform: Waveform, sample: &std::path::Path) -> SynthPatch {
     match waveform {
         Waveform::Granular => {
             let settings = granular::GranularPatch {
+                channel_mode: Default::default(),
+                pitch_mode: Default::default(),
+                read_mode: Default::default(),
+                loop_grains: false,
+                envelope: None,
                 sample: sample.to_path_buf(),
                 root_note: 60.0,
                 density: 60.0,
@@ -5181,6 +5186,7 @@ fn sampler_tone_patch(path: &std::path::Path, frames: usize) -> super::SynthPatc
                     decay: 0.0,
                     sustain: 1.0,
                     release: 2.0,
+                    release_shape: oc_device_schema::sampler::RELEASE_SHAPE.default,
                 },
             }],
             gain: 1.0,
@@ -8294,4 +8300,67 @@ fn amplitude_fraction_schema_prepared_updates_and_mappings_allocate_nothing() {
         }
     });
     assert_eq!(operations, 0);
+}
+
+#[test]
+fn wide_identified_pitch_preserves_note_identity_and_tracks_frequency() {
+    let patch = SynthPatch {
+        oscillator_a_waveform: Waveform::Sine,
+        oscillator_b_level: 0.0,
+        sub_level: 0.0,
+        filter_wet: 0.0,
+        ..Default::default()
+    };
+    let mut synth = OpenSynth::new(patch);
+    let id = synth.note_on_identified(0, 72, 100).unwrap();
+    synth.set_identified_pitch(id, -37.0).unwrap();
+    synth.next_stereo(48_000);
+    assert_eq!(synth.voices[0].note, 72);
+    assert_eq!(synth.voices[0].age, id);
+    let expected = 440.0 * 2f64.powf((35.0 - 69.0) / 12.0);
+    assert!((synth.voices[0].frequency_hz - expected).abs() < 1e-10);
+    let mut crossings = 0;
+    let mut previous = 0.0_f32;
+    for _ in 0..48_000 {
+        let current = synth.next_stereo(48_000)[0];
+        if previous <= 0.0 && current > 0.0 {
+            crossings += 1;
+        }
+        previous = current;
+    }
+    assert!((crossings as f64 - expected).abs() < 2.0);
+    assert_eq!(synth.voices[0].note, 72);
+    assert!(synth.set_identified_pitch(id, 96.01).is_err());
+    assert_eq!(synth.voices[0].expression_tuning, -37.0);
+}
+
+#[test]
+fn wide_native_pitch_extremes_remain_finite_for_table_oscillators() {
+    for waveform in [
+        Waveform::Sine,
+        Waveform::Saw,
+        Waveform::Square,
+        Waveform::Triangle,
+        Waveform::Wavetable,
+    ] {
+        let patch = SynthPatch {
+            oscillator_a_waveform: waveform,
+            oscillator_b_waveform: waveform,
+            oscillator_c_waveform: waveform,
+            oscillator_c_level: 0.5,
+            ..Default::default()
+        };
+        let mut synth = OpenSynth::new(patch);
+        for key in [0, 127] {
+            let id = synth.note_on_identified(0, key, 127).unwrap();
+            for semitones in [-96.0, 96.0] {
+                synth.set_identified_pitch(id, semitones).unwrap();
+                for _ in 0..256 {
+                    assert!(synth.next_stereo(8_000).iter().all(|v| v.is_finite()));
+                }
+            }
+            synth.note_off_identified(id);
+            synth.reset();
+        }
+    }
 }

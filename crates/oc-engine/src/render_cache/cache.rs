@@ -135,7 +135,14 @@ impl RenderCache {
         let mut source_chains = lane_project
             .tracks
             .iter()
-            .map(|lane| crate::source_lanes::effect_chain(project, lane, sample_rate))
+            .map(|lane| {
+                crate::source_lanes::effect_chain_with_resources(
+                    project,
+                    lane,
+                    sample_rate,
+                    self.resource_root.as_deref(),
+                )
+            })
             .collect::<Result<Vec<_>, _>>()?;
         self.track_source_tails = vec![0; num_tracks];
         for (lane, chain) in source_chains.iter().enumerate() {
@@ -569,6 +576,9 @@ impl RenderCache {
 
             // A shared multi-output track may intentionally contain no MIDI:
             // it still captures a pair driven by another track in its group.
+            if track.instrument.is_midi_only() {
+                continue;
+            }
             let has_audio_clips = project
                 .audio_clips()
                 .iter()
@@ -1447,7 +1457,13 @@ impl RenderCache {
             })
             .collect();
         let mixer_project = crate::graph::graph_document(project);
-        AudioGraph::try_from_project_with_source_latencies(&mixer_project, sample_rate, &latencies)
+        AudioGraph::try_from_project_with_resources(
+            &mixer_project,
+            sample_rate,
+            &latencies,
+            self.resource_root.as_deref(),
+            None,
+        )
     }
 
     /// Mix the cached track buffers through the graph.

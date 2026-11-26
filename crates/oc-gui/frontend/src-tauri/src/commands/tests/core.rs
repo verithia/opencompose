@@ -1135,6 +1135,7 @@ fn audio_clip_project() -> crate::state::AppStateInner {
         .add_audio_clip(ast::AudioClip {
             name: "hit".into(),
             track: "tape".into(),
+            playlist_lane: None,
             file: "media/hit.wav".into(),
             time_range: ast::TimeRange {
                 start: ast::BarBeat::new(1, 1, 0),
@@ -1142,9 +1143,11 @@ fn audio_clip_project() -> crate::state::AppStateInner {
             },
             placement: Default::default(),
             offset_seconds: 0.0,
+            stereo_offset_seconds: 0.0,
             gain_db: -3.0,
             fade_in_seconds: 0.1,
             fade_out_seconds: 0.2,
+            fade_curves: Default::default(),
             invert: false,
             crossfade_seconds: 0.0,
             stretch: 1.0,
@@ -1160,6 +1163,7 @@ fn audio_clip_project() -> crate::state::AppStateInner {
             take: None,
             muted: false,
             gain_envelope: Vec::new(),
+            gain_envelope_interpolation: Default::default(),
         })
         .expect("the fixture clip lands on its track");
     inner
@@ -1233,6 +1237,49 @@ fn audio_clip_trim_remaps_the_gain_envelope() {
     assert!((clip.gain_envelope[0].gain_db + 6.0).abs() < 1e-9);
     assert_eq!(clip.gain_envelope[1].position, 1.0);
     assert!(clip.gain_envelope[1].gain_db.abs() < 1e-9);
+}
+
+#[test]
+fn audio_clip_linear_amplitude_envelope_survives_move_trim_and_split() {
+    let mut inner = audio_clip_project();
+    let clip = inner.project.audio_clip_mut(0).unwrap();
+    let interpolation = ast::ClipGainInterpolation::LinearAmplitude;
+    clip.gain_envelope_interpolation = interpolation;
+    let points = vec![
+        ast::GainEnvelopePoint {
+            position: 0.0,
+            gain_db: 20.0 * 0.0625_f64.log10(),
+        },
+        ast::GainEnvelopePoint {
+            position: 1.0,
+            gain_db: 0.0,
+        },
+    ];
+    clip.gain_envelope.clone_from(&points);
+    let start = ast::BarBeat::new(2, 1, 0);
+    let midpoint = ast::BarBeat::new(3, 1, 0);
+    let end = ast::BarBeat::new(4, 1, 0);
+    move_audio_clip_inner(&mut inner, 0, start, None).unwrap();
+    assert_eq!(inner.project.audio_clip(0).unwrap().gain_envelope, points);
+
+    let seam_db = 20.0 * 0.53125_f64.log10();
+    split_audio_clip_inner(&mut inner, 0, midpoint).unwrap();
+    let clips = inner.project.audio_clips();
+    assert_eq!(clips[0].gain_envelope_interpolation, interpolation);
+    assert_eq!(clips[1].gain_envelope_interpolation, interpolation);
+    assert!((clips[0].gain_envelope[1].gain_db - seam_db).abs() < 1e-9);
+    assert!((clips[1].gain_envelope[0].gain_db - seam_db).abs() < 1e-9);
+
+    let mut inner = audio_clip_project();
+    let clip = inner.project.audio_clip_mut(0).unwrap();
+    clip.gain_envelope_interpolation = interpolation;
+    clip.gain_envelope = points;
+    move_audio_clip_inner(&mut inner, 0, start, None).unwrap();
+    trim_audio_clip_inner(&mut inner, 0, midpoint, end).unwrap();
+    let clip = inner.project.audio_clip(0).unwrap();
+    assert_eq!(clip.gain_envelope_interpolation, interpolation);
+    assert!((clip.gain_envelope[0].gain_db - seam_db).abs() < 1e-9);
+    assert_eq!(clip.gain_envelope[1].gain_db, 0.0);
 }
 
 #[test]
@@ -1882,6 +1929,7 @@ fn multi_block_remove_is_one_undo_step_and_restores_everything() {
     let mut inner = test_state();
     let mut keys = make_track("keys");
     keys.phrases.push(ast::Phrase {
+        playlist_lane: None,
         name: "main".into(),
         time_range: Some(ast::TimeRange {
             start: ast::BarBeat::new(1, 1, 0),
@@ -1893,6 +1941,7 @@ fn multi_block_remove_is_one_undo_step_and_restores_everything() {
         channel: None,
     });
     keys.phrases.push(ast::Phrase {
+        playlist_lane: None,
         name: "intro".into(),
         time_range: Some(ast::TimeRange {
             start: ast::BarBeat::new(5, 1, 0),

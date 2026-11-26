@@ -17,6 +17,7 @@ import {
   type ParametricShape,
   audibleBands,
   bandCurve,
+  isCutShape,
   parseChannel,
   parseShape,
   responseCurve,
@@ -37,7 +38,8 @@ const DB_MIN = -24;
 const DB_MAX = 24;
 const DB_GRID = [-12, -6, 0, 6, 12];
 const FREQ_GRID = [100, 1000, 10000];
-const BAND_COLORS = ["#4fc3f7", "#ffb74d", "#ce93d8", "#81c784", "#e57373", "#ffd54f"];
+const BAND_COLORS = ["#4fc3f7", "#ffb74d", "#ce93d8", "#81c784", "#e57373", "#ffd54f", "#4db6ac"];
+const INITIAL_BAND_ROWS = 7;
 
 interface BandSlot {
   id: string;
@@ -128,10 +130,9 @@ export function ParametricEqEditor(props: {
     parameter ? readEffectParam(props.effect, props.device.id, parameter) : fallback;
 
   const slots = createMemo<BandSlot[]>(() => {
-    const result: BandSlot[] = [];
-    for (let index = 1; index <= 6; index += 1) {
-      if (def(`band${index}_freq`)) result.push({ id: `band${index}`, cut: false });
-    }
+    const result: BandSlot[] = props.device.params
+      .filter((parameter) => /^band[1-9]\d*_freq$/.test(parameter.id))
+      .map((parameter) => ({ id: parameter.id.slice(0, -"_freq".length), cut: false }));
     for (const cut of ["low_cut", "high_cut"]) {
       if (def(`${cut}_freq`)) result.push({ id: cut, cut: true });
     }
@@ -144,6 +145,7 @@ export function ParametricEqEditor(props: {
       const typeIndex = Math.round(read(typeDef, 0));
       const label = typeDef?.options?.[typeIndex] ?? (slot.cut ? cutLabel(slot.id) : "Bell");
       const channelDef = def(`${slot.id}_channel`);
+      const slopeDef = def(`${slot.id}_slope`);
       const pendingQ = wheelValues()[slot.id];
       const band: ParametricBand = {
         id: slot.id,
@@ -151,6 +153,7 @@ export function ParametricEqEditor(props: {
         shape: parseShape(label) ?? (slot.cut ? (slot.id as ParametricShape) : "bell"),
         freq: read(def(`${slot.id}_freq`), 1000),
         q: pendingQ ?? read(def(`${slot.id}_q`), 0.707),
+        cutSections: slopeDef ? Math.round(clampParam(slopeDef, read(slopeDef, 0))) + 1 : 1,
         gainDb: read(def(`${slot.id}_gain`), 0),
         enabled: read(def(`${slot.id}_enabled`), 0) >= 0.5,
         solo: read(def(`${slot.id}_solo`), 0) >= 0.5,
@@ -167,19 +170,33 @@ export function ParametricEqEditor(props: {
     }),
   );
 
+  const visibleBands = createMemo(() => bands().filter((band, index) =>
+    index < INITIAL_BAND_ROWS || band.cut || band.enabled || band.id === selectedId(),
+  ));
   const selected = createMemo(() => bands().find((band) => band.id === selectedId()) ?? null);
   const soloing = createMemo(() => bands().some((band) => band.enabled && band.solo));
 
-  const curve = createMemo(() => responseCurve(bands(), 256, CURVE_SAMPLE_RATE, view(), false));
+  const outputGain = () => read(def("output_gain"), 0);
+  const oversampling = () => {
+    if (read(def("oversample_fir"), 0) >= 0.5) return "fir";
+    return read(def("oversample"), 0) >= 0.5 ? "polyphase" : "off";
+  };
+  const curveSampleRate = () => oversampling() === "off" ? CURVE_SAMPLE_RATE : CURVE_SAMPLE_RATE * 2;
+  function plotResponse(source: ParametricBand[], dynamicRange = false) {
+    const gain = outputGain();
+    const points = responseCurve(source, 256, curveSampleRate(), view(), dynamicRange);
+    return gain === 0 ? points : points.map(({ freq, db }) => ({ freq, db: db + gain }));
+  }
+  const curve = createMemo(() => plotResponse(bands()));
   const rangeCurve = createMemo(() => {
     if (!bands().some((band) => band.enabled && band.dynamic)) return null;
-    return responseCurve(bands(), 256, CURVE_SAMPLE_RATE, view(), true);
+    return plotResponse(bands(), true);
   });
   const traces = createMemo(() =>
     audibleBands(bands(), view()).map((band) => ({
       id: band.id,
       color: colorOf(band.id),
-      path: toPath(bandCurve(band, 140, CURVE_SAMPLE_RATE)),
+      path: toPath(bandCurve(band, 140, curveSampleRate())),
     })),
   );
 
@@ -206,9 +223,7 @@ export function ParametricEqEditor(props: {
       return offset === 0 ? band : { ...band, gainDb: band.gainDb + offset };
     }),
   );
-  const currentCurve = createMemo(() =>
-    responseCurve(currentBands(), 256, CURVE_SAMPLE_RATE, view(), false),
-  );
+  const currentCurve = createMemo(() => plotResponse(currentBands()));
   const hasGainReduction = createMemo(() =>
     bands().some((band) => band.dynamic && band.enabled && Math.abs(bandOffsetDb(band.id)) > 0.05),
   );
@@ -531,6 +546,23 @@ export function ParametricEqEditor(props: {
           >
             {i18n.t("device.peq.spectrum")}
           </button>
+          <Show when={def("oversample_fir")}>
+            <select
+              class="peq-chip"
+              classList={{ on: oversampling() !== "off" }}
+              value={oversampling()}
+              aria-label={i18n.t("device.peq.oversample")}
+              title={i18n.t("device.peq.oversample")}
+              onChange={(event) => {
+                const mode = event.currentTarget.value;
+                void commitToggle("", "oversample", mode === "polyphase", [["oversample_fir", mode === "fir"]]);
+              }}
+            >
+              <option value="off">{i18n.t("device.peq.oversampleOff")}</option>
+              <option value="polyphase">{i18n.t("device.peq.oversamplePolyphase")}</option>
+              <option value="fir">{i18n.t("device.peq.oversampleFir")}</option>
+            </select>
+          </Show>
           <Show when={def("auto_gain")}>
             <button
               type="button"
@@ -574,6 +606,9 @@ export function ParametricEqEditor(props: {
             </button>
           )}
         </For>
+        <Show when={def("output_gain")}>
+          <span class="peq-output-gain">{numberField("output_gain", 0.1)}</span>
+        </Show>
       </div>
 
       <div class="peq-sidechain-row" role="group" aria-label={i18n.t("device.peq.sidechain")}>
@@ -719,7 +754,7 @@ export function ParametricEqEditor(props: {
           )}
         </Show>
 
-        <For each={bands()}>
+        <For each={visibleBands()}>
           {(band) => {
             const x = () => freqToX(band.freq);
             const y = () => dbToY(band.cut ? 0 : band.gainDb);
@@ -784,7 +819,7 @@ export function ParametricEqEditor(props: {
       <div class="peq-hint">{i18n.t("device.peq.hint")}</div>
 
       <div class="peq-bands" role="list">
-        <For each={bands()}>
+        <For each={visibleBands()}>
           {(band) => {
             const typeDef = () => def(`${band.id}_type`);
             const typeValue = () => {
@@ -793,6 +828,8 @@ export function ParametricEqEditor(props: {
               return dynamic && parseShape(typeDef()?.options?.[index] ?? "Bell") === "bell" ? "dynamic" : String(index);
             };
             const channelDef = () => def(`${band.id}_channel`);
+            const slopeDef = () => def(`${band.id}_slope`);
+            const slopeValue = () => String((band.cutSections ?? 1) - 1);
             return (
               <div
                 class="peq-band"
@@ -847,6 +884,30 @@ export function ParametricEqEditor(props: {
                       <option value="dynamic">{i18n.t("device.peq.dynamic")}</option>
                     </Show>
                   </select>
+                </Show>
+                <Show when={isCutShape(band.shape) && slopeDef()}>
+                  {(definition) => (
+                    <select
+                      class="peq-slope"
+                      data-band-slope={band.id}
+                      aria-label={i18n.t("device.peq.slope")}
+                      ref={bindSelectValue(slopeValue)}
+                      onClick={(event) => event.stopPropagation()}
+                      onPointerDown={captureControl}
+                      onFocus={captureControl}
+                      onKeyDown={captureFirstInput}
+                      onInput={captureFirstInput}
+                      onChange={(event) => {
+                        const select = event.currentTarget;
+                        const next = Number(select.value);
+                        commitControl(select, owner => commitNumber(band.id, "slope", next, owner), () => { select.value = slopeValue(); });
+                      }}
+                    >
+                      <For each={definition().options ?? []}>
+                        {(option, index) => <option value={String(index())}>{option}</option>}
+                      </For>
+                    </select>
+                  )}
                 </Show>
                 <span class="peq-band-value" data-band-freq={band.id}>
                   {formatHz(band.freq)}
@@ -962,14 +1023,14 @@ export function ParametricEqEditor(props: {
               </button>
             </div>
             <div class="peq-fields">
-              {numberField(band(), "freq", 1)}
-              {numberField(band(), "gain", 0.1)}
-              {numberField(band(), "q", 0.01)}
+              {numberField("freq", 1, band())}
+              {numberField("gain", 0.1, band())}
+              {numberField("q", 0.01, band())}
               <Show when={band().dynamic}>
-                {numberField(band(), "threshold", 0.1)}
-                {numberField(band(), "range", 0.1)}
-                {numberField(band(), "attack", 0.1)}
-                {numberField(band(), "release", 1)}
+                {numberField("threshold", 0.1, band())}
+                {numberField("range", 0.1, band())}
+                {numberField("attack", 0.1, band())}
+                {numberField("release", 1, band())}
                 <Show when={def(`${band().id}_sidechain`)}>
                   <label class="peq-field" title={i18n.t("device.peq.bandSidechain")}>
                     <span class="peq-field-name">{i18n.t("device.peq.bandSidechain")}</span>
@@ -999,21 +1060,23 @@ export function ParametricEqEditor(props: {
     </div>
   );
 
-  function numberField(band: ParametricBand, suffix: string, step: number) {
-    const parameter = () => def(`${band.id}_${suffix}`);
+  function numberField(suffix: string, step: number, band?: ParametricBand) {
+    const id = band?.id ?? "";
+    const key = id ? `${id}_${suffix}` : suffix;
+    const parameter = () => def(key);
     return (
       <Show when={parameter()}>
         {(entry) => (
           <label class="peq-field">
-            <span class="peq-field-name">{entry().name}</span>
+            <span class="peq-field-name">{band ? entry().name : i18n.t("device.peq.outputGain")}</span>
             <input
               type="number"
               class="peq-input"
-              data-peq-field={`${band.id}_${suffix}`}
+              data-peq-field={key}
               min={entry().min}
               max={entry().max}
               step={step}
-              value={fieldValue(band, suffix)}
+              value={band ? fieldValue(band, suffix) : formatFieldNumber(read(entry(), entry().default), suffix)}
               onPointerDown={captureControl}
               onFocus={captureControl}
               onKeyDown={captureFirstInput}
@@ -1021,7 +1084,7 @@ export function ParametricEqEditor(props: {
               onChange={(event) => {
                 const input = event.currentTarget;
                 const next = Number(input.value);
-                commitControl(input, owner => commitNumber(band.id, suffix, next, owner), () => {
+                commitControl(input, owner => commitNumber(id, suffix, next, owner), () => {
                   input.value = formatFieldNumber(read(parameter(), parameter()?.default ?? 0), suffix);
                 });
               }}

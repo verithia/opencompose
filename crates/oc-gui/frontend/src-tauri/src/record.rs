@@ -513,6 +513,7 @@ fn take_clip(project: &ast::Project, take: &FinishedTake) -> Result<ast::AudioCl
     Ok(ast::AudioClip {
         name: unique_clip_name(project, &take.track),
         track: take.track.clone(),
+        playlist_lane: None,
         file: take.media.clone(),
         time_range: ast::TimeRange {
             start: take.clip_start_beat,
@@ -521,10 +522,12 @@ fn take_clip(project: &ast::Project, take: &FinishedTake) -> Result<ast::AudioCl
         // The file starts at the clip position, so there is no media offset.
         placement: Default::default(),
         offset_seconds: 0.0,
+        stereo_offset_seconds: 0.0,
         loop_seconds: 0.0,
         gain_db: 0.0,
         fade_in_seconds: 0.0,
         fade_out_seconds: 0.0,
+        fade_curves: Default::default(),
         invert: false,
         crossfade_seconds: 0.0,
         stretch: 1.0,
@@ -539,6 +542,7 @@ fn take_clip(project: &ast::Project, take: &FinishedTake) -> Result<ast::AudioCl
         take: take.take_group.as_ref().map(|_| take.take),
         muted: false,
         gain_envelope: Vec::new(),
+        gain_envelope_interpolation: Default::default(),
     })
 }
 

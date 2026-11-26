@@ -112,6 +112,12 @@ pub fn check_combinations(ornament: Ornament, note: &NoteEvent) -> Result<(), St
         ));
     }
     let conflicting = [
+        (
+            "pitch_curve_mode",
+            note.modifiers
+                .iter()
+                .any(|(key, _)| key == "pitch_curve_mode"),
+        ),
         ("bend", note.pitch_bend.is_some()),
         ("vibrato", note.vibrato.is_some()),
         ("expression", note.expression.is_some()),
@@ -269,9 +275,10 @@ pub fn step_above(pitch: Pitch, key: Option<KeySignature>) -> Pitch {
 fn trill(pitch: Pitch, key: Option<KeySignature>, total: f64) -> Vec<Segment> {
     let parts = (total / STEP_QUARTERS).floor() as usize;
     // An even part count would end on the upper pitch; drop one so the trill
-    // returns to the written pitch, as a player would close it.
+    // returns to the written pitch, as a player would close it. A gate shorter
+    // than a step has no parts at all, so it holds the note.
     let parts = if parts.is_multiple_of(2) {
-        parts - 1
+        parts.saturating_sub(1)
     } else {
         parts
     };
@@ -418,6 +425,18 @@ mod tests {
     }
 
     #[test]
+    fn a_trill_shorter_than_two_steps_holds_the_written_pitch() {
+        let mut note = note(0.0, "C4");
+        note.modifiers = marked("trill");
+        for gate in [STEP_QUARTERS / 2.0, STEP_QUARTERS, STEP_QUARTERS * 2.5] {
+            let segments = segments(&note, Some(c_major()), gate).unwrap();
+            assert_eq!(segments.len(), 1, "gate {gate}");
+            assert_eq!(segments[0].pitch, note.pitch);
+            assert!((segments[0].duration_quarters - gate).abs() < 1e-9);
+        }
+    }
+
+    #[test]
     fn a_mordent_holds_the_written_pitch_after_the_upper_step() {
         let mut note = note(0.0, "E4");
         note.modifiers = marked("mordent");
@@ -486,6 +505,14 @@ mod tests {
         note.modifiers = marked("trill");
         note.pitch_bend = Some(20.0);
         assert!(segments(&note, None, 1.0).unwrap_err().contains("bend="));
+        note.pitch_bend = None;
+        note.modifiers
+            .push(("pitch_curve_mode".into(), ParamValue::String("step".into())));
+        assert!(
+            segments(&note, None, 1.0)
+                .unwrap_err()
+                .contains("pitch_curve_mode=")
+        );
     }
 
     fn c_major() -> KeySignature {

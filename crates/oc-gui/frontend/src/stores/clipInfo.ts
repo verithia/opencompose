@@ -4,9 +4,10 @@ import { createSignal } from "solid-js";
 import { store } from "./project";
 import { clipAt, positionText, type ClipRef } from "./clipPool";
 import { findPattern, isRestEvent } from "../utils/clipContent";
+import { trackDisplayName } from "../utils/trackLabel";
 import { createProjectClock } from "../utils/projectClock";
-import { resolvePresetForDisplay } from "../utils/presetInheritance";
-import { INJECTED_PRESET_PREFIX, type InstrumentPath, type TimeRange, type Track } from "../types/project";
+import { effectivePatternSound, patternSoundLabel, patternSoundOrigin, type EffectivePatternSound } from "../utils/patternSound";
+import { type TimeRange, type Track } from "../types/project";
 import { i18n } from "./i18n";
 
 export interface ClipInfoRow { label: string; value: string; path?: boolean }
@@ -31,25 +32,25 @@ export function displayMediaPath(file: string, project: string | null): string {
 
 type AddRow = (label: Parameters<typeof i18n.t>[0], value: unknown, path?: boolean) => void;
 
-function addPlacement(row: AddRow, range: TimeRange | null) {
+function addPlacement(row: AddRow, range: TimeRange | null, ppq = 0) {
   if (!range) return;
   const clock = createProjectClock(store.project.properties);
-  const start = clock.quarterAt(range.start), end = clock.quarterAt(range.end);
+  const start = clock.quarterAt(range.start, ppq), end = clock.quarterAt(range.end, ppq);
   row("clip.info.position", `${positionText(range.start)} – ${positionText(range.end)}`);
   row("clip.info.duration", i18n.t("clip.info.durationValue", { beats: +(end - start).toFixed(3), seconds: +(clock.secondsAt(end) - clock.secondsAt(start)).toFixed(3) }));
 }
 
-function addSound(row: AddRow, presetName: string | null | undefined, engine: string | null | undefined, instrument?: InstrumentPath) {
-  const authored = store.project.presets.find(entry => entry.name === presetName);
-  const preset = authored ? resolvePresetForDisplay(authored, store.project.presets) ?? authored : null;
-  row("tooltip.preset", preset?.name ?? (presetName ? `${presetName} (${i18n.t("tooltip.notFound")})` : null));
+function addSound(row: AddRow, sound: EffectivePatternSound) {
+  const {preset, presetName, instrument, engine} = sound;
+  row("tooltip.preset", presetName ? patternSoundLabel(sound) : null);
+  row("clip.info.soundOrigin", patternSoundOrigin(sound));
   row("tooltip.source", preset?.source);
   row("tooltip.plugin", preset?.plugin ?? engine);
   row("clip.info.patch", preset?.patch);
   row("clip.info.program", preset?.program);
   const file = preset?.file;
   row("clip.info.file", file ? displayMediaPath(file, store.filePath()) : null, true);
-  row("clip.info.instrument", instrument ? `${instrument.category}/${instrument.name}` : null);
+  row("clip.info.instrument", `${instrument.category}/${instrument.name}`);
   return preset?.effects.length ?? 0;
 }
 
@@ -70,9 +71,9 @@ export function clipInformation(key: string): ClipInfo | null {
     const drum = lane[1] === "pattern" ? track.patterns[Number(lane[3])] : undefined;
     const block = phrase ?? drum;
     if (!block) return null;
-    row("clip.info.track", track.name);
+    row("clip.info.track", trackDisplayName(track));
     addPlacement(row, block.time_range);
-    addSound(row, track.preset, track.engine, track.instrument);
+    addSound(row, effectivePatternSound(store.project, track));
     row("clip.info.events", i18n.t("clip.info.eventValue", { notes: phrase?.events.filter(event => !isRestEvent(event)).length ?? 0, hits: drum?.hits.length ?? 0 }));
     return { title: block.name, kind: "pattern", rows };
   }
@@ -81,8 +82,8 @@ export function clipInformation(key: string): ClipInfo | null {
   const track = ref.kind === "audio"
     ? store.project.tracks.find(t => t.name === store.project.properties.audio_clips?.[ref.audioIndex!]?.track)
     : ref.trackIndex === null ? undefined : store.project.tracks[ref.trackIndex];
-  row("clip.info.track", track?.name ?? ref.owner);
-  if (ref.kind !== "audio") addPlacement(row, ref.time_range);
+  row("clip.info.track", track ? trackDisplayName(track) : ref.owner);
+  if (ref.kind !== "audio") addPlacement(row, ref.time_range, ref.ppq);
   if (ref.kind === "audio") {
     const clip = store.project.properties.audio_clips?.[ref.audioIndex!];
     if (!clip) return null;
@@ -104,9 +105,7 @@ export function clipInformation(key: string): ClipInfo | null {
     const clip = track?.clips[ref.clipIndex!];
     const pattern = clip ? findPattern(clip.pattern) : null;
     row("clip.info.pattern", clip?.pattern);
-    const ownPreset = pattern?.preset && !pattern.preset.startsWith(INJECTED_PRESET_PREFIX) ? pattern.preset : null;
-    const instrument = pattern?.instrument?.name ? pattern.instrument : track?.instrument;
-    const presetEffects = addSound(row, ownPreset ?? track?.preset, pattern?.engine ?? track?.engine, instrument);
+    const presetEffects = track ? addSound(row, effectivePatternSound(store.project, track, pattern)) : 0;
     row("clip.info.events", i18n.t("clip.info.eventValue", { notes: pattern?.events.filter(event => !isRestEvent(event)).length ?? 0, hits: pattern?.hits.length ?? 0 }));
     row("clip.info.sourceOffset", `${clip?.offset_quarters ?? 0} q`);
     if (clip?.loop_quarters) row("clip.info.loop", `${clip.loop_quarters} q`);

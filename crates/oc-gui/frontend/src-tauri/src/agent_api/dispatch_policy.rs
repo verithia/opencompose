@@ -1,5 +1,11 @@
 //! Host-selected authority for installation; never deserialized from tool input.
 
+pub(super) struct DispatchOptions {
+    pub(super) install_policy: InstallPolicy,
+    pub(super) attach_changes: bool,
+    pub(super) reply_projection: super::mutation_reply::ReplyProjection,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum InstallPolicy {
     External,

@@ -31,6 +31,85 @@ fn write_constant_wav(path: &Path, sample_rate: u32, frames: usize, value: f32) 
     writer.finalize().unwrap();
 }
 
+#[test]
+fn cli_render_vocoder_reads_the_routed_modulator_without_mixing_it() {
+    let scratch = tempfile::tempdir().unwrap();
+    let root = scratch.path();
+    let carrier = root.join("carrier.wav");
+    let key = root.join("key.wav");
+    let silent = root.join("silence.wav");
+    for (file, frequency) in [(&carrier, 660.0_f64), (&key, 770.0)] {
+        let mut writer = hound::WavWriter::create(
+            file,
+            hound::WavSpec {
+                channels: 1,
+                sample_rate: 48_000,
+                bits_per_sample: 32,
+                sample_format: hound::SampleFormat::Float,
+            },
+        )
+        .unwrap();
+        for frame in 0..48_000 {
+            let radians = std::f64::consts::TAU * frequency * f64::from(frame) / 48_000.0;
+            writer.write_sample((0.4 * radians.sin()) as f32).unwrap();
+        }
+        writer.finalize().unwrap();
+    }
+    write_constant_wav(&silent, 48_000, 48_000, 0.0);
+    let project = root.join("project.ocp");
+    let output = root.join("out.wav");
+    let peak = |key_file: &str, route: &str| {
+        std::fs::write(
+            &project,
+            format!(
+                r#"@project
+  tempo: 120
+@track carrier | instrument: audio/clip
+  effects:
+    - vocoder: bands=24, mix=100%{route}
+@track voice | instrument: audio/clip
+  mix: output=sink
+@bus sink
+  effects:
+    - gain: factor=0
+@audio_clip source [1:1 - 1:3] | track: carrier
+  file: "carrier.wav"
+@audio_clip modulation [1:1 - 1:3] | track: voice
+  file: "{key_file}"
+"#,
+            ),
+        )
+        .unwrap();
+        let render = run(&[
+            "render",
+            path(&project),
+            "--output",
+            path(&output),
+            "--sample-rate",
+            "48000",
+            "--sample-format",
+            "f32",
+            "--no-dither",
+            "--no-loudness-normalisation",
+            "--pre-roll",
+            "0",
+        ]);
+        assert!(
+            render.status.success(),
+            "{}",
+            String::from_utf8_lossy(&render.stderr)
+        );
+        let mut reader = hound::WavReader::open(&output).unwrap();
+        reader
+            .samples::<f32>()
+            .map(|x| x.unwrap().abs())
+            .fold(0.0, f32::max)
+    };
+    assert!(peak("key.wav", ", sidechain=voice") > 0.01);
+    assert!(peak("key.wav", "") > 0.01);
+    assert!(peak("silence.wav", ", sidechain=voice") < 1e-9);
+}
+
 fn project_text(file: &str) -> String {
     format!(
         r#"@project "Audio CLI"

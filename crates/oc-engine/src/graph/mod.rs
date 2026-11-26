@@ -9,6 +9,7 @@
 //! ```
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::dsp::{self, AudioEffect};
@@ -23,6 +24,11 @@ mod effect_automation;
 mod gain_automation;
 mod gain_ramp;
 mod latency;
+mod linked_automation;
+mod live_controls;
+mod macro_preview;
+pub use macro_preview::PresetMacroInput;
+mod midi_input;
 mod prepared;
 mod process_boundary;
 pub use process_boundary::EffectChainProcessError;
@@ -32,8 +38,12 @@ mod prepared_tests;
 pub use prepared::{PreparationError, PreparedGraphBlock};
 use prepared::{PreparedGraph, SignalLookup};
 #[cfg(test)]
+mod channel_equality_tests;
+#[cfg(test)]
 mod streaming_gate_tests;
 
+#[cfg(feature = "plugin-host")]
+pub(crate) use latency::track_chain_tail_seconds_with_resources;
 pub use latency::{
     ChainTailSeconds, DestinationLatency, LatencyDiagnostic, TrackLatencyReadout,
     track_chain_tail_seconds,
@@ -87,6 +97,14 @@ impl Default for StemCapture {
 /// check when it sees anything else.
 pub const MASTER_CHANNELS: u16 = 2;
 
+/// Live sources available to a streaming mixer.
+#[derive(Default)]
+pub struct GraphLiveInputs {
+    pub touch: Option<Arc<touch::TouchRegistry>>,
+    pub midi_cc: Option<Arc<crate::control_link::MidiControlInput>>,
+    pub preset_macros: Option<Arc<PresetMacroInput>>,
+}
+
 /// A fully instantiated audio graph ready for rendering.
 pub struct AudioGraph {
     pub track_chains: Vec<EffectChain>,
@@ -98,6 +116,7 @@ pub struct AudioGraph {
     ramps: MixerRamps,
     pub routing: Vec<TrackRouting>,
     pub sample_rate: u32,
+    resource_root: Option<PathBuf>,
     /// Measured source width per track; drives the fader/pan law.
     track_widths: Vec<SourceWidth>,
     source_latencies: Vec<u32>,
@@ -134,13 +153,15 @@ pub struct AudioGraph {
     control_fresh: Vec<bool>,
     /// Track key routing derived once at build time.
     key_plan: KeyPlan,
+    live_controls: Option<live_controls::LiveControls>,
+    preset_macros: Option<macro_preview::MacroSnapshots>,
     prepared: Option<PreparedGraph>,
 }
 
 /// Which tracks a key or control edge reads, and in what order their chains
 /// must run. A control source is evaluated after its feed track's chain and
 /// before its consumer's chain, so a consumer always sees this block's value.
-#[derive(Default)]
+#[derive(Default, PartialEq, Eq)]
 struct KeyPlan {
     /// Track indices with every key/control source before its consumer.
     order: Vec<usize>,
@@ -267,6 +288,17 @@ impl StereoDelayCompensator {
         }
     }
 
+    fn reset(&mut self) {
+        self.buffer.fill(0.0);
+        self.position = 0;
+    }
+
+    fn set_frames(&mut self, frames: u32) {
+        if self.buffer.len() / 2 != frames as usize {
+            *self = Self::new(frames);
+        }
+    }
+
     /// Push silence through the line without producing output, so a gated
     /// route keeps its place in the compensation timeline.
     fn advance_silent(&mut self, samples: usize) {
@@ -329,25 +361,11 @@ impl StereoDelayCompensator {
 
 /// Longest effect block while a tempo/meter map is active. Keeping the same
 /// quantum as the source lanes makes offline and streaming plugin blocks line
-/// up; without a map the chain keeps its one-call-per-buffer path.
+/// up; every span also respects the device's prepared frame capacity.
 const CLOCK_ALIGNED_BLOCK_FRAMES: usize = 128;
 
-fn process_effect_context(
-    effect: &mut dyn AudioEffect,
-    buffer: &mut [f32],
-    sample_rate: u32,
-    transport: Option<&PluginTransport>,
-    input: AudioProcessInput<'_>,
-) {
-    effect.process_with_context(
-        buffer,
-        AudioProcessContext {
-            sample_rate,
-            transport,
-            input,
-        },
-    );
-}
+mod effect_blocks;
+use effect_blocks::process_effect_context;
 
 /// Run one effect over spans that each carry a single clock context.
 ///
@@ -535,12 +553,15 @@ struct PreparedMixOptions<'a> {
 }
 
 struct EffectChainBuild<'a> {
+    project: Option<&'a Project>,
     sample_rate: u32,
     checked: bool,
     properties: &'a oc_dsl::ast::ProjectProperties,
     owner: &'a str,
     place: &'a str,
     touch: Option<&'a Arc<touch::TouchRegistry>>,
+    resource_root: Option<&'a Path>,
+    linked_lanes: &'a [linked_automation::LinkedLane],
 }
 
 impl Default for EffectChain {
@@ -550,21 +571,38 @@ impl Default for EffectChain {
 }
 
 impl EffectChain {
+    fn configure_midi_input_latency(&mut self, mut samples: u32) {
+        for effect in &mut self.effects {
+            effect.configure_midi_input_latency(samples);
+            samples = samples.saturating_add(effect.latency_samples());
+        }
+    }
     pub fn try_from_effects(
         effects: &[oc_dsl::ast::Effect],
         sample_rate: u32,
+    ) -> Result<Self, String> {
+        Self::try_from_effects_with_resources(effects, sample_rate, None)
+    }
+
+    pub(crate) fn try_from_effects_with_resources(
+        effects: &[oc_dsl::ast::Effect],
+        sample_rate: u32,
+        resource_root: Option<&Path>,
     ) -> Result<Self, String> {
         build_effect_chain(
             effects,
             &[],
             &[],
             EffectChainBuild {
+                project: None,
                 sample_rate,
                 checked: true,
                 properties: &oc_dsl::ast::ProjectProperties::default(),
                 owner: "",
                 place: "",
                 touch: None,
+                resource_root,
+                linked_lanes: &[],
             },
         )
     }
@@ -690,7 +728,8 @@ impl EffectChain {
         max_frames: usize,
     ) -> Result<(), oc_audio::BlockPreparationError> {
         for effect in &mut self.effects {
-            effect.prepare_block(max_frames)?;
+            let frames = max_frames.min(effect.max_block_frames().max(1) as usize);
+            effect.prepare_block(frames)?;
         }
         self.boundary.clear();
         Ok(())
@@ -701,7 +740,13 @@ impl EffectChain {
             return;
         }
         for fx in &mut self.effects {
-            fx.process(buffer, sample_rate);
+            process_effect_context(
+                fx.as_mut(),
+                buffer,
+                sample_rate,
+                None,
+                AudioProcessInput::Main,
+            );
         }
     }
 
@@ -780,6 +825,17 @@ impl EffectChain {
         self.effects
             .iter()
             .filter_map(|effect| effect.control_source())
+    }
+
+    /// Compose reset/equal-history certificates before any channel pan law.
+    /// A sidechain or control edge leaves the chain conservatively unknown.
+    pub fn preserves_channel_equality(&self) -> bool {
+        !self.has_sidechain()
+            && !self.has_control_inputs()
+            && self
+                .effects
+                .iter()
+                .all(|effect| effect.preserves_channel_equality())
     }
 
     pub fn has_control_inputs(&self) -> bool {
@@ -985,6 +1041,16 @@ impl EffectChain {
     pub fn reset(&mut self) {
         for fx in &mut self.effects {
             fx.reset();
+        }
+        self.finish_ramps_on_rewind();
+    }
+
+    fn finish_ramps_on_rewind(&mut self) {
+        for ramp in self.ramps.iter_mut().filter(|ramp| !ramp.done()) {
+            if let Some(effect) = self.effects.get_mut(ramp.effect) {
+                effect.set_param(&ramp.name, ramp.to);
+            }
+            ramp.elapsed = ramp.total;
         }
     }
 
@@ -1214,7 +1280,11 @@ pub fn audible_buses(project: &Project) -> Vec<bool> {
 /// panel's validation answer the question `ocp render` answers. External
 /// plugins are skipped: loading one is not a parameter check, and the built-in
 /// preflight documents that it leaves them to render time.
-pub fn validate_effect_parameters(project: &Project, sample_rate: u32) -> Vec<String> {
+pub fn validate_effect_parameters(
+    project: &Project,
+    sample_rate: u32,
+    resource_root: Option<&Path>,
+) -> Vec<String> {
     let Ok(expanded) = oc_dsl::dynamics::expand(project) else {
         return Vec::new();
     };
@@ -1226,9 +1296,15 @@ pub fn validate_effect_parameters(project: &Project, sample_rate: u32) -> Vec<St
             if matches!(effect.effect_type, oc_dsl::ast::EffectType::Plugin(_)) {
                 continue;
             }
-            if let Err(error) =
-                dsp::try_create_effect_at(&effect.effect_type, &effect.params, sample_rate, place)
-                && seen.insert(format!("{place}: {error}"))
+            if let Err(error) = dsp::try_create_effect_with_resources(
+                &effect.effect_type,
+                &effect_device_params(effect),
+                sample_rate,
+                place,
+                dsp::EffectResources {
+                    root: resource_root,
+                },
+            ) && seen.insert(format!("{place}: {error}"))
             {
                 refusals.push(format!("{place}: {error}"));
             }
@@ -1550,14 +1626,38 @@ impl AudioGraph {
         {
             return Ok(ChainPatch::Structural);
         }
+        let mut linked_owners = linked_automation::changed_owners(previous, next);
+        let replacement_macros = self
+            .preset_macros
+            .as_ref()
+            .filter(|_| previous.properties.control_links != next.properties.control_links)
+            .map(|macros| macros.with_project(next));
+        let replacement_controls = if let Some(current) = &self.live_controls
+            && live_controls::mixer_cc_links(previous).ne(live_controls::mixer_cc_links(next))
+        {
+            linked_owners.extend(live_controls::changed_cc_owners(previous, next));
+            Some(current.with_project(next)?)
+        } else {
+            None
+        };
         let track_plans: Vec<ChainPlan> = (0..self.track_chains.len())
             .map(|index| {
-                chain_plan(
+                if linked_owners.contains(next.tracks[index].name.as_str())
+                    || midi_input::source_changed(
+                        previous,
+                        next,
+                        &next.tracks[index].input_routes,
+                        self.sample_rate,
+                    )?
+                {
+                    return Ok(ChainPlan::Rebuild);
+                }
+                Ok(chain_plan(
                     &track_shape(&previous.tracks[index]),
                     &track_shape(&next.tracks[index]),
-                )
+                ))
             })
-            .collect();
+            .collect::<Result<_, String>>()?;
         let bus_plans: Vec<(usize, ChainPlan)> = next
             .buses
             .iter()
@@ -1568,11 +1668,33 @@ impl AudioGraph {
                     .iter()
                     .find(|before| before.name == bus.name)
                     .ok_or_else(|| format!("Bus '{}' not found", bus.name))?;
-                Ok((index, chain_plan(&bus_shape(before), &bus_shape(bus))))
+                let plan = if linked_owners.contains(bus.name.as_str())
+                    || midi_input::source_changed(
+                        previous,
+                        next,
+                        &bus.input_routes,
+                        self.sample_rate,
+                    )? {
+                    ChainPlan::Rebuild
+                } else {
+                    chain_plan(&bus_shape(before), &bus_shape(bus))
+                };
+                Ok((index, plan))
             })
             .collect::<Result<_, String>>()?;
         let master_plan = match (&previous.master, &next.master) {
-            (Some(before), Some(after)) => chain_plan(&master_shape(before), &master_shape(after)),
+            (Some(before), Some(after)) => {
+                if midi_input::source_changed(
+                    previous,
+                    next,
+                    &after.input_routes,
+                    self.sample_rate,
+                )? {
+                    ChainPlan::Rebuild
+                } else {
+                    chain_plan(&master_shape(before), &master_shape(after))
+                }
+            }
             _ => ChainPlan::Unchanged,
         };
 
@@ -1593,10 +1715,71 @@ impl AudioGraph {
                 self.master_chain.validate_fade_params(changes)?;
             }
         }
+        let mut track_replacements = HashMap::new();
+        let mut bus_replacements = HashMap::new();
+        let mut master_replacement = None;
+        let rebuild = |plan: &ChainPlan| matches!(plan, ChainPlan::Rebuild);
+        // Prepare every replacement before publishing any change. A missing
+        // state sidecar or a plugin refusal must leave all live chains intact.
+        if track_plans.iter().any(rebuild)
+            || bus_plans.iter().any(|(_, plan)| rebuild(plan))
+            || rebuild(&master_plan)
+        {
+            let document = graph_document(next);
+            let root = self.resource_root.as_deref();
+            let linked = linked_automation::LinkedAutomation::new(
+                &document,
+                self.sample_rate,
+                linked_automation::LinkedSources {
+                    midi: replacement_controls
+                        .as_ref()
+                        .or(self.live_controls.as_ref()),
+                    macros: replacement_macros.as_ref().or(self.preset_macros.as_ref()),
+                    root,
+                },
+            )?;
+            for (index, _) in track_plans
+                .iter()
+                .enumerate()
+                .filter(|(_, plan)| rebuild(plan))
+            {
+                let chain = build_track_chain(
+                    &document,
+                    index,
+                    self.sample_rate,
+                    true,
+                    touch,
+                    root,
+                    &linked,
+                )?;
+                track_replacements.insert(index, chain);
+            }
+            for (index, _) in bus_plans.iter().filter(|(_, plan)| rebuild(plan)) {
+                let chain = build_bus_chain(
+                    &document,
+                    *index,
+                    self.sample_rate,
+                    true,
+                    touch,
+                    root,
+                    &linked,
+                )?;
+                bus_replacements.insert(*index, chain);
+            }
+            if rebuild(&master_plan) {
+                master_replacement = Some(build_master_chain(
+                    &document,
+                    self.sample_rate,
+                    true,
+                    touch,
+                    root,
+                )?);
+            }
+        }
+        let rebuilt = !track_replacements.is_empty()
+            || !bus_replacements.is_empty()
+            || master_replacement.is_some();
         let mut patched = 0;
-        let mut rebuilt = false;
-        // Built on the first rebuild only: a fade needs no document copy.
-        let mut document: Option<Project> = None;
         for (index, plan) in track_plans.into_iter().enumerate() {
             match plan {
                 ChainPlan::Unchanged => {}
@@ -1609,13 +1792,13 @@ impl AudioGraph {
                     patched += 1;
                 }
                 ChainPlan::Rebuild => {
-                    let document = document.get_or_insert_with(|| graph_document(next));
-                    let chain = build_track_chain(document, index, self.sample_rate, true, touch)?;
+                    let chain = track_replacements
+                        .remove(&index)
+                        .expect("prepared track chain");
                     // Release the replaced chain's plugins on the thread that
                     // processed them.
                     self.track_chains[index].end_processing();
                     self.track_chains[index] = chain;
-                    rebuilt = true;
                     patched += 1;
                 }
             }
@@ -1635,13 +1818,11 @@ impl AudioGraph {
                     patched += 1;
                 }
                 ChainPlan::Rebuild => {
-                    let document = document.get_or_insert_with(|| graph_document(next));
-                    let chain = build_bus_chain(document, index, self.sample_rate, true, touch)?;
+                    let chain = bus_replacements.remove(&index).expect("prepared bus chain");
                     if let Some(node) = self.bus_chains.get_mut(name) {
                         node.chain.end_processing();
                         node.chain = chain;
                     }
-                    rebuilt = true;
                     patched += 1;
                 }
             }
@@ -1657,13 +1838,19 @@ impl AudioGraph {
                 patched += 1;
             }
             ChainPlan::Rebuild => {
-                let document = document.get_or_insert_with(|| graph_document(next));
-                let chain = build_master_chain(document, self.sample_rate, true, touch)?;
                 self.master_chain.end_processing();
-                self.master_chain = chain;
-                rebuilt = true;
+                self.master_chain = master_replacement.expect("prepared master chain");
                 patched += 1;
             }
+        }
+        if let Some(controls) = replacement_controls {
+            self.live_controls = Some(controls);
+        }
+        if let Some(macros) = replacement_macros {
+            self.preset_macros = Some(macros);
+        }
+        if let Some(macros) = &mut self.preset_macros {
+            macros.clear_recompiled_values(previous, next);
         }
         if rebuilt {
             // A rebuilt chain can move a detector edge or a latency. A fade
@@ -1680,13 +1867,13 @@ impl AudioGraph {
                 &self.master_chain,
                 &feeds,
             );
-            if self.current_latency_signature() != self.latency_signature {
-                // Re-planning the alignment flushes its delay lines, so only a
-                // chain that actually moved its latency asks for it.
-                self.configure_sidechain_alignment();
-            }
+            // A rebuilt insert needs its key delays even when it reports the
+            // same latency. The existing route delays still belong to the
+            // same paths.
+            self.rebuild_latency_compensation(true);
+        } else {
+            self.refresh_latency_compensation();
         }
-        self.refresh_latency_compensation();
         Ok(ChainPatch::Patched { chains: patched })
     }
 
@@ -1729,8 +1916,15 @@ impl AudioGraph {
         sample_rate: u32,
         source_latencies: &[u32],
     ) -> Self {
-        Self::build_project(project, sample_rate, source_latencies, false, None)
-            .expect("legacy graph construction")
+        Self::build_project(
+            project,
+            sample_rate,
+            source_latencies,
+            false,
+            GraphLiveInputs::default(),
+            None,
+        )
+        .expect("legacy graph construction")
     }
 
     pub fn try_from_project_with_source_latencies(
@@ -1738,7 +1932,7 @@ impl AudioGraph {
         sample_rate: u32,
         source_latencies: &[u32],
     ) -> Result<Self, String> {
-        Self::build_project(project, sample_rate, source_latencies, true, None)
+        Self::try_from_project_with_resources(project, sample_rate, source_latencies, None, None)
     }
 
     /// Live variant: automated parameters consult `touch` for the hand-vs-lane
@@ -1749,7 +1943,50 @@ impl AudioGraph {
         source_latencies: &[u32],
         touch: Arc<touch::TouchRegistry>,
     ) -> Result<Self, String> {
-        Self::build_project(project, sample_rate, source_latencies, true, Some(touch))
+        Self::try_from_project_with_resources(
+            project,
+            sample_rate,
+            source_latencies,
+            None,
+            Some(touch),
+        )
+    }
+
+    /// Prepare the mixer against the same project-relative resources as its sources.
+    pub fn try_from_project_with_resources(
+        project: &Project,
+        sample_rate: u32,
+        source_latencies: &[u32],
+        resource_root: Option<&Path>,
+        touch: Option<Arc<touch::TouchRegistry>>,
+    ) -> Result<Self, String> {
+        Self::try_from_project_with_live_inputs(
+            project,
+            sample_rate,
+            source_latencies,
+            resource_root,
+            GraphLiveInputs {
+                touch,
+                ..Default::default()
+            },
+        )
+    }
+
+    pub fn try_from_project_with_live_inputs(
+        project: &Project,
+        sample_rate: u32,
+        source_latencies: &[u32],
+        resource_root: Option<&Path>,
+        live: GraphLiveInputs,
+    ) -> Result<Self, String> {
+        Self::build_project(
+            project,
+            sample_rate,
+            source_latencies,
+            true,
+            live,
+            resource_root,
+        )
     }
 
     fn build_project(
@@ -1757,7 +1994,8 @@ impl AudioGraph {
         sample_rate: u32,
         source_latencies: &[u32],
         checked: bool,
-        touch: Option<Arc<touch::TouchRegistry>>,
+        live: GraphLiveInputs,
+        resource_root: Option<&Path>,
     ) -> Result<Self, String> {
         // Authoritative render entry points reject resolution errors. Preserve
         // this legacy infallible graph API for already-validated callers.
@@ -1774,6 +2012,25 @@ impl AudioGraph {
         if checked {
             reject_bus_routing_cycles(project)?;
         }
+        let GraphLiveInputs {
+            touch,
+            midi_cc,
+            preset_macros,
+        } = live;
+        let live_controls = midi_cc
+            .map(|input| live_controls::LiveControls::new(input, project))
+            .transpose()?;
+        let preset_macros =
+            preset_macros.map(|input| macro_preview::MacroSnapshots::new(input, project));
+        let linked = linked_automation::LinkedAutomation::new(
+            project,
+            sample_rate,
+            linked_automation::LinkedSources {
+                midi: live_controls.as_ref(),
+                macros: preset_macros.as_ref(),
+                root: resource_root,
+            },
+        )?;
         let mut track_chains = Vec::new();
         let mut routing = Vec::new();
         let tracks_audible = audible_tracks(project);
@@ -1787,6 +2044,8 @@ impl AudioGraph {
                 sample_rate,
                 checked,
                 touch.as_ref(),
+                resource_root,
+                &linked,
             )?);
 
             // Build routing
@@ -1836,7 +2095,15 @@ impl AudioGraph {
         // Build bus chains
         let mut bus_chains = HashMap::new();
         for (index, bus) in project.buses.iter().enumerate() {
-            let chain = build_bus_chain(project, index, sample_rate, checked, touch.as_ref())?;
+            let chain = build_bus_chain(
+                project,
+                index,
+                sample_rate,
+                checked,
+                touch.as_ref(),
+                resource_root,
+                &linked,
+            )?;
             bus_chains.insert(
                 bus.name.clone(),
                 BusNode {
@@ -1851,7 +2118,9 @@ impl AudioGraph {
 
         // Build master chain
         let master_chain = match &project.master {
-            Some(_) => build_master_chain(project, sample_rate, checked, touch.as_ref())?,
+            Some(_) => {
+                build_master_chain(project, sample_rate, checked, touch.as_ref(), resource_root)?
+            }
             None => EffectChain::new(),
         };
 
@@ -1975,6 +2244,7 @@ impl AudioGraph {
             ramps,
             routing,
             sample_rate,
+            resource_root: resource_root.map(Path::to_path_buf),
             track_widths: project
                 .tracks
                 .iter()
@@ -2020,9 +2290,10 @@ impl AudioGraph {
             control_only: Vec::new(),
             control_fresh: vec![false; control_runtime_count],
             key_plan,
+            live_controls,
+            preset_macros,
             prepared: None,
         };
-        graph.configure_sidechain_alignment();
         graph.refresh_latency_compensation();
         for index in 0..project.tracks.len() {
             for (_, bus, envelope) in
@@ -2034,39 +2305,12 @@ impl AudioGraph {
         Ok(graph)
     }
 
-    /// Align each keyed effect with the source's **post-insert** tap: reported
-    /// source latency plus the source chain's own latency. Sources come before
-    /// their consumers, so a source's tap latency is final when it is read.
-    fn configure_sidechain_alignment(&mut self) {
-        let mut tap_latency = vec![0_u32; self.track_names.len()];
-        let mut resolved = vec![false; self.track_names.len()];
-        let planned = self.key_plan.order.len() == self.track_chains.len();
-        for position in 0..self.track_chains.len() {
-            let index = if planned {
-                self.key_plan.order[position]
-            } else {
-                position
-            };
-            let mut chain = std::mem::take(&mut self.track_chains[index]);
-            let mut main_latency = self.source_latencies.get(index).copied().unwrap_or(0);
-            for effect in &mut chain.effects {
-                if let Some(source) = effect.sidechain_source()
-                    && let Some(source_index) =
-                        self.track_names.iter().position(|name| name == source)
-                    && resolved.get(source_index).copied().unwrap_or(false)
-                {
-                    effect.configure_sidechain_alignment(main_latency, tap_latency[source_index]);
-                }
-                main_latency = main_latency.saturating_add(effect.latency_samples());
-            }
-            self.track_chains[index] = chain;
-            if let Some(slot) = tap_latency.get_mut(index) {
-                *slot = main_latency;
-            }
-            if let Some(slot) = resolved.get_mut(index) {
-                *slot = true;
-            }
-        }
+    /// Publish a saved macro value already validated by the desktop project
+    /// edit. The next block uses it when there is no preview gesture.
+    pub fn commit_saved_preset_macro(&mut self, preset: &str, index: u8, value: f64) -> bool {
+        self.preset_macros
+            .as_mut()
+            .is_some_and(|macros| macros.commit_saved(preset, index, value))
     }
 
     pub fn has_track_sidechains(&self) -> bool {
@@ -2354,8 +2598,7 @@ impl AudioGraph {
         if signature == self.latency_signature {
             return false;
         }
-        self.latency_signature = signature;
-        self.rebuild_latency_compensation();
+        self.rebuild_latency_compensation(false);
         true
     }
 
@@ -2401,6 +2644,7 @@ impl AudioGraph {
         for (target, bus) in &self.bus_chains {
             for source in bus.chain.sidechain_sources() {
                 if source != target
+                    && !self.track_names.iter().any(|track| track == source)
                     && self.bus_chains.contains_key(source)
                     && let Some(value) = indegree.get_mut(target)
                 {
@@ -2429,17 +2673,22 @@ impl AudioGraph {
                     }
                 }
             }
-            for (target, target_bus) in &self.bus_chains {
-                if target_bus
-                    .chain
-                    .sidechain_sources()
-                    .any(|source| source == name)
-                    && let Some(value) = indegree.get_mut(target)
-                {
-                    *value -= 1;
-                    if *value == 0 {
-                        ready.push(target.clone());
-                        ready.sort_unstable_by(|a, b| b.cmp(a));
+            if !self.track_names.contains(&name) {
+                for (target, target_bus) in &self.bus_chains {
+                    let keys = target_bus
+                        .chain
+                        .sidechain_sources()
+                        .filter(|source| *source == name)
+                        .count();
+                    if keys != 0
+                        && target != &name
+                        && let Some(value) = indegree.get_mut(target)
+                    {
+                        *value -= keys;
+                        if *value == 0 {
+                            ready.push(target.clone());
+                            ready.sort_unstable_by(|a, b| b.cmp(a));
+                        }
                     }
                 }
             }
@@ -2452,7 +2701,9 @@ impl AudioGraph {
         cyclic.sort_unstable();
         order.extend(cyclic);
         self.bus_order = order;
+    }
 
+    fn rebuild_bus_downstream_latencies(&mut self) {
         self.bus_downstream_latencies.clear();
         for name in self.bus_order.iter().rev() {
             let downstream = self
@@ -2878,6 +3129,7 @@ impl AudioGraph {
             match ramps.as_deref_mut() {
                 Some(ramps) => ramps.fader_block(
                     fader_gains(route.volume, route.pan, width),
+                    width,
                     track_buf,
                     ramp_frames,
                 ),
@@ -3200,6 +3452,10 @@ impl AudioGraph {
             bus.chain.reset();
         }
         self.master_chain.reset();
+        self.reset_mixer_history();
+    }
+
+    fn reset_mixer_history(&mut self) {
         for runtime in &mut self.control_runtimes {
             runtime.reset();
         }
@@ -3215,8 +3471,7 @@ impl AudioGraph {
             .chain(self.aux_send_delays.values_mut())
             .chain(self.bus_route_delays.values_mut())
         {
-            delay.buffer.fill(0.0);
-            delay.position = 0;
+            delay.reset();
         }
     }
 }
@@ -3786,6 +4041,12 @@ fn numeric_param(
     name: &str,
     value: &oc_dsl::ast::ParamValue,
 ) -> Option<f64> {
+    // Rebuild when an edit changes the plan or instance lifecycle.
+    if effect_type.parameter_changes_latency(name)
+        || name == oc_dsp::schema::effect_slot::SlotControl::WET_ID
+    {
+        return None;
+    }
     // A hosted plugin takes the plain number the document wrote.
     if matches!(effect_type, oc_dsl::ast::EffectType::Plugin(_)) {
         return value.as_f64();
@@ -3804,6 +4065,8 @@ fn build_track_chain(
     sample_rate: u32,
     checked: bool,
     touch: Option<&Arc<touch::TouchRegistry>>,
+    resource_root: Option<&Path>,
+    linked: &linked_automation::LinkedAutomation<'_>,
 ) -> Result<EffectChain, String> {
     let track = project
         .tracks
@@ -3821,12 +4084,15 @@ fn build_track_chain(
         &[],
         &[],
         EffectChainBuild {
+            project: Some(project),
             sample_rate,
             checked,
             properties: &project.properties,
             owner: "",
             place: &place,
             touch: None,
+            resource_root,
+            linked_lanes: &[],
         },
     )?;
     chain.effects.extend(
@@ -3835,12 +4101,15 @@ fn build_track_chain(
             &track.input_routes,
             track.automation(),
             EffectChainBuild {
+                project: Some(project),
                 sample_rate,
                 checked,
                 properties: &project.properties,
                 owner: &format!("track:{index}"),
                 place: &place,
                 touch,
+                resource_root,
+                linked_lanes: linked.for_owner(&track.name),
             },
         )?
         .effects,
@@ -3866,6 +4135,8 @@ fn build_bus_chain(
     sample_rate: u32,
     checked: bool,
     touch: Option<&Arc<touch::TouchRegistry>>,
+    resource_root: Option<&Path>,
+    linked: &linked_automation::LinkedAutomation<'_>,
 ) -> Result<EffectChain, String> {
     let bus = project
         .buses
@@ -3877,12 +4148,15 @@ fn build_bus_chain(
         &bus.input_routes,
         &bus.automation,
         EffectChainBuild {
+            project: Some(project),
             sample_rate,
             checked,
             properties: &project.properties,
             owner: &owner,
             place: &format!("bus '{}'", bus.name),
             touch,
+            resource_root,
+            linked_lanes: linked.for_owner(&bus.name),
         },
     )?;
     if !bus.gain_automation.is_empty() {
@@ -3905,6 +4179,7 @@ fn build_master_chain(
     sample_rate: u32,
     checked: bool,
     touch: Option<&Arc<touch::TouchRegistry>>,
+    resource_root: Option<&Path>,
 ) -> Result<EffectChain, String> {
     let master = project
         .master
@@ -3915,12 +4190,15 @@ fn build_master_chain(
         &master.input_routes,
         &master.automation,
         EffectChainBuild {
+            project: Some(project),
             sample_rate,
             checked,
             properties: &project.properties,
             owner: "master",
             place: "master",
             touch,
+            resource_root,
+            linked_lanes: &[],
         },
     )?;
     if !master.gain_automation.is_empty() {
@@ -3943,17 +4221,56 @@ fn build_effect_chain<'a>(
     automation: impl IntoIterator<Item = &'a oc_dsl::ast::AutomationLane>,
     context: EffectChainBuild<'_>,
 ) -> Result<EffectChain, String> {
+    build_effect_chain_selection(effects, routes, automation, context, None)
+}
+
+fn build_effect_chain_selection<'a>(
+    effects: &[oc_dsl::ast::Effect],
+    routes: &[oc_dsl::ast::InputRoute],
+    automation: impl IntoIterator<Item = &'a oc_dsl::ast::AutomationLane>,
+    context: EffectChainBuild<'_>,
+    selected: Option<usize>,
+) -> Result<EffectChain, String> {
+    use oc_dsp::schema::effect_slot::SlotControl;
     let EffectChainBuild {
+        project,
         sample_rate,
         checked,
         properties,
         owner,
         place,
         touch,
+        resource_root,
+        linked_lanes,
     } = context;
     let lanes = effect_lanes_by_index(effects, automation, checked)?;
+    let mut linked: HashMap<usize, Vec<&linked_automation::LinkedLane>> = HashMap::new();
+    for lane in linked_lanes {
+        linked.entry(lane.slot).or_default().push(lane);
+    }
+    let slot_lanes = |index, control: Option<SlotControl>| {
+        let matches = |parameter| {
+            SlotControl::from_id(parameter)
+                .is_some_and(|found| control.is_none_or(|id| id == found))
+        };
+        lanes.get(&index).is_some_and(|lanes| {
+            lanes.iter().any(|lane| {
+                !lane.muted
+                    && !lane.points.is_empty()
+                    && lane
+                        .effect_lane()
+                        .is_some_and(|(_, parameter)| matches(parameter))
+            })
+        }) || linked
+            .get(&index)
+            .is_some_and(|lanes| lanes.iter().any(|lane| matches(lane.parameter.as_str())))
+    };
+    let resources = dsp::EffectResources {
+        root: resource_root,
+    };
     let mut audio_routes: HashMap<usize, &str> = HashMap::new();
     let mut control_routes: HashMap<usize, &str> = HashMap::new();
+    let mut midi_routes: HashMap<usize, &str> = HashMap::new();
     for route in routes {
         let index = match oc_dsl::automation::resolve_effect(effects, &route.target) {
             Ok(index) => index,
@@ -3969,60 +4286,119 @@ fn build_effect_chain<'a>(
             oc_dsl::ast::RouteKind::Control => {
                 control_routes.insert(index, route.source.as_str());
             }
+            oc_dsl::ast::RouteKind::Midi => {
+                if midi_routes.insert(index, route.source.as_str()).is_some() {
+                    return Err(format!("duplicate MIDI route into {owner}"));
+                }
+            }
         }
     }
     let mut chain = EffectChain::new();
     for (index, effect) in effects.iter().enumerate() {
-        if effect.bypass {
+        if selected.is_some_and(|selected| selected != index) {
+            continue;
+        }
+        let wet = effect
+            .params
+            .iter()
+            .find(|(name, _)| name == SlotControl::WET_ID)
+            .map(|(_, value)| oc_dsl::automation::slot_point_value(SlotControl::Wet, value))
+            .transpose()?
+            .unwrap_or(SlotControl::DEFAULT_WET);
+        let params = effect_device_params(effect);
+        if effect.bypass && !slot_lanes(index, Some(SlotControl::Enabled)) {
             // A bypassed entry is absent: no device, no latency, no tail. A
             // built-in still has its parameters checked so validate and render
             // agree; a plugin is never loaded.
             if checked && !matches!(effect.effect_type, oc_dsl::ast::EffectType::Plugin(_)) {
-                dsp::try_create_effect_at(&effect.effect_type, &effect.params, sample_rate, place)
-                    .map_err(|error| {
-                        if place.is_empty() {
-                            error
-                        } else {
-                            format!("{place}: {error}")
-                        }
-                    })?;
+                dsp::try_create_effect_with_resources(
+                    &effect.effect_type,
+                    &params,
+                    sample_rate,
+                    place,
+                    resources,
+                )
+                .map_err(|error| {
+                    if place.is_empty() {
+                        error
+                    } else {
+                        format!("{place}: {error}")
+                    }
+                })?;
             }
             chain.effects.push(Box::new(Bypassed));
             continue;
         }
         let mut fx = if checked {
-            dsp::try_create_effect_at(&effect.effect_type, &effect.params, sample_rate, place)
-                .map_err(|error| {
-                    // A plugin refusal already names the place it sits in.
-                    let named = place.is_empty()
-                        || matches!(effect.effect_type, oc_dsl::ast::EffectType::Plugin(_));
-                    if named {
-                        error
-                    } else {
-                        format!("{place}: {error}")
-                    }
-                })?
+            dsp::try_create_effect_with_resources(
+                &effect.effect_type,
+                &params,
+                sample_rate,
+                place,
+                resources,
+            )
+            .map_err(|error| {
+                // A plugin refusal already names the place it sits in.
+                let named = place.is_empty()
+                    || matches!(effect.effect_type, oc_dsl::ast::EffectType::Plugin(_));
+                if named {
+                    error
+                } else {
+                    format!("{place}: {error}")
+                }
+            })?
         } else {
-            dsp::create_effect(&effect.effect_type, &effect.params, sample_rate)
+            dsp::create_effect_with_resources(&effect.effect_type, &params, sample_rate, resources)
         };
         // Seeded devices take their sequence from where they sit, not from the
         // clock or an address, so the same project renders the same audio.
         fx.set_seed(device_seed(place, index));
         // The gate must see whole render blocks, so it wraps the finished
         // entry: automation, key and control wrappers stay inside it.
-        let idle_gate = fx
-            .plugin_tail_samples()
-            .map(|tail| idle_gate::IdleGate::new(sample_rate, Some(tail), !smart_disable(effect)));
-        if let Some(lanes) = lanes.get(&index) {
-            match effect_automation::compile(effect, lanes, properties, sample_rate, owner, index) {
+        // A MIDI event can wake a processor while its audio input is silent.
+        let slot_mix = wet != SlotControl::DEFAULT_WET || slot_lanes(index, None);
+        let idle_gate = if slot_mix || midi_routes.contains_key(&index) {
+            None
+        } else {
+            fx.plugin_tail_samples().map(|tail| {
+                idle_gate::IdleGate::new(sample_rate, Some(tail), !smart_disable(effect))
+            })
+        };
+        if let Some(source) = midi_routes.get(&index) {
+            let project = project.ok_or("MIDI routing requires the containing project")?;
+            fx = midi_input::wrap(fx, project, source, sample_rate)?;
+        }
+        let effect_lanes = lanes.get(&index).map_or(&[][..], Vec::as_slice);
+        let links = linked.get(&index).map_or(&[][..], Vec::as_slice);
+        if slot_mix || !effect_lanes.is_empty() || !links.is_empty() {
+            let compiled = effect_automation::compile(
+                effect,
+                effect_lanes,
+                properties,
+                sample_rate,
+                owner,
+                index,
+            )
+            .and_then(|mut compiled| {
+                compiled.append_links(effect, links, sample_rate, owner, index)?;
+                Ok(compiled)
+            });
+            match compiled {
                 Ok(compiled) => {
-                    fx = Box::new(effect_automation::AutomatedEffect::new(
+                    let mut automated = effect_automation::AutomatedEffect::new(
                         fx,
                         compiled.lanes,
                         sample_rate,
                         touch.cloned(),
                         compiled.clock,
-                    ))
+                    )
+                    .map_err(|error| error.to_string())?;
+                    if slot_mix {
+                        automated = automated.with_slot_mix(wet, !effect.bypass).map_err(|_| {
+                            format!("{place}: insert dry path exceeds preparation capacity")
+                        })?;
+                    }
+                    fx = Box::new(automated);
                 }
                 Err(error) if checked => return Err(error),
                 // Legacy infallible builds keep the effect without automation.
@@ -4074,6 +4450,27 @@ fn build_effect_chain<'a>(
         chain.effects.push(fx);
     }
     Ok(chain)
+}
+
+fn effect_device_params(
+    effect: &oc_dsl::ast::Effect,
+) -> std::borrow::Cow<'_, [(String, oc_dsl::ast::ParamValue)]> {
+    use oc_dsp::schema::effect_slot::SlotControl;
+    if effect
+        .params
+        .iter()
+        .any(|(name, _)| name == SlotControl::WET_ID)
+    {
+        return std::borrow::Cow::Owned(
+            effect
+                .params
+                .iter()
+                .filter(|(name, _)| name != SlotControl::WET_ID)
+                .cloned()
+                .collect(),
+        );
+    }
+    std::borrow::Cow::Borrowed(&effect.params)
 }
 
 /// Reserved effect parameter that keeps a hosted plugin processing while its
@@ -4130,6 +4527,15 @@ impl SidechainEffect {
 }
 
 impl AudioEffect for SidechainEffect {
+    fn configure_midi_input_latency(&mut self, samples: u32) {
+        self.inner
+            .configure_midi_input_latency(samples.saturating_add(self.main_delay_frames));
+    }
+
+    fn max_block_frames(&self) -> u32 {
+        self.inner.max_block_frames()
+    }
+
     fn processing_failed(&self) -> bool {
         self.inner.processing_failed()
     }
@@ -4221,9 +4627,9 @@ impl AudioEffect for SidechainEffect {
     }
     fn configure_sidechain_alignment(&mut self, main_latency: u32, sidechain_latency: u32) -> u32 {
         self.main_delay_frames = sidechain_latency.saturating_sub(main_latency);
-        self.main_delay = StereoDelayCompensator::new(self.main_delay_frames);
-        self.key_delay =
-            StereoDelayCompensator::new(main_latency.saturating_sub(sidechain_latency));
+        self.main_delay.set_frames(self.main_delay_frames);
+        self.key_delay
+            .set_frames(main_latency.saturating_sub(sidechain_latency));
         self.main_delay_frames
     }
     fn set_param(&mut self, name: &str, value: f64) {
@@ -4233,6 +4639,8 @@ impl AudioEffect for SidechainEffect {
         self.inner.get_param(name)
     }
     fn reset(&mut self) {
+        self.main_delay.reset();
+        self.key_delay.reset();
         self.inner.reset();
     }
     fn latency_samples(&self) -> u32 {
@@ -4274,6 +4682,10 @@ impl ControlEffect {
 }
 
 impl AudioEffect for ControlEffect {
+    fn configure_midi_input_latency(&mut self, samples: u32) {
+        self.inner.configure_midi_input_latency(samples);
+    }
+
     fn processing_failed(&self) -> bool {
         self.inner.processing_failed()
     }

@@ -4,7 +4,7 @@
  * `api.ts` re-exports this module so the panel keeps its existing imports.
  */
 import { invoke } from "@tauri-apps/api/core";
-import type { AutomationMode, LaneLfo, ProjectSnapshot } from "../types/project";
+import type { AutomationMode, GainAutomation, ParameterTargetStamp, LaneLfo, ProjectSnapshot } from "../types/project";
 
 /** The value a lane drives into one parameter, or why nothing drives it. */
 export type AutomationReadout =
@@ -58,6 +58,7 @@ export const setAutomationPointCurve = (
   curve: string,
   tension: number | null,
   laneIndex: number | null = null,
+  curvature?: number | null,
 ) =>
   invoke<ProjectSnapshot>("set_automation_point_curve", {
     target,
@@ -66,6 +67,7 @@ export const setAutomationPointCurve = (
     pointIndex,
     curve,
     tension,
+    ...(curvature !== undefined ? { curvature } : {}),
   });
 
 /** Changes only the lane's mode; the cycle controls are kept as they were. */
@@ -245,3 +247,7 @@ export const removeAutomationLane = (
     laneParam,
     laneIndex,
   });
+
+/** Expected-current comparison keeps a draft from replacing a newer envelope. */
+export const replaceGainAutomation = (target: string, index: number, expected: GainAutomation, replacement: GainAutomation, expectedStamp: ParameterTargetStamp, expectedRevision: number) =>
+  invoke<ProjectSnapshot>("replace_gain_automation", { request: {target, index, expected, replacement, expected_stamp: expectedStamp, expected_revision: expectedRevision} });

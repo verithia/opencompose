@@ -1041,3 +1041,25 @@ describe("one pick at a time", () => {
     expect(commandCount("remove_automation_point"), "the stale point keeps its value").toBe(0);
   });
 });
+
+describe("high-resolution lane placement", () => {
+  it("renders the actual timeline with track, bus and master ticks across7/8 to3/4", async () => {
+    const tickLane = lane({ppq:96000,time_range:{start:{bar:2,beat:7,subdivision:47999},end:{bar:3,beat:1,subdivision:48001}},points:[
+      {position:{bar:2,beat:7,subdivision:47999},value:{Number:0}},
+      {position:{bar:3,beat:1,subdivision:48001},value:{Number:1}},
+    ]});
+    const track = {...makeTrack("fine ticks",0), phrases:[], automation:[tickLane]};
+    const snap = makeSnapshot({tracks:[track],buses:[{name:"return",routes:["master"],effects:[],automation:[tickLane]}],master:{effects:[],automation:[tickLane],loudness_target:null,volume_db:0}});
+    snap.project.properties.time_signature={numerator:7,denominator:8};
+    snap.project.properties.time_sig_map=[{position:{bar:3,beat:1,subdivision:0},numerator:3,denominator:4}];
+    const view = await mountTimeline(snap);
+    openAutomation(view.container);
+    const points = view.container.querySelectorAll<HTMLElement>(".automation-point");
+    expect(points.length).toBe(6);
+    const expected=[(7-1/96000)*24,(7+48001/96000)*24];
+    for (let index=0;index<points.length;index++) {
+      expect(parseFloat(points[index].style.left)).toBeCloseTo(expected[index%2],8);
+    }
+    expect(view.container.querySelectorAll(".automation-span").length).toBe(3);
+  });
+});

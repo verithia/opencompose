@@ -11,8 +11,10 @@ mod stream_owner;
 pub mod wav;
 
 pub use oc_audio_types::{
-    AudioEffect, AudioProcessContext, AudioProcessInput, BlockPreparationError, PluginTransport,
-    ProcessingFailureReport, TransportBlockError, TransportRangeError,
+    AudioEffect, AudioProcessContext, AudioProcessInput, BlockPreparationError, ChannelSymmetry,
+    ChannelSymmetryContext, MidiInputError, MidiInputEvent, MidiInputMessage, PluginTransport,
+    PreparedParameterError, PreparedParameterHandle, PreparedParameterOutcome,
+    PreparedParameterOwner, ProcessingFailureReport, TransportBlockError, TransportRangeError,
 };
 
 use serde::{Deserialize, Serialize};

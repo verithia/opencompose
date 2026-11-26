@@ -71,7 +71,7 @@ impl std::error::Error for TouchError {}
 #[serde(transparent)]
 pub struct TouchToken(String);
 impl TouchToken {
-    fn matches(&self, owner: Option<u64>) -> bool {
+    pub(crate) fn matches(&self, owner: Option<u64>) -> bool {
         !self.0.starts_with('0')
             && self.0.bytes().all(|byte| byte.is_ascii_digit())
             && self
@@ -81,6 +81,11 @@ impl TouchToken {
                 .zip(owner)
                 .is_some_and(|(token, owner)| token == owner)
     }
+}
+
+pub(crate) fn new_owned_token() -> Result<(u64, TouchToken), TouchError> {
+    let identity = next_touch_identity(&NEXT_TOUCH_IDENTITY)?;
+    Ok((identity, TouchToken(identity.to_string())))
 }
 
 /// What the registry holds for one parameter right now.
@@ -127,7 +132,7 @@ impl TouchRegistry {
         if !hand.is_finite() {
             return Err(TouchError::NonfiniteValue);
         }
-        let identity = next_touch_identity(&NEXT_TOUCH_IDENTITY)?;
+        let (identity, token) = new_owned_token()?;
         let mut slots = self.lock();
         slots.insert(
             key.to_owned(),
@@ -138,7 +143,7 @@ impl TouchRegistry {
                 serial: self.next_serial(),
             },
         );
-        Ok(TouchToken(identity.to_string()))
+        Ok(token)
     }
 
     /// Update a held touch when the token owns it.

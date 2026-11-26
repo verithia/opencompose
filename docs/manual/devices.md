@@ -57,7 +57,7 @@ controls, and check the target's catalog.
 | Gain | `gain` | Fixed linear gain (`factor`). | You need a level trim and nothing else. |
 | Parametric EQ | `eq` | Three-band EQ: low shelf, mid bell, high shelf. | You want quick tone shaping with a fixed layout. |
 | Passive EQ | `passive_eq` | Coupled bell and shelf low and high bands, with tilt and air shelves. | You want a program EQ with coupled controls. |
-| Dynamic EQ | `dynamic_eq` | Six bands plus low and high cuts, each band optionally dynamic. | A frequency range only needs changing when it gets loud. |
+| Dynamic EQ | `dynamic_eq` | Twelve bands plus low and high cuts, each band optionally dynamic. | A frequency range only needs changing when it gets loud. |
 | Compression | `compression` | General compressor with a sidechain input and a filtered detector. | You control dynamics, glue a bus or duck against a kick. |
 | Multiband Compander | `multiband` | Two to four bands with per-band compression and crossover control. | A single compressor would pump or dull one band. |
 | De-esser | `de_esser` | Band-split or wide-band sibilance control. | Vocals or cymbals have harsh `s` and `sh` sounds. |
@@ -75,7 +75,9 @@ controls, and check the target's catalog.
 | Chorus | `chorus` | Modulated doubling. | You add width and motion to pads, guitars or vocals. |
 | Flanger | `flanger` | Short modulated delay with feedback. | You want sweeping jet tones. |
 | Phaser | `phaser` | Modulated allpass notches. | You want gentler motion than a flanger gives. |
+| Vocoder | `vocoder` | Stereo filter bank driven by the envelopes of its input or a sidechain. | You shape a synth with speech, percussion or its own spectrum. |
 | Stereo Width | `stereo_width` | Mid/side width; 100 % leaves the signal unchanged. | You widen a stereo source or fold it to mono. |
+| Stereo Matrix | `stereo_matrix` | Four signed channel gains and up to 500 ms of offset between channels. | You cross-mix, invert, swap or offset the two channels. |
 | Doubler | `doubler` | Short detuned delay voices with a focus high-pass. | You thicken a vocal or guitar and keep the low end mono. |
 | Air Exciter | `exciter` | Synthesised air band from existing upper-mid content. | You add openness without an EQ shelf. |
 | Ducked Send | `ducked_send` | Reverb return reduced by the dry signal. | You want a space that stays clear of the lyric. |
@@ -85,6 +87,19 @@ controls, and check the target's catalog.
 | Plosive | `plosive` | Low-band burst detector driving a dynamic low shelf. | You remove `p`, `b`, `t` and `k` thumps without thinning the vowel. |
 
 `ocp devices list --json` prints the full parameter list of every device.
+
+Place the vocoder on the carrier track or bus. Assign a sidechain to use
+another track as the modulator. With no sidechain, the input supplies both
+signals. Choose between 12 and 48 bands and use Attack and Release to control
+how closely the envelopes follow the modulator. Mix blends in the dry
+carrier. Output Gain trims the wet signal.
+
+Stereo Matrix feeds each output from both inputs. The two direct gains default
+to 100% and the two cross gains default to 0%. Negative gains invert the
+contribution. A negative `offset` delays the left channel and a positive offset
+delays the right. Use `delay_before_matrix=true` to delay the input before mixing.
+The default delays the selected output. Offsets are rounded to the nearest
+sample frame and do not add latency compensation to the other channel.
 
 ## Dynamics
 
@@ -176,7 +191,7 @@ Passive EQ (`passive_eq`) has these sections:
 - A `tilt` around 1 kHz.
 - An `air` shelf (`air_freq`, `air`).
 
-Dynamic EQ (`dynamic_eq`) has six identical band slots plus dedicated cuts.
+Dynamic EQ (`dynamic_eq`) has twelve identical band slots plus dedicated cuts.
 
 - Each band has `enabled`, `solo`, `channel` (`stereo`, `mid`, `side`, `left`,
   `right`), `type` (`bell`, `low_shelf`, `high_shelf`, `low_cut`, `high_cut`,
@@ -189,7 +204,7 @@ Dynamic EQ (`dynamic_eq`) has six identical band slots plus dedicated cuts.
 - `auto_gain` compensates the level.
 
 In the GUI this device opens as a full curve editor (see
-[The window](gui.md)).
+[The window](gui.md)); **Add band** turns on another slot.
 
 The retired `eq: high_shelf=…`/`low_cut=…`/`notch=…` shorthand expands onto
 this device's static bands and cuts; see
@@ -232,6 +247,12 @@ Design and measurements are in [FDN reverb](../reverb-fdn.md).
 
 Delay has `time_l`, `time_r`, `feedback` and `mix`. Chorus, Flanger and Phaser
 each take `rate`, `depth` and `mix`; Flanger and Phaser add `feedback`.
+
+Flanger can average up to eight modulated voices. `delay` sets the low end of
+the sweep, and `spread` varies each voice's delay, depth and rate.
+`stereo_cross` sends part of the wet signal to the other channel; a negative
+value inverts that part. `dry_gain` and `wet_gain` are signed trims on the two
+branches, applied after `mix` sets their levels.
 
 Stereo Width takes `amount` as a percentage from 0 to 200 %. At `100 %` the
 signal is unchanged, `0` is mono, and `200 %` doubles the side signal. The

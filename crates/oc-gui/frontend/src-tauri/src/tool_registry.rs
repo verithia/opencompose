@@ -585,6 +585,9 @@ pub fn catalog() -> Vec<ToolSpec> {
         arguments::tool::<crate::agent_tools::effects::EffectsSetBypassArgs>(
             "Bypass or enable an existing effect without changing its parameters or removing the insert. The index is zero-based within the target's effects chain.",
         ),
+        arguments::tool::<crate::commands::CurveImportRequest>(
+            "Import a transfer-shaper curve JSON file by path as one atomic undoable edit. Read current revision first. The validated curve is retained inline in project/session snapshots; result includes hash/count/domain, not sample data. Do not put large sample arrays in tool arguments.",
+        ),
         arguments::tool::<crate::agent_tools::effects::EffectsSetParamArgs>(
             "Set an effect parameter.",
         ),
@@ -742,7 +745,7 @@ mod tests {
     #[test]
     fn mcp_surface_is_pinned() {
         let tools = mcp_tools();
-        assert_eq!(tools.len(), 127);
+        assert_eq!(tools.len(), 128);
         assert_eq!(tools[0]["name"], "system_capabilities");
         for tool in &tools {
             let mut keys: Vec<_> = tool.as_object().unwrap().keys().cloned().collect();
@@ -1675,12 +1678,12 @@ mod tests {
             }
         }
         assert_eq!(enabled, panel_daw_names().len());
-        assert_eq!(enabled + excluded, 127);
-        assert_eq!(enabled, 99);
+        assert_eq!(enabled + excluded, 128);
+        assert_eq!(enabled, 100);
         assert_eq!(excluded, 28);
         let unique: std::collections::HashSet<_> = panel_daw_names().into_iter().collect();
-        assert_eq!(unique.len(), 99);
-        assert_eq!(panel_tools_for(None).len(), 102);
+        assert_eq!(unique.len(), 100);
+        assert_eq!(panel_tools_for(None).len(), 103);
     }
 
     /// The panel loop groups a turn by opening one transaction around its

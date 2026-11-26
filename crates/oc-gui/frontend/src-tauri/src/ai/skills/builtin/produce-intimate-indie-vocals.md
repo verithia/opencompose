@@ -3,8 +3,8 @@ id: produce-intimate-indie-vocals
 title: Produce an intimate indie vocal arrangement
 when: Shaping an indie or singer-songwriter recording around a close vocal and acoustic backing without losing its performance character.
 category: production
-version: 1
-tools: [tracks_list, project_extract, edit_subtree, project_validate, devices_catalog, tracks_mix, audition_range]
+version: 2
+tools: [tracks_list, project_extract, edit_subtree, project_validate, devices_catalog, tracks_mix, render_range, audio_compare, audition_range]
 ---
 Choose the take that tells the story across a whole line. Keep a dry copy and
 check the quietest phrase with its accompaniment. Write down which breaths,
@@ -29,7 +29,13 @@ Make a small change and compare it with simply changing the arrangement.
 For uneven phrases, try clip gain before heavy compression. Leave useful
 breath and room tone between phrases. Add space on a separate return so the
 dry performance can be compared and adjusted independently.
+For a programmed voice, check its available phrase expression and source envelope: identical note velocities can carry different held-vowel contours.
+Keep note timing fixed while comparing a declining sustain, a flatter sustain and the transition into the next syllable.
+For recorded audio, use a local gain envelope to shape the same role without replacing the performance.
+Keep a clip gain envelope's end anchor for the intended release; check track automation's exclusive end separately.
+Hear source processing, track inserts and the shared return separately before adding more space or compression.
 
-Audition the quiet verse, the chorus entrance and a phrase ending at
-similar monitoring levels. Check that the words stay clear and the section
-contrast remains audible when the extra harmony or reverb is muted.
+Render the quiet verse, chorus entrance and phrase ending before and after the selected change.
+Use audio_compare with listen: true and listening_only: true on corresponding short passages, then audition each full phrase.
+If a word still disappears, first reduce a competing attack or ride that word; check that useful breaths and endings survive.
+Keep the version whose lead stays clear and whose section contrast remains when extra harmony or reverb is muted.

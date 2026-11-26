@@ -1,7 +1,21 @@
-import type { I18nKey } from "../i18n";
+import type {
+ I18nKey } from "../i18n";
 
 /** Japanese interface copy for the editor, settings and export workflows. */
 export const jaCompletionCore = {
+  "device.description.transferShaper": "元のサンプルレートで伝達曲線を編集します。",
+  "curve.title": "伝達曲線 · 1×",
+  "curve.import": "曲線を読み込む",
+  "curve.export": "曲線を書き出す",
+  "curve.reset": "曲線をリセット",
+  "curve.samples": "サンプル数",
+  "curve.point": "曲線の点",
+  "curve.value": "出力レベル",
+  "curve.invalid": "曲線が無効か大きすぎます。",
+  "curve.domain": "曲線の範囲",
+  "curve.odd": "ミラー",
+  "curve.bipolar": "バイポーラ",
+
   "ai.turn.changed": "このターンの変更: {changes}",
   "ai.binding.bound": "会話を {name} に紐付けました",
   "ai.binding.moved": "プロジェクトを {name} に移動しました",
@@ -710,6 +724,7 @@ export const jaCompletionCore = {
   "device.peq.solo": "バンドをソロ",
   "device.peq.channel": "バンドのチャンネル",
   "device.peq.type": "バンドの種類",
+  "device.peq.slope": "カットの傾き",
   "device.peq.enable": "バンドを有効にする",
   "device.peq.bypass": "バイパス",
   "device.peq.view": "表示するチャンネル",
@@ -722,6 +737,11 @@ export const jaCompletionCore = {
   "device.peq.sidechainOff": "オフ（自身の信号）",
   "device.peq.sidechainActive": "サイドチェイン：{source}",
   "device.peq.autoGain": "オートゲイン",
+  "device.peq.oversample": "2倍オーバーサンプリング",
+  "device.peq.oversampleOff": "オーバーサンプリングなし",
+  "device.peq.oversamplePolyphase": "2倍ポリフェーズ",
+  "device.peq.oversampleFir": "2倍FIR",
+  "device.peq.outputGain": "出力ゲイン",
   "device.peq.bandSidechain": "外部キー入力",
   "device.peq.gr": "ゲインリダクション",
   "device.meter.gainReduction": "ゲインリダクション",
@@ -750,7 +770,9 @@ export const jaCompletionCore = {
   "device.desc.distortion": "ハードクリッピングで歪みを加えます。",
   "device.desc.flanger": "コムフィルターを動かしてジェット音のようなうねりを作ります。",
   "device.desc.phaser": "ノッチ周波数を動かして渦を巻くような響きを作ります。",
+  "device.desc.allpass": "振幅特性を保ち、位相と群遅延を調整します。先読みやホストの位置補正は行いません。",
   "device.desc.stereo_width": "ミッド／サイドでステレオの広がりを調整します。",
+  "device.desc.stereo_matrix": "左右チャンネルを個別にミックスし、極性反転と遅延を設定します。",
   "menu.clip.loop": "繰り返して埋める",
   "menu.clip.loopHint": "クリップの長さに合わせて内容を繰り返します。",
   "menu.clip.loopHintPattern": "クリップの長さに合わせてパターンを繰り返します。",

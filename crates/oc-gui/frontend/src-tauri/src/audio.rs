@@ -109,6 +109,7 @@ pub enum PlaybackState {
 
 pub struct AudioState {
     pub soundfont_path: Option<PathBuf>,
+    automatic_preload: bool,
     /// Resolved rate of the current output device; every render thread uses it.
     pub sample_rate: u32,
     /// Owner of the device list, the chosen device and the negotiated format.
@@ -206,6 +207,8 @@ pub struct AudioState {
     spectrum_request: Option<String>,
     /// Shared producer slot: GUI and MIDI threads push, the audio callback pops.
     live_route: crate::live_synth::Route,
+    pub(crate) midi_cc: Arc<oc_engine::control_link::MidiControlInput>,
+    pub(crate) preset_macros: Arc<oc_engine::graph::PresetMacroInput>,
     /// Session loop region in beats. Playback only: it never joins the project
     /// and no render or export path reads it. The beats are the session state;
     /// the frames below are a cache of the current clock and device rate.
@@ -447,6 +450,7 @@ impl AudioState {
         let click = audio_io.click_settings();
         Self {
             soundfont_path: find_default_soundfont(),
+            automatic_preload: true,
             sample_rate,
             audio_io,
             main_stream,
@@ -501,6 +505,8 @@ impl AudioState {
             mpe_config: None,
             spectrum_request: None,
             live_route: Arc::new(Mutex::new(None)),
+            midi_cc: Arc::default(),
+            preset_macros: Arc::default(),
             loop_region: None,
             loop_frames: None,
             loop_enabled: false,
@@ -720,6 +726,15 @@ impl AudioState {
             io.ensure_loaded();
             Self::build(io)
         }
+    }
+
+    /// Set the startup policy before this state can open a playback device.
+    pub(crate) fn set_automatic_preload(&mut self, enabled: bool) {
+        self.automatic_preload = enabled;
+    }
+
+    pub(crate) fn automatic_preload_allowed(&self) -> bool {
+        self.automatic_preload
     }
 
     /// Build with an explicit device backend; tests use this to drive opens,
@@ -1573,7 +1588,11 @@ impl AudioState {
 
         // Ensure render thread is spawned
         if self.render_thread.is_none() {
-            self.render_thread = Some(RenderThreadHandle::spawn(self.sample_rate));
+            self.render_thread = Some(RenderThreadHandle::spawn_with_controls(
+                self.sample_rate,
+                Some(Arc::clone(&self.midi_cc)),
+                Some(Arc::clone(&self.preset_macros)),
+            ));
             // The seam is in beats: derive it on this clock at the current rate,
             // which a device change may have replaced since it was last pushed.
             self.retime_loop_on(&prepared.properties);
@@ -1932,6 +1951,7 @@ impl AudioState {
     }
 
     pub(crate) fn retire_owned_effect_touches(&self) {
+        self.preset_macros.clear();
         if let Some(handle) = &self.render_thread {
             handle.touch().release_all_owned();
         }
@@ -2602,6 +2622,19 @@ impl AudioState {
     /// lookahead so the next play only has to start the consumer.
     /// Call this after loading a project or a structural edit.
     pub fn preload_project(&mut self, project: &Project) {
+        self.preload_project_with_macro(project, None);
+    }
+
+    pub(crate) fn preload_project_with_macro(
+        &mut self,
+        project: &Project,
+        rack_macro: Option<crate::render_thread::RackMacroEdit>,
+    ) {
+        // Headless edits and file operations do not request hardware output.
+        // Explicit transport commands prepare their own playback on demand.
+        if !self.automatic_preload_allowed() {
+            return;
+        }
         self.track_preview = None;
         self.sync_sample_rate();
         // Every load and every structural edit passes through here, so this is
@@ -2633,7 +2666,11 @@ impl AudioState {
 
         // Ensure render thread is spawned
         if self.render_thread.is_none() {
-            self.render_thread = Some(RenderThreadHandle::spawn(self.sample_rate));
+            self.render_thread = Some(RenderThreadHandle::spawn_with_controls(
+                self.sample_rate,
+                Some(Arc::clone(&self.midi_cc)),
+                Some(Arc::clone(&self.preset_macros)),
+            ));
             self.retime_loop_on(&project.properties);
             self.apply_mono_check();
             self.replay_spectrum_request();
@@ -2672,17 +2709,27 @@ impl AudioState {
         // Send project to render thread (it will load in background)
         #[cfg(test)]
         let phase = std::time::Instant::now();
-        self.render_thread
-            .as_ref()
-            .unwrap()
-            .send(RenderCommand::ProjectChanged {
-                // The load may be the first one after opening a file, so the
-                // directory travels with it instead of coming from the panel.
+        // The load may be the first one after opening a file, so the directory
+        // travels with it instead of coming from the panel.
+        let command = if let Some(edit) =
+            rack_macro.filter(|_| self.playback_state == PlaybackState::Playing)
+        {
+            RenderCommand::SavedRackMacro {
                 root: self.resource_root.clone(),
                 project: Box::new(playback),
                 soundfont_path,
                 warm,
-            });
+                edit,
+            }
+        } else {
+            RenderCommand::ProjectChanged {
+                root: self.resource_root.clone(),
+                project: Box::new(playback),
+                soundfont_path,
+                warm,
+            }
+        };
+        self.render_thread.as_ref().unwrap().send(command);
         #[cfg(test)]
         crate::profile_phase("preload_dispatch", phase);
         self.render_dirty = false;

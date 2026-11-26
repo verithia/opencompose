@@ -338,6 +338,7 @@ fn build_lane(clock: &ProjectClock, law: &Law) -> Result<GainAutomation, String>
             value: ParamValue::Number(factor(law.gains_db[index])),
             curve: Curve::Linear,
             tension: None,
+            curvature: None,
         });
     }
     if !points.windows(2).all(|pair| {
@@ -357,6 +358,9 @@ fn build_lane(clock: &ProjectClock, law: &Law) -> Result<GainAutomation, String>
         return Err("the baked range is shorter than one notated tick".into());
     }
     Ok(GainAutomation {
+        playlist_lane: None,
+        value_mapping: None,
+        preserve_discontinuities: false,
         time_range: TimeRange { start, end },
         interpolation: GainInterpolation::Linear,
         ppq: BAKE_PPQ,

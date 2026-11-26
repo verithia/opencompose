@@ -6,7 +6,7 @@
 //! steps, not ramps. Construction rejects ambiguous maps rather than repairing
 //! or silently sorting authored state.
 
-use crate::ast::{BarBeat, ProjectProperties, TimeSignature};
+use crate::ast::{AudioClipStartQuantization, BarBeat, ProjectProperties, TimeSignature};
 
 #[derive(Debug, Clone)]
 struct MeterSegment {
@@ -40,9 +40,30 @@ pub struct ClockPosition {
     pub bar_number: u32,
 }
 
+/// A linear run of the sample clock between two tempo changes.
+#[derive(Debug, Clone, Copy)]
+pub struct SampleTempo {
+    origin: u64,
+    quarter: f64,
+    bpm: f64,
+    rate: u32,
+}
+
+impl SampleTempo {
+    /// Compute phase from the fixed tempo origin, independent of block size.
+    pub fn quarter_at(self, sample: u64) -> f64 {
+        self.quarter
+            + sample.saturating_sub(self.origin) as f64 / f64::from(self.rate) * self.bpm / 60.0
+    }
+}
+
 fn valid_meter(signature: TimeSignature) -> bool {
     (1..=32).contains(&signature.numerator)
         && matches!(signature.denominator, 1 | 2 | 4 | 8 | 16 | 32 | 64)
+}
+
+fn valid_ppq(ppq: u32) -> bool {
+    (1..=96_000).contains(&ppq)
 }
 
 fn valid_tempo(bpm: f64) -> bool {
@@ -58,8 +79,8 @@ fn nonnegative(value: f64, name: &str) -> Result<(), String> {
 }
 
 impl ProjectClock {
-    /// Convert an absolute sample index to its clock position.
-    pub fn position_at_sample(&self, sample: u64, rate: u32) -> Result<ClockPosition, String> {
+    /// Get the sample-anchored tempo valid at a render position.
+    pub fn sample_tempo_at(&self, sample: u64, rate: u32) -> Result<SampleTempo, String> {
         if rate == 0 {
             return Err("sample rate must be positive".into());
         }
@@ -69,8 +90,18 @@ impl ProjectClock {
             - 1;
         let tempo = &self.tempos[index];
         // Anchor each change to its floored frame, as sample_at_quarter does.
-        let origin = (tempo.seconds * f64::from(rate)) as u64;
-        let quarter = tempo.quarter + (sample - origin) as f64 / f64::from(rate) * tempo.bpm / 60.0;
+        Ok(SampleTempo {
+            origin: (tempo.seconds * f64::from(rate)) as u64,
+            quarter: tempo.quarter,
+            bpm: tempo.bpm,
+            rate,
+        })
+    }
+
+    /// Convert an absolute sample index to its clock position.
+    pub fn position_at_sample(&self, sample: u64, rate: u32) -> Result<ClockPosition, String> {
+        let tempo = self.sample_tempo_at(sample, rate)?;
+        let quarter = tempo.quarter_at(sample);
         let meter_index = self.meters.partition_point(|segment| {
             self.sample_at_quarter(segment.quarter, rate)
                 .is_ok_and(|frame| frame <= sample)
@@ -248,8 +279,7 @@ impl ProjectClock {
     /// ordinary BarBeat subdivision which divides a notated beat into four.
     pub fn quarter_notes_at_ppq(&self, position: &BarBeat, ppq: u32) -> Result<f64, String> {
         let meter = self.meter_at_bar(position.bar)?;
-        if ppq == 0
-            || ppq > 96000
+        if !valid_ppq(ppq)
             || u64::from(position.subdivision) * u64::from(meter.denominator) >= u64::from(ppq) * 4
         {
             return Err("PPQ subdivision must lie inside its notated beat".into());
@@ -276,6 +306,48 @@ impl ProjectClock {
             (ticks % per_bar / 4) as u32 + 1,
             (ticks % 4) as u32,
         ))
+    }
+
+    /// Inverse of quarter-note PPQ positions without rounding to the notated grid.
+    /// Beat starts remain representable even when PPQ does not divide the meter.
+    pub fn bar_beat_at_quarter_ppq(&self, quarter: f64, ppq: u32) -> Result<BarBeat, String> {
+        nonnegative(quarter, "quarter-note position")?;
+        if !valid_ppq(ppq) {
+            return Err("PPQ subdivision must lie inside its notated beat".into());
+        }
+        let index = self.meters.partition_point(|m| m.quarter <= quarter) - 1;
+        let meter = &self.meters[index];
+        let beat_quarters = 4.0 / f64::from(meter.signature.denominator);
+        let relative = quarter - meter.quarter;
+        let beats = (relative / beat_quarters).floor();
+        if beats >= u64::MAX as f64 {
+            return Err("bar overflow".into());
+        }
+        let mut beats = beats as u64;
+        let ticks = (relative - beats as f64 * beat_quarters) * f64::from(ppq);
+        if (ticks - ticks.round()).abs() > 1e-7 {
+            return Err("position is not representable on the lane PPQ grid".into());
+        }
+        let mut ticks = ticks.round() as u64;
+        let tick_units = ticks * u64::from(meter.signature.denominator);
+        let beat_units = u64::from(ppq) * 4;
+        if tick_units == beat_units {
+            beats = beats.checked_add(1).ok_or("bar overflow")?;
+            ticks = 0;
+        } else if tick_units > beat_units {
+            return Err("position is not representable on the lane PPQ grid".into());
+        }
+        let per_bar = u64::from(meter.signature.numerator);
+        let bar = u64::from(meter.bar)
+            .checked_add(beats / per_bar)
+            .ok_or("bar overflow")?;
+        let position = BarBeat::new(
+            u32::try_from(bar).map_err(|_| "bar overflow")?,
+            (beats % per_bar) as u32 + 1,
+            u32::try_from(ticks).map_err(|_| "PPQ subdivision overflow")?,
+        );
+        self.quarter_notes_at_ppq(&position, ppq)?;
+        Ok(position)
     }
 
     /// Lower notated-grid anchor, for lossless anchor-plus-residual positions.
@@ -347,8 +419,8 @@ impl ProjectClock {
     }
 
     /// Quantize actual endpoints once. Unchanged endpoints retain the legacy
-    /// musical clock's floor; explicitly offset endpoints round the combined
-    /// anchor plus offset to the nearest sample, never two separate terms.
+    /// musical clock's floor unless nearest start quantization is requested.
+    /// Explicitly offset endpoints round the combined anchor and offset once.
     pub fn audio_clip_range_frames(
         &self,
         clip: &crate::ast::AudioClip,
@@ -358,20 +430,22 @@ impl ProjectClock {
         if sample_rate == 0 {
             return Err("sample rate must be positive".into());
         }
-        let boundary = |seconds: f64, offset: f64| -> Result<u64, String> {
+        let boundary = |seconds: f64, nearest: bool| -> Result<u64, String> {
             let sample = seconds * f64::from(sample_rate);
-            let quantized = if offset == 0.0 {
-                sample.floor()
-            } else {
+            let quantized = if nearest {
                 sample.round()
+            } else {
+                sample.floor()
             };
             if !quantized.is_finite() || quantized >= u64::MAX as f64 {
                 return Err("sample position overflow".into());
             }
             Ok(quantized as u64)
         };
-        let start = boundary(start, clip.placement.start_offset_seconds)?;
-        let end = boundary(end, clip.placement.end_offset_seconds)?;
+        let nearest_start = clip.placement.start_offset_seconds != 0.0
+            || clip.placement.start_quantization == AudioClipStartQuantization::Nearest;
+        let start = boundary(start, nearest_start)?;
+        let end = boundary(end, clip.placement.end_offset_seconds != 0.0)?;
         if end <= start {
             return Err("audio clip placement is shorter than one sample".into());
         }
@@ -616,6 +690,7 @@ mod audio_clip_placement_tests {
         project.audio_clip_mut(0).unwrap().placement = crate::ast::AudioClipPlacement {
             start_offset_seconds: -1.0 / 44100.0,
             end_offset_seconds: 1.0 / 48000.0,
+            ..Default::default()
         };
         let source = crate::serialize(&project);
         let decoded = crate::parse(&source).unwrap();
@@ -657,6 +732,39 @@ mod audio_clip_placement_tests {
     }
 
     #[test]
+    fn audio_clip_start_quantization_preserves_anchors_and_roundtrips() {
+        let plain = project();
+        let clock = ProjectClock::new(&plain.properties).unwrap();
+        let original = plain.audio_clip(0).unwrap();
+        let source = crate::serialize(&plain).replace(
+            "  file: \"voice.wav\"",
+            "  file: \"voice.wav\"\n  placement_start_quantization: nearest",
+        );
+        let rounded = crate::parse(&source).unwrap();
+        let clip = rounded.audio_clip(0).unwrap();
+        assert_eq!(clip.time_range, original.time_range);
+        assert_eq!(
+            clock.audio_clip_range_seconds(clip).unwrap(),
+            clock.audio_clip_range_seconds(original).unwrap()
+        );
+        for rate in [44_100, 48_000] {
+            let (start, end) = clock.audio_clip_range_frames(original, rate).unwrap();
+            assert_eq!(
+                clock.audio_clip_range_frames(clip, rate).unwrap(),
+                (start + 1, end)
+            );
+        }
+        let serialized = crate::serialize(&rounded);
+        assert!(serialized.contains("placement_start_quantization: nearest"));
+        assert_eq!(crate::parse(&serialized).unwrap().audio_clip(0), Some(clip));
+        let json = serde_json::to_value(clip).unwrap();
+        assert_eq!(json["placement"]["start_quantization"], "nearest");
+        let restored: crate::ast::AudioClip = serde_json::from_value(json).unwrap();
+        assert_eq!(&restored, clip);
+        assert!(crate::parse(&source.replace("nearest", "unknown")).is_err());
+    }
+
+    #[test]
     fn audio_clip_placement_supports_subgrid_ranges_and_content_extent() {
         let mut project = project();
         let clip = project.audio_clip_mut(0).unwrap();
@@ -684,6 +792,7 @@ mod audio_clip_placement_tests {
             project.audio_clip_mut(0).unwrap().placement = crate::ast::AudioClipPlacement {
                 start_offset_seconds: start,
                 end_offset_seconds: end,
+                ..Default::default()
             };
             let clock = ProjectClock::new(&project.properties).unwrap();
             assert!(
@@ -693,5 +802,72 @@ mod audio_clip_placement_tests {
             );
             assert!(crate::validate(&project).is_err());
         }
+    }
+}
+
+#[cfg(test)]
+mod ppq_edit_tests {
+    use super::*;
+
+    #[test]
+    fn inverse_ppq_retains_ticks_across_denominator_and_meter_boundaries() {
+        let project =
+            crate::parse("@project\n  time_signature: 7/8\n  time_sig_map:\n    3:1 = 3/4\n")
+                .unwrap();
+        let clock = ProjectClock::new(&project.properties).unwrap();
+        for position in [
+            BarBeat::new(1, 1, 0),
+            BarBeat::new(2, 7, 47_999),
+            BarBeat::new(3, 1, 0),
+            BarBeat::new(3, 1, 48_001),
+            BarBeat::new(4, 3, 95_999),
+        ] {
+            let quarter = clock.quarter_notes_at_ppq(&position, 96_000).unwrap();
+            assert_eq!(
+                clock.bar_beat_at_quarter_ppq(quarter, 96_000).unwrap(),
+                position
+            );
+        }
+        // PPQ counts quarter ticks, even when one notated beat has half a tick.
+        assert_eq!(
+            clock.bar_beat_at_quarter_ppq(0.5, 1).unwrap(),
+            BarBeat::new(1, 2, 0)
+        );
+        for position in [BarBeat::new(1, 1, 1), BarBeat::new(2, 7, 1)] {
+            let quarter = clock.quarter_notes_at_ppq(&position, 3).unwrap();
+            assert_eq!(clock.bar_beat_at_quarter_ppq(quarter, 3).unwrap(), position);
+        }
+        assert!(
+            clock
+                .quarter_notes_at_ppq(&BarBeat::new(2, 7, 48_000), 96_000)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn inverse_ppq_rejects_loss_overflow_and_invalid_domains_without_fallback() {
+        let project = crate::parse("@project\n  time_signature: 7/8\n").unwrap();
+        let clock = ProjectClock::new(&project.properties).unwrap();
+        for ppq in [0, 96_001, u32::MAX] {
+            assert!(clock.bar_beat_at_quarter_ppq(0.0, ppq).is_err());
+        }
+        for quarter in [-1.0, f64::NAN, f64::INFINITY, f64::MAX] {
+            assert!(clock.bar_beat_at_quarter_ppq(quarter, 96_000).is_err());
+        }
+        assert!(
+            clock
+                .bar_beat_at_quarter_ppq(1.0 / (96_000.0 * 3.0), 96_000)
+                .is_err()
+        );
+        assert!(
+            clock
+                .bar_beat_at_quarter_ppq(f64::from(u32::MAX) * 3.5, 96_000)
+                .is_err()
+        );
+        assert!(clock.bar_beat_at_quarter(0.0625).is_err());
+        assert_eq!(
+            clock.bar_beat_at_quarter_ppq(0.0625, 96_000).unwrap(),
+            BarBeat::new(1, 1, 6_000)
+        );
     }
 }

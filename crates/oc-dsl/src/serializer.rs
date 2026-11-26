@@ -177,6 +177,13 @@ pub fn serialize(project: &Project) -> String {
         }
     }
 
+    if !project.properties.playlist_rows.is_empty() {
+        out.push_str("  playlist_rows:\n");
+        for (row, name) in &project.properties.playlist_rows {
+            out.push_str(&format!("    {row} = \"{}\"\n", escape_quotes(name)));
+        }
+    }
+
     // Key map
     if !project.properties.key_map.is_empty() {
         out.push_str("  key_map:\n");
@@ -292,13 +299,20 @@ fn serialize_audio_clip(clip: &AudioClip, out: &mut String) {
         format_name(&clip.track)
     ));
     out.push_str(&format!("  file: \"{}\"\n", clip.file));
+    if let Some(lane) = clip.playlist_lane {
+        out.push_str(&format!("  playlist_lane: {lane}\n"));
+    }
     for (field, value) in [
         ("placement_start", clip.placement.start_offset_seconds),
         ("placement_end", clip.placement.end_offset_seconds),
+        ("stereo_offset", clip.stereo_offset_seconds),
     ] {
         if value != 0.0 {
             out.push_str(&format!("  {field}: {}s\n", format_number(value)));
         }
+    }
+    if clip.placement.start_quantization == AudioClipStartQuantization::Nearest {
+        out.push_str("  placement_start_quantization: nearest\n");
     }
     if clip.offset_seconds != 0.0 {
         out.push_str(&format!(
@@ -324,6 +338,15 @@ fn serialize_audio_clip(clip: &AudioClip, out: &mut String) {
             format_number(clip.fade_out_seconds)
         ));
     }
+    for (field, curve) in [
+        ("fade_in_curve", clip.fade_curves.fade_in),
+        ("fade_out_curve", clip.fade_curves.fade_out),
+    ] {
+        if let Some(points) = curve {
+            let [x1, y1, x2, y2] = points.map(format_number);
+            out.push_str(&format!("  {field}: bezier({x1}, {y1}, {x2}, {y2})\n"));
+        }
+    }
     if clip.invert {
         out.push_str("  invert: true\n");
     }
@@ -332,6 +355,9 @@ fn serialize_audio_clip(clip: &AudioClip, out: &mut String) {
             "  crossfade: {}s\n",
             format_number(clip.crossfade_seconds)
         ));
+    }
+    if clip.gain_envelope_interpolation == ClipGainInterpolation::LinearAmplitude {
+        out.push_str("  gain_envelope_interpolation: linear_amplitude\n");
     }
     if !clip.gain_envelope.is_empty() {
         out.push_str("  gain_envelope:");
@@ -615,6 +641,7 @@ fn serialize_control_link(link: &ControlLink, out: &mut String) {
             format_param(&target.param),
             target.formula
         ));
+        serialize_automation_mapping(target.value_mapping.as_ref(), out);
         if target.smoothing_ms > 0 {
             out.push_str(&format!(" smoothing: {}ms", target.smoothing_ms));
         }
@@ -635,8 +662,11 @@ fn control_link_source_name(source: &ControlLinkSource) -> String {
             }
         }
         ControlLinkSource::Macro { index } => format!("macro({index})"),
+        ControlLinkSource::PresetMacro { preset, index } => {
+            format!("macro({index}, {})", format_name(preset))
+        }
         ControlLinkSource::Lane { track, param } => {
-            format!("lane({}, {})", format_name(track), format_param(param))
+            format!("lane({}, {})", format_name(track), format_name(param))
         }
     }
 }
@@ -970,6 +1000,14 @@ fn serialize_phrase(phrase: &Phrase, properties: Option<&ProjectProperties>, out
     if let Some(channel) = phrase.channel {
         out.push_str(&format!(" | channel: {channel}"));
     }
+    if let Some(lane) = phrase.playlist_lane {
+        let separator = if phrase.channel.is_some() {
+            ", "
+        } else {
+            " | "
+        };
+        out.push_str(&format!("{separator}playlist_lane: {lane}"));
+    }
     out.push('\n');
 
     serialize_pedal_events(&phrase.pedals, out);
@@ -1232,6 +1270,9 @@ fn serialize_hit_modifiers(hit: &HitEvent, out: &mut String) {
 
 fn serialize_automation(lane: &AutomationLane, out: &mut String) {
     out.push_str(&format!("  automation: {}", lane.param));
+    if let Some(row) = lane.playlist_lane {
+        out.push_str(&format!(" playlist_lane={row}"));
+    }
     if let Some(range) = &lane.time_range {
         out.push_str(&format!(
             " [{} - {}]",
@@ -1244,7 +1285,9 @@ fn serialize_automation(lane: &AutomationLane, out: &mut String) {
     }
     if lane.mode != LaneMode::Envelope {
         out.push_str(&format!(" mode={}", lane.mode.keyword()));
-        serialize_lane_lfo(&lane.lfo, out);
+        if lane.is_lfo() {
+            serialize_lane_lfo(&lane.lfo, out);
+        }
     }
     if lane.smoothing_ms != 0.0 {
         out.push_str(&format!(
@@ -1252,6 +1295,10 @@ fn serialize_automation(lane: &AutomationLane, out: &mut String) {
             format_param_value(&ParamValue::Time(lane.smoothing_ms / 1000.0))
         ));
     }
+    if lane.preserve_discontinuities {
+        out.push_str(" discontinuities");
+    }
+    serialize_automation_mapping(lane.value_mapping.as_ref(), out);
     if lane.ppq != 0 {
         out.push_str(&format!(" [ppq={}]", lane.ppq));
     }
@@ -1260,13 +1307,16 @@ fn serialize_automation(lane: &AutomationLane, out: &mut String) {
         .points
         .iter()
         .map(|p| {
-            let mut text = format!(
-                "{}={}",
-                format_bar_beat(&p.position),
-                format_param_value(&p.value)
-            );
+            let value = match &p.value {
+                ParamValue::Number(value) if lane.is_recorded() => value.to_string(),
+                value => format_param_value(value),
+            };
+            let mut text = format!("{}={value}", format_bar_beat(&p.position));
             if p.curve != Curve::Linear {
                 text.push_str(&format!(" curve={}", p.curve.keyword()));
+            }
+            if let Some(curvature) = p.curvature {
+                text.push_str(&format!(" curvature={}", format_number(curvature)));
             }
             if let Some(tension) = p.tension {
                 text.push_str(&format!(" tension={}", format_number(tension)));
@@ -1328,7 +1378,7 @@ fn serialize_effects(effects: &[Effect], out: &mut String) {
         if !params.is_empty() {
             let param_list: Vec<String> = params
                 .iter()
-                .map(|(k, v)| format!("{}={}", k, format_param_value(v)))
+                .map(|(k, v)| format!("{}={}", k, format_effect_value(v)))
                 .collect();
             out.push_str(&format!(": {}", param_list.join(", ")));
         }
@@ -1349,6 +1399,7 @@ fn serialize_input_routes(routes: &[InputRoute], out: &mut String) {
         let kind = match route.kind {
             RouteKind::Audio => String::new(),
             RouteKind::Control => "control ".to_string(),
+            RouteKind::Midi => "midi ".to_string(),
         };
         out.push_str(&format!(
             "  route: {kind}{source} -> {}\n",
@@ -1386,33 +1437,77 @@ fn serialize_bus(bus: &Bus, out: &mut String) {
     serialize_gain_automation(&bus.gain_automation, out);
 }
 
+fn serialize_automation_mapping(mapping: Option<&AutomationValueMapping>, out: &mut String) {
+    if let Some(mapping) = mapping {
+        out.push_str(match mapping.curve {
+            ValueMappingCurve::Linear => " mapping(linear",
+            ValueMappingCurve::Exponential => " mapping(exponential",
+        });
+        if let Some(curvature) = mapping.curvature {
+            out.push_str(&format!(", curvature={}", format_number(curvature)));
+        }
+        if mapping.scale != 1.0 {
+            out.push_str(&format!(", scale={}", format_number(mapping.scale)));
+        }
+        if mapping.offset != 0.0 {
+            out.push_str(&format!(", offset={}", format_number(mapping.offset)));
+        }
+        if let Some(steps) = mapping.input_quantization_steps {
+            out.push_str(&format!(", input_quantization_steps={steps}"));
+        }
+        out.push(')');
+    }
+}
+
 fn serialize_gain_automation(clips: &[GainAutomation], out: &mut String) {
     for clip in clips {
         let mode = match clip.interpolation {
             GainInterpolation::Step => "step",
             GainInterpolation::Linear => "linear",
+            GainInterpolation::Segments => "segments",
         };
         let points = clip
             .points
             .iter()
             .map(|p| {
-                format!(
+                let mut text = format!(
                     "{}={}",
                     format_bar_beat(&p.position),
                     format_param_value(&p.value)
-                )
+                );
+                if clip.interpolation == GainInterpolation::Segments {
+                    if p.curve != Curve::Linear {
+                        text.push_str(&format!(" curve={}", p.curve.keyword()));
+                    }
+                    if let Some(k) = p.curvature {
+                        text.push_str(&format!(" curvature={}", format_number(k)));
+                    }
+                    if let Some(tension) = p.tension {
+                        text.push_str(&format!(" tension={}", format_number(tension)));
+                    }
+                }
+                text
             })
             .collect::<Vec<_>>();
+        let mut attributes = String::new();
+        if let Some(row) = clip.playlist_lane {
+            attributes.push_str(&format!(" playlist_lane={row}"));
+        }
+        if clip.preserve_discontinuities {
+            attributes.push_str(" discontinuities");
+        }
+        serialize_automation_mapping(clip.value_mapping.as_ref(), &mut attributes);
         out.push_str(&format!(
-            "  gain_automation: {}{} [{} - {}] {{{}}}\n",
+            "  gain_automation: {}{} [{} - {}]{} {{{}}}\n",
             mode,
-            if clip.ppq == 4 {
+            if clip.ppq == oc_device_schema::automation_curves::DEFAULT_GAIN_PPQ {
                 String::new()
             } else {
                 format!(" ppq={}", clip.ppq)
             },
             format_bar_beat(&clip.time_range.start),
             format_bar_beat(&clip.time_range.end),
+            attributes,
             points.join(", ")
         ));
     }
@@ -1597,6 +1692,23 @@ fn format_key(k: &KeySignature) -> String {
     format!("{}{} {}", k.root.as_str(), k.accidental.as_str(), mode)
 }
 
+fn format_effect_value(value: &ParamValue) -> String {
+    if let ParamValue::String(text) = value {
+        let bare = !text.is_empty()
+            && !text
+                .chars()
+                .any(|character| character.is_whitespace() || matches!(character, ',' | '"'))
+            && matches!(
+                crate::parser::parse_effect_value(text),
+                ParamValue::String(_)
+            );
+        if !bare {
+            return serde_json::to_string(text).expect("a string serializes as JSON");
+        }
+    }
+    format_param_value(value)
+}
+
 fn format_param_value(v: &ParamValue) -> String {
     match v {
         ParamValue::Number(n) => format_number(*n),
@@ -1757,6 +1869,20 @@ mod tests {
         assert!(output.contains("  invert: true"), "{output}");
         assert!(output.contains("  crossfade: 0.01s"), "{output}");
         assert_eq!(parser::parse(&output).unwrap(), project);
+
+        assert!(!output.contains("gain_envelope_interpolation"));
+        let linear_source = source.replace(
+            "  crossfade: 10ms",
+            "  crossfade: 10ms\n  gain_envelope_interpolation: linear_amplitude\n  gain_envelope: 0:0dB, 1:-6dB",
+        );
+        let linear = parser::parse(&linear_source).unwrap();
+        assert_eq!(
+            linear.audio_clip(0).unwrap().gain_envelope_interpolation,
+            ClipGainInterpolation::LinearAmplitude
+        );
+        let linear_output = serialize(&linear);
+        assert!(linear_output.contains("gain_envelope_interpolation: linear_amplitude"));
+        assert_eq!(parser::parse(&linear_output).unwrap(), linear);
 
         let plain = parser::parse(
             "@project\n@audio_clip take [1:1 - 2:1] | track: tape\n  file: \"take.wav\"\n@track tape | instrument: audio/clip\n",

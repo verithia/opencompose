@@ -3,21 +3,21 @@ id: prepare-a-stem-handoff
 title: Prepare a stem handoff
 when: A collaborator needs aligned tracks, buses, dry and wet choices, editable MIDI, or a mix reference for import.
 category: workflow
-version: 3
+version: 4
 tools: [tracks_list, project_get, project_extract, render_compat_report, render_range, audio_analyze, audition_range, midi_export_handoff, midi_import_handoff, project_validate]
 ---
-Agree on the stem list, dry versus printed processing, format and sample
-rate before rendering. Preserve the mix state in a separate project copy
-when disabling effects for handoff. Keep a rough mix with processing as a
-reference, labeled so it will not be mistaken for a stem.
+Agree on the stem list, dry versus printed processing, format and rate before rendering.
+Preserve the mix state in a separate project copy when disabling effects for handoff.
+Keep a labeled processed rough mix so it will not be mistaken for a stem.
 
 Choose one origin and end for every file. Preserve pickup notes and leading
 silence. Allow enough room for the longest intentional tail. Label files by
 role and name, and record tempo, meter, and any tempo map or count-in offset.
+For already aligned stems, preserve one common source-to-song time transform.
+Do not independently snap each stem's strongest detected transient; it can change their relative timing.
 
-Use render_range with stems for a bounded QA window. For whole-song delivery,
-use the app's Export Stems command. A range render is before loudness
-normalization. The exported whole-song mix may have a loudness target that
+Use render_range with stems for a bounded QA window; use Export Stems for whole-song delivery.
+A range render is before loudness normalization. The whole-song mix may have a loudness target that
 does not apply to individual stems.
 
 Avoid handing off both a group sum and all of its child tracks as though

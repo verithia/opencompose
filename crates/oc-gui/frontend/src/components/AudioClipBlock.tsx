@@ -123,6 +123,8 @@ export interface AudioClipBlockProps {
   index: number;
   color: string;
   height: number;
+  /** Quarter at the containing playlist item's left edge; the block is placed relative to it. */
+  originQuarter?: number;
   pxPerBeat: number;
   selected: boolean;
   tooltipContent: () => TooltipContent | null;
@@ -202,7 +204,7 @@ export function AudioClipBlock(props: AudioClipBlockProps) {
     };
   });
 
-  const leftPx = () => preview().startQuarter * props.pxPerBeat;
+  const leftPx = () => (preview().startQuarter - (props.originQuarter ?? 0)) * props.pxPerBeat;
   const widthPx = () =>
     Math.max(2, (preview().endQuarter - preview().startQuarter) * props.pxPerBeat);
   const durationSeconds = () => {
@@ -433,8 +435,10 @@ export function AudioClipBlock(props: AudioClipBlockProps) {
       gainDb: gainDb(),
       fadeInSeconds: fadeIn(),
       fadeOutSeconds: fadeOut(),
+      fadeCurves: props.clip.fade_curves,
       crossfadeSeconds: props.clip.crossfade_seconds ?? 0,
       gainEnvelope: props.clip.gain_envelope ?? [],
+      gainEnvelopeInterpolation: props.clip.gain_envelope_interpolation,
       width,
       height,
       color: waveformColor,
@@ -758,7 +762,7 @@ export function AudioClipBlock(props: AudioClipBlockProps) {
       <span class="clip-accent-flag" aria-hidden="true" />
       <canvas ref={canvasRef} class="audio-clip-waveform" aria-hidden="true" />
       <div class="clip-label-chip">
-        <span class="phrase-block-name">{basename(props.clip.file)}</span>
+        <span class="phrase-block-name">{props.clip.name || basename(props.clip.file)}</span>
         <span class="clip-meta">
           {preview().offsetSeconds > 0
             ? i18n.t("clip.slipChip", { value: formatClipSeconds(preview().offsetSeconds) }) + " "

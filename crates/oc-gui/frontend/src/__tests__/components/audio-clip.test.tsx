@@ -209,7 +209,7 @@ describe("audio clip block", () => {
     const { block, container } = await mountClip();
     expect(block).toBeTruthy();
     expect(block.querySelector("canvas.audio-clip-waveform")).toBeTruthy();
-    expect(block.textContent).toContain("hit.wav");
+    expect(block.querySelector(".phrase-block-name")?.textContent).toBe("hit");
     expect(block.textContent).toContain("-3dB");
     await waitFor(() => expect(clipCalls("audio_clip_peaks").length).toBe(1));
     expect(getLastCallArgs("audio_clip_peaks")).toMatchObject({ file: "media/hit.wav" });

@@ -113,6 +113,10 @@ fn a_mark_that_shares_its_onset_is_refused_by_name() {
 #[test]
 fn a_mark_cannot_share_the_note_with_another_pitch_control() {
     for (extra, needle) in [
+        (
+            "pitch_curve_mode=\"step\"",
+            "cannot share the note with pitch_curve_mode=",
+        ),
         ("bend=50ct", "cannot share the note with bend="),
         (
             "vibrato={rate: 5Hz, depth: 20ct}",

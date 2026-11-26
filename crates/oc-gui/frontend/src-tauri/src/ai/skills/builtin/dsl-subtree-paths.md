@@ -32,16 +32,16 @@ Names match exactly; a name with a dot cannot be addressed, since the split on
 - `track:<ref>.automation` takes that track's `automation:` lines only.
 - `project.properties` takes only the `key: value` lines, no header.
 
-A path that fits none of these fails with `Unsupported replace path` or
-`Invalid track child for replace`.
+A single-node replacement holds only that node, and a named selector must match
+it; edit several nodes in a transaction. Any other path fails with
+`Unsupported replace path` or `Invalid track child for replace`.
 
 ## Order of work
 1. `project_extract(path)`: read the exact text you are about to replace, then
    build the replacement in that shape (a level-1 block for a track/preset/bus,
    only the child block for a phrase/mix/effects).
-2. `project_validate(path, dsl)` or `edit_subtree(path, new_dsl)`. The result
-   says `pending_user_confirmation` when a user has to accept it and `applied`
-   when the session has nobody to ask; trust that field.
+2. `project_validate(path, dsl)` or `edit_subtree(path, new_dsl)`. Trust the
+   result: `pending_user_confirmation` awaits a user, `applied` is done.
 3. `project_diff` against the old text when the replacement is large.
 
 Never build a path from a track name you have not seen: call `tracks_list` or

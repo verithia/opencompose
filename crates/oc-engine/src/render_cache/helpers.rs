@@ -592,6 +592,7 @@ fn hash_audio_clip(hash: &mut u64, clip: &oc_dsl::ast::AudioClip, root: Option<&
         hash_u64(hash, u64::from(beat.beat));
         hash_u64(hash, u64::from(beat.subdivision));
     }
+    hash_u64(hash, clip.placement.start_quantization as u64);
     for value in [
         clip.placement.start_offset_seconds,
         clip.placement.end_offset_seconds,
@@ -605,6 +606,22 @@ fn hash_audio_clip(hash: &mut u64, clip: &oc_dsl::ast::AudioClip, root: Option<&
         clip.loop_seconds,
     ] {
         hash_u64(hash, value.to_bits());
+    }
+    for (tag, curve) in [
+        (1, clip.fade_curves.fade_in),
+        (2, clip.fade_curves.fade_out),
+    ] {
+        if let Some(handles) = curve {
+            hash_bytes(hash, b"clip_fade_curve");
+            hash_u64(hash, tag);
+            for handle in handles {
+                hash_u64(hash, handle.to_bits());
+            }
+        }
+    }
+    if clip.stereo_offset_seconds != 0.0 {
+        hash_bytes(hash, b"stereo_offset");
+        hash_u64(hash, clip.stereo_offset_seconds.to_bits());
     }
     hash_u64(hash, clip.stretch_mode as u64);
     hash_u64(hash, u64::from(clip.tempo_follow));
@@ -623,6 +640,9 @@ fn hash_audio_clip(hash: &mut u64, clip: &oc_dsl::ast::AudioClip, root: Option<&
         }
     }
     hash_u64(hash, u64::from(clip.invert));
+    if !clip.gain_envelope_interpolation.is_decibels() {
+        hash_bytes(hash, b"clip-envelope-linear-amplitude");
+    }
     hash_u64(hash, clip.gain_envelope.len() as u64);
     for point in &clip.gain_envelope {
         hash_u64(hash, point.position.to_bits());

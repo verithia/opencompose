@@ -3,7 +3,7 @@ id: build-ambient-textures
 title: Build ambient layers and seamless beds
 when: Make an ambient, drone, or atmospheric texture from a sustained tone, field recording, or granular layer.
 category: production
-version: 1
+version: 2
 tools: [project_extract, devices_catalog, edit_subtree, project_validate, audition_range, audio_analyze, presets_set_params]
 ---
 Decide what stays stable while the texture moves. Hold a quiet pitch
@@ -15,6 +15,10 @@ Try two layers with different jobs: one supplies the core tone and the
 other adds a slow, less predictable surface. On a pad, compare a shorter
 attack with a longer one at the same note onset. The longer version
 should still arrive in time to support the next sound.
+For a held layer, separate amp decay from spectral darkening; full amp sustain does not create a volume fall.
+Verify a nonzero route to the intended destination before changing modulation-envelope times.
+Compare early, middle and late moments: unequal layer envelopes can move the stereo image over time.
+Test a held tone, repeated notes and an overlap separately; envelope reuse and LFO phase restart are different decisions.
 
 For a file-backed granular oscillator, verify the loaded sample and
 supported controls before adjusting grain length, density or scan.

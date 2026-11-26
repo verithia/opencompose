@@ -708,7 +708,13 @@ fn render_to_buffer_per_track_raw(
             .try_into()
             .map_err(|_| "arrangement length exceeds platform size".to_string())?,
     );
-    let mut graph = AudioGraph::try_from_project_with_source_latencies(project, sample_rate, &[])?;
+    let mut graph = AudioGraph::try_from_project_with_resources(
+        project,
+        sample_rate,
+        &[],
+        resource_root,
+        None,
+    )?;
     // Render the master chain's latency as extra frames, then shift it back.
     let master_shift = graph.master_chain.latency_samples() as usize * 2;
     let render_frames = total_frames + master_shift / 2;
@@ -1025,7 +1031,12 @@ pub fn bounce_tail_seconds(
     plugin_instances: &HashMap<String, ClapInstance>,
     resource_root: Option<&Path>,
 ) -> Result<f64, String> {
-    let chain = crate::graph::track_chain_tail_seconds(project, track, sample_rate)?;
+    let chain = crate::graph::track_chain_tail_seconds_with_resources(
+        project,
+        track,
+        sample_rate,
+        resource_root,
+    )?;
     let release = match declared_release_seconds(
         project,
         track,
@@ -3334,6 +3345,7 @@ mod tests {
             .add_audio_clip(oc_dsl::ast::AudioClip {
                 name: "low bounce".to_string(),
                 track: "low (bounced)".to_string(),
+                playlist_lane: None,
                 file: "media/bounce-low-1.wav".to_string(),
                 time_range: oc_dsl::ast::TimeRange {
                     start: oc_dsl::ast::BarBeat::new(2, 1, 0),
@@ -3341,9 +3353,11 @@ mod tests {
                 },
                 placement: Default::default(),
                 offset_seconds: 0.0,
+                stereo_offset_seconds: 0.0,
                 gain_db: 0.0,
                 fade_in_seconds: 0.0,
                 fade_out_seconds: 0.0,
+                fade_curves: Default::default(),
                 invert: false,
                 crossfade_seconds: 0.0,
                 stretch: 1.0,
@@ -3359,6 +3373,7 @@ mod tests {
                 take: None,
                 muted: false,
                 gain_envelope: Vec::new(),
+                gain_envelope_interpolation: Default::default(),
             })
             .expect("the bounced track exists");
         oc_dsl::validate(&substituted).expect("the substituted project validates");

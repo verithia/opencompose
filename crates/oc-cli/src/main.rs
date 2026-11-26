@@ -425,7 +425,7 @@ enum Commands {
         command: PluginIndexCommand,
     },
 
-    /// Search a sample catalogue and pull one sample
+    /// Find samples or prepare editable sampler slices
     Sample {
         #[command(subcommand)]
         command: sample::SampleCommand,
@@ -1105,10 +1105,12 @@ fn run() -> Result<()> {
             print_legacy_effect_warnings(&project);
             let builtin_project = builtin_effect_project(&project)
                 .map_err(|e| anyhow::anyhow!("Preset resolution failed: {e}"))?;
-            oc_engine::graph::AudioGraph::try_from_project_with_source_latencies(
+            oc_engine::graph::AudioGraph::try_from_project_with_resources(
                 &builtin_project,
                 sample_rate,
                 &[],
+                input.parent(),
+                None,
             )
             .map_err(|e| anyhow::anyhow!("Built-in DSP preflight failed: {e}"))?;
             println!(
@@ -1152,7 +1154,8 @@ fn run() -> Result<()> {
                     print_legacy_effect_warnings(&project);
                     // The renderer's own factory: a value it cannot type is
                     // refused here too, not only when the render starts.
-                    let refusals = oc_engine::graph::validate_effect_parameters(&project, 48_000);
+                    let refusals =
+                        oc_engine::graph::validate_effect_parameters(&project, 48_000, Some(root));
                     if !refusals.is_empty() {
                         anyhow::bail!("{}", refusals.join("\n"));
                     }

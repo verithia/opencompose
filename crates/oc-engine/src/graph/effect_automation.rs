@@ -14,13 +14,26 @@
 //! crossfade from the hand to the lane hands it back, and the lane's own
 //! smoothing resumes from the state it stopped at.
 
+use super::linked_automation::LinkedLane;
+use super::live_controls::CcReading;
+use super::macro_preview::MacroReading;
+use crate::control_link::apply_midi_formula;
 use crate::touch::{self, TouchLane, TouchPlan, TouchRegistry};
-use oc_audio::{AudioEffect, AudioProcessContext, AudioProcessInput, PluginTransport};
-use oc_dsl::ast::{AutomationLane, Effect, ParamValue, ProjectProperties};
-use oc_dsl::automation::{LaneCurve, smooth_step};
-use oc_dsl::timing::ProjectClock;
+use oc_audio::{
+    AudioEffect, AudioProcessContext, AudioProcessInput, PluginTransport, PreparedParameterHandle,
+    PreparedParameterOutcome,
+};
+use oc_dsl::ast::{AutomationLane, Effect, LinkFormula, ProjectProperties};
+use oc_dsl::automation::{LaneCurve, PreparedMapping, smooth_step};
+use oc_dsl::timing::{ProjectClock, SampleTempo};
 use oc_dsp::schema::DeviceSchema;
+use oc_dsp::schema::effect_slot::SlotControl;
 use std::sync::Arc;
+
+mod mapped_bounds;
+mod preparation;
+mod slot_mix;
+pub(super) use preparation::AutomationPreparationError;
 
 /// Samples between parameter writes while a release fades back to the lane.
 /// 8 samples at 48 kHz is 0.17 ms, so a 20 ms fade is 120 even steps.
@@ -34,14 +47,45 @@ const FADE_STEP: u64 = 8;
 /// sampled at absolute positions, so the same samples are written either way.
 const MAX_AUTOMATION_BLOCK_FRAMES: usize = 1024;
 
-/// One parameter lane and the per-sample state its evaluation keeps.
-///
-/// The stateless value comes from [`LaneCurve`], which the editor reads back at
-/// a beat; the state here is only the renderer's: the sample cursor, the
-/// one-pole smoother and the touch arbitration.
+#[derive(Clone)]
+pub(super) enum ParamInput {
+    Timeline(Arc<LaneCurve>),
+    MidiCc(Arc<CcReading>),
+    PresetValue {
+        saved: f64,
+        preview: Option<Arc<MacroReading>>,
+    },
+}
+
+impl ParamInput {
+    fn timeline(&self) -> Option<&LaneCurve> {
+        match self {
+            Self::Timeline(curve) => Some(curve),
+            Self::MidiCc(_) | Self::PresetValue { .. } => None,
+        }
+    }
+
+    fn held_value(&self) -> Option<f64> {
+        match self {
+            Self::MidiCc(reading) => reading.value(),
+            Self::PresetValue { saved, preview } => Some(
+                preview
+                    .as_deref()
+                    .and_then(MacroReading::read)
+                    .unwrap_or(*saved),
+            ),
+            Self::Timeline(_) => None,
+        }
+    }
+}
+
+/// One parameter input with a sample cursor, smoother, and touch arbitration.
 pub(super) struct ParamLane {
     name: String,
-    curve: LaneCurve,
+    slot_control: Option<SlotControl>,
+    prepared: Option<PreparedParameterHandle>,
+    input: ParamInput,
+    link: Option<LinkSignal>,
     /// Fraction of the remaining distance covered per sample; `None` keeps the
     /// raw curve values.
     smoothing: Option<f64>,
@@ -54,10 +98,26 @@ pub(super) struct ParamLane {
     applied: Option<f64>,
     /// Touch arbitration state for exactly this parameter.
     touch: TouchLane,
-    /// Musical position of a tempo-following LFO, advanced one sample at a time.
-    lfo_quarter: f64,
-    /// Quarter notes per sample while the LFO follows the tempo.
-    lfo_step: f64,
+}
+
+struct LinkSignal {
+    formula: LinkFormula,
+    mapping: Option<PreparedMapping>,
+    midi: bool,
+    source_smoothing: Option<f64>,
+    source_value: Option<f64>,
+}
+
+impl LinkSignal {
+    fn apply(&self, value: f64) -> f64 {
+        let normalized = if self.midi {
+            apply_midi_formula(self.formula, value)
+        } else {
+            self.formula.apply(value)
+        };
+        self.mapping
+            .map_or(normalized, |mapping| mapping.apply(normalized))
+    }
 }
 
 impl ParamLane {
@@ -67,43 +127,60 @@ impl ParamLane {
         self.started = false;
         self.filtered = 0.0;
         self.applied = None;
-    }
-
-    /// Fix the musical position and tempo at the start of a processing span.
-    ///
-    /// Only a tempo-following LFO needs this; the absolute units of an envelope
-    /// or a Hz LFO never consult the clock.
-    fn begin_block(&mut self, quarter: f64, tempo: f64, sample_rate: u32) {
-        if !self.curve.is_lfo() {
-            return;
+        if let Some(link) = &mut self.link {
+            link.source_value = None;
         }
-        self.lfo_quarter = quarter;
-        self.lfo_step = self.curve.lfo_quarter_step(tempo, sample_rate);
     }
 
-    /// Analytic target at `sample`; `None` before the lane's first point.
-    fn target_at(&mut self, sample: u64) -> Option<f64> {
-        if self.curve.is_lfo() {
-            let cycles = self.curve.lfo_cycles(self.lfo_quarter, sample)?;
-            self.lfo_quarter += self.lfo_step;
-            self.curve.lfo_value(cycles)
+    fn curve_at(&self, sample: u64, tempo: Option<SampleTempo>) -> Option<f64> {
+        let curve = self.input.timeline()?;
+        if curve.is_lfo() {
+            let quarter = tempo.map_or(0.0, |tempo| tempo.quarter_at(sample));
+            let cycles = curve.lfo_cycles(quarter, sample)?;
+            curve.lfo_value(cycles)
         } else {
-            self.curve.envelope_value(sample as f64)
+            curve.envelope_value(sample as f64)
         }
+    }
+
+    /// Target at `sample`; absent before a lane or CC source starts writing.
+    fn target_at(&self, sample: u64, tempo: Option<SampleTempo>) -> Option<f64> {
+        self.held_target().or_else(|| {
+            let value = self.curve_at(sample, tempo)?;
+            Some(self.link.as_ref().map_or(value, |link| link.apply(value)))
+        })
+    }
+
+    fn held_target(&self) -> Option<f64> {
+        Some(self.link.as_ref()?.apply(self.input.held_value()?))
     }
 
     /// Value for the current sample, then advance one sample.
-    fn next_value(&mut self) -> Option<f64> {
+    fn next_value(&mut self, tempo: Option<SampleTempo>, held: Option<f64>) -> Option<f64> {
         let sample = self.cursor;
         self.cursor += 1;
-        let target = self.target_at(sample)?;
+        let target = if let Some(held) = held {
+            held
+        } else {
+            let mut target = self.curve_at(sample, tempo)?;
+            if let Some(link) = &mut self.link {
+                if let Some(alpha) = link.source_smoothing {
+                    target = link
+                        .source_value
+                        .map_or(target, |prior| smooth_step(prior, target, alpha));
+                    link.source_value = Some(target);
+                }
+                target = link.apply(target);
+            }
+            target
+        };
         let Some(coefficient) = self.smoothing else {
             return Some(target);
         };
         let value = if self.started {
             smooth_step(self.filtered, target, coefficient)
         } else {
-            // The first value snaps: a lane starts where its curve says.
+            // The first value starts at the source; subsequent changes smooth.
             self.started = true;
             target
         };
@@ -119,9 +196,6 @@ impl ParamLane {
     /// smoother competing with the lane's own time constant.
     fn hold(&mut self, span: u64) {
         self.cursor = self.cursor.saturating_add(span);
-        if self.curve.is_lfo() {
-            self.lfo_quarter += self.lfo_step * span as f64;
-        }
     }
 }
 
@@ -129,6 +203,8 @@ impl ParamLane {
 pub(super) struct AutomatedEffect {
     inner: Box<dyn AudioEffect>,
     lanes: Vec<ParamLane>,
+    /// One authored value per parameter, shared by all its automation clips.
+    static_parameters: Vec<(usize, Option<f64>)>,
     cursor: u64,
     sample_rate: u32,
     /// The project clock; only a tempo-following LFO reads it.
@@ -137,12 +213,94 @@ pub(super) struct AutomatedEffect {
     touch: Option<Arc<TouchRegistry>>,
     /// Reused per-block change list so a smoothed lane does not allocate.
     events: Vec<(u64, usize, f64)>,
+    plans: Vec<TouchPlan>,
+    slot: Option<slot_mix::SlotMix>,
 }
 
 /// Compiled lanes plus the clock they were resolved against.
 pub(super) struct CompiledAutomation {
     pub clock: Arc<ProjectClock>,
     pub lanes: Vec<ParamLane>,
+}
+
+impl CompiledAutomation {
+    pub(super) fn append_links(
+        &mut self,
+        effect: &Effect,
+        links: &[&LinkedLane],
+        sample_rate: u32,
+        owner: &str,
+        slot: usize,
+    ) -> Result<(), String> {
+        if links.is_empty() {
+            return Ok(());
+        }
+        let total = self
+            .lanes
+            .len()
+            .checked_add(links.len())
+            .ok_or_else(|| AutomationPreparationError::ScratchCapacity.to_string())?;
+        preparation::event_capacity(total).map_err(|error| error.to_string())?;
+        self.lanes
+            .try_reserve_exact(links.len())
+            .map_err(|_| AutomationPreparationError::ScratchAllocation.to_string())?;
+        let device = crate::dsp::device_for_effect(&effect.effect_type);
+        for link in links {
+            let parameter = link.parameter.as_str();
+            let slot_control = SlotControl::from_id(parameter);
+            let (first, last) = link.bounds;
+            let midi = matches!(link.input, ParamInput::MidiCc(_));
+            // A centered MIDI formula can peak between the two raw endpoints.
+            let (mut a, mut b) = if midi {
+                (0.0, 1.0)
+            } else {
+                (link.formula.apply(first), link.formula.apply(last))
+            };
+            let mapping = link
+                .value_mapping
+                .map(|mapping| PreparedMapping::new(mapping, a.min(b), a.max(b)))
+                .transpose()?;
+            if slot_control == Some(SlotControl::Enabled) {
+                if mapping.is_some() {
+                    return Err(
+                        "control link value mapping needs a numeric effect parameter".into(),
+                    );
+                }
+            } else {
+                if let Some(mapping) = mapping {
+                    a = mapping.apply(a);
+                    b = mapping.apply(b);
+                }
+                mapped_bounds::validate(parameter, device, Some((a.min(b), a.max(b))))?;
+            }
+            self.lanes.push(ParamLane {
+                name: parameter.to_owned(),
+                slot_control,
+                prepared: None,
+                input: link.input.clone(),
+                link: Some(LinkSignal {
+                    formula: link.formula,
+                    mapping,
+                    midi,
+                    source_smoothing: link.input.timeline().and_then(LaneCurve::smoothing_alpha),
+                    source_value: None,
+                }),
+                smoothing: (link.smoothing_ms > 0).then(|| {
+                    crate::smoothing::one_pole_alpha(
+                        f64::from(link.smoothing_ms),
+                        1.0,
+                        f64::from(sample_rate),
+                    )
+                }),
+                cursor: 0,
+                filtered: 0.0,
+                started: false,
+                applied: None,
+                touch: TouchLane::new(touch::effect_key(owner, slot, parameter)),
+            });
+        }
+        Ok(())
+    }
 }
 
 /// Compile an effect's lanes; callers decide whether an error is fatal.
@@ -157,9 +315,14 @@ pub(super) fn compile(
     owner: &str,
     effect_index: usize,
 ) -> Result<CompiledAutomation, String> {
+    let active_lanes = lanes.iter().filter(|lane| !lane.muted).count();
+    preparation::event_capacity(active_lanes).map_err(|error| error.to_string())?;
     let clock = Arc::new(ProjectClock::new(properties)?);
     let device = crate::dsp::device_for_effect(&effect.effect_type);
-    let mut compiled = Vec::with_capacity(lanes.len());
+    let mut compiled = Vec::new();
+    compiled
+        .try_reserve_exact(active_lanes)
+        .map_err(|_| AutomationPreparationError::ScratchAllocation.to_string())?;
     for lane in lanes {
         if lane.muted {
             continue;
@@ -206,37 +369,80 @@ impl<'a> Detector<'a> {
 
 impl AutomatedEffect {
     pub(super) fn new(
-        inner: Box<dyn AudioEffect>,
-        lanes: Vec<ParamLane>,
+        mut inner: Box<dyn AudioEffect>,
+        mut lanes: Vec<ParamLane>,
         sample_rate: u32,
         touch: Option<Arc<TouchRegistry>>,
         clock: Arc<ProjectClock>,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, AutomationPreparationError> {
+        let event_capacity = preparation::event_capacity(lanes.len())?;
+        let mut events = Vec::new();
+        events
+            .try_reserve_exact(event_capacity)
+            .map_err(|_| AutomationPreparationError::ScratchAllocation)?;
+        let mut plans = Vec::new();
+        plans
+            .try_reserve_exact(lanes.len())
+            .map_err(|_| AutomationPreparationError::ScratchAllocation)?;
+        let mut static_parameters: Vec<(usize, Option<f64>)> = Vec::new();
+        static_parameters
+            .try_reserve_exact(lanes.len())
+            .map_err(|_| AutomationPreparationError::ScratchAllocation)?;
+        for index in 0..lanes.len() {
+            if lanes[index].slot_control.is_some() {
+                continue;
+            }
+            let name = &lanes[index].name;
+            if let Some(&(first, _)) = static_parameters
+                .iter()
+                .find(|&&(first, _)| lanes[first].name == *name)
+            {
+                lanes[index].prepared = lanes[first].prepared;
+                continue;
+            }
+            let prepared = inner.prepare_parameter(name);
+            static_parameters.push((
+                index,
+                inner.get_param(name).filter(|value| value.is_finite()),
+            ));
+            lanes[index].prepared = prepared;
+        }
+        Ok(Self {
             inner,
             lanes,
+            static_parameters,
             cursor: 0,
             sample_rate,
             clock,
             touch,
-            events: Vec::new(),
-        }
+            events,
+            plans,
+            slot: None,
+        })
+    }
+
+    pub(super) fn with_slot_mix(
+        mut self,
+        wet: f64,
+        enabled: bool,
+    ) -> Result<Self, oc_audio::BlockPreparationError> {
+        self.slot = Some(slot_mix::SlotMix::new(
+            wet,
+            enabled,
+            self.inner.latency_samples(),
+        )?);
+        Ok(self)
     }
 
     /// The one arbitration point: per parameter, per poll span, the lane value
     /// or the hand value wins. A release is noticed within one poll span so the
     /// 20 ms fade stays well inside the 50 ms hand-back budget.
-    ///
-    /// `resume` is true when this span continues the previous one in the same
-    /// block, so a tempo-following LFO keeps its accumulated phase instead of
-    /// restarting it at an artificial span boundary.
     fn collect_events(
         &mut self,
         events: &mut Vec<(u64, usize, f64)>,
         start: u64,
         frames: u64,
         sample_rate: u32,
-        resume: bool,
     ) {
         let span_frames = if self.touch.is_some() {
             touch::POLL_FRAMES
@@ -249,13 +455,18 @@ impl AutomatedEffect {
             }
         }
         let mut offset = 0u64;
-        let mut first_span = true;
+        let follows_tempo = self.lanes.iter().any(|lane| {
+            lane.input
+                .timeline()
+                .is_some_and(LaneCurve::lfo_follows_tempo)
+        });
         while offset < frames {
             let at = start + offset;
-            let position = self
-                .clock
-                .position_at_sample(at, sample_rate)
-                .expect("validated render clock and sample rate");
+            let tempo = follows_tempo.then(|| {
+                self.clock
+                    .sample_tempo_at(at, sample_rate)
+                    .expect("validated render clock and sample rate")
+            });
             let mut span = (frames - offset).min(span_frames).max(1);
             // A tempo or meter change starts a new span, so the phase step is
             // exact on both sides of the step.
@@ -266,23 +477,18 @@ impl AutomatedEffect {
             {
                 span = span.min(change.saturating_sub(at)).max(1);
             }
-            let mut plans = Vec::with_capacity(self.lanes.len());
+            self.plans.clear();
             for lane in self.lanes.iter_mut() {
                 let status = self
                     .touch
                     .as_ref()
                     .and_then(|registry| registry.status(lane.touch.key()));
-                plans.push(lane.touch.plan(status, span as u32, sample_rate));
+                self.plans
+                    .push(lane.touch.plan(status, span as u32, sample_rate));
             }
 
-            // A continuing span keeps the LFO phase, unless a tempo or meter
-            // change lands exactly on its first sample.
-            let continue_phase = first_span && resume && !self.starts_clock_change(at, sample_rate);
             for (index, lane) in self.lanes.iter_mut().enumerate() {
-                if !continue_phase {
-                    lane.begin_block(position.quarter, position.bpm, sample_rate);
-                }
-                let plan = plans[index];
+                let plan = self.plans[index];
                 if let TouchPlan::Hand(hand) = plan {
                     // The hand is the only writer; the lane keeps its clock but
                     // holds its smoothing state for the release.
@@ -297,8 +503,30 @@ impl AutomatedEffect {
                     TouchPlan::Release { .. } => u64::from(plan.fade_end().unwrap_or(0)).min(span),
                     _ => 0,
                 };
-                for step in 0..span {
-                    let Some(lane_value) = lane.next_value() else {
+                let held = lane.held_target();
+                if !matches!(lane.input, ParamInput::Timeline(_)) {
+                    let settled = held == lane.applied
+                        && (lane.smoothing.is_none() || held == Some(lane.filtered));
+                    if held.is_none() || (settled && matches!(plan, TouchPlan::Lane)) {
+                        lane.hold(span);
+                        continue;
+                    }
+                }
+                let mut next_step = 0;
+                while next_step < span {
+                    let inactive = lane.input.timeline().map_or(0, |curve| {
+                        curve.inactive_envelope_prefix(lane.cursor, span - next_step)
+                    });
+                    if inactive > 0 {
+                        // An absent target leaves both smoothing and the last
+                        // applied value untouched, including during touch release.
+                        lane.cursor += inactive;
+                        next_step += inactive;
+                        continue;
+                    }
+                    let step = next_step;
+                    next_step += 1;
+                    let Some(lane_value) = lane.next_value(tempo, held) else {
                         continue;
                     };
                     if step < fade_end {
@@ -322,17 +550,8 @@ impl AutomatedEffect {
                     }
                 }
             }
-            first_span = false;
             offset += span;
         }
-    }
-
-    /// True when an authored tempo or meter change starts exactly at `sample`.
-    fn starts_clock_change(&self, sample: u64, sample_rate: u32) -> bool {
-        self.clock
-            .next_change_sample(sample.saturating_sub(1), sample_rate)
-            .expect("validated render clock and sample rate")
-            == Some(sample)
     }
 
     /// Apply one block in bounded spans.
@@ -347,8 +566,8 @@ impl AutomatedEffect {
         input: Detector<'_>,
         transport: Option<&PluginTransport>,
     ) {
-        if self.lanes.is_empty() {
-            self.process_span(buffer, input, transport, false);
+        if self.lanes.is_empty() && self.slot.is_none() {
+            self.process_span(buffer, input, transport);
             return;
         }
         let frames = buffer.len() / 2;
@@ -363,8 +582,11 @@ impl AutomatedEffect {
                 &mut buffer[position * 2..chunk_end * 2],
                 input.slice(position, chunk_end),
                 chunk_transport.as_ref(),
-                position > 0,
             );
+            if self.inner.processing_failed() {
+                buffer.fill(0.0);
+                return;
+            }
             position = chunk_end;
         }
     }
@@ -375,7 +597,6 @@ impl AutomatedEffect {
         buffer: &mut [f32],
         input: Detector<'_>,
         transport: Option<&PluginTransport>,
-        resume: bool,
     ) {
         let sample_rate = self.sample_rate;
         let frames = buffer.len() / 2;
@@ -383,14 +604,24 @@ impl AutomatedEffect {
             return;
         }
         let start = transport.as_ref().map_or(self.cursor, |t| t.sample_pos);
+        if let Some(slot) = &mut self.slot
+            && start != self.cursor
+        {
+            slot.seek(start, &self.lanes, &self.clock, sample_rate);
+        }
         self.cursor = start + frames as u64;
 
         // Move the scratch list out so processing can borrow `self` freely.
         let mut events = std::mem::take(&mut self.events);
         events.clear();
-        events.reserve(self.lanes.len().saturating_mul(frames));
-        self.collect_events(&mut events, start, frames as u64, sample_rate, resume);
-        events.sort_by_key(|(offset, _, _)| *offset);
+        debug_assert!(events.capacity() >= self.lanes.len() * frames);
+        self.collect_events(&mut events, start, frames as u64, sample_rate);
+        // Lanes emit at most one event per sample. Lane index preserves the
+        // declared writer order at equal offsets without a stable-sort buffer.
+        events.sort_unstable_by_key(|(offset, lane, _)| (*offset, *lane));
+        if let Some(slot) = &mut self.slot {
+            slot.capture(buffer, &mut events, &self.lanes);
+        }
 
         if self.inner.supports_param_offsets() {
             // Queue points per device-sized chunk: hosts only accept offsets
@@ -428,7 +659,7 @@ impl AutomatedEffect {
                 position = chunk_end;
             }
             self.events = events;
-            self.trim_event_capacity();
+            self.blend_slot(buffer);
             return;
         }
 
@@ -439,7 +670,11 @@ impl AutomatedEffect {
                 if *offset > position as u64 {
                     break;
                 }
-                self.inner.set_param(&self.lanes[*lane].name, *value);
+                if !write_parameter(&mut *self.inner, &self.lanes[*lane], *value) {
+                    buffer.fill(0.0);
+                    self.events = events;
+                    return;
+                }
                 index += 1;
             }
             let next = events
@@ -484,14 +719,14 @@ impl AutomatedEffect {
             position = segment_end;
         }
         self.events = events;
-        self.trim_event_capacity();
+        self.blend_slot(buffer);
     }
 
-    /// Keep the retained scratch list bounded after a pass.
-    fn trim_event_capacity(&mut self) {
-        let limit = self.lanes.len().saturating_mul(MAX_AUTOMATION_BLOCK_FRAMES);
-        if self.events.capacity() > limit {
-            self.events.shrink_to(limit);
+    fn blend_slot(&self, buffer: &mut [f32]) {
+        if let Some(slot) = &self.slot
+            && !self.inner.processing_failed()
+        {
+            slot.blend(buffer);
         }
     }
 
@@ -538,18 +773,7 @@ impl AutomatedEffect {
     }
 }
 
-/// Convert one authored point into the unit the device receives.
-///
-/// A built-in device answers from its schema; a hosted plugin takes the numeric
-/// value as its own normalized parameter.
-pub(crate) fn lane_point_value(
-    parameter: &str,
-    value: &ParamValue,
-    device: Option<&DeviceSchema>,
-) -> Result<f64, String> {
-    crate::automation::point_value(parameter, value, device)
-}
-
+/// Resolve one effect lane and its output bounds before real-time processing.
 fn compile_lane(
     parameter: &str,
     lane: &AutomationLane,
@@ -559,25 +783,58 @@ fn compile_lane(
     owner: &str,
     effect_index: usize,
 ) -> Result<ParamLane, String> {
+    let slot_control = SlotControl::from_id(parameter);
+    if let Some(control) = slot_control {
+        oc_dsl::automation::validate_slot_lane(lane, control)?;
+    }
     let curve = LaneCurve::new(lane, clock, sample_rate, |value| {
-        lane_point_value(parameter, value, device)
+        crate::automation::effect_curve_point_value(lane, parameter, value, device)
     })?;
+    if lane.value_mapping.is_some() {
+        mapped_bounds::validate(parameter, device, curve.value_bounds())?;
+    }
     let smoothing = curve.smoothing_alpha();
     Ok(ParamLane {
         name: parameter.to_string(),
-        curve,
+        slot_control,
+        prepared: None,
+        input: ParamInput::Timeline(Arc::new(curve)),
+        link: None,
         smoothing,
         cursor: 0,
         filtered: 0.0,
         started: false,
         applied: None,
         touch: TouchLane::new(touch::effect_key(owner, effect_index, parameter)),
-        lfo_quarter: 0.0,
-        lfo_step: 0.0,
     })
 }
 
+fn write_parameter(effect: &mut dyn AudioEffect, lane: &ParamLane, value: f64) -> bool {
+    let outcome = lane
+        .prepared
+        .map_or(PreparedParameterOutcome::Unsupported, |handle| {
+            effect.set_prepared_parameter(handle, value)
+        });
+    match outcome {
+        PreparedParameterOutcome::Unsupported => {
+            effect.set_param(&lane.name, value);
+            true
+        }
+        PreparedParameterOutcome::Applied => true,
+        PreparedParameterOutcome::Invalidated(_) | PreparedParameterOutcome::Failed => false,
+    }
+}
+
 impl AudioEffect for AutomatedEffect {
+    fn preserves_channel_equality(&self) -> bool {
+        self.inner.sidechain_source().is_none()
+            && self.inner.control_source().is_none()
+            && self.inner.preserves_channel_equality()
+    }
+
+    fn configure_midi_input_latency(&mut self, samples: u32) {
+        self.inner.configure_midi_input_latency(samples);
+    }
     fn processing_failed(&self) -> bool {
         self.inner.processing_failed()
     }
@@ -586,7 +843,11 @@ impl AudioEffect for AutomatedEffect {
     }
 
     fn prepare_block(&mut self, max_frames: usize) -> Result<(), oc_audio::BlockPreparationError> {
-        self.inner.prepare_block(max_frames)
+        self.inner.prepare_block(max_frames)?;
+        if let Some(slot) = &mut self.slot {
+            slot.prepare_latency(self.inner.latency_samples())?;
+        }
+        Ok(())
     }
 
     fn process_with_context(&mut self, buffer: &mut [f32], context: AudioProcessContext<'_>) {
@@ -653,7 +914,39 @@ impl AudioEffect for AutomatedEffect {
     }
 
     fn set_param(&mut self, name: &str, value: f64) {
-        self.inner.set_param(name, value);
+        match (SlotControl::from_id(name), &mut self.slot) {
+            (Some(control), Some(slot)) => slot.write(control, value),
+            _ => {
+                self.inner.set_param(name, value);
+                if value.is_finite() {
+                    for (index, stored) in &mut self.static_parameters {
+                        if self.lanes[*index].name == name {
+                            *stored = Some(value);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn prepare_parameter(&mut self, name: &str) -> Option<PreparedParameterHandle> {
+        self.inner.prepare_parameter(name)
+    }
+
+    fn set_prepared_parameter(
+        &mut self,
+        handle: PreparedParameterHandle,
+        value: f64,
+    ) -> PreparedParameterOutcome {
+        let outcome = self.inner.set_prepared_parameter(handle, value);
+        if outcome == PreparedParameterOutcome::Applied && value.is_finite() {
+            for (index, stored) in &mut self.static_parameters {
+                if self.lanes[*index].prepared == Some(handle) {
+                    *stored = Some(value);
+                }
+            }
+        }
+        outcome
     }
 
     fn queue_param_at(&mut self, name: &str, value: f64, sample_offset: u32) -> bool {
@@ -669,11 +962,26 @@ impl AudioEffect for AutomatedEffect {
     }
 
     fn get_param(&self, name: &str) -> Option<f64> {
-        self.inner.get_param(name)
+        match (SlotControl::from_id(name), &self.slot) {
+            (Some(control), Some(slot)) => Some(slot.read(control)),
+            _ => self.inner.get_param(name),
+        }
     }
 
     fn reset(&mut self) {
         self.inner.reset();
+        // An automation clip writes nothing before its first point. Restore
+        // the authored setting explicitly so that region plays as on a fresh run.
+        for &(index, value) in &self.static_parameters {
+            if let Some(value) = value
+                && !write_parameter(&mut *self.inner, &self.lanes[index], value)
+            {
+                break;
+            }
+        }
+        if let Some(slot) = &mut self.slot {
+            slot.reset();
+        }
         self.cursor = 0;
         for lane in &mut self.lanes {
             lane.seed(0);
@@ -726,9 +1034,13 @@ mod tests {
     use super::*;
     use crate::graph::AudioGraph;
     use oc_dsl::ast::{
-        AutomationLane, AutomationPoint, BarBeat, Curve, EffectType, LaneMode, LfoSpeed, TimeRange,
+        AutomationLane, AutomationPoint, BarBeat, Curve, EffectType, LaneMode, LfoSpeed,
+        ParamValue, TimeRange,
     };
     use std::sync::{Arc, Mutex};
+
+    include!("effect_automation/inactive_span_tests.rs");
+    include!("effect_automation/prepared_parameter_tests.rs");
 
     /// Default lane values: no smoothing, linear segments.
     fn lane(param: &str, ppq: u32, points: &[(BarBeat, ParamValue)]) -> AutomationLane {
@@ -748,6 +1060,7 @@ mod tests {
             points: points
                 .iter()
                 .map(|(position, value)| AutomationPoint {
+                    curvature: None,
                     position: *position,
                     value: value.clone(),
                     curve: Curve::Linear,
@@ -837,7 +1150,8 @@ mod tests {
             48_000,
             None,
             compiled.clock,
-        );
+        )
+        .unwrap();
         for start in (0..frames).step_by(block) {
             let length = block.min(frames - start);
             let mut buffer = vec![0.0f32; length * 2];
@@ -889,7 +1203,8 @@ mod tests {
             48_000,
             None,
             compiled.clock,
-        );
+        )
+        .unwrap();
 
         let frames = 16_384;
         let mut buffer = vec![0.0f32; frames * 2];
@@ -1204,7 +1519,8 @@ mod tests {
             48_000,
             Some(registry.clone()),
             compiled.clock,
-        );
+        )
+        .unwrap();
         const BLOCK: usize = 256;
         const HOLD_START: u64 = 256 * 48;
         const HOLD_END: u64 = 256 * 117;
@@ -1281,6 +1597,17 @@ mod tests {
         output
     }
 
+    #[test]
+    fn insert_mix_combines_device_automation_with_a_stepped_enable_lane() {
+        let source = "@project\n  tempo: 120\n@track t | instrument: piano/acoustic_grand\n  effects:\n    - gain: factor=3, bypass=true, slot/wet=25%\n  automation: fx1.slot/enabled {1:2=true, 1:4=false}\n  automation: fx1.slot/wet {1:3=0.5}\n  automation: fx1.factor {1:3=2}\n";
+        let frames = 75_000;
+        let uneven = render_gain(source, frames, 733);
+        assert_eq!(uneven, render_gain(source, frames, 8192));
+        assert!(uneven[..24_000 * 2].iter().all(|x| *x == 1.0));
+        assert!(uneven[24_000 * 2..72_000 * 2].iter().all(|x| *x == 1.5));
+        assert!(uneven[72_000 * 2..].iter().all(|x| *x == 1.0));
+    }
+
     /// The same lane drives a built-in device: stairs split the block at the
     /// point positions without any plugin involved.
     #[test]
@@ -1331,6 +1658,63 @@ mod tests {
         // last value stays instead of reverting to the declared factor.
         assert_eq!(at(384_000), at(383_999));
         assert_eq!(at(399_999), at(383_999));
+    }
+
+    #[test]
+    fn rewind_restores_authored_parameter_before_a_late_clip() {
+        let score = "@project\n  tempo: 120\n@track t | instrument: audio/clip\n  effects:\n    - gain: factor=0.75\n  automation: gain.factor [1:2 - 1:4] {1:2=0.25}\n";
+        let project = project(score);
+        let mut graph =
+            AudioGraph::try_from_project_with_source_latencies(&project, 48_000, &[]).unwrap();
+        let chain = &mut graph.track_chains[0];
+        chain.prepare_block(32).unwrap();
+        let mut opening = [1.0; 64];
+        chain.process(&mut opening, 48_000);
+        assert_eq!(opening, [0.75; 64]);
+
+        let mut middle = [1.0; 64];
+        chain.process_with_transport(
+            &mut middle,
+            48_000,
+            Some(PluginTransport::new(24_000, 48_000, 120.0)),
+        );
+        assert_eq!(middle, [0.25; 64]);
+
+        let mut first_after_rewind = [1.0; 64];
+        let operations = crate::test_alloc::operations(|| {
+            chain.reset();
+            chain.process(&mut first_after_rewind, 48_000);
+        });
+        assert_eq!(operations, 0);
+        assert_eq!(first_after_rewind, opening);
+    }
+
+    #[test]
+    fn rewind_restores_the_latest_mixer_edit_even_during_its_fade() {
+        let score = "@project\n  tempo: 120\n@track t | instrument: audio/clip\n  effects:\n    - gain: factor=0.75\n  automation: gain.factor [1:2 - 1:4] {1:2=0.25}\n";
+        let project = project(score);
+        let mut graph =
+            AudioGraph::try_from_project_with_source_latencies(&project, 48_000, &[]).unwrap();
+        let chain = &mut graph.track_chains[0];
+        chain.prepare_block(32).unwrap();
+        chain
+            .fade_params(&[(0, "factor".into(), 0.75, 0.5)], 48_000)
+            .unwrap();
+        let mut block = [1.0; 64];
+        chain.process_with_transport(
+            &mut block,
+            48_000,
+            Some(PluginTransport::new(24_000, 48_000, 120.0)),
+        );
+        assert_eq!(block[0], 0.25);
+
+        let mut first_after_rewind = [1.0; 64];
+        let operations = crate::test_alloc::operations(|| {
+            chain.reset();
+            chain.process(&mut first_after_rewind, 48_000);
+        });
+        assert_eq!(operations, 0);
+        assert_eq!(first_after_rewind, [0.5; 64]);
     }
 
     /// A muted lane writes nothing at all, so the device keeps the value its
@@ -1417,7 +1801,10 @@ mod tests {
         );
         stairs(&mut l);
         let compiled = compile(&effect, &[&l], &project.properties, 48_000, "track:0", 0).unwrap();
-        assert_eq!(compiled.lanes[0].curve.points()[1].position, 100.0);
+        assert_eq!(
+            compiled.lanes[0].input.timeline().unwrap().points()[1].position,
+            100.0
+        );
 
         let control = Arc::new(FakeControl::default());
         let inner = fake_effect_instance(&control, 2, 512);
@@ -1427,7 +1814,8 @@ mod tests {
             48_000,
             None,
             compiled.clock,
-        );
+        )
+        .unwrap();
         let mut buffer = vec![0.0f32; 512 * 2];
         automated.process_with_transport(
             &mut buffer,
@@ -1672,7 +2060,7 @@ mod tests {
         let clock = ProjectClock::new(&project.properties).expect("test clock");
         let read = |lane: &AutomationLane, sample: usize| {
             value_at(lane, &clock, 48_000, sample as f64 / 24_000.0, |value| {
-                lane_point_value("filter.cutoff", value, None)
+                crate::automation::point_value("filter.cutoff", value, None)
             })
             .expect("lane evaluates")
             .expect("inside the lane")

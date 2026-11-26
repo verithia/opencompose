@@ -3561,6 +3561,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "tempfile",
  "zstd",
 ]
 
@@ -3818,6 +3819,7 @@ dependencies = [
  "hound",
  "log",
  "md-5",
+ "oc-device-schema",
  "oc-dsl",
  "oc-dsp",
  "oc-synth-core",

@@ -19,7 +19,7 @@ Source files:
 
 ## Device model
 
-The dynamic EQ has six band slots and two dedicated cut slots. "Add band"
+The dynamic EQ has seven band slots and two dedicated cut slots. "Add band"
 enables the first free slot; "remove" disables a slot while keeping its values.
 The type menu offers bell, low shelf, high shelf, low cut, high cut, notch, band
 pass, and a "Dynamic" entry that selects a bell plus the dynamic detector.
@@ -28,7 +28,7 @@ the DSL keeps its shape and shows the dynamic badge.
 
 Per band the editor exposes enable, type, frequency, Q, gain, dynamic
 threshold/range/attack/release, solo, and a channel target (`stereo`, `mid`,
-`side`, `left`, `right`). Cuts expose enable, frequency, and Q. Bypass sits in
+`side`, `left`, `right`). Cuts expose enable, frequency, Q, and slope. Bypass sits in
 the header. Solo is real processing state: when any enabled band is soloed only
 soloed bands are processed, and the drawn curve follows the same rule.
 

@@ -78,6 +78,8 @@
 
 - [EQ](../devices/params/eq.html)
 - [Dynamic EQ](../devices/params/dynamic-eq.html)
+- [All-pass phase section](../devices/params/allpass.html)
+- [Transfer Shaper](../devices/params/transfer-shaper.html)
 - [Compressor](../devices/params/compression.html)
 - [De-esser](../devices/params/de-esser.html)
 - [Multiband compander](../devices/params/multiband.html)

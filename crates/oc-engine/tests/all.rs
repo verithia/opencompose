@@ -62,6 +62,8 @@ mod vocal_timing;
 #[path = "vocal_tune_shift.rs"]
 mod vocal_tune_shift;
 
+#[path = "automation_curve_alloc.rs"]
+mod automation_curve_alloc;
 #[path = "clip_lane_alloc.rs"]
 mod clip_lane_alloc;
 #[path = "clips.rs"]
@@ -82,3 +84,11 @@ mod sf2_sends_alloc;
 mod spectrum_alloc;
 #[path = "vocal_tune.rs"]
 mod vocal_tune;
+
+#[path = "allpass.rs"]
+mod allpass;
+#[path = "stereo_matrix.rs"]
+mod stereo_matrix;
+
+#[path = "transfer_shaper.rs"]
+mod transfer_shaper;

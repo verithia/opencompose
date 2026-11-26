@@ -269,6 +269,38 @@ pub fn default_patch_plugin(instrument: &InstrumentPath) -> Option<&'static str>
     patch_for(instrument).map(|patch| patch.plugin)
 }
 
+/// MIDI-only sources retain score data but cannot hide an authored audio source.
+pub fn validate_midi_only_source(
+    project: &Project,
+    track: &crate::ast::Track,
+) -> Result<(), String> {
+    if !track.instrument.is_midi_only() {
+        return Ok(());
+    }
+    let pattern_preset = track.inline_patterns.iter().any(|p| p.preset.is_some())
+        || track.pattern_clips().any(|clip| {
+            project
+                .patterns
+                .iter()
+                .any(|p| p.name == clip.pattern && p.preset.is_some())
+        });
+    if track.preset.is_some()
+        || track.performance.is_some()
+        || !track.effects.is_empty()
+        || pattern_preset
+        || project
+            .audio_clips()
+            .iter()
+            .any(|clip| clip.track == track.name)
+    {
+        return Err(format!(
+            "MIDI-only source '{}' cannot declare an audio preset, clip, effect chain or performance source",
+            track.name
+        ));
+    }
+    Ok(())
+}
+
 /// Give every bare track and named pattern a playable built-in preset.
 /// Explicit presets, audio/clip hosts and families with no honest default
 /// (`sample`) stay as written.

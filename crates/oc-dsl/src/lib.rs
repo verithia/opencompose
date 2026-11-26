@@ -96,3 +96,6 @@ pub fn validate(project: &ast::Project) -> Result<(), Vec<error::ValidationError
 
 #[cfg(test)]
 mod pitch_tests;
+
+/// Post-insert gain envelope preparation shared by admission and rendering.
+pub mod gain_automation;

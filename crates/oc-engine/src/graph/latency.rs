@@ -21,7 +21,7 @@ use std::collections::HashMap;
 
 use serde::Serialize;
 
-use super::{AudioGraph, StereoDelayCompensator, effective_bus_routes};
+use super::{AudioGraph, EffectChain, StereoDelayCompensator, effective_bus_routes};
 use oc_dsl::ast::{LatencyCompensation, Project};
 
 /// Seconds one track's insert chain adds before and after a bounce range.
@@ -46,7 +46,30 @@ pub fn track_chain_tail_seconds(
     track: usize,
     sample_rate: u32,
 ) -> Result<ChainTailSeconds, String> {
-    let chain = super::build_track_chain(project, track, sample_rate, false, None)?;
+    track_chain_tail_seconds_with_resources(project, track, sample_rate, None)
+}
+
+pub(crate) fn track_chain_tail_seconds_with_resources(
+    project: &Project,
+    track: usize,
+    sample_rate: u32,
+    resource_root: Option<&std::path::Path>,
+) -> Result<ChainTailSeconds, String> {
+    let linked = super::linked_automation::LinkedAutomation::for_track(
+        project,
+        sample_rate,
+        track,
+        resource_root,
+    )?;
+    let chain = super::build_track_chain(
+        project,
+        track,
+        sample_rate,
+        false,
+        None,
+        resource_root,
+        &linked,
+    )?;
     let rate = f64::from(sample_rate.max(1));
     Ok(ChainTailSeconds {
         latency: f64::from(chain.latency_samples()) / rate,
@@ -120,6 +143,23 @@ pub struct TrackLatencyReadout {
 /// is than the source's own output.
 fn destination_referenced_delay(source_latency: u32, destination_latency: u32) -> u32 {
     destination_latency.saturating_sub(source_latency)
+}
+
+/// Advance through the serial effects using the arrival time at each input.
+fn align_keyed_chain(
+    chain: &mut EffectChain,
+    mut main: u32,
+    key_latency: impl Fn(&str) -> Option<u32>,
+) -> u32 {
+    for effect in &mut chain.effects {
+        if let Some(source) = effect.sidechain_source()
+            && let Some(key) = key_latency(source)
+        {
+            effect.configure_sidechain_alignment(main, key);
+        }
+        main = main.saturating_add(effect.latency_samples());
+    }
+    main
 }
 
 fn record_diagnostic(
@@ -267,20 +307,39 @@ impl AudioGraph {
         (applied, effective)
     }
 
-    pub(super) fn rebuild_latency_compensation(&mut self) {
+    /// Track keys read post-insert taps in dependency order.
+    pub(super) fn configure_sidechain_alignment(&mut self) -> Vec<u32> {
+        let mut taps = vec![None; self.track_chains.len()];
+        let names = &self.track_names;
+        let planned = self.key_plan.order.len() == self.track_chains.len();
+        for position in 0..self.track_chains.len() {
+            let index = if planned {
+                self.key_plan.order[position]
+            } else {
+                position
+            };
+            let main = self.source_latencies.get(index).copied().unwrap_or(0);
+            let output = align_keyed_chain(&mut self.track_chains[index], main, |key| {
+                names
+                    .iter()
+                    .position(|name| name == key)
+                    .and_then(|index| taps.get(index).copied().flatten())
+            });
+            taps[index] = Some(output);
+        }
+        taps.into_iter().map(Option::unwrap_or_default).collect()
+    }
+
+    pub(super) fn rebuild_latency_compensation(&mut self, preserve_route_history: bool) {
         self.rebuild_bus_plan();
-        let reported_latencies: Vec<u32> = self
-            .track_chains
-            .iter()
-            .enumerate()
-            .map(|(index, chain)| {
-                self.source_latencies
-                    .get(index)
-                    .copied()
-                    .unwrap_or(0)
-                    .saturating_add(chain.latency_samples())
-            })
-            .collect();
+        let reported_latencies = self.configure_sidechain_alignment();
+        let track_names = &self.track_names;
+        let track_key_latency = |key: &str| {
+            track_names
+                .iter()
+                .position(|name| name == key)
+                .and_then(|index| reported_latencies.get(index).copied())
+        };
         let bypassed: Vec<bool> = (0..self.routing.len())
             .map(|index| self.latency_bypassed(index))
             .collect();
@@ -334,17 +393,14 @@ impl AudioGraph {
                     arrival = arrival.max(bus_out.get(other).copied().unwrap_or(0));
                 }
             }
-            let chain_latency = self
-                .bus_chains
-                .get(name)
-                .map_or(0, |bus| bus.chain.latency_samples());
+            let output = self.bus_chains.get_mut(name).map_or(arrival, |bus| {
+                align_keyed_chain(&mut bus.chain, arrival, |key| {
+                    track_key_latency(key).or_else(|| bus_out.get(key).copied())
+                })
+            });
             // A bus nothing feeds carries nothing, so it must not stretch the
             // master reference.
-            let output = if has_input {
-                arrival.saturating_add(chain_latency)
-            } else {
-                0
-            };
+            let output = if has_input { output } else { 0 };
             if self.bus_chains.get(name).is_some_and(|bus| {
                 effective_bus_routes(bus)
                     .iter()
@@ -355,7 +411,23 @@ impl AudioGraph {
             bus_in.insert(name.clone(), arrival);
             bus_out.insert(name.clone(), output);
         }
+        align_keyed_chain(&mut self.master_chain, master_reference, |key| {
+            track_key_latency(key).or_else(|| bus_out.get(key).copied())
+        });
+        self.rebuild_bus_downstream_latencies();
         self.pre_master_latency_samples = master_reference;
+        // Score events reach each processor with its aligned audio input.
+        for (index, chain) in self.track_chains.iter_mut().enumerate() {
+            chain.configure_midi_input_latency(
+                self.source_latencies.get(index).copied().unwrap_or(0),
+            );
+        }
+        for (name, bus) in &mut self.bus_chains {
+            bus.chain
+                .configure_midi_input_latency(bus_in.get(name).copied().unwrap_or(0));
+        }
+        self.master_chain
+            .configure_midi_input_latency(master_reference);
 
         // Manual offsets only redistribute the delay above; the reference and
         // the render window stay exactly where the reported latencies put them.
@@ -363,18 +435,24 @@ impl AudioGraph {
             self.apply_latency_offsets(&reported_latencies, &bus_in, master_reference);
 
         let mut diagnostics = Vec::new();
-        self.direct_delays = effective_latencies
-            .iter()
+        if !preserve_route_history {
+            self.direct_delays.clear();
+            self.send_delays.clear();
+            self.aux_send_delays.clear();
+            self.bus_route_delays.clear();
+        }
+        self.direct_delays
+            .resize_with(effective_latencies.len(), || StereoDelayCompensator::new(0));
+        for (index, (line, latency)) in self
+            .direct_delays
+            .iter_mut()
+            .zip(&effective_latencies)
             .enumerate()
-            .map(|(index, latency)| {
-                let delay = if bypassed.get(index).copied().unwrap_or(false) {
-                    0
-                } else {
-                    master_reference.saturating_sub(*latency)
-                };
-                StereoDelayCompensator::new(delay)
-            })
-            .collect();
+        {
+            let delay =
+                applied_delay_of(master_reference.saturating_sub(*latency), bypassed[index]);
+            line.set_frames(delay);
+        }
         let mut readout = Vec::with_capacity(reported_latencies.len());
         for (index, &reported) in reported_latencies.iter().enumerate() {
             let bypass = bypassed.get(index).copied().unwrap_or(false);
@@ -428,7 +506,6 @@ impl AudioGraph {
         }
         self.latency_readout = readout;
 
-        self.send_delays.clear();
         for (index, route) in self.routing.iter().enumerate() {
             let source_latency = effective_latencies.get(index).copied().unwrap_or(0);
             let bypass = bypassed.get(index).copied().unwrap_or(false);
@@ -441,7 +518,9 @@ impl AudioGraph {
                     destination_referenced_delay(source_latency, destination)
                 };
                 self.send_delays
-                    .insert((index, send_index), StereoDelayCompensator::new(delay));
+                    .entry((index, send_index))
+                    .or_insert_with(|| StereoDelayCompensator::new(0))
+                    .set_frames(delay);
                 if !bypass {
                     record_diagnostic(
                         &mut diagnostics,
@@ -453,7 +532,6 @@ impl AudioGraph {
                 }
             }
         }
-        self.aux_send_delays.clear();
         for (index, route) in self.routing.iter().enumerate() {
             let source_latency = self.source_latencies.get(index).copied().unwrap_or(0);
             let bypass = bypassed.get(index).copied().unwrap_or(false);
@@ -466,7 +544,9 @@ impl AudioGraph {
                     destination_referenced_delay(source_latency, destination)
                 };
                 self.aux_send_delays
-                    .insert((index, send_index), StereoDelayCompensator::new(delay));
+                    .entry((index, send_index))
+                    .or_insert_with(|| StereoDelayCompensator::new(0))
+                    .set_frames(delay);
                 if !bypass {
                     record_diagnostic(
                         &mut diagnostics,
@@ -504,11 +584,14 @@ impl AudioGraph {
                 bus_delays.push(((source_name.clone(), target), delay));
             }
         }
-        self.bus_route_delays = bus_delays
-            .into_iter()
-            .map(|(key, delay)| (key, StereoDelayCompensator::new(delay)))
-            .collect();
+        for (route, delay) in bus_delays {
+            self.bus_route_delays
+                .entry(route)
+                .or_insert_with(|| StereoDelayCompensator::new(0))
+                .set_frames(delay);
+        }
         self.latency_diagnostics = diagnostics;
+        self.latency_signature = self.current_latency_signature();
         for diagnostic in &self.latency_diagnostics {
             crate::render_warnings::push(diagnostic.to_string());
         }

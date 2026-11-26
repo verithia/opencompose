@@ -16,6 +16,7 @@ use tauri::Emitter;
 
 use crate::plugin_store::{self, InstalledPlugin};
 use crate::private_fs;
+use crate::startup::RunMode;
 
 /// The cache file under `~/.opencompose`.
 const CACHE_FILE: &str = "plugin-inventory.json";
@@ -92,6 +93,7 @@ enum Refresh {
 
 static HANDLE: OnceLock<tauri::AppHandle> = OnceLock::new();
 static REFRESHING: AtomicBool = AtomicBool::new(false);
+static AUTOMATIC_REFRESH: AtomicBool = AtomicBool::new(true);
 
 fn served() -> &'static Mutex<Option<Served>> {
     static SERVED: OnceLock<Mutex<Option<Served>>> = OnceLock::new();
@@ -231,6 +233,7 @@ fn write(path: &Path, cache: &CachedInventory) -> std::io::Result<()> {
 fn load_into(
     path: &Path,
     key: &InventoryKey,
+    mode: RunMode,
     install: &mut dyn FnMut(&CachedInventory),
     refresh: &mut dyn FnMut(Refresh),
 ) {
@@ -240,20 +243,30 @@ fn load_into(
             // A moved key still describes the last scan; serving it keeps the
             // first paint off the scan path.
             install(&cache);
-            refresh(Refresh::Stale);
+            if mode.is_desktop() {
+                refresh(Refresh::Stale);
+            }
         }
-        None => refresh(Refresh::Cold),
+        None if mode.is_desktop() => refresh(Refresh::Cold),
+        None => install(&CachedInventory {
+            key: key.clone(),
+            plugins: oc_host::builtin::builtin_plugin_list(),
+            installed: Vec::new(),
+        }),
     }
 }
 
 /// Load the cached inventory at startup and refresh it in the background when
 /// the key moved. Returns before any scan: a launch with no cache starts one in
-/// the background so the next launch is warm.
-pub fn start(app: tauri::AppHandle) {
+/// the background so the next launch is warm. A headless host serves the last
+/// inventory or built-ins and leaves native library scans to explicit requests.
+pub fn start(app: tauri::AppHandle, mode: RunMode) {
     let _ = HANDLE.set(app);
+    AUTOMATIC_REFRESH.store(mode.is_desktop(), Ordering::Release);
     load_into(
         &cache_path(),
         &key_now(),
+        mode,
         &mut |cache| {
             log::debug!(
                 "plugin inventory: {} entries from cache",
@@ -353,6 +366,9 @@ fn store(plugins: &[oc_host::PluginInfo]) {
 
 /// Scan in the background, then publish and persist the list.
 fn start_refresh(mode: Refresh) {
+    if !AUTOMATIC_REFRESH.load(Ordering::Acquire) {
+        return;
+    }
     if REFRESHING.swap(true, Ordering::AcqRel) {
         return;
     }
@@ -567,6 +583,7 @@ mod tests {
         load_into(
             &path,
             &key,
+            RunMode::Desktop,
             &mut |cache| served = Some(cache.clone()),
             &mut |_| walks += 1,
         );
@@ -591,6 +608,7 @@ mod tests {
         load_into(
             &path,
             &fixture.key(),
+            RunMode::Desktop,
             &mut |cache| served = Some(cache.clone()),
             &mut |mode| refresh = Some(mode),
         );
@@ -607,12 +625,54 @@ mod tests {
 
         let mut served = false;
         let mut refresh = None;
-        load_into(&path, &fixture.key(), &mut |_| served = true, &mut |mode| {
-            refresh = Some(mode)
-        });
+        load_into(
+            &path,
+            &fixture.key(),
+            RunMode::Desktop,
+            &mut |_| served = true,
+            &mut |mode| refresh = Some(mode),
+        );
 
         assert!(!served, "a corrupt file must not be served");
         assert_eq!(refresh, Some(Refresh::Cold));
+    }
+
+    #[test]
+    fn headless_start_serves_cached_or_builtin_metadata_without_native_scans() {
+        let fixture = Fixture::new("headless");
+        let path = fixture.cache_file();
+        let key = fixture.key();
+        for cache_state in ["missing", "stale", "corrupt"] {
+            match cache_state {
+                "stale" => {
+                    let mut cache = fixture.cache(&key);
+                    cache.key.version = "different-build".into();
+                    write(&path, &cache).unwrap();
+                }
+                "corrupt" => std::fs::write(&path, b"{ malformed").unwrap(),
+                _ => {}
+            }
+            let mut served = None;
+            load_into(
+                &path,
+                &key,
+                RunMode::Headless,
+                &mut |cache| served = Some(cache.clone()),
+                &mut |_| panic!("headless startup must not load unrelated native modules"),
+            );
+            let served = served.expect("metadata is published before targeted resolution");
+            if cache_state == "stale" {
+                assert_eq!(served.plugins[0].name, "Loud");
+            } else {
+                assert!(!served.plugins.is_empty());
+                assert!(
+                    served
+                        .plugins
+                        .iter()
+                        .all(|plugin| plugin.format == oc_host::PluginFormat::Internal)
+                );
+            }
+        }
     }
 
     /// Measures cold scan versus warm cache read latency with installed plug-ins.

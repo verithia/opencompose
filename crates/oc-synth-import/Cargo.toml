@@ -8,6 +8,7 @@ license.workspace = true
 description = "Foreign preset and project-state import mapped onto OpenSynth patch types"
 
 [dependencies]
+oc-device-schema = { path = "../oc-device-schema" }
 oc-dsl = { path = "../oc-dsl" }
 oc-dsp = { path = "../oc-dsp" }
 oc-synth-core = { path = "../oc-synth-core" }

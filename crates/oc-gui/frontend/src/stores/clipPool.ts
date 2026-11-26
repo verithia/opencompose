@@ -21,6 +21,8 @@ export interface ClipRef {
   kind: ClipKind;
   /** Span the timeline draws; null only for a whole-timeline automation lane. */
   time_range: TimeRange | null;
+  /** Explicit quarter-note tick grid for automation; absent is notated subdivisions. */
+  ppq?: number;
   /** Pattern name, audio clip name or `<owner>/<parameter>`. */
   label: string;
   /** Track owning a pattern clip or a track automation lane. */
@@ -62,6 +64,7 @@ function automationRef(
     key: automationKey(owner, laneIndex),
     kind: "automation",
     time_range: lane.time_range ?? null,
+    ppq: lane.ppq ?? 0,
     label: `${owner}/${lane.param}`,
     trackIndex,
     clipIndex: null,

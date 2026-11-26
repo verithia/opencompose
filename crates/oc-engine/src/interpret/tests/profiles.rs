@@ -3,6 +3,75 @@
 use super::super::*;
 
 #[test]
+fn hosted_parameter_ramp_keeps_the_exclusive_clip_endpoint_as_an_anchor() {
+    let project = oc_dsl::parse(
+        r#"@project
+  tempo: 120
+@track lead | instrument: synth/lead_saw
+  automation: pluginparam_4375746f6666 [1:1 - 1:3] {1:1=0, 1:3=1}
+"#,
+    )
+    .unwrap();
+    let settings = InterpretSettings {
+        sample_rate: 8_000,
+        ..Default::default()
+    };
+    let events = interpret(&project, &settings);
+    let values: Vec<_> = events
+        .iter()
+        .filter_map(|event| match &event.event {
+            MidiMessage::PluginParam { name, value } if name == "Cutoff" => {
+                Some((event.time_samples, *value))
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(
+        values.len() > 2,
+        "a hosted parameter must move between its anchors"
+    );
+    let middle = values.iter().rev().find(|p| p.0 <= 4_000).unwrap();
+    assert!((middle.1 - 0.5).abs() < 0.01, "{middle:?}");
+    assert!(values.iter().all(|p| p.0 < 8_000));
+    assert!(values.last().unwrap().1 > 0.99);
+}
+
+#[test]
+fn hosted_parameter_trim_reads_the_original_curve_at_both_clip_edges() {
+    let project = oc_dsl::parse(
+        r#"@project
+  tempo: 120
+@track lead | instrument: synth/lead_saw
+  automation: pluginparam_4375746f6666 [1:2 - 1:4] {1:1=0, 2:1=1}
+"#,
+    )
+    .unwrap();
+    let settings = InterpretSettings {
+        sample_rate: 8_000,
+        ..Default::default()
+    };
+    let events = interpret(&project, &settings);
+    let values: Vec<_> = events
+        .iter()
+        .filter_map(|event| match &event.event {
+            MidiMessage::PluginParam { name, value } if name == "Cutoff" => {
+                Some((event.time_samples, *value))
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(
+        !values.is_empty(),
+        "trimmed anchors must still define the active curve"
+    );
+    assert_eq!(values.first().unwrap().0, 4_000);
+    assert!((values.first().unwrap().1 - 0.25).abs() < 0.001);
+    assert_eq!(values.last().unwrap().0, 11_999);
+    assert!((values.last().unwrap().1 - 0.75).abs() < 0.001);
+    assert!(values.iter().all(|p| (4_000..12_000).contains(&p.0)));
+}
+
+#[test]
 fn articulation_legato_extends_note_duration() {
     let source = r#"@project "Test"
   tempo: 120
@@ -115,7 +184,10 @@ C4 q mf
         })
         .collect();
 
-    assert_eq!(values, vec![0.25, 0.75]);
+    assert_eq!(values.first(), Some(&0.25));
+    assert_eq!(values.last(), Some(&0.75));
+    assert!(values.iter().any(|value| *value > 0.25 && *value < 0.75));
+    assert!(values.windows(2).all(|pair| pair[0] <= pair[1]));
 }
 
 /// The GUI writes built-in synth lanes with the hosted-plugin encoding; this
@@ -142,9 +214,10 @@ C4 w mf
         })
         .collect();
 
-    assert_eq!(values.len(), 2, "{values:?}");
-    assert!((values[0] - 0.926).abs() < 1e-9);
-    assert!((values[1] - 1.0).abs() < 1e-9);
+    assert!(values.len() > 2);
+    assert!((values.first().unwrap() - 0.926).abs() < 1e-9);
+    assert!((values.last().unwrap() - 1.0).abs() < 1e-9);
+    assert!(values.iter().any(|value| *value > 0.926 && *value < 1.0));
     assert!(
         events.iter().all(|event| !matches!(
             &event.event,

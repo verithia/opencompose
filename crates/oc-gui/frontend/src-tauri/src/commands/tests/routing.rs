@@ -312,7 +312,7 @@ fn output_port_edits_round_trip_and_stay_absent_at_port_zero() {
     inner.project = project(BASE);
     let old_project = inner.project.clone();
 
-    apply_set_track_output_port(&mut inner.project, 0, 2).unwrap();
+    apply_set_track_output_port(&mut inner.project, 0, 2, Some(1)).unwrap();
     resync_with_undo(
         &mut inner,
         old_project,
@@ -320,6 +320,7 @@ fn output_port_edits_round_trip_and_stay_absent_at_port_zero() {
     )
     .expect("resync");
     assert_eq!(inner.project.tracks[0].output_port, Some(2));
+    assert_eq!(inner.project.tracks[0].output_pair, Some(1));
     assert!(
         inner.dsl_source.contains("port: 2"),
         "output port was not written:\n{}",
@@ -328,10 +329,16 @@ fn output_port_edits_round_trip_and_stay_absent_at_port_zero() {
 
     inner.undo.undo(&mut inner.project).unwrap();
     assert_eq!(inner.project.tracks[0].output_port, None);
+    assert_eq!(inner.project.tracks[0].output_pair, None);
 
-    apply_set_track_output_port(&mut inner.project, 0, 0).unwrap();
+    apply_set_track_output_port(&mut inner.project, 0, 0, Some(3)).unwrap();
+    assert_eq!(inner.project.tracks[0].output_pair, Some(3));
+    assert!(apply_set_track_output_port(&mut inner.project, 0, 1, Some(64)).is_err());
     assert_eq!(inner.project.tracks[0].output_port, None);
-    assert!(apply_set_track_output_port(&mut inner.project, 0, 64).is_err());
+    assert_eq!(inner.project.tracks[0].output_pair, Some(3));
+    apply_set_track_output_port(&mut inner.project, 0, 0, Some(0)).unwrap();
+    assert_eq!(inner.project.tracks[0].output_pair, None);
+    assert!(apply_set_track_output_port(&mut inner.project, 0, 64, None).is_err());
 }
 
 #[test]

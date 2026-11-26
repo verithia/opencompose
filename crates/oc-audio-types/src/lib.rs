@@ -1,6 +1,15 @@
 //! Effect and transport contracts shared by the DSP graph and plugin hosts.
 
+mod channel_symmetry;
+mod midi_input;
+mod prepared_parameter;
 mod transport_range;
+pub use channel_symmetry::{ChannelSymmetry, ChannelSymmetryContext};
+pub use midi_input::{MidiInputError, MidiInputEvent, MidiInputMessage};
+pub use prepared_parameter::{
+    PreparedParameterError, PreparedParameterHandle, PreparedParameterOutcome,
+    PreparedParameterOwner,
+};
 pub use transport_range::{TransportBlockError, TransportRangeError};
 
 /// Host timeline information supplied to plugins during offline render blocks.
@@ -13,6 +22,7 @@ pub struct PluginTransport {
     pub time_sig_denominator: u16,
     pub playing: bool,
     clock: Option<std::sync::Arc<oc_dsl::timing::ProjectClock>>,
+    musical_position_snapshot: Option<(u64, f64, f64, u32)>,
 }
 
 impl PluginTransport {
@@ -26,6 +36,25 @@ impl PluginTransport {
             time_sig_denominator: 4,
             playing: true,
             clock: None,
+            musical_position_snapshot: None,
+        }
+    }
+
+    /// Share the same fixed or mapped clock between playback and export.
+    pub fn from_project(
+        sample_pos: u64,
+        sample_rate: u32,
+        properties: &oc_dsl::ast::ProjectProperties,
+    ) -> Result<Self, String> {
+        let transport = Self::new(sample_pos, sample_rate, properties.tempo).with_time_signature(
+            u16::from(properties.time_signature.numerator),
+            u16::from(properties.time_signature.denominator),
+        );
+        if properties.tempo_map.is_empty() && properties.time_sig_map.is_empty() {
+            Ok(transport)
+        } else {
+            let clock = oc_dsl::timing::ProjectClock::new(properties)?;
+            Ok(transport.with_clock(std::sync::Arc::new(clock)))
         }
     }
 
@@ -33,6 +62,12 @@ impl PluginTransport {
     pub fn with_time_signature(mut self, numerator: u16, denominator: u16) -> Self {
         self.time_sig_numerator = numerator.max(1);
         self.time_sig_denominator = denominator.max(1);
+        self
+    }
+
+    /// Attach the authoritative musical position of a block from a remote host.
+    pub fn with_musical_position(mut self, quarter: f64, bar_start: f64, bar: u32) -> Self {
+        self.musical_position_snapshot = Some((self.sample_pos, quarter, bar_start, bar));
         self
     }
 
@@ -45,7 +80,16 @@ impl PluginTransport {
     pub fn quarter_notes(&self) -> f64 {
         self.clock_position()
             .map(|position| position.quarter)
-            .unwrap_or_else(|| self.seconds() * self.tempo / 60.0)
+            .unwrap_or_else(|| {
+                self.musical_position_snapshot.map_or_else(
+                    || self.seconds() * self.tempo / 60.0,
+                    |(sample, quarter, _, _)| {
+                        quarter
+                            + (self.sample_pos as f64 - sample as f64) * self.tempo
+                                / (f64::from(self.sample_rate) * 60.0)
+                    },
+                )
+            })
     }
 
     /// Attach the authored project clock used for musical positions.
@@ -95,6 +139,25 @@ impl PluginTransport {
         }
         let length = f64::from(self.time_sig_numerator.max(1)) * 4.0
             / f64::from(self.time_sig_denominator.max(1));
+        if let Some((sample, _, start, bar)) = self.musical_position_snapshot {
+            if self.sample_pos == sample {
+                return (
+                    self.time_sig_numerator,
+                    self.time_sig_denominator,
+                    start,
+                    bar,
+                );
+            }
+            let advance = ((self.quarter_notes() - start) / length).floor() as i64;
+            return (
+                self.time_sig_numerator,
+                self.time_sig_denominator,
+                start + advance as f64 * length,
+                i64::from(bar)
+                    .saturating_add(advance)
+                    .clamp(0, i64::from(u32::MAX)) as u32,
+            );
+        }
         let bar = (self.quarter_notes() / length).floor();
         (
             self.time_sig_numerator,
@@ -209,6 +272,19 @@ pub struct AudioProcessContext<'a> {
 
 /// A prepared stereo processor that renders one bounded block at a time.
 pub trait AudioEffect: Send {
+    /// Maximum queued MIDI messages per prepared native block; zero refuses MIDI.
+    fn midi_input_capacity(&self) -> usize {
+        0
+    }
+
+    /// Queue one message for the next native block without allocating or locking.
+    fn queue_midi_input(&mut self, _event: MidiInputEvent) -> Result<(), MidiInputError> {
+        Err(MidiInputError::Unsupported)
+    }
+
+    /// Align score input with the audio arriving at this processor's input.
+    fn configure_midi_input_latency(&mut self, _samples: u32) {}
+
     /// Reserve scratch for `max_frames` stereo frames (two interleaved samples
     /// per frame), outside processing. Implementations must
     /// preserve parameters, latency, and signal history without consuming audio.
@@ -301,6 +377,15 @@ pub trait AudioEffect: Send {
         self.process_with_transport(buffer, sample_rate, transport);
     }
 
+    /// Whether equal finite input channels remain bit-identical from reset.
+    ///
+    /// This certificate assumes equal channel history and valid shared parameter
+    /// writes throughout processing. It says nothing about arbitrary prior
+    /// stereo state or silence preservation. Unknown processors return false.
+    fn preserves_channel_equality(&self) -> bool {
+        false
+    }
+
     /// True when the device declares a control input port.
     fn supports_control_input(&self) -> bool {
         false
@@ -323,6 +408,24 @@ pub trait AudioEffect: Send {
 
     /// Set a named parameter (e.g., "ratio", "threshold", "decay").
     fn set_param(&mut self, name: &str, value: f64);
+
+    /// Resolve a parameter outside processing. Unknown devices keep named writes.
+    fn prepare_parameter(&mut self, _name: &str) -> Option<PreparedParameterHandle> {
+        None
+    }
+
+    /// Write an instance-scoped parameter without resolving its name again.
+    ///
+    /// `Unsupported` permits the existing named adapter. Every other failure
+    /// forbids retry and must remain visible through `processing_failed` and
+    /// `take_processing_failure` until the owner is prepared again.
+    fn set_prepared_parameter(
+        &mut self,
+        _handle: PreparedParameterHandle,
+        _value: f64,
+    ) -> PreparedParameterOutcome {
+        PreparedParameterOutcome::Unsupported
+    }
 
     /// Queue a named parameter change at a block-relative sample offset. The
     /// value is in the device's plain domain, like `set_param`. Returns false

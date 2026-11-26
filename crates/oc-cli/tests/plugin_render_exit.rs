@@ -276,7 +276,7 @@ fn native_vst2_tail_preparation_checks_real_state_resources_before_output() {
 fn native_vst2_owned_audio_applies_runtime_gain_to_the_real_module() {
     // The score's initial CC7 setup also controls this fixture's gain. Place
     // both observations after explicit automation points beyond that setup.
-    let source = "@project\n  tempo: 120\n@preset voice\n  source: vst2\n  plugin: \"test.fixture.vst2.tone\"\n  params: {Gain: 0.25}\n@track lead | preset: voice, instrument: synth/lead\n  automation: pluginparam_4761696e {1:2=0.25, 1:3=0.75}\n  @phrase held [1:1 - 2:1]\n    C4 w mf\n";
+    let source = "@project\n  tempo: 120\n@preset voice\n  source: vst2\n  plugin: \"test.fixture.vst2.tone\"\n  params: {Gain: 0.25}\n@track lead | preset: voice, instrument: synth/lead\n  automation: pluginparam_4761696e {1:2=0.25 curve=stairs, 1:3=0.75}\n  @phrase held [1:1 - 2:1]\n    C4 w mf\n";
     let result = component_render(source, false);
     let error = String::from_utf8_lossy(&result.output.stderr);
     assert!(result.output.status.success(), "{error}");

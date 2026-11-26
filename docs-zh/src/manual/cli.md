@@ -251,6 +251,8 @@ FREESOUND_API_KEY=... ocp sample search "riser" --provider freesound
 
 Wikimedia Commons 是默认来源，不需要密钥。Freesound 需要 API 密钥，提供 128 kbps 的试听版本。GUI 的**采样**面板可以通过 OAuth2 连接 Freesound 并下载原始文件。`ocp sample providers` 列出当前构建支持的来源。存储布局、许可规则和工具名称见[采样](../samples.md)。
 
+`ocp sample slices loop.wav --first-key 60` 打印一个 SFZ 音色补丁，每个 WAVE 提示点对应一个区域；`--gated` 让切片跟随音符长度，`--json` 则改为打印帧范围。参见[采样器](../sampler.md)。
+
 ## 区间渲染与分析
 
 窗口渲染、音频分析和 A/B 对比工具（`render_range`、`audio_analyze`、`audio_compare`）不是命令行子命令，而是运行中 GUI 的智能体接口的一部分；参见[让智能体作曲](agents.md)。

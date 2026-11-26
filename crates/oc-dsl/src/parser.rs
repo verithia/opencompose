@@ -312,7 +312,7 @@ fn parse_project_with_map(
                         control_sources.push(parse_control_source(block)?)
                     }
                     Rule::audio_clip_block => {
-                        let (line, col) = block.as_span().start_pos().line_col();
+                        let (line, col) = block.line_col();
                         audio_clips.push((parse_audio_clip(block)?, line, col));
                     }
                     Rule::vocal_tune_block => vocal_tunes.push(parse_vocal_tune(block)?),
@@ -564,7 +564,7 @@ fn parse_project_property(pair: Pair, props: &mut ProjectProperties) -> Result<(
         }
         Rule::automation_normalization_prop => {
             let value = inner.into_inner().next().unwrap();
-            let (line, col) = value.as_span().start_pos().line_col();
+            let (line, col) = value.line_col();
             let version = value
                 .as_str()
                 .parse::<crate::automation_normalization::AutomationNormalization>()
@@ -614,6 +614,22 @@ fn parse_project_property(pair: Pair, props: &mut ProjectProperties) -> Result<(
                         numerator: ts.numerator,
                         denominator: ts.denominator,
                     });
+                }
+            }
+        }
+        Rule::playlist_rows_prop => {
+            for row in inner.into_inner() {
+                let mut fields = row.into_inner();
+                let id = fields.next().unwrap();
+                let number = id.as_str().parse::<std::num::NonZeroU16>().map_err(|_| {
+                    unsupported(id.clone(), "Playlist row must be from 1 to 65535".into())
+                })?;
+                let name = parse_string_literal(fields.next().unwrap());
+                if name.trim().is_empty() || props.playlist_rows.insert(number, name).is_some() {
+                    return Err(unsupported(
+                        id,
+                        "Blank or duplicate Playlist row name".into(),
+                    ));
                 }
             }
         }
@@ -683,7 +699,7 @@ fn parse_track(pair: Pair) -> Result<Track, ParseError> {
                                         ));
                                     }
                                     Rule::channel_prop => {
-                                        let (line, col) = p.as_span().start_pos().line_col();
+                                        let (line, col) = p.line_col();
                                         let value = p.into_inner().next().unwrap();
                                         channel =
                                             Some(value.as_str().parse::<u8>().map_err(|_| {
@@ -712,7 +728,7 @@ fn parse_track(pair: Pair) -> Result<Track, ParseError> {
                 let content = inner.into_inner().next().unwrap();
                 match content.as_rule() {
                     Rule::performance_block => {
-                        let (line, col) = content.as_span().start_pos().line_col();
+                        let (line, col) = content.line_col();
                         let failure = |message| ParseError::Syntax { line, col, message };
                         if performance.is_some() {
                             return Err(failure("duplicate performance block".into()));
@@ -778,7 +794,7 @@ fn parse_track(pair: Pair) -> Result<Track, ParseError> {
 }
 
 fn parse_output_port(pair: Pair) -> Result<u16, ParseError> {
-    let (line, col) = pair.as_span().start_pos().line_col();
+    let (line, col) = pair.line_col();
     pair.into_inner()
         .next()
         .unwrap()
@@ -792,7 +808,7 @@ fn parse_output_port(pair: Pair) -> Result<u16, ParseError> {
 }
 
 fn parse_output_pair(pair: Pair) -> Result<u16, ParseError> {
-    let (line, col) = pair.as_span().start_pos().line_col();
+    let (line, col) = pair.line_col();
     pair.into_inner()
         .next()
         .unwrap()
@@ -831,7 +847,7 @@ fn parse_preset_def(pair: Pair) -> Result<PresetDef, ParseError> {
                     }
                     Rule::preset_program_prop => {
                         let n = content.into_inner().next().unwrap();
-                        let (line, col) = n.as_span().start_pos().line_col();
+                        let (line, col) = n.line_col();
                         let written = n.as_str();
                         program = Some(written.parse::<u8>().map_err(|_| ParseError::Syntax {
                             line,
@@ -1122,6 +1138,7 @@ fn parse_note_text(text: &str) -> Option<u8> {
 fn parse_audio_clip(pair: Pair) -> Result<AudioClip, ParseError> {
     let mut name = String::new();
     let mut track = String::new();
+    let mut playlist_lane = None;
     let mut file = String::new();
     let mut time_range = TimeRange {
         start: BarBeat::new(1, 1, 0),
@@ -1129,9 +1146,11 @@ fn parse_audio_clip(pair: Pair) -> Result<AudioClip, ParseError> {
     };
     let mut placement = AudioClipPlacement::default();
     let mut offset_seconds = 0.0;
+    let mut stereo_offset_seconds = 0.0;
     let mut gain_db = 0.0;
     let mut fade_in_seconds = 0.0;
     let mut fade_out_seconds = 0.0;
+    let mut fade_curves = AudioFadeCurves::default();
     let mut invert = false;
     let mut crossfade_seconds = 0.0;
     let mut stretch = 1.0;
@@ -1147,6 +1166,7 @@ fn parse_audio_clip(pair: Pair) -> Result<AudioClip, ParseError> {
     let mut take = None;
     let mut muted = false;
     let mut gain_envelope = Vec::new();
+    let mut gain_envelope_interpolation = ClipGainInterpolation::Decibels;
 
     for inner in pair.into_inner() {
         match inner.as_rule() {
@@ -1161,9 +1181,18 @@ fn parse_audio_clip(pair: Pair) -> Result<AudioClip, ParseError> {
                     Rule::audio_clip_file_prop => {
                         file = parse_string_literal(content.into_inner().next().unwrap());
                     }
+                    Rule::playlist_lane_prop => parse_playlist_lane(content, &mut playlist_lane)?,
                     Rule::audio_clip_placement_start_prop => {
                         placement.start_offset_seconds =
                             parse_time_value(content.into_inner().next().unwrap());
+                    }
+                    Rule::audio_clip_placement_start_quantization_prop => {
+                        let mode = content.into_inner().next().unwrap();
+                        placement.start_quantization = match mode.as_str() {
+                            "nearest" => AudioClipStartQuantization::Nearest,
+                            "offset_aware" => AudioClipStartQuantization::OffsetAware,
+                            _ => unreachable!("validated start quantization"),
+                        };
                     }
                     Rule::audio_clip_placement_end_prop => {
                         placement.end_offset_seconds =
@@ -1172,11 +1201,28 @@ fn parse_audio_clip(pair: Pair) -> Result<AudioClip, ParseError> {
                     Rule::audio_clip_offset_prop => {
                         offset_seconds = parse_time_value(content.into_inner().next().unwrap());
                     }
+                    Rule::audio_clip_stereo_offset_prop => {
+                        stereo_offset_seconds =
+                            parse_time_value(content.into_inner().next().unwrap());
+                    }
                     Rule::audio_clip_loop_prop => {
                         loop_seconds = parse_time_value(content.into_inner().next().unwrap());
                     }
                     Rule::audio_clip_gain_prop => {
                         gain_db = parse_db_value(content.into_inner().next().unwrap());
+                    }
+                    Rule::audio_clip_gain_interpolation_prop => {
+                        gain_envelope_interpolation = if content
+                            .into_inner()
+                            .next()
+                            .unwrap()
+                            .as_str()
+                            == "linear_amplitude"
+                        {
+                            ClipGainInterpolation::LinearAmplitude
+                        } else {
+                            ClipGainInterpolation::Decibels
+                        };
                     }
                     Rule::audio_clip_gain_envelope_prop => {
                         gain_envelope = content
@@ -1195,6 +1241,18 @@ fn parse_audio_clip(pair: Pair) -> Result<AudioClip, ParseError> {
                     }
                     Rule::audio_clip_fade_out_prop => {
                         fade_out_seconds = parse_time_value(content.into_inner().next().unwrap());
+                    }
+                    Rule::audio_clip_fade_in_curve_prop | Rule::audio_clip_fade_out_curve_prop => {
+                        let destination =
+                            if content.as_rule() == Rule::audio_clip_fade_in_curve_prop {
+                                &mut fade_curves.fade_in
+                            } else {
+                                &mut fade_curves.fade_out
+                            };
+                        let bezier = content.into_inner().next().unwrap();
+                        let mut args = bezier.into_inner();
+                        *destination =
+                            Some(std::array::from_fn(|_| parse_number(args.next().unwrap())));
                     }
                     Rule::audio_clip_invert_prop => {
                         invert = content.into_inner().next().unwrap().as_str() == "true";
@@ -1255,13 +1313,16 @@ fn parse_audio_clip(pair: Pair) -> Result<AudioClip, ParseError> {
     Ok(AudioClip {
         name,
         track,
+        playlist_lane,
         file,
         time_range,
         placement,
         offset_seconds,
+        stereo_offset_seconds,
         gain_db,
         fade_in_seconds,
         fade_out_seconds,
+        fade_curves,
         invert,
         crossfade_seconds,
         stretch,
@@ -1277,6 +1338,7 @@ fn parse_audio_clip(pair: Pair) -> Result<AudioClip, ParseError> {
         take,
         muted,
         gain_envelope,
+        gain_envelope_interpolation,
     })
 }
 
@@ -1296,7 +1358,7 @@ struct ControlSourceDraft {
 }
 
 fn parse_control_source(pair: Pair) -> Result<ControlSource, ParseError> {
-    let (line, col) = pair.as_span().start_pos().line_col();
+    let (line, col) = pair.line_col();
     let mut name = String::new();
     let mut draft = ControlSourceDraft {
         source_track: None,
@@ -1798,17 +1860,17 @@ fn parse_instrument_path(pair: Pair) -> InstrumentPath {
 /// One `route:` line: an optional kind (audio is the default), a source and an
 /// effect address in the owner's chain.
 fn parse_route_line(pair: Pair) -> Result<InputRoute, ParseError> {
-    let (line, col) = pair.as_span().start_pos().line_col();
+    let (line, col) = pair.line_col();
     let mut kind = RouteKind::Audio;
     let mut source = String::new();
     let mut target = String::new();
     for inner in pair.into_inner() {
         match inner.as_rule() {
             Rule::route_kind => {
-                kind = if inner.as_str() == "control" {
-                    RouteKind::Control
-                } else {
-                    RouteKind::Audio
+                kind = match inner.as_str() {
+                    "control" => RouteKind::Control,
+                    "midi" => RouteKind::Midi,
+                    _ => RouteKind::Audio,
                 };
             }
             Rule::route_target => target = inner.as_str().to_string(),
@@ -1939,7 +2001,7 @@ fn parse_mix_line(pair: Pair) -> Result<MixState, ParseError> {
             }
             Rule::latency_prop => {
                 let val = inner.into_inner().next().unwrap();
-                let (line, col) = val.as_span().start_pos().line_col();
+                let (line, col) = val.line_col();
                 let written = val.as_str();
                 mix.latency_offset = written.parse::<i32>().map_err(|_| ParseError::Syntax {
                     line,
@@ -1995,7 +2057,7 @@ fn parse_effect_entry(pair: Pair) -> Result<Effect, ParseError> {
     let effect_type = if let Some(rest) = type_str.strip_prefix("plugin:") {
         let id = if rest.starts_with('"') {
             serde_json::from_str::<String>(rest).map_err(|_| {
-                let (line, col) = type_pair.as_span().start_pos().line_col();
+                let (line, col) = type_pair.line_col();
                 ParseError::Syntax {
                     line,
                     col,
@@ -2008,7 +2070,7 @@ fn parse_effect_entry(pair: Pair) -> Result<Effect, ParseError> {
         EffectType::Plugin(id)
     } else {
         EffectType::builtin_from_name(type_str).ok_or_else(|| {
-            let (line, col) = type_pair.as_span().start_pos().line_col();
+            let (line, col) = type_pair.line_col();
             ParseError::Syntax {
                 line,
                 col,
@@ -2029,7 +2091,7 @@ fn parse_effect_entry(pair: Pair) -> Result<Effect, ParseError> {
                 let name = name_pair.as_str().to_string();
                 let raw_value = ep_inner.next().unwrap().as_str().to_string();
                 if name == "bypass" {
-                    let (line, col) = name_pair.as_span().start_pos().line_col();
+                    let (line, col) = name_pair.line_col();
                     if bypass.is_some() {
                         return Err(ParseError::Syntax {
                             line,
@@ -2047,7 +2109,18 @@ fn parse_effect_entry(pair: Pair) -> Result<Effect, ParseError> {
                         );
                     continue;
                 }
-                let value = parse_effect_value(&raw_value);
+                let value = if raw_value.starts_with('"') {
+                    let (line, col) = name_pair.line_col();
+                    ParamValue::String(serde_json::from_str(&raw_value).map_err(|error| {
+                        ParseError::Syntax {
+                            line,
+                            col,
+                            message: format!("invalid quoted effect value: {error}"),
+                        }
+                    })?)
+                } else {
+                    parse_effect_value(&raw_value)
+                };
                 params.push((name, value));
             }
         }
@@ -2076,6 +2149,27 @@ fn parse_effect_entry(pair: Pair) -> Result<Effect, ParseError> {
 // Phrase
 // ============================================================================
 
+fn parse_playlist_lane(
+    property: Pair,
+    target: &mut Option<std::num::NonZeroU16>,
+) -> Result<(), ParseError> {
+    let value = property.into_inner().next().unwrap();
+    let (line, col) = value.line_col();
+    if target.is_some() {
+        return Err(ParseError::Syntax {
+            line,
+            col,
+            message: "Duplicate playlist_lane".into(),
+        });
+    }
+    *target = Some(value.as_str().parse().map_err(|_| ParseError::Syntax {
+        line,
+        col,
+        message: "playlist_lane must be an integer from 1 to 65535".into(),
+    })?);
+    Ok(())
+}
+
 fn parse_phrase(pair: Pair) -> Result<Phrase, ParseError> {
     let mut name = String::new();
     let mut time_range = None;
@@ -2083,7 +2177,8 @@ fn parse_phrase(pair: Pair) -> Result<Phrase, ParseError> {
     let mut pedals = Vec::new();
     let mut hairpins = Vec::new();
     let mut channel = None;
-    let mut previous_end_line = None;
+    let mut playlist_lane = None;
+    let mut previous_end_position = None;
 
     for inner in pair.into_inner() {
         match inner.as_rule() {
@@ -2092,8 +2187,9 @@ fn parse_phrase(pair: Pair) -> Result<Phrase, ParseError> {
                     match h.as_rule() {
                         Rule::identifier | Rule::string_literal => name = name_of(h),
                         Rule::time_range => time_range = Some(parse_time_range(h)),
+                        Rule::playlist_lane_prop => parse_playlist_lane(h, &mut playlist_lane)?,
                         Rule::channel_prop => {
-                            let (line, col) = h.as_span().start_pos().line_col();
+                            let (line, col) = h.line_col();
                             let value = h.into_inner().next().unwrap();
                             channel = Some(value.as_str().parse::<u8>().map_err(|_| {
                                 ParseError::Syntax {
@@ -2108,12 +2204,14 @@ fn parse_phrase(pair: Pair) -> Result<Phrase, ParseError> {
                 }
             }
             Rule::phrase_event => {
-                let end_line = inner.as_span().end_pos().line_col().0;
+                // Only a malformed comma needs the previous event's end line;
+                // resolving every end position rescans the source per note.
+                let end_position = inner.as_span().end_pos();
                 let evt = inner.into_inner().next().unwrap();
                 match evt.as_rule() {
                     Rule::note_line => items.push(parse_note_line(evt)?),
                     Rule::rest_event => {
-                        let position = evt.as_span().start_pos().line_col();
+                        let position = evt.line_col();
                         items.push(ParsedNote::Single(parse_rest_event(evt)?, position));
                     }
                     Rule::pedal_event => pedals.push(parse_pedal_event(evt)),
@@ -2121,11 +2219,11 @@ fn parse_phrase(pair: Pair) -> Result<Phrase, ParseError> {
                     Rule::hairpin_event => hairpins.push(parse_hairpin_event(evt)),
                     Rule::hairpin_missing_position => return Err(hairpin_needs_position(evt)),
                     Rule::unclosed_chord => return Err(unclosed_chord_error(evt)),
-                    Rule::bad_comma_line => return Err(comma_error(evt, previous_end_line)),
+                    Rule::bad_comma_line => return Err(comma_error(evt, previous_end_position)),
                     Rule::bar_line => {} // skip bar lines (visual only)
                     _ => {}
                 }
-                previous_end_line = Some(end_line);
+                previous_end_position = Some(end_position);
             }
             _ => {}
         }
@@ -2142,6 +2240,7 @@ fn parse_phrase(pair: Pair) -> Result<Phrase, ParseError> {
 
     Ok(Phrase {
         name,
+        playlist_lane,
         time_range,
         events,
         pedals,
@@ -2271,7 +2370,8 @@ fn expand_notes(
 /// line's position; the members may also carry chord tokens, which expand to
 /// one event per pitch.
 fn parse_note_line(pair: Pair) -> Result<ParsedNote, ParseError> {
-    let line_start = pair.as_span().start_pos().line_col().0;
+    // Pairs share pest's line index; a span position scans from the file head.
+    let line_start = pair.line_col().0;
     let mut start_beat = 0.0;
     let mut explicit_position = false;
     let mut grace = false;
@@ -2291,8 +2391,8 @@ fn parse_note_line(pair: Pair) -> Result<ParsedNote, ParseError> {
             Rule::comma => pending_comma = Some(inner),
             Rule::note_member => {
                 if let Some(comma) = pending_comma.take() {
-                    let (comma_line, comma_col) = comma.as_span().start_pos().line_col();
-                    let member_line = inner.as_span().start_pos().line_col().0;
+                    let (comma_line, comma_col) = comma.line_col();
+                    let member_line = inner.line_col().0;
                     if comma_line != line_start || member_line != line_start {
                         return Err(ParseError::Syntax {
                             line: comma_line,
@@ -2393,7 +2493,7 @@ struct NoteMember {
 }
 
 fn parse_note_member(pair: Pair) -> Result<NoteMember, ParseError> {
-    let (line, col) = pair.as_span().start_pos().line_col();
+    let (line, col) = pair.line_col();
     let mut pitches = None;
     let mut duration = None;
     let mut dynamics = None;
@@ -2435,7 +2535,7 @@ fn parse_note_member(pair: Pair) -> Result<NoteMember, ParseError> {
                         pitch_bend = Some(parse_cents_value(cents));
                     }
                     Rule::gliss_mod => {
-                        let (mark_line, mark_col) = modifier.as_span().start_pos().line_col();
+                        let (mark_line, mark_col) = modifier.line_col();
                         let value =
                             parse_gliss_value(modifier).map_err(|message| ParseError::Syntax {
                                 line: mark_line,
@@ -2499,6 +2599,10 @@ fn parse_note_member(pair: Pair) -> Result<NoteMember, ParseError> {
         // Every other pitch control is channel-wide or note-wide; a mark writes
         // the note's own pitch curve, so it cannot share the job.
         if let Some(conflict) = [
+            (
+                "pitch_curve_mode",
+                modifiers.iter().any(|(key, _)| key == "pitch_curve_mode"),
+            ),
             ("bend", pitch_bend.is_some()),
             ("vibrato", vibrato.is_some()),
             ("expression", expression.is_some()),
@@ -2550,9 +2654,10 @@ fn parse_note_member(pair: Pair) -> Result<NoteMember, ParseError> {
     })
 }
 
-/// A malformed comma line. `previous_end_line` is the line of the last event
-/// the phrase produced, which separates a trailing comma from a leading one.
-fn comma_error(pair: Pair, previous_end_line: Option<usize>) -> ParseError {
+/// Resolve the previous event's end only for a malformed comma. Its line
+/// separates a trailing comma from a leading one without per-note scans.
+fn comma_error(pair: Pair, previous_end_position: Option<pest::Position<'_>>) -> ParseError {
+    let previous_end_line = previous_end_position.map(|position| position.line_col().0);
     let fallback_span = pair.as_span();
     let mut comma = None;
     let mut position = None;
@@ -2608,7 +2713,7 @@ fn member_problem(tail: &str) -> String {
 }
 
 fn unclosed_chord_error(pair: Pair) -> ParseError {
-    let (line, col) = pair.as_span().start_pos().line_col();
+    let (line, col) = pair.line_col();
     ParseError::Syntax {
         line,
         col,
@@ -2619,7 +2724,7 @@ fn unclosed_chord_error(pair: Pair) -> ParseError {
 /// Parse a chord token's contents. The token text is `[<member> <member> ...]`;
 /// whitespace both inside and around members is insignificant.
 fn parse_chord(pair: Pair) -> Result<Vec<Pitch>, ParseError> {
-    let (line, col) = pair.as_span().start_pos().line_col();
+    let (line, col) = pair.line_col();
     let text = pair.as_str();
     let inner = &text[1..text.len() - 1];
     let refuse = |message: String| ParseError::Syntax { line, col, message };
@@ -3053,13 +3158,16 @@ fn parse_drum_articulation(pair: Pair) -> Result<DrumArticulation, ParseError> {
 
 fn parse_automation(pair: Pair) -> Result<AutomationLane, ParseError> {
     let mut param = String::new();
+    let mut playlist_lane = None;
     let mut time_range = None;
     let mut muted = false;
+    let mut preserve_discontinuities = false;
     let mut ppq = 0;
     let mut smoothing_ms = 0.0;
     let mut mode = LaneMode::Envelope;
     let mut lfo = LaneLfo::default();
     let mut points = Vec::new();
+    let mut value_mapping = None;
 
     for inner in pair.into_inner() {
         match inner.as_rule() {
@@ -3070,7 +3178,9 @@ fn parse_automation(pair: Pair) -> Result<AutomationLane, ParseError> {
                     time_range = Some(TimeRange { start, end });
                 }
             }
+            Rule::automation_playlist_lane => parse_playlist_lane(inner, &mut playlist_lane)?,
             Rule::automation_muted => muted = true,
+            Rule::automation_discontinuities => preserve_discontinuities = true,
             Rule::automation_ppq => {
                 ppq = inner
                     .into_inner()
@@ -3137,47 +3247,27 @@ fn parse_automation(pair: Pair) -> Result<AutomationLane, ParseError> {
                     .map(parse_number)
                     .unwrap_or(lfo.amount);
             }
+            Rule::automation_value_mapping => {
+                let mapping = parse_automation_mapping(inner);
+                value_mapping = Some(mapping);
+            }
             Rule::automation_points => {
-                for ap in inner.into_inner() {
-                    if ap.as_rule() == Rule::automation_point {
-                        let mut parts = ap.into_inner();
-                        let pos = parse_bar_beat(parts.next().unwrap());
-                        let val = parse_param_value(parts.next().unwrap());
-                        let mut curve = Curve::Linear;
-                        let mut tension = None;
-                        for attribute in parts {
-                            match attribute.as_rule() {
-                                Rule::automation_curve => {
-                                    curve = attribute
-                                        .into_inner()
-                                        .next()
-                                        .and_then(|name| Curve::from_keyword(name.as_str()))
-                                        .unwrap_or(Curve::Linear);
-                                }
-                                Rule::automation_tension => {
-                                    tension = attribute
-                                        .into_inner()
-                                        .next()
-                                        .and_then(|value| value.as_str().parse().ok());
-                                }
-                                _ => {}
-                            }
-                        }
-                        points.push(AutomationPoint {
-                            position: pos,
-                            value: val,
-                            curve,
-                            tension,
-                        });
-                    }
-                }
+                points.extend(
+                    inner
+                        .into_inner()
+                        .filter(|point| point.as_rule() == Rule::automation_point)
+                        .map(parse_automation_point),
+                );
             }
             _ => {}
         }
     }
 
     Ok(AutomationLane {
+        preserve_discontinuities,
+        value_mapping,
         param,
+        playlist_lane,
         time_range,
         muted,
         ppq,
@@ -3212,7 +3302,7 @@ fn parse_lfo_speed(pair: Pair) -> Option<LfoSpeed> {
 // ============================================================================
 
 fn parse_control_link(pair: Pair) -> Result<ControlLink, ParseError> {
-    let (line, col) = pair.as_span().start_pos().line_col();
+    let (line, col) = pair.line_col();
     let mut name = String::new();
     let mut source = None;
     let mut targets = Vec::new();
@@ -3260,9 +3350,17 @@ fn parse_control_link_source(pair: Pair) -> Result<ControlLinkSource, ParseError
             })
         }
         Rule::control_link_macro => {
-            let values = numbers(value);
-            Ok(ControlLinkSource::Macro {
-                index: *values.first().unwrap_or(&1),
+            let mut fields = value.into_inner();
+            let index = fields
+                .next()
+                .and_then(|pair| pair.as_str().parse::<u8>().ok())
+                .unwrap_or(0);
+            Ok(match fields.next() {
+                Some(preset) => ControlLinkSource::PresetMacro {
+                    preset: name_of(preset),
+                    index,
+                },
+                None => ControlLinkSource::Macro { index },
             })
         }
         Rule::control_link_lane => {
@@ -3280,7 +3378,7 @@ fn parse_control_link_source(pair: Pair) -> Result<ControlLinkSource, ParseError
 }
 
 fn parse_control_link_target(pair: Pair) -> Result<ControlLinkTarget, ParseError> {
-    let (line, col) = pair.as_span().start_pos().line_col();
+    let (line, col) = pair.line_col();
     let body = pair
         .into_inner()
         .flat_map(|target| target.into_inner())
@@ -3293,6 +3391,7 @@ fn parse_control_link_target(pair: Pair) -> Result<ControlLinkTarget, ParseError
     let mut track = String::new();
     let mut param = String::new();
     let mut formula = LinkFormula::Linear;
+    let mut value_mapping = None;
     let mut smoothing_ms = 0u32;
     for inner in body.into_inner() {
         match inner.as_rule() {
@@ -3305,6 +3404,9 @@ fn parse_control_link_target(pair: Pair) -> Result<ControlLinkTarget, ParseError
                     .as_str()
                     .parse::<LinkFormula>()
                     .map_err(|message| ParseError::Syntax { line, col, message })?;
+            }
+            Rule::automation_value_mapping => {
+                value_mapping = Some(parse_automation_mapping(inner));
             }
             Rule::control_link_smoothing => {
                 let value = inner
@@ -3324,6 +3426,7 @@ fn parse_control_link_target(pair: Pair) -> Result<ControlLinkTarget, ParseError
         track,
         param,
         formula,
+        value_mapping,
         smoothing_ms,
     })
 }
@@ -3332,12 +3435,94 @@ fn parse_control_link_target(pair: Pair) -> Result<ControlLinkTarget, ParseError
 // Bus, Master, Section
 // ============================================================================
 
+fn parse_automation_point(pair: Pair) -> AutomationPoint {
+    let mut parts = pair.into_inner();
+    let mut point = AutomationPoint {
+        position: parse_bar_beat(parts.next().unwrap()),
+        value: parse_param_value(parts.next().unwrap()),
+        curve: Curve::Linear,
+        tension: None,
+        curvature: None,
+    };
+    for attribute in parts {
+        match attribute.as_rule() {
+            Rule::automation_curve => {
+                point.curve = attribute
+                    .into_inner()
+                    .next()
+                    .and_then(|v| Curve::from_keyword(v.as_str()))
+                    .unwrap_or(Curve::Linear)
+            }
+            Rule::automation_tension => {
+                point.tension = attribute
+                    .into_inner()
+                    .next()
+                    .and_then(|v| v.as_str().parse().ok())
+            }
+            Rule::automation_curvature => {
+                point.curvature = attribute
+                    .into_inner()
+                    .next()
+                    .and_then(|v| v.as_str().parse().ok())
+            }
+            _ => {}
+        }
+    }
+    point
+}
+
+fn parse_automation_mapping(pair: Pair) -> AutomationValueMapping {
+    let mut mapping = AutomationValueMapping::default();
+    for attribute in pair.into_inner() {
+        match attribute.as_rule() {
+            Rule::mapping_curve => {
+                mapping.curve = if attribute.as_str() == "exponential" {
+                    ValueMappingCurve::Exponential
+                } else {
+                    ValueMappingCurve::Linear
+                }
+            }
+            Rule::automation_curvature => {
+                mapping.curvature = attribute
+                    .into_inner()
+                    .next()
+                    .and_then(|v| v.as_str().parse::<f64>().ok())
+            }
+            Rule::mapping_scale => {
+                mapping.scale = attribute
+                    .into_inner()
+                    .next()
+                    .and_then(|v| v.as_str().parse::<f64>().ok())
+                    .unwrap_or(1.0)
+            }
+            Rule::mapping_quantization => {
+                mapping.input_quantization_steps = Some(
+                    attribute
+                        .into_inner()
+                        .next()
+                        .and_then(|v| v.as_str().parse().ok())
+                        .unwrap_or(0),
+                );
+            }
+            Rule::mapping_offset => {
+                mapping.offset = attribute
+                    .into_inner()
+                    .next()
+                    .and_then(|v| v.as_str().parse::<f64>().ok())
+                    .unwrap_or(0.0)
+            }
+            _ => {}
+        }
+    }
+    mapping
+}
+
 fn parse_gain_automation(pair: Pair) -> Result<GainAutomation, ParseError> {
     let mut parts = pair.into_inner();
-    let interpolation = if parts.next().unwrap().as_str() == "step" {
-        GainInterpolation::Step
-    } else {
-        GainInterpolation::Linear
+    let interpolation = match parts.next().unwrap().as_str() {
+        "step" => GainInterpolation::Step,
+        "segments" => GainInterpolation::Segments,
+        _ => GainInterpolation::Linear,
     };
     let mut range = parts.next().unwrap();
     let ppq = if range.as_rule() == Rule::gain_ppq {
@@ -3351,28 +3536,36 @@ fn parse_gain_automation(pair: Pair) -> Result<GainAutomation, ParseError> {
         range = parts.next().unwrap();
         ppq
     } else {
-        4
+        oc_device_schema::automation_curves::DEFAULT_GAIN_PPQ
     };
     let time_range = parse_time_range(range);
-    let points = parts
-        .next()
-        .unwrap()
-        .into_inner()
-        .map(|point| {
-            let mut values = point.into_inner();
-            AutomationPoint {
-                position: parse_bar_beat(values.next().unwrap()),
-                value: parse_param_value(values.next().unwrap()),
-                curve: Curve::Linear,
-                tension: None,
+    let mut playlist_lane = None;
+    let mut value_mapping = None;
+    let mut preserve_discontinuities = false;
+    let mut points = Vec::new();
+    for part in parts {
+        match part.as_rule() {
+            Rule::automation_playlist_lane => parse_playlist_lane(part, &mut playlist_lane)?,
+            Rule::automation_discontinuities => preserve_discontinuities = true,
+            Rule::automation_value_mapping => value_mapping = Some(parse_automation_mapping(part)),
+            Rule::automation_points => {
+                points.extend(
+                    part.into_inner()
+                        .filter(|point| point.as_rule() == Rule::automation_point)
+                        .map(parse_automation_point),
+                );
             }
-        })
-        .collect();
+            _ => {}
+        }
+    }
     Ok(GainAutomation {
+        playlist_lane,
         time_range,
         interpolation,
         ppq,
         points,
+        value_mapping,
+        preserve_discontinuities,
     })
 }
 
@@ -3558,8 +3751,8 @@ fn parse_section(pair: Pair) -> Result<Section, ParseError> {
                     Rule::flags_line => {
                         if flags.is_some() {
                             return Err(ParseError::Syntax {
-                                line: content.as_span().start_pos().line_col().0,
-                                col: content.as_span().start_pos().line_col().1,
+                                line: content.line_col().0,
+                                col: content.line_col().1,
                                 message: "a section carries one `flags:` line".into(),
                             });
                         }
@@ -3590,8 +3783,8 @@ fn parse_sound_flag(pair: Pair) -> Result<Articulation, ParseError> {
         "sul_pont" | "sul_ponticello" => Ok(Articulation::SulPonticello),
         "sul_tasto" => Ok(Articulation::SulTasto),
         other => Err(ParseError::Syntax {
-            line: pair.as_span().start_pos().line_col().0,
-            col: pair.as_span().start_pos().line_col().1,
+            line: pair.line_col().0,
+            col: pair.line_col().1,
             message: format!("unknown section sound flag '{other}'"),
         }),
     }
@@ -3717,10 +3910,10 @@ fn parse_param_value(pair: Pair) -> ParamValue {
     let inner = pair.into_inner().next().unwrap();
     match inner.as_rule() {
         Rule::db_value => ParamValue::Db(parse_db_value(inner)),
-        Rule::percentage => ParamValue::Percentage(parse_percentage(inner)),
-        Rule::freq_value => ParamValue::Frequency(parse_freq_value(inner)),
-        Rule::cents_value => ParamValue::Cents(parse_cents_value(inner)),
-        Rule::time_value => ParamValue::Time(parse_time_value(inner)),
+        Rule::signed_percentage => ParamValue::Percentage(parse_percentage(inner)),
+        Rule::signed_freq_value => ParamValue::Frequency(parse_freq_value(inner)),
+        Rule::signed_cents_value => ParamValue::Cents(parse_cents_value(inner)),
+        Rule::signed_time_value => ParamValue::Time(parse_time_value(inner)),
         Rule::signed_number => ParamValue::Number(parse_number(inner)),
         Rule::array_value => ParamValue::Array(inner.into_inner().map(parse_number).collect()),
         Rule::string_literal => ParamValue::String(parse_string_literal(inner)),
@@ -3731,7 +3924,7 @@ fn parse_param_value(pair: Pair) -> ParamValue {
 
 /// Parse a raw effect parameter value string into a ParamValue.
 /// Tries numeric+unit patterns first, falls back to string.
-fn parse_effect_value(raw: &str) -> ParamValue {
+pub(crate) fn parse_effect_value(raw: &str) -> ParamValue {
     // Try dB: "-3dB", "+2dB", "0dB"
     if raw.ends_with("dB")
         && let Ok(v) = raw[..raw.len() - 2].parse::<f64>()
@@ -3943,7 +4136,7 @@ fn name_of(pair: Pair) -> String {
 
 /// Reject a keyword whose value has no consumer, at the token that carries it.
 fn unsupported(pair: Pair, message: String) -> ParseError {
-    let (line, col) = pair.as_span().start_pos().line_col();
+    let (line, col) = pair.line_col();
     ParseError::Syntax { line, col, message }
 }
 
@@ -3992,7 +4185,7 @@ fn parse_pattern_def(pair: Pair) -> Result<PatternDef, ParseError> {
                         }
                         Rule::pattern_transpose_prop => {
                             let val = p.into_inner().next().unwrap();
-                            let (line, col) = val.as_span().start_pos().line_col();
+                            let (line, col) = val.line_col();
                             let written = val.as_str();
                             let semitones =
                                 written.parse::<i16>().map_err(|_| ParseError::Syntax {
@@ -4019,7 +4212,7 @@ fn parse_pattern_def(pair: Pair) -> Result<PatternDef, ParseError> {
                         }
                         Rule::pattern_bars_prop => {
                             let val = p.into_inner().next().unwrap();
-                            let (line, col) = val.as_span().start_pos().line_col();
+                            let (line, col) = val.line_col();
                             let length = parse_number(val);
                             if !length.is_finite() || length <= 0.0 {
                                 return Err(ParseError::Syntax {
@@ -4042,15 +4235,15 @@ fn parse_pattern_def(pair: Pair) -> Result<PatternDef, ParseError> {
                 match content.as_rule() {
                     Rule::events_block => {
                         let mut items = Vec::new();
-                        let mut previous_end_line = None;
+                        let mut previous_end_position = None;
                         for evt in content.into_inner() {
                             if evt.as_rule() == Rule::phrase_event {
-                                let end_line = evt.as_span().end_pos().line_col().0;
+                                let end_position = evt.as_span().end_pos();
                                 let ev = evt.into_inner().next().unwrap();
                                 match ev.as_rule() {
                                     Rule::note_line => items.push(parse_note_line(ev)?),
                                     Rule::rest_event => {
-                                        let position = ev.as_span().start_pos().line_col();
+                                        let position = ev.line_col();
                                         items.push(ParsedNote::Single(
                                             parse_rest_event(ev)?,
                                             position,
@@ -4066,11 +4259,11 @@ fn parse_pattern_def(pair: Pair) -> Result<PatternDef, ParseError> {
                                     }
                                     Rule::unclosed_chord => return Err(unclosed_chord_error(ev)),
                                     Rule::bad_comma_line => {
-                                        return Err(comma_error(ev, previous_end_line));
+                                        return Err(comma_error(ev, previous_end_position));
                                     }
                                     _ => {}
                                 }
-                                previous_end_line = Some(end_line);
+                                previous_end_position = Some(end_position);
                             }
                         }
                         expand_notes(items, &mut events, &mut positions);
@@ -4196,6 +4389,87 @@ mod tests {
     use super::*;
 
     #[test]
+    fn phrase_playlist_lane_and_midi_channel_are_independent() {
+        let text = "@project\n@track lead | instrument: synth/lead\n\
+                    @phrase theme [1:1 - 2:1] | channel: 2, playlist_lane: 7\n  C4 q mf\n";
+        let project = parse(text).unwrap();
+        let phrase = &project.tracks[0].phrases[0];
+        assert_eq!(phrase.channel, Some(2));
+        assert_eq!(phrase.playlist_lane.unwrap().get(), 7);
+        assert_eq!(parse(&crate::serialize(&project)).unwrap(), project);
+        assert!(parse(&text.replace("playlist_lane: 7", "playlist_lane: 0")).is_err());
+    }
+
+    #[test]
+    fn audio_clip_playlist_lane_round_trips_independently_of_mix_track() {
+        let text = "@project\n@track a | instrument: audio/clip\n@track b | instrument: audio/clip\n\
+                    @audio_clip first [1:1 - 2:1] | track: a\n  file: \"a.wav\"\n  playlist_lane: 7\n\
+                    @audio_clip next [2:1 - 3:1] | track: b\n  file: \"b.wav\"\n  playlist_lane: 7\n";
+        let project = parse(text).unwrap();
+        let values: Vec<_> = project
+            .audio_clips()
+            .into_iter()
+            .map(|clip| (clip.track.as_str(), clip.playlist_lane.unwrap().get()))
+            .collect();
+        assert_eq!(values, vec![("a", 7), ("b", 7)]);
+        assert_eq!(parse(&crate::serialize(&project)).unwrap(), project);
+        for invalid in ["0", "65536", "7\n  playlist_lane: 8"] {
+            assert!(
+                parse(&text.replacen("playlist_lane: 7", &format!("playlist_lane: {invalid}"), 1))
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn automation_playlist_row_stays_separate_from_the_automation_target() {
+        let text = r#"@project "Rows"
+@bus test
+  routes: [master]
+  effects:
+    - gain: factor=1
+  automation: fx1.factor playlist_lane=12 [1:1 - 2:1] [ppq=96] {1:1=0.8, 2:1=1}
+"#;
+        let project = parse(text).unwrap();
+        crate::validate(&project).unwrap();
+        let lane = &project.buses[0].automation[0];
+        assert_eq!(lane.playlist_lane.unwrap().get(), 12);
+        assert_eq!(
+            parse(&crate::serializer::serialize(&project)).unwrap(),
+            project
+        );
+        assert!(parse(&text.replace("playlist_lane=12", "playlist_lane=0")).is_err());
+        assert!(
+            parse(&text.replace("playlist_lane=12", "playlist_lane=12 playlist_lane=4")).is_err()
+        );
+        let unscoped = parse(&text.replace("[1:1 - 2:1]", "")).unwrap();
+        assert!(crate::validate(&unscoped).is_err());
+    }
+
+    #[test]
+    fn gain_automation_playlist_row_round_trips() {
+        let text = r#"@project "Gain rows"
+@bus test
+  routes: [master]
+  gain_automation: linear [1:1 - 2:1] playlist_lane=6 {1:1=0.8, 2:1=1}
+"#;
+        let project = parse(text).unwrap();
+        crate::validate(&project).unwrap();
+        assert_eq!(
+            project.buses[0].gain_automation[0]
+                .playlist_lane
+                .unwrap()
+                .get(),
+            6
+        );
+        assert_eq!(
+            parse(&crate::serializer::serialize(&project)).unwrap(),
+            project
+        );
+        assert!(parse(&text.replace("playlist_lane=6", "playlist_lane=0")).is_err());
+    }
+
+    #[test]
     fn parameter_keys_match_the_complete_dsl_grammar() {
         for key in [
             "amp.attack",
@@ -4280,6 +4554,10 @@ mod tests {
             ("-6 dB", ParamValue::Db(-6.0)),
             ("50 %", ParamValue::Percentage(50.0)),
             ("7 ct", ParamValue::Cents(7.0)),
+            ("-25 ms", ParamValue::Time(-0.025)),
+            ("-600 Hz", ParamValue::Frequency(-600.0)),
+            ("-50 %", ParamValue::Percentage(-50.0)),
+            ("-7 ct", ParamValue::Cents(-7.0)),
         ] {
             let pair = OcpParser::parse(Rule::param_value, source)
                 .unwrap()

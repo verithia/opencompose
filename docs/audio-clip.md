@@ -79,12 +79,16 @@ for a note-driven track.
 | `| track:` | destination track name | required |
 | `file:` | media path relative to the `.ocp` file | required |
 | `placement_start:` / `placement_end:` | signed seconds added to the musical start/end anchors; move both equally to retain elapsed duration | `0` |
+| `placement_start_quantization:` | use `nearest` to round the start to the nearest render frame, including a start exactly on the musical grid. With `offset_aware`, grid starts use the preceding frame and starts with fine placement round to the nearest frame | `offset_aware` |
 | `offset:` | seconds trimmed from the start of the (stretched) media (`ms`/`s`) | `0` |
+| `stereo_offset:` | signed delay on one media channel before source trim, looping and fades; positive delays left, negative delays right. It fills the shifted start with silence without extending the media | `0` |
 | `loop:` | seconds of media the clip repeats from `offset`; shorter than the clip | `0` |
 | `gain:` | clip gain in dB (same unit as `mix: vol`) | `0 dB` |
 | `gain_envelope:` | comma-separated `position:gain` points, normalised to the clip; relative to `gain:` | absent |
+| `gain_envelope_interpolation:` | `decibels` or `linear_amplitude` between the gain envelope points | `decibels` |
 | `fade_in:` | linear fade from silence, in seconds | `0` |
 | `fade_out:` | linear fade to silence, in seconds | `0` |
+| `fade_in_curve:` / `fade_out_curve:` | optional `bezier(x1, y1, x2, y2)` controls for the fade's progress. Each coordinate is between 0 and 1. Fade-in rises along the curve and fade-out falls by its mirror in amplitude | linear |
 | `invert:` | reverse polarity at mix time | `false` |
 | `crossfade:` | equal-power fade at the head and tail, in seconds | `0` |
 | `stretch:` | time-stretch factor; `1.0` is a bit-exact bypass | `1.0` |

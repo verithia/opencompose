@@ -123,7 +123,11 @@ pub fn run_with_options(path: Option<String>, diag: DiagOptions) {
         .manage(mode)
         .manage(open_events::OpenProjectRequests::default())
         .manage(startup::StartupProject(std::sync::Mutex::new(path)))
-        .manage(AppState::new())
+        .manage({
+            let state = AppState::new();
+            state.lock_inner().audio.set_automatic_preload(mode.is_desktop());
+            state
+        })
         .manage(ai_service::Requests::default())
         .manage(ai::oauth::Attempts::default())
         .setup(move |app| {
@@ -223,7 +227,7 @@ pub fn run_with_options(path: Option<String>, diag: DiagOptions) {
             build_progress::install_engine_reports();
             // Serve the stored plugin inventory before the first panel asks;
             // a moved key refreshes it off the UI thread.
-            plugin_inventory::start(app.handle().clone());
+            plugin_inventory::start(app.handle().clone(), mode);
             agent_api::spawn(app.handle().clone());
             autosave::spawn(app.handle().clone());
             project_data::stale::spawn(app.handle().clone());
@@ -412,6 +416,9 @@ pub fn run_with_options(path: Option<String>, diag: DiagOptions) {
             commands::remove_control_link_target,
             // Live touch overrides for automated effect parameters
             commands::begin_guarded_effect_param_touch,
+            commands::begin_preset_macro_preview,
+            commands::update_preset_macro_preview,
+            commands::end_preset_macro_preview,
             commands::update_owned_effect_param_touch,
             commands::end_owned_effect_param_touch,
             commands::begin_effect_param_touch,
@@ -550,6 +557,7 @@ pub fn run_with_options(path: Option<String>, diag: DiagOptions) {
             commands::set_effect_bypass_owned,
             commands::set_effect_param,
             commands::set_effect_param_owned,
+            commands::import_effect_curve,
             commands::set_effect_params,
             commands::set_effect_params_owned,
             // Device preset library
@@ -559,6 +567,7 @@ pub fn run_with_options(path: Option<String>, diag: DiagOptions) {
             device_presets::apply_device_preset,
             commands::set_automation_smoothing,
             commands::set_automation_point_curve,
+            commands::replace_gain_automation,
             commands::set_automation_mode,
             commands::set_automation_lfo,
             commands::add_automation_point,

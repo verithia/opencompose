@@ -103,6 +103,7 @@ const BUNDLED: &[(&str, &str, &str, &[ToolId], bool)] = &[
             ToolId::EffectsRemove,
             ToolId::EffectsSetBypass,
             ToolId::EffectsSetParam,
+            ToolId::EffectsImportCurve,
             ToolId::BusesAdd,
             ToolId::BusesRoutes,
             ToolId::BusesRemove,

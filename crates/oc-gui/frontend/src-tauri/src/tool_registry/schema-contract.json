@@ -3456,6 +3456,36 @@
     "name": "effects_set_bypass"
   },
   {
+    "description": "Import a transfer-shaper curve JSON file by path as one atomic undoable edit. Read current revision first. The validated curve is retained inline in project/session snapshots; result includes hash/count/domain, not sample data. Do not put large sample arrays in tool arguments.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "expected_revision": {
+          "description": "Project revision guard; the call fails if the project moved to another revision",
+          "type": "integer"
+        },
+        "index": {
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "path": {
+          "type": "string"
+        },
+        "target": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "target",
+        "index",
+        "path",
+        "expected_revision"
+      ],
+      "type": "object"
+    },
+    "name": "effects_import_curve"
+  },
+  {
     "description": "Set an effect parameter.",
     "inputSchema": {
       "additionalProperties": false,

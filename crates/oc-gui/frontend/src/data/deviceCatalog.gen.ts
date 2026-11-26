@@ -94,6 +94,16 @@ export const DEVICE_CATALOG: DevicesCatalog = {
           "default": 1.0,
           "curve": "linear",
           "steps": null
+        },
+        {
+          "id": "mix",
+          "name": "Mix",
+          "unit": "fraction",
+          "min": 0.0,
+          "max": 1.0,
+          "default": 1.0,
+          "curve": "linear",
+          "steps": null
         }
       ],
       "ports": [
@@ -392,6 +402,23 @@ export const DEVICE_CATALOG: DevicesCatalog = {
           ]
         },
         {
+          "id": "band1_slope",
+          "name": "Band 1 Cut Slope",
+          "unit": "none",
+          "min": 0.0,
+          "max": 3.0,
+          "default": 0.0,
+          "curve": "linear",
+          "steps": 4,
+          "kind": "enum",
+          "options": [
+            "12 dB/oct",
+            "24 dB/oct",
+            "36 dB/oct",
+            "48 dB/oct"
+          ]
+        },
+        {
           "id": "band1_freq",
           "name": "Band 1 Frequency",
           "unit": "Hz",
@@ -541,6 +568,23 @@ export const DEVICE_CATALOG: DevicesCatalog = {
             "High Cut",
             "Notch",
             "Band Pass"
+          ]
+        },
+        {
+          "id": "band2_slope",
+          "name": "Band 2 Cut Slope",
+          "unit": "none",
+          "min": 0.0,
+          "max": 3.0,
+          "default": 0.0,
+          "curve": "linear",
+          "steps": 4,
+          "kind": "enum",
+          "options": [
+            "12 dB/oct",
+            "24 dB/oct",
+            "36 dB/oct",
+            "48 dB/oct"
           ]
         },
         {
@@ -696,6 +740,23 @@ export const DEVICE_CATALOG: DevicesCatalog = {
           ]
         },
         {
+          "id": "band3_slope",
+          "name": "Band 3 Cut Slope",
+          "unit": "none",
+          "min": 0.0,
+          "max": 3.0,
+          "default": 0.0,
+          "curve": "linear",
+          "steps": 4,
+          "kind": "enum",
+          "options": [
+            "12 dB/oct",
+            "24 dB/oct",
+            "36 dB/oct",
+            "48 dB/oct"
+          ]
+        },
+        {
           "id": "band3_freq",
           "name": "Band 3 Frequency",
           "unit": "Hz",
@@ -845,6 +906,23 @@ export const DEVICE_CATALOG: DevicesCatalog = {
             "High Cut",
             "Notch",
             "Band Pass"
+          ]
+        },
+        {
+          "id": "band4_slope",
+          "name": "Band 4 Cut Slope",
+          "unit": "none",
+          "min": 0.0,
+          "max": 3.0,
+          "default": 0.0,
+          "curve": "linear",
+          "steps": 4,
+          "kind": "enum",
+          "options": [
+            "12 dB/oct",
+            "24 dB/oct",
+            "36 dB/oct",
+            "48 dB/oct"
           ]
         },
         {
@@ -1000,6 +1078,23 @@ export const DEVICE_CATALOG: DevicesCatalog = {
           ]
         },
         {
+          "id": "band5_slope",
+          "name": "Band 5 Cut Slope",
+          "unit": "none",
+          "min": 0.0,
+          "max": 3.0,
+          "default": 0.0,
+          "curve": "linear",
+          "steps": 4,
+          "kind": "enum",
+          "options": [
+            "12 dB/oct",
+            "24 dB/oct",
+            "36 dB/oct",
+            "48 dB/oct"
+          ]
+        },
+        {
           "id": "band5_freq",
           "name": "Band 5 Frequency",
           "unit": "Hz",
@@ -1152,6 +1247,23 @@ export const DEVICE_CATALOG: DevicesCatalog = {
           ]
         },
         {
+          "id": "band6_slope",
+          "name": "Band 6 Cut Slope",
+          "unit": "none",
+          "min": 0.0,
+          "max": 3.0,
+          "default": 0.0,
+          "curve": "linear",
+          "steps": 4,
+          "kind": "enum",
+          "options": [
+            "12 dB/oct",
+            "24 dB/oct",
+            "36 dB/oct",
+            "48 dB/oct"
+          ]
+        },
+        {
           "id": "band6_freq",
           "name": "Band 6 Frequency",
           "unit": "Hz",
@@ -1244,6 +1356,1020 @@ export const DEVICE_CATALOG: DevicesCatalog = {
           "steps": null
         },
         {
+          "id": "band7_enabled",
+          "name": "Band 7 Enabled",
+          "unit": "none",
+          "min": 0.0,
+          "max": 1.0,
+          "default": 0.0,
+          "curve": "linear",
+          "steps": 2,
+          "kind": "bool"
+        },
+        {
+          "id": "band7_solo",
+          "name": "Band 7 Solo",
+          "unit": "none",
+          "min": 0.0,
+          "max": 1.0,
+          "default": 0.0,
+          "curve": "linear",
+          "steps": 2,
+          "kind": "bool"
+        },
+        {
+          "id": "band7_channel",
+          "name": "Band 7 Channel",
+          "unit": "none",
+          "min": 0.0,
+          "max": 4.0,
+          "default": 0.0,
+          "curve": "linear",
+          "steps": 5,
+          "kind": "enum",
+          "options": [
+            "Stereo",
+            "Mid",
+            "Side",
+            "Left",
+            "Right"
+          ]
+        },
+        {
+          "id": "band7_type",
+          "name": "Band 7 Type",
+          "unit": "none",
+          "min": 0.0,
+          "max": 6.0,
+          "default": 0.0,
+          "curve": "linear",
+          "steps": 7,
+          "kind": "enum",
+          "options": [
+            "Bell",
+            "Low Shelf",
+            "High Shelf",
+            "Low Cut",
+            "High Cut",
+            "Notch",
+            "Band Pass"
+          ]
+        },
+        {
+          "id": "band7_slope",
+          "name": "Band 7 Cut Slope",
+          "unit": "none",
+          "min": 0.0,
+          "max": 3.0,
+          "default": 0.0,
+          "curve": "linear",
+          "steps": 4,
+          "kind": "enum",
+          "options": [
+            "12 dB/oct",
+            "24 dB/oct",
+            "36 dB/oct",
+            "48 dB/oct"
+          ]
+        },
+        {
+          "id": "band7_freq",
+          "name": "Band 7 Frequency",
+          "unit": "Hz",
+          "min": 20.0,
+          "max": 20000.0,
+          "default": 12000.0,
+          "curve": "log",
+          "steps": null
+        },
+        {
+          "id": "band7_q",
+          "name": "Band 7 Q",
+          "unit": "none",
+          "min": 0.1,
+          "max": 20.0,
+          "default": 1.0,
+          "curve": "log",
+          "steps": null
+        },
+        {
+          "id": "band7_gain",
+          "name": "Band 7 Gain",
+          "unit": "dB",
+          "min": -24.0,
+          "max": 24.0,
+          "default": 0.0,
+          "curve": "linear",
+          "steps": null
+        },
+        {
+          "id": "band7_dynamic",
+          "name": "Band 7 Dynamic",
+          "unit": "none",
+          "min": 0.0,
+          "max": 1.0,
+          "default": 0.0,
+          "curve": "linear",
+          "steps": 2,
+          "kind": "bool"
+        },
+        {
+          "id": "band7_sidechain",
+          "name": "Band 7 Sidechain",
+          "unit": "none",
+          "min": 0.0,
+          "max": 1.0,
+          "default": 0.0,
+          "curve": "linear",
+          "steps": 2,
+          "kind": "bool"
+        },
+        {
+          "id": "band7_threshold",
+          "name": "Band 7 Threshold",
+          "unit": "dB",
+          "min": -60.0,
+          "max": 0.0,
+          "default": -30.0,
+          "curve": "linear",
+          "steps": null
+        },
+        {
+          "id": "band7_range",
+          "name": "Band 7 Range",
+          "unit": "dB",
+          "min": -24.0,
+          "max": 24.0,
+          "default": -6.0,
+          "curve": "linear",
+          "steps": null
+        },
+        {
+          "id": "band7_attack",
+          "name": "Band 7 Attack",
+          "unit": "ms",
+          "min": 0.1,
+          "max": 200.0,
+          "default": 10.0,
+          "curve": "log",
+          "steps": null
+        },
+        {
+          "id": "band7_release",
+          "name": "Band 7 Release",
+          "unit": "ms",
+          "min": 5.0,
+          "max": 2000.0,
+          "default": 100.0,
+          "curve": "log",
+          "steps": null
+        },
+        {
+          "id": "band8_enabled",
+          "name": "Band 8 Enabled",
+          "unit": "none",
+          "min": 0.0,
+          "max": 1.0,
+          "default": 0.0,
+          "curve": "linear",
+          "steps": 2,
+          "kind": "bool"
+        },
+        {
+          "id": "band8_solo",
+          "name": "Band 8 Solo",
+          "unit": "none",
+          "min": 0.0,
+          "max": 1.0,
+          "default": 0.0,
+          "curve": "linear",
+          "steps": 2,
+          "kind": "bool"
+        },
+        {
+          "id": "band8_channel",
+          "name": "Band 8 Channel",
+          "unit": "none",
+          "min": 0.0,
+          "max": 4.0,
+          "default": 0.0,
+          "curve": "linear",
+          "steps": 5,
+          "kind": "enum",
+          "options": [
+            "Stereo",
+            "Mid",
+            "Side",
+            "Left",
+            "Right"
+          ]
+        },
+        {
+          "id": "band8_type",
+          "name": "Band 8 Type",
+          "unit": "none",
+          "min": 0.0,
+          "max": 6.0,
+          "default": 0.0,
+          "curve": "linear",
+          "steps": 7,
+          "kind": "enum",
+          "options": [
+            "Bell",
+            "Low Shelf",
+            "High Shelf",
+            "Low Cut",
+            "High Cut",
+            "Notch",
+            "Band Pass"
+          ]
+        },
+        {
+          "id": "band8_slope",
+          "name": "Band 8 Cut Slope",
+          "unit": "none",
+          "min": 0.0,
+          "max": 3.0,
+          "default": 0.0,
+          "curve": "linear",
+          "steps": 4,
+          "kind": "enum",
+          "options": [
+            "12 dB/oct",
+            "24 dB/oct",
+            "36 dB/oct",
+            "48 dB/oct"
+          ]
+        },
+        {
+          "id": "band8_freq",
+          "name": "Band 8 Frequency",
+          "unit": "Hz",
+          "min": 20.0,
+          "max": 20000.0,
+          "default": 60.0,
+          "curve": "log",
+          "steps": null
+        },
+        {
+          "id": "band8_q",
+          "name": "Band 8 Q",
+          "unit": "none",
+          "min": 0.1,
+          "max": 20.0,
+          "default": 1.0,
+          "curve": "log",
+          "steps": null
+        },
+        {
+          "id": "band8_gain",
+          "name": "Band 8 Gain",
+          "unit": "dB",
+          "min": -24.0,
+          "max": 24.0,
+          "default": 0.0,
+          "curve": "linear",
+          "steps": null
+        },
+        {
+          "id": "band8_dynamic",
+          "name": "Band 8 Dynamic",
+          "unit": "none",
+          "min": 0.0,
+          "max": 1.0,
+          "default": 0.0,
+          "curve": "linear",
+          "steps": 2,
+          "kind": "bool"
+        },
+        {
+          "id": "band8_sidechain",
+          "name": "Band 8 Sidechain",
+          "unit": "none",
+          "min": 0.0,
+          "max": 1.0,
+          "default": 0.0,
+          "curve": "linear",
+          "steps": 2,
+          "kind": "bool"
+        },
+        {
+          "id": "band8_threshold",
+          "name": "Band 8 Threshold",
+          "unit": "dB",
+          "min": -60.0,
+          "max": 0.0,
+          "default": -30.0,
+          "curve": "linear",
+          "steps": null
+        },
+        {
+          "id": "band8_range",
+          "name": "Band 8 Range",
+          "unit": "dB",
+          "min": -24.0,
+          "max": 24.0,
+          "default": -6.0,
+          "curve": "linear",
+          "steps": null
+        },
+        {
+          "id": "band8_attack",
+          "name": "Band 8 Attack",
+          "unit": "ms",
+          "min": 0.1,
+          "max": 200.0,
+          "default": 10.0,
+          "curve": "log",
+          "steps": null
+        },
+        {
+          "id": "band8_release",
+          "name": "Band 8 Release",
+          "unit": "ms",
+          "min": 5.0,
+          "max": 2000.0,
+          "default": 100.0,
+          "curve": "log",
+          "steps": null
+        },
+        {
+          "id": "band9_enabled",
+          "name": "Band 9 Enabled",
+          "unit": "none",
+          "min": 0.0,
+          "max": 1.0,
+          "default": 0.0,
+          "curve": "linear",
+          "steps": 2,
+          "kind": "bool"
+        },
+        {
+          "id": "band9_solo",
+          "name": "Band 9 Solo",
+          "unit": "none",
+          "min": 0.0,
+          "max": 1.0,
+          "default": 0.0,
+          "curve": "linear",
+          "steps": 2,
+          "kind": "bool"
+        },
+        {
+          "id": "band9_channel",
+          "name": "Band 9 Channel",
+          "unit": "none",
+          "min": 0.0,
+          "max": 4.0,
+          "default": 0.0,
+          "curve": "linear",
+          "steps": 5,
+          "kind": "enum",
+          "options": [
+            "Stereo",
+            "Mid",
+            "Side",
+            "Left",
+            "Right"
+          ]
+        },
+        {
+          "id": "band9_type",
+          "name": "Band 9 Type",
+          "unit": "none",
+          "min": 0.0,
+          "max": 6.0,
+          "default": 0.0,
+          "curve": "linear",
+          "steps": 7,
+          "kind": "enum",
+          "options": [
+            "Bell",
+            "Low Shelf",
+            "High Shelf",
+            "Low Cut",
+            "High Cut",
+            "Notch",
+            "Band Pass"
+          ]
+        },
+        {
+          "id": "band9_slope",
+          "name": "Band 9 Cut Slope",
+          "unit": "none",
+          "min": 0.0,
+          "max": 3.0,
+          "default": 0.0,
+          "curve": "linear",
+          "steps": 4,
+          "kind": "enum",
+          "options": [
+            "12 dB/oct",
+            "24 dB/oct",
+            "36 dB/oct",
+            "48 dB/oct"
+          ]
+        },
+        {
+          "id": "band9_freq",
+          "name": "Band 9 Frequency",
+          "unit": "Hz",
+          "min": 20.0,
+          "max": 20000.0,
+          "default": 160.0,
+          "curve": "log",
+          "steps": null
+        },
+        {
+          "id": "band9_q",
+          "name": "Band 9 Q",
+          "unit": "none",
+          "min": 0.1,
+          "max": 20.0,
+          "default": 1.0,
+          "curve": "log",
+          "steps": null
+        },
+        {
+          "id": "band9_gain",
+          "name": "Band 9 Gain",
+          "unit": "dB",
+          "min": -24.0,
+          "max": 24.0,
+          "default": 0.0,
+          "curve": "linear",
+          "steps": null
+        },
+        {
+          "id": "band9_dynamic",
+          "name": "Band 9 Dynamic",
+          "unit": "none",
+          "min": 0.0,
+          "max": 1.0,
+          "default": 0.0,
+          "curve": "linear",
+          "steps": 2,
+          "kind": "bool"
+        },
+        {
+          "id": "band9_sidechain",
+          "name": "Band 9 Sidechain",
+          "unit": "none",
+          "min": 0.0,
+          "max": 1.0,
+          "default": 0.0,
+          "curve": "linear",
+          "steps": 2,
+          "kind": "bool"
+        },
+        {
+          "id": "band9_threshold",
+          "name": "Band 9 Threshold",
+          "unit": "dB",
+          "min": -60.0,
+          "max": 0.0,
+          "default": -30.0,
+          "curve": "linear",
+          "steps": null
+        },
+        {
+          "id": "band9_range",
+          "name": "Band 9 Range",
+          "unit": "dB",
+          "min": -24.0,
+          "max": 24.0,
+          "default": -6.0,
+          "curve": "linear",
+          "steps": null
+        },
+        {
+          "id": "band9_attack",
+          "name": "Band 9 Attack",
+          "unit": "ms",
+          "min": 0.1,
+          "max": 200.0,
+          "default": 10.0,
+          "curve": "log",
+          "steps": null
+        },
+        {
+          "id": "band9_release",
+          "name": "Band 9 Release",
+          "unit": "ms",
+          "min": 5.0,
+          "max": 2000.0,
+          "default": 100.0,
+          "curve": "log",
+          "steps": null
+        },
+        {
+          "id": "band10_enabled",
+          "name": "Band 10 Enabled",
+          "unit": "none",
+          "min": 0.0,
+          "max": 1.0,
+          "default": 0.0,
+          "curve": "linear",
+          "steps": 2,
+          "kind": "bool"
+        },
+        {
+          "id": "band10_solo",
+          "name": "Band 10 Solo",
+          "unit": "none",
+          "min": 0.0,
+          "max": 1.0,
+          "default": 0.0,
+          "curve": "linear",
+          "steps": 2,
+          "kind": "bool"
+        },
+        {
+          "id": "band10_channel",
+          "name": "Band 10 Channel",
+          "unit": "none",
+          "min": 0.0,
+          "max": 4.0,
+          "default": 0.0,
+          "curve": "linear",
+          "steps": 5,
+          "kind": "enum",
+          "options": [
+            "Stereo",
+            "Mid",
+            "Side",
+            "Left",
+            "Right"
+          ]
+        },
+        {
+          "id": "band10_type",
+          "name": "Band 10 Type",
+          "unit": "none",
+          "min": 0.0,
+          "max": 6.0,
+          "default": 0.0,
+          "curve": "linear",
+          "steps": 7,
+          "kind": "enum",
+          "options": [
+            "Bell",
+            "Low Shelf",
+            "High Shelf",
+            "Low Cut",
+            "High Cut",
+            "Notch",
+            "Band Pass"
+          ]
+        },
+        {
+          "id": "band10_slope",
+          "name": "Band 10 Cut Slope",
+          "unit": "none",
+          "min": 0.0,
+          "max": 3.0,
+          "default": 0.0,
+          "curve": "linear",
+          "steps": 4,
+          "kind": "enum",
+          "options": [
+            "12 dB/oct",
+            "24 dB/oct",
+            "36 dB/oct",
+            "48 dB/oct"
+          ]
+        },
+        {
+          "id": "band10_freq",
+          "name": "Band 10 Frequency",
+          "unit": "Hz",
+          "min": 20.0,
+          "max": 20000.0,
+          "default": 750.0,
+          "curve": "log",
+          "steps": null
+        },
+        {
+          "id": "band10_q",
+          "name": "Band 10 Q",
+          "unit": "none",
+          "min": 0.1,
+          "max": 20.0,
+          "default": 1.0,
+          "curve": "log",
+          "steps": null
+        },
+        {
+          "id": "band10_gain",
+          "name": "Band 10 Gain",
+          "unit": "dB",
+          "min": -24.0,
+          "max": 24.0,
+          "default": 0.0,
+          "curve": "linear",
+          "steps": null
+        },
+        {
+          "id": "band10_dynamic",
+          "name": "Band 10 Dynamic",
+          "unit": "none",
+          "min": 0.0,
+          "max": 1.0,
+          "default": 0.0,
+          "curve": "linear",
+          "steps": 2,
+          "kind": "bool"
+        },
+        {
+          "id": "band10_sidechain",
+          "name": "Band 10 Sidechain",
+          "unit": "none",
+          "min": 0.0,
+          "max": 1.0,
+          "default": 0.0,
+          "curve": "linear",
+          "steps": 2,
+          "kind": "bool"
+        },
+        {
+          "id": "band10_threshold",
+          "name": "Band 10 Threshold",
+          "unit": "dB",
+          "min": -60.0,
+          "max": 0.0,
+          "default": -30.0,
+          "curve": "linear",
+          "steps": null
+        },
+        {
+          "id": "band10_range",
+          "name": "Band 10 Range",
+          "unit": "dB",
+          "min": -24.0,
+          "max": 24.0,
+          "default": -6.0,
+          "curve": "linear",
+          "steps": null
+        },
+        {
+          "id": "band10_attack",
+          "name": "Band 10 Attack",
+          "unit": "ms",
+          "min": 0.1,
+          "max": 200.0,
+          "default": 10.0,
+          "curve": "log",
+          "steps": null
+        },
+        {
+          "id": "band10_release",
+          "name": "Band 10 Release",
+          "unit": "ms",
+          "min": 5.0,
+          "max": 2000.0,
+          "default": 100.0,
+          "curve": "log",
+          "steps": null
+        },
+        {
+          "id": "band11_enabled",
+          "name": "Band 11 Enabled",
+          "unit": "none",
+          "min": 0.0,
+          "max": 1.0,
+          "default": 0.0,
+          "curve": "linear",
+          "steps": 2,
+          "kind": "bool"
+        },
+        {
+          "id": "band11_solo",
+          "name": "Band 11 Solo",
+          "unit": "none",
+          "min": 0.0,
+          "max": 1.0,
+          "default": 0.0,
+          "curve": "linear",
+          "steps": 2,
+          "kind": "bool"
+        },
+        {
+          "id": "band11_channel",
+          "name": "Band 11 Channel",
+          "unit": "none",
+          "min": 0.0,
+          "max": 4.0,
+          "default": 0.0,
+          "curve": "linear",
+          "steps": 5,
+          "kind": "enum",
+          "options": [
+            "Stereo",
+            "Mid",
+            "Side",
+            "Left",
+            "Right"
+          ]
+        },
+        {
+          "id": "band11_type",
+          "name": "Band 11 Type",
+          "unit": "none",
+          "min": 0.0,
+          "max": 6.0,
+          "default": 0.0,
+          "curve": "linear",
+          "steps": 7,
+          "kind": "enum",
+          "options": [
+            "Bell",
+            "Low Shelf",
+            "High Shelf",
+            "Low Cut",
+            "High Cut",
+            "Notch",
+            "Band Pass"
+          ]
+        },
+        {
+          "id": "band11_slope",
+          "name": "Band 11 Cut Slope",
+          "unit": "none",
+          "min": 0.0,
+          "max": 3.0,
+          "default": 0.0,
+          "curve": "linear",
+          "steps": 4,
+          "kind": "enum",
+          "options": [
+            "12 dB/oct",
+            "24 dB/oct",
+            "36 dB/oct",
+            "48 dB/oct"
+          ]
+        },
+        {
+          "id": "band11_freq",
+          "name": "Band 11 Frequency",
+          "unit": "Hz",
+          "min": 20.0,
+          "max": 20000.0,
+          "default": 3500.0,
+          "curve": "log",
+          "steps": null
+        },
+        {
+          "id": "band11_q",
+          "name": "Band 11 Q",
+          "unit": "none",
+          "min": 0.1,
+          "max": 20.0,
+          "default": 1.0,
+          "curve": "log",
+          "steps": null
+        },
+        {
+          "id": "band11_gain",
+          "name": "Band 11 Gain",
+          "unit": "dB",
+          "min": -24.0,
+          "max": 24.0,
+          "default": 0.0,
+          "curve": "linear",
+          "steps": null
+        },
+        {
+          "id": "band11_dynamic",
+          "name": "Band 11 Dynamic",
+          "unit": "none",
+          "min": 0.0,
+          "max": 1.0,
+          "default": 0.0,
+          "curve": "linear",
+          "steps": 2,
+          "kind": "bool"
+        },
+        {
+          "id": "band11_sidechain",
+          "name": "Band 11 Sidechain",
+          "unit": "none",
+          "min": 0.0,
+          "max": 1.0,
+          "default": 0.0,
+          "curve": "linear",
+          "steps": 2,
+          "kind": "bool"
+        },
+        {
+          "id": "band11_threshold",
+          "name": "Band 11 Threshold",
+          "unit": "dB",
+          "min": -60.0,
+          "max": 0.0,
+          "default": -30.0,
+          "curve": "linear",
+          "steps": null
+        },
+        {
+          "id": "band11_range",
+          "name": "Band 11 Range",
+          "unit": "dB",
+          "min": -24.0,
+          "max": 24.0,
+          "default": -6.0,
+          "curve": "linear",
+          "steps": null
+        },
+        {
+          "id": "band11_attack",
+          "name": "Band 11 Attack",
+          "unit": "ms",
+          "min": 0.1,
+          "max": 200.0,
+          "default": 10.0,
+          "curve": "log",
+          "steps": null
+        },
+        {
+          "id": "band11_release",
+          "name": "Band 11 Release",
+          "unit": "ms",
+          "min": 5.0,
+          "max": 2000.0,
+          "default": 100.0,
+          "curve": "log",
+          "steps": null
+        },
+        {
+          "id": "band12_enabled",
+          "name": "Band 12 Enabled",
+          "unit": "none",
+          "min": 0.0,
+          "max": 1.0,
+          "default": 0.0,
+          "curve": "linear",
+          "steps": 2,
+          "kind": "bool"
+        },
+        {
+          "id": "band12_solo",
+          "name": "Band 12 Solo",
+          "unit": "none",
+          "min": 0.0,
+          "max": 1.0,
+          "default": 0.0,
+          "curve": "linear",
+          "steps": 2,
+          "kind": "bool"
+        },
+        {
+          "id": "band12_channel",
+          "name": "Band 12 Channel",
+          "unit": "none",
+          "min": 0.0,
+          "max": 4.0,
+          "default": 0.0,
+          "curve": "linear",
+          "steps": 5,
+          "kind": "enum",
+          "options": [
+            "Stereo",
+            "Mid",
+            "Side",
+            "Left",
+            "Right"
+          ]
+        },
+        {
+          "id": "band12_type",
+          "name": "Band 12 Type",
+          "unit": "none",
+          "min": 0.0,
+          "max": 6.0,
+          "default": 0.0,
+          "curve": "linear",
+          "steps": 7,
+          "kind": "enum",
+          "options": [
+            "Bell",
+            "Low Shelf",
+            "High Shelf",
+            "Low Cut",
+            "High Cut",
+            "Notch",
+            "Band Pass"
+          ]
+        },
+        {
+          "id": "band12_slope",
+          "name": "Band 12 Cut Slope",
+          "unit": "none",
+          "min": 0.0,
+          "max": 3.0,
+          "default": 0.0,
+          "curve": "linear",
+          "steps": 4,
+          "kind": "enum",
+          "options": [
+            "12 dB/oct",
+            "24 dB/oct",
+            "36 dB/oct",
+            "48 dB/oct"
+          ]
+        },
+        {
+          "id": "band12_freq",
+          "name": "Band 12 Frequency",
+          "unit": "Hz",
+          "min": 20.0,
+          "max": 20000.0,
+          "default": 5500.0,
+          "curve": "log",
+          "steps": null
+        },
+        {
+          "id": "band12_q",
+          "name": "Band 12 Q",
+          "unit": "none",
+          "min": 0.1,
+          "max": 20.0,
+          "default": 1.0,
+          "curve": "log",
+          "steps": null
+        },
+        {
+          "id": "band12_gain",
+          "name": "Band 12 Gain",
+          "unit": "dB",
+          "min": -24.0,
+          "max": 24.0,
+          "default": 0.0,
+          "curve": "linear",
+          "steps": null
+        },
+        {
+          "id": "band12_dynamic",
+          "name": "Band 12 Dynamic",
+          "unit": "none",
+          "min": 0.0,
+          "max": 1.0,
+          "default": 0.0,
+          "curve": "linear",
+          "steps": 2,
+          "kind": "bool"
+        },
+        {
+          "id": "band12_sidechain",
+          "name": "Band 12 Sidechain",
+          "unit": "none",
+          "min": 0.0,
+          "max": 1.0,
+          "default": 0.0,
+          "curve": "linear",
+          "steps": 2,
+          "kind": "bool"
+        },
+        {
+          "id": "band12_threshold",
+          "name": "Band 12 Threshold",
+          "unit": "dB",
+          "min": -60.0,
+          "max": 0.0,
+          "default": -30.0,
+          "curve": "linear",
+          "steps": null
+        },
+        {
+          "id": "band12_range",
+          "name": "Band 12 Range",
+          "unit": "dB",
+          "min": -24.0,
+          "max": 24.0,
+          "default": -6.0,
+          "curve": "linear",
+          "steps": null
+        },
+        {
+          "id": "band12_attack",
+          "name": "Band 12 Attack",
+          "unit": "ms",
+          "min": 0.1,
+          "max": 200.0,
+          "default": 10.0,
+          "curve": "log",
+          "steps": null
+        },
+        {
+          "id": "band12_release",
+          "name": "Band 12 Release",
+          "unit": "ms",
+          "min": 5.0,
+          "max": 2000.0,
+          "default": 100.0,
+          "curve": "log",
+          "steps": null
+        },
+        {
           "id": "auto_gain",
           "name": "Auto Gain",
           "unit": "none",
@@ -1253,6 +2379,38 @@ export const DEVICE_CATALOG: DevicesCatalog = {
           "curve": "linear",
           "steps": 2,
           "kind": "bool"
+        },
+        {
+          "id": "oversample",
+          "name": "2x Oversampling",
+          "unit": "none",
+          "min": 0.0,
+          "max": 1.0,
+          "default": 0.0,
+          "curve": "linear",
+          "steps": 2,
+          "kind": "bool"
+        },
+        {
+          "id": "oversample_fir",
+          "name": "2x FIR Oversampling",
+          "unit": "none",
+          "min": 0.0,
+          "max": 1.0,
+          "default": 0.0,
+          "curve": "linear",
+          "steps": 2,
+          "kind": "bool"
+        },
+        {
+          "id": "output_gain",
+          "name": "Output Gain",
+          "unit": "dB",
+          "min": -24.0,
+          "max": 24.0,
+          "default": 0.0,
+          "curve": "linear",
+          "steps": null
         },
         {
           "id": "low_cut_enabled",
@@ -1286,6 +2444,23 @@ export const DEVICE_CATALOG: DevicesCatalog = {
           "steps": null
         },
         {
+          "id": "low_cut_slope",
+          "name": "Low Cut Slope",
+          "unit": "none",
+          "min": 0.0,
+          "max": 3.0,
+          "default": 0.0,
+          "curve": "linear",
+          "steps": 4,
+          "kind": "enum",
+          "options": [
+            "12 dB/oct",
+            "24 dB/oct",
+            "36 dB/oct",
+            "48 dB/oct"
+          ]
+        },
+        {
           "id": "high_cut_enabled",
           "name": "High Cut Enabled",
           "unit": "none",
@@ -1315,6 +2490,23 @@ export const DEVICE_CATALOG: DevicesCatalog = {
           "default": 0.707,
           "curve": "log",
           "steps": null
+        },
+        {
+          "id": "high_cut_slope",
+          "name": "High Cut Slope",
+          "unit": "none",
+          "min": 0.0,
+          "max": 3.0,
+          "default": 0.0,
+          "curve": "linear",
+          "steps": 4,
+          "kind": "enum",
+          "options": [
+            "12 dB/oct",
+            "24 dB/oct",
+            "36 dB/oct",
+            "48 dB/oct"
+          ]
         }
       ],
       "ports": [
@@ -4154,6 +5346,116 @@ export const DEVICE_CATALOG: DevicesCatalog = {
           "default": 30.0,
           "curve": "linear",
           "steps": null
+        },
+        {
+          "id": "interpolate",
+          "name": "Interpolate Time",
+          "unit": "none",
+          "min": 0.0,
+          "max": 1.0,
+          "default": 0.0,
+          "curve": "linear",
+          "steps": 2,
+          "kind": "bool",
+          "description": "Interpolate fractional read positions when automating delay time."
+        },
+        {
+          "id": "routing",
+          "name": "Routing",
+          "unit": "none",
+          "min": 0.0,
+          "max": 3.0,
+          "default": 0.0,
+          "curve": "linear",
+          "steps": 4,
+          "kind": "enum",
+          "options": [
+            "Stereo",
+            "Mono",
+            "Swapped",
+            "Ping Pong"
+          ]
+        },
+        {
+          "id": "tempo_sync",
+          "name": "Tempo Sync",
+          "unit": "none",
+          "min": 0.0,
+          "max": 1.0,
+          "default": 0.0,
+          "curve": "linear",
+          "steps": 2,
+          "kind": "bool",
+          "description": "Use quarter-note lengths at the current tempo, capped at two seconds per tap."
+        },
+        {
+          "id": "quarters_l",
+          "name": "Left Quarter Notes",
+          "unit": "none",
+          "min": 0.03125,
+          "max": 4.0,
+          "default": 0.75,
+          "curve": "log",
+          "steps": null
+        },
+        {
+          "id": "quarters_r",
+          "name": "Right Quarter Notes",
+          "unit": "none",
+          "min": 0.03125,
+          "max": 4.0,
+          "default": 0.5,
+          "curve": "log",
+          "steps": null
+        },
+        {
+          "id": "dry_gain",
+          "name": "Dry Gain",
+          "unit": "%",
+          "min": 0.0,
+          "max": 200.0,
+          "default": 100.0,
+          "curve": "linear",
+          "steps": null,
+          "description": "Scale the dry signal after the Mix control."
+        },
+        {
+          "id": "wet_gain",
+          "name": "Wet Gain",
+          "unit": "%",
+          "min": 0.0,
+          "max": 200.0,
+          "default": 100.0,
+          "curve": "linear",
+          "steps": null,
+          "description": "Scale the delayed signal after the Mix control."
+        },
+        {
+          "id": "feedback_filter",
+          "name": "Feedback Filter",
+          "unit": "none",
+          "min": 0.0,
+          "max": 3.0,
+          "default": 0.0,
+          "curve": "linear",
+          "steps": 4,
+          "kind": "enum",
+          "options": [
+            "Off",
+            "Low Pass",
+            "High Pass",
+            "Band Pass"
+          ]
+        },
+        {
+          "id": "feedback_cutoff",
+          "name": "Feedback Cutoff",
+          "unit": "Hz",
+          "min": 20.0,
+          "max": 20000.0,
+          "default": 10000.0,
+          "curve": "log",
+          "steps": null
         }
       ],
       "ports": [
@@ -4892,6 +6194,72 @@ export const DEVICE_CATALOG: DevicesCatalog = {
           "default": 50.0,
           "curve": "linear",
           "steps": null
+        },
+        {
+          "id": "voices",
+          "name": "Voices",
+          "unit": "none",
+          "min": 1.0,
+          "max": 8.0,
+          "default": 1.0,
+          "curve": "linear",
+          "steps": 8,
+          "description": "Number of swept taps; their wet contributions are averaged."
+        },
+        {
+          "id": "delay",
+          "name": "Delay",
+          "unit": "ms",
+          "min": 0.5,
+          "max": 40.0,
+          "default": 0.5,
+          "curve": "log",
+          "steps": null,
+          "description": "Delay at the bottom of the sweep, before per-voice spread."
+        },
+        {
+          "id": "spread",
+          "name": "Spread",
+          "unit": "%",
+          "min": 0.0,
+          "max": 100.0,
+          "default": 0.0,
+          "curve": "linear",
+          "steps": null,
+          "description": "Separates the voices in delay, depth and modulation rate."
+        },
+        {
+          "id": "stereo_cross",
+          "name": "Stereo Cross",
+          "unit": "%",
+          "min": -100.0,
+          "max": 100.0,
+          "default": 0.0,
+          "curve": "linear",
+          "steps": null,
+          "description": "Blend the delayed signal with the opposite channel. Negative values invert the crossed signal."
+        },
+        {
+          "id": "dry_gain",
+          "name": "Dry Gain",
+          "unit": "%",
+          "min": -200.0,
+          "max": 200.0,
+          "default": 100.0,
+          "curve": "linear",
+          "steps": null,
+          "description": "Signed level trim on the unprocessed branch after applying Mix."
+        },
+        {
+          "id": "wet_gain",
+          "name": "Wet Gain",
+          "unit": "%",
+          "min": -200.0,
+          "max": 200.0,
+          "default": 100.0,
+          "curve": "linear",
+          "steps": null,
+          "description": "Signed level trim on the delayed branch after applying Mix."
         }
       ],
       "ports": [
@@ -5024,6 +6392,172 @@ export const DEVICE_CATALOG: DevicesCatalog = {
       ]
     },
     {
+      "id": "frequency-shift",
+      "name": "Frequency Shifter",
+      "category": "color",
+      "params": [
+        {
+          "id": "shift",
+          "name": "Shift",
+          "unit": "Hz",
+          "min": -5000.0,
+          "max": 5000.0,
+          "default": 0.0,
+          "curve": "linear",
+          "steps": null
+        },
+        {
+          "id": "sideband_left",
+          "name": "Left sideband",
+          "unit": "%",
+          "min": -100.0,
+          "max": 100.0,
+          "default": 100.0,
+          "curve": "linear",
+          "steps": null
+        },
+        {
+          "id": "sideband_right",
+          "name": "Right sideband",
+          "unit": "%",
+          "min": -100.0,
+          "max": 100.0,
+          "default": 100.0,
+          "curve": "linear",
+          "steps": null
+        },
+        {
+          "id": "phase",
+          "name": "Start phase",
+          "unit": "%",
+          "min": 0.0,
+          "max": 100.0,
+          "default": 0.0,
+          "curve": "linear",
+          "steps": null
+        },
+        {
+          "id": "stereo_phase",
+          "name": "Stereo phase offset",
+          "unit": "%",
+          "min": -50.0,
+          "max": 50.0,
+          "default": 0.0,
+          "curve": "linear",
+          "steps": null
+        },
+        {
+          "id": "feedback",
+          "name": "Feedback",
+          "unit": "%",
+          "min": 0.0,
+          "max": 90.0,
+          "default": 0.0,
+          "curve": "linear",
+          "steps": null
+        },
+        {
+          "id": "mix",
+          "name": "Mix",
+          "unit": "%",
+          "min": 0.0,
+          "max": 100.0,
+          "default": 100.0,
+          "curve": "linear",
+          "steps": null
+        },
+        {
+          "id": "width",
+          "name": "Stereo width",
+          "unit": "%",
+          "min": 0.0,
+          "max": 200.0,
+          "default": 100.0,
+          "curve": "linear",
+          "steps": null
+        }
+      ],
+      "ports": [
+        {
+          "id": "in",
+          "name": "In",
+          "kind": "audio",
+          "sums": true
+        }
+      ]
+    },
+    {
+      "id": "vocoder",
+      "name": "Vocoder",
+      "category": "color",
+      "params": [
+        {
+          "id": "bands",
+          "name": "Bands",
+          "unit": "none",
+          "min": 12.0,
+          "max": 48.0,
+          "default": 24.0,
+          "curve": "linear",
+          "steps": 37
+        },
+        {
+          "id": "attack",
+          "name": "Attack",
+          "unit": "ms",
+          "min": 0.5,
+          "max": 100.0,
+          "default": 5.0,
+          "curve": "log",
+          "steps": null
+        },
+        {
+          "id": "release",
+          "name": "Release",
+          "unit": "ms",
+          "min": 5.0,
+          "max": 500.0,
+          "default": 50.0,
+          "curve": "log",
+          "steps": null
+        },
+        {
+          "id": "output_gain",
+          "name": "Output Gain",
+          "unit": "dB",
+          "min": -24.0,
+          "max": 24.0,
+          "default": 0.0,
+          "curve": "linear",
+          "steps": null
+        },
+        {
+          "id": "mix",
+          "name": "Mix",
+          "unit": "%",
+          "min": 0.0,
+          "max": 100.0,
+          "default": 100.0,
+          "curve": "linear",
+          "steps": null
+        }
+      ],
+      "ports": [
+        {
+          "id": "in",
+          "name": "In",
+          "kind": "audio",
+          "sums": true
+        },
+        {
+          "id": "key",
+          "name": "Key",
+          "kind": "audio",
+          "sums": false
+        }
+      ]
+    },
+    {
       "id": "stereo-width",
       "name": "Stereo Width",
       "category": "utility",
@@ -5047,6 +6581,173 @@ export const DEVICE_CATALOG: DevicesCatalog = {
           "sums": true
         }
       ]
+    },
+    {
+      "id": "stereo-matrix",
+      "name": "Stereo Matrix",
+      "category": "utility",
+      "params": [
+        {
+          "id": "left_from_left",
+          "name": "Left into left",
+          "unit": "%",
+          "min": -200.0,
+          "max": 200.0,
+          "default": 100.0,
+          "curve": "linear",
+          "steps": null
+        },
+        {
+          "id": "left_from_right",
+          "name": "Right into left",
+          "unit": "%",
+          "min": -200.0,
+          "max": 200.0,
+          "default": 0.0,
+          "curve": "linear",
+          "steps": null
+        },
+        {
+          "id": "right_from_left",
+          "name": "Left into right",
+          "unit": "%",
+          "min": -200.0,
+          "max": 200.0,
+          "default": 0.0,
+          "curve": "linear",
+          "steps": null
+        },
+        {
+          "id": "right_from_right",
+          "name": "Right into right",
+          "unit": "%",
+          "min": -200.0,
+          "max": 200.0,
+          "default": 100.0,
+          "curve": "linear",
+          "steps": null
+        },
+        {
+          "id": "offset",
+          "name": "Offset",
+          "unit": "ms",
+          "min": -500.0,
+          "max": 500.0,
+          "default": 0.0,
+          "curve": "linear",
+          "steps": null,
+          "description": "Negative delays the left channel. Positive delays the right channel."
+        },
+        {
+          "id": "delay_before_matrix",
+          "name": "Delay before matrix",
+          "unit": "none",
+          "min": 0.0,
+          "max": 1.0,
+          "default": 0.0,
+          "curve": "linear",
+          "steps": 2,
+          "kind": "bool"
+        }
+      ],
+      "ports": [
+        {
+          "id": "in",
+          "name": "In",
+          "kind": "audio",
+          "sums": true
+        }
+      ]
+    },
+    {
+      "id": "allpass",
+      "name": "All-pass",
+      "category": "utility",
+      "params": [
+        {
+          "id": "coefficient",
+          "name": "Coefficient",
+          "unit": "none",
+          "min": -0.999,
+          "max": 0.999,
+          "default": 0.0,
+          "curve": "linear",
+          "steps": null,
+          "description": "Normalized digital coefficient. Changes phase and group delay while preserving magnitude; zero delays the signal by one sample."
+        }
+      ],
+      "ports": [
+        {
+          "id": "in",
+          "name": "In",
+          "kind": "audio",
+          "sums": true
+        }
+      ]
+    },
+    {
+      "id": "transfer-shaper",
+      "name": "Transfer Shaper",
+      "category": "color",
+      "params": [
+        {
+          "id": "pre_gain",
+          "name": "Input",
+          "unit": "none",
+          "min": 0.0,
+          "max": 16.0,
+          "default": 1.0,
+          "curve": "linear",
+          "steps": null,
+          "description": "Linear amplitude multiplier."
+        },
+        {
+          "id": "dry_gain",
+          "name": "Dry",
+          "unit": "none",
+          "min": 0.0,
+          "max": 16.0,
+          "default": 0.0,
+          "curve": "linear",
+          "steps": null,
+          "description": "Linear amplitude multiplier."
+        },
+        {
+          "id": "wet_gain",
+          "name": "Wet",
+          "unit": "none",
+          "min": 0.0,
+          "max": 16.0,
+          "default": 1.0,
+          "curve": "linear",
+          "steps": null,
+          "description": "Linear amplitude multiplier."
+        }
+      ],
+      "ports": [
+        {
+          "id": "in",
+          "name": "In",
+          "kind": "audio",
+          "sums": true
+        }
+      ]
+    }
+  ],
+  "assets": [
+    {
+      "device": "transfer-shaper",
+      "param": "curve",
+      "encoding": "inline_json",
+      "version": 1,
+      "domains": [
+        "odd",
+        "bipolar"
+      ],
+      "max_bytes": 2097152,
+      "max_samples": 65537,
+      "max_level": 16.0,
+      "default_json": "{\"version\":1,\"domain\":\"odd\",\"samples\":[0,1]}"
     }
   ]
 };

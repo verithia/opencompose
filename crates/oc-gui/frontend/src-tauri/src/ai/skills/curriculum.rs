@@ -146,7 +146,7 @@ mod tests {
             assert!(result.body.contains(exercise.session));
             assert!(result.body.contains(exercise.check));
         }
-        assert_eq!(topics.len(), 339);
+        assert_eq!(topics.len(), 359);
         assert_eq!(fields.len(), 13);
         for exercise in exercises().filter(|entry| entry.level != "field") {
             for field in exercise.fields.split(',') {

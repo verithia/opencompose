@@ -5,11 +5,94 @@ use oc_dsl::ast::{
 };
 use oc_dsl::{parse, serialize, validator};
 
+#[test]
+fn named_macro_resolves_an_inherited_synth_and_round_trips() {
+    let text = r#"@project
+@preset base
+  source: builtin
+  plugin: "builtin.open_synth"
+  params: {macro.8: 0.25}
+@preset "Macro bank"
+  extends: base
+@bus Return
+  routes: [master]
+  effects:
+    - gain: factor=1
+@control_link spread
+  from: macro(8, "Macro bank")
+  -> track: Return param: fx1.factor formula: inverted mapping(linear, scale=2)
+"#;
+    let project = parse(text).unwrap();
+    oc_dsl::validate(&project).unwrap();
+    let source = &project.properties.control_links[0].source;
+    assert_eq!(
+        source,
+        &ControlLinkSource::PresetMacro {
+            preset: "Macro bank".into(),
+            index: 8
+        }
+    );
+    assert_eq!(parse(&serialize(&project)).unwrap(), project);
+    let json = serde_json::to_value(source).unwrap();
+    assert_eq!(
+        serde_json::from_value::<ControlLinkSource>(json).unwrap(),
+        *source
+    );
+    for invalid in [
+        text.replace("macro(8", "macro(9"),
+        text.replace("macro(8, \"Macro bank\")", "macro(8, absent)"),
+        text.replace("builtin.open_synth", "builtin.test_tone"),
+        text.replace("formula: inverted", "formula: midi_unit"),
+    ] {
+        assert!(oc_dsl::validate(&parse(&invalid).unwrap()).is_err());
+    }
+}
+
+#[test]
+fn mixer_link_mapping_round_trips_and_refuses_unsupported_sources() {
+    let text = r#"@project
+@track control | instrument: audio/clip
+  effects:
+    - gain: factor=1
+  automation: fx1.factor {1:1=0.25, 1:2=0.75}
+@bus return
+  routes: [master]
+  effects:
+    - dynamic_eq: low_cut_enabled=true
+@control_link tone
+  from: lane(control, "fx1.factor")
+  -> track: return param: fx1.low_cut_freq formula: linear mapping(exponential, curvature=2, scale=8000, offset=20) smoothing: 8ms
+"#;
+    let project = oc_dsl::parse(text).unwrap();
+    oc_dsl::validate(&project).unwrap();
+    let target = &project.properties.control_links[0].targets[0];
+    assert_eq!(target.value_mapping.unwrap().curvature, Some(2.0));
+    assert_eq!(target.smoothing_ms, 8);
+    assert_eq!(
+        oc_dsl::parse(&oc_dsl::serialize(&project)).unwrap(),
+        project
+    );
+    assert_eq!(
+        serde_json::from_value::<ControlLinkTarget>(serde_json::to_value(target).unwrap()).unwrap(),
+        *target,
+    );
+    for invalid in [
+        text.replace(r#"lane(control, "fx1.factor")"#, "macro(1)")
+            .replace("track: return", "track: control"),
+        text.replace("curvature=2", "curvature=20000"),
+        text.replace("fx1.low_cut_freq", r#""fx1.slot/enabled""#),
+    ] {
+        let invalid = oc_dsl::parse(&invalid).unwrap();
+        assert!(oc_dsl::validate(&invalid).is_err());
+    }
+}
+
 fn target(track: &str, param: &str, formula: LinkFormula, smoothing_ms: u32) -> ControlLinkTarget {
     ControlLinkTarget {
         track: track.into(),
         param: param.into(),
         formula,
+        value_mapping: None,
         smoothing_ms,
     }
 }

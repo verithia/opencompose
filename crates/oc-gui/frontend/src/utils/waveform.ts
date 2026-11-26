@@ -2,7 +2,7 @@
  * Waveform peak helpers: decode the Rust pyramid payload, pick a level for the
  * current zoom, and aggregate buckets into per-pixel columns.
  */
-import type { AudioClip, GainEnvelopePoint } from "../types/project";
+import type { AudioClip, AudioFadeBezier, AudioFadeCurves, ClipGainInterpolation, GainEnvelopePoint } from "../types/project";
 
 export interface PeakLevel {
   bucket_frames: number;
@@ -191,17 +191,38 @@ export function formatClipBeats(beats: number): string {
   return `${text} q`;
 }
 
-/** Linear fade envelope at `seconds` into a clip of `duration` seconds. */
+function easeFade(phase: number, [x1, y1, x2, y2]: AudioFadeBezier): number {
+  if (phase === 0 || phase === 1) return phase;
+  const cubic = (u: number, a: number, b: number) => {
+    const v = 1 - u;
+    return ((3 * a * v + 3 * b * u) * v + u * u) * u;
+  };
+  let lo = 0;
+  let hi = 1;
+  for (let step = 0; step < 25; step++) {
+    const u = (lo + hi) / 2;
+    if (cubic(u, x1, x2) < phase) lo = u;
+    else hi = u;
+  }
+  return cubic((lo + hi) / 2, y1, y2);
+}
+
+/** Fade envelope at `seconds` into a clip of `duration` seconds. */
 export function fadeEnvelope(
   seconds: number,
   duration: number,
   fadeIn: number,
   fadeOut: number,
+  curves?: AudioFadeCurves,
 ): number {
   let envelope = 1;
-  if (fadeIn > 0 && seconds < fadeIn) envelope *= Math.max(0, seconds / fadeIn);
+  if (fadeIn > 0 && seconds < fadeIn) {
+    const phase = Math.max(0, seconds / fadeIn);
+    envelope *= curves?.fade_in ? easeFade(phase, curves.fade_in) : phase;
+  }
   if (fadeOut > 0 && seconds > duration - fadeOut) {
-    envelope *= Math.max(0, (duration - seconds) / fadeOut);
+    const remaining = Math.max(0, (duration - seconds) / fadeOut);
+    envelope *= curves?.fade_out ? 1 - easeFade(1 - remaining, curves.fade_out) : remaining;
   }
   return Math.min(1, envelope);
 }
@@ -233,10 +254,12 @@ export interface WaveformPaint {
   gainDb: number;
   fadeInSeconds: number;
   fadeOutSeconds: number;
+  fadeCurves?: AudioFadeCurves;
   /** Equal-power crossfade at the head and tail, in seconds. */
   crossfadeSeconds?: number;
   /** Optional gain envelope, relative to `gainDb`. */
   gainEnvelope?: GainEnvelopePoint[];
+  gainEnvelopeInterpolation?: ClipGainInterpolation;
   width: number;
   height: number;
   color: string;
@@ -285,7 +308,7 @@ export function paintWaveform(
     const seconds = ((column + 0.5) / columns) * paint.durationSeconds;
     const position = (column + 0.5) / columns;
     const pointGain = paint.gainEnvelope?.length
-      ? Math.pow(10, envelopeDb(paint.gainEnvelope, position) / 20)
+      ? Math.pow(10, gainEnvelopeDb(paint.gainEnvelope, position, paint.gainEnvelopeInterpolation) / 20)
       : 1;
     let crossfadeGain = 1;
     const crossfadeSpan = paint.durationSeconds > 0
@@ -301,7 +324,7 @@ export function paintWaveform(
     }
     const envelope =
       gain *
-      fadeEnvelope(seconds, paint.durationSeconds, paint.fadeInSeconds, paint.fadeOutSeconds) *
+      fadeEnvelope(seconds, paint.durationSeconds, paint.fadeInSeconds, paint.fadeOutSeconds, paint.fadeCurves) *
       pointGain *
       crossfadeGain;
     const top = middle - Math.max(-1, Math.min(1, max[column] * envelope)) * half;
@@ -320,7 +343,25 @@ export function paintWaveform(
 }
 
 /** Linearly interpolate a relative gain envelope at a normalised position. */
-function envelopeDb(points: GainEnvelopePoint[], position: number): number {
+export function interpolateGainDb(
+  left: number,
+  right: number,
+  fraction: number,
+  interpolation?: ClipGainInterpolation,
+): number {
+  if (interpolation === "linear_amplitude") {
+    const start = 10 ** (left / 20);
+    const end = 10 ** (right / 20);
+    return 20 * Math.log10(start + (end - start) * fraction);
+  }
+  return left + (right - left) * fraction;
+}
+
+export function gainEnvelopeDb(
+  points: GainEnvelopePoint[],
+  position: number,
+  interpolation?: ClipGainInterpolation,
+): number {
   if (points.length === 0) return 0;
   if (position <= points[0].position) return points[0].gain_db;
   for (let index = 1; index < points.length; index++) {
@@ -329,7 +370,12 @@ function envelopeDb(points: GainEnvelopePoint[], position: number): number {
     if (position <= next.position) {
       const span = next.position - previous.position;
       if (span <= 0) return next.gain_db;
-      return previous.gain_db + (next.gain_db - previous.gain_db) * ((position - previous.position) / span);
+      return interpolateGainDb(
+        previous.gain_db,
+        next.gain_db,
+        (position - previous.position) / span,
+        interpolation,
+      );
     }
   }
   return points[points.length - 1].gain_db;
@@ -360,23 +406,22 @@ function paintEnvelope(
 
   const trace = () => {
     context.beginPath();
-    if (envelope.length > 0 || crossfadeX > 0) {
-      // Sample the real curve: the point envelope, linear fades and the
+    if (envelope.length > 0 || crossfadeX > 0 || paint.fadeCurves?.fade_in || paint.fadeCurves?.fade_out) {
+      // Sample the real curve: the point envelope, clip fades and the
       // equal-power crossfade all feed the same gain line.
       const steps = Math.max(2, Math.round(width));
       for (let step = 0; step <= steps; step++) {
         const x = (step / steps) * width;
         const position = width > 0 ? x / width : 0;
-        let factor = 1;
-        if (fadeInX > 0) factor *= Math.min(1, x / fadeInX);
-        if (fadeOutX > 0) factor *= Math.min(1, (width - x) / fadeOutX);
+        let factor = fadeEnvelope(position * duration, duration, paint.fadeInSeconds, paint.fadeOutSeconds, paint.fadeCurves);
         if (crossfadeX > 0) {
           if (x < crossfadeX) factor *= Math.sin((x / crossfadeX) * Math.PI / 2);
           if (x > width - crossfadeX) {
             factor *= Math.sin(((width - x) / crossfadeX) * Math.PI / 2);
           }
         }
-        const baseY = gainLineY(paint.gainDb + envelopeDb(envelope, position), height);
+        const db = gainEnvelopeDb(envelope, position, paint.gainEnvelopeInterpolation);
+        const baseY = gainLineY(paint.gainDb + db, height);
         const y = height - (height - baseY) * factor;
         if (step === 0) context.moveTo(x, y);
         else context.lineTo(x, y);

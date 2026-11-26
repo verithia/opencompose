@@ -10,9 +10,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let on_disk = std::fs::read_to_string(&default_path)?;
         let units = std::fs::read_to_string(default_path.with_file_name("units.gen.ts"))?;
         let gm = std::fs::read_to_string(default_path.with_file_name("gmPrograms.gen.ts"))?;
+        let automation =
+            std::fs::read_to_string(default_path.with_file_name("automationCurves.gen.ts"))?;
         if gm == oc_device_schema::gm::render_typescript()
             && on_disk == oc_device_schema::frontend::render_typescript()
             && units == oc_device_schema::units::render_typescript()
+            && automation == oc_device_schema::automation_curves::render_typescript()
         {
             return Ok(());
         }
@@ -31,6 +34,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     std::fs::write(
         path.with_file_name("gmPrograms.gen.ts"),
         oc_device_schema::gm::render_typescript(),
+    )?;
+    std::fs::write(
+        path.with_file_name("automationCurves.gen.ts"),
+        oc_device_schema::automation_curves::render_typescript(),
     )?;
     println!("wrote {}", path.display());
     Ok(())

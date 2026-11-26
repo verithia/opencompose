@@ -8,7 +8,7 @@ use tauri::State;
 
 use oc_dsl::ast::{ControlLink, ControlLinkSource, ControlLinkTarget, LinkFormula};
 
-use super::shared::{ProjectSnapshot, resync_with_undo, snapshot};
+use super::shared::{ProjectSnapshot, resync_chain_with_undo, resync_with_undo, snapshot};
 use crate::state::{AppState, AppStateInner, UndoEdit, UndoScope};
 
 const MAX_SMOOTHING_MS: u32 = 60_000;
@@ -33,16 +33,18 @@ pub(crate) fn add_control_link_target_inner(
     target.track = target.track.trim().to_string();
     target.param = target.param.trim().to_string();
     validate_target(inner, &source, &target)?;
+    let mixer_target = target.is_mixer_effect_target(&source);
     let old_project = inner.project.clone();
     let index = find_link(&inner.project.properties.control_links, &source)
         .unwrap_or_else(|| insert_link(inner, source.clone()));
     if !inner.project.properties.control_links[index].learn_target(target) {
         return Ok(());
     }
-    resync_with_undo(
+    resync_link_with_undo(
         inner,
         old_project,
         UndoEdit::new("control link learn", UndoScope::Automation),
+        mixer_target,
     )?;
     Ok(())
 }
@@ -84,6 +86,7 @@ pub(crate) fn update_control_link_target_inner(
     if current.formula == formula && current.smoothing_ms == smoothing_ms.min(MAX_SMOOTHING_MS) {
         return Ok(());
     }
+    let mixer_target = current.is_mixer_effect_target(&link.source);
     let old_project = inner.project.clone();
     let target = inner.project.properties.control_links[index]
         .targets
@@ -92,10 +95,11 @@ pub(crate) fn update_control_link_target_inner(
         .expect("target resolved above");
     target.formula = formula;
     target.smoothing_ms = smoothing_ms.min(MAX_SMOOTHING_MS);
-    resync_with_undo(
+    resync_link_with_undo(
         inner,
         old_project,
         UndoEdit::new("control link formula", UndoScope::Automation),
+        mixer_target,
     )?;
     Ok(())
 }
@@ -122,9 +126,10 @@ pub(crate) fn remove_control_link_target_inner(
     let index = find_link(&inner.project.properties.control_links, source)
         .ok_or_else(|| "No control link for that source".to_string())?;
     let link = &inner.project.properties.control_links[index];
-    if link.target(track, param).is_none() {
-        return Err(format!("No control link target '{track}:{param}'"));
-    }
+    let target = link
+        .target(track, param)
+        .ok_or_else(|| format!("No control link target '{track}:{param}'"))?;
+    let mixer_target = target.is_mixer_effect_target(source);
     let old_project = inner.project.clone();
     let links = &mut inner.project.properties.control_links;
     links[index]
@@ -133,12 +138,26 @@ pub(crate) fn remove_control_link_target_inner(
     if links[index].targets.is_empty() {
         links.remove(index);
     }
-    resync_with_undo(
+    resync_link_with_undo(
         inner,
         old_project,
         UndoEdit::new("control link remove", UndoScope::Automation),
+        mixer_target,
     )?;
     Ok(())
+}
+
+fn resync_link_with_undo(
+    inner: &mut AppStateInner,
+    old_project: oc_dsl::ast::Project,
+    edit: UndoEdit,
+    mixer_target: bool,
+) -> Result<(), String> {
+    if mixer_target {
+        resync_chain_with_undo(inner, old_project, edit)
+    } else {
+        resync_with_undo(inner, old_project, edit)
+    }
 }
 
 fn validate_target(
@@ -146,18 +165,32 @@ fn validate_target(
     source: &ControlLinkSource,
     target: &ControlLinkTarget,
 ) -> Result<(), String> {
+    if source.resolve_macro_preset(&inner.project)?.is_some()
+        && !target.is_mixer_effect_target(source)
+    {
+        return Err("A named preset macro needs a mixer effect target".into());
+    }
     if target.track.is_empty() {
         return Err("A control link target needs a track".into());
     }
     if target.param.is_empty() {
         return Err("A control link target needs a parameter".into());
     }
-    if !inner
+    let on_track = inner
         .project
         .tracks
         .iter()
-        .any(|track| track.name == target.track)
-    {
+        .any(|track| track.name == target.track);
+    let on_bus = target.is_mixer_effect_target(source)
+        && inner
+            .project
+            .buses
+            .iter()
+            .any(|bus| bus.name == target.track);
+    if on_track == on_bus {
+        if on_track {
+            return Err(format!("Ambiguous control link owner '{}'", target.track));
+        }
         return Err(format!("Unknown track '{}'", target.track));
     }
     if target.formula.input() == oc_dsl::ast::LinkFormulaInput::Midi7Bit && !source.is_midi() {
@@ -173,7 +206,7 @@ fn validate_target(
             MAX_SMOOTHING_MS / 1000
         ));
     }
-    Ok(())
+    target.validate_value_mapping(source)
 }
 
 fn find_link(links: &[ControlLink], source: &ControlLinkSource) -> Option<usize> {
@@ -194,6 +227,9 @@ fn insert_link(inner: &mut AppStateInner, source: ControlLinkSource) -> usize {
             }
         }
         ControlLinkSource::Macro { index } => format!("macro{index}"),
+        ControlLinkSource::PresetMacro { preset, index } => {
+            format!("macro{index}_{}", sanitize(preset))
+        }
         ControlLinkSource::Lane { track, .. } => format!("lane_{}", sanitize(track)),
     };
     let mut name = base.clone();
