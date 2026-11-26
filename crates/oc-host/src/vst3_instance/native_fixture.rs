@@ -1467,7 +1467,7 @@ mod tests {
                     .process_block_outputs_into(32, Some(transport.clone()), &[0], &mut output)
                     .unwrap();
 
-                let playing = u64::from(StatesAndFlags_::kPlaying);
+                let playing = u64::from(test_support::PLAYING_FLAG);
                 assert_ne!(fixture.delivery_for_test(4) & playing, 0);
                 let instrument = fixture.instance_mut();
                 instrument.note_on(72, 1.0, 0);

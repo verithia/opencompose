@@ -16,9 +16,9 @@ use vst3::Steinberg::{
 };
 
 #[cfg(target_os = "windows")]
-const PLAYING_FLAG: u32 = StatesAndFlags_::kPlaying as u32;
+pub(super) const PLAYING_FLAG: u32 = StatesAndFlags_::kPlaying as u32;
 #[cfg(not(target_os = "windows"))]
-const PLAYING_FLAG: u32 = StatesAndFlags_::kPlaying;
+pub(super) const PLAYING_FLAG: u32 = StatesAndFlags_::kPlaying;
 
 /// Program list the fake plugin advertises through `IUnitInfo`.
 pub const FAKE_PROGRAM_LIST_ID: i32 = 1;
