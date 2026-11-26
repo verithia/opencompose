@@ -163,6 +163,17 @@ impl RenderCache {
         self.sample_rate = sample_rate;
 
         let mut stamps = HashMap::new();
+        for file in oc_dsl::media::insert_state_files(project) {
+            let path = self.resource_root.as_deref().map_or_else(
+                || PathBuf::from(file),
+                |root| oc_dsl::media::resolve(root, Path::new(file)),
+            );
+            // A selected chain is responsible for refusing a broken state file.
+            // Watch present files even when a render does not select their chain.
+            if let Ok(stamp) = native_state_stamp(&path) {
+                stamps.insert(path, stamp);
+            }
+        }
         for track in &lane_project.tracks {
             let preset = lane_project
                 .presets
@@ -828,7 +839,10 @@ impl RenderCache {
                 &pairs,
                 &aux_pairs,
                 performance[first].as_deref(),
-                self.pre_roll_seconds,
+                super::offline_warmup::WarmupOptions {
+                    seconds: self.pre_roll_seconds,
+                    cancel: cancel.as_ref(),
+                },
             )?;
             let latency = instance.latency_samples();
             for (&lane, buffer) in group.iter().zip(buffers) {
@@ -881,14 +895,14 @@ impl RenderCache {
             let mut instance = request
                 .execute()
                 .map_err(|error| format!("VST3 instrument preset '{preset_name}': {error}"))?;
-            let ports = &instance.snapshot.outputs;
+            let ports = instance.output_ports();
             let pairs = resolve_group_pairs(
                 lane_project,
                 &group,
                 "VST3",
                 preset_name,
                 sample_rate,
-                ports,
+                &ports,
                 self.resource_root.as_deref(),
             )?;
             let profiles: Vec<_> = group
@@ -927,7 +941,7 @@ impl RenderCache {
                     cancel: cancel.as_ref(),
                 },
             )?;
-            let latency = instance.snapshot.latency_samples;
+            let latency = instance.latency_samples();
             for (&lane, buffer) in group.iter().zip(buffers) {
                 lane_latencies[lane] = latency;
                 lane_buffers[lane] = Some(buffer);
@@ -937,64 +951,82 @@ impl RenderCache {
             }
         }
 
-        // VST2 instruments render in process. The interface has one stereo
-        // output pair, so every track in the group reads the same pair.
-        for group in group_tracks_by_preset(lane_project, &vst2_tracks) {
-            if crate::render_cancel::stopped(cancel.as_ref()) {
-                return Err(crate::render_cancel::cancelled());
+        // Each bounded cohort finishes state preparation before any member
+        // waits or renders, so asynchronous library loading overlaps safely.
+        let vst2_groups = group_tracks_by_preset(lane_project, &vst2_tracks);
+        for cohort in vst2_groups.chunks(super::vst2_batch::capacity(worker_options.workers())) {
+            let mut prepared = Vec::with_capacity(cohort.len());
+            for group in cohort {
+                let result = (|| {
+                    if crate::render_cancel::stopped(cancel.as_ref()) {
+                        return Err(crate::render_cancel::cancelled());
+                    }
+                    progress_done = (progress_done + group.len()).min(progress_total);
+                    self.report_progress(
+                        crate::render_cancel::RenderStage::Rendering,
+                        progress_done,
+                        progress_total,
+                    );
+                    let first = group[0];
+                    let preset_name = lane_project.tracks[first].preset.as_deref().unwrap();
+                    let preset = lane_project
+                        .presets
+                        .iter()
+                        .find(|p| p.name == preset_name)
+                        .ok_or_else(|| format!("Preset '{}' not found", preset_name))?;
+                    let plugin = super::vst2_group::prepare_plugin(
+                        authored_presets,
+                        lane_project,
+                        preset,
+                        group,
+                        sample_rate,
+                        self.resource_root.as_deref(),
+                    )?;
+                    let aux_pairs: Vec<_> = group
+                        .iter()
+                        .map(|&index| self.aux_pairs[targets[index]].as_slice())
+                        .collect();
+                    let event_groups: Vec<_> = group
+                        .iter()
+                        .map(|&index| events_by_track[index].as_slice())
+                        .collect();
+                    let request = super::vst2_group::Vst2GroupRequest {
+                        plugin,
+                        preset,
+                        project: lane_project,
+                        tracks: group,
+                        aux_pairs: &aux_pairs,
+                        events: &event_groups,
+                        performance: performance[first].as_deref(),
+                        total_frames: total_samples,
+                        transport: project_transport(project, timeline_start, sample_rate),
+                        pre_roll_seconds: self.pre_roll_seconds,
+                        cancel: cancel.as_ref(),
+                    };
+                    if let Some(prepare) = self.vst2_group_preparer {
+                        prepare(request)
+                    } else {
+                        super::vst2_batch::PreparedGroup::completed((self.vst2_group_renderer)(
+                            request,
+                        )?)
+                    }
+                })();
+                match result {
+                    Ok(group) => prepared.push(group),
+                    Err(error) => {
+                        super::vst2_batch::discard(prepared)?;
+                        return Err(error);
+                    }
+                }
             }
-            progress_done = (progress_done + group.len()).min(progress_total);
-            self.report_progress(
-                crate::render_cancel::RenderStage::Rendering,
-                progress_done,
-                progress_total,
-            );
-            let first = group[0];
-            let preset_name = lane_project.tracks[first].preset.as_deref().unwrap();
-            let preset = lane_project
-                .presets
-                .iter()
-                .find(|p| p.name == preset_name)
-                .ok_or_else(|| format!("Preset '{}' not found", preset_name))?;
-            let plugin = super::vst2_group::prepare_plugin(
-                authored_presets,
-                lane_project,
-                preset,
-                &group,
-                sample_rate,
-                self.resource_root.as_deref(),
-            )?;
-            if let Some(pair) = group
-                .iter()
-                .flat_map(|&index| self.aux_pairs[targets[index]].iter())
-                .find(|pair| **pair > 0)
-            {
-                return Err(format!(
-                    "VST2 preset '{}' exposes only the main stereo pair; output pair {} was requested",
-                    preset.name,
-                    pair + 1
-                ));
-            }
-            let event_groups: Vec<_> = group
-                .iter()
-                .map(|&index| events_by_track[index].as_slice())
-                .collect();
-            let rendered = (self.vst2_group_renderer)(super::vst2_group::Vst2GroupRequest {
-                plugin,
-                preset,
-                tracks: &group,
-                events: &event_groups,
-                performance: performance[first].as_deref(),
-                total_frames: total_samples,
-                transport: project_transport(project, timeline_start, sample_rate),
-                pre_roll_seconds: self.pre_roll_seconds,
-                cancel: cancel.as_ref(),
-            })?;
-            let latency = rendered.latency;
-            let buffers = rendered.buffers;
-            for (&lane, buffer) in group.iter().zip(buffers) {
-                lane_latencies[lane] = latency;
-                lane_buffers[lane] = Some(buffer);
+            let outputs = super::vst2_batch::render(prepared, cancel.as_ref())?;
+            for (group, rendered) in cohort.iter().zip(outputs) {
+                let latency = rendered.latency;
+                for (&lane, buffer) in group.iter().zip(rendered.buffers) {
+                    lane_latencies[lane] = latency;
+                    lane_buffers[lane] = Some(buffer);
+                }
+                lane_aux.extend(rendered.aux);
             }
         }
 
@@ -1044,6 +1076,11 @@ impl RenderCache {
             }
             let mut instance = match AuInstance::load(plugin_id, sample_rate, 512) {
                 Ok(instance) => instance,
+                Err(error) if performance[first].is_some() => {
+                    return Err(format!(
+                        "AudioUnit performance preset '{preset_name}': {error}"
+                    ));
+                }
                 Err(error) => {
                     crate::render_warnings::push(format!(
                         "AU preset '{}' used by track '{}' cannot render in process: {error}. Its tracks render silence",
@@ -1059,6 +1096,11 @@ impl RenderCache {
                 &context,
                 self.resource_root.as_deref(),
             ) {
+                if performance[first].is_some() {
+                    return Err(format!(
+                        "AudioUnit performance preset '{preset_name}': {error}"
+                    ));
+                }
                 crate::render_warnings::push(format!(
                     "AU preset '{}' keeps the unit's default state: {error}",
                     preset.name
@@ -1084,7 +1126,11 @@ impl RenderCache {
                 &event_groups,
                 total_samples,
                 project_transport(project, timeline_start, sample_rate),
-                self.pre_roll_seconds,
+                super::offline_warmup::WarmupOptions {
+                    seconds: self.pre_roll_seconds,
+                    cancel: cancel.as_ref(),
+                },
+                performance[first].as_deref(),
             )?;
             let latency = instance.latency_samples();
             for (&lane, buffer) in group.iter().zip(buffers) {
@@ -1166,7 +1212,10 @@ impl RenderCache {
                 &event_groups,
                 total_samples,
                 project_transport(project, timeline_start, sample_rate),
-                self.pre_roll_seconds,
+                super::offline_warmup::WarmupOptions {
+                    seconds: self.pre_roll_seconds,
+                    cancel: cancel.as_ref(),
+                },
             )?;
             let latency = instance.latency_samples();
             for (&lane, buffer) in group.iter().zip(buffers) {

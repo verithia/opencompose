@@ -14,6 +14,10 @@ pub use oc_dsp::{
 };
 
 pub mod control_source;
+#[cfg(feature = "plugin-host")]
+mod plugin_sidechain;
+#[cfg(feature = "plugin-host")]
+mod plugin_state;
 pub mod schema_bridge;
 mod transfer_curve;
 
@@ -1734,11 +1738,11 @@ enum PluginEffectError {
     Refused(String),
 }
 
-/// Project context that some effects need while they are built.
 #[derive(Clone, Copy, Default)]
+#[cfg_attr(not(feature = "plugin-host"), allow(dead_code))]
 pub(crate) struct EffectResources<'a> {
-    /// Directory that project-relative assets resolve against.
     pub root: Option<&'a Path>,
+    pub transport: Option<&'a oc_audio::PluginTransport>,
 }
 
 pub fn try_create_effect(
@@ -1784,11 +1788,8 @@ pub(crate) fn try_create_effect_with_resources(
         );
     }
     if let oc_dsl::ast::EffectType::Plugin(id) = effect_type {
-        let values = params
-            .iter()
-            .filter_map(|(k, v)| v.as_f64().map(|f| (k.as_str(), f)))
-            .collect();
-        create_plugin_effect(id, &values, sample_rate, place).map_err(|error| match error {
+        create_plugin_effect(id, params, sample_rate, place, resources).map_err(|error| match error
+        {
             PluginEffectError::Unavailable => {
                 format!("external effect '{id}' could not be loaded; refusing bypassed render")
             }
@@ -2386,46 +2387,9 @@ pub(crate) fn create_effect_with_resources(
             Box::new(fx)
         }
         EffectType::Plugin(plugin_id) => {
-            create_plugin_effect(plugin_id, &param_map, sample_rate, "")
+            create_plugin_effect(plugin_id, params, sample_rate, "", resources)
                 .unwrap_or_else(|_| Box::new(Passthrough))
         }
-    }
-}
-
-/// Effect parameter that selects a declared sidechain input by index.
-#[cfg(feature = "plugin-host")]
-const SIDECHAIN_INPUT: &str = "sidechain_input";
-
-#[cfg(feature = "plugin-host")]
-fn sidechain_input_index(params: &HashMap<&str, f64>) -> Option<usize> {
-    params
-        .get(SIDECHAIN_INPUT)
-        .map(|value| value.max(0.0) as usize)
-}
-
-#[cfg(feature = "plugin-host")]
-fn apply_sidechain_input(
-    params: &HashMap<&str, f64>,
-    instance: &mut oc_host::clap_instance::ClapInstance,
-) {
-    let Some(index) = sidechain_input_index(params) else {
-        return;
-    };
-    if index < instance.sidechain_input_count() {
-        instance.set_sidechain_input_index(index);
-    }
-}
-
-#[cfg(feature = "plugin-host")]
-fn apply_sidechain_input_vst3(
-    params: &HashMap<&str, f64>,
-    instance: &mut oc_host::vst3_instance::Vst3Instance,
-) {
-    let Some(index) = sidechain_input_index(params) else {
-        return;
-    };
-    if index < instance.sidechain_input_count() {
-        instance.set_sidechain_input_index(index);
     }
 }
 
@@ -2472,45 +2436,70 @@ fn count_noun(count: usize, one: &str, many: &str) -> String {
 #[cfg(feature = "plugin-host")]
 fn create_plugin_effect(
     plugin_id: &str,
-    params: &HashMap<&str, f64>,
+    authored_params: &[(String, oc_dsl::ast::ParamValue)],
     sample_rate: u32,
     place: &str,
+    resources: EffectResources<'_>,
 ) -> Result<Box<dyn AudioEffect>, PluginEffectError> {
-    let (required_format, plugin_id) = if let Some(id) = plugin_id.strip_prefix("clap.") {
-        (Some(oc_audio::PluginFormat::Clap), id)
-    } else if let Some(id) = plugin_id.strip_prefix("vst3.") {
-        (Some(oc_audio::PluginFormat::Vst3), id)
-    } else if let Some(id) = plugin_id.strip_prefix("au.") {
-        (Some(oc_audio::PluginFormat::Au), id)
-    } else if let Some(id) = plugin_id.strip_prefix("lv2.") {
-        (Some(oc_audio::PluginFormat::Lv2), id)
-    } else if let Some(id) = plugin_id.strip_prefix("vst2.") {
-        (Some(oc_audio::PluginFormat::Vst2), id)
-    } else {
-        (None, plugin_id)
-    };
+    let resource_root = resources.root;
+    let (required_format, plugin_id) = oc_host::effect_plugin_selector(plugin_id);
     // In-process fake components are never installed as bundles.
     #[cfg(any(test, feature = "test-support"))]
     if required_format.is_none_or(|format| format == oc_audio::PluginFormat::Vst3)
         && let Some(mut instance) =
             oc_host::vst3_instance::test_support::fake_instance_for_id(plugin_id, 512)
     {
+        let inputs = plugin_state::prepare(
+            oc_host::PluginFormat::Vst3,
+            plugin_id,
+            place,
+            authored_params,
+            resource_root,
+        )
+        .map_err(PluginEffectError::Refused)?;
+        let state = inputs.state;
+        let params = &inputs.controls;
+        plugin_state::apply(&state, |bytes| instance.set_state_bytes(bytes))
+            .map_err(PluginEffectError::Refused)?;
         refuse_instrument_insert(
             instance.name(),
             oc_host::ports::BusTopology::new(instance.input_ports(), instance.output_ports()),
             place,
         )?;
-        for (name, value) in params.iter().filter(|(name, _)| **name != SIDECHAIN_INPUT) {
+        if let Some(selection) = inputs.sidechain {
+            selection
+                .apply(instance.sidechain_input_count(), |index| {
+                    instance.set_sidechain_input_index(index);
+                })
+                .map_err(PluginEffectError::Refused)?;
+        }
+        for (name, value) in params {
             instance.set_param(name, *value);
         }
+        instance
+            .prepare_restored_insert(resources.transport)
+            .map_err(PluginEffectError::Refused)?;
         return Ok(Box::new(instance));
     }
     if required_format == Some(oc_audio::PluginFormat::Au) {
         #[cfg(target_os = "macos")]
         {
+            let inputs = plugin_state::prepare(
+                oc_host::PluginFormat::Au,
+                plugin_id,
+                place,
+                authored_params,
+                resource_root,
+            )
+            .map_err(PluginEffectError::Refused)?;
+            let state = inputs.state;
+            let params = &inputs.controls;
             let mut instance = oc_host::au_instance::AuInstance::load(plugin_id, sample_rate, 512)
-                .ok()
-                .ok_or(PluginEffectError::Unavailable)?;
+                .map_err(|error| {
+                    PluginEffectError::Refused(format!("Audio Unit effect '{plugin_id}': {error}"))
+                })?;
+            plugin_state::apply(&state, |bytes| instance.set_state_bytes(bytes))
+                .map_err(PluginEffectError::Refused)?;
             refuse_instrument_insert(
                 instance.name(),
                 oc_host::ports::BusTopology::new(instance.input_ports(), instance.output_ports()),
@@ -2522,7 +2511,7 @@ fn create_plugin_effect(
                     instance.component_name()
                 ));
             }
-            for (name, value) in params.iter().filter(|(name, _)| **name != SIDECHAIN_INPUT) {
+            for (name, value) in params {
                 instance.set_param_by_name(name, *value);
             }
             return Ok(Box::new(instance));
@@ -2532,26 +2521,43 @@ fn create_plugin_effect(
             return Err(PluginEffectError::Unavailable);
         }
     }
-    let info = if required_format == Some(oc_audio::PluginFormat::Lv2) {
-        oc_host::find_plugin_info(plugin_id, oc_audio::PluginFormat::Lv2)
-    } else {
-        oc_host::cached_plugins()
-            .iter()
-            .find(|plugin| {
-                matches!(
-                    plugin.format,
-                    oc_audio::PluginFormat::Clap
-                        | oc_audio::PluginFormat::Vst3
-                        | oc_audio::PluginFormat::Lv2
-                        | oc_audio::PluginFormat::Vst2
-                ) && required_format.is_none_or(|format| plugin.format == format)
-                    && (plugin.id == plugin_id
-                        || plugin.name == plugin_id
-                        || plugin.path == plugin_id)
-            })
-            .cloned()
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    if required_format == Some(oc_audio::PluginFormat::Vst2)
+        && oc_host::vst2_bridge::bridge_mode().is_some()
+        && std::path::Path::new(plugin_id).is_absolute()
+        && oc_host::vst2_bridge::needs_translation(std::path::Path::new(plugin_id))
+    {
+        return create_bridged_vst2_insert(
+            plugin_id,
+            plugin_id,
+            authored_params,
+            sample_rate,
+            place,
+            resources,
+        );
     }
-    .ok_or(PluginEffectError::Unavailable)?;
+    let info = oc_host::find_effect_plugin(required_format, plugin_id)
+        .ok_or(PluginEffectError::Unavailable)?;
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    if info.format == oc_audio::PluginFormat::Vst2
+        && oc_host::vst2_bridge::bridge_mode().is_some()
+        && oc_host::vst2_bridge::needs_translation(std::path::Path::new(&info.path))
+    {
+        return create_bridged_vst2_insert(
+            &info.path,
+            &info.id,
+            authored_params,
+            sample_rate,
+            place,
+            resources,
+        );
+    }
+    let inputs =
+        plugin_state::prepare(info.format, &info.id, place, authored_params, resource_root)
+            .map_err(PluginEffectError::Refused)?;
+    let state = inputs.state;
+    let params = &inputs.controls;
+    let sidechain = inputs.sidechain;
 
     match info.format {
         oc_audio::PluginFormat::Clap => {
@@ -2565,17 +2571,19 @@ fn create_plugin_effect(
                 sample_rate,
                 512,
                 move |instance| {
+                    plugin_state::apply(&state, |bytes| instance.set_state_bytes(bytes))?;
                     let borrowed: HashMap<&str, f64> = owned_params
                         .iter()
                         .map(|(name, value)| (name.as_str(), *value))
                         .collect();
-                    for (name, value) in borrowed
-                        .iter()
-                        .filter(|(name, _)| **name != SIDECHAIN_INPUT)
-                    {
+                    if let Some(selection) = sidechain {
+                        selection.apply(instance.sidechain_input_count(), |index| {
+                            instance.set_sidechain_input_index(index);
+                        })?;
+                    }
+                    for (name, value) in &borrowed {
                         instance.set_param(name, *value);
                     }
-                    apply_sidechain_input(&borrowed, instance);
                     Ok(())
                 },
             )
@@ -2591,24 +2599,64 @@ fn create_plugin_effect(
             Ok(Box::new(instance))
         }
         oc_audio::PluginFormat::Vst3 => {
-            let mut instance = oc_host::vst3_instance::Vst3Instance::load(
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            if let Some(mode) = oc_host::vst2_bridge::bridge_mode()
+                && oc_host::vst2_bridge::needs_vst3_translation(std::path::Path::new(&info.path))
+            {
+                let instance = oc_host::vst2_bridge::BridgedVst3Insert::load(
+                    oc_host::vst2_bridge::Vst3InsertSetup {
+                        path: std::path::Path::new(&info.path),
+                        class_name: &info.name,
+                        sample_rate,
+                        state: state.as_deref(),
+                        parameters: params
+                            .iter()
+                            .map(|(name, value)| ((*name).into(), *value))
+                            .collect(),
+                        sidechain_input: sidechain.map(plugin_sidechain::Selection::index),
+                        transport: resources.transport,
+                    },
+                    mode,
+                )
+                .map_err(|error| {
+                    PluginEffectError::Refused(format!("VST3 effect '{}': {error}", info.name))
+                })?;
+                return Ok(Box::new(instance));
+            }
+
+            let mut instance = oc_host::vst3_instance::Vst3Instance::load_class(
                 std::path::Path::new(&info.path),
+                &info.name,
                 sample_rate,
                 512,
             )
-            .ok()
-            .ok_or(PluginEffectError::Unavailable)?;
+            .map_err(|error| {
+                PluginEffectError::Refused(format!("VST3 effect '{}': {error}", info.name))
+            })?;
+            plugin_state::apply(&state, |bytes| instance.set_state_bytes(bytes))
+                .map_err(PluginEffectError::Refused)?;
             refuse_instrument_insert(
                 &info.name,
                 oc_host::ports::BusTopology::new(instance.input_ports(), instance.output_ports()),
                 place,
             )?;
 
-            for (name, value) in params.iter().filter(|(name, _)| **name != SIDECHAIN_INPUT) {
+            if let Some(selection) = sidechain {
+                selection
+                    .apply(instance.sidechain_input_count(), |index| {
+                        instance.set_sidechain_input_index(index);
+                    })
+                    .map_err(PluginEffectError::Refused)?;
+            }
+            for (name, value) in params {
                 instance.set_param(name, *value);
             }
-            apply_sidechain_input_vst3(params, &mut instance);
 
+            instance
+                .prepare_restored_insert(resources.transport)
+                .map_err(|error| {
+                    PluginEffectError::Refused(format!("VST3 effect '{}': {error}", info.name))
+                })?;
             Ok(Box::new(instance))
         }
         oc_audio::PluginFormat::Lv2 => {
@@ -2620,47 +2668,176 @@ fn create_plugin_effect(
             )
             .ok()
             .ok_or(PluginEffectError::Unavailable)?;
+            plugin_state::apply(&state, |bytes| instance.set_state_bytes(bytes))
+                .map_err(PluginEffectError::Refused)?;
             refuse_instrument_insert(
                 &info.name,
                 oc_host::ports::BusTopology::new(instance.input_ports(), instance.output_ports()),
                 place,
             )?;
 
-            for (name, value) in params.iter().filter(|(name, _)| **name != SIDECHAIN_INPUT) {
+            for (name, value) in params {
                 instance.set_param(name, *value);
             }
 
             Ok(Box::new(instance))
         }
         oc_audio::PluginFormat::Vst2 => {
-            let mut instance = oc_host::vst2::Vst2Instance::load(
+            let transport = resources.transport.cloned();
+            let params: Vec<_> = params
+                .iter()
+                .map(|(name, value)| ((*name).to_owned(), *value))
+                .collect();
+            let instance = oc_host::vst2::Vst2Instance::load_prepared_insert(
                 std::path::Path::new(&info.path),
                 sample_rate,
                 512,
+                move |instance| {
+                    plugin_state::apply(&state, |bytes| instance.set_state_bytes(bytes))?;
+                    for (name, value) in &params {
+                        instance.set_param(name, *value);
+                    }
+                    if state.is_some() || !params.is_empty() {
+                        instance.prepare_restored_insert(transport.as_ref())
+                    } else {
+                        instance
+                            .prepare_block_buffers(512)
+                            .map_err(|error| format!("Block preparation failed: {error:?}"))
+                    }
+                },
             )
-            .ok()
-            .ok_or(PluginEffectError::Unavailable)?;
+            .map_err(|error| {
+                PluginEffectError::Refused(format!("VST2 '{}': {error}", info.name))
+            })?;
             refuse_instrument_insert(
                 &info.name,
                 oc_host::ports::BusTopology::new(instance.input_ports(), instance.output_ports()),
                 place,
             )?;
 
-            for (name, value) in params.iter().filter(|(name, _)| **name != SIDECHAIN_INPUT) {
-                instance.set_param(name, *value);
-            }
-
             Ok(Box::new(instance))
         }
         _ => Err(PluginEffectError::Unavailable),
     }
 }
+
+#[cfg(all(feature = "plugin-host", target_os = "macos", target_arch = "aarch64"))]
+fn create_bridged_vst2_insert(
+    path: &str,
+    identity: &str,
+    authored_params: &[(String, oc_dsl::ast::ParamValue)],
+    sample_rate: u32,
+    place: &str,
+    resources: EffectResources<'_>,
+) -> Result<Box<dyn AudioEffect>, PluginEffectError> {
+    let inputs = plugin_state::prepare(
+        oc_audio::PluginFormat::Vst2,
+        identity,
+        place,
+        authored_params,
+        resources.root,
+    )
+    .map_err(PluginEffectError::Refused)?;
+    let parameters = inputs
+        .controls
+        .into_iter()
+        .map(|(name, value)| (name.into(), value))
+        .collect();
+    let effect = oc_host::vst2_bridge::BridgedVst2::load_insert(
+        std::path::Path::new(path),
+        sample_rate,
+        inputs.state.as_deref(),
+        parameters,
+        resources.transport,
+    )
+    .map_err(|error| PluginEffectError::Refused(format!("effect '{identity}' {place}: {error}")))?;
+    Ok(Box::new(effect))
+}
+
+#[cfg(all(test, feature = "plugin-host"))]
+mod plugin_resolution_tests {
+    use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn unavailable_audio_unit_insert_reports_the_registry_error() {
+        let result = try_create_effect(
+            &oc_dsl::ast::EffectType::Plugin("au.aufx:ocNO:ocNO".into()),
+            &[],
+            48_000,
+        );
+        let error = result.err().expect("unregistered component");
+        assert!(
+            error.contains("Audio Unit effect 'aufx:ocNO:ocNO'"),
+            "{error}"
+        );
+        assert!(error.contains("no registered AudioUnit matches"), "{error}");
+    }
+
+    #[test]
+    fn insert_sidechain_selection_refuses_invalid_or_absent_native_inputs() {
+        use oc_dsl::ast::{EffectType, ParamValue};
+        for plugin in ["test.fake.effect", "vst2.test.fixture.vst2.gain"] {
+            for value in [-1.0, 0.5, 0.0, 9.0] {
+                let effect = try_create_effect(
+                    &EffectType::Plugin(plugin.into()),
+                    &[("sidechain_input".into(), ParamValue::Number(value))],
+                    48_000,
+                );
+                assert!(effect.is_err(), "{plugin}: sidechain_input={value}");
+            }
+            assert!(try_create_effect(&EffectType::Plugin(plugin.into()), &[], 48_000).is_ok());
+        }
+    }
+
+    #[test]
+    fn native_insert_restores_inline_state_before_numeric_overrides() {
+        use oc_dsl::ast::{EffectType, ParamValue};
+        let state: Vec<u8> = b"OCF2"
+            .iter()
+            .copied()
+            .chain(0.25f32.to_le_bytes())
+            .chain(0.5f32.to_le_bytes())
+            .collect();
+        let hex: String = state.iter().map(|byte| format!("{byte:02x}")).collect();
+        for (override_gain, expected) in [(None, [0.225, 0.025]), (Some(0.75), [0.425, -0.175])] {
+            let mut params = vec![("vst2_state_hex".into(), ParamValue::String(hex.clone()))];
+            if let Some(gain) = override_gain {
+                params.push(("Gain".into(), ParamValue::Number(gain)));
+            }
+            let mut effect = try_create_effect(
+                &EffectType::Plugin("vst2.test.fixture.vst2.gain".into()),
+                &params,
+                48_000,
+            )
+            .unwrap();
+            let mut audio = [0.2, -0.2];
+            effect.process(&mut audio, 48_000);
+            assert!((audio[0] - expected[0]).abs() < 1e-6, "{audio:?}");
+            assert!((audio[1] - expected[1]).abs() < 1e-6, "{audio:?}");
+        }
+    }
+
+    #[test]
+    fn format_qualified_insert_resolves_outside_the_browser_inventory() {
+        let mut effect = try_create_effect(
+            &oc_dsl::ast::EffectType::Plugin("vst2.test.fixture.vst2.gain".into()),
+            &[("Gain".into(), oc_dsl::ast::ParamValue::Number(0.25))],
+            48_000,
+        )
+        .expect("an explicitly requested module does not require a browser scan");
+        let mut audio = [0.2f32, -0.2, 0.4, -0.4];
+        effect.process(&mut audio, 48_000);
+        assert_eq!(audio, [0.1, -0.1, 0.2, -0.2]);
+    }
+}
 #[cfg(not(feature = "plugin-host"))]
 fn create_plugin_effect(
     _plugin_id: &str,
-    _params: &HashMap<&str, f64>,
+    _params: &[(String, oc_dsl::ast::ParamValue)],
     _sample_rate: u32,
     _place: &str,
+    _resources: EffectResources<'_>,
 ) -> Result<Box<dyn AudioEffect>, PluginEffectError> {
     Err(PluginEffectError::Unavailable)
 }

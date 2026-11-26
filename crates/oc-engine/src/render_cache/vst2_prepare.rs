@@ -28,6 +28,11 @@ pub(super) fn instrument_tail(
     probe: Vst2TailProbe,
 ) -> Result<u32, String> {
     let plan = instrument_request(definitions, preset, track, sample_rate, resource_root)?;
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    if oc_host::vst2_bridge::needs_translation(&plan.path) {
+        let plugin = load_translated(&plan)?;
+        return Ok(plugin.plugin_tail().unwrap_or(0));
+    }
     // Unknown/unbounded native tails keep the shared render horizon fallback.
     // A failed preparation or CLOSE is an error, never a successful fallback.
     probe(plan).map(|tail| tail.unwrap_or(0)).map_err(|error| {
@@ -36,6 +41,30 @@ pub(super) fn instrument_tail(
             preset.name, track.name
         )
     })
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub(super) fn load_translated(
+    plan: &Vst2OwnedAuthoredPlan,
+) -> Result<oc_host::vst2_bridge::BridgedVst2, String> {
+    let params = plan
+        .parameters
+        .iter()
+        .filter(|param| param.claim == Vst2AuthoredClaim::NativeOnly)
+        .map(|param| {
+            param
+                .native_value
+                .map(|value| (param.name.clone(), value))
+                .ok_or_else(|| format!("VST2 parameter '{}' requires a numeric value", param.name))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    oc_host::vst2_bridge::BridgedVst2::load_instrument(
+        &plan.path,
+        plan.sample_rate,
+        plan.state.as_deref(),
+        params,
+        oc_host::vst2_bridge::BridgeMode::Offline,
+    )
 }
 
 pub(super) fn instrument_request(
@@ -76,19 +105,6 @@ pub(super) fn instrument_request(
             return Err("VST2 authored parameter name exceeds its preparation budget".into());
         }
     }
-    // Typed track routing is consumed independently of authored native values.
-    let mut routing = InstrumentProfile::default();
-    routing.set_output_port(
-        track.output_port.map(usize::from),
-        track.output_pair.map(usize::from),
-    );
-    resolve_output_pair(
-        &[AudioPort::STEREO],
-        &routing,
-        "VST2",
-        &preset.name,
-        &track.name,
-    )?;
     let routing_rows: Vec<_> = assembled
         .authored
         .iter()

@@ -31,6 +31,7 @@ pub use macro_preview::PresetMacroInput;
 mod midi_input;
 mod prepared;
 mod process_boundary;
+mod rewind;
 pub use process_boundary::EffectChainProcessError;
 use process_boundary::ProcessBoundary;
 #[cfg(test)]
@@ -1303,6 +1304,7 @@ pub fn validate_effect_parameters(
                 place,
                 dsp::EffectResources {
                     root: resource_root,
+                    ..Default::default()
                 },
             ) && seen.insert(format!("{place}: {error}"))
             {
@@ -4044,6 +4046,7 @@ fn numeric_param(
     // Rebuild when an edit changes the plan or instance lifecycle.
     if effect_type.parameter_changes_latency(name)
         || name == oc_dsp::schema::effect_slot::SlotControl::WET_ID
+        || name == rewind::RECREATE_PARAM
     {
         return None;
     }
@@ -4265,8 +4268,22 @@ fn build_effect_chain_selection<'a>(
             .get(&index)
             .is_some_and(|lanes| lanes.iter().any(|lane| matches(lane.parameter.as_str())))
     };
+    let transport = if effects.iter().enumerate().any(|(index, effect)| {
+        (!effect.bypass || slot_lanes(index, Some(SlotControl::Enabled)))
+            && matches!(effect.effect_type, oc_dsl::ast::EffectType::Plugin(_))
+    }) {
+        let transport = oc_audio::PluginTransport::from_project(0, sample_rate, properties);
+        if checked {
+            Some(transport?)
+        } else {
+            transport.ok()
+        }
+    } else {
+        None
+    };
     let resources = dsp::EffectResources {
         root: resource_root,
+        transport: transport.as_ref(),
     };
     let mut audio_routes: HashMap<usize, &str> = HashMap::new();
     let mut control_routes: HashMap<usize, &str> = HashMap::new();
@@ -4298,6 +4315,7 @@ fn build_effect_chain_selection<'a>(
         if selected.is_some_and(|selected| selected != index) {
             continue;
         }
+        rewind::validate_recreate(effect, owner, place)?;
         let wet = effect
             .params
             .iter()
@@ -4459,13 +4477,13 @@ fn effect_device_params(
     if effect
         .params
         .iter()
-        .any(|(name, _)| name == SlotControl::WET_ID)
+        .any(|(name, _)| name == SlotControl::WET_ID || name == rewind::RECREATE_PARAM)
     {
         return std::borrow::Cow::Owned(
             effect
                 .params
                 .iter()
-                .filter(|(name, _)| name != SlotControl::WET_ID)
+                .filter(|(name, _)| name != SlotControl::WET_ID && name != rewind::RECREATE_PARAM)
                 .cloned()
                 .collect(),
         );

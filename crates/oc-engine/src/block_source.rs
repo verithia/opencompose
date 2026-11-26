@@ -7,6 +7,9 @@ use oc_dsl::ast::{ParamValue, PresetDef, Project, ProjectProperties, Track};
 use oc_synth::synth::OpenSynth;
 use std::path::Path;
 
+mod vst2;
+pub use vst2::StreamingVst2;
+
 /// Resolve project-owned resources without mutating the saved document.
 pub fn prepare_project(
     project: &oc_dsl::ast::Project,
@@ -206,10 +209,16 @@ pub enum BlockSource {
     SoundFont(Box<SoundFontRenderer>),
     Clap(Box<oc_host::clap_instance::ClapInstance>),
     Vst3(Box<oc_host::vst3_instance::Vst3Instance>),
+    #[cfg(target_os = "macos")]
+    TranslatedVst3(Box<oc_host::vst2_bridge::BridgedVst3>),
     Lv2(Box<oc_host::lv2::Lv2Instance>),
-    Vst2(Box<oc_host::vst2::Vst2Instance>),
+    Vst2(Box<StreamingVst2>),
+    #[cfg(target_os = "macos")]
+    TranslatedVst2(Box<oc_host::vst2_bridge::BridgedVst2>),
     #[cfg(target_os = "macos")]
     Au(Box<oc_host::au_instance::AuInstance>),
+    #[cfg(target_os = "macos")]
+    AuPerformance(Box<oc_host::au_instance::AuInstance>),
     /// Clip-only track: clip lanes supply the audio, no instrument is built.
     Silent,
     Builtin {
@@ -262,10 +271,11 @@ impl BlockSource {
                 )?,
             )));
         }
-        if !matches!(preset.source.as_deref(), Some("clap" | "vst2" | "vst3")) {
-            return Err(
-                "performance streaming requires OpenSynth or MIDI-capable CLAP/VST2/VST3".into(),
-            );
+        if !matches!(
+            preset.source.as_deref(),
+            Some("clap" | "vst2" | "vst3" | "au")
+        ) {
+            return Err("performance streaming requires a supported MIDI-capable source".into());
         }
         let source = Self::new(
             Some(preset),
@@ -275,12 +285,19 @@ impl BlockSource {
             tempo,
             root,
         )?;
-        match &source {
-            Self::Clap(p) if !p.supports_midi1_input() => {
+        match source {
+            Self::Clap(ref p) if !p.supports_midi1_input() => {
                 return Err("CLAP input port zero does not support MIDI1".into());
             }
-            Self::Vst2(p) if !p.accepts_midi() => {
+            Self::Vst2(ref p) if !p.snapshot().accepts_midi => {
                 return Err("VST2 instrument does not accept MIDI".into());
+            }
+            #[cfg(target_os = "macos")]
+            Self::Au(p) => {
+                if oc_audio::AudioEffect::midi_input_capacity(p.as_ref()) == 0 {
+                    return Err("AudioUnit instrument does not accept MIDI".into());
+                }
+                return Ok(Self::AuPerformance(p));
             }
             _ => {}
         }
@@ -303,11 +320,27 @@ impl BlockSource {
                 Err("native performance must dispatch at an event boundary".into())
             }
             Self::Clap(p) => p.queue_performance_command(command, offset, block_frames),
-            Self::Vst2(p) => {
-                crate::render_cache::queue_vst2_performance_command(p, command, offset as i32)
+            Self::Vst2(p) => p.send_performance(command, offset as i32),
+            #[cfg(target_os = "macos")]
+            Self::TranslatedVst2(p) => {
+                let bytes = command.midi_bytes();
+                p.queue_midi(
+                    [bytes[0], bytes[1], bytes.get(2).copied().unwrap_or(0)],
+                    offset,
+                )
             }
             Self::Vst3(p) => {
                 crate::render_cache::queue_vst3_performance_command(p, command, offset as i32)
+            }
+            #[cfg(target_os = "macos")]
+            Self::AuPerformance(p) => {
+                crate::render_cache::queue_au_performance_command(p, command, offset)
+            }
+            #[cfg(target_os = "macos")]
+            Self::TranslatedVst3(p) => {
+                p.queue_event(oc_host::vst3_instance::Vst3OrderedEvent::Midi(
+                    crate::render_cache::vst3_performance_event(command, offset),
+                ))
             }
             _ => Err("source does not support explicit performance commands".into()),
         }
@@ -425,16 +458,33 @@ impl BlockSource {
             if p.source.as_deref() == Some("vst2") {
                 let info = find_plugin_info(id, PluginFormat::Vst2)
                     .ok_or_else(|| format!("VST2 plugin {id} is not installed"))?;
-                let mut plugin =
-                    oc_host::vst2::Vst2Instance::load(Path::new(&info.path), sample_rate, 4096)?;
                 let context = oc_host::PluginStateContext::new(
                     PluginFormat::Vst2,
                     Some(info.id.as_str()),
                     &p.name,
                 );
-                apply_vst2_preset_state_at(&mut plugin, params, &context, root)?;
-                apply_vst2_preset_params(&mut plugin, params)?;
-                return Ok(Self::Vst2(Box::new(plugin)));
+                #[cfg(target_os = "macos")]
+                if oc_host::vst2_bridge::needs_translation(Path::new(&info.path)) {
+                    use oc_host::vst2_bridge::{BridgeMode, BridgedVst2, bridge_mode};
+                    let state = materialize_vst2_preset_state_at(params, &context, root)?;
+                    let instance = BridgedVst2::load_instrument(
+                        Path::new(&info.path),
+                        sample_rate,
+                        state.as_deref(),
+                        vst2_bridge_parameters(params)?,
+                        bridge_mode().unwrap_or(BridgeMode::Offline),
+                    )?;
+                    return Ok(Self::TranslatedVst2(Box::new(instance)));
+                }
+                let plan = streaming_vst2_request(
+                    Path::new(&info.path),
+                    params,
+                    &context,
+                    root,
+                    sample_rate,
+                    4096,
+                )?;
+                return Ok(Self::Vst2(Box::new(StreamingVst2::load(plan)?)));
             }
             let format = if p.source.as_deref() == Some("clap") {
                 PluginFormat::Clap
@@ -494,9 +544,16 @@ impl BlockSource {
                 )?;
                 return Ok(Self::Clap(Box::new(plugin)));
             }
+            #[cfg(target_os = "macos")]
+            if oc_host::vst2_bridge::needs_vst3_translation(Path::new(&info.path)) {
+                let instance =
+                    crate::render_cache::load_streamed_vst3(&info, p, params, sample_rate, root)?;
+                return Ok(Self::TranslatedVst3(Box::new(instance)));
+            }
             let load_start = std::time::Instant::now();
-            let mut plugin = oc_host::vst3_instance::Vst3Instance::load(
+            let mut plugin = oc_host::vst3_instance::Vst3Instance::load_class(
                 Path::new(&info.path),
+                &info.name,
                 sample_rate,
                 4096,
             )?;
@@ -643,6 +700,10 @@ impl BlockSource {
     /// every loaded asset. Returns `false` when the source cannot restore its
     /// own DSP state, so the caller rebuilds that lane alone.
     pub fn rewind(&mut self) -> bool {
+        self.rewind_from(None)
+    }
+
+    fn rewind_from(&mut self, transport: Option<oc_host::PluginTransport>) -> bool {
         match self {
             Self::Synth(synth) => {
                 synth.reset();
@@ -665,20 +726,28 @@ impl BlockSource {
                 true
             }
             Self::Clap(plugin) => plugin.reset(),
-            Self::Vst3(plugin) => plugin.reset(),
+            Self::Vst3(plugin) => match transport {
+                Some(transport) => plugin.reset_at_transport(transport),
+                None => plugin.reset(),
+            },
+            #[cfg(target_os = "macos")]
+            Self::TranslatedVst3(_) => false,
             Self::Lv2(plugin) => {
                 plugin.reset_state();
                 true
             }
-            Self::Vst2(plugin) => {
+            Self::Vst2(plugin) => plugin.rewind(),
+            #[cfg(target_os = "macos")]
+            Self::TranslatedVst2(plugin) => {
                 plugin.reset();
-                true
+                !plugin.processing_failed()
             }
             #[cfg(target_os = "macos")]
-            Self::Au(plugin) => {
-                plugin.reset();
-                true
-            }
+            Self::Au(plugin) => plugin.reset_prepared().is_ok(),
+            // AudioUnitReset retains programs and controls. Rebuild this lane
+            // before replaying performance events from the project origin.
+            #[cfg(target_os = "macos")]
+            Self::AuPerformance(_) => false,
             Self::Builtin { plugin, active } => {
                 plugin.reset();
                 *active = false;
@@ -705,9 +774,15 @@ impl BlockSource {
                 Self::Vst3(p) => {
                     crate::render_cache::queue_plugin_midi_event(p.as_mut(), event, 0)?
                 }
+                #[cfg(target_os = "macos")]
+                Self::TranslatedVst3(p) => {
+                    crate::render_cache::queue_translated_vst3_score(p, event, 0)?
+                }
                 Self::Lv2(p) => crate::render_cache::queue_plugin_midi_event(p.as_mut(), event, 0)?,
-                Self::Vst2(p) => {
-                    crate::render_cache::queue_plugin_midi_event(p.as_mut(), event, 0)?
+                Self::Vst2(p) => p.send_score(event, 0)?,
+                #[cfg(target_os = "macos")]
+                Self::TranslatedVst2(p) => {
+                    crate::render_cache::queue_translated_score(p, event, 0)?
                 }
                 #[cfg(target_os = "macos")]
                 Self::Au(p) => crate::render_cache::queue_plugin_midi_event(p.as_mut(), event, 0)?,
@@ -731,13 +806,29 @@ impl BlockSource {
         s.send_midi(event)
     }
 
-    /// Queue VST3 events relative to the upcoming process block, as in export.
-    pub fn send_vst3_at(&mut self, event: &MidiMessage, offset: i32) -> Result<(), String> {
+    /// Queue hosted score events relative to the upcoming process block.
+    pub fn send_score_at(&mut self, event: &MidiMessage, offset: i32) -> Result<(), String> {
         match self {
+            Self::Vst2(plugin) if offset >= 0 => plugin.send_score(event, offset),
+            Self::Clap(plugin) if offset >= 0 => {
+                crate::render_cache::queue_plugin_midi_event(plugin.as_mut(), event, offset)
+            }
             Self::Vst3(plugin) if offset >= 0 => {
                 crate::render_cache::queue_plugin_midi_event(plugin.as_mut(), event, offset)
             }
-            _ => Err("offset event requires a VST3 source and nonnegative offset".into()),
+            #[cfg(target_os = "macos")]
+            Self::Au(plugin) if offset >= 0 => {
+                crate::render_cache::queue_plugin_midi_event(plugin.as_mut(), event, offset)
+            }
+            #[cfg(target_os = "macos")]
+            Self::TranslatedVst3(plugin) if offset >= 0 => {
+                crate::render_cache::queue_translated_vst3_score(plugin, event, offset as u32)
+            }
+            #[cfg(target_os = "macos")]
+            Self::TranslatedVst2(plugin) if offset >= 0 => {
+                crate::render_cache::queue_translated_score(plugin, event, offset as u32)
+            }
+            _ => Err("offset event requires a supported plugin and nonnegative offset".into()),
         }
     }
 
@@ -746,10 +837,14 @@ impl BlockSource {
         match self {
             Self::Clap(p) => p.latency_samples(),
             Self::Vst3(p) => p.latency_samples(),
-            Self::Lv2(p) => p.latency_samples(),
-            Self::Vst2(p) => p.latency_samples(),
             #[cfg(target_os = "macos")]
-            Self::Au(p) => p.latency_samples(),
+            Self::TranslatedVst3(p) => p.latency_samples(),
+            Self::Lv2(p) => p.latency_samples(),
+            Self::Vst2(p) => p.snapshot().latency_samples,
+            #[cfg(target_os = "macos")]
+            Self::TranslatedVst2(p) => p.latency_samples(),
+            #[cfg(target_os = "macos")]
+            Self::Au(p) | Self::AuPerformance(p) => p.latency_samples(),
             _ => 0,
         }
     }
@@ -759,10 +854,14 @@ impl BlockSource {
         match self {
             Self::Clap(p) => p.output_ports(),
             Self::Vst3(p) => p.output_ports(),
-            Self::Lv2(p) => p.output_ports(),
-            Self::Vst2(p) => p.output_ports(),
             #[cfg(target_os = "macos")]
-            Self::Au(p) => p.output_ports(),
+            Self::TranslatedVst3(p) => p.output_ports(),
+            Self::Lv2(p) => p.output_ports(),
+            Self::Vst2(p) => p.snapshot().outputs.clone(),
+            #[cfg(target_os = "macos")]
+            Self::TranslatedVst2(p) => p.output_ports(),
+            #[cfg(target_os = "macos")]
+            Self::Au(p) | Self::AuPerformance(p) => p.output_ports(),
             _ => Vec::new(),
         }
     }
@@ -773,10 +872,14 @@ impl BlockSource {
         match self {
             Self::Clap(p) => Some(p.output_count()),
             Self::Vst3(p) => Some(p.output_count()),
-            Self::Lv2(_) => None,
-            Self::Vst2(p) => Some(p.output_count()),
             #[cfg(target_os = "macos")]
-            Self::Au(p) => Some(p.output_count()),
+            Self::TranslatedVst3(p) => Some(p.output_count()),
+            Self::Lv2(_) => None,
+            Self::Vst2(p) => Some(p.snapshot().output_pairs),
+            #[cfg(target_os = "macos")]
+            Self::TranslatedVst2(p) => Some(p.output_count()),
+            #[cfg(target_os = "macos")]
+            Self::Au(p) | Self::AuPerformance(p) => Some(p.output_count()),
             _ => None,
         }
     }
@@ -854,17 +957,37 @@ impl BlockSource {
                     output.fill_silence(frames);
                 }
             }
+            #[cfg(target_os = "macos")]
+            Self::TranslatedVst3(p) => {
+                output.fill_silence(frames);
+                let _ = p.process_queued(oc_host::vst3_instance::Vst3OwnedInstrumentBlock {
+                    frames: frames as u32,
+                    transport: Some(&transport),
+                    parameters: &[],
+                    output_pairs: &output.requested,
+                    outputs: &mut output.buffers,
+                });
+            }
             Self::Lv2(p) => {
                 let rendered = p.process_block_with_transport(frames as u32, Some(transport));
                 output.buffers[0].extend_from_slice(rendered);
             }
-            Self::Vst2(p) => {
-                let main = &mut output.buffers[0];
-                main.resize(frames * 2, 0.0);
-                let _ = p.process_block_into(main, Some(transport));
+            Self::Vst2(p) => p.render(frames, &transport, output),
+            #[cfg(target_os = "macos")]
+            Self::TranslatedVst2(p) => {
+                if p.render_instrument_outputs_into(
+                    frames,
+                    &transport,
+                    &output.requested,
+                    &mut output.buffers,
+                )
+                .is_err()
+                {
+                    output.fill_silence(frames);
+                }
             }
             #[cfg(target_os = "macos")]
-            Self::Au(p) => {
+            Self::Au(p) | Self::AuPerformance(p) => {
                 let main = &mut output.buffers[0];
                 main.resize(frames * 2, 0.0);
                 let _ = p.process_block_into(main, Some(&transport));
@@ -898,9 +1021,13 @@ impl BlockSource {
         match self {
             Self::Clap(plugin) => plugin.plugin_tail_samples(),
             Self::Vst3(plugin) => plugin.plugin_tail_samples(),
-            Self::Vst2(plugin) => plugin.plugin_tail_samples(),
             #[cfg(target_os = "macos")]
-            Self::Au(plugin) => plugin.plugin_tail_samples(),
+            Self::TranslatedVst3(plugin) => Some(plugin.tail_samples()),
+            Self::Vst2(plugin) => plugin.snapshot().tail_samples,
+            #[cfg(target_os = "macos")]
+            Self::TranslatedVst2(plugin) => plugin.plugin_tail(),
+            #[cfg(target_os = "macos")]
+            Self::Au(plugin) | Self::AuPerformance(plugin) => plugin.plugin_tail_samples(),
             _ => None,
         }
     }
@@ -929,13 +1056,31 @@ pub struct SmartSource {
 static NEXT_SOURCE_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 impl SmartSource {
+    /// Whether opening a stopped project may process this source's score.
+    pub fn can_prefill_before_play(&self) -> bool {
+        match &self.source {
+            // Native VST3 instruments can finish preparing asynchronously.
+            // Processing early can consume the first note before it can sound.
+            BlockSource::Vst3(_) => false,
+            #[cfg(target_os = "macos")]
+            BlockSource::TranslatedVst3(_) => false,
+            _ => true,
+        }
+    }
+
     /// Poll a failure authority; this never enters a native plugin.
     pub fn processing_failed(&self) -> bool {
         match &self.source {
             BlockSource::Clap(instance) => instance.processing_failed(),
-            BlockSource::Vst2(instance) => instance.processing_failed(),
+            BlockSource::Vst2(instance) => instance.failed(),
             #[cfg(target_os = "macos")]
-            BlockSource::Au(instance) => instance.processing_failed(),
+            BlockSource::TranslatedVst3(instance) => instance.failed(),
+            #[cfg(target_os = "macos")]
+            BlockSource::TranslatedVst2(instance) => instance.processing_failed(),
+            #[cfg(target_os = "macos")]
+            BlockSource::Au(instance) | BlockSource::AuPerformance(instance) => {
+                instance.processing_failed()
+            }
             BlockSource::Builtin { plugin, .. } => plugin.processing_failed(),
             _ => false,
         }
@@ -945,9 +1090,15 @@ impl SmartSource {
     pub fn take_processing_failure(&self) -> oc_audio::ProcessingFailureReport {
         match &self.source {
             BlockSource::Clap(instance) => instance.take_processing_failure(),
-            BlockSource::Vst2(instance) => instance.take_processing_failure(),
+            BlockSource::Vst2(instance) => instance.take_failure(),
             #[cfg(target_os = "macos")]
-            BlockSource::Au(instance) => instance.take_processing_failure(),
+            BlockSource::TranslatedVst3(instance) => instance.take_processing_failure(),
+            #[cfg(target_os = "macos")]
+            BlockSource::TranslatedVst2(instance) => instance.take_processing_failure(),
+            #[cfg(target_os = "macos")]
+            BlockSource::Au(instance) | BlockSource::AuPerformance(instance) => {
+                instance.take_processing_failure()
+            }
             BlockSource::Builtin { plugin, .. } => plugin.take_processing_failure(),
             _ => oc_audio::ProcessingFailureReport::Unavailable,
         }
@@ -988,26 +1139,39 @@ impl SmartSource {
     /// Return the lane to its construction state, keeping the instance.
     /// Returns `false` when the caller must rebuild this lane.
     pub fn rewind(&mut self) -> bool {
+        self.rewind_from(None)
+    }
+
+    /// Rewind after discarding playback at the supplied transport position.
+    pub fn rewind_from(&mut self, transport: Option<oc_host::PluginTransport>) -> bool {
         #[cfg(any(test, feature = "test-support"))]
         if self.non_rewindable {
             return false;
         }
         self.input = false;
         self.gate.rewind();
-        self.source.rewind()
+        self.source.rewind_from(transport)
     }
 
-    /// Whether the lane hosts a VST3 instance.
-    pub fn is_vst3(&self) -> bool {
-        matches!(self.source, BlockSource::Vst3(_))
+    /// Whether the lane queues score events with offsets in a fixed block.
+    pub fn supports_score_offsets(&self) -> bool {
+        match self.source {
+            BlockSource::Vst2(_) | BlockSource::Vst3(_) => true,
+            #[cfg(target_os = "macos")]
+            BlockSource::TranslatedVst2(_)
+            | BlockSource::TranslatedVst3(_)
+            | BlockSource::Au(_) => true,
+            _ => false,
+        }
     }
 
     /// Hosted performance sources preserve plugin processing quantum and event offsets.
     pub fn performance_uses_offsets(&self) -> bool {
-        matches!(
-            self.source,
-            BlockSource::Clap(_) | BlockSource::Vst2(_) | BlockSource::Vst3(_)
-        )
+        #[cfg(target_os = "macos")]
+        if matches!(self.source, BlockSource::AuPerformance(_)) {
+            return true;
+        }
+        self.supports_score_offsets() || matches!(self.source, BlockSource::Clap(_))
     }
 
     /// Send a performance command through the idle gate.
@@ -1048,10 +1212,10 @@ impl SmartSource {
         self.source.send(event)
     }
 
-    /// Queue a VST3 event at a block-relative offset.
-    pub fn send_vst3_at(&mut self, event: &MidiMessage, offset: i32) -> Result<(), String> {
+    /// Queue a hosted score event at a block-relative offset.
+    pub fn send_score_at(&mut self, event: &MidiMessage, offset: i32) -> Result<(), String> {
         self.input = true;
-        self.source.send_vst3_at(event, offset)
+        self.source.send_score_at(event, offset)
     }
 
     /// Install the lane's hairpin layer ramps; see [`BlockSource`].
@@ -1680,7 +1844,7 @@ mod prepared_sample_tests {
 
 #[cfg(test)]
 mod prepared_vst2_tests {
-    use super::{BlockSource, SmartSource, SourceOutput};
+    use super::{BlockSource, MidiMessage, SmartSource, SourceOutput, StreamingVst2};
     use oc_audio::{AudioEffect, PluginTransport, ProcessingFailureReport};
     use oc_host::vst2::{MAX_PENDING_MIDI, Vst2Instance, Vst2ProcessError};
 
@@ -1692,7 +1856,7 @@ mod prepared_vst2_tests {
     }
 
     #[test]
-    fn prepared_vst2_first_note_partial_reset_and_source_adapter_have_zero_heap_operations() {
+    fn prepared_vst2_first_note_and_partial_reset_have_zero_heap_operations() {
         let mut plugin = fixture("OpenCompose Tone Fixture");
         let mut output = [0.0; 256];
         assert_eq!(
@@ -1726,19 +1890,108 @@ mod prepared_vst2_tests {
             0
         );
         assert!(output.iter().all(|sample| *sample == 0.5));
-        let mut source = SmartSource::new(BlockSource::Vst2(Box::new(plugin)), RATE, false);
+    }
+
+    #[test]
+    fn application_main_vst2_source_streams_midi_and_rewinds_without_retaining_events() {
+        let _executor = oc_host::application_main::ApplicationMainExecutor::ensure_test_executor()
+            .expect("the streaming source can use the application-main test executor");
+        let path = oc_host::vst2::test_support::fixture_path("OpenCompose Tone Fixture")
+            .expect("the host build must provide its native VST2 fixture");
+        let plan = oc_host::vst2::Vst2OwnedAuthoredPlan {
+            path,
+            sample_rate: RATE,
+            max_frames: 128,
+            state: None,
+            parameters: Vec::new(),
+        };
+        let mut source = SmartSource::new(
+            BlockSource::Vst2(Box::new(StreamingVst2::load(plan).unwrap())),
+            RATE,
+            false,
+        );
         let mut pairs = SourceOutput::new(0, &[]);
+        let note = MidiMessage::NoteOn {
+            channel: 0,
+            note: 64,
+            velocity: 127,
+        };
         assert_eq!(
-            crate::test_alloc::operations(|| source.render_into(
-                128,
-                RATE,
-                PluginTransport::new(256, RATE, 137.0),
-                &mut pairs
-            )),
+            crate::test_alloc::operations(|| {
+                source.send_score_at(&note, 0).unwrap();
+                source.render_into(128, RATE, PluginTransport::new(0, RATE, 137.0), &mut pairs);
+            }),
             0
         );
-        assert_eq!(pairs.main(), output);
+        assert_eq!(pairs.main(), &[0.5; 256]);
+
+        let off = MidiMessage::NoteOff {
+            channel: 0,
+            note: 64,
+        };
+        source.send_score_at(&off, 0).unwrap();
+        source.render_into(
+            128,
+            RATE,
+            PluginTransport::new(128, RATE, 137.0),
+            &mut pairs,
+        );
+        assert!(pairs.main().iter().all(|&sample| sample == 0.0));
+        source.send_score_at(&note, 10).unwrap();
+        assert!(source.rewind());
+        source.render_into(128, RATE, PluginTransport::new(0, RATE, 137.0), &mut pairs);
+        assert!(pairs.main().iter().all(|&sample| sample == 0.0));
+
+        let gain = MidiMessage::PluginParam {
+            name: "Gain".into(),
+            value: 0.75,
+        };
+        assert_eq!(
+            crate::test_alloc::operations(|| {
+                source.send_score_at(&gain, 0).unwrap();
+                source.send_score_at(&note, 0).unwrap();
+                source.render_into(
+                    128,
+                    RATE,
+                    PluginTransport::new(128, RATE, 137.0),
+                    &mut pairs,
+                );
+            }),
+            0
+        );
+        assert!(pairs.main().iter().all(|&sample| sample == 0.75));
         assert!(!source.processing_failed());
+    }
+
+    #[test]
+    fn application_main_vst2_source_keeps_flat_channel_pairs() {
+        let _executor = oc_host::application_main::ApplicationMainExecutor::ensure_test_executor()
+            .expect("the streaming source can use the application-main test executor");
+        let path =
+            oc_host::vst2::test_support::fixture_path("OpenCompose Multi Out Fixture").unwrap();
+        let plan = oc_host::vst2::Vst2OwnedAuthoredPlan {
+            path,
+            sample_rate: RATE,
+            max_frames: 128,
+            state: None,
+            parameters: Vec::new(),
+        };
+        let mut source = BlockSource::Vst2(Box::new(StreamingVst2::load(plan).unwrap()));
+        assert_eq!(source.aux_capacity(), Some(4));
+        let mut pairs = SourceOutput::new(0, &[3]);
+        let note = MidiMessage::NoteOn {
+            channel: 1,
+            note: 48,
+            velocity: 127,
+        };
+        source.send_score_at(&note, 0).unwrap();
+        source.render_into(32, RATE, PluginTransport::new(0, RATE, 120.0), &mut pairs);
+        let (index, aux) = pairs.aux().next().unwrap();
+        assert_eq!(index, 3);
+        assert_eq!(pairs.main().len(), 64);
+        assert_eq!(aux.len(), 64);
+        assert!(aux[0] > pairs.main()[0]);
+        assert!(aux[1] > pairs.main()[1]);
     }
 
     #[test]
@@ -1844,7 +2097,7 @@ mod prepared_vst2_tests {
         let mut output = [9.0; 256];
         assert_eq!(
             crate::test_alloc::operations(|| {
-                oc_host::vst2::test_support::notify_io_changed(&plugin);
+                oc_host::vst2::test_support::change_latency_and_notify(&mut plugin, 7);
                 assert_eq!(
                     plugin.process_block_into(&mut output, None),
                     Err(Vst2ProcessError::TopologyChanged)

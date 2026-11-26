@@ -72,6 +72,7 @@ fn vst2_group_warm_single_track_edit_rerenders_every_shared_source_member() {
                 .iter()
                 .map(|_| vec![sum as f32 / 1000.0; request.total_frames * 2])
                 .collect(),
+            aux: Default::default(),
             latency: 0,
         })
     }
@@ -145,6 +146,7 @@ fn vst2_group_cache_preflight_uses_original_alias_order_not_flattened_positions(
         );
         Ok(Vst2GroupOutput {
             buffers: vec![vec![0.25; request.total_frames * 2]],
+            aux: Default::default(),
             latency: 0,
         })
     }

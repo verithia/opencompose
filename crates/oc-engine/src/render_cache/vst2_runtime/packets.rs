@@ -3,7 +3,7 @@ use super::super::{MidiMessage, PluginMidiEventSink, queue_plugin_midi_event};
 use crate::midi_io::LiveEvent;
 
 #[derive(Debug, Default)]
-pub(super) struct ScorePackets {
+pub(crate) struct ScorePackets {
     pub bytes: [[u8; 3]; 2],
     pub count: usize,
     unsupported: bool,
@@ -18,7 +18,7 @@ impl ScorePackets {
         self.count += 1;
     }
 }
-pub(super) fn encode(event: &MidiMessage) -> Result<ScorePackets, String> {
+pub(crate) fn encode(event: &MidiMessage) -> Result<ScorePackets, String> {
     let mut packets = ScorePackets::default();
     queue_plugin_midi_event(&mut packets, event, 0)?;
     if packets.unsupported {

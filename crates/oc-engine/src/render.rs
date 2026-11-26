@@ -582,6 +582,9 @@ pub fn render_full_for_export_with_options_and_cache(
     options: RenderOptions<'_>,
     mut cache: crate::render_cache::RenderCache,
 ) -> Result<(Vec<f32>, crate::render_cache::RenderCache), crate::render_cancel::RenderError> {
+    #[cfg(all(feature = "plugin-host", target_os = "macos", target_arch = "aarch64"))]
+    let _bridge_scope =
+        oc_host::vst2_bridge::BridgeScope::enter(oc_host::vst2_bridge::BridgeMode::Offline);
     let RenderOptions {
         sample_rate,
         output_gain_db,

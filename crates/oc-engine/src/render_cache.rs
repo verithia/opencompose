@@ -35,6 +35,7 @@ use oc_dsl::ast::{ParamValue, PresetDef, Project};
 use oc_host::au_instance::AuInstance;
 use oc_host::clap_instance::ClapInstance;
 use oc_host::ports::AudioPort;
+#[cfg(test)]
 use oc_host::vst2::Vst2Instance;
 use oc_host::vst3_instance::Vst3Instance;
 use oc_host::{PluginFormat, PluginStateContext, PluginTransport, find_plugin_info};
@@ -49,15 +50,28 @@ mod builtin;
 mod cache;
 mod clap_prepare;
 mod event_sink;
+#[cfg(target_os = "macos")]
+pub(crate) use event_sink::vst3_performance_event;
 mod helpers;
+mod offline_warmup;
 mod patterns;
 mod plugin_tracks;
 mod preset_state;
+#[cfg(target_os = "macos")]
+pub(crate) use preset_state::{materialize_vst2_preset_state_at, vst2_bridge_parameters};
+pub(crate) use vst2_runtime::encode_vst2_score;
+#[cfg(target_os = "macos")]
+pub(crate) use vst2_runtime::queue_translated_score;
+mod vst2_batch;
 mod vst2_group;
 mod vst2_prepare;
 mod vst2_runtime;
 mod vst3_group;
 mod vst3_tail;
+#[cfg(target_os = "macos")]
+mod vst3_translated;
+#[cfg(target_os = "macos")]
+pub(crate) use vst3_translated::{load_streamed_vst3, queue_translated_vst3_score};
 mod window;
 
 #[cfg(test)]
@@ -69,10 +83,10 @@ use self::helpers::*;
 pub use self::helpers::{
     aux_pairs_by_track, track_output_pair, track_requests_non_main_output, validate_aux_sends,
 };
+#[cfg(target_os = "macos")]
+pub(crate) use self::plugin_tracks::queue_au_performance_command;
+pub(crate) use self::plugin_tracks::queue_vst3_performance_command;
 use self::plugin_tracks::*;
-pub(crate) use self::plugin_tracks::{
-    queue_vst2_performance_command, queue_vst3_performance_command,
-};
 use self::preset_state::*;
 use self::vst3_group::{Vst3GroupRenderOptions, render_tracks_via_vst3};
 use self::window::*;
@@ -82,6 +96,8 @@ pub use self::builtin::{render_track_via_builtin_pub, render_track_via_builtin_w
 pub(crate) use self::event_sink::queue_plugin_midi_event;
 pub(crate) use self::helpers::project_transport;
 pub(crate) use self::preset_state::sfizz_vst3_state_bytes;
+pub(crate) use self::preset_state::streaming_vst2_request;
+pub(crate) use self::preset_state::{PluginStateInput, materialize_plugin_state_input};
 #[cfg(target_os = "macos")]
 pub use self::preset_state::{apply_au_preset_params, apply_au_preset_state_at};
 pub use self::preset_state::{
@@ -249,6 +265,7 @@ pub struct RenderCache {
     vst3_tail_probe: vst3_tail::Vst3TailProbe,
     vst2_tail_probe: vst2_prepare::Vst2TailProbe,
     vst2_group_renderer: vst2_group::Vst2GroupRenderer,
+    vst2_group_preparer: Option<vst2_group::Vst2GroupPreparer>,
     track_buffers: Vec<Option<Vec<f32>>>,
     track_dirty: Vec<bool>,
     track_source_latencies: Vec<u32>,
@@ -350,6 +367,7 @@ impl RenderCache {
             vst3_tail_probe: vst3_tail::execute_probe,
             vst2_tail_probe: vst2_prepare::execute_probe,
             vst2_group_renderer: vst2_group::render,
+            vst2_group_preparer: Some(vst2_group::prepare),
             track_buffers: Vec::new(),
             track_dirty: Vec::new(),
             track_source_latencies: Vec::new(),
@@ -424,6 +442,12 @@ impl RenderCache {
     #[cfg(test)]
     pub(crate) fn set_vst2_group_renderer(&mut self, renderer: vst2_group::Vst2GroupRenderer) {
         self.vst2_group_renderer = renderer;
+        self.vst2_group_preparer = None;
+    }
+
+    #[cfg(test)]
+    fn set_vst2_group_preparer(&mut self, prepare: vst2_group::Vst2GroupPreparer) {
+        self.vst2_group_preparer = Some(prepare);
     }
 
     /// Poll `token` between source chunks; a cancelled render publishes nothing.

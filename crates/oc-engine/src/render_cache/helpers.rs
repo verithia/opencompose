@@ -128,19 +128,8 @@ pub(crate) fn project_transport(
     sample_pos: u64,
     sample_rate: u32,
 ) -> PluginTransport {
-    let transport = PluginTransport::new(sample_pos, sample_rate, project.properties.tempo)
-        .with_time_signature(
-            project.properties.time_signature.numerator as u16,
-            project.properties.time_signature.denominator as u16,
-        );
-    if project.properties.tempo_map.is_empty() && project.properties.time_sig_map.is_empty() {
-        transport
-    } else {
-        transport.with_clock(std::sync::Arc::new(
-            oc_dsl::timing::ProjectClock::new(&project.properties)
-                .expect("render timing preflight must succeed"),
-        ))
-    }
+    PluginTransport::from_project(sample_pos, sample_rate, &project.properties)
+        .expect("render timing preflight must succeed")
 }
 
 pub(super) fn group_tracks_by_preset(
@@ -355,8 +344,16 @@ pub fn track_output_pair(
     ports: &[AudioPort],
     sample_rate: u32,
 ) -> Result<usize, String> {
+    let track = &project.tracks[track_index];
+    let preset = track.preset.as_deref().unwrap_or("");
+    if project
+        .presets
+        .iter()
+        .any(|definition| definition.name == preset && definition.source.as_deref() == Some("vst2"))
+    {
+        return resolve_vst2_output_pair(ports, preset, track);
+    }
     let profile = instrument_profile_for_track(project, track_index, sample_rate);
-    let preset = project.tracks[track_index].preset.as_deref().unwrap_or("");
     resolve_output_pair(
         ports,
         &profile,
@@ -364,6 +361,20 @@ pub fn track_output_pair(
         preset,
         &project.tracks[track_index].name,
     )
+}
+
+pub(super) fn resolve_vst2_output_pair(
+    ports: &[AudioPort],
+    preset: &str,
+    track: &oc_dsl::ast::Track,
+) -> Result<usize, String> {
+    // First-class routing never competes with a native parameter name.
+    let mut routing = InstrumentProfile::default();
+    routing.set_output_port(
+        track.output_port.map(usize::from),
+        track.output_pair.map(usize::from),
+    );
+    resolve_output_pair(ports, &routing, "VST2", preset, &track.name)
 }
 
 /// True when a track asks for an output other than its instrument's first pair.
@@ -399,7 +410,7 @@ pub fn aux_pairs_by_track(project: &Project) -> Vec<Vec<usize>> {
         .collect()
 }
 
-/// Auxiliary outputs are host buffers captured from a CLAP or VST3 instrument.
+/// Auxiliary outputs are buffers captured from hosted multi-output instruments.
 pub fn validate_aux_sends(project: &Project) -> Result<(), String> {
     for track in &project.tracks {
         if !track.mix.sends.iter().any(|send| send.source.is_some()) {
@@ -411,15 +422,15 @@ pub fn validate_aux_sends(project: &Project) -> Result<(), String> {
             .and_then(|name| project.presets.iter().find(|preset| preset.name == name))
         else {
             return Err(format!(
-                "track '{}' auxiliary plugin outputs require a hosted CLAP or VST3 preset",
+                "track '{}' auxiliary plugin outputs require a hosted instrument preset",
                 track.name
             ));
         };
-        if !matches!(preset.source.as_deref(), Some("clap") | Some("vst3"))
+        if !matches!(preset.source.as_deref(), Some("clap" | "vst2" | "vst3"))
             && !is_sfizz_sample_preset(preset)
         {
             return Err(format!(
-                "track '{}' auxiliary plugin outputs require a CLAP or VST3 instrument",
+                "track '{}' auxiliary plugin outputs require a multi-output instrument",
                 track.name
             ));
         }

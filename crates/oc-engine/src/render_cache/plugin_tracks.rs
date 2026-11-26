@@ -28,7 +28,7 @@ pub(super) fn prepare_performance_tracks(
             .presets
             .iter()
             .find(|p| Some(&p.name) == track.preset.as_ref())
-            .ok_or("performance playback requires an explicit CLAP preset")?;
+            .ok_or("performance playback requires an explicit instrument preset")?;
         if preset.source.as_deref() == Some("builtin")
             && preset.plugin.as_deref() == Some(oc_synth::synth::PLUGIN_ID)
         {
@@ -48,7 +48,11 @@ pub(super) fn prepare_performance_tracks(
             result[index] = Some(commands);
             continue;
         }
-        if matches!(preset.source.as_deref(), Some("vst3" | "vst2")) {
+        let source = preset.source.as_deref();
+        if source == Some("au") && !cfg!(target_os = "macos") {
+            return Err("AudioUnit performance requires macOS AudioUnit hosting".into());
+        }
+        if matches!(source, Some("vst3" | "vst2" | "au")) {
             let candidates: Vec<_> = project
                 .tracks
                 .iter()
@@ -99,29 +103,11 @@ pub(super) fn prepare_performance_tracks(
     Ok(result)
 }
 
-/// Give a plugin's background sample loader real wall-clock time before the
-/// project starts. Audio is not processed: that would advance free-running
-/// oscillator/LFO phase and make a deterministic plugin differ from a
-/// no-pre-roll render. The hosted plugin loads on a background thread, so
-/// sleeping works.
-pub(super) fn pre_roll_plugin(seconds: f64) {
-    if seconds > 0.0 {
-        if !oc_host::clap_main::offline_main_is_active() {
-            std::thread::sleep(std::time::Duration::from_secs_f64(seconds));
-            return;
-        }
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs_f64(seconds);
-        while std::time::Instant::now() < deadline {
-            if let Err(error) = oc_host::clap_main::service_offline_main() {
-                log::warn!("CLAP pre-roll main service: {error}");
-            }
-            std::thread::sleep(
-                deadline
-                    .saturating_duration_since(std::time::Instant::now())
-                    .min(std::time::Duration::from_millis(5)),
-            );
-        }
-    }
+/// Give background loading wall-clock time without advancing oscillator phase.
+pub(super) fn pre_roll_plugin(
+    options: super::offline_warmup::WarmupOptions<'_>,
+) -> Result<(), String> {
+    super::offline_warmup::wait(options)
 }
 
 /// Deduplicated output pairs for one process call, plus each track's and aux
@@ -173,10 +159,10 @@ pub(super) fn render_tracks_via_clap(
     pairs: &[usize],
     aux_pairs: &[&[usize]],
     performance: Option<&[oc_synth::performance::ScheduledCommand]>,
-    pre_roll_seconds: f64,
+    warmup: super::offline_warmup::WarmupOptions<'_>,
 ) -> Result<(Vec<Vec<f32>>, AuxOutputBuffers), String> {
     crate::processing_failure::effect(instance, None).map_err(|error| error.to_string())?;
-    pre_roll_plugin(pre_roll_seconds);
+    pre_roll_plugin(warmup)?;
     let block_size: u32 = 128;
     if let Some(pair) = aux_pairs
         .iter()
@@ -305,10 +291,11 @@ pub(super) fn render_tracks_via_au(
     event_groups: &[&[&MidiEvent]],
     total_samples: usize,
     transport: PluginTransport,
-    pre_roll_seconds: f64,
+    warmup: super::offline_warmup::WarmupOptions<'_>,
+    performance: Option<&[oc_synth::performance::ScheduledCommand]>,
 ) -> Result<Vec<Vec<f32>>, String> {
     crate::processing_failure::effect(instance, None).map_err(|error| error.to_string())?;
-    pre_roll_plugin(pre_roll_seconds);
+    super::offline_warmup::prepare_au(instance, warmup)?;
     let block_size: u32 = 128;
     let mut buffers: Vec<Vec<f32>> = track_indices
         .iter()
@@ -322,6 +309,7 @@ pub(super) fn render_tracks_via_au(
 
     let mut output = vec![0.0; block_size as usize * 2];
     let mut event_idx = 0;
+    let mut performance_idx = 0;
     let mut sample_pos: u64 = 0;
     let total = total_samples as u64;
     while sample_pos < total {
@@ -331,6 +319,19 @@ pub(super) fn render_tracks_via_au(
         let frames =
             block_transport.block_frames((block_size as u64).min(remaining) as usize) as u32;
         let block_end = sample_pos + frames as u64;
+        if let Some(commands) = performance {
+            while let Some(command) = commands.get(performance_idx) {
+                if command.sample >= block_end {
+                    break;
+                }
+                let offset = command
+                    .sample
+                    .checked_sub(sample_pos)
+                    .ok_or("late AudioUnit performance event")?;
+                queue_au_performance_command(instance, command, offset as u32)?;
+                performance_idx += 1;
+            }
+        }
         while event_idx < events.len() && events[event_idx].time_samples < block_end {
             let sample_offset = events[event_idx].time_samples.saturating_sub(sample_pos) as i32;
             queue_plugin_midi_event(instance, &events[event_idx].event, sample_offset)?;
@@ -353,8 +354,28 @@ pub(super) fn render_tracks_via_au(
     for buffer in &mut buffers {
         buffer.resize(total_samples * 2, 0.0);
     }
+    if performance.is_some_and(|commands| performance_idx != commands.len()) {
+        return Err("AudioUnit performance events exceeded the render horizon".into());
+    }
     crate::processing_failure::effect(instance, None).map_err(|error| error.to_string())?;
     Ok(buffers)
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn queue_au_performance_command(
+    instance: &mut AuInstance,
+    command: &oc_synth::performance::ScheduledCommand,
+    offset: u32,
+) -> Result<(), String> {
+    use oc_dsl::performance::ChannelCommand;
+    if command.channel > 15
+        || matches!(command.message, ChannelCommand::PitchBend { value } if !(-8192..=8191).contains(&value))
+    {
+        return Err("invalid AudioUnit performance message".into());
+    }
+    instance
+        .queue_midi_packet(command.midi_packet(), offset)
+        .map_err(|error| format!("AudioUnit performance MIDI rejected: {error:?}"))
 }
 
 /// Render every track that reads one LV2 instrument's stereo output.
@@ -367,10 +388,10 @@ pub(super) fn render_tracks_via_lv2(
     event_groups: &[&[&MidiEvent]],
     total_samples: usize,
     transport: PluginTransport,
-    pre_roll_seconds: f64,
+    warmup: super::offline_warmup::WarmupOptions<'_>,
 ) -> Result<Vec<Vec<f32>>, String> {
     crate::processing_failure::effect(instance, None).map_err(|error| error.to_string())?;
-    pre_roll_plugin(pre_roll_seconds);
+    pre_roll_plugin(warmup)?;
     let block_size: u32 = 128;
     let mut buffers: Vec<Vec<f32>> = track_indices
         .iter()
@@ -415,21 +436,6 @@ pub(super) fn render_tracks_via_lv2(
     }
     crate::processing_failure::effect(instance, None).map_err(|error| error.to_string())?;
     Ok(buffers)
-}
-
-pub(crate) fn queue_vst2_performance_command(
-    instance: &mut Vst2Instance,
-    command: &oc_synth::performance::ScheduledCommand,
-    sample_offset: i32,
-) -> Result<(), String> {
-    let bytes = command.midi_bytes();
-    instance.queue_midi(
-        bytes[0],
-        bytes[1],
-        bytes.get(2).copied().unwrap_or(0),
-        sample_offset,
-    );
-    Ok(())
 }
 
 pub(crate) fn queue_vst3_performance_command(
