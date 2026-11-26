@@ -41,6 +41,10 @@ impl PluginQuery {
         &self.raw
     }
 
+    pub(super) fn is_explicit_path(&self) -> bool {
+        self.path.is_some()
+    }
+
     /// An existing path whose extension matches the requested format.
     pub(super) fn direct_bundle_path(&self, format: PluginFormat) -> Option<&Path> {
         let path = self.path.as_deref()?;
@@ -65,36 +69,48 @@ pub(super) fn resolve_plugin<'a>(
     query: &PluginQuery,
     format: PluginFormat,
 ) -> Option<&'a PluginInfo> {
-    let of_format = || plugins.iter().filter(|plugin| plugin.format == format);
+    resolve_candidates(
+        plugins.iter().filter(|plugin| plugin.format == format),
+        query,
+    )
+}
 
-    if let Some(found) = of_format().find(|plugin| plugin.id == query.raw) {
+pub(super) fn resolve_candidates<'a>(
+    candidates: impl Iterator<Item = &'a PluginInfo> + Clone,
+    query: &PluginQuery,
+) -> Option<&'a PluginInfo> {
+    // A saved path is an explicit identity, even when its bundle is missing.
+    if query.is_explicit_path() {
+        return preferred(candidates.clone().filter(|plugin| plugin.path == query.raw)).or_else(
+            || {
+                preferred(
+                    candidates
+                        .filter(|plugin| canonical_path_matches(Path::new(&plugin.path), query)),
+                )
+            },
+        );
+    }
+
+    if let Some(found) = candidates.clone().find(|plugin| plugin.id == query.raw) {
         return Some(found);
     }
-    if let Some(found) = of_format().find(|plugin| plugin.name == query.raw) {
+    if let Some(found) = candidates.clone().find(|plugin| plugin.name == query.raw) {
         return Some(found);
     }
-    // A path or bundle id names the bundle; default to its instrument class.
-    if let Some(found) = preferred(of_format().filter(|plugin| plugin.path == query.raw)) {
-        return Some(found);
-    }
-    if let Some(found) = preferred(
-        of_format().filter(|plugin| canonical_path_matches(Path::new(&plugin.path), query)),
-    ) {
-        return Some(found);
-    }
-    if let Some(found) = preferred(of_format().filter(|plugin| {
+    // A basename or bundle id names the bundle; default to its instrument class.
+    if let Some(found) = preferred(candidates.clone().filter(|plugin| {
         let path = Path::new(&plugin.path);
         path.file_name().and_then(|name| name.to_str()) == Some(query.raw())
             || path.file_stem().and_then(|stem| stem.to_str()) == Some(query.raw())
     })) {
         return Some(found);
     }
-    if let Some(found) = unique_normalized_match(plugins, query, format) {
+    if let Some(found) = unique_normalized_match(candidates.clone(), query) {
         return Some(found);
     }
     if query.bundle_identifier.is_some()
         && let Some(found) = preferred(
-            of_format().filter(|plugin| bundle_identifier_matches(Path::new(&plugin.path), query)),
+            candidates.filter(|plugin| bundle_identifier_matches(Path::new(&plugin.path), query)),
         )
     {
         return Some(found);
@@ -102,17 +118,23 @@ pub(super) fn resolve_plugin<'a>(
     None
 }
 
-fn preferred<'a>(plugins: impl Iterator<Item = &'a PluginInfo>) -> Option<&'a PluginInfo> {
-    let candidates: Vec<&'a PluginInfo> = plugins.collect();
+pub(super) fn preferred<'a>(
+    mut candidates: impl Iterator<Item = &'a PluginInfo>,
+) -> Option<&'a PluginInfo> {
+    let first = candidates.next()?;
+    if first.category == PluginCategory::Instrument {
+        return Some(first);
+    }
     candidates
-        .iter()
-        .copied()
         .find(|plugin| plugin.category == PluginCategory::Instrument)
-        .or_else(|| candidates.first().copied())
+        .or(Some(first))
 }
 
 /// Whether a plugin descriptor itself satisfies the query (no bundle-id I/O).
 pub(super) fn plugin_matches_query(plugin: &PluginInfo, query: &PluginQuery) -> bool {
+    if query.is_explicit_path() {
+        return path_matches_query(Path::new(&plugin.path), query);
+    }
     plugin.id == query.raw
         || plugin.name == query.raw
         || path_matches_query(Path::new(&plugin.path), query)
@@ -127,6 +149,9 @@ pub(super) fn path_matches_query(path: &Path, query: &PluginQuery) -> bool {
     }
     if canonical_path_matches(path, query) {
         return true;
+    }
+    if query.is_explicit_path() {
+        return false;
     }
     let name = path.file_name().and_then(|name| name.to_str());
     let stem = path.file_stem().and_then(|stem| stem.to_str());
@@ -165,13 +190,10 @@ pub(super) fn bundle_identifier_matches(bundle: &Path, query: &PluginQuery) -> b
 }
 
 fn unique_normalized_match<'a>(
-    plugins: &'a [PluginInfo],
+    plugins: impl Iterator<Item = &'a PluginInfo>,
     query: &PluginQuery,
-    format: PluginFormat,
 ) -> Option<&'a PluginInfo> {
-    let mut matches = plugins
-        .iter()
-        .filter(|plugin| plugin.format == format && plugin_matches_query(plugin, query));
+    let mut matches = plugins.filter(|plugin| plugin_matches_query(plugin, query));
     let first = matches.next()?;
     let (id, path) = (&first.id, &first.path);
     matches
@@ -358,6 +380,23 @@ mod tests {
                 "{identifier} must not resolve"
             );
         }
+    }
+
+    #[test]
+    fn explicit_missing_paths_do_not_match_normalized_class_ids_or_other_bundles() {
+        let selector = "/missing/Example.vst3";
+        let mistaken = plugin(
+            "vst3:missingexample",
+            "Missing Example",
+            "/other/Example.vst3",
+        );
+        let want = PluginQuery::parse(selector).unwrap();
+        assert!(!plugin_matches_query(&mistaken, &want));
+        assert!(resolve_plugin(&[mistaken], &want, PluginFormat::Vst3).is_none());
+
+        let exact = plugin("vst3:example", "Example", selector);
+        assert!(plugin_matches_query(&exact, &want));
+        assert!(resolve_plugin(&[exact], &want, PluginFormat::Vst3).is_some());
     }
 
     #[test]

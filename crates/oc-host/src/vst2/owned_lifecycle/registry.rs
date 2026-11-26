@@ -1,6 +1,6 @@
 use super::*;
 use crate::application_main::{MainService, MainThreadToken, UiRetirementToken, UiThreadToken};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::mem::ManuallyDrop;
 use std::sync::OnceLock;
@@ -37,6 +37,9 @@ impl Drop for Registry {
     }
 }
 thread_local! { static REGISTRY: RefCell<Registry> = RefCell::new(Registry::new()); }
+// A failed CLOSE retains its complete payload even if registry reinsertion is
+// refused. That quarantine cannot be acknowledged as reclaimed capacity.
+thread_local! { static QUARANTINED_RETIREMENTS: Cell<usize> = const { Cell::new(0) }; }
 struct Service;
 impl MainService for Service {
     fn service_main(&self, _: &MainThreadToken<'_>) {
@@ -253,6 +256,7 @@ pub(super) fn drain(_token: &UiRetirementToken<'_>) -> Result<usize, Vst2OwnedEr
             drop(ManuallyDrop::into_inner(entry.owner.native));
         } else {
             entry.owner.native.quarantine();
+            QUARANTINED_RETIREMENTS.with(|count| count.set(count.get().saturating_add(1)));
             REGISTRY.with(|registry| {
                 if let Ok(mut registry) = registry.try_borrow_mut() {
                     registry.entries.insert(id, entry);
@@ -265,6 +269,34 @@ pub(super) fn drain(_token: &UiRetirementToken<'_>) -> Result<usize, Vst2OwnedEr
     Ok(count)
 }
 
+pub(super) fn drain_checked(token: &UiRetirementToken<'_>) -> Result<usize, Vst2OwnedError> {
+    let attempted = drain(token)?;
+    let pending = REGISTRY.with(|registry| {
+        let registry = registry.try_borrow().map_err(|_| Vst2OwnedError::Busy)?;
+        Ok::<_, Vst2OwnedError>(
+            registry
+                .entries
+                .values()
+                .filter(|entry| {
+                    entry.link.retire.load(Ordering::Acquire)
+                        && entry.link.gate.load(Ordering::Acquire) != RETIRED
+                })
+                .count(),
+        )
+    })?;
+    let quarantined = QUARANTINED_RETIREMENTS.with(Cell::get);
+    require_complete_retirement(pending, quarantined)?;
+    Ok(attempted)
+}
+
+fn require_complete_retirement(pending: usize, quarantined: usize) -> Result<(), Vst2OwnedError> {
+    let resident = pending.saturating_add(quarantined);
+    if resident != 0 {
+        return Err(Vst2OwnedError::RetirementIncomplete { resident });
+    }
+    Ok(())
+}
+
 #[cfg(any(test, feature = "test-support"))]
 pub(super) fn next_source_for_audit() -> u64 {
     REGISTRY.with(|registry| registry.borrow().next)
@@ -272,4 +304,18 @@ pub(super) fn next_source_for_audit() -> u64 {
 #[cfg(any(test, feature = "test-support"))]
 pub(super) fn entries_for_audit() -> usize {
     REGISTRY.with(|registry| registry.borrow().entries.len())
+}
+
+#[cfg(test)]
+mod retirement_tests {
+    use super::*;
+
+    #[test]
+    fn checked_retirement_refuses_quarantine_and_outstanding_leases() {
+        assert!(require_complete_retirement(0, 0).is_ok());
+        for (pending, quarantined, expected) in [(1, 0, 1), (0, 1, 1), (1, 2, 3)] {
+            assert!(matches!(require_complete_retirement(pending, quarantined),
+                Err(Vst2OwnedError::RetirementIncomplete { resident }) if resident == expected));
+        }
+    }
 }

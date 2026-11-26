@@ -31,6 +31,7 @@ fn budget() -> Vst3ProcessingBudget {
 fn plan() -> Vst3OwnedAuthoredPlan {
     Vst3OwnedAuthoredPlan {
         path: "test.fake.one_bus".into(),
+        class_name: None,
         sample_rate: 48_000,
         max_frames: 512,
         component_state: None,

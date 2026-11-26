@@ -6,6 +6,66 @@
 
 use std::path::{Path, PathBuf};
 
+#[cfg(target_os = "macos")]
+enum DeclaredExecutable {
+    Absent,
+    Binary(PathBuf),
+    Invalid,
+}
+
+#[cfg(target_os = "macos")]
+fn declared_executable(bundle: &Path) -> DeclaredExecutable {
+    use std::io::Read;
+    const MAX_MANIFEST_BYTES: u64 = 256 * 1024;
+    let file = match std::fs::File::open(bundle.join("Contents/Info.plist")) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return DeclaredExecutable::Absent;
+        }
+        Err(_) => return DeclaredExecutable::Invalid,
+    };
+    let mut bytes = Vec::new();
+    if file
+        .take(MAX_MANIFEST_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .is_err()
+        || bytes.len() as u64 > MAX_MANIFEST_BYTES
+    {
+        return DeclaredExecutable::Invalid;
+    }
+    let Ok(value) = plist::Value::from_reader(std::io::Cursor::new(bytes)) else {
+        return DeclaredExecutable::Invalid;
+    };
+    let Some(dictionary) = value.as_dictionary() else {
+        return DeclaredExecutable::Invalid;
+    };
+    let Some(executable) = dictionary.get("CFBundleExecutable") else {
+        return DeclaredExecutable::Absent;
+    };
+    let Some(name) = executable.as_string() else {
+        return DeclaredExecutable::Invalid;
+    };
+    // The bundle manifest names one module, not a path outside its code directory.
+    if name.is_empty()
+        || name.len() > 4096
+        || name.contains(['/', '\\', '\0'])
+        || matches!(name, "." | "..")
+    {
+        return DeclaredExecutable::Invalid;
+    }
+    let binary = bundle.join("Contents/MacOS").join(name);
+    let contained = bundle
+        .canonicalize()
+        .ok()
+        .zip(binary.canonicalize().ok())
+        .is_some_and(|(bundle, binary)| binary.starts_with(bundle));
+    if binary.is_file() && contained {
+        DeclaredExecutable::Binary(binary)
+    } else {
+        DeclaredExecutable::Invalid
+    }
+}
+
 /// Candidate binary file names for a bundle with the given stem, in probe order.
 fn binary_names(stem: &str) -> Vec<String> {
     let mut names = vec![stem.to_string()];
@@ -57,12 +117,20 @@ fn binary_dirs() -> Vec<String> {
 ///
 /// Returns `None` when `path` is a bundle directory that holds no binary in a
 /// layout this platform understands.
+/// On macOS, a declared `CFBundleExecutable` takes precedence over filename
+/// conventions. An invalid declaration never selects a different module.
 pub fn binary_path(path: &Path) -> Option<PathBuf> {
     if path.is_file() {
         return Some(path.to_path_buf());
     }
     if !path.is_dir() {
         return None;
+    }
+    #[cfg(target_os = "macos")]
+    match declared_executable(path) {
+        DeclaredExecutable::Binary(binary) => return Some(binary),
+        DeclaredExecutable::Invalid => return None,
+        DeclaredExecutable::Absent => {}
     }
     let stem = path.file_stem()?.to_str()?;
     let names = binary_names(stem);

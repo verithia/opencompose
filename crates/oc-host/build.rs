@@ -10,12 +10,14 @@ use std::process::Command;
 
 const VST2_CALLBACK_CAPACITY: usize = 1024;
 
-const VARIANTS: [(&str, &str); 5] = [
+const VARIANTS: [(&str, &str); 7] = [
     ("gain", "OpenCompose Gain Fixture"),
+    ("program_bank", "OpenCompose Program Bank Fixture"),
     ("instrument", "OpenCompose Tone Fixture"),
     ("broken", "OpenCompose Broken Fixture"),
     ("no_output", "OpenCompose No Output Fixture"),
     ("multi_out", "OpenCompose Multi Out Fixture"),
+    ("exit_on_close", "OpenCompose Exit on Close Fixture"),
 ];
 
 fn main() {

@@ -113,9 +113,39 @@ pub fn is_plugin_path(path: &Path) -> bool {
 /// retried on every scan.
 pub fn scan_bundle(path: &Path) -> Result<Vec<PluginInfo>, String> {
     let instance = Vst2Instance::load(path, 44_100, 512)?;
+    Ok(vec![plugin_info(path, &instance)])
+}
+
+/// Inspect a module in a one-bundle helper that exits immediately afterward.
+pub(crate) fn scan_in_disposable_process(
+    path: &Path,
+    translated: bool,
+) -> Result<Vec<PluginInfo>, String> {
+    // Keep the instance and callback state alive through process exit. A
+    // plugin can block or crash in effClose after returning valid metadata.
+    let instance = std::mem::ManuallyDrop::new(Vst2Instance::load(path, 44_100, 512)?);
+    Ok(vec![describe_for_runtime(path, &instance, translated)?])
+}
+
+fn describe_for_runtime(
+    path: &Path,
+    instance: &Vst2Instance,
+    translated: bool,
+) -> Result<PluginInfo, String> {
+    if translated && !instance.supports_insert_layout() && !instance.is_bridge_instrument() {
+        return Err(format!(
+            "The Intel VST2 bridge supports MIDI instruments and mono or stereo inserts; this module declares {} inputs and {} outputs",
+            instance.num_inputs(),
+            instance.num_outputs()
+        ));
+    }
+    Ok(plugin_info(path, instance))
+}
+
+fn plugin_info(path: &Path, instance: &Vst2Instance) -> PluginInfo {
     let name = instance.name().to_string();
     let version = version_string(instance.version());
-    Ok(vec![PluginInfo {
+    PluginInfo {
         id: format!("vst2:{}", id_slug(&name)),
         name,
         vendor: instance.vendor().to_string(),
@@ -126,7 +156,7 @@ pub fn scan_bundle(path: &Path) -> Result<Vec<PluginInfo>, String> {
         version,
         architectures: Vec::new(),
         state_abi: None,
-    }])
+    }
 }
 
 fn id_slug(name: &str) -> String {
@@ -149,6 +179,27 @@ fn version_string(version: i32) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::PluginCategory;
+
+    #[test]
+    fn translated_scan_accepts_instruments_and_stereo_inserts() {
+        let inspect = |path: &Path| {
+            let instance = Vst2Instance::load(path, 44_100, 512)?;
+            describe_for_runtime(path, &instance, true)
+        };
+        let gain = super::super::test_support::fixture_path("OpenCompose Gain Fixture")
+            .expect("stereo gain fixture");
+        let synth = super::super::test_support::fixture_path("OpenCompose Tone Fixture")
+            .expect("instrument fixture");
+        let no_output = super::super::test_support::fixture_path("OpenCompose No Output Fixture")
+            .expect("no-output fixture");
+        assert_eq!(inspect(&gain).unwrap().category, PluginCategory::Effect);
+        assert_eq!(
+            inspect(&synth).unwrap().category,
+            PluginCategory::Instrument
+        );
+        assert!(inspect(&no_output).is_err());
+    }
 
     #[test]
     fn slug_is_stable_across_punctuation() {

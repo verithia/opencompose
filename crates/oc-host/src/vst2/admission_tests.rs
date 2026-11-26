@@ -11,8 +11,13 @@ static ALLOCATOR: oc_test_support::CountingAllocator = oc_test_support::Counting
 thread_local! {
     static CALLS: Cell<[u32; 64]> = const { Cell::new([0; 64]) };
     static CHUNK_SIZE: Cell<isize> = const { Cell::new(4) };
+    static CHUNK_REPLY: Cell<isize> = const { Cell::new(0) };
     static RECT_MODE: Cell<u8> = const { Cell::new(2) };
     static RATE_AT_NOTIFICATION: Cell<f64> = const { Cell::new(0.0) };
+    static PROCESS_LATENCY: Cell<i32> = const { Cell::new(17) };
+    static IO_CALLBACK: Cell<abi::AudioMasterCallback> = const { Cell::new(audio_master) };
+    static PREPARATION_PROBE: Cell<Option<(f64, f64, i32)>> = const { Cell::new(None) };
+    static REQUEST_MIDI_ON_ACTIVATION: Cell<bool> = const { Cell::new(false) };
 }
 static CHUNK: &[u8; 4] = b"good";
 static RECT: abi::ERect = abi::ERect {
@@ -32,7 +37,7 @@ unsafe extern "C" fn dispatcher(
     effect: *mut abi::AEffect,
     opcode: i32,
     _index: i32,
-    _value: isize,
+    value: isize,
     output: *mut c_void,
     _opt: f32,
 ) -> isize {
@@ -44,6 +49,32 @@ unsafe extern "C" fn dispatcher(
         calls.set(values);
     });
     match opcode {
+        op::MAINS_CHANGED if value == 1 => {
+            // SAFETY: This is the live fixture descriptor owned by the caller.
+            unsafe { (*effect).initial_delay = 17 };
+            if REQUEST_MIDI_ON_ACTIVATION.with(Cell::get) {
+                // SAFETY: The synchronous callback receives the live descriptor
+                // and needs no buffer.
+                let accepted = unsafe {
+                    audio_master(
+                        effect,
+                        abi::host_op::WANT_MIDI,
+                        0,
+                        0,
+                        std::ptr::null_mut(),
+                        0.0,
+                    )
+                };
+                assert_eq!(accepted, 1);
+            }
+            0
+        }
+        op::CAN_DO if REQUEST_MIDI_ON_ACTIVATION.with(Cell::get) => -1,
+        op::SET_BLOCK_SIZE => {
+            // SAFETY: This is the live fixture descriptor owned by the caller.
+            unsafe { (*effect).initial_delay = value as i32 };
+            0
+        }
         op::SET_SAMPLE_RATE => {
             // SAFETY: The fixture retains descriptor and context through this
             // synchronous dispatcher; the callback returns a thread-local borrow.
@@ -77,6 +108,7 @@ unsafe extern "C" fn dispatcher(
             unsafe { output.cast::<*mut c_void>().write(bytes) };
             size
         }
+        op::SET_CHUNK => CHUNK_REPLY.with(Cell::get),
         op::EDIT_GET_RECT => {
             let mode = RECT_MODE.with(Cell::get);
             let rectangle = match mode {
@@ -104,6 +136,7 @@ impl Fixture {
     fn new() -> Self {
         CALLS.with(|calls| calls.set([0; 64]));
         CHUNK_SIZE.with(|size| size.set(4));
+        CHUNK_REPLY.with(|reply| reply.set(0));
         RECT_MODE.with(|mode| mode.set(2));
         // SAFETY: AEffect consists of scalars, raw pointers and nullable C
         // function pointers, whose all-zero representations are valid.
@@ -133,9 +166,11 @@ impl Fixture {
             param_labels: Vec::new(),
             param_defaults: Vec::new(),
             param_can_automate: Vec::new(),
+            prepared_parameters: oc_audio::PreparedParameterOwner::new(),
+            parameter_name_lookups: Cell::new(0),
             sample_rate: 48_000,
             max_block_frames: 8,
-            accepts_midi: false,
+            advertises_midi: false,
             supports_double: false,
             active: false,
             pending_midi: Vec::new(),
@@ -154,8 +189,271 @@ impl Fixture {
         }
     }
 }
+
+unsafe extern "C" fn notifying_process(
+    effect: *mut abi::AEffect,
+    _inputs: *const *const f32,
+    outputs: *mut *mut f32,
+    frames: i32,
+) {
+    // SAFETY: This synthetic function owns the synchronous call's writable
+    // stereo planes and descriptor for all of the admitted frames.
+    unsafe {
+        (*effect).initial_delay = PROCESS_LATENCY.with(Cell::get);
+        IO_CALLBACK.with(Cell::get)(
+            effect,
+            abi::host_op::IO_CHANGED,
+            0,
+            0,
+            std::ptr::null_mut(),
+            0.0,
+        );
+        for channel in 0..2 {
+            std::slice::from_raw_parts_mut(*outputs.add(channel), frames as usize).fill(0.25);
+        }
+    }
+}
+
 fn calls(opcode: i32) -> u32 {
     CALLS.with(|calls| calls.get()[opcode as usize])
+}
+
+#[test]
+fn synchronous_notification_accepts_unchanged_layout_but_rejects_a_new_delay() {
+    let mut fixture = Fixture::new();
+    let instance = &mut fixture.instance;
+    instance.flags |= abi::FLAG_CAN_REPLACING;
+    // SAFETY: The live fixture retains exclusive ownership of this descriptor.
+    unsafe {
+        (*instance.effect).num_outputs = 2;
+        (*instance.effect).flags = instance.flags;
+        (*instance.effect).process_replacing = Some(notifying_process);
+    }
+    instance.activate();
+    instance.prepare_block_buffers(8).unwrap();
+
+    // A vendor may announce the same layout on a helper thread as well.
+    test_support::notify_io_changed(instance);
+    assert!(!instance.host.has_io_changed());
+    PROCESS_LATENCY.with(|delay| delay.set(17));
+    let mut output = [1.0; 16];
+    assert_eq!(
+        oc_test_support::operations(|| instance.process_block_into(&mut output, None).unwrap()),
+        0
+    );
+    assert_eq!(output, [0.25; 16]);
+    assert!(!instance.host.has_io_changed());
+
+    PROCESS_LATENCY.with(|delay| delay.set(31));
+    output.fill(1.0);
+    assert_eq!(
+        oc_test_support::operations(|| {
+            assert_eq!(
+                instance.process_block_into(&mut output, None),
+                Err(Vst2ProcessError::TopologyChanged)
+            );
+        }),
+        0
+    );
+    assert_eq!(output, [1.0; 16]);
+    assert_eq!(instance.latency_samples(), 17);
+    instance.prepare_block_buffers(8).unwrap();
+    assert_eq!(instance.latency_samples(), 31);
+    instance.process_block_into(&mut output, None).unwrap();
+    assert_eq!(output, [0.25; 16]);
+}
+
+#[test]
+fn owned_callback_accepts_unchanged_routing_without_hiding_a_real_change() {
+    let mut fixture = Fixture::new();
+    let instance = &mut fixture.instance;
+    let mut route = callback_route::RouteOwner::reserve(&instance.host).unwrap();
+    route.bind(instance.effect.addr()).unwrap();
+    instance.binding = CallbackBinding::Owned(route);
+    IO_CALLBACK.with(|callback| callback.set(instance.binding.callback().unwrap()));
+    instance.flags |= abi::FLAG_CAN_REPLACING;
+    // SAFETY: The live fixture retains exclusive ownership of this descriptor.
+    unsafe {
+        (*instance.effect).num_outputs = 2;
+        (*instance.effect).flags = instance.flags;
+        (*instance.effect).process_replacing = Some(notifying_process);
+    }
+    instance.activate();
+    instance.prepare_block_buffers(8).unwrap();
+
+    PROCESS_LATENCY.with(|delay| delay.set(17));
+    let mut output = [1.0; 16];
+    assert_eq!(
+        oc_test_support::operations(|| instance.process_block_into(&mut output, None).unwrap()),
+        0,
+    );
+    assert_eq!(output, [0.25; 16]);
+    assert!(!instance.host.has_io_changed());
+
+    PROCESS_LATENCY.with(|delay| delay.set(31));
+    output.fill(1.0);
+    assert_eq!(
+        oc_test_support::operations(|| assert_eq!(
+            instance.process_block_into(&mut output, None),
+            Err(Vst2ProcessError::TopologyChanged),
+        )),
+        0,
+    );
+    assert_eq!(output, [1.0; 16]);
+    assert_eq!(instance.latency_samples(), 17);
+    instance.prepare_block_buffers(8).unwrap();
+    assert_eq!(instance.latency_samples(), 31);
+    instance.process_block_into(&mut output, None).unwrap();
+    assert_eq!(output, [0.25; 16]);
+    IO_CALLBACK.with(|callback| callback.set(audio_master));
+}
+
+unsafe extern "C" fn retains_discovered_latency(
+    effect: *mut abi::AEffect,
+    opcode: i32,
+    index: i32,
+    value: isize,
+    ptr: *mut c_void,
+    opt: f32,
+) -> isize {
+    if opcode == op::MAINS_CHANGED {
+        return 0;
+    }
+    // SAFETY: This fixture keeps the descriptor and pointer arguments valid
+    // for the delegated native call.
+    unsafe { dispatcher(effect, opcode, index, value, ptr, opt) }
+}
+
+unsafe extern "C" fn publishes_latency_on_first_process(
+    effect: *mut abi::AEffect,
+    inputs: *const *const f32,
+    outputs: *mut *mut f32,
+    frames: i32,
+) {
+    // SAFETY: The fixture supplies its live descriptor and two prepared
+    // channel planes per input and output for the whole native block.
+    unsafe {
+        if (*effect).initial_delay == 0 {
+            assert_eq!(frames, 1);
+            assert_eq!([**inputs, **inputs.add(1)], [0.0; 2]);
+            let time = audio_master(
+                effect,
+                abi::host_op::GET_TIME,
+                0,
+                0,
+                std::ptr::null_mut(),
+                0.0,
+            );
+            let time = (time as *const abi::VstTimeInfo).read();
+            PREPARATION_PROBE
+                .with(|probe| probe.set(Some((time.sample_pos, time.tempo, time.flags))));
+            (*effect).initial_delay = 31;
+            audio_master(
+                effect,
+                abi::host_op::IO_CHANGED,
+                0,
+                0,
+                std::ptr::null_mut(),
+                0.0,
+            );
+        }
+        for channel in 0..2 {
+            let input = std::slice::from_raw_parts(*inputs.add(channel), frames as usize);
+            let output = std::slice::from_raw_parts_mut(*outputs.add(channel), frames as usize);
+            output.copy_from_slice(input);
+        }
+    }
+}
+
+#[test]
+fn restored_insert_publishes_late_delay_before_the_first_authored_audio() {
+    let mut fixture = Fixture::new();
+    let instance = &mut fixture.instance;
+    instance.flags |= abi::FLAG_CAN_REPLACING;
+    // SAFETY: The fixture holds its exclusive live descriptor throughout setup.
+    unsafe {
+        (*instance.effect).dispatcher = Some(retains_discovered_latency);
+        (*instance.effect).num_inputs = 2;
+        (*instance.effect).num_outputs = 2;
+        (*instance.effect).flags = instance.flags;
+        (*instance.effect).process_replacing = Some(publishes_latency_on_first_process);
+    }
+    instance.activate();
+    assert_eq!(instance.latency_samples(), 0);
+    let transport = PluginTransport::new(27, 48_000, 156.0);
+    instance.prepare_restored_insert(Some(&transport)).unwrap();
+    let (sample, tempo, flags) = PREPARATION_PROBE.with(Cell::take).unwrap();
+    assert_eq!((sample, tempo), (27.0, 156.0));
+    assert_eq!(flags & abi::TIME_TRANSPORT_PLAYING, 0);
+    assert_eq!(instance.latency_samples(), 31);
+    let mut first = [0.2, -0.4, 0.6, -0.8];
+    assert_eq!(
+        oc_test_support::operations(|| {
+            instance
+                .process_effect_into(&mut first, 48_000, Some(transport))
+                .unwrap()
+        }),
+        0,
+    );
+    assert_eq!(first, [0.2, -0.4, 0.6, -0.8]);
+}
+
+unsafe extern "C" fn mono_passthrough(
+    _effect: *mut abi::AEffect,
+    input: *const *const f32,
+    output: *mut *mut f32,
+    frames: i32,
+) {
+    // SAFETY: The fixture declares one distinct input and output plane, each
+    // prepared for the nonnegative frame count in this synchronous call.
+    unsafe { std::ptr::copy_nonoverlapping(*input, *output, frames as usize) };
+}
+
+#[test]
+fn mono_vst2_insert_uses_both_track_channels_without_allocating() {
+    let mut fixture = Fixture::new();
+    let instance = &mut fixture.instance;
+    instance.flags |= abi::FLAG_CAN_REPLACING;
+    // SAFETY: The fixture owns its live, unaliased descriptor during setup.
+    unsafe {
+        (*instance.effect).num_inputs = 1;
+        (*instance.effect).num_outputs = 1;
+        (*instance.effect).flags = instance.flags;
+        (*instance.effect).process_replacing = Some(mono_passthrough);
+    }
+    instance.activate();
+    instance.prepare_block_buffers(8).unwrap();
+    assert!(instance.supports_insert_layout());
+    assert_eq!(instance.input_ports()[0].channels, 1);
+    assert_eq!(instance.output_ports()[0].channels, 1);
+    assert!(!instance.supports_sidechain());
+    let mut audio = [0.0, 0.5, 0.5, 0.5, 0.75, -0.75];
+    assert_eq!(
+        oc_test_support::operations(|| instance
+            .process_effect_into(&mut audio, 48_000, None)
+            .unwrap()),
+        0
+    );
+    assert_eq!(audio, [0.25, 0.25, 0.5, 0.5, 0.0, 0.0]);
+}
+
+#[test]
+fn preparation_publishes_native_latency_without_waiting_for_a_notification() {
+    let mut fixture = Fixture::new();
+    fixture.instance.activate();
+    assert_eq!(fixture.instance.latency_samples(), 0);
+    assert!(!fixture.instance.host.has_io_changed());
+
+    fixture.instance.prepare_block_buffers(8).unwrap();
+    assert_eq!(fixture.instance.latency_samples(), 17);
+
+    fixture.instance.prepare_block_buffers(32).unwrap();
+    assert_eq!(calls(op::SET_BLOCK_SIZE), 1);
+    assert_eq!(fixture.instance.latency_samples(), 32);
+    assert_eq!(
+        oc_test_support::operations(|| fixture.instance.prepare_block_buffers(32).unwrap()),
+        0
+    );
 }
 
 #[test]
@@ -181,7 +479,7 @@ fn oversized_preparation_refuses_before_allocation_topology_consumption_or_nativ
         );
         assert_eq!(heap, 0);
         assert_eq!(fixture.instance.max_block_frames, 8);
-        assert!(fixture.instance.host.io_changed.load(Ordering::Acquire));
+        assert!(fixture.instance.host.has_io_changed());
         assert!(fixture.instance.input_channels.is_empty());
         assert_eq!(calls(op::SET_BLOCK_SIZE), 0);
     }
@@ -246,6 +544,16 @@ fn state_restore_uses_shared_byte_limit_before_native_setter() {
     assert_eq!(calls(op::SET_CHUNK), 0);
     fixture.instance.set_state_bytes(b"good").unwrap();
     assert_eq!(calls(op::SET_CHUNK), 1);
+}
+
+#[test]
+fn state_restore_accepts_both_zero_and_positive_dispatch_replies() {
+    let mut fixture = Fixture::new();
+    for reply in [0, 1] {
+        CHUNK_REPLY.with(|value| value.set(reply));
+        fixture.instance.set_state_bytes(b"good").unwrap();
+    }
+    assert_eq!(calls(op::SET_CHUNK), 2);
 }
 
 #[test]
@@ -345,4 +653,99 @@ fn callback_feature_queries_accept_exact_names_and_refuse_other_bytes_without_he
         assert!(!supported);
     });
     assert_eq!(heap, 0);
+}
+
+#[test]
+fn effect_midi_input_capacity_and_invalid_messages_preserve_prepared_storage() {
+    use oc_audio::{AudioEffect, MidiInputError, MidiInputEvent, MidiInputMessage};
+    let mut fixture = Fixture::new();
+    let unit = &mut fixture.instance;
+    unit.prepare_block_buffers(8).unwrap();
+    let event = MidiInputEvent {
+        sample_offset: 7,
+        message: MidiInputMessage::NoteOn {
+            channel: 2,
+            key: 60,
+            velocity: 100,
+        },
+    };
+    assert_eq!(
+        unit.queue_midi_input(event),
+        Err(MidiInputError::Unsupported)
+    );
+    unit.advertises_midi = true;
+    assert_eq!(unit.midi_input_capacity(), MAX_PENDING_MIDI);
+    assert_eq!(
+        unit.queue_midi_input(MidiInputEvent {
+            sample_offset: 8,
+            ..event
+        }),
+        Err(MidiInputError::InvalidOffset)
+    );
+    assert_eq!(
+        unit.queue_midi_input(MidiInputEvent {
+            message: MidiInputMessage::NoteOff {
+                channel: 16,
+                key: 60
+            },
+            ..event
+        }),
+        Err(MidiInputError::InvalidMessage)
+    );
+    assert!(unit.pending_midi.is_empty());
+    assert_eq!(
+        oc_test_support::operations(|| {
+            for _ in 0..MAX_PENDING_MIDI {
+                unit.queue_midi_input(event).unwrap();
+            }
+            assert_eq!(
+                unit.queue_midi_input(event),
+                Err(MidiInputError::CapacityExceeded)
+            );
+        }),
+        0
+    );
+    assert_eq!(unit.pending_midi.len(), MAX_PENDING_MIDI);
+}
+
+#[test]
+fn activation_midi_request_enables_bounded_events_for_that_instance() {
+    use oc_audio::{AudioEffect, MidiInputEvent, MidiInputMessage};
+
+    let mut unrequested = Fixture::new();
+    let mut fixture = Fixture::new();
+    let unit = &mut fixture.instance;
+    unit.prepare_block_buffers(8).unwrap();
+    assert_eq!(unit.midi_input_capacity(), 0);
+
+    REQUEST_MIDI_ON_ACTIVATION.with(|request| {
+        request.set(true);
+        unit.activate();
+        unit.refresh_midi_capabilities();
+        request.set(false);
+    });
+    assert!(!unit.advertises_midi);
+    assert_eq!(unit.midi_input_capacity(), MAX_PENDING_MIDI);
+    assert_eq!(unrequested.instance.midi_input_capacity(), 0);
+    assert_eq!(
+        oc_test_support::operations(|| {
+            unit.queue_midi_input(MidiInputEvent {
+                sample_offset: 3,
+                message: MidiInputMessage::NoteOn {
+                    channel: 0,
+                    key: 60,
+                    velocity: 100,
+                },
+            })
+            .unwrap();
+            unit.send_events();
+        }),
+        0
+    );
+    assert_eq!(
+        CALLS.with(|calls| calls.get()[op::PROCESS_EVENTS as usize]),
+        1
+    );
+    unrequested.instance.activate();
+    assert_eq!(unrequested.instance.midi_input_capacity(), 0);
 }

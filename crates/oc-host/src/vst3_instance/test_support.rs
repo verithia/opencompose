@@ -35,8 +35,11 @@ pub struct FakeControl {
     /// Declared stereo input buses; instruments declare none.
     pub input_bus_count: AtomicUsize,
     pub last_note_channel: AtomicI32,
+    pub last_process_output_buses: AtomicI32,
     pub bus_queries: AtomicUsize,
     pub process_calls: AtomicUsize,
+    /// Report this latency after the processor has received its first block.
+    pub latency_after_process: AtomicU32,
     /// Encode the process ordinal as quiet PCM for subprocess pipeline tests.
     pub encode_process_ordinal: AtomicBool,
     /// Fixed output attenuation for guarded CLI export fixtures.
@@ -106,8 +109,10 @@ impl Default for FakeControl {
             state_bus_count: AtomicUsize::new(1),
             input_bus_count: AtomicUsize::new(0),
             last_note_channel: AtomicI32::new(-1),
+            last_process_output_buses: AtomicI32::new(0),
             bus_queries: AtomicUsize::new(0),
             process_calls: AtomicUsize::new(0),
+            latency_after_process: AtomicU32::new(0),
             encode_process_ordinal: AtomicBool::new(false),
             output_scale_bits: AtomicU32::new(1.0f32.to_bits()),
             input_events_null: AtomicBool::new(true),
@@ -462,7 +467,11 @@ impl IAudioProcessorTrait for FakePlugin {
     }
 
     unsafe fn getLatencySamples(&self) -> uint32 {
-        0
+        if self.control.process_calls.load(Ordering::Relaxed) == 0 {
+            0
+        } else {
+            self.control.latency_after_process.load(Ordering::Relaxed)
+        }
     }
 
     unsafe fn setupProcessing(&self, _setup: *mut ProcessSetup) -> tresult {
@@ -479,6 +488,9 @@ impl IAudioProcessorTrait for FakePlugin {
         }
         // SAFETY: The process caller retains an initialized ProcessData and all referenced planes for this synchronous call; null was rejected.
         let data = unsafe { &*data };
+        self.control
+            .last_process_output_buses
+            .store(data.numOutputs, Ordering::Relaxed);
         let process_call = self.control.process_calls.fetch_add(1, Ordering::Relaxed);
         if self
             .control

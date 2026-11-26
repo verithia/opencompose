@@ -8,7 +8,12 @@ fn checked_status(
     let code = result.map_err(|fault| {
         Vst3OwnedError::Native(Box::new(instance.native_fault(operation, fault)))
     })?;
-    if code != kResultOk {
+    let succeeded = if operation == Operation::SetProcessing {
+        processing_notification_succeeded(code)
+    } else {
+        code == kResultOk
+    };
+    if !succeeded {
         return Err(Vst3OwnedError::Native(Box::new(Vst3ProcessError::refused(
             operation, code,
         ))));
@@ -50,6 +55,7 @@ pub struct Vst3ActivationAudit {
     pub ordinary_refusals: usize,
     pub exceptions_quarantined: usize,
     pub successful_activation_and_retirement: bool,
+    pub optional_processing_and_retirement: bool,
 }
 
 /// Uses the real application bootstrap and optimized native fixture; no window
@@ -146,6 +152,37 @@ pub fn audit_checked_owned_activation() -> Result<Vst3ActivationAudit, Vst3Owned
         )?;
     }
     let mut fixture = inactive_fixture(&token)?;
+    fixture.set_refusal(kNotImplemented);
+    fixture.set_fault(4, 4);
+    require(
+        matches!(activate(&token, fixture.instance_mut()),
+            Err(Vst3OwnedError::Native(error))
+                if error.operation == Operation::SetActive
+                    && error.plugin_result == Some(kNotImplemented)),
+        "Optional processing status incorrectly accepted for component activation",
+    )?;
+    fixture.retire();
+    require(
+        fixture.refs() == 0,
+        "Unsupported component activation leaked references",
+    )?;
+
+    let mut fixture = inactive_fixture(&token)?;
+    let before_processing = fixture.calls(3);
+    fixture.set_refusal(kNotImplemented);
+    fixture.set_fault(3, 4);
+    activate(&token, fixture.instance_mut())?;
+    require(
+        fixture.instance_mut().reset(),
+        "Optional processing notification prevented reset",
+    )?;
+    fixture.retire();
+    require(
+        fixture.refs() == 0 && fixture.calls(3) == before_processing + 4,
+        "Optional processing notification prevented healthy retirement",
+    )?;
+
+    let mut fixture = inactive_fixture(&token)?;
     activate(&token, fixture.instance_mut())?;
     require(
         fixture.instance().active && fixture.instance().processing,
@@ -157,8 +194,9 @@ pub fn audit_checked_owned_activation() -> Result<Vst3ActivationAudit, Vst3Owned
         "Successful owned activation did not retire without processing",
     )?;
     Ok(Vst3ActivationAudit {
-        ordinary_refusals: 2,
+        ordinary_refusals: 3,
         exceptions_quarantined: 2,
         successful_activation_and_retirement: true,
+        optional_processing_and_retirement: true,
     })
 }

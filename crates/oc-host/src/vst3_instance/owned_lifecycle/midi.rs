@@ -1,7 +1,7 @@
 //! Detached UI-captured MIDI capabilities; processing reads only immutable data.
 use super::*;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 /// A MIDI message carried by an owned VST3 event.
 pub enum Vst3MidiMessage {
     NoteOn {
@@ -39,7 +39,7 @@ pub enum Vst3MidiMessage {
         value: Vst3NoteExpressionValue,
     },
 }
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 /// One MIDI message at a block offset.
 pub struct Vst3MidiEvent {
     pub channel: u8,
@@ -203,6 +203,7 @@ pub(super) fn capture(
         None => None,
     };
     if let Some(mapping) = mapping {
+        let mut undeclared_assignments = 0;
         for channel in 0..i16::from(result.event_channels) {
             for controller in 0..=130_i16 {
                 current(instance, revision)?;
@@ -221,9 +222,10 @@ pub(super) fn capture(
                     continue;
                 }
                 let Some(&(steps, writable)) = parameters.get(&id) else {
-                    return Err(Vst3OwnedError::InvalidRequest(
-                        "MIDI mapping refers to an undeclared parameter",
-                    ));
+                    // Leave this controller unavailable. Notes and valid
+                    // mappings remain usable without submitting an unknown ID.
+                    undeclared_assignments += 1;
+                    continue;
                 };
                 result.mappings[channel as usize * 131 + controller as usize] = Some(MidiBinding {
                     id,
@@ -231,6 +233,11 @@ pub(super) fn capture(
                     writable,
                 });
             }
+        }
+        if undeclared_assignments != 0 {
+            log::warn!(
+                "VST3: ignored {undeclared_assignments} MIDI assignments to undeclared parameters"
+            );
         }
     }
     let expressions = match instance.controller.as_ref() {

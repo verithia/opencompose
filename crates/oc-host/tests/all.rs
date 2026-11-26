@@ -8,6 +8,9 @@
 //! Run a subset with the libtest filter:
 //! `cargo test -p <crate> --test all -- <name>`.
 
+#[path = "suite/bundle_resolution.rs"]
+mod bundle_resolution;
+
 #[path = "plugin_module_exit.rs"]
 mod plugin_module_exit;
 #[path = "plugin_preset.rs"]

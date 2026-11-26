@@ -19,6 +19,12 @@ template <class F> bool guarded(F &&work, OcNativeFault *fault) noexcept {
 }
 } // namespace
 
+extern "C" bool oc_application_service_native_main(OcNativeFault *fault) noexcept {
+  return guarded([&] {
+    CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.0, true);
+  }, fault);
+}
+
 extern "C" bool oc_au_find_next(const OcAuFindNext *in, AudioComponent *out, OcNativeFault *fault) noexcept {
   return guarded([&] { *out = in->call(in->args.component, in->args.description); }, fault);
 }

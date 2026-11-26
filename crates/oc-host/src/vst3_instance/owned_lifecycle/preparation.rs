@@ -16,7 +16,7 @@ const MAX_STATE_BYTES: usize = 64 * 1024 * 1024;
 
 /// An external claim is evidence from actual engine value acceptance, rather
 /// than key classification. A native/external collision requires disambiguation.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Vst3AuthoredInput {
     pub name: String,
     pub native_value: Option<f64>,
@@ -26,6 +26,7 @@ pub struct Vst3AuthoredInput {
 /// Plan to load a VST3 instance with state and parameters.
 pub struct Vst3OwnedAuthoredPlan {
     pub path: std::path::PathBuf,
+    pub class_name: Option<String>,
     pub sample_rate: u32,
     pub max_frames: u32,
     pub component_state: Option<Vec<u8>>,
@@ -49,6 +50,7 @@ impl Vst3OwnedAuthoredPlan {
             let prepared = prepare(
                 &token,
                 self.path,
+                self.class_name,
                 self.sample_rate,
                 self.max_frames,
                 self.component_state,
@@ -68,6 +70,7 @@ impl Vst3OwnedAuthoredPlan {
             let prepared = prepare(
                 &token,
                 self.path,
+                self.class_name,
                 self.sample_rate,
                 self.max_frames,
                 self.component_state,
@@ -167,6 +170,7 @@ fn apply_authored(
 pub(super) fn prepare(
     token: &UiThreadToken<'_>,
     path: std::path::PathBuf,
+    class_name: Option<String>,
     sample_rate: u32,
     max_frames: u32,
     state: Option<Vec<u8>>,
@@ -189,7 +193,15 @@ pub(super) fn prepare(
     }
     let failure = Arc::new(Vst3Failure::default());
     let mut slot = registry::reserve(token, Arc::clone(&failure))?;
-    let native = load_inactive(&path, sample_rate, max_frames, &failure)?;
+    let native = load_inactive(
+        Vst3LoadTarget {
+            bundle: &path,
+            class: class_name.as_deref().into(),
+        },
+        sample_rate,
+        max_frames,
+        &failure,
+    )?;
     // Test acquisition constructs its own retained foreign references. Reserve
     // before acquisition, then bind quota to the actual owner's fault identity.
     slot.failure = native.failure();
@@ -215,6 +227,7 @@ pub(super) fn complete_candidate(
 ) -> Result<PreparedCandidate, Vst3OwnedError> {
     application_main::ui_authority()?;
     let failure = candidate.native.failure();
+    let restoring_state = state.is_some();
     if let Some(state) = state {
         candidate
             .native
@@ -231,6 +244,11 @@ pub(super) fn complete_candidate(
         InitialParameters::Authored(rows) => apply_authored(&mut candidate.native, rows)?,
     }
     activation::activate(token, &mut candidate.native)?;
+    if restoring_state {
+        // Restored plugins can queue controller notifications on native main.
+        // Finish due offline callbacks before capturing the processor contract.
+        application_main::service_offline_main().map_err(Vst3OwnedError::Control)?;
+    }
     let snapshot = metadata::capture(token, &candidate.native, 0)?;
     Ok(PreparedCandidate {
         candidate,
@@ -246,13 +264,14 @@ fn admit_normalized_verification(parameters: usize, writes: usize) -> Result<(),
     metadata::initial_verification_queries(parameters, writes_with_final).map(|_| ())
 }
 fn load_inactive(
-    path: &std::path::Path,
+    target: Vst3LoadTarget<'_>,
     sample_rate: u32,
     max_frames: u32,
     failure: &Arc<Vst3Failure>,
 ) -> Result<Vst3Instance, Vst3OwnedError> {
     #[cfg(any(test, feature = "test-support"))]
-    if let Some(mut instance) = path
+    if let Some(mut instance) = target
+        .bundle
         .to_str()
         .and_then(|id| super::super::test_support::fake_parameter_instance_for_id(id, max_frames))
     {
@@ -262,7 +281,7 @@ fn load_inactive(
         return Ok(instance);
     }
     Vst3Instance::load_with_context_inner(
-        path,
+        target,
         sample_rate,
         max_frames,
         Vst3LoadContext {
@@ -285,7 +304,7 @@ pub(super) fn checked_inactive(instance: &mut Vst3Instance) -> Result<(), Vst3Ow
                 instance.native_fault(Operation::SetProcessing, fault),
             ))
         })?;
-    if status != kResultOk {
+    if !processing_notification_succeeded(status) {
         return Err(Vst3OwnedError::Native(Box::new(Vst3ProcessError::refused(
             Operation::SetProcessing,
             status,

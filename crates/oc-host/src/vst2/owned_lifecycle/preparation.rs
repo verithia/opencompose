@@ -190,7 +190,6 @@ pub(super) fn capture_snapshot(
             ParameterErrorKind::InventoryChanged,
         ));
     }
-    native.refresh_io().map_err(Vst2OwnedError::Preparation)?;
     native
         .prepare_block_buffers(native.max_block_frames as usize)
         .map_err(Vst2OwnedError::Preparation)?;
@@ -213,8 +212,7 @@ pub(super) fn capture_snapshot(
     if native.flags & abi::FLAG_IS_SYNTH != 0 {
         category = PluginCategory::Instrument;
     }
-    let accepts_midi = native.can_do(abi::can_do::RECEIVE_VST_MIDI_EVENT)
-        || native.can_do(abi::can_do::RECEIVE_VST_EVENTS);
+    native.refresh_midi_capabilities();
     let parameters = native.get_params();
     let surface = native.parameter_surface();
     let tail_samples = native.plugin_tail_samples();
@@ -233,7 +231,7 @@ pub(super) fn capture_snapshot(
         || final_inputs != native.num_inputs
         || final_outputs != native.num_outputs
         || final_flags != native.flags
-        || native.host.io_changed.load(Ordering::Acquire)
+        || native.host.has_io_changed()
         || native
             .host
             .authored_inventory_revision
@@ -252,7 +250,6 @@ pub(super) fn capture_snapshot(
         .host
         .latency
         .store(latency_samples, Ordering::Relaxed);
-    native.accepts_midi = accepts_midi;
     Ok(Vst2OwnedSnapshot {
         path: native.path.clone(),
         unique_id,
@@ -265,12 +262,13 @@ pub(super) fn capture_snapshot(
         product,
         version,
         category,
-        accepts_midi,
+        accepts_midi: native.accepts_midi(),
         tail_samples,
         surface,
         parameters,
         inputs: native.input_ports(),
         outputs: native.output_ports(),
+        output_pairs: native.output_count(),
         sample_rate: native.sample_rate,
         max_frames: native.max_block_frames,
         latency_samples,

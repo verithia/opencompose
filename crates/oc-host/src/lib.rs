@@ -23,16 +23,12 @@ use std::sync::{Mutex, OnceLock};
 static PLUGIN_INVENTORY: OnceLock<Mutex<Option<&'static [PluginInfo]>>> = OnceLock::new();
 /// Serialises the first scan: readers that arrive while it runs wait for it.
 static INVENTORY_SCAN: Mutex<()> = Mutex::new(());
-static REQUESTED_PLUGIN_CACHE: Mutex<Vec<PluginInfo>> = Mutex::new(Vec::new());
-/// Resolved lookups by normalized id and format; a scan is paid at most once.
-static RESOLVED_PLUGIN_CACHE: OnceLock<
-    Mutex<std::collections::HashMap<(String, PluginFormat), PluginInfo>>,
-> = OnceLock::new();
+static RESOLVED_PLUGIN_CACHE: OnceLock<resolution_cache::ResolutionCache> = OnceLock::new();
 
 /// Drop memoized lookups so a rescan can pick up installed or removed bundles.
 pub fn clear_resolved_plugin_cache() {
     if let Some(cache) = RESOLVED_PLUGIN_CACHE.get() {
-        cache.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        cache.clear();
     }
 }
 
@@ -121,9 +117,12 @@ pub mod ports;
 pub mod preset_parameters;
 pub mod programs;
 mod resolution;
+mod resolution_cache;
 pub mod scanner;
 /// VST2 plugin support.
 pub mod vst2;
+#[cfg(target_os = "macos")]
+pub mod vst2_bridge;
 mod vst3_guard;
 pub mod vst3_instance;
 #[cfg(target_os = "linux")]
@@ -423,6 +422,8 @@ pub fn scan_all_plugins() -> Vec<PluginInfo> {
 /// dependency was installed gets one more chance, and one that still fails is
 /// quarantined again after the same bounded helper run.
 pub fn rescan_all_plugins() -> (Vec<PluginInfo>, scanner::ScanReport) {
+    #[cfg(target_os = "macos")]
+    vst2_bridge::allow_setup_retry();
     scan_all_plugins_with(true)
 }
 
@@ -451,48 +452,14 @@ fn scan_all_plugins_with(force: bool) -> (Vec<PluginInfo>, scanner::ScanReport) 
     log::info!("Found {} LV2 plugins", lv2_plugins.len());
     all.extend(lv2_plugins.iter().map(lv2::plugin_info));
 
-    // Scan VST3/AU bundles without loading them. Rendering can instantiate an
-    // explicitly selected VST3 later, but scan must stay filesystem-only because
-    // arbitrary bundle loading can execute plugin UI/runtime code.
+    // AudioUnit discovery only reads the bundle declarations. Loading arbitrary
+    // components during a scan could execute plugin UI/runtime code.
+    #[cfg(target_os = "macos")]
     for dir in plugin_search_paths() {
-        collect_au_bundles(std::path::Path::new(&dir), &mut all);
+        au_instance::collect_au_bundles(std::path::Path::new(&dir), &mut all);
     }
 
     (all, report)
-}
-
-/// List the `.component` bundles directly under one search directory.
-///
-/// The id and path a [`PluginInfo`] carries are strings, so a directory that is
-/// not valid UTF-8 is rendered lossily and logged: the entry is never dropped
-/// and never records an empty path.
-fn collect_au_bundles(dir: &std::path::Path, all: &mut Vec<PluginInfo>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|extension| extension.to_str()) != Some("component") {
-            continue;
-        }
-        let name = path
-            .file_stem()
-            .map(|stem| stem.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "Unknown".to_string());
-        let path = display_path(&path);
-        all.push(PluginInfo {
-            id: path.clone(),
-            name,
-            vendor: String::new(),
-            format: PluginFormat::Au,
-            path,
-            category: PluginCategory::Effect,
-            num_params: 0,
-            version: None,
-            architectures: vec![std::env::consts::ARCH.to_string()],
-            state_abi: None,
-        });
-    }
 }
 
 /// A bundle path as the string a receipt or an inventory entry stores.
@@ -578,6 +545,50 @@ pub fn plugin_state_identity(identifier: &str, format: PluginFormat) -> String {
         .unwrap_or_else(|| raw.to_string())
 }
 
+/// Split an insert reference into an optional explicit format and its selector.
+pub fn effect_plugin_selector(reference: &str) -> (Option<PluginFormat>, &str) {
+    if let Some(selector) = reference
+        .strip_prefix("au:")
+        .or_else(|| reference.strip_prefix("au."))
+    {
+        return (Some(PluginFormat::Au), selector);
+    }
+    if (reference.contains('/') || reference.contains('\\'))
+        && std::path::Path::new(reference)
+            .extension()
+            .is_some_and(|extension| extension == "component")
+    {
+        return (Some(PluginFormat::Au), reference);
+    }
+    let Some((prefix, selector)) = reference.split_once('.') else {
+        return (None, reference);
+    };
+    let format = match prefix {
+        "clap" => PluginFormat::Clap,
+        "vst2" => PluginFormat::Vst2,
+        "vst3" => PluginFormat::Vst3,
+        "lv2" => PluginFormat::Lv2,
+        _ => return (None, reference),
+    };
+    (Some(format), selector)
+}
+
+/// Resolve an insert selector using its explicit format or the legacy inventory.
+pub fn find_effect_plugin(format: Option<PluginFormat>, selector: &str) -> Option<PluginInfo> {
+    if let Some(format) = format {
+        return find_plugin_info(selector, format);
+    }
+    cached_plugins()
+        .iter()
+        .find(|plugin| {
+            matches!(
+                plugin.format,
+                PluginFormat::Clap | PluginFormat::Vst2 | PluginFormat::Vst3 | PluginFormat::Lv2
+            ) && (plugin.id == selector || plugin.name == selector || plugin.path == selector)
+        })
+        .cloned()
+}
+
 /// Resolve a plugin id, display name, path, basename, or bundle identifier.
 ///
 /// Exact identifiers win; normalized and bundle-identifier forms resolve only
@@ -587,19 +598,9 @@ pub fn find_plugin_info(plugin_id: &str, format: PluginFormat) -> Option<PluginI
     if let Some(fixture) = test_fixture_plugin_info(plugin_id, format) {
         return Some(fixture);
     }
-    let key = (plugin_id.trim().to_ascii_lowercase(), format);
-    let cache = RESOLVED_PLUGIN_CACHE.get_or_init(Default::default);
-    if let Some(found) = cache.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
-        return Some(found.clone());
-    }
-    let found = resolve_plugin_info(plugin_id, format);
-    if let Some(info) = &found {
-        cache
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(key, info.clone());
-    }
-    found
+    RESOLVED_PLUGIN_CACHE
+        .get_or_init(Default::default)
+        .resolve(plugin_id, format, || resolve_plugin_info(plugin_id, format))
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -611,6 +612,11 @@ fn test_fixture_plugin_info(plugin_id: &str, format: PluginFormat) -> Option<Plu
         "test.fixture.vst2.tone" => (
             "test.fixture.vst2.tone",
             "OpenCompose Tone Fixture",
+            PluginCategory::Instrument,
+        ),
+        "test.fixture.vst2.multi" => (
+            "test.fixture.vst2.multi",
+            "OpenCompose Multi Out Fixture",
             PluginCategory::Instrument,
         ),
         "test.fixture.vst2.gain" => (
@@ -668,17 +674,13 @@ fn resolve_plugin_info(plugin_id: &str, format: PluginFormat) -> Option<PluginIn
     }
     // Opening a known bundle must not scan every unrelated installed plugin on
     // the playback startup path. Still use the crash-isolated/quarantined scanner.
-    {
-        let mut requested = REQUESTED_PLUGIN_CACHE
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        if let Some(found) = resolution::resolve_plugin(&requested, &query, format) {
-            return Some(found.clone());
-        }
-        if let Some(info) = scanner::resolve_plugin_isolated(&query, format) {
-            requested.push(info.clone());
-            return Some(info);
-        }
+    if let Some(info) = scanner::resolve_plugin_isolated(&query, format) {
+        return Some(info);
+    }
+    // A refused, missing or differently formatted explicit path must not turn
+    // into a scan of unrelated installed modules.
+    if query.is_explicit_path() {
+        return None;
     }
     // Class IDs unrelated to the bundle filename need the full inventory.
     resolution::resolve_plugin(cached_plugins(), &query, format).cloned()
