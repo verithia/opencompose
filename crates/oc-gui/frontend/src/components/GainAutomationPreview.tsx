@@ -1,6 +1,7 @@
 import { AUTOMATION_CURVES } from "../data/automationCurves.gen";
-import { For, Show, createMemo, createUniqueId } from "solid-js";
+import { For, Show, createMemo, createSignal, createUniqueId } from "solid-js";
 import type { GainAutomation } from "../types/project";
+import type { TimelineViewport } from "../utils/timelineViewport";
 import {
   gainAutomationView,
   gainAutomationDomain,
@@ -24,9 +25,11 @@ export function GainAutomationPreview(props: {
   index: number;
   width: number;
   pxPerBeat: number;
+  viewport?: TimelineViewport;
   compact?: boolean;
   playlistStartQuarter?: number;
 }) {
+  const [visible, setVisible] = createSignal(!props.viewport?.supported);
   const view = createMemo(() => gainAutomationView(props.curve));
   const domain = createMemo(() => gainAutomationDomain(props.curve));
   const clock = createMemo(() => projectClock(store.project.properties));
@@ -46,6 +49,7 @@ export function GainAutomationPreview(props: {
   const activeId = createUniqueId();
   const inPlaylist = () => props.playlistStartQuarter !== undefined;
   const anchors = createMemo(() => {
+    if (!visible()) return [];
     const points = view().points.flatMap((point, index) => {
       const quarter = at(point.position);
       if (inPlaylist() && (quarter < start() || quarter > end())) return [];
@@ -69,6 +73,7 @@ export function GainAutomationPreview(props: {
     <div
       class="gain-automation-preview"
       classList={{ "playlist-gain-lane": inPlaylist() }}
+      ref={(node) => props.viewport?.observe(node, setVisible)}
       style={{
         height: `${AUTOMATION_ROW_HEIGHT}px`,
         width: `${props.width}px`,
@@ -76,72 +81,74 @@ export function GainAutomationPreview(props: {
       data-gain-owner={props.target}
       data-gain-index={props.index}
     >
-      <svg
-        width={props.width}
-        height={AUTOMATION_ROW_HEIGHT}
-        aria-hidden="true"
-      >
-        <defs>
-          <clipPath id={activeId}>
-            <rect
-              x={(start() - origin()) * props.pxPerBeat}
-              y="0"
-              width={(end() - start()) * props.pxPerBeat}
-              height={AUTOMATION_ROW_HEIGHT}
+      <Show when={visible()}>
+        <svg
+          width={props.width}
+          height={AUTOMATION_ROW_HEIGHT}
+          aria-hidden="true"
+        >
+          <defs>
+            <clipPath id={activeId}>
+              <rect
+                x={(start() - origin()) * props.pxPerBeat}
+                y="0"
+                width={(end() - start()) * props.pxPerBeat}
+                height={AUTOMATION_ROW_HEIGHT}
+              />
+            </clipPath>
+          </defs>
+          <Show when={!inPlaylist()}>
+            <polyline
+              class="automation-polyline gain-envelope-context-curve"
+              points={polyline()}
             />
-          </clipPath>
-        </defs>
-        <Show when={!inPlaylist()}>
+          </Show>
           <polyline
-            class="automation-polyline gain-envelope-context-curve"
+            class="automation-polyline"
+            clip-path={`url(#${activeId})`}
             points={polyline()}
           />
-        </Show>
-        <polyline
-          class="automation-polyline"
-          clip-path={`url(#${activeId})`}
-          points={polyline()}
-        />
-      </svg>
-      <For each={anchors()}>
-        {({ point, index, at: xy }) => {
-          const gain = mappedAutomationValue(pointValue(point.value) ?? 0, view().value_mapping);
-          const hint = () => i18n.t("gainEditor.anchorValue", {
-            value: gain <= 0 ? "−∞" : new Intl.NumberFormat(i18n.locale(), {
-              maximumFractionDigits: 1,
-              signDisplay: "exceptZero",
-            }).format(20 * Math.log10(gain)),
-          });
-          return (
-            <button
-              type="button"
-              class="automation-point gain-envelope-anchor"
-              classList={{
-                "gain-envelope-context":
-                  at(point.position) < start() || at(point.position) >= end(),
-              }}
-              style={{ left: `${xy.x}px`, top: `${xy.y}px` }}
-              aria-label={hint()}
-              title={hint()}
-              onClick={(event) => {
-                event.stopPropagation();
-                gainAutomationUi.open(props.target, props.index, index);
-              }}
-            />
-          );
-        }}
-      </For>
-      <button
-        type="button"
-        class="gain-envelope-edit"
-        style={inPlaylist() ? {
-          left: `${(start() - origin()) * props.pxPerBeat}px`,
-          "max-width": `${(end() - start()) * props.pxPerBeat}px`,
-        } : undefined}
-        onClick={() => gainAutomationUi.open(props.target, props.index)}
-      >
-        {i18n.t("gainEditor.edit")}
-      </button>
+        </svg>
+        <For each={anchors()}>
+          {({ point, index, at: xy }) => {
+            const gain = mappedAutomationValue(pointValue(point.value) ?? 0, view().value_mapping);
+            const hint = () => i18n.t("gainEditor.anchorValue", {
+              value: gain <= 0 ? "−∞" : new Intl.NumberFormat(i18n.locale(), {
+                maximumFractionDigits: 1,
+                signDisplay: "exceptZero",
+              }).format(20 * Math.log10(gain)),
+            });
+            return (
+              <button
+                type="button"
+                class="automation-point gain-envelope-anchor"
+                classList={{
+                  "gain-envelope-context":
+                    at(point.position) < start() || at(point.position) >= end(),
+                }}
+                style={{ left: `${xy.x}px`, top: `${xy.y}px` }}
+                aria-label={hint()}
+                title={hint()}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  gainAutomationUi.open(props.target, props.index, index);
+                }}
+              />
+            );
+          }}
+        </For>
+        <button
+          type="button"
+          class="gain-envelope-edit"
+          style={inPlaylist() ? {
+            left: `${(start() - origin()) * props.pxPerBeat}px`,
+            "max-width": `${(end() - start()) * props.pxPerBeat}px`,
+          } : undefined}
+          onClick={() => gainAutomationUi.open(props.target, props.index)}
+        >
+          {i18n.t("gainEditor.edit")}
+        </button>
+      </Show>
     </div>
   );
 }

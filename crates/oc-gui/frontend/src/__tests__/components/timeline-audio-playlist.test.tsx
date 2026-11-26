@@ -322,3 +322,90 @@ it("uses one compact strip for consecutive samples, notes and automation", async
     if (fallback) invokeMock.mockImplementation(fallback);
   }
 });
+
+
+it("virtualizes offscreen clips horizontally and keeps a dragged clip mounted until release", async () => {
+  let observerCallback: IntersectionObserverCallback | undefined;
+  const observed = new Set<Element>();
+  const observer = {
+    observe: (element: Element) => observed.add(element),
+    unobserve: (element: Element) => observed.delete(element),
+    disconnect: () => observed.clear(),
+  } as unknown as IntersectionObserver;
+  const intersect = (target: Element, isIntersecting: boolean) => {
+    expect(observed.has(target)).toBe(true);
+    observerCallback!([{ target, isIntersecting } as IntersectionObserverEntry], observer);
+  };
+  vi.stubGlobal("IntersectionObserver", function (
+    callback: IntersectionObserverCallback,
+    options: IntersectionObserverInit,
+  ) {
+    expect(options.rootMargin).toBe("256px 384px");
+    observerCallback = callback;
+    return observer;
+  });
+
+  const track = makeTrack("Sampler", 0);
+  const at = (bar: number) => ({ bar, beat: 1, subdivision: 0 });
+  const snapshot = makeSnapshot({ tracks: [track] });
+  snapshot.project.properties.audio_clips = [1, 50].map((bar) =>
+    makeAudioClip({ name: `Sample at ${bar}`, track: track.name, playlist_lane: 1,
+      time_range: { start: at(bar), end: at(bar + 1) } }),
+  );
+  const fallback = invokeMock.getMockImplementation();
+  invokeMock.mockImplementation(async (cmd, args) => {
+    if (cmd === "get_project") return snapshot;
+    if (cmd === "get_transport_state") return TRANSPORT_STOPPED();
+    if (cmd === "audio_clip_peaks") return "";
+    return fallback?.(cmd, args);
+  });
+  try {
+    await store.initProject();
+    const view = render(() => <Timeline />);
+    const row = view.container.querySelector("[data-playlist-lane='1']")!;
+    intersect(row, true);
+    const [first, far] = row.querySelectorAll(".playlist-item");
+    expect(first.getAttribute("data-playlist-label")).toBe("Sample at 1");
+    expect(far.getAttribute("data-playlist-label")).toBe("Sample at 50");
+    expect(row.querySelectorAll(".audio-clip-block")).toHaveLength(0);
+    intersect(first, true);
+    const clip = first.querySelector(".audio-clip-block")!;
+    expect(clip).toBeTruthy();
+    expect(far.querySelector(".audio-clip-block")).toBeNull();
+    fireEvent.pointerDown(clip, { pointerId: 12, button: 0, clientX: 10, clientY: 10 });
+    intersect(first, false);
+    intersect(far, true);
+    expect(first.querySelector(".audio-clip-block")).toBe(clip);
+    expect(far.querySelector(".audio-clip-block")).toBeTruthy();
+    fireEvent.pointerUp(document, { pointerId: 12, clientX: 10, clientY: 10 });
+    expect(first.querySelector(".audio-clip-block")).toBe(clip);
+    (clip as HTMLElement).blur();
+    expect(first.querySelector(".audio-clip-block")).toBeNull();
+    expect(store.project.properties.audio_clips).toHaveLength(2);
+    const scroller = view.container.querySelector<HTMLElement>(".timeline-lanes")!;
+    scroller.scrollLeft = 200;
+    fireEvent.scroll(scroller);
+    intersect(first, true);
+    intersect(far, false);
+    expect(first.querySelector(".audio-clip-block")).toBeNull();
+    expect(far.querySelector(".audio-clip-block")).toBeTruthy();
+    await waitFor(() => expect(first.querySelector(".audio-clip-block")).toBeTruthy());
+    await waitFor(() => expect(far.querySelector(".audio-clip-block")).toBeNull());
+    scroller.scrollLeft = 224;
+    fireEvent.scroll(scroller);
+    intersect(far, true);
+    expect(far.querySelector(".audio-clip-block")).toBeNull();
+    for (let step = 1; step <= 3; step += 1) {
+      await new Promise<void>((resolve) => requestAnimationFrame(() => {
+        scroller.scrollLeft = 224 + step * 24;
+        fireEvent.scroll(scroller);
+        resolve();
+      }));
+    }
+    expect(far.querySelector(".audio-clip-block")).toBeTruthy();
+    view.unmount();
+  } finally {
+    vi.unstubAllGlobals();
+    if (fallback) invokeMock.mockImplementation(fallback);
+  }
+});

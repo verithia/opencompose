@@ -852,6 +852,63 @@ describe("Timeline document swap and clip keys", () => {
   });
 });
 
+describe("timeline viewport ownership", () => {
+  it("mounts heavy content only near the viewport and retains an offscreen pointer owner until release", async () => {
+    class Observer {
+      static instances: Observer[] = [];
+      targets = new Set<Element>();
+      observe = vi.fn((element: Element) => this.targets.add(element));
+      unobserve = vi.fn((element: Element) => this.targets.delete(element));
+      disconnect = vi.fn(() => this.targets.clear());
+      callback: IntersectionObserverCallback;
+      options?: IntersectionObserverInit;
+      constructor(callback: IntersectionObserverCallback, options?: IntersectionObserverInit) {
+        this.callback = callback;
+        this.options = options;
+        Observer.instances.push(this);
+      }
+      emit(element: Element, visible: boolean) {
+        this.callback([{target:element,isIntersecting:visible} as IntersectionObserverEntry], this as unknown as IntersectionObserver);
+      }
+    }
+    vi.stubGlobal("IntersectionObserver", Observer);
+    const points = Array.from({length:96},(_,index)=>({position:{bar:1,beat:1,subdivision:index*500},value:{Number:index/96}}));
+    const tracks = Array.from({length:236},(_,index)=>makeTrack(`track ${index}`,index));
+    const buses = Array.from({length:166},(_,index)=>({name:`bus ${index}`,routes:["master"],effects:[],automation:[{param:"gain.factor",ppq:96000,points}]}));
+    invokeMock.mockImplementation(async () => makeSnapshot({tracks,buses}));
+    await store.initProject();
+    const view = render(() => <Timeline />);
+    try {
+      expect(Observer.instances).toHaveLength(1);
+      const observer = Observer.instances[0];
+      expect(observer.options?.root).toBe(view.container.querySelector(".timeline-lanes"));
+      const lanes = view.container.querySelectorAll(".track-lane");
+      const automation = view.container.querySelectorAll(".automation-lane");
+      expect(lanes).toHaveLength(236);
+      expect(automation).toHaveLength(166);
+      expect(view.container.querySelectorAll(".phrase-note-block")).toHaveLength(0);
+      expect(view.container.querySelectorAll(".automation-point")).toHaveLength(0);
+      observer.emit(lanes[235],true);
+      expect(view.container.querySelectorAll(".phrase-note-block")).toHaveLength(1);
+      observer.emit(lanes[235],false);
+      expect(view.container.querySelectorAll(".phrase-note-block")).toHaveLength(0);
+      observer.emit(automation[165],true);
+      expect(view.container.querySelectorAll(".automation-point")).toHaveLength(3);
+      const point = automation[165].querySelector(".automation-point")!;
+      fireEvent.pointerDown(point,{button:0,pointerId:71,clientX:10,clientY:10});
+      observer.emit(automation[165],false);
+      expect(view.container.querySelectorAll(".automation-point")).toHaveLength(3);
+      fireEvent.pointerUp(document,{pointerId:71,clientX:10,clientY:10});
+      expect(view.container.querySelectorAll(".automation-point")).toHaveLength(0);
+      expect(store.project.tracks).toHaveLength(236);
+      expect(store.project.buses[165].automation?.[0].points).toHaveLength(96);
+      expect((automation[165] as HTMLElement).style.height).toBe("38px");
+      view.unmount();
+      expect(observer.disconnect).toHaveBeenCalledTimes(1);
+    } finally { view.unmount(); vi.unstubAllGlobals(); }
+  });
+});
+
 describe("track display identity", () => {
   it("shows the human label while retaining stable clip bindings and rename seed", async () => {
     const track = makeTrack("source_ch005",0);

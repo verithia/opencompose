@@ -24,6 +24,7 @@ import { i18n, type I18nKey } from "../stores/i18n";
 import { BLOCK_POSITION_QUARTERS, gridDivision, snapBlockQuarter } from "../stores/grid";
 import { beginBlockGesture, endBlockGesture, isSecondaryClick } from "../stores/gesture";
 import { projectClock } from "../utils/projectClock";
+import type { TimelineViewport } from "../utils/timelineViewport";
 import { ownerEffects, supportsExponentialAutomation } from "../utils/automationTarget";
 import {
   AUTOMATION_ROW_HEIGHT,
@@ -139,6 +140,7 @@ export function AutomationOwnerStrip(props: { label: string }) {
 
 export interface AutomationLaneRowProps {
   lane: AutomationLane;
+  viewport?: TimelineViewport;
   laneIndex: number;
   /** Absolute quarter of the containing Playlist clip's local origin. */
   playlistStartQuarter?: number;
@@ -174,6 +176,7 @@ export function AutomationLaneRow(props: AutomationLaneRowProps) {
   let element: HTMLDivElement | undefined;
   const [ghost, setGhost] = createSignal<{ index: number; x: number; y: number } | null>(null);
 
+  const [visible, setVisible] = createSignal(!props.viewport?.supported);
   const height = AUTOMATION_ROW_HEIGHT;
   // One clock per project revision; every x on the row goes through it, so a
   // point sits over the same beat the clips use.
@@ -197,7 +200,7 @@ export function AutomationLaneRow(props: AutomationLaneRowProps) {
   const recorded = () => props.lane.mode === "recorded";
   const points = createMemo(() => {
     const result: { at: { x: number; y: number }; index: number }[] = [];
-    if (recorded()) return result;
+    if (!visible() || recorded()) return result;
     const range = props.playlistStartQuarter === undefined ? null : props.lane.time_range;
     const spanBounds = range && { start: quarterAt(range.start), end: quarterAt(range.end) };
     for (const [index, point] of props.lane.points.entries()) {
@@ -530,7 +533,7 @@ export function AutomationLaneRow(props: AutomationLaneRowProps) {
 
   return (
     <div
-      ref={element}
+      ref={(node) => { element = node; props.viewport?.observe(node, setVisible); }}
       class="automation-lane"
       classList={{ "whole-timeline": span() === null, muted: muted(), "playlist-automation-lane": props.playlistStartQuarter !== undefined }}
       data-lane={props.lane.param}
@@ -559,6 +562,7 @@ export function AutomationLaneRow(props: AutomationLaneRowProps) {
         openBlockMenu(event);
       }}
     >
+      <Show when={visible()}>
       <Show when={span()}>
         {(block) => (
           <div
@@ -657,6 +661,7 @@ export function AutomationLaneRow(props: AutomationLaneRowProps) {
             aria-hidden="true"
           />
         )}
+      </Show>
       </Show>
     </div>
   );

@@ -1,12 +1,13 @@
-import { createEffect, createMemo, createSignal, For, Index, onCleanup, Show } from "solid-js";
+import { createEffect, createMemo, createSignal, For, Index, onCleanup, onMount, Show } from "solid-js";
 import type { AudioClip, BarBeat } from "../types/project";
 import { store } from "../stores/project";
 import { i18n } from "../stores/i18n";
 import { themeStore } from "../stores/theme";
-import { loadPeaks, peaksFor, peaksMissing, peaksVersion } from "../stores/audioPeaks";
+import { loadPeaks, peaksFor, peaksMissing } from "../stores/audioPeaks";
 import { blockStepQuarters, gridDivision, snapBlockQuarter } from "../stores/grid";
 import { audioClipBounds } from "../utils/audioClipPlacement";
 import { projectClock } from "../utils/projectClock";
+import type { TimelineViewport } from "../utils/timelineViewport";
 import {
   CLIP_GAIN_MAX_DB,
   CLIP_GAIN_MIN_DB,
@@ -22,6 +23,7 @@ import type { AudioClipEnvelope } from "../stores/api";
 import { useTooltip, type TooltipContent } from "./Tooltip";
 import { beginBlockGesture, endBlockGesture, isSecondaryClick } from "../stores/gesture";
 import { beginPointerDrag } from "../utils/pointerDrag";
+import { scheduleFrameWork } from "../utils/frameWorkQueue";
 
 const MIN_QUARTERS = 0.25;
 const LABEL_HEIGHT = 15;
@@ -48,7 +50,7 @@ function readCanvasColor(canvas: HTMLCanvasElement, value: string): [number, num
  * theme text colour. Dark themes get a light waveform, light themes a dark
  * one; the accent only supplies a hue. No color-mix() reaches Canvas 2D.
  */
-function waveformColors(canvas: HTMLCanvasElement): {
+function waveformColors(canvas: HTMLCanvasElement, accent: string): {
   waveform: string;
   envelope: string;
   halo: string | undefined;
@@ -60,7 +62,7 @@ function waveformColors(canvas: HTMLCanvasElement): {
     : undefined;
   if (!inkChannels) return { waveform: "#d8c7b3", envelope: "#d8c7b3", halo };
   const ink = `rgb(${inkChannels[0]}, ${inkChannels[1]}, ${inkChannels[2]})`;
-  const accentChannels = readCanvasColor(canvas, "var(--clip-accent)");
+  const accentChannels = readCanvasColor(canvas, accent);
   if (!accentChannels) return { waveform: ink, envelope: ink, halo };
   const mix = (weight: number) => {
     const channels = accentChannels.map((channel, index) =>
@@ -71,6 +73,23 @@ function waveformColors(canvas: HTMLCanvasElement): {
   // The waveform sits back; the envelope carries more of the track hue so it
   // reads as a control line rather than a black stroke over a tinted clip.
   return { waveform: mix(0.30), envelope: mix(0.55), halo };
+}
+
+// A track uses the same ink across viewport mounts. Resolve CSS once per accent.
+const waveformInkByAccent = new Map<string, ReturnType<typeof waveformColors>>();
+let waveformInkTheme: string | undefined;
+
+function waveformInk(canvas: HTMLCanvasElement, theme: string, accent: string) {
+  if (waveformInkTheme !== theme || waveformInkByAccent.size >= 256) {
+    waveformInkTheme = theme;
+    waveformInkByAccent.clear();
+  }
+  let ink = waveformInkByAccent.get(accent);
+  if (!ink) {
+    ink = waveformColors(canvas, accent);
+    waveformInkByAccent.set(accent, ink);
+  }
+  return ink;
 }
 
 const MAX_CANVAS_WIDTH = 8192;
@@ -119,11 +138,12 @@ interface DragSession {
 }
 
 export interface AudioClipBlockProps {
+  viewport?: TimelineViewport;
   clip: AudioClip;
   index: number;
   color: string;
   height: number;
-  /** Quarter at the containing playlist item's left edge; the block is placed relative to it. */
+  /** Quarter at the containing clip's left edge, when the timeline virtualizes it. */
   originQuarter?: number;
   pxPerBeat: number;
   selected: boolean;
@@ -170,6 +190,10 @@ function roundSlip(seconds: number): number {
 export function AudioClipBlock(props: AudioClipBlockProps) {
   let canvasRef: HTMLCanvasElement | undefined;
   let blockRef: HTMLDivElement | undefined;
+  const [visible, setVisible] = createSignal(!props.viewport?.supported);
+  onMount(() => {
+    if (blockRef && props.viewport) props.viewport.observe(blockRef, setVisible);
+  });
   const [session, setSession] = createSignal<DragSession | null>(null);
   const tooltip = useTooltip(() => props.tooltipContent());
 
@@ -257,7 +281,6 @@ export function AudioClipBlock(props: AudioClipBlockProps) {
 
   /// Stretched media length in seconds: the span a slip can move through.
   const contentSeconds = () => {
-    peaksVersion();
     const pyramid = peaksFor(props.clip.file);
     if (!pyramid) return 0;
     const media = pyramid.frames / pyramid.sample_rate;
@@ -368,27 +391,31 @@ export function AudioClipBlock(props: AudioClipBlockProps) {
     };
   });
 
+  const showWaveform = createMemo(() =>
+    visible() && (props.originQuarter === undefined || widthPx() >= 8));
+
   createEffect(() => {
+    if (!showWaveform()) return;
     const file = props.clip.file;
     if (!peaksFor(file)) void loadPeaks(file);
   });
 
-  // Repaint on zoom, width, peak arrival, envelope changes and trim previews.
+  // Repaint on zoom, width, this file's peak arrival, envelope and trim previews.
   createEffect(() => {
+    if (!showWaveform()) {
+      // Retain the semantic block and its controls, but release the large
+      // backing store while its waveform is outside the shared viewport.
+      if (canvasRef) { canvasRef.width = 1; canvasRef.height = 1; }
+      return;
+    }
     // The waveform ink comes from theme tokens, so a theme switch must repaint.
-    themeStore.cssTheme();
+    const theme = themeStore.cssTheme();
+    const accent = props.color;
     const canvas = canvasRef;
     if (!canvas) return;
     const width = Math.max(1, Math.min(MAX_CANVAS_WIDTH, Math.round(widthPx())));
     const height = waveHeight();
     const dpr = window.devicePixelRatio || 1;
-    const pixelWidth = Math.round(width * dpr);
-    const pixelHeight = Math.round(height * dpr);
-    if (canvas.width !== pixelWidth) canvas.width = pixelWidth;
-    if (canvas.height !== pixelHeight) canvas.height = pixelHeight;
-    const context = canvas.getContext("2d");
-    if (!context) return;
-    peaksVersion();
     const pyramid = peaksFor(props.clip.file);
     const range = preview();
     const duration = durationSeconds();
@@ -419,11 +446,7 @@ export function AudioClipBlock(props: AudioClipBlockProps) {
     const period = loopPeriod();
     const mediaStart = frameAt(offset);
     const mediaEnd = frameAt(offset + elapsedAt(1));
-    context.setTransform(dpr, 0, 0, dpr, 0, 0);
-    // Canvas 2D never sees a color-mix() expression: resolve the theme ink and
-    // the track accent to rgb() first, then blend them.
-    const { waveform: waveformColor, envelope: envelopeColor, halo } = waveformColors(canvas);
-    paintWaveform(context, {
+    const request: Omit<Parameters<typeof paintWaveform>[1], "color"> = {
       pyramid,
       startFrame: mediaStart,
       endFrame: mediaEnd,
@@ -441,10 +464,23 @@ export function AudioClipBlock(props: AudioClipBlockProps) {
       gainEnvelopeInterpolation: props.clip.gain_envelope_interpolation,
       width,
       height,
-      color: waveformColor,
-      envelopeColor,
-      envelopeHalo: halo,
-    });
+    };
+    const paint = () => {
+      const pixelWidth = Math.round(width * dpr);
+      const pixelHeight = Math.round(height * dpr);
+      if (canvas.width !== pixelWidth) canvas.width = pixelWidth;
+      if (canvas.height !== pixelHeight) canvas.height = pixelHeight;
+      const context = canvas.getContext("2d");
+      if (!context) return;
+      context.setTransform(dpr, 0, 0, dpr, 0, 0);
+      const { waveform: color, envelope: envelopeColor, halo: envelopeHalo } = waveformInk(canvas, theme, accent);
+      paintWaveform(context, { ...request, color, envelopeColor, envelopeHalo });
+    };
+    if (props.originQuarter !== undefined && !session() && !warpPreview()) {
+      onCleanup(scheduleFrameWork(paint));
+    } else {
+      paint();
+    }
   });
 
   let stopDrag: (() => void) | null = null;
