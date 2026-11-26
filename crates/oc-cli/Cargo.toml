@@ -50,6 +50,7 @@ sha2.workspace = true
 ring.workspace = true
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
 oc-market = { path = "../oc-market" }
+tempfile.workspace = true
 
 [dev-dependencies]
 oc-test-support = { path = "../oc-test-support" }
@@ -60,7 +61,6 @@ hound = "3"
 claxon = "0.4"          # FLAC decoding, to check what the encoder wrote
 midly = "0.5"
 serde_json.workspace = true
-tempfile.workspace = true
 # The in-process VST3 fakes (test-support) give the CLI an instrument-shaped
 # insert without instantiating a commercial plugin.
 oc-engine = { path = "../oc-engine", features = ["test-support", "perf-log"] }

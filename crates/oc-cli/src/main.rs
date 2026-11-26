@@ -13,6 +13,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 mod conformance;
 mod midi;
 mod play;
+mod plugin_migration;
 mod sample;
 
 use oc_cli::plugin_index;
@@ -56,6 +57,9 @@ enum Commands {
         /// Retry bundles an earlier scan quarantined
         #[arg(long)]
         rescan: bool,
+        /// Retry just one installed bundle by its absolute path
+        #[arg(long, conflicts_with = "rescan", value_name = "PATH")]
+        bundle: Option<PathBuf>,
     },
     /// Inspect the built-in mixer device registry
     Devices {
@@ -434,6 +438,22 @@ enum Commands {
 
 #[derive(Subcommand)]
 enum PluginCommand {
+    /// Convert an opaque VST2 FXB bank through the VST3 plugin's compatibility reader
+    MigrateVst2 {
+        /// Original FXB bank
+        #[arg(value_name = "FXB")]
+        input: PathBuf,
+        /// Original VST2 processor name used in the legacy class ID
+        #[arg(long, value_name = "NAME")]
+        source_name: String,
+        /// Explicit VST3 bundle to use for conversion
+        #[arg(long, value_name = "BUNDLE")]
+        plugin: PathBuf,
+        /// New .vstpreset file to publish after verifying it reopens
+        #[arg(short, long, value_name = "VSTPRESET")]
+        output: PathBuf,
+    },
+
     /// Resolve, download, verify, and install one catalog entry
     Install {
         /// Catalog entry id, e.g. asb2m10.dexed
@@ -835,6 +855,14 @@ fn main() {
 }
 
 fn run() -> Result<()> {
+    let mut worker = std::env::args_os().skip(1);
+    if worker
+        .next()
+        .is_some_and(|arg| arg == oc_host::vst3_instance::VST2_BANK_WORKER_ARG)
+    {
+        return oc_host::vst3_instance::run_vst2_bank_worker(&worker.collect::<Vec<_>>())
+            .map_err(|error| anyhow::anyhow!("VST2 bank migration: {error}"));
+    }
     // `ocp` doubles as the isolated scan helper when no dedicated helper
     // binary sits beside it, so intercept that mode before clap parses argv.
     let args: Vec<String> = std::env::args().collect();
@@ -864,6 +892,17 @@ fn run() -> Result<()> {
     match cli.command {
         Commands::ResolvePlugin { id } => {
             use oc_host::{PluginFormat, find_plugin_info};
+            #[cfg(target_os = "macos")]
+            {
+                let (format, selector) = oc_host::effect_plugin_selector(&id);
+                if format == Some(PluginFormat::Au)
+                    || oc_host::au_instance::is_component_id(selector)
+                {
+                    let info = oc_host::au_instance::resolve_plugin_metadata(selector)?;
+                    println!("{}", serde_json::to_string(&info)?);
+                    return Ok(());
+                }
+            }
             let found = [
                 PluginFormat::Vst3,
                 PluginFormat::Vst2,
@@ -882,7 +921,23 @@ fn run() -> Result<()> {
             }
             println!("{}", serde_json::to_string(&found[0])?);
         }
-        Commands::Scan { rescan } => {
+        Commands::Scan {
+            bundle: Some(path), ..
+        } => {
+            let receipt = oc_host::scanner::rescan_bundle(&path).map_err(anyhow::Error::msg)?;
+            if receipt.status != oc_host::scanner::ScanStatus::Passed {
+                anyhow::bail!(
+                    "Bundle scan failed for {} ({:?})",
+                    path.display(),
+                    receipt.status
+                );
+            }
+            println!("{}", serde_json::to_string(&receipt)?);
+        }
+        Commands::Scan {
+            rescan,
+            bundle: None,
+        } => {
             let (plugins, report) = if rescan {
                 let (plugins, report) = oc_host::rescan_all_plugins();
                 (plugins, Some(report))
@@ -906,42 +961,39 @@ fn run() -> Result<()> {
             }
         }
         Commands::PluginParams { id, json } => {
-            use oc_host::vst3_instance::Vst3Instance;
+            use oc_host::scanner::{PluginParameterInventory, inspect_plugin_parameters};
             use oc_host::{PluginFormat, find_plugin_info};
-            let Some(info) = find_plugin_info(&id, PluginFormat::Vst3) else {
-                let Some(info) = find_plugin_info(&id, PluginFormat::Vst2) else {
-                    anyhow::bail!("No VST3 or VST2 plugin matched {id}");
-                };
-                let instance =
-                    oc_host::vst2::Vst2Instance::load(std::path::Path::new(&info.path), 48000, 512)
-                        .map_err(anyhow::Error::msg)?;
-                let params = instance.get_params();
-                if json {
-                    println!("{}", serde_json::to_string_pretty(&params)?);
+            let info = find_plugin_info(&id, PluginFormat::Vst3)
+                .or_else(|| find_plugin_info(&id, PluginFormat::Vst2))
+                .ok_or_else(|| anyhow::anyhow!("No VST3 or VST2 plugin matched {id}"))?;
+            let inventory = inspect_plugin_parameters(&info).map_err(anyhow::Error::msg)?;
+            let params = match inventory {
+                PluginParameterInventory::Vst3(params) => params,
+                PluginParameterInventory::Vst2(params) => {
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&params)?);
+                        return Ok(());
+                    }
+                    println!("{} — {} parameters", info.name, params.len());
+                    println!("{}", info.path);
+                    println!(
+                        "{:>6}  {:<44} {:<8} {:>10} {:>10}",
+                        "index", "name", "label", "default", "current"
+                    );
+                    for param in params {
+                        println!(
+                            "{:>6}  {:<44} {:<8} {:>10.4} {:>10.4}  {}",
+                            param.index,
+                            param.name,
+                            param.label,
+                            param.default,
+                            param.value,
+                            param.display
+                        );
+                    }
                     return Ok(());
                 }
-                println!("{} — {} parameters", info.name, params.len());
-                println!("{}", info.path);
-                println!(
-                    "{:>6}  {:<44} {:<8} {:>10} {:>10}",
-                    "index", "name", "label", "default", "current"
-                );
-                for param in params {
-                    println!(
-                        "{:>6}  {:<44} {:<8} {:>10.4} {:>10.4}  {}",
-                        param.index,
-                        param.name,
-                        param.label,
-                        param.default,
-                        param.value,
-                        param.display
-                    );
-                }
-                return Ok(());
             };
-            let instance = Vst3Instance::load(std::path::Path::new(&info.path), 48000, 512)
-                .map_err(anyhow::Error::msg)?;
-            let params = instance.get_param_details();
             if json {
                 println!("{}", serde_json::to_string_pretty(&params)?);
                 return Ok(());
@@ -992,8 +1044,13 @@ fn run() -> Result<()> {
                 })?;
                 let info = find_plugin_info(&plugin, PluginFormat::Vst3)
                     .ok_or_else(|| anyhow::anyhow!("No VST3 plugin matched {plugin}"))?;
-                let mut instance = Vst3Instance::load(std::path::Path::new(&info.path), 48000, 512)
-                    .map_err(anyhow::Error::msg)?;
+                let mut instance = Vst3Instance::load_class(
+                    std::path::Path::new(&info.path),
+                    &info.name,
+                    48000,
+                    512,
+                )
+                .map_err(anyhow::Error::msg)?;
                 let report =
                     plugin_preset::apply_to_instance(&mut instance, &preset).map_err(|error| {
                         anyhow::anyhow!("Failed to import {}: {error}", file.display())
@@ -1894,6 +1951,12 @@ fn run() -> Result<()> {
         }
         Commands::Sample { command } => sample::run(command)?,
         Commands::Plugin { command } => match command {
+            PluginCommand::MigrateVst2 {
+                input,
+                source_name,
+                plugin,
+                output,
+            } => plugin_migration::run(&input, &source_name, &plugin, &output)?,
             PluginCommand::Install {
                 id,
                 index,
