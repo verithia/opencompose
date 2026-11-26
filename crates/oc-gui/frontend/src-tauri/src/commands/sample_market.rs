@@ -369,8 +369,7 @@ fn add_blocking(
     // in, because the media folder can be the same for two projects.
     let identity = DocumentIdentity::capture(&state);
     let (store, root) = samples::store_for(&state)?;
-    let root =
-        root.ok_or_else(|| "Save the project first: a sample needs a media folder.".to_string())?;
+    root.ok_or_else(|| "Save the project first: a sample needs a media folder.".to_string())?;
     // A file previewed from the same URL is read back from the cache; the
     // store verifies its size and checksum exactly as for a download.
     let cached;
@@ -394,7 +393,6 @@ fn add_blocking(
     let (snapshot, track_name) =
         place_pulled(&mut inner, &identity, &receipt, seconds, track.as_deref())?;
     drop(inner);
-    super::arrangement::warm_audio_clip_peaks(&snapshot.project, Some(&root));
     Ok(json!({
         "status": "ok",
         "provider": provider_id,

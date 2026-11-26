@@ -1002,13 +1002,6 @@ pub async fn restore_recovery(
     snapshot.restored_from = Some(path);
     // A recovered document is on screen; warm the graph behind the response.
     crate::commands::warm_preload_later(&app, snapshot.revision);
-    crate::commands::warm_audio_clip_peaks(
-        &snapshot.project,
-        snapshot
-            .file_path
-            .as_deref()
-            .and_then(|path| Path::new(path).parent()),
-    );
     Ok(snapshot)
 }
 
