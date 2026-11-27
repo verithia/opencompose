@@ -655,3 +655,32 @@ fn a_project_without_tracks_schedules_an_empty_block() {
     assert!(scheduled);
     assert!(output.iter().all(|sample| *sample == 0.0));
 }
+
+/// A graph that is one chain keeps no worker busy beside the render thread,
+/// so its blocks do not wake any: waking a parked worker can cost more than
+/// the whole block, and a short exact-history seek then misses its deadline.
+#[test]
+fn a_single_chain_runs_on_the_render_thread_alone() {
+    let chain = oc_dsl::parse(
+        "@project\n@track lead | instrument: audio/clip\n  mix: output=b0\n\
+         @bus b0\n  routes: [b1]\n@bus b1\n  routes: [master]\n",
+    )
+    .unwrap();
+    let mut graph = AudioGraph::from_project(&chain, RATE);
+    graph.prepare(MAX_FRAMES).unwrap();
+    graph.set_block_sources(Some(&[0]));
+    let width = |graph: &AudioGraph| {
+        let parallel = graph.prepared.as_ref().unwrap().parallel.as_ref().unwrap();
+        (
+            parallel.buses.as_ref().unwrap().width,
+            parallel.flow.as_ref().unwrap().width,
+        )
+    };
+    assert_eq!(width(&graph), (1, 1));
+
+    let (wide, _) = flow_layout(3);
+    let mut graph = AudioGraph::from_project(&wide, RATE);
+    graph.prepare(MAX_FRAMES).unwrap();
+    graph.set_block_sources(Some(&(0..wide.tracks.len()).collect::<Vec<_>>()));
+    assert!(width(&graph).1 >= wide.tracks.len());
+}

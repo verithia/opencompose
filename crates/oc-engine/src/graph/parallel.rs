@@ -127,6 +127,10 @@ struct BusPlan {
     dependents: Vec<usize>,
     /// Longest chain of dependent buses, for diagnostics.
     depth: usize,
+    /// Most nodes on one dependency level: the workers a block can keep busy.
+    /// A graph that is one chain runs on the render thread alone, without
+    /// waking workers that would only wait for their turn.
+    width: usize,
     /// Prepared bus index by name.
     bus_slots: HashMap<String, usize>,
     /// Route scratch for each target that has an incoming route.
@@ -494,6 +498,11 @@ impl BusPlan {
             })
             .collect();
         let bus_count = buses.len();
+        let mut per_level = vec![0usize; levels.iter().copied().max().map_or(0, |level| level + 1)];
+        for &level in &levels {
+            per_level[level] += 1;
+        }
+        let width = per_level.iter().copied().max().unwrap_or(0).max(1);
         let bus_levels = &levels[first_bus..];
         let bus_floor = bus_levels.iter().copied().min().unwrap_or(0);
         Some(Self {
@@ -510,6 +519,7 @@ impl BusPlan {
             track_blocks: vec![TrackBlock::default(); track_count],
             track_ramps: Table::with_capacity(track_count),
             track_taps: Vec::with_capacity(track_count),
+            width,
             depth: bus_levels
                 .iter()
                 .copied()
@@ -810,7 +820,7 @@ impl AudioGraph {
             // SAFETY: the queue hands each bus to one job per block, after
             // every bus it gathers from or reads a key of.
             let run = |bus: usize| unsafe { jobs.run_bus(bus) };
-            let result = workers.dispatch(workers.parallelism(), &|_| {
+            let result = workers.dispatch(workers.parallelism().min(plan.width), &|_| {
                 queue.work(&plan.order, |bus| plan.dependents_of(bus), run);
             });
             // A panicking chain unwinds the render thread as it would serially.
@@ -1120,7 +1130,7 @@ impl AudioGraph {
                 }
             };
             let queue = &plan.queue;
-            let result = workers.dispatch(workers.parallelism(), &|_| {
+            let result = workers.dispatch(workers.parallelism().min(plan.width), &|_| {
                 queue.work(&plan.order, |node| plan.dependents_of(node), run);
             });
             // A panicking job unwinds the render thread as it would serially.
