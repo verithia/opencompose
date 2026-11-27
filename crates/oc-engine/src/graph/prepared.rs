@@ -1,6 +1,7 @@
 //! Prepared scratch and preflight for bounded graph blocks.
 
 use super::*;
+use std::cell::UnsafeCell;
 
 /// A graph block was refused before any audio or DSP state was consumed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,19 +60,27 @@ struct SignalBuffer {
     samples: Vec<f32>,
 }
 
+/// One named signal. Its cell lets the bus job that owns the signal publish it
+/// through a [`SignalSlot`] while other jobs read other signals.
+struct SignalCell(UnsafeCell<SignalBuffer>);
+
 pub(super) struct PreparedSignals {
-    values: HashMap<String, SignalBuffer>,
+    values: HashMap<String, SignalCell>,
 }
+
+// SAFETY: shared access only reads, except through `SignalSlot::set`, whose
+// contract excludes every concurrent access to the signal it writes.
+unsafe impl Sync for PreparedSignals {}
 
 impl PreparedSignals {
     fn new(names: impl Iterator<Item = String>, samples: usize) -> Result<Self, PreparationError> {
         let mut values = HashMap::new();
         for name in names {
             if let std::collections::hash_map::Entry::Vacant(entry) = values.entry(name) {
-                entry.insert(SignalBuffer {
+                entry.insert(SignalCell(UnsafeCell::new(SignalBuffer {
                     active: false,
                     samples: sample_capacity(samples)?,
-                });
+                })));
             }
         }
         Ok(Self { values })
@@ -79,12 +88,13 @@ impl PreparedSignals {
 
     pub(super) fn clear(&mut self) {
         for value in self.values.values_mut() {
-            value.active = false;
+            value.0.get_mut().active = false;
         }
     }
 
     pub(super) fn set(&mut self, name: &str, samples: &[f32]) {
         if let Some(value) = self.values.get_mut(name) {
+            let value = value.0.get_mut();
             value.samples.clear();
             value.samples.extend_from_slice(samples);
             value.active = true;
@@ -94,14 +104,60 @@ impl PreparedSignals {
     pub(super) fn has(&self, name: &str) -> bool {
         self.values.contains_key(name)
     }
+
+    /// A handle that publishes `name`, or a null handle when it is absent.
+    pub(super) fn slot(&self, name: &str) -> SignalSlot {
+        SignalSlot(
+            self.values
+                .get(name)
+                .map_or(std::ptr::null_mut(), |value| value.0.get()),
+        )
+    }
+}
+
+/// Publishes one signal from the job that produces it.
+#[derive(Clone, Copy)]
+pub(super) struct SignalSlot(*mut SignalBuffer);
+
+// SAFETY: the pointer is only dereferenced by `set`, whose caller guarantees
+// exclusive access to the signal for the call.
+unsafe impl Send for SignalSlot {}
+// SAFETY: as above.
+unsafe impl Sync for SignalSlot {}
+
+impl SignalSlot {
+    pub(super) const NONE: Self = Self(std::ptr::null_mut());
+
+    pub(super) fn is_none(self) -> bool {
+        self.0.is_null()
+    }
+
+    /// Publish `samples` as the signal's value for this block.
+    ///
+    /// # Safety
+    /// The signals outlive the call, and no other thread reads or writes this
+    /// signal until the caller's job hands it on with release ordering.
+    pub(super) unsafe fn set(self, samples: &[f32]) {
+        debug_assert!(!self.is_none());
+        // SAFETY: guaranteed by the caller.
+        let value = unsafe { &mut *self.0 };
+        // Capacity is reserved at preparation for the longest block, so this
+        // copy does not allocate.
+        value.samples.clear();
+        value.samples.extend_from_slice(samples);
+        value.active = true;
+    }
 }
 
 impl SignalLookup for PreparedSignals {
     fn signal(&self, name: &str) -> Option<&[f32]> {
-        self.values
-            .get(name)
-            .filter(|value| value.active)
-            .map(|value| value.samples.as_slice())
+        self.values.get(name).and_then(|value| {
+            // SAFETY: a signal is written only through `&mut self` or by the
+            // one job that owns its slot, and that job finishes before any
+            // reader of the signal starts.
+            let value = unsafe { &*value.0.get() };
+            value.active.then_some(value.samples.as_slice())
+        })
     }
 }
 
@@ -141,6 +197,8 @@ pub(super) struct PreparedGraph {
     master_inputs: Vec<(Option<String>, Option<String>)>,
     master_latency: u32,
     latency_invalidated: bool,
+    /// Work that block workers may run concurrently; taken while in use.
+    pub(super) parallel: Option<super::parallel::ParallelPlan>,
 }
 
 fn inputs(chain: &EffectChain) -> Vec<(Option<String>, Option<String>)> {
@@ -170,7 +228,7 @@ fn same_inputs(chain: &EffectChain, prepared: &[(Option<String>, Option<String>)
 
 impl PreparedGraph {
     pub(super) fn new(graph: &AudioGraph, max_samples: usize) -> Result<Self, PreparationError> {
-        Ok(Self {
+        let mut prepared = Self {
             max_samples,
             sample_rate: graph.sample_rate,
             master: sample_capacity(max_samples)?,
@@ -270,7 +328,10 @@ impl PreparedGraph {
             master_inputs: inputs(&graph.master_chain),
             master_latency: graph.master_chain.latency_samples(),
             latency_invalidated: graph.latency_signature.is_empty(),
-        })
+            parallel: None,
+        };
+        prepared.parallel = Some(super::parallel::ParallelPlan::new(graph, &prepared.buses));
+        Ok(prepared)
     }
 
     pub(super) fn preflight(
@@ -457,6 +518,24 @@ impl AudioGraph {
         &mut self,
         block: PreparedGraphBlock<'_>,
     ) -> Result<(), PreparationError> {
+        self.process_prepared_on(block, None)
+    }
+
+    /// Process like [`Self::process_prepared`], running independent track and
+    /// bus chains on `workers`. The output is identical to the serial block.
+    pub fn process_prepared_with_workers(
+        &mut self,
+        block: PreparedGraphBlock<'_>,
+        workers: &mut crate::block_workers::BlockWorkers,
+    ) -> Result<(), PreparationError> {
+        self.process_prepared_on(block, Some(workers))
+    }
+
+    fn process_prepared_on(
+        &mut self,
+        block: PreparedGraphBlock<'_>,
+        mut workers: Option<&mut crate::block_workers::BlockWorkers>,
+    ) -> Result<(), PreparationError> {
         let PreparedGraphBlock {
             tracks,
             transport,
@@ -493,7 +572,12 @@ impl AudioGraph {
         }
         let mut prepared = self.prepared.take().unwrap();
         self.set_streaming_idle_gate(true);
-        self.process_track_effects_prepared(tracks, transport, None, &mut prepared);
+        match workers.as_deref_mut() {
+            Some(workers) if workers.parallelism() > 1 => {
+                self.process_track_effects_parallel(tracks, transport, &mut prepared, workers);
+            }
+            _ => self.process_track_effects_prepared(tracks, transport, None, &mut prepared),
+        }
         self.mix_prepared(
             tracks,
             PreparedMixOptions {
@@ -501,6 +585,7 @@ impl AudioGraph {
                 stems: None,
                 aux_buffers: aux,
                 bus_workers: 1,
+                block_workers: workers.filter(|workers| workers.parallelism() > 1),
                 samples: output.len(),
             },
             &mut prepared,

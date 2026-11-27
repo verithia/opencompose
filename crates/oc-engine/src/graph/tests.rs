@@ -1071,8 +1071,15 @@ fn mapped_effect_ramp_keeps_contiguous_monotonic_blocks() {
     let mut shortened = false;
     for block in &seen {
         assert_eq!(block.sample_pos, position as u64);
-        assert!(block.frames > 0 && block.frames <= 128, "{block:?}");
-        shortened |= block.frames < 128;
+        assert!(
+            block.frames > 0 && block.frames <= EFFECT_SPAN_FRAMES,
+            "{block:?}"
+        );
+        // A call never crosses a span boundary on the timeline, so streaming
+        // chunks that start on one see the same calls as this whole pass.
+        let into_span = block.sample_pos as usize % EFFECT_SPAN_FRAMES;
+        assert!(into_span + block.frames <= EFFECT_SPAN_FRAMES, "{block:?}");
+        shortened |= block.frames < EFFECT_SPAN_FRAMES;
         assert!(block.ppq > previous_ppq, "{block:?}");
         previous_ppq = block.ppq;
         let expected = clock.position_at_sample(block.sample_pos, 48_000).unwrap();
@@ -1081,6 +1088,52 @@ fn mapped_effect_ramp_keeps_contiguous_monotonic_blocks() {
     }
     assert_eq!(position, frames);
     assert!(shortened, "the ramp must split at least one block");
+}
+
+#[test]
+fn mapped_effect_sees_the_same_calls_in_streaming_chunks_as_in_one_pass() {
+    // Changes deliberately fall between span boundaries.
+    let project = oc_dsl::parse(
+        "@project\n  tempo: 120\n  tempo_map:\n    1:2 + 0.1875q = 97 bpm\n    2:3 = 141 bpm\n  time_sig_map:\n    3:1 = 7/8\n",
+    )
+    .unwrap();
+    let rate = 48_000;
+    let frames = 8 * rate as usize;
+    let (mut whole, whole_seen) = recording_chain();
+    let mut buffer = vec![0.0; frames * 2];
+    whole.process_with_transport(&mut buffer, rate, Some(mapped_transport(&project, 0, rate)));
+
+    let (mut chunked, chunked_seen) = recording_chain();
+    let mut start = 0;
+    let mut chunk = 1024;
+    while start < frames {
+        let length = chunk.min(frames - start);
+        let mut buffer = vec![0.0; length * 2];
+        chunked.process_with_transport(
+            &mut buffer,
+            rate,
+            Some(mapped_transport(&project, start as u64, rate)),
+        );
+        start += length;
+        chunk = 4096;
+    }
+    let whole = blocks(&whole_seen);
+    let chunked = blocks(&chunked_seen);
+    assert!(whole.iter().any(|block| block.tempo == 97.0));
+    assert!(whole.iter().any(|block| block.numerator == 7));
+    assert_eq!(chunked.len(), whole.len());
+    for (chunked, whole) in chunked.iter().zip(&whole) {
+        assert_eq!(
+            (
+                chunked.sample_pos,
+                chunked.frames,
+                chunked.tempo,
+                chunked.numerator
+            ),
+            (whole.sample_pos, whole.frames, whole.tempo, whole.numerator),
+        );
+        assert_eq!(chunked.ppq.to_bits(), whole.ppq.to_bits());
+    }
 }
 
 #[test]

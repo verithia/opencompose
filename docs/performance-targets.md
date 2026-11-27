@@ -318,6 +318,47 @@ eviction. On the reference session a 2-track window at 10–11 s holds 8,455,680
 bytes, at 60–61 s 46,855,680 bytes, and a 4-track window at 20–22 s 63,759,360
 bytes (just under the cap).
 
+## Streaming chunks
+
+Playback renders the project in chunks ahead of the device. A chunk of duration
+`T` must render in at most `0.1 T` at the 99th percentile, so a stream keeps
+headroom for the interface, other applications and plugin spikes, and the first
+chunk after Play is ready within 100 ms.
+
+A chunk runs on persistent block workers, one per core, that live as long as
+the render thread and park when the transport stops:
+
+- every source lane renders into buffers it owns, longest lane first by its
+  previous cost, and the render thread sums the lanes in lane order;
+- track chains that read no key or control signal run side by side;
+- a bus starts as soon as the buses that route into it, and the buses whose key
+  or control it reads, have finished. Among the ready buses a worker takes the
+  one that heads the costliest remaining path to the master, ranked by a
+  running average of each bus's measured time. A routing graph is often one
+  long chain of heavy buses beside many light ones; starting that chain first
+  keeps it from waiting behind work that has slack.
+
+Each destination sums its sources in a fixed order, so a chunk is bit-identical
+to rendering it on one thread. The longest chain of dependent buses still sets
+a floor: a chunk cannot finish before the plugins on that chain have run in
+sequence.
+
+Effects are called once per 1024-frame span of the timeline while a tempo map
+is active, rather than once per source quantum, so a plugin that crosses a
+process boundary on every call pays that round trip a few times per chunk.
+
+Measure a project with the opt-in harness:
+
+```sh
+OCP_STREAM_PROJECT=path/to/project.ocp OCP_STREAM_SECONDS=60 \
+  OCP_STREAM_SEEK_SECONDS=30 cargo test -p oc-gui --profile perf --lib \
+  render_thread::stream_budget_tests::review_stream_chunk_budget \
+  -- --exact --ignored --nocapture
+```
+
+It reports the first chunk, the p50, p90 and p99 chunk ratios and real-time
+speed, from the start and after a seek, and fails when a budget is missed.
+
 ## Why these two targets and not a single number
 
 They fail differently. Target 1 is throughput on a saturated offline renderer:

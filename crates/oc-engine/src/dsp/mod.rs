@@ -2494,10 +2494,15 @@ fn create_plugin_effect(
             .map_err(PluginEffectError::Refused)?;
             let state = inputs.state;
             let params = &inputs.controls;
-            let mut instance = oc_host::au_instance::AuInstance::load(plugin_id, sample_rate, 512)
-                .map_err(|error| {
-                    PluginEffectError::Refused(format!("Audio Unit effect '{plugin_id}': {error}"))
-                })?;
+            let mut instance = oc_host::au_instance::AuInstance::load(
+                plugin_id,
+                sample_rate,
+                // One render call per effect span.
+                crate::graph::EFFECT_SPAN_FRAMES as u32,
+            )
+            .map_err(|error| {
+                PluginEffectError::Refused(format!("Audio Unit effect '{plugin_id}': {error}"))
+            })?;
             plugin_state::apply(&state, |bytes| instance.set_state_bytes(bytes))
                 .map_err(PluginEffectError::Refused)?;
             refuse_instrument_insert(

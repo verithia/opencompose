@@ -29,6 +29,7 @@ mod live_controls;
 mod macro_preview;
 pub use macro_preview::PresetMacroInput;
 mod midi_input;
+mod parallel;
 mod prepared;
 mod process_boundary;
 mod rewind;
@@ -38,6 +39,7 @@ use process_boundary::ProcessBoundary;
 pub use stem_selection::StemCaptureSelection;
 #[cfg(test)]
 mod prepared_tests;
+pub use parallel::ParallelShape;
 pub use prepared::{PreparationError, PreparedGraphBlock};
 use prepared::{PreparedGraph, SignalLookup};
 #[cfg(test)]
@@ -370,18 +372,30 @@ impl StereoDelayCompensator {
     }
 }
 
-/// Longest effect block while a tempo/meter map is active. Keeping the same
-/// quantum as the source lanes makes offline and streaming plugin blocks line
-/// up; every span also respects the device's prepared frame capacity.
-const CLOCK_ALIGNED_BLOCK_FRAMES: usize = 128;
+/// Longest effect call while a tempo/meter map is active.
+///
+/// Spans end on multiples of this length on the timeline, so an offline pass
+/// over a whole track and streaming chunks that start on such a multiple hand
+/// every device the same calls. It divides the streaming chunk lengths, and it
+/// is long enough that a device whose every call crosses a process boundary
+/// pays that round trip a few times per chunk rather than dozens. Every span
+/// also respects the device's prepared frame capacity.
+pub(crate) const EFFECT_SPAN_FRAMES: usize = 1024;
+
+/// Frames from `position` to the end of its effect span, capped at `remaining`.
+fn effect_span(position: u64, remaining: usize) -> usize {
+    let into = (position % EFFECT_SPAN_FRAMES as u64) as usize;
+    remaining.min(EFFECT_SPAN_FRAMES - into)
+}
 
 mod effect_blocks;
 use effect_blocks::process_effect_context;
 
 /// Run one effect over spans that each carry a single clock context.
 ///
-/// A block is split at the next authored tempo/meter change and at the block
-/// quantum, so every `process` call sees one tempo, PPQ and time signature.
+/// A block is split at the next authored tempo/meter change and at the end of
+/// each effect span, so every `process` call sees one tempo, PPQ and time
+/// signature.
 /// Sliding windows slice the caller's buffer, so the split allocates nothing
 /// and cannot drop or duplicate a frame.
 fn process_effect_aligned(
@@ -429,7 +443,7 @@ fn process_effect_aligned(
     let mut offset = 0;
     while offset < total {
         let segment = base.at_sample(base.sample_pos + offset as u64);
-        let limit = (total - offset).min(CLOCK_ALIGNED_BLOCK_FRAMES);
+        let limit = effect_span(segment.sample_pos, total - offset);
         let frames = segment.block_frames(limit).clamp(1, limit);
         let range = offset * 2..(offset + frames) * 2;
         let key = sidechain.and_then(|side| side.get(range.clone()));
@@ -486,7 +500,7 @@ fn process_effect_aligned_control(
     let mut offset = 0;
     while offset < total {
         let segment = base.at_sample(base.sample_pos + offset as u64);
-        let limit = (total - offset).min(CLOCK_ALIGNED_BLOCK_FRAMES);
+        let limit = effect_span(segment.sample_pos, total - offset);
         let frames = segment.block_frames(limit).clamp(1, limit);
         let range = offset * 2..(offset + frames) * 2;
         let span = control.get(offset..offset + frames).unwrap_or(&[]);
@@ -560,6 +574,8 @@ struct PreparedMixOptions<'a> {
     stems: Option<&'a mut StemCapture>,
     aux_buffers: &'a HashMap<(usize, usize), Vec<f32>>,
     bus_workers: usize,
+    /// Persistent workers for streaming blocks; offline passes use `bus_workers`.
+    block_workers: Option<&'a mut crate::block_workers::BlockWorkers>,
     samples: usize,
 }
 
@@ -2960,6 +2976,7 @@ impl AudioGraph {
                 stems,
                 aux_buffers,
                 bus_workers,
+                block_workers: None,
                 samples,
             },
             &mut prepared,
@@ -2980,6 +2997,7 @@ impl AudioGraph {
             mut stems,
             aux_buffers,
             bus_workers,
+            block_workers,
             samples: buf_len,
         } = options;
         if let Some(capture) = stems.as_deref_mut() {
@@ -3275,7 +3293,19 @@ impl AudioGraph {
         // Process buses source-before-target and fan each return into its
         // declared outgoing buses and/or the master output.
         let bus_stage = crate::stage_log::stage("bus chains");
-        if let Some(barriers) = self.parallel_bus_barriers(bus_workers) {
+        let scheduled = match block_workers {
+            Some(workers) if stems.is_none() => self.process_buses_parallel(
+                prepared,
+                &mut master_buf,
+                transport,
+                ramp_frames,
+                workers,
+            ),
+            _ => false,
+        };
+        if scheduled {
+            // Block workers ran every bus chain and gathered the master.
+        } else if let Some(barriers) = self.parallel_bus_barriers(bus_workers) {
             // Compute ready, independent chains ahead of the ordered routing
             // cursor. Their buffers cannot receive any later input: every
             // predecessor has already crossed the fan-out cursor.

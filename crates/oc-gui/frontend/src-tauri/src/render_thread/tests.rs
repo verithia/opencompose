@@ -5995,3 +5995,133 @@ fn adding_a_track_after_a_reused_load_rebuilds_every_lane() {
         "both lanes were rebuilt once"
     );
 }
+
+/// Lanes and graph chains on block workers stream exactly the audio of one
+/// thread: lane-owned buffers are summed in lane order and buses gather their
+/// sources in a fixed order, whichever thread finishes first.
+#[test]
+fn block_workers_stream_the_same_audio_as_one_thread() {
+    let project = oc_dsl::parse(
+        r#"@project "Workers"
+  tempo: 124
+  tempo_map:
+    2:1 + 0.1875q = 97 bpm
+@preset thump
+  source: builtin
+  plugin: "builtin.open_synth"
+  params: {synth_version: 2, osc.a.waveform: 0, amp.attack: 0s, amp.decay: 0.12s, amp.sustain: 0, amp.release: 0.05s, output.gain: 0.5}
+@preset saw
+  source: builtin
+  plugin: "builtin.open_synth"
+  params: {synth_version: 2, osc.a.waveform: 1, filter.cutoff: 2400Hz, amp.release: 0.2s, output.gain: 0.3}
+@track kick | instrument: synth/virtual_analog, preset: thump
+  mix: output=drums
+  @phrase beat [1:1:0 - 4:1:0]
+    C1 q ff
+    rest q
+    C1 q ff
+    C1 8th f
+    rest 8th
+    |
+    C1 q ff
+    rest q
+    C1 q ff
+    rest q
+    |
+    C1 h ff
+    C1 h ff
+@track bass | instrument: synth/virtual_analog, preset: saw
+  effects:
+    - compression: threshold=-24dB, ratio=4:1, attack=2ms, release=60ms, sidechain=kick
+  mix: output=music
+  @phrase line [1:1:0 - 4:1:0]
+    C2 q f
+    E2 q f
+    G2 q f
+    C3 q f
+    |
+    A1 h f
+    F2 h f
+    |
+    G1 w f
+@track lead | instrument: synth/virtual_analog, preset: saw
+  effects:
+    - gain: factor=0.6
+  mix: output=music, send(space=30%)
+  @phrase motif [1:1:0 - 4:1:0]
+    C4 8th f
+    D4 8th f
+    E4 8th f
+    G4 8th f
+    A4 q f
+    G4 q f
+    |
+    E4 w mf
+    |
+    D4 h mf
+    C4 h mf
+@track pad | instrument: synth/virtual_analog, preset: thump
+  mix: output=music
+  @phrase bed [1:1:0 - 4:1:0]
+    C3 w mp
+    |
+    A2 w mp
+    |
+    G2 w mp
+@bus drums
+  routes: [glue]
+  effects:
+    - gain: factor=0.8
+@bus music
+  routes: [glue]
+  effects:
+    - compression: threshold=-20dB, ratio=3:1, attack=5ms, release=80ms, sidechain=drums
+@bus space
+  routes: [glue]
+  effects:
+    - gain: factor=0.5
+@bus glue
+  routes: [master]
+  effects:
+    - gain: factor=0.9
+"#,
+    )
+    .unwrap();
+    let render = |workers: Option<oc_engine::block_workers::BlockWorkers>| {
+        let mut state = RenderState::new(48_000);
+        state.block_workers = workers;
+        state
+            .load_project_from(&project, PathBuf::new(), None, 0)
+            .unwrap();
+        state.prepare_streaming().unwrap();
+        state.seek_to(0).unwrap();
+        state.start_playing();
+        let mut chunks = Vec::new();
+        let mut frames = FIRST_CHUNK_FRAMES;
+        while chunks.len() < 40 {
+            let mut chunk = Vec::new();
+            state.render_chunk_into(frames, &mut chunk);
+            assert!(state.render_error.is_none(), "{:?}", state.render_error);
+            if chunk.is_empty() {
+                break;
+            }
+            chunks.push(chunk);
+            frames = CHUNK_FRAMES;
+        }
+        chunks
+    };
+    let serial = render(None);
+    let workers = oc_engine::block_workers::BlockWorkers::new(4, "ocp-test-block", || {}).unwrap();
+    let parallel = render(Some(workers));
+    assert!(serial.len() >= 20);
+    assert!(serial.iter().flatten().any(|sample| sample.abs() > 1e-3));
+    assert_eq!(serial.len(), parallel.len());
+    for (index, (serial, parallel)) in serial.iter().zip(&parallel).enumerate() {
+        let same = serial.len() == parallel.len()
+            && serial
+                .iter()
+                .zip(parallel)
+                .all(|(a, b)| a.to_bits() == b.to_bits());
+        assert!(same, "chunk {index}");
+    }
+}

@@ -1083,7 +1083,15 @@ struct RenderState {
     /// Preallocated main/aux buffers per source lane, planned at load.
     source_outputs: Vec<SourceOutput>,
     track_chunks: Vec<Vec<f32>>,
-    lane_audio: Vec<f32>,
+    /// Per-lane rendered audio, auxiliary pairs, errors and last block cost.
+    lane_buffers: Vec<Vec<f32>>,
+    lane_aux: Vec<Vec<Vec<f32>>>,
+    lane_errors: Vec<Option<String>>,
+    lane_costs: Vec<u64>,
+    /// Lanes in the order the next block dispatches them.
+    lane_order: Vec<usize>,
+    /// Persistent workers for lanes and graph chains; none renders serially.
+    block_workers: Option<oc_engine::block_workers::BlockWorkers>,
     dsp_block: Vec<f32>,
     preroll_buffer: Vec<f32>,
     free_meter_frames: Vec<crate::meters::MeterFrame>,
@@ -1208,7 +1216,12 @@ impl RenderState {
             source_tracks: Vec::new(),
             source_outputs: Vec::new(),
             track_chunks: Vec::new(),
-            lane_audio: Vec::with_capacity(CHUNK_FRAMES * 2),
+            lane_buffers: Vec::new(),
+            lane_aux: Vec::new(),
+            lane_errors: Vec::new(),
+            lane_costs: Vec::new(),
+            lane_order: Vec::new(),
+            block_workers: None,
             dsp_block: Vec::with_capacity(CHUNK_FRAMES * 2),
             preroll_buffer: Vec::with_capacity(CHUNK_FRAMES * 2),
             free_meter_frames: Vec::with_capacity(MAX_PENDING_METERS),
@@ -1365,6 +1378,7 @@ impl RenderState {
         replacement.source_epoch = self.source_epoch.wrapping_add(1);
         replacement.root.clone_from(&self.root);
         replacement.meter_hub = self.meter_hub.take();
+        replacement.block_workers = self.block_workers.take();
         replacement.meter_input_peaks = std::mem::take(&mut self.meter_input_peaks);
         replacement.instrument_instantiations = Arc::clone(&self.instrument_instantiations);
         replacement.chain_latency_frames = Arc::clone(&self.chain_latency_frames);
@@ -1384,6 +1398,7 @@ impl RenderState {
             .clone_from(&self.spectrum_target);
         if let Err(error) = replacement.build_project(project, soundfont_path, progressive_cursor) {
             self.meter_hub = replacement.meter_hub.take();
+            self.block_workers = replacement.block_workers.take();
             self.meter_input_peaks = std::mem::take(&mut replacement.meter_input_peaks);
             if reuse_sources {
                 self.renderers = std::mem::take(&mut replacement.renderers);
@@ -1912,6 +1927,7 @@ impl RenderState {
                 buffer.reserve(CHUNK_FRAMES * 2 - buffer.len());
             }
         }
+        self.prepare_lane_buffers();
         self.prepare_meter_frames();
         Ok(())
     }
@@ -2337,210 +2353,22 @@ impl RenderState {
             buffer.clear();
             buffer.resize(actual_frames * 2, 0.0);
         }
-        let mut track_audio = std::mem::take(&mut self.lane_audio);
-        let sub_chunk_size: usize = 64; // Render in small sub-chunks for timing accuracy
-
         // Auxiliary returns start at silence; capacity is kept from load.
         for buffer in self.aux_buffers.values_mut() {
             buffer.clear();
             buffer.resize(actual_frames * 2, 0.0);
         }
 
-        for track_idx in 0..self.renderers.len() {
-            track_audio.clear();
-            let cursor = &mut self.track_event_cursors[track_idx];
-            let track_events = &self.events_by_track[track_idx];
-            let mut pos = chunk_start;
-
-            while pos < source_end {
-                if self.renderers[track_idx].supports_score_offsets()
-                    || self.renderers[track_idx].performance_uses_offsets()
-                {
-                    // Same 128-frame hosted processing quantum as offline export.
-                    // Keep sample offsets; chopping at each note changes plugin
-                    // block-dependent envelopes and round-robin behavior.
-                    let transport = self.transport.as_ref().unwrap().at_sample(pos);
-                    let frames = transport.block_frames((source_end - pos).min(128) as usize);
-                    let end = pos + frames as u64;
-                    let performance_cursor = &mut self.performance_cursors[track_idx];
-                    while *performance_cursor < self.performance_events[track_idx].len() {
-                        let command = &self.performance_events[track_idx][*performance_cursor];
-                        if command.sample >= end {
-                            break;
-                        }
-                        if let Err(error) = self.renderers[track_idx].send_performance_at(
-                            command,
-                            command.sample.saturating_sub(pos) as u32,
-                            frames as u32,
-                        ) {
-                            self.render_error = Some(format!("Track {track_idx}: {error}"));
-                            return;
-                        }
-                        track_sounding_command(
-                            lane_sounding(&mut self.sounding, track_idx),
-                            command.channel,
-                            &command.message,
-                        );
-                        *performance_cursor += 1;
-                    }
-                    while *cursor < track_events.len() {
-                        let ev = &self.events[track_events[*cursor]];
-                        if ev.time_samples >= end {
-                            break;
-                        }
-                        if let Err(error) = self.renderers[track_idx]
-                            .send_score_at(&ev.event, ev.time_samples.saturating_sub(pos) as i32)
-                        {
-                            self.render_error = Some(format!("Track {track_idx}: {error}"));
-                            return;
-                        }
-                        track_sounding(lane_sounding(&mut self.sounding, track_idx), &ev.event);
-                        *cursor += 1;
-                    }
-                    self.renderers[track_idx].render_into(
-                        frames,
-                        self.sample_rate,
-                        transport,
-                        &mut self.source_outputs[track_idx],
-                    );
-                    track_audio.extend_from_slice(self.source_outputs[track_idx].main());
-                    accumulate_aux(
-                        &self.source_outputs[track_idx],
-                        &mut self.aux_delays[track_idx],
-                        &mut self.aux_buffers,
-                        self.source_tracks[track_idx],
-                        (pos - chunk_start) as usize * 2,
-                    );
-                    pos = end;
-                    continue;
-                }
-                let performance_cursor = &mut self.performance_cursors[track_idx];
-                while *performance_cursor < self.performance_events[track_idx].len() {
-                    let command = &self.performance_events[track_idx][*performance_cursor];
-                    if command.sample > pos {
-                        break;
-                    }
-                    if let Err(error) = self.renderers[track_idx].send_performance_at(command, 0, 1)
-                    {
-                        self.render_error = Some(format!("Track {track_idx}: {error}"));
-                        return;
-                    }
-                    track_sounding_command(
-                        lane_sounding(&mut self.sounding, track_idx),
-                        command.channel,
-                        &command.message,
-                    );
-                    *performance_cursor += 1;
-                }
-                // Send all events at or before current position
-                while *cursor < track_events.len() {
-                    let ev = &self.events[track_events[*cursor]];
-                    if ev.time_samples > pos {
-                        break;
-                    }
-                    if let Err(error) = self.renderers[track_idx].send(&ev.event) {
-                        self.render_error = Some(format!("Track {track_idx}: {error}"));
-                        return;
-                    }
-                    track_sounding(lane_sounding(&mut self.sounding, track_idx), &ev.event);
-                    *cursor += 1;
-                }
-
-                // Determine sub-chunk size: render up to next event or sub_chunk_size
-                let next_event_time = if *cursor < track_events.len() {
-                    self.events[track_events[*cursor]].time_samples
-                } else {
-                    source_end
-                };
-                let next_event_time = next_event_time.min(
-                    self.performance_events[track_idx]
-                        .get(*performance_cursor)
-                        .map_or(source_end, |event| event.sample),
-                );
-                let remaining = (source_end - pos) as usize;
-                let until_next = (next_event_time - pos) as usize;
-                let clock_limit = self
-                    .transport
-                    .as_ref()
-                    .unwrap()
-                    .at_sample(pos)
-                    .next_clock_change_sample()
-                    .map(|end| (end - pos) as usize)
-                    .unwrap_or(remaining);
-                let frames_to_render = sub_chunk_size
-                    .min(remaining)
-                    .min(until_next.max(1))
-                    .min(clock_limit.max(1));
-
-                let transport = self.transport.as_ref().unwrap().at_sample(pos);
-                self.renderers[track_idx].render_into(
-                    frames_to_render,
-                    self.sample_rate,
-                    transport,
-                    &mut self.source_outputs[track_idx],
-                );
-                track_audio.extend_from_slice(self.source_outputs[track_idx].main());
-                // Auxiliary outputs bypass the lane chain and the fader.
-                accumulate_aux(
-                    &self.source_outputs[track_idx],
-                    &mut self.aux_delays[track_idx],
-                    &mut self.aux_buffers,
-                    self.source_tracks[track_idx],
-                    (pos - chunk_start) as usize * 2,
-                );
-                pos += frames_to_render as u64;
-            }
-
-            track_audio.resize(actual_frames * 2, 0.0);
-            let drain_start = source_end.saturating_sub(chunk_start) as usize * 2;
-            for (&pair, delay) in self.source_outputs[track_idx]
-                .aux_pairs()
-                .iter()
-                .zip(&mut self.aux_delays[track_idx])
-            {
-                if !delay.is_empty()
-                    && let Some(bus) = self
-                        .aux_buffers
-                        .get_mut(&(self.source_tracks[track_idx], pair))
-                {
-                    for out in &mut bus[drain_start..] {
-                        delay.push_back(0.0);
-                        *out += delay.pop_front().unwrap();
-                    }
-                }
-            }
-            let transport = self.transport.as_ref().map(|t| t.at_sample(chunk_start));
-            if let Err(error) = self.source_chains[track_idx].try_process_with_context(
-                &mut track_audio,
-                AudioProcessContext {
-                    sample_rate: self.sample_rate,
-                    transport: transport.as_ref(),
-                    input: AudioProcessInput::Main,
-                },
-            ) {
-                self.render_error = Some(format!("Track {track_idx}: {error}"));
-                self.track_chunks = track_chunks;
-                self.lane_audio = track_audio;
-                return;
-            }
-            let delay = &mut self.source_delays[track_idx];
-            for (out, sample) in track_chunks[self.source_tracks[track_idx]]
-                .iter_mut()
-                .zip(track_audio.iter().copied())
-            {
-                if delay.is_empty() {
-                    *out += sample;
-                } else {
-                    delay.push_back(sample);
-                    *out += delay.pop_front().unwrap();
-                }
-            }
+        let lanes_ok =
+            self.render_lanes_into(&mut track_chunks, chunk_start, source_end, actual_frames);
+        if !lanes_ok {
+            self.track_chunks = track_chunks;
+            return;
         }
 
         if self.processing_failed() {
             self.processing_fault = true;
             self.track_chunks = track_chunks;
-            self.lane_audio = track_audio;
             return;
         }
 
@@ -2554,7 +2382,6 @@ impl RenderState {
         // Source inserts and summing precede the parent graph exactly as offline.
         self.mix_chunk_into(&mut track_chunks, actual_frames, mixed);
         self.track_chunks = track_chunks;
-        self.lane_audio = track_audio;
         if self.processing_failed() {
             self.processing_fault = true;
         }
@@ -2758,12 +2585,17 @@ impl RenderState {
             .transport
             .as_ref()
             .map(|t| t.at_sample(self.dsp_cursor));
-        if let Err(error) = graph.process_prepared(PreparedGraphBlock {
+        let block = PreparedGraphBlock {
             tracks: track_chunks,
             transport: transport.as_ref(),
             aux: &self.aux_buffers,
             output: mixed,
-        }) {
+        };
+        let processed = match self.block_workers.as_mut() {
+            Some(workers) => graph.process_prepared_with_workers(block, workers),
+            None => graph.process_prepared(block),
+        };
+        if let Err(error) = processed {
             self.render_error = Some(error.to_string());
             mixed.clear();
             return;
@@ -3179,34 +3011,6 @@ fn supported_aux_pairs(
     pairs
 }
 
-/// Add one rendered block's auxiliary pairs to the chunk buffers at `offset`.
-fn accumulate_aux(
-    output: &SourceOutput,
-    delays: &mut [VecDeque<f32>],
-    aux_buffers: &mut HashMap<(usize, usize), Vec<f32>>,
-    track: usize,
-    offset: usize,
-) {
-    for ((pair, aux), delay) in output.aux().zip(delays.iter_mut()) {
-        let Some(bus) = aux_buffers.get_mut(&(track, pair)) else {
-            continue;
-        };
-        let start = offset.min(bus.len());
-        let frames = aux.len().min(bus.len() - start);
-        let bus = &mut bus[start..start + frames];
-        if delay.is_empty() {
-            for (out, sample) in bus.iter_mut().zip(&aux[..frames]) {
-                *out += sample;
-            }
-        } else {
-            for (out, sample) in bus.iter_mut().zip(&aux[..frames]) {
-                delay.push_back(*sample);
-                *out += delay.pop_front().unwrap();
-            }
-        }
-    }
-}
-
 /// Instantiate the sources for pruned lanes. Runs on the source worker so a
 /// slow preset import never stalls the producer thread.
 fn build_lanes(
@@ -3363,6 +3167,7 @@ fn seek_or_fail(state: &mut RenderState, playback: &StreamingPlayback, frame: u6
 /// Drop all playable state after a load failure and publish the reason.
 fn fail_playback(state: &mut RenderState, playback: &StreamingPlayback, error: String) {
     let meter_hub = state.meter_hub.take();
+    let block_workers = state.block_workers.take();
     let instantiations = Arc::clone(&state.instrument_instantiations);
     let chain_latency = Arc::clone(&state.chain_latency_frames);
     chain_latency.store(0, Ordering::Release);
@@ -3370,6 +3175,7 @@ fn fail_playback(state: &mut RenderState, playback: &StreamingPlayback, error: S
     *state = RenderState::new(state.sample_rate);
     state.source_epoch = next_epoch;
     state.meter_hub = meter_hub;
+    state.block_workers = block_workers;
     state.instrument_instantiations = instantiations;
     state.chain_latency_frames = chain_latency;
     playback.active.store(false, Ordering::Release);
@@ -3442,6 +3248,25 @@ fn publish_chain_latency(cell: &AtomicU64, graph: &AudioGraph) {
     cell.store(latency, Ordering::Release);
 }
 
+/// Workers that share each block with the render thread. Each one adopts the
+/// render thread's plugin-bridge mode, because hosted instruments and inserts
+/// read it on whichever thread processes them. Without workers the render
+/// thread renders every lane and chain itself.
+fn spawn_block_workers() -> Option<oc_engine::block_workers::BlockWorkers> {
+    let parallelism = oc_engine::render_parallel::RenderWorkerOptions::default().workers();
+    if parallelism <= 1 {
+        return None;
+    }
+    oc_engine::block_workers::BlockWorkers::new(parallelism, "ocp-block", || {
+        #[cfg(target_os = "macos")]
+        std::mem::forget(oc_host::vst2_bridge::BridgeScope::enter(
+            oc_host::vst2_bridge::BridgeMode::Streaming,
+        ));
+    })
+    .map_err(|error| log::warn!("[render_thread] block workers unavailable: {error}"))
+    .ok()
+}
+
 /// Main render loop — runs on the background thread.
 fn render_loop(
     cmd_rx: Receiver<RenderCommand>,
@@ -3455,6 +3280,7 @@ fn render_loop(
     let _bridge_scope =
         oc_host::vst2_bridge::BridgeScope::enter(oc_host::vst2_bridge::BridgeMode::Streaming);
     let mut state = RenderState::new(sample_rate);
+    state.block_workers = spawn_block_workers();
     let mut chunk = Vec::with_capacity(CHUNK_FRAMES * 2);
     state.meter_hub = Some(Arc::clone(&playback.meters));
     state.instrument_instantiations = Arc::clone(&playback.instrument_instantiations);
@@ -4219,3 +4045,10 @@ mod source_lane_tests;
 #[cfg(test)]
 #[path = "render_thread/owned_touch_tests.rs"]
 mod owned_touch_tests;
+
+#[path = "render_thread/lane_render.rs"]
+mod lane_render;
+
+#[cfg(test)]
+#[path = "render_thread/stream_budget_tests.rs"]
+mod stream_budget_tests;
