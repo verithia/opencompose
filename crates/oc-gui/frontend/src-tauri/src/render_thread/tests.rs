@@ -2449,6 +2449,59 @@ fn two_track_project(tempo: f64) -> Project {
         .unwrap()
 }
 
+/// A playing stream with a stalled consumer queues half a second of audio and
+/// then waits: enough to ride out a chunk that renders slower than real time,
+/// and no more, so an edit is heard within that window.
+#[test]
+fn playback_queues_half_a_second_ahead_and_no_more() {
+    use super::*;
+    let rate = 48_000;
+    let lookahead = lookahead_frames(rate);
+    assert_eq!(lookahead, 24_000);
+    for rate in [8_000, 44_100, 96_000, 192_000] {
+        assert!(lookahead_frames(rate) * 1000 >= rate as usize * 500);
+        assert!(lookahead_frames(rate) >= FIRST_CHUNK_FRAMES + 2 * CHUNK_FRAMES);
+        assert!(ring_buffer_frames(rate) >= lookahead_frames(rate) + CHUNK_FRAMES);
+        // Every queued chunk keeps its meter frame until the device plays it.
+        assert!(max_pending_meters(rate) * CHUNK_FRAMES >= lookahead_frames(rate) + CHUNK_FRAMES);
+    }
+    let handle = RenderThreadHandle::spawn(rate);
+    handle.send(RenderCommand::ProjectChanged {
+        root: None,
+        project: Box::new(two_track_project(120.0)),
+        soundfont_path: PathBuf::new(),
+        warm: false,
+    });
+    handle
+        .wait_project_loaded(std::time::Duration::from_secs(5))
+        .unwrap();
+    handle.send(RenderCommand::Play {
+        start_frame: 0,
+        resume: false,
+        end_frame: None,
+    });
+    assert!(handle.wait_ready(std::time::Duration::from_secs(5)));
+    // No callback acks; the producer publishes after its bounded wait and
+    // stops once the next chunk would overfill the lookahead.
+    let started = std::time::Instant::now();
+    let mut queued = 0;
+    let mut stable_since = std::time::Instant::now();
+    while started.elapsed() < std::time::Duration::from_secs(10) {
+        let now = ring_slots(&handle) / 2;
+        if now != queued {
+            queued = now;
+            stable_since = std::time::Instant::now();
+        } else if queued > 0 && stable_since.elapsed() > std::time::Duration::from_millis(300) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(
+        queued > lookahead - CHUNK_FRAMES && queued <= lookahead,
+        "queued {queued} frames against a lookahead of {lookahead}"
+    );
+}
+
 #[test]
 fn warm_up_builds_sources_without_starting_playback() {
     use super::*;
@@ -2846,7 +2899,7 @@ fn unmuting_a_pruned_track_does_not_underrun_the_callback() {
         "steady playback underran before the unmute"
     );
 
-    // 1.5 s is well past the 250 ms lookahead: building this lane on the
+    // 1.5 s is well past the 500 ms lookahead: building this lane on the
     // producer would drain the ring long before the splice.
     handle.test_build_delay_ms.store(1500, Ordering::Release);
     let mut unmuted = project.clone();
@@ -5621,7 +5674,7 @@ fn prepared_streaming_blocks_and_meter_recycling_do_not_allocate_from_first_bloc
         assert_eq!(output, expected, "streaming block {block}");
         assert_eq!(
             state.free_meter_frames.len() + state.pending_meters.len(),
-            MAX_PENDING_METERS
+            max_pending_meters(48_000)
         );
         if block >= 20 {
             assert_eq!(

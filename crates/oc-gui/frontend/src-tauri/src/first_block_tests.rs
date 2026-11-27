@@ -690,10 +690,11 @@ fn run_path(
     samples
 }
 
-/// The streaming bound: a start computes at most the 250 ms lookahead window
-/// plus one chunk before its first block, which is four full 4096-frame chunks.
-/// A path that renders a range first shows the whole range here instead.
-const MAX_FRAMES_BEFORE_FIRST_BLOCK: u64 = 16_384;
+/// The streaming bound: a start computes at most the lookahead window plus one
+/// chunk before its first block. The harness runs at 48 kHz. A path that
+/// renders a range first shows the whole range here instead.
+const MAX_FRAMES_BEFORE_FIRST_BLOCK: u64 =
+    (crate::render_thread::lookahead_frames(48_000) + crate::render_thread::CHUNK_FRAMES) as u64;
 
 fn assert_streams(path: &str, samples: &Samples) {
     for snapshot in &samples.0 {

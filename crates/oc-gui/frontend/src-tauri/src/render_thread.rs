@@ -43,11 +43,38 @@ pub const CHUNK_FRAMES: usize = 4096;
 /// The first chunk of a playback generation is short so sound starts sooner.
 pub const FIRST_CHUNK_FRAMES: usize = 1024;
 
-/// Ring buffer capacity in frames. ~2 seconds of capacity, not a fill target.
+/// Smallest ring buffer capacity in frames, ~2 s at 44.1 kHz. The ring is
+/// capacity, not a fill target: the lookahead bounds how much of it is used.
 const RING_BUFFER_FRAMES: usize = 88200;
 
-/// Queued audio never exceeds this; a mixer edit is heard within one window.
-pub const LOOKAHEAD_FRAMES: usize = 12000;
+/// Audio the producer keeps queued ahead of the device, in milliseconds.
+///
+/// A chunk's render time is set by its longest chain of dependent plugins, so
+/// one plugin that stalls, or a dense passage, can hold a chunk past its own
+/// duration; the queue plays on meanwhile. Half a second rides out a stall
+/// several chunks long. A mixer edit is heard after the queued audio, so this
+/// is also the bound on how late an edit sounds.
+const LOOKAHEAD_MS: usize = 500;
+
+/// Fewest frames the lookahead holds at any rate: the opening chunk and two
+/// steady chunks, so a low rate still queues whole chunks.
+const MIN_LOOKAHEAD_FRAMES: usize = 12_000;
+
+/// Frames the producer keeps queued at `sample_rate`.
+pub const fn lookahead_frames(sample_rate: u32) -> usize {
+    let frames = (sample_rate as usize * LOOKAHEAD_MS).div_ceil(1000);
+    if frames > MIN_LOOKAHEAD_FRAMES {
+        frames
+    } else {
+        MIN_LOOKAHEAD_FRAMES
+    }
+}
+
+/// Ring capacity at `sample_rate`: the full lookahead plus the chunk that
+/// opens a wrapped loop pass, which may be queued past it.
+fn ring_buffer_frames(sample_rate: u32) -> usize {
+    RING_BUFFER_FRAMES.max(lookahead_frames(sample_rate) + CHUNK_FRAMES)
+}
 
 /// Bound on waiting for the callback to acknowledge a seek generation.
 const ACK_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250);
@@ -113,9 +140,13 @@ fn track_sounding_command(
     }
 }
 
-/// Meter frames the producer may hold for the device; the lookahead bounds
-/// the real number at a handful.
-const MAX_PENDING_METERS: usize = 16;
+/// Meter frames the producer may hold for the device: one per queued chunk,
+/// which the lookahead bounds, plus the opening and seam chunks. Short loop
+/// passes queue shorter chunks, so the pool never drops below a floor.
+const fn max_pending_meters(sample_rate: u32) -> usize {
+    let queued = lookahead_frames(sample_rate).div_ceil(CHUNK_FRAMES) + 2;
+    if queued > 16 { queued } else { 16 }
+}
 
 /// Callback buffers of presentation delay between handing audio to the device
 /// and hearing it. A device callback fills the buffer that plays one period
@@ -782,7 +813,7 @@ impl RenderThreadHandle {
         let (build_tx, build_rx) = std::sync::mpsc::channel();
 
         // Create ring buffer (stereo interleaved, so capacity * 2 floats)
-        let (producer, consumer) = rtrb::RingBuffer::new(RING_BUFFER_FRAMES * 2);
+        let (producer, consumer) = rtrb::RingBuffer::new(ring_buffer_frames(sample_rate) * 2);
 
         let playback = Arc::new(StreamingPlayback {
             midi_cc,
@@ -1224,7 +1255,7 @@ impl RenderState {
             block_workers: None,
             dsp_block: Vec::with_capacity(CHUNK_FRAMES * 2),
             preroll_buffer: Vec::with_capacity(CHUNK_FRAMES * 2),
-            free_meter_frames: Vec::with_capacity(MAX_PENDING_METERS),
+            free_meter_frames: Vec::with_capacity(max_pending_meters(sample_rate)),
             aux_buffers: HashMap::new(),
             aux_delays: Vec::new(),
             warned_aux: HashSet::new(),
@@ -1243,7 +1274,7 @@ impl RenderState {
             render_cursor: 0,
             dsp_cursor: 0,
             rendered_ahead: std::collections::VecDeque::with_capacity(
-                (LOOKAHEAD_FRAMES + CHUNK_FRAMES) * 2,
+                (lookahead_frames(sample_rate) + CHUNK_FRAMES) * 2,
             ),
             total_frames: 0,
             drain_frames: 0,
@@ -1278,7 +1309,9 @@ impl RenderState {
             click_settings: ClickSettings::default(),
             count_in: None,
             armed_count_in: None,
-            pending_meters: std::collections::VecDeque::with_capacity(MAX_PENDING_METERS),
+            pending_meters: std::collections::VecDeque::with_capacity(max_pending_meters(
+                sample_rate,
+            )),
             spectrum_target: None,
             pending_sources: Vec::new(),
             source_epoch: 0,
@@ -1944,7 +1977,7 @@ impl RenderState {
         if self.meter_hub.is_some()
             && let Some(graph) = &self.graph
         {
-            for _ in 0..MAX_PENDING_METERS {
+            for _ in 0..max_pending_meters(self.sample_rate) {
                 self.free_meter_frames.push(MeterHub::capture(
                     graph,
                     &[],
@@ -3232,13 +3265,7 @@ fn fold_to_mono(buffer: &mut [f32]) {
 
 /// Sample peak of an interleaved stereo buffer; non-finite samples are ignored.
 fn peak_of(buffer: &[f32]) -> f32 {
-    let mut peak = 0.0f32;
-    for sample in buffer {
-        if sample.is_finite() {
-            peak = peak.max(sample.abs());
-        }
-    }
-    peak.min(16.0)
+    crate::meters::finite_peak(buffer).min(16.0)
 }
 
 /// Publish the latency of the live pre-master and master chains.
@@ -3281,6 +3308,8 @@ fn render_loop(
         oc_host::vst2_bridge::BridgeScope::enter(oc_host::vst2_bridge::BridgeMode::Streaming);
     let mut state = RenderState::new(sample_rate);
     state.block_workers = spawn_block_workers();
+    let lookahead = lookahead_frames(sample_rate);
+    let ring_frames = producer.buffer().capacity() / 2;
     let mut chunk = Vec::with_capacity(CHUNK_FRAMES * 2);
     state.meter_hub = Some(Arc::clone(&playback.meters));
     state.instrument_instantiations = Arc::clone(&playback.instrument_instantiations);
@@ -3819,9 +3848,9 @@ fn render_loop(
             let queued = if warm_stage {
                 state.rendered_ahead.len() / 2
             } else {
-                RING_BUFFER_FRAMES
+                ring_frames
                     .saturating_sub(producer.slots() / 2)
-                    .min(LOOKAHEAD_FRAMES)
+                    .min(lookahead)
             };
             let remaining = if warm_stage {
                 state.playback_end().saturating_sub(state.dsp_cursor)
@@ -3829,7 +3858,7 @@ fn render_loop(
                 state.playback_end().saturating_sub(state.render_cursor)
             } as usize;
             let mut frames = CHUNK_FRAMES
-                .min(LOOKAHEAD_FRAMES.saturating_sub(queued))
+                .min(lookahead.saturating_sub(queued))
                 .min(remaining);
             // Warm only up to the loop end, so the first press does not hear
             // audio the loop would never play.
@@ -3962,7 +3991,7 @@ fn render_loop(
 
             // Keep a bounded lookahead: the ring is capacity, not a fill target,
             // so a mixer edit is heard within one window instead of two seconds.
-            let queued_samples = RING_BUFFER_FRAMES * 2 - producer.slots();
+            let queued_samples = ring_frames * 2 - producer.slots();
             let first = !playback.ready.load(Ordering::Acquire);
             let mut frames = if first {
                 FIRST_CHUNK_FRAMES
@@ -3985,7 +4014,7 @@ fn render_loop(
             // the lookahead is full: the pass behind the seam is what keeps the
             // callback fed until this chunk is ready.
             let seam_head = state.loop_seam_fade > 0;
-            if (seam_head || queued_samples + chunk_stereo_samples <= LOOKAHEAD_FRAMES * 2)
+            if (seam_head || queued_samples + chunk_stereo_samples <= lookahead * 2)
                 && producer.slots() >= chunk_stereo_samples
             {
                 state.render_chunk_into(frames, &mut chunk);

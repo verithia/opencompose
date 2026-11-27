@@ -10,7 +10,7 @@ use tauri::State;
 
 use crate::first_block::{FIRST_BLOCK_BUDGET_MS, FirstBlockSnapshot};
 use crate::gui_settings::{self, GuiSettings};
-use crate::render_thread::{CHUNK_FRAMES, FIRST_CHUNK_FRAMES, LOOKAHEAD_FRAMES};
+use crate::render_thread::{CHUNK_FRAMES, FIRST_CHUNK_FRAMES, lookahead_frames};
 use crate::state::AppState;
 
 /// Versions read from the build and the DSL crate, never written here.
@@ -75,7 +75,7 @@ fn facts(state: &AppState, settings: &GuiSettings) -> PerformanceFacts {
         render_threads: settings.render_threads,
         parallel_tracks: settings.parallel_tracks,
         effective_workers: settings.effective_workers(),
-        lookahead_frames: LOOKAHEAD_FRAMES,
+        lookahead_frames: lookahead_frames(sample_rate),
         first_chunk_frames: FIRST_CHUNK_FRAMES,
         block_frames: CHUNK_FRAMES,
         sample_rate,
