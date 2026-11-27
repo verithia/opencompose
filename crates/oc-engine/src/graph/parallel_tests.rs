@@ -634,3 +634,24 @@ fn graphs_the_schedule_cannot_order_leave_their_sources_untouched() {
     }));
     assert!(tracks.iter().flatten().all(|sample| *sample == 0.0));
 }
+
+/// A project without tracks still runs its block: the master chain and
+/// fader process the block's silence.
+#[test]
+fn a_project_without_tracks_schedules_an_empty_block() {
+    let mut workers = BlockWorkers::new(4, "ocp-test-block", || {}).expect("workers");
+    let project = oc_dsl::parse(
+        "@project\n@bus b0\n  routes: [master]\n@master\n  effects:\n    - gain: factor=0.5\n",
+    )
+    .unwrap();
+    let mut graph = AudioGraph::from_project(&project, RATE);
+    graph.prepare(MAX_FRAMES).unwrap();
+    graph.set_block_sources(Some(&[]));
+    let sources = ToneSources::new(Vec::new(), 0);
+    let mut output = vec![f32::NAN; 2048];
+    let scheduled = graph
+        .process_prepared_with_sources(&mut [], None, &mut output, &mut workers, &sources)
+        .unwrap();
+    assert!(scheduled);
+    assert!(output.iter().all(|sample| *sample == 0.0));
+}

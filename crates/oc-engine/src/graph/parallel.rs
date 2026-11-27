@@ -974,7 +974,15 @@ impl AudioGraph {
             macros.latch();
         }
         self.set_streaming_idle_gate(true);
-        self.mix_flow(plan, tracks, transport, workers, sources, &mut prepared);
+        self.mix_flow(
+            plan,
+            tracks,
+            output.len(),
+            transport,
+            workers,
+            sources,
+            &mut prepared,
+        );
         plan.unbind();
         prepared.parallel = Some(parallel);
         let mut master = std::mem::take(&mut prepared.master);
@@ -992,12 +1000,12 @@ impl AudioGraph {
         &mut self,
         plan: &mut BusPlan,
         tracks: &mut [Vec<f32>],
+        samples: usize,
         transport: Option<&PluginTransport>,
         workers: &mut BlockWorkers,
         sources: &dyn BlockSources,
         prepared: &mut PreparedGraph,
     ) {
-        let samples = tracks.first().map_or(0, Vec::len);
         let frames = samples / 2;
         let ramp_frames = gain_ramp::ramp_frames(self.sample_rate);
         let send_start = transport.map_or(self.send_cursor, |t| t.sample_pos);
