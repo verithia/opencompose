@@ -253,6 +253,16 @@ impl<T> Table<T> {
     }
 }
 
+/// What the caller hands one scheduled block.
+struct FlowInput<'a> {
+    tracks: &'a mut [Vec<f32>],
+    /// Interleaved samples in the block, which a graph without tracks cannot
+    /// read from a track buffer.
+    samples: usize,
+    transport: Option<&'a PluginTransport>,
+    sources: &'a dyn BlockSources,
+}
+
 /// Track state shared by one block's track and bus jobs.
 struct FlowBlock<'a> {
     sources: &'a dyn BlockSources,
@@ -976,11 +986,13 @@ impl AudioGraph {
         self.set_streaming_idle_gate(true);
         self.mix_flow(
             plan,
-            tracks,
-            output.len(),
-            transport,
+            FlowInput {
+                tracks,
+                samples: output.len(),
+                transport,
+                sources,
+            },
             workers,
-            sources,
             &mut prepared,
         );
         plan.unbind();
@@ -999,13 +1011,16 @@ impl AudioGraph {
     fn mix_flow(
         &mut self,
         plan: &mut BusPlan,
-        tracks: &mut [Vec<f32>],
-        samples: usize,
-        transport: Option<&PluginTransport>,
+        input: FlowInput<'_>,
         workers: &mut BlockWorkers,
-        sources: &dyn BlockSources,
         prepared: &mut PreparedGraph,
     ) {
+        let FlowInput {
+            tracks,
+            samples,
+            transport,
+            sources,
+        } = input;
         let frames = samples / 2;
         let ramp_frames = gain_ramp::ramp_frames(self.sample_rate);
         let send_start = transport.map_or(self.send_cursor, |t| t.sample_pos);
