@@ -61,7 +61,12 @@ even when nothing structural changed.
 - Solo resolves to an effective mute in the graph, at build time and when
   patched, so streaming and offline agree.
 - **Short first chunk.** The first chunk of a playback generation is 1024
-  frames (`FIRST_CHUNK_FRAMES`), then steady state is 4096. The producer keeps
+  frames (`FIRST_CHUNK_FRAMES`). The next chunks are 2048, 2048, then the
+  steady 4096 (`next_chunk_frames`): each is at most twice the audio rendered
+  before it, so it renders before the device plays out the chunks ahead of it,
+  where a full chunk right behind the opening one would still be rendering
+  when those 1024 frames ran out. The ramp ends where the first full chunk
+  would, so every start splits the timeline the same way. The producer keeps
   at most 500 ms queued (`lookahead_frames`, 24 000 frames at 48 kHz), so a
   mixer edit is audible within one lookahead window instead of up to 2 s, and a
   plugin that stalls for a few chunks plays out of the queue instead of

@@ -6310,3 +6310,31 @@ fn lanes_scheduled_with_the_graph_stream_the_same_audio_as_one_thread() {
     assert_eq!(serial_peaks, parallel_peaks);
     std::fs::remove_dir_all(root).unwrap();
 }
+
+/// After the opening chunk, chunks double up to full size: each is at most
+/// twice the audio rendered before it, and they land on the grid full chunks
+/// would use, so every start splits the timeline the same way.
+#[test]
+fn chunks_grow_from_the_opening_chunk_onto_the_full_chunk_grid() {
+    let mut rendered = 0;
+    let mut sizes = Vec::new();
+    while rendered < 6 * CHUNK_FRAMES {
+        let frames = next_chunk_frames(rendered);
+        assert!(frames <= (rendered * 2).max(FIRST_CHUNK_FRAMES));
+        sizes.push(frames);
+        rendered += frames;
+    }
+    assert_eq!(
+        sizes[..5],
+        [FIRST_CHUNK_FRAMES, 2048, 2048, CHUNK_FRAMES, CHUNK_FRAMES]
+    );
+    assert!(sizes[3..].iter().all(|frames| *frames == CHUNK_FRAMES));
+    // The ramp ends where a full chunk after the opening chunk would.
+    assert_eq!(
+        sizes[..3].iter().sum::<usize>(),
+        FIRST_CHUNK_FRAMES + CHUNK_FRAMES
+    );
+    // Past the ramp chunks are full, wherever a loop or region end cut one
+    // short.
+    assert_eq!(next_chunk_frames(16_000), CHUNK_FRAMES);
+}

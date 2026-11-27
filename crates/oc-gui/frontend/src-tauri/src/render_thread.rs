@@ -43,6 +43,33 @@ pub const CHUNK_FRAMES: usize = 4096;
 /// The first chunk of a playback generation is short so sound starts sooner.
 pub const FIRST_CHUNK_FRAMES: usize = 1024;
 
+/// Frames of the next chunk after `rendered` frames of this playback
+/// generation.
+///
+/// The opening chunk is short so sound starts sooner, but the device plays it
+/// out in a few milliseconds; a full chunk right behind it would still be
+/// rendering when it ran out. Each later chunk is therefore at most twice the
+/// audio rendered before it, which keeps a chunk renderable before the queue
+/// ahead of it plays out while the render runs at least twice as fast as real
+/// time. Sizes double from the opening chunk to [`CHUNK_FRAMES`] in powers of
+/// two that end where the first full chunk would, so the ramp changes only
+/// where the first few chunks end, and every generation splits the timeline
+/// the same way whatever the device has consumed.
+pub const fn next_chunk_frames(rendered: usize) -> usize {
+    let mut frames = FIRST_CHUNK_FRAMES;
+    if rendered < FIRST_CHUNK_FRAMES {
+        return frames;
+    }
+    if rendered >= FIRST_CHUNK_FRAMES + CHUNK_FRAMES {
+        return CHUNK_FRAMES;
+    }
+    let to_grid = FIRST_CHUNK_FRAMES + CHUNK_FRAMES - rendered;
+    while frames < CHUNK_FRAMES && frames <= rendered && to_grid.is_multiple_of(frames * 2) {
+        frames *= 2;
+    }
+    frames
+}
+
 /// Smallest ring buffer capacity in frames, ~2 s at 44.1 kHz. The ring is
 /// capacity, not a fill target: the lookahead bounds how much of it is used.
 const RING_BUFFER_FRAMES: usize = 88200;
@@ -3383,6 +3410,9 @@ fn render_loop(
     state.preset_macros = playback.preset_macros.clone();
     // Reset whenever a seek generation has not been acknowledged for this long.
     let mut ack_wait_started: Option<std::time::Instant> = None;
+    // Seek generation and cursor where this loop opened playback, so chunk
+    // sizes ramp from the opening chunk.
+    let mut chunk_origin: Option<(u64, u64)> = None;
     // Loop generation already applied; a newer one invalidates the queued pass.
     let mut loop_generation = playback.loop_generation.load(Ordering::Acquire);
     #[cfg(test)]
@@ -4052,11 +4082,16 @@ fn render_loop(
             // Keep a bounded lookahead: the ring is capacity, not a fill target,
             // so a mixer edit is heard within one window instead of two seconds.
             let queued_samples = ring_frames * 2 - producer.slots();
-            let first = !playback.ready.load(Ordering::Acquire);
-            let mut frames = if first {
-                FIRST_CHUNK_FRAMES
-            } else {
-                CHUNK_FRAMES
+            let generation = playback.seek_generation.load(Ordering::Acquire);
+            if !playback.ready.load(Ordering::Acquire) {
+                chunk_origin = Some((generation, state.render_cursor));
+            }
+            // A generation this loop did not open (a warm ring) starts full.
+            let mut frames = match chunk_origin {
+                Some((opened, origin)) if opened == generation => {
+                    next_chunk_frames(state.render_cursor.saturating_sub(origin) as usize)
+                }
+                _ => CHUNK_FRAMES,
             };
             // A chunk that crosses the region end is shortened, so no audio
             // past the loop point is ever rendered or queued.
