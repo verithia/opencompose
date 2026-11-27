@@ -269,6 +269,20 @@ impl<'a, T> DisjointSlice<'a, T> {
         // SAFETY: the index is in bounds and the caller guarantees exclusivity.
         unsafe { &mut *self.base.add(index) }
     }
+
+    /// Read element `index`, which several jobs may do at once.
+    ///
+    /// # Safety
+    /// No mutable reference to element `index` may be live, and none may be
+    /// created while the returned reference is.
+    pub unsafe fn get_ref(&self, index: usize) -> &T
+    where
+        T: Sync,
+    {
+        assert!(index < self.len, "disjoint slice index out of range");
+        // SAFETY: the index is in bounds and the caller excludes writers.
+        unsafe { &*self.base.add(index) }
+    }
 }
 
 #[cfg(test)]

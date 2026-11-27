@@ -1121,6 +1121,10 @@ struct RenderState {
     lane_costs: Vec<u64>,
     /// Lanes in the order the next block dispatches them.
     lane_order: Vec<usize>,
+    /// Lanes, clips and returns by track for a block the graph schedules.
+    track_sources: lane_render::TrackSources,
+    /// First clip failure of each track in a scheduled block.
+    clip_errors: Vec<Option<String>>,
     /// Persistent workers for lanes and graph chains; none renders serially.
     block_workers: Option<oc_engine::block_workers::BlockWorkers>,
     dsp_block: Vec<f32>,
@@ -1252,6 +1256,8 @@ impl RenderState {
             lane_errors: Vec::new(),
             lane_costs: Vec::new(),
             lane_order: Vec::new(),
+            track_sources: lane_render::TrackSources::default(),
+            clip_errors: Vec::new(),
             block_workers: None,
             dsp_block: Vec::with_capacity(CHUNK_FRAMES * 2),
             preroll_buffer: Vec::with_capacity(CHUNK_FRAMES * 2),
@@ -1947,6 +1953,8 @@ impl RenderState {
             graph
                 .prepare(CHUNK_FRAMES)
                 .map_err(|error| error.to_string())?;
+            // Lanes join the graph's block schedule where it can order them.
+            graph.set_block_sources(Some(&self.source_tracks));
         }
         for chain in &mut self.source_chains {
             chain
@@ -2392,29 +2400,54 @@ impl RenderState {
             buffer.resize(actual_frames * 2, 0.0);
         }
 
-        let lanes_ok =
-            self.render_lanes_into(&mut track_chunks, chunk_start, source_end, actual_frames);
-        if !lanes_ok {
-            self.track_chunks = track_chunks;
-            return;
-        }
+        match self.render_scheduled_block(
+            &mut track_chunks,
+            chunk_start,
+            source_end,
+            actual_frames,
+            mixed,
+        ) {
+            Some(true) => {
+                self.finish_scheduled_mix(&track_chunks, mixed);
+                self.track_chunks = track_chunks;
+            }
+            Some(false) => {
+                self.track_chunks = track_chunks;
+                mixed.clear();
+                return;
+            }
+            None => {
+                let lanes_ok = self.render_lanes_into(
+                    &mut track_chunks,
+                    chunk_start,
+                    source_end,
+                    actual_frames,
+                );
+                if !lanes_ok {
+                    self.track_chunks = track_chunks;
+                    return;
+                }
 
-        if self.processing_failed() {
-            self.processing_fault = true;
-            self.track_chunks = track_chunks;
-            return;
-        }
+                if self.processing_failed() {
+                    self.processing_fault = true;
+                    self.track_chunks = track_chunks;
+                    return;
+                }
 
-        // Clip lanes sit alongside the instrument sources: same track buffer,
-        // before track effects and routing. The worker can read spooled clips.
-        if let Err(error) = self.clip_lanes.mix_into(chunk_start, &mut track_chunks) {
-            self.render_error = Some(error);
-            return;
-        }
+                // Clip lanes sit alongside the instrument sources: same track
+                // buffer, before track effects and routing. The worker can
+                // read spooled clips.
+                if let Err(error) = self.clip_lanes.mix_into(chunk_start, &mut track_chunks) {
+                    self.render_error = Some(error);
+                    return;
+                }
 
-        // Source inserts and summing precede the parent graph exactly as offline.
-        self.mix_chunk_into(&mut track_chunks, actual_frames, mixed);
-        self.track_chunks = track_chunks;
+                // Source inserts and summing precede the parent graph exactly
+                // as offline.
+                self.mix_chunk_into(&mut track_chunks, actual_frames, mixed);
+                self.track_chunks = track_chunks;
+            }
+        }
         if self.processing_failed() {
             self.processing_fault = true;
         }
@@ -2466,6 +2499,25 @@ impl RenderState {
             return;
         }
         self.mix_tracks_into(track_chunks, frames, mixed);
+        if self.processing_failed() {
+            self.processing_fault = true;
+            mixed.clear();
+            return;
+        }
+        if self.render_error.is_none() && !self.processing_fault {
+            self.mix_click(mixed, self.dsp_cursor);
+        }
+    }
+
+    /// Finish a block the graph scheduled with its lanes: the same checks,
+    /// monitor and meter capture, and click as a staged block.
+    fn finish_scheduled_mix(&mut self, track_chunks: &[Vec<f32>], mixed: &mut Vec<f32>) {
+        if self.processing_failed() {
+            self.processing_fault = true;
+            mixed.clear();
+            return;
+        }
+        self.finish_mix(track_chunks, mixed);
         if self.processing_failed() {
             self.processing_fault = true;
             mixed.clear();
@@ -2633,7 +2685,15 @@ impl RenderState {
             mixed.clear();
             return;
         }
+        self.finish_mix(track_chunks, mixed);
+    }
 
+    /// Monitor, mono fold and meter capture after the graph has mixed a
+    /// block into `mixed`.
+    fn finish_mix(&mut self, track_chunks: &[Vec<f32>], mixed: &mut Vec<f32>) {
+        let Some(graph) = self.graph.as_ref() else {
+            return;
+        };
         if graph.processing_failed() {
             self.processing_fault = true;
             mixed.clear();

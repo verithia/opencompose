@@ -68,6 +68,7 @@ fn plain_graph(chain: EffectChain) -> AudioGraph {
         control_runtimes: Vec::new(),
         control_gains: vec![None],
         control_only: Vec::new(),
+        block_sources: None,
         key_plan: KeyPlan::default(),
         live_controls: None,
         preset_macros: None,

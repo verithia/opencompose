@@ -39,7 +39,7 @@ use process_boundary::ProcessBoundary;
 pub use stem_selection::StemCaptureSelection;
 #[cfg(test)]
 mod prepared_tests;
-pub use parallel::ParallelShape;
+pub use parallel::{BlockSources, ParallelShape};
 pub use prepared::{PreparationError, PreparedGraphBlock};
 use prepared::{PreparedGraph, SignalLookup};
 #[cfg(test)]
@@ -162,6 +162,9 @@ pub struct AudioGraph {
     control_gains: Vec<Option<control_source::GainRide>>,
     /// Tracks that feed a control source but must not reach the mix themselves.
     control_only: Vec<bool>,
+    /// Track fed by each block source, when a caller renders its sources
+    /// inside the graph block; see [`BlockSources`].
+    block_sources: Option<Vec<usize>>,
     /// A control source was refreshed by the track-FX pass for this block.
     control_fresh: Vec<bool>,
     /// Track key routing derived once at build time.
@@ -2316,6 +2319,7 @@ impl AudioGraph {
             control_runtimes,
             control_gains,
             control_only: Vec::new(),
+            block_sources: None,
             control_fresh: vec![false; control_runtime_count],
             key_plan,
             live_controls,
@@ -3466,20 +3470,33 @@ impl AudioGraph {
         }
 
         drop(bus_stage);
+        self.finish_master(&mut master_buf, prepared, transport, ramp_frames, stems);
+        prepared.master = master_buf;
+    }
+
+    /// Run the master chain and fader over the summed master input.
+    fn finish_master(
+        &mut self,
+        master_buf: &mut [f32],
+        prepared: &PreparedGraph,
+        transport: Option<&PluginTransport>,
+        ramp_frames: u32,
+        stems: Option<&mut StemCapture>,
+    ) {
         // Apply master effects
         let master_stage = crate::stage_log::stage("master chain");
         if let Some(capture) =
             stems.filter(|capture| capture.capture_master_inputs || capture.selection.pre_master)
         {
-            capture.pre_master = master_buf.clone();
+            capture.pre_master = master_buf.to_vec();
         }
         if self.spectrum_target.as_ref() == Some(&SpectrumTarget::Master)
             && let Some(analyser) = &mut self.spectrum
         {
-            analyser.push_interleaved(&master_buf);
+            analyser.push_interleaved(master_buf);
         }
         self.master_chain.process_with_lookup(
-            &mut master_buf,
+            master_buf,
             &prepared.taps,
             &prepared.controls,
             self.sample_rate,
@@ -3489,14 +3506,12 @@ impl AudioGraph {
         self.ramps.master.set_target(target, ramp_frames);
         if self.ramps.master.is_settled() {
             if target != 1.0 {
-                simd::apply_uniform_gain(&mut master_buf, target);
+                simd::apply_uniform_gain(master_buf, target);
             }
         } else {
-            self.ramps.master.apply(&mut master_buf);
+            self.ramps.master.apply(master_buf);
         }
         drop(master_stage);
-
-        prepared.master = master_buf;
     }
 
     /// Apply a bus return fader and report whether the return still reaches its

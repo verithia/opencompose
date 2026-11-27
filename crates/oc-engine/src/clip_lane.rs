@@ -124,6 +124,11 @@ impl ClipLane {
         self.frames
     }
 
+    /// Project track index whose buffer receives this clip.
+    pub fn track(&self) -> usize {
+        self.track
+    }
+
     /// Add the clip's contribution to a chunk starting at `chunk_start`.
     ///
     /// The destination is interleaved stereo. Disk-backed variants are read

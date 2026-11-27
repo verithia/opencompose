@@ -6178,3 +6178,135 @@ fn block_workers_stream_the_same_audio_as_one_thread() {
         assert!(same, "chunk {index}");
     }
 }
+
+/// Lanes scheduled inside the graph block stream exactly the audio and meter
+/// inputs of one thread: each track mixes its lanes and clips in order, and
+/// each bus gathers its sends in serial routing order.
+#[test]
+fn lanes_scheduled_with_the_graph_stream_the_same_audio_as_one_thread() {
+    let root = clip_temp_dir("scheduled-lanes");
+    clip_media(&root);
+    let project = oc_dsl::parse(
+        r#"@project "Scheduled"
+  tempo: 124
+@preset thump
+  source: builtin
+  plugin: "builtin.open_synth"
+  params: {synth_version: 2, osc.a.waveform: 0, amp.attack: 0s, amp.decay: 0.12s, amp.sustain: 0, amp.release: 0.05s, output.gain: 0.5}
+@preset saw
+  source: builtin
+  plugin: "builtin.open_synth"
+  params: {synth_version: 2, osc.a.waveform: 1, filter.cutoff: 2400Hz, amp.release: 0.2s, output.gain: 0.3}
+@audio_clip hit [1:3 - 3:1] | track: tape
+  file: "clip.wav"
+  gain: -6dB
+@track kick | instrument: synth/virtual_analog, preset: thump
+  mix: output=drums, send(space=20%, pre)
+  @phrase beat [1:1:0 - 4:1:0]
+    C1 q ff
+    rest q
+    C1 q ff
+    C1 q ff
+    |
+    C1 h ff
+    C1 h ff
+@track bass | instrument: synth/virtual_analog, preset: saw
+  effects:
+    - gain: factor=0.7
+  mix: output=music, polarity=invert, vol=-3dB, pan=-0.4
+  @phrase line [1:1:0 - 4:1:0]
+    C2 q f
+    E2 q f
+    G2 q f
+    C3 q f
+    |
+    A1 w f
+@track lead | instrument: synth/virtual_analog, preset: saw
+  mix: send(space=30%), pan=0.5
+  @phrase motif [1:1:0 - 4:1:0]
+    C4 8th f
+    D4 8th f
+    E4 8th f
+    G4 8th f
+    A4 h f
+    |
+    E4 w mf
+@track tape | instrument: audio/clip
+  mix: output=music
+@bus drums
+  routes: [glue]
+  effects:
+    - gain: factor=0.8
+@bus music
+  routes: [glue]
+  effects:
+    - compression: threshold=-20dB, ratio=3:1, attack=5ms, release=80ms, sidechain=kick
+@bus space
+  routes: [glue, master]
+  effects:
+    - gain: factor=0.5
+@bus glue
+  routes: [master]
+  effects:
+    - gain: factor=0.9
+"#,
+    )
+    .unwrap();
+    let project = oc_engine::block_source::prepare_project(&project, Some(&root)).unwrap();
+    let render = |workers: Option<oc_engine::block_workers::BlockWorkers>| {
+        let mut state = RenderState::new(48_000);
+        state.meter_hub = Some(Arc::new(MeterHub::new()));
+        state.block_workers = workers;
+        state.root = Some(root.clone());
+        state.load_project(&project, PathBuf::new()).unwrap();
+        state.prepare_streaming().unwrap();
+        let scheduled = state
+            .graph
+            .as_ref()
+            .unwrap()
+            .parallel_shape()
+            .scheduled_sources;
+        state.seek_to(0).unwrap();
+        state.start_playing();
+        let mut chunks = Vec::new();
+        let mut peaks = Vec::new();
+        let mut frames = FIRST_CHUNK_FRAMES;
+        while chunks.len() < 40 {
+            let mut chunk = Vec::with_capacity(CHUNK_FRAMES * 2);
+            let operations =
+                crate::test_alloc::operations(|| state.render_chunk_into(frames, &mut chunk));
+            assert!(state.render_error.is_none(), "{:?}", state.render_error);
+            if chunk.is_empty() {
+                break;
+            }
+            // Past the first blocks, which grow the meter queue, a block
+            // neither allocates nor frees.
+            if chunks.len() >= 4 {
+                assert_eq!(operations, 0, "block {}", chunks.len());
+            }
+            chunks.push(chunk);
+            peaks.push(state.meter_input_peaks.clone());
+            frames = CHUNK_FRAMES;
+        }
+        (scheduled, state.renderers.len(), chunks, peaks)
+    };
+    let (_, _, serial, serial_peaks) = render(None);
+    let workers = oc_engine::block_workers::BlockWorkers::new(4, "ocp-test-block", || {}).unwrap();
+    let (scheduled, lanes, parallel, parallel_peaks) = render(Some(workers));
+    assert!(lanes >= 3);
+    assert_eq!(scheduled, lanes, "every lane joins the graph's schedule");
+    assert!(serial.len() >= 20);
+    assert!(serial.iter().flatten().any(|sample| sample.abs() > 1e-3));
+    assert_eq!(serial.len(), parallel.len());
+    for (index, (serial, parallel)) in serial.iter().zip(&parallel).enumerate() {
+        let same = serial.len() == parallel.len()
+            && serial
+                .iter()
+                .zip(parallel)
+                .all(|(a, b)| a.to_bits() == b.to_bits());
+        assert!(same, "chunk {index}");
+    }
+    assert!(serial_peaks.iter().flatten().any(|peak| *peak > 0.0));
+    assert_eq!(serial_peaks, parallel_peaks);
+    std::fs::remove_dir_all(root).unwrap();
+}

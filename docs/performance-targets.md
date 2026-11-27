@@ -326,17 +326,24 @@ headroom for the interface, other applications and plugin spikes, and the first
 chunk after Play is ready within 100 ms.
 
 A chunk runs on persistent block workers, one per core, that live as long as
-the render thread and park when the transport stops:
+the render thread and park when the transport stops. Source lanes, tracks and
+buses are the nodes of one dependency graph:
 
-- every source lane renders into buffers it owns, longest lane first by its
-  previous cost, and the render thread sums the lanes in lane order;
-- track chains that read no key or control signal run side by side;
-- a bus starts as soon as the buses that route into it, and the buses whose key
-  or control it reads, have finished. Among the ready buses a worker takes the
-  one that heads the costliest remaining path to the master, ranked by a
-  running average of each bus's measured time. A routing graph is often one
-  long chain of heavy buses beside many light ones; starting that chain first
-  keeps it from waiting behind work that has slack.
+- every source lane renders into buffers it owns;
+- a track starts once its lanes have rendered: it mixes them with its clips,
+  then runs its chain, gate, polarity and fader;
+- a bus starts as soon as the tracks that send to it, the buses that route
+  into it, and the tracks or buses whose key it reads have finished.
+
+Among the ready nodes a worker takes the one that heads the costliest
+remaining path to the master, ranked by a running average of each node's
+measured time. A routing graph is often one long chain of heavy buses beside
+many light ones; starting that chain first keeps it from waiting behind work
+that has slack, and a bus no longer waits for lanes it does not hear.
+
+A project whose tracks read keys or control signals, or a block with the
+spectrum analyser open, renders every lane first and then runs the track
+chains that read no key or control signal side by side before the buses.
 
 Each destination sums its sources in a fixed order, so a chunk is bit-identical
 to rendering it on one thread. The longest chain of dependent buses still sets

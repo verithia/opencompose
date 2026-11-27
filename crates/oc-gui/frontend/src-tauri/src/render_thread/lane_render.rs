@@ -2,12 +2,18 @@
 //!
 //! Each lane owns its instrument, event cursors, sounding-note words, insert
 //! chain, delay line and output buffers, so lanes render concurrently into
-//! lane-owned buffers. The render thread then sums every lane into its track
-//! buffer and auxiliary returns in lane order, which keeps each sum's operand
-//! order, and so the mixed block, identical to rendering the lanes one by one.
+//! lane-owned buffers. Each track then sums its lanes in lane order, followed
+//! by its clips in clip order, which keeps every sum's operand order, and so
+//! the mixed block, identical to rendering the lanes one by one.
+//!
+//! When the graph can schedule them, lanes are jobs of the graph's own block
+//! ([`oc_engine::graph::BlockSources`]): a track mixes its lanes as soon as
+//! they are done, and a bus starts once the tracks it hears are done. Other
+//! graphs render every lane first and mix them on the render thread.
 
 use super::*;
-use oc_engine::block_workers::DisjointSlice;
+use oc_engine::block_workers::{BlockWorkers, DisjointSlice};
+use oc_engine::graph::BlockSources;
 
 /// Lane state that stays fixed for one block.
 struct LaneBlock<'a> {
@@ -243,6 +249,14 @@ impl RenderState {
                 buffer.reserve(CHUNK_FRAMES * 2 - buffer.len());
             }
         }
+        self.clip_errors.clear();
+        self.clip_errors.resize(self.num_tracks, None);
+        self.track_sources.reserve(
+            self.num_tracks,
+            self.renderers.len(),
+            self.clip_lanes.len(),
+            self.aux_buffers.len(),
+        );
     }
 
     /// Size the per-lane tables to the current lane set. Steady blocks only
@@ -263,6 +277,75 @@ impl RenderState {
         }
     }
 
+    /// Borrow every lane's state for one block, beside the workers and the
+    /// graph, which the caller may use at the same time.
+    fn lane_sources<'a>(
+        &'a mut self,
+        transport: &'a PluginTransport,
+        chunk_start: u64,
+        source_end: u64,
+        actual_frames: usize,
+        meter: bool,
+    ) -> (
+        LaneSources<'a>,
+        Option<&'a mut BlockWorkers>,
+        Option<&'a mut AudioGraph>,
+    ) {
+        let lanes = self.renderers.len();
+        let sources = LaneSources {
+            block: LaneBlock {
+                events: &self.events,
+                events_by_track: &self.events_by_track,
+                performance_events: &self.performance_events,
+                transport,
+                sample_rate: self.sample_rate,
+                chunk_start,
+                source_end,
+                actual_frames,
+            },
+            renderers: DisjointSlice::new(&mut self.renderers),
+            outputs: DisjointSlice::new(&mut self.source_outputs),
+            cursors: DisjointSlice::new(&mut self.track_event_cursors),
+            performance_cursors: DisjointSlice::new(&mut self.performance_cursors),
+            sounding: DisjointSlice::new(
+                self.sounding[..lanes * SOUNDING_WORDS]
+                    .as_chunks_mut::<SOUNDING_WORDS>()
+                    .0,
+            ),
+            aux_delays: DisjointSlice::new(&mut self.aux_delays),
+            chains: DisjointSlice::new(&mut self.source_chains),
+            delays: DisjointSlice::new(&mut self.source_delays),
+            audio: DisjointSlice::new(&mut self.lane_buffers),
+            aux: DisjointSlice::new(&mut self.lane_aux),
+            errors: DisjointSlice::new(&mut self.lane_errors),
+            costs: DisjointSlice::new(&mut self.lane_costs),
+            source_tracks: &self.source_tracks,
+            tables: &self.track_sources,
+            clip_errors: DisjointSlice::new(&mut self.clip_errors),
+            peaks: meter.then(|| DisjointSlice::new(&mut self.meter_input_peaks)),
+        };
+        (sources, self.block_workers.as_mut(), self.graph.as_mut())
+    }
+
+    /// Record the first lane or clip failure of a block as its render error.
+    /// Returns false when one was recorded.
+    fn take_source_errors(&mut self) -> bool {
+        if let Some((lane, error)) = self
+            .lane_errors
+            .iter_mut()
+            .enumerate()
+            .find_map(|(lane, error)| error.take().map(|error| (lane, error)))
+        {
+            self.render_error = Some(format!("Track {lane}: {error}"));
+            return false;
+        }
+        if let Some(error) = self.clip_errors.iter_mut().find_map(Option::take) {
+            self.render_error = Some(error);
+            return false;
+        }
+        true
+    }
+
     /// Render every lane of one block into the track chunks and auxiliary
     /// returns. Returns false after recording a render error.
     pub(super) fn render_lanes_into(
@@ -279,88 +362,36 @@ impl RenderState {
         }
         let transport = self
             .transport
-            .as_ref()
+            .take()
             .expect("a project with source lanes has a transport");
         // Start the most expensive lanes first so the block does not end on
         // one long lane while the other workers idle.
         let costs = &self.lane_costs;
         self.lane_order
             .sort_unstable_by_key(|&lane| std::cmp::Reverse(costs[lane]));
-        let block = LaneBlock {
-            events: &self.events,
-            events_by_track: &self.events_by_track,
-            performance_events: &self.performance_events,
-            transport,
-            sample_rate: self.sample_rate,
-            chunk_start,
-            source_end,
-            actual_frames,
-        };
-        let renderers = DisjointSlice::new(&mut self.renderers);
-        let outputs = DisjointSlice::new(&mut self.source_outputs);
-        let cursors = DisjointSlice::new(&mut self.track_event_cursors);
-        let performance_cursors = DisjointSlice::new(&mut self.performance_cursors);
-        let sounding = DisjointSlice::new(
-            self.sounding[..lanes * SOUNDING_WORDS]
-                .as_chunks_mut::<SOUNDING_WORDS>()
-                .0,
-        );
-        let aux_delays = DisjointSlice::new(&mut self.aux_delays);
-        let chains = DisjointSlice::new(&mut self.source_chains);
-        let delays = DisjointSlice::new(&mut self.source_delays);
-        let audio = DisjointSlice::new(&mut self.lane_buffers);
-        let aux = DisjointSlice::new(&mut self.lane_aux);
-        let errors = DisjointSlice::new(&mut self.lane_errors);
-        let lane_costs = DisjointSlice::new(&mut self.lane_costs);
-        let order = &self.lane_order;
-        let job = |job: usize| {
-            let lane = order[job];
-            let started = std::time::Instant::now();
-            // SAFETY: `lane_order` is a permutation of the lanes and each job
-            // index runs once per dispatch, so every lane's elements are
-            // borrowed by exactly one job.
-            let result = unsafe {
-                render_lane(
-                    &block,
-                    lane,
-                    LaneParts {
-                        renderer: renderers.get(lane),
-                        output: outputs.get(lane),
-                        cursor: cursors.get(lane),
-                        performance_cursor: performance_cursors.get(lane),
-                        sounding: sounding.get(lane),
-                        aux_delays: aux_delays.get(lane),
-                        chain: chains.get(lane),
-                        delay: delays.get(lane),
-                        audio: audio.get(lane),
-                        aux: aux.get(lane),
-                    },
-                )
-            };
-            // SAFETY: as above.
-            unsafe {
-                *errors.get(lane) = result.err();
-                *lane_costs.get(lane) = started.elapsed().as_nanos() as u64;
-            }
-        };
-        let dispatched = match self.block_workers.as_mut() {
-            Some(workers) => workers.dispatch(lanes, &job),
-            None => {
-                (0..lanes).for_each(job);
-                Ok(())
-            }
-        };
-        // A panicking instrument unwinds the render thread as it would serially.
-        if let Err(error) = dispatched {
-            panic!("source lane: {error}");
-        }
-        if let Some((lane, error)) = self
-            .lane_errors
-            .iter_mut()
-            .enumerate()
-            .find_map(|(lane, error)| error.take().map(|error| (lane, error)))
+        let order = std::mem::take(&mut self.lane_order);
         {
-            self.render_error = Some(format!("Track {lane}: {error}"));
+            let (sources, workers, _) =
+                self.lane_sources(&transport, chunk_start, source_end, actual_frames, false);
+            // SAFETY: `order` is a permutation of the lanes and each job index
+            // runs once per dispatch, so every lane renders once.
+            let job = |job: usize| unsafe { sources.render(order[job]) };
+            let dispatched = match workers {
+                Some(workers) => workers.dispatch(lanes, &job),
+                None => {
+                    (0..lanes).for_each(job);
+                    Ok(())
+                }
+            };
+            // A panicking instrument unwinds the render thread as it would
+            // serially.
+            if let Err(error) = dispatched {
+                panic!("source lane: {error}");
+            }
+        }
+        self.lane_order = order;
+        self.transport = Some(transport);
+        if !self.take_source_errors() {
             return false;
         }
         for lane in 0..lanes {
@@ -384,5 +415,367 @@ impl RenderState {
             }
         }
         true
+    }
+
+    /// Render the lanes, tracks and buses of one block as one schedule on
+    /// the block workers, leaving the graph output in `mixed`.
+    ///
+    /// Returns `None`, with no lane, clip or graph state touched, when the
+    /// graph cannot schedule its sources; the caller renders the block in
+    /// stages then. `Some(false)` means a render error was recorded.
+    pub(super) fn render_scheduled_block(
+        &mut self,
+        track_chunks: &mut [Vec<f32>],
+        chunk_start: u64,
+        source_end: u64,
+        actual_frames: usize,
+        mixed: &mut Vec<f32>,
+    ) -> Option<bool> {
+        if self
+            .block_workers
+            .as_ref()
+            .is_none_or(|workers| workers.parallelism() <= 1)
+            || self.graph.is_none()
+            || self.transport.is_none()
+        {
+            return None;
+        }
+        self.ensure_lane_buffers();
+        if self.clip_errors.len() < track_chunks.len()
+            || !self.track_sources.bind(
+                &self.source_tracks,
+                &self.clip_lanes,
+                &mut self.aux_buffers,
+                track_chunks.len(),
+            )
+        {
+            return None;
+        }
+        let transport = self.transport.take().expect("checked above");
+        let graph_transport = transport.at_sample(self.dsp_cursor);
+        mixed.clear();
+        mixed.resize(actual_frames * 2, 0.0);
+        let meter = self.meter_hub.is_some();
+        let processed = {
+            let (sources, workers, graph) =
+                self.lane_sources(&transport, chunk_start, source_end, actual_frames, meter);
+            let (Some(workers), Some(graph)) = (workers, graph) else {
+                unreachable!("checked above");
+            };
+            graph.process_prepared_with_sources(
+                track_chunks,
+                Some(&graph_transport),
+                mixed,
+                workers,
+                &sources,
+            )
+        };
+        self.track_sources.unbind();
+        self.transport = Some(transport);
+        match processed {
+            Ok(false) => None,
+            Err(error) => {
+                self.render_error = Some(error.to_string());
+                Some(false)
+            }
+            Ok(true) => Some(self.take_source_errors()),
+        }
+    }
+}
+
+/// Where each track finds its lanes, clips and auxiliary returns during one
+/// block. Capacity is reserved when the lane set is prepared, so binding a
+/// block does not allocate.
+#[derive(Default)]
+pub(super) struct TrackSources {
+    /// `lanes[lane_starts[t]..lane_starts[t + 1]]` feed track `t`, ascending.
+    lane_starts: Vec<usize>,
+    lanes: Vec<usize>,
+    clip_starts: Vec<usize>,
+    clips: Vec<usize>,
+    /// Clip lanes by index, addressed for one block only.
+    clip_lanes: Vec<ClipRef>,
+    /// Auxiliary returns by track: `aux[aux_starts[t]..aux_starts[t + 1]]`.
+    aux_starts: Vec<usize>,
+    aux: Vec<AuxReturn>,
+    /// Next free slot per track while grouping.
+    cursor: Vec<usize>,
+}
+
+/// One clip lane, addressed for one block only.
+#[derive(Clone, Copy)]
+struct ClipRef(*const oc_engine::clip_lane::ClipLane);
+
+// A clip lane is shared by reference with the track job that mixes it.
+const _: () = {
+    const fn shared<T: Sync>() {}
+    shared::<oc_engine::clip_lane::ClipLane>();
+};
+
+// SAFETY: an address is set only while the clip lanes are borrowed for one
+// block and cleared before that borrow ends; clip lanes are `Sync` (checked
+// above) and only read.
+unsafe impl Send for ClipRef {}
+// SAFETY: as above.
+unsafe impl Sync for ClipRef {}
+
+/// One auxiliary return buffer, addressed for one block only.
+struct AuxReturn {
+    pair: usize,
+    buffer: *mut Vec<f32>,
+}
+
+// SAFETY: an address is set only while `aux_buffers` is exclusively borrowed
+// for one block and cleared before that borrow ends. Its track's job is the
+// only writer, and bus jobs read it only after that job finished.
+unsafe impl Send for AuxReturn {}
+// SAFETY: as above.
+unsafe impl Sync for AuxReturn {}
+
+impl TrackSources {
+    /// Reserve every table for this many tracks, lanes, clips and returns.
+    pub(super) fn reserve(&mut self, tracks: usize, lanes: usize, clips: usize, returns: usize) {
+        for starts in [
+            &mut self.lane_starts,
+            &mut self.clip_starts,
+            &mut self.aux_starts,
+        ] {
+            starts.reserve(tracks + 1);
+        }
+        self.cursor.reserve(tracks);
+        self.lanes.reserve(lanes);
+        self.clips.reserve(clips);
+        self.clip_lanes.reserve(clips);
+        self.aux.reserve(returns);
+    }
+
+    /// Group this block's lanes, clips and auxiliary returns by track.
+    /// Returns false, with nothing bound, when a table lacks capacity.
+    fn bind(
+        &mut self,
+        source_tracks: &[usize],
+        clip_lanes: &ClipLanes,
+        aux_buffers: &mut HashMap<(usize, usize), Vec<f32>>,
+        tracks: usize,
+    ) -> bool {
+        let fits = |starts: &Vec<usize>| starts.capacity() > tracks;
+        if !fits(&self.lane_starts)
+            || !fits(&self.clip_starts)
+            || !fits(&self.aux_starts)
+            || self.cursor.capacity() < tracks
+            || self.lanes.capacity() < source_tracks.len()
+            || self.clips.capacity() < clip_lanes.len()
+            || self.clip_lanes.capacity() < clip_lanes.len()
+            || self.aux.capacity() < aux_buffers.len()
+            || source_tracks.iter().any(|&track| track >= tracks)
+            || (0..clip_lanes.len()).any(|clip| {
+                clip_lanes
+                    .get(clip)
+                    .is_none_or(|lane| lane.track() >= tracks)
+            })
+            || aux_buffers.keys().any(|&(track, _)| track >= tracks)
+        {
+            return false;
+        }
+        group(
+            &mut self.lane_starts,
+            &mut self.lanes,
+            &mut self.cursor,
+            tracks,
+            source_tracks.iter().copied().enumerate(),
+        );
+        group(
+            &mut self.clip_starts,
+            &mut self.clips,
+            &mut self.cursor,
+            tracks,
+            (0..clip_lanes.len())
+                .map(|clip| (clip, clip_lanes.get(clip).map_or(0, |lane| lane.track()))),
+        );
+        self.clip_lanes.clear();
+        self.clip_lanes.extend(
+            (0..clip_lanes.len())
+                .filter_map(|clip| clip_lanes.get(clip).map(|lane| ClipRef(lane as *const _))),
+        );
+        self.aux_starts.clear();
+        self.aux_starts.resize(tracks + 1, 0);
+        for &(track, _) in aux_buffers.keys() {
+            self.aux_starts[track + 1] += 1;
+        }
+        for track in 0..tracks {
+            self.aux_starts[track + 1] += self.aux_starts[track];
+        }
+        self.cursor.clear();
+        self.cursor.extend_from_slice(&self.aux_starts[..tracks]);
+        self.aux.clear();
+        self.aux.resize_with(aux_buffers.len(), || AuxReturn {
+            pair: 0,
+            buffer: std::ptr::null_mut(),
+        });
+        for (&(track, pair), buffer) in aux_buffers.iter_mut() {
+            self.aux[self.cursor[track]] = AuxReturn {
+                pair,
+                buffer: buffer as *mut _,
+            };
+            self.cursor[track] += 1;
+        }
+        true
+    }
+
+    /// Drop every per-block address.
+    fn unbind(&mut self) {
+        self.aux.clear();
+        self.clip_lanes.clear();
+    }
+
+    fn lanes_of(&self, track: usize) -> &[usize] {
+        &self.lanes[self.lane_starts[track]..self.lane_starts[track + 1]]
+    }
+
+    fn clips_of(&self, track: usize) -> &[usize] {
+        &self.clips[self.clip_starts[track]..self.clip_starts[track + 1]]
+    }
+
+    fn aux_of(&self, track: usize, pair: usize) -> Option<*mut Vec<f32>> {
+        self.aux[self.aux_starts[track]..self.aux_starts[track + 1]]
+            .iter()
+            .find(|aux| aux.pair == pair)
+            .map(|aux| aux.buffer)
+    }
+}
+
+/// Group `(item, track)` pairs by track in a counting sort, keeping item
+/// order within each track, into `items[starts[t]..starts[t + 1]]`.
+fn group(
+    starts: &mut Vec<usize>,
+    items: &mut Vec<usize>,
+    cursor: &mut Vec<usize>,
+    tracks: usize,
+    pairs: impl Iterator<Item = (usize, usize)> + Clone,
+) {
+    starts.clear();
+    starts.resize(tracks + 1, 0);
+    let mut count = 0;
+    for (_, track) in pairs.clone() {
+        starts[track + 1] += 1;
+        count += 1;
+    }
+    for track in 0..tracks {
+        starts[track + 1] += starts[track];
+    }
+    cursor.clear();
+    cursor.extend_from_slice(&starts[..tracks]);
+    items.clear();
+    items.resize(count, 0);
+    for (index, track) in pairs {
+        items[cursor[track]] = index;
+        cursor[track] += 1;
+    }
+}
+
+/// Every lane's state for one block, handed out per lane and per track by
+/// the [`BlockSources`] contract.
+pub(super) struct LaneSources<'a> {
+    block: LaneBlock<'a>,
+    renderers: DisjointSlice<'a, SmartSource>,
+    outputs: DisjointSlice<'a, SourceOutput>,
+    cursors: DisjointSlice<'a, usize>,
+    performance_cursors: DisjointSlice<'a, usize>,
+    sounding: DisjointSlice<'a, [u64; SOUNDING_WORDS]>,
+    aux_delays: DisjointSlice<'a, Vec<VecDeque<f32>>>,
+    chains: DisjointSlice<'a, oc_engine::graph::EffectChain>,
+    delays: DisjointSlice<'a, VecDeque<f32>>,
+    audio: DisjointSlice<'a, Vec<f32>>,
+    aux: DisjointSlice<'a, Vec<Vec<f32>>>,
+    errors: DisjointSlice<'a, Option<String>>,
+    costs: DisjointSlice<'a, u64>,
+    source_tracks: &'a [usize],
+    tables: &'a TrackSources,
+    clip_errors: DisjointSlice<'a, Option<String>>,
+    /// Pre-graph input peak per track, when meters are on.
+    peaks: Option<DisjointSlice<'a, f32>>,
+}
+
+impl BlockSources for LaneSources<'_> {
+    fn source_tracks(&self) -> &[usize] {
+        self.source_tracks
+    }
+
+    unsafe fn render(&self, lane: usize) {
+        let started = std::time::Instant::now();
+        // SAFETY: the caller renders each lane once per block and touches
+        // none of its state concurrently, so every element is borrowed by
+        // this call alone.
+        let result = unsafe {
+            render_lane(
+                &self.block,
+                lane,
+                LaneParts {
+                    renderer: self.renderers.get(lane),
+                    output: self.outputs.get(lane),
+                    cursor: self.cursors.get(lane),
+                    performance_cursor: self.performance_cursors.get(lane),
+                    sounding: self.sounding.get(lane),
+                    aux_delays: self.aux_delays.get(lane),
+                    chain: self.chains.get(lane),
+                    delay: self.delays.get(lane),
+                    audio: self.audio.get(lane),
+                    aux: self.aux.get(lane),
+                },
+            )
+        };
+        // SAFETY: as above.
+        unsafe {
+            *self.errors.get(lane) = result.err();
+            *self.costs.get(lane) = started.elapsed().as_nanos() as u64;
+        }
+    }
+
+    unsafe fn mix_track(&self, track: usize, buffer: &mut [f32]) {
+        for &lane in self.tables.lanes_of(track) {
+            // SAFETY: the lane has rendered, and only this track's job reads
+            // it until the next block.
+            let (audio, output, aux) = unsafe {
+                (
+                    self.audio.get(lane),
+                    self.outputs.get(lane),
+                    self.aux.get(lane),
+                )
+            };
+            for (out, sample) in buffer.iter_mut().zip(audio.iter().copied()) {
+                *out += sample;
+            }
+            for (&pair, samples) in output.aux_pairs().iter().zip(aux.iter()) {
+                if let Some(target) = self.tables.aux_of(track, pair) {
+                    // SAFETY: this track's job is the return's only writer.
+                    let target = unsafe { &mut *target };
+                    for (out, sample) in target.iter_mut().zip(samples) {
+                        *out += sample;
+                    }
+                }
+            }
+        }
+        for &clip in self.tables.clips_of(track) {
+            // SAFETY: bound for this block; clip lanes are only read.
+            let lane = unsafe { &*self.tables.clip_lanes[clip].0 };
+            if let Err(error) = lane.mix_into(self.block.chunk_start, buffer) {
+                // SAFETY: one job per track.
+                unsafe { *self.clip_errors.get(track) = Some(error) };
+                break;
+            }
+        }
+        if let Some(peaks) = &self.peaks
+            && track < peaks.len()
+        {
+            // SAFETY: one job per track.
+            unsafe { *peaks.get(track) = peak_of(buffer) };
+        }
+    }
+
+    unsafe fn aux(&self, track: usize, pair: usize) -> Option<&[f32]> {
+        // SAFETY: the track has mixed its lanes; its return is only read now.
+        self.tables
+            .aux_of(track, pair)
+            .map(|buffer| unsafe { (*buffer).as_slice() })
     }
 }
