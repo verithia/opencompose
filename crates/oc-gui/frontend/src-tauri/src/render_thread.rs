@@ -43,11 +43,65 @@ pub const CHUNK_FRAMES: usize = 4096;
 /// The first chunk of a playback generation is short so sound starts sooner.
 pub const FIRST_CHUNK_FRAMES: usize = 1024;
 
-/// Ring buffer capacity in frames. ~2 seconds of capacity, not a fill target.
+/// Frames of the next chunk after `rendered` frames of this playback
+/// generation.
+///
+/// The opening chunk is short so sound starts sooner, but the device plays it
+/// out in a few milliseconds; a full chunk right behind it would still be
+/// rendering when it ran out. Each later chunk is therefore at most twice the
+/// audio rendered before it, which keeps a chunk renderable before the queue
+/// ahead of it plays out while the render runs at least twice as fast as real
+/// time. Sizes double from the opening chunk to [`CHUNK_FRAMES`] in powers of
+/// two that end where the first full chunk would, so the ramp changes only
+/// where the first few chunks end, and every generation splits the timeline
+/// the same way whatever the device has consumed.
+pub const fn next_chunk_frames(rendered: usize) -> usize {
+    let mut frames = FIRST_CHUNK_FRAMES;
+    if rendered < FIRST_CHUNK_FRAMES {
+        return frames;
+    }
+    if rendered >= FIRST_CHUNK_FRAMES + CHUNK_FRAMES {
+        return CHUNK_FRAMES;
+    }
+    let to_grid = FIRST_CHUNK_FRAMES + CHUNK_FRAMES - rendered;
+    while frames < CHUNK_FRAMES && frames <= rendered && to_grid.is_multiple_of(frames * 2) {
+        frames *= 2;
+    }
+    frames
+}
+
+/// Smallest ring buffer capacity in frames, ~2 s at 44.1 kHz. The ring is
+/// capacity, not a fill target: the lookahead bounds how much of it is used.
 const RING_BUFFER_FRAMES: usize = 88200;
 
-/// Queued audio never exceeds this; a mixer edit is heard within one window.
-pub const LOOKAHEAD_FRAMES: usize = 12000;
+/// Audio the producer keeps queued ahead of the device, in milliseconds.
+///
+/// A chunk's render time is set by its longest chain of dependent plugins, so
+/// one plugin that stalls, or a dense passage, can hold a chunk past its own
+/// duration; the queue plays on meanwhile. Half a second rides out a stall
+/// several chunks long. A mixer edit is heard after the queued audio, so this
+/// is also the bound on how late an edit sounds.
+const LOOKAHEAD_MS: usize = 500;
+
+/// Fewest frames the lookahead holds at any rate: the opening chunk and two
+/// steady chunks, so a low rate still queues whole chunks.
+const MIN_LOOKAHEAD_FRAMES: usize = 12_000;
+
+/// Frames the producer keeps queued at `sample_rate`.
+pub const fn lookahead_frames(sample_rate: u32) -> usize {
+    let frames = (sample_rate as usize * LOOKAHEAD_MS).div_ceil(1000);
+    if frames > MIN_LOOKAHEAD_FRAMES {
+        frames
+    } else {
+        MIN_LOOKAHEAD_FRAMES
+    }
+}
+
+/// Ring capacity at `sample_rate`: the full lookahead plus the chunk that
+/// opens a wrapped loop pass, which may be queued past it.
+fn ring_buffer_frames(sample_rate: u32) -> usize {
+    RING_BUFFER_FRAMES.max(lookahead_frames(sample_rate) + CHUNK_FRAMES)
+}
 
 /// Bound on waiting for the callback to acknowledge a seek generation.
 const ACK_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250);
@@ -113,9 +167,13 @@ fn track_sounding_command(
     }
 }
 
-/// Meter frames the producer may hold for the device; the lookahead bounds
-/// the real number at a handful.
-const MAX_PENDING_METERS: usize = 16;
+/// Meter frames the producer may hold for the device: one per queued chunk,
+/// which the lookahead bounds, plus the opening and seam chunks. Short loop
+/// passes queue shorter chunks, so the pool never drops below a floor.
+const fn max_pending_meters(sample_rate: u32) -> usize {
+    let queued = lookahead_frames(sample_rate).div_ceil(CHUNK_FRAMES) + 2;
+    if queued > 16 { queued } else { 16 }
+}
 
 /// Callback buffers of presentation delay between handing audio to the device
 /// and hearing it. A device callback fills the buffer that plays one period
@@ -782,7 +840,7 @@ impl RenderThreadHandle {
         let (build_tx, build_rx) = std::sync::mpsc::channel();
 
         // Create ring buffer (stereo interleaved, so capacity * 2 floats)
-        let (producer, consumer) = rtrb::RingBuffer::new(RING_BUFFER_FRAMES * 2);
+        let (producer, consumer) = rtrb::RingBuffer::new(ring_buffer_frames(sample_rate) * 2);
 
         let playback = Arc::new(StreamingPlayback {
             midi_cc,
@@ -1083,7 +1141,19 @@ struct RenderState {
     /// Preallocated main/aux buffers per source lane, planned at load.
     source_outputs: Vec<SourceOutput>,
     track_chunks: Vec<Vec<f32>>,
-    lane_audio: Vec<f32>,
+    /// Per-lane rendered audio, auxiliary pairs, errors and last block cost.
+    lane_buffers: Vec<Vec<f32>>,
+    lane_aux: Vec<Vec<Vec<f32>>>,
+    lane_errors: Vec<Option<String>>,
+    lane_costs: Vec<u64>,
+    /// Lanes in the order the next block dispatches them.
+    lane_order: Vec<usize>,
+    /// Lanes, clips and returns by track for a block the graph schedules.
+    track_sources: lane_render::TrackSources,
+    /// First clip failure of each track in a scheduled block.
+    clip_errors: Vec<Option<String>>,
+    /// Persistent workers for lanes and graph chains; none renders serially.
+    block_workers: Option<oc_engine::block_workers::BlockWorkers>,
     dsp_block: Vec<f32>,
     preroll_buffer: Vec<f32>,
     free_meter_frames: Vec<crate::meters::MeterFrame>,
@@ -1208,10 +1278,17 @@ impl RenderState {
             source_tracks: Vec::new(),
             source_outputs: Vec::new(),
             track_chunks: Vec::new(),
-            lane_audio: Vec::with_capacity(CHUNK_FRAMES * 2),
+            lane_buffers: Vec::new(),
+            lane_aux: Vec::new(),
+            lane_errors: Vec::new(),
+            lane_costs: Vec::new(),
+            lane_order: Vec::new(),
+            track_sources: lane_render::TrackSources::default(),
+            clip_errors: Vec::new(),
+            block_workers: None,
             dsp_block: Vec::with_capacity(CHUNK_FRAMES * 2),
             preroll_buffer: Vec::with_capacity(CHUNK_FRAMES * 2),
-            free_meter_frames: Vec::with_capacity(MAX_PENDING_METERS),
+            free_meter_frames: Vec::with_capacity(max_pending_meters(sample_rate)),
             aux_buffers: HashMap::new(),
             aux_delays: Vec::new(),
             warned_aux: HashSet::new(),
@@ -1230,7 +1307,7 @@ impl RenderState {
             render_cursor: 0,
             dsp_cursor: 0,
             rendered_ahead: std::collections::VecDeque::with_capacity(
-                (LOOKAHEAD_FRAMES + CHUNK_FRAMES) * 2,
+                (lookahead_frames(sample_rate) + CHUNK_FRAMES) * 2,
             ),
             total_frames: 0,
             drain_frames: 0,
@@ -1265,7 +1342,9 @@ impl RenderState {
             click_settings: ClickSettings::default(),
             count_in: None,
             armed_count_in: None,
-            pending_meters: std::collections::VecDeque::with_capacity(MAX_PENDING_METERS),
+            pending_meters: std::collections::VecDeque::with_capacity(max_pending_meters(
+                sample_rate,
+            )),
             spectrum_target: None,
             pending_sources: Vec::new(),
             source_epoch: 0,
@@ -1365,6 +1444,7 @@ impl RenderState {
         replacement.source_epoch = self.source_epoch.wrapping_add(1);
         replacement.root.clone_from(&self.root);
         replacement.meter_hub = self.meter_hub.take();
+        replacement.block_workers = self.block_workers.take();
         replacement.meter_input_peaks = std::mem::take(&mut self.meter_input_peaks);
         replacement.instrument_instantiations = Arc::clone(&self.instrument_instantiations);
         replacement.chain_latency_frames = Arc::clone(&self.chain_latency_frames);
@@ -1384,6 +1464,7 @@ impl RenderState {
             .clone_from(&self.spectrum_target);
         if let Err(error) = replacement.build_project(project, soundfont_path, progressive_cursor) {
             self.meter_hub = replacement.meter_hub.take();
+            self.block_workers = replacement.block_workers.take();
             self.meter_input_peaks = std::mem::take(&mut replacement.meter_input_peaks);
             if reuse_sources {
                 self.renderers = std::mem::take(&mut replacement.renderers);
@@ -1899,6 +1980,8 @@ impl RenderState {
             graph
                 .prepare(CHUNK_FRAMES)
                 .map_err(|error| error.to_string())?;
+            // Lanes join the graph's block schedule where it can order them.
+            graph.set_block_sources(Some(&self.source_tracks));
         }
         for chain in &mut self.source_chains {
             chain
@@ -1912,6 +1995,7 @@ impl RenderState {
                 buffer.reserve(CHUNK_FRAMES * 2 - buffer.len());
             }
         }
+        self.prepare_lane_buffers();
         self.prepare_meter_frames();
         Ok(())
     }
@@ -1928,7 +2012,7 @@ impl RenderState {
         if self.meter_hub.is_some()
             && let Some(graph) = &self.graph
         {
-            for _ in 0..MAX_PENDING_METERS {
+            for _ in 0..max_pending_meters(self.sample_rate) {
                 self.free_meter_frames.push(MeterHub::capture(
                     graph,
                     &[],
@@ -2337,224 +2421,60 @@ impl RenderState {
             buffer.clear();
             buffer.resize(actual_frames * 2, 0.0);
         }
-        let mut track_audio = std::mem::take(&mut self.lane_audio);
-        let sub_chunk_size: usize = 64; // Render in small sub-chunks for timing accuracy
-
         // Auxiliary returns start at silence; capacity is kept from load.
         for buffer in self.aux_buffers.values_mut() {
             buffer.clear();
             buffer.resize(actual_frames * 2, 0.0);
         }
 
-        for track_idx in 0..self.renderers.len() {
-            track_audio.clear();
-            let cursor = &mut self.track_event_cursors[track_idx];
-            let track_events = &self.events_by_track[track_idx];
-            let mut pos = chunk_start;
-
-            while pos < source_end {
-                if self.renderers[track_idx].supports_score_offsets()
-                    || self.renderers[track_idx].performance_uses_offsets()
-                {
-                    // Same 128-frame hosted processing quantum as offline export.
-                    // Keep sample offsets; chopping at each note changes plugin
-                    // block-dependent envelopes and round-robin behavior.
-                    let transport = self.transport.as_ref().unwrap().at_sample(pos);
-                    let frames = transport.block_frames((source_end - pos).min(128) as usize);
-                    let end = pos + frames as u64;
-                    let performance_cursor = &mut self.performance_cursors[track_idx];
-                    while *performance_cursor < self.performance_events[track_idx].len() {
-                        let command = &self.performance_events[track_idx][*performance_cursor];
-                        if command.sample >= end {
-                            break;
-                        }
-                        if let Err(error) = self.renderers[track_idx].send_performance_at(
-                            command,
-                            command.sample.saturating_sub(pos) as u32,
-                            frames as u32,
-                        ) {
-                            self.render_error = Some(format!("Track {track_idx}: {error}"));
-                            return;
-                        }
-                        track_sounding_command(
-                            lane_sounding(&mut self.sounding, track_idx),
-                            command.channel,
-                            &command.message,
-                        );
-                        *performance_cursor += 1;
-                    }
-                    while *cursor < track_events.len() {
-                        let ev = &self.events[track_events[*cursor]];
-                        if ev.time_samples >= end {
-                            break;
-                        }
-                        if let Err(error) = self.renderers[track_idx]
-                            .send_score_at(&ev.event, ev.time_samples.saturating_sub(pos) as i32)
-                        {
-                            self.render_error = Some(format!("Track {track_idx}: {error}"));
-                            return;
-                        }
-                        track_sounding(lane_sounding(&mut self.sounding, track_idx), &ev.event);
-                        *cursor += 1;
-                    }
-                    self.renderers[track_idx].render_into(
-                        frames,
-                        self.sample_rate,
-                        transport,
-                        &mut self.source_outputs[track_idx],
-                    );
-                    track_audio.extend_from_slice(self.source_outputs[track_idx].main());
-                    accumulate_aux(
-                        &self.source_outputs[track_idx],
-                        &mut self.aux_delays[track_idx],
-                        &mut self.aux_buffers,
-                        self.source_tracks[track_idx],
-                        (pos - chunk_start) as usize * 2,
-                    );
-                    pos = end;
-                    continue;
-                }
-                let performance_cursor = &mut self.performance_cursors[track_idx];
-                while *performance_cursor < self.performance_events[track_idx].len() {
-                    let command = &self.performance_events[track_idx][*performance_cursor];
-                    if command.sample > pos {
-                        break;
-                    }
-                    if let Err(error) = self.renderers[track_idx].send_performance_at(command, 0, 1)
-                    {
-                        self.render_error = Some(format!("Track {track_idx}: {error}"));
-                        return;
-                    }
-                    track_sounding_command(
-                        lane_sounding(&mut self.sounding, track_idx),
-                        command.channel,
-                        &command.message,
-                    );
-                    *performance_cursor += 1;
-                }
-                // Send all events at or before current position
-                while *cursor < track_events.len() {
-                    let ev = &self.events[track_events[*cursor]];
-                    if ev.time_samples > pos {
-                        break;
-                    }
-                    if let Err(error) = self.renderers[track_idx].send(&ev.event) {
-                        self.render_error = Some(format!("Track {track_idx}: {error}"));
-                        return;
-                    }
-                    track_sounding(lane_sounding(&mut self.sounding, track_idx), &ev.event);
-                    *cursor += 1;
-                }
-
-                // Determine sub-chunk size: render up to next event or sub_chunk_size
-                let next_event_time = if *cursor < track_events.len() {
-                    self.events[track_events[*cursor]].time_samples
-                } else {
-                    source_end
-                };
-                let next_event_time = next_event_time.min(
-                    self.performance_events[track_idx]
-                        .get(*performance_cursor)
-                        .map_or(source_end, |event| event.sample),
-                );
-                let remaining = (source_end - pos) as usize;
-                let until_next = (next_event_time - pos) as usize;
-                let clock_limit = self
-                    .transport
-                    .as_ref()
-                    .unwrap()
-                    .at_sample(pos)
-                    .next_clock_change_sample()
-                    .map(|end| (end - pos) as usize)
-                    .unwrap_or(remaining);
-                let frames_to_render = sub_chunk_size
-                    .min(remaining)
-                    .min(until_next.max(1))
-                    .min(clock_limit.max(1));
-
-                let transport = self.transport.as_ref().unwrap().at_sample(pos);
-                self.renderers[track_idx].render_into(
-                    frames_to_render,
-                    self.sample_rate,
-                    transport,
-                    &mut self.source_outputs[track_idx],
-                );
-                track_audio.extend_from_slice(self.source_outputs[track_idx].main());
-                // Auxiliary outputs bypass the lane chain and the fader.
-                accumulate_aux(
-                    &self.source_outputs[track_idx],
-                    &mut self.aux_delays[track_idx],
-                    &mut self.aux_buffers,
-                    self.source_tracks[track_idx],
-                    (pos - chunk_start) as usize * 2,
-                );
-                pos += frames_to_render as u64;
-            }
-
-            track_audio.resize(actual_frames * 2, 0.0);
-            let drain_start = source_end.saturating_sub(chunk_start) as usize * 2;
-            for (&pair, delay) in self.source_outputs[track_idx]
-                .aux_pairs()
-                .iter()
-                .zip(&mut self.aux_delays[track_idx])
-            {
-                if !delay.is_empty()
-                    && let Some(bus) = self
-                        .aux_buffers
-                        .get_mut(&(self.source_tracks[track_idx], pair))
-                {
-                    for out in &mut bus[drain_start..] {
-                        delay.push_back(0.0);
-                        *out += delay.pop_front().unwrap();
-                    }
-                }
-            }
-            let transport = self.transport.as_ref().map(|t| t.at_sample(chunk_start));
-            if let Err(error) = self.source_chains[track_idx].try_process_with_context(
-                &mut track_audio,
-                AudioProcessContext {
-                    sample_rate: self.sample_rate,
-                    transport: transport.as_ref(),
-                    input: AudioProcessInput::Main,
-                },
-            ) {
-                self.render_error = Some(format!("Track {track_idx}: {error}"));
+        match self.render_scheduled_block(
+            &mut track_chunks,
+            chunk_start,
+            source_end,
+            actual_frames,
+            mixed,
+        ) {
+            Some(true) => {
+                self.finish_scheduled_mix(&track_chunks, mixed);
                 self.track_chunks = track_chunks;
-                self.lane_audio = track_audio;
+            }
+            Some(false) => {
+                self.track_chunks = track_chunks;
+                mixed.clear();
                 return;
             }
-            let delay = &mut self.source_delays[track_idx];
-            for (out, sample) in track_chunks[self.source_tracks[track_idx]]
-                .iter_mut()
-                .zip(track_audio.iter().copied())
-            {
-                if delay.is_empty() {
-                    *out += sample;
-                } else {
-                    delay.push_back(sample);
-                    *out += delay.pop_front().unwrap();
+            None => {
+                let lanes_ok = self.render_lanes_into(
+                    &mut track_chunks,
+                    chunk_start,
+                    source_end,
+                    actual_frames,
+                );
+                if !lanes_ok {
+                    self.track_chunks = track_chunks;
+                    return;
                 }
+
+                if self.processing_failed() {
+                    self.processing_fault = true;
+                    self.track_chunks = track_chunks;
+                    return;
+                }
+
+                // Clip lanes sit alongside the instrument sources: same track
+                // buffer, before track effects and routing. The worker can
+                // read spooled clips.
+                if let Err(error) = self.clip_lanes.mix_into(chunk_start, &mut track_chunks) {
+                    self.render_error = Some(error);
+                    return;
+                }
+
+                // Source inserts and summing precede the parent graph exactly
+                // as offline.
+                self.mix_chunk_into(&mut track_chunks, actual_frames, mixed);
+                self.track_chunks = track_chunks;
             }
         }
-
-        if self.processing_failed() {
-            self.processing_fault = true;
-            self.track_chunks = track_chunks;
-            self.lane_audio = track_audio;
-            return;
-        }
-
-        // Clip lanes sit alongside the instrument sources: same track buffer,
-        // before track effects and routing. The worker can read spooled clips.
-        if let Err(error) = self.clip_lanes.mix_into(chunk_start, &mut track_chunks) {
-            self.render_error = Some(error);
-            return;
-        }
-
-        // Source inserts and summing precede the parent graph exactly as offline.
-        self.mix_chunk_into(&mut track_chunks, actual_frames, mixed);
-        self.track_chunks = track_chunks;
-        self.lane_audio = track_audio;
         if self.processing_failed() {
             self.processing_fault = true;
         }
@@ -2606,6 +2526,25 @@ impl RenderState {
             return;
         }
         self.mix_tracks_into(track_chunks, frames, mixed);
+        if self.processing_failed() {
+            self.processing_fault = true;
+            mixed.clear();
+            return;
+        }
+        if self.render_error.is_none() && !self.processing_fault {
+            self.mix_click(mixed, self.dsp_cursor);
+        }
+    }
+
+    /// Finish a block the graph scheduled with its lanes: the same checks,
+    /// monitor and meter capture, and click as a staged block.
+    fn finish_scheduled_mix(&mut self, track_chunks: &[Vec<f32>], mixed: &mut Vec<f32>) {
+        if self.processing_failed() {
+            self.processing_fault = true;
+            mixed.clear();
+            return;
+        }
+        self.finish_mix(track_chunks, mixed);
         if self.processing_failed() {
             self.processing_fault = true;
             mixed.clear();
@@ -2758,17 +2697,30 @@ impl RenderState {
             .transport
             .as_ref()
             .map(|t| t.at_sample(self.dsp_cursor));
-        if let Err(error) = graph.process_prepared(PreparedGraphBlock {
+        let block = PreparedGraphBlock {
             tracks: track_chunks,
             transport: transport.as_ref(),
             aux: &self.aux_buffers,
             output: mixed,
-        }) {
+        };
+        let processed = match self.block_workers.as_mut() {
+            Some(workers) => graph.process_prepared_with_workers(block, workers),
+            None => graph.process_prepared(block),
+        };
+        if let Err(error) = processed {
             self.render_error = Some(error.to_string());
             mixed.clear();
             return;
         }
+        self.finish_mix(track_chunks, mixed);
+    }
 
+    /// Monitor, mono fold and meter capture after the graph has mixed a
+    /// block into `mixed`.
+    fn finish_mix(&mut self, track_chunks: &[Vec<f32>], mixed: &mut Vec<f32>) {
+        let Some(graph) = self.graph.as_ref() else {
+            return;
+        };
         if graph.processing_failed() {
             self.processing_fault = true;
             mixed.clear();
@@ -3179,34 +3131,6 @@ fn supported_aux_pairs(
     pairs
 }
 
-/// Add one rendered block's auxiliary pairs to the chunk buffers at `offset`.
-fn accumulate_aux(
-    output: &SourceOutput,
-    delays: &mut [VecDeque<f32>],
-    aux_buffers: &mut HashMap<(usize, usize), Vec<f32>>,
-    track: usize,
-    offset: usize,
-) {
-    for ((pair, aux), delay) in output.aux().zip(delays.iter_mut()) {
-        let Some(bus) = aux_buffers.get_mut(&(track, pair)) else {
-            continue;
-        };
-        let start = offset.min(bus.len());
-        let frames = aux.len().min(bus.len() - start);
-        let bus = &mut bus[start..start + frames];
-        if delay.is_empty() {
-            for (out, sample) in bus.iter_mut().zip(&aux[..frames]) {
-                *out += sample;
-            }
-        } else {
-            for (out, sample) in bus.iter_mut().zip(&aux[..frames]) {
-                delay.push_back(*sample);
-                *out += delay.pop_front().unwrap();
-            }
-        }
-    }
-}
-
 /// Instantiate the sources for pruned lanes. Runs on the source worker so a
 /// slow preset import never stalls the producer thread.
 fn build_lanes(
@@ -3363,6 +3287,7 @@ fn seek_or_fail(state: &mut RenderState, playback: &StreamingPlayback, frame: u6
 /// Drop all playable state after a load failure and publish the reason.
 fn fail_playback(state: &mut RenderState, playback: &StreamingPlayback, error: String) {
     let meter_hub = state.meter_hub.take();
+    let block_workers = state.block_workers.take();
     let instantiations = Arc::clone(&state.instrument_instantiations);
     let chain_latency = Arc::clone(&state.chain_latency_frames);
     chain_latency.store(0, Ordering::Release);
@@ -3370,6 +3295,7 @@ fn fail_playback(state: &mut RenderState, playback: &StreamingPlayback, error: S
     *state = RenderState::new(state.sample_rate);
     state.source_epoch = next_epoch;
     state.meter_hub = meter_hub;
+    state.block_workers = block_workers;
     state.instrument_instantiations = instantiations;
     state.chain_latency_frames = chain_latency;
     playback.active.store(false, Ordering::Release);
@@ -3426,13 +3352,7 @@ fn fold_to_mono(buffer: &mut [f32]) {
 
 /// Sample peak of an interleaved stereo buffer; non-finite samples are ignored.
 fn peak_of(buffer: &[f32]) -> f32 {
-    let mut peak = 0.0f32;
-    for sample in buffer {
-        if sample.is_finite() {
-            peak = peak.max(sample.abs());
-        }
-    }
-    peak.min(16.0)
+    crate::meters::finite_peak(buffer).min(16.0)
 }
 
 /// Publish the latency of the live pre-master and master chains.
@@ -3440,6 +3360,25 @@ fn publish_chain_latency(cell: &AtomicU64, graph: &AudioGraph) {
     let latency = u64::from(graph.pre_master_latency_samples())
         + u64::from(graph.master_chain.latency_samples());
     cell.store(latency, Ordering::Release);
+}
+
+/// Workers that share each block with the render thread. Each one adopts the
+/// render thread's plugin-bridge mode, because hosted instruments and inserts
+/// read it on whichever thread processes them. Without workers the render
+/// thread renders every lane and chain itself.
+fn spawn_block_workers() -> Option<oc_engine::block_workers::BlockWorkers> {
+    let parallelism = oc_engine::render_parallel::RenderWorkerOptions::default().workers();
+    if parallelism <= 1 {
+        return None;
+    }
+    oc_engine::block_workers::BlockWorkers::new(parallelism, "ocp-block", || {
+        #[cfg(target_os = "macos")]
+        std::mem::forget(oc_host::vst2_bridge::BridgeScope::enter(
+            oc_host::vst2_bridge::BridgeMode::Streaming,
+        ));
+    })
+    .map_err(|error| log::warn!("[render_thread] block workers unavailable: {error}"))
+    .ok()
 }
 
 /// Main render loop — runs on the background thread.
@@ -3455,6 +3394,9 @@ fn render_loop(
     let _bridge_scope =
         oc_host::vst2_bridge::BridgeScope::enter(oc_host::vst2_bridge::BridgeMode::Streaming);
     let mut state = RenderState::new(sample_rate);
+    state.block_workers = spawn_block_workers();
+    let lookahead = lookahead_frames(sample_rate);
+    let ring_frames = producer.buffer().capacity() / 2;
     let mut chunk = Vec::with_capacity(CHUNK_FRAMES * 2);
     state.meter_hub = Some(Arc::clone(&playback.meters));
     state.instrument_instantiations = Arc::clone(&playback.instrument_instantiations);
@@ -3468,6 +3410,9 @@ fn render_loop(
     state.preset_macros = playback.preset_macros.clone();
     // Reset whenever a seek generation has not been acknowledged for this long.
     let mut ack_wait_started: Option<std::time::Instant> = None;
+    // Seek generation and cursor where this loop opened playback, so chunk
+    // sizes ramp from the opening chunk.
+    let mut chunk_origin: Option<(u64, u64)> = None;
     // Loop generation already applied; a newer one invalidates the queued pass.
     let mut loop_generation = playback.loop_generation.load(Ordering::Acquire);
     #[cfg(test)]
@@ -3993,9 +3938,9 @@ fn render_loop(
             let queued = if warm_stage {
                 state.rendered_ahead.len() / 2
             } else {
-                RING_BUFFER_FRAMES
+                ring_frames
                     .saturating_sub(producer.slots() / 2)
-                    .min(LOOKAHEAD_FRAMES)
+                    .min(lookahead)
             };
             let remaining = if warm_stage {
                 state.playback_end().saturating_sub(state.dsp_cursor)
@@ -4003,7 +3948,7 @@ fn render_loop(
                 state.playback_end().saturating_sub(state.render_cursor)
             } as usize;
             let mut frames = CHUNK_FRAMES
-                .min(LOOKAHEAD_FRAMES.saturating_sub(queued))
+                .min(lookahead.saturating_sub(queued))
                 .min(remaining);
             // Warm only up to the loop end, so the first press does not hear
             // audio the loop would never play.
@@ -4136,12 +4081,17 @@ fn render_loop(
 
             // Keep a bounded lookahead: the ring is capacity, not a fill target,
             // so a mixer edit is heard within one window instead of two seconds.
-            let queued_samples = RING_BUFFER_FRAMES * 2 - producer.slots();
-            let first = !playback.ready.load(Ordering::Acquire);
-            let mut frames = if first {
-                FIRST_CHUNK_FRAMES
-            } else {
-                CHUNK_FRAMES
+            let queued_samples = ring_frames * 2 - producer.slots();
+            let generation = playback.seek_generation.load(Ordering::Acquire);
+            if !playback.ready.load(Ordering::Acquire) {
+                chunk_origin = Some((generation, state.render_cursor));
+            }
+            // A generation this loop did not open (a warm ring) starts full.
+            let mut frames = match chunk_origin {
+                Some((opened, origin)) if opened == generation => {
+                    next_chunk_frames(state.render_cursor.saturating_sub(origin) as usize)
+                }
+                _ => CHUNK_FRAMES,
             };
             // A chunk that crosses the region end is shortened, so no audio
             // past the loop point is ever rendered or queued.
@@ -4159,7 +4109,7 @@ fn render_loop(
             // the lookahead is full: the pass behind the seam is what keeps the
             // callback fed until this chunk is ready.
             let seam_head = state.loop_seam_fade > 0;
-            if (seam_head || queued_samples + chunk_stereo_samples <= LOOKAHEAD_FRAMES * 2)
+            if (seam_head || queued_samples + chunk_stereo_samples <= lookahead * 2)
                 && producer.slots() >= chunk_stereo_samples
             {
                 state.render_chunk_into(frames, &mut chunk);
@@ -4219,3 +4169,10 @@ mod source_lane_tests;
 #[cfg(test)]
 #[path = "render_thread/owned_touch_tests.rs"]
 mod owned_touch_tests;
+
+#[path = "render_thread/lane_render.rs"]
+mod lane_render;
+
+#[cfg(test)]
+#[path = "render_thread/stream_budget_tests.rs"]
+mod stream_budget_tests;

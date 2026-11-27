@@ -199,6 +199,11 @@ impl TrackRamps {
         Some(ramp)
     }
 
+    /// One send's ramp, for a job that mixes that send alone.
+    pub(super) fn send_ramp(&mut self, index: usize) -> Option<&mut GainRamp> {
+        self.sends.get_mut(index)
+    }
+
     /// Keep one send ramp per route. A route whose amount moved keeps its ramp;
     /// a route added since the last edit starts at its amount.
     pub(super) fn resize_sends(&mut self, sends: &[SendRoute]) {

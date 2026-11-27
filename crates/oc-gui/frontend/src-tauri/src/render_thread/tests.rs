@@ -2449,6 +2449,59 @@ fn two_track_project(tempo: f64) -> Project {
         .unwrap()
 }
 
+/// A playing stream with a stalled consumer queues half a second of audio and
+/// then waits: enough to ride out a chunk that renders slower than real time,
+/// and no more, so an edit is heard within that window.
+#[test]
+fn playback_queues_half_a_second_ahead_and_no_more() {
+    use super::*;
+    let rate = 48_000;
+    let lookahead = lookahead_frames(rate);
+    assert_eq!(lookahead, 24_000);
+    for rate in [8_000, 44_100, 96_000, 192_000] {
+        assert!(lookahead_frames(rate) * 1000 >= rate as usize * 500);
+        assert!(lookahead_frames(rate) >= FIRST_CHUNK_FRAMES + 2 * CHUNK_FRAMES);
+        assert!(ring_buffer_frames(rate) >= lookahead_frames(rate) + CHUNK_FRAMES);
+        // Every queued chunk keeps its meter frame until the device plays it.
+        assert!(max_pending_meters(rate) * CHUNK_FRAMES >= lookahead_frames(rate) + CHUNK_FRAMES);
+    }
+    let handle = RenderThreadHandle::spawn(rate);
+    handle.send(RenderCommand::ProjectChanged {
+        root: None,
+        project: Box::new(two_track_project(120.0)),
+        soundfont_path: PathBuf::new(),
+        warm: false,
+    });
+    handle
+        .wait_project_loaded(std::time::Duration::from_secs(5))
+        .unwrap();
+    handle.send(RenderCommand::Play {
+        start_frame: 0,
+        resume: false,
+        end_frame: None,
+    });
+    assert!(handle.wait_ready(std::time::Duration::from_secs(5)));
+    // No callback acks; the producer publishes after its bounded wait and
+    // stops once the next chunk would overfill the lookahead.
+    let started = std::time::Instant::now();
+    let mut queued = 0;
+    let mut stable_since = std::time::Instant::now();
+    while started.elapsed() < std::time::Duration::from_secs(10) {
+        let now = ring_slots(&handle) / 2;
+        if now != queued {
+            queued = now;
+            stable_since = std::time::Instant::now();
+        } else if queued > 0 && stable_since.elapsed() > std::time::Duration::from_millis(300) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(
+        queued > lookahead - CHUNK_FRAMES && queued <= lookahead,
+        "queued {queued} frames against a lookahead of {lookahead}"
+    );
+}
+
 #[test]
 fn warm_up_builds_sources_without_starting_playback() {
     use super::*;
@@ -2846,7 +2899,7 @@ fn unmuting_a_pruned_track_does_not_underrun_the_callback() {
         "steady playback underran before the unmute"
     );
 
-    // 1.5 s is well past the 250 ms lookahead: building this lane on the
+    // 1.5 s is well past the 500 ms lookahead: building this lane on the
     // producer would drain the ring long before the splice.
     handle.test_build_delay_ms.store(1500, Ordering::Release);
     let mut unmuted = project.clone();
@@ -5621,7 +5674,7 @@ fn prepared_streaming_blocks_and_meter_recycling_do_not_allocate_from_first_bloc
         assert_eq!(output, expected, "streaming block {block}");
         assert_eq!(
             state.free_meter_frames.len() + state.pending_meters.len(),
-            MAX_PENDING_METERS
+            max_pending_meters(48_000)
         );
         if block >= 20 {
             assert_eq!(
@@ -5994,4 +6047,294 @@ fn adding_a_track_after_a_reused_load_rebuilds_every_lane() {
         first + 2,
         "both lanes were rebuilt once"
     );
+}
+
+/// Lanes and graph chains on block workers stream exactly the audio of one
+/// thread: lane-owned buffers are summed in lane order and buses gather their
+/// sources in a fixed order, whichever thread finishes first.
+#[test]
+fn block_workers_stream_the_same_audio_as_one_thread() {
+    let project = oc_dsl::parse(
+        r#"@project "Workers"
+  tempo: 124
+  tempo_map:
+    2:1 + 0.1875q = 97 bpm
+@preset thump
+  source: builtin
+  plugin: "builtin.open_synth"
+  params: {synth_version: 2, osc.a.waveform: 0, amp.attack: 0s, amp.decay: 0.12s, amp.sustain: 0, amp.release: 0.05s, output.gain: 0.5}
+@preset saw
+  source: builtin
+  plugin: "builtin.open_synth"
+  params: {synth_version: 2, osc.a.waveform: 1, filter.cutoff: 2400Hz, amp.release: 0.2s, output.gain: 0.3}
+@track kick | instrument: synth/virtual_analog, preset: thump
+  mix: output=drums
+  @phrase beat [1:1:0 - 4:1:0]
+    C1 q ff
+    rest q
+    C1 q ff
+    C1 8th f
+    rest 8th
+    |
+    C1 q ff
+    rest q
+    C1 q ff
+    rest q
+    |
+    C1 h ff
+    C1 h ff
+@track bass | instrument: synth/virtual_analog, preset: saw
+  effects:
+    - compression: threshold=-24dB, ratio=4:1, attack=2ms, release=60ms, sidechain=kick
+  mix: output=music
+  @phrase line [1:1:0 - 4:1:0]
+    C2 q f
+    E2 q f
+    G2 q f
+    C3 q f
+    |
+    A1 h f
+    F2 h f
+    |
+    G1 w f
+@track lead | instrument: synth/virtual_analog, preset: saw
+  effects:
+    - gain: factor=0.6
+  mix: output=music, send(space=30%)
+  @phrase motif [1:1:0 - 4:1:0]
+    C4 8th f
+    D4 8th f
+    E4 8th f
+    G4 8th f
+    A4 q f
+    G4 q f
+    |
+    E4 w mf
+    |
+    D4 h mf
+    C4 h mf
+@track pad | instrument: synth/virtual_analog, preset: thump
+  mix: output=music
+  @phrase bed [1:1:0 - 4:1:0]
+    C3 w mp
+    |
+    A2 w mp
+    |
+    G2 w mp
+@bus drums
+  routes: [glue]
+  effects:
+    - gain: factor=0.8
+@bus music
+  routes: [glue]
+  effects:
+    - compression: threshold=-20dB, ratio=3:1, attack=5ms, release=80ms, sidechain=drums
+@bus space
+  routes: [glue]
+  effects:
+    - gain: factor=0.5
+@bus glue
+  routes: [master]
+  effects:
+    - gain: factor=0.9
+"#,
+    )
+    .unwrap();
+    let render = |workers: Option<oc_engine::block_workers::BlockWorkers>| {
+        let mut state = RenderState::new(48_000);
+        state.block_workers = workers;
+        state
+            .load_project_from(&project, PathBuf::new(), None, 0)
+            .unwrap();
+        state.prepare_streaming().unwrap();
+        state.seek_to(0).unwrap();
+        state.start_playing();
+        let mut chunks = Vec::new();
+        let mut frames = FIRST_CHUNK_FRAMES;
+        while chunks.len() < 40 {
+            let mut chunk = Vec::new();
+            state.render_chunk_into(frames, &mut chunk);
+            assert!(state.render_error.is_none(), "{:?}", state.render_error);
+            if chunk.is_empty() {
+                break;
+            }
+            chunks.push(chunk);
+            frames = CHUNK_FRAMES;
+        }
+        chunks
+    };
+    let serial = render(None);
+    let workers = oc_engine::block_workers::BlockWorkers::new(4, "ocp-test-block", || {}).unwrap();
+    let parallel = render(Some(workers));
+    assert!(serial.len() >= 20);
+    assert!(serial.iter().flatten().any(|sample| sample.abs() > 1e-3));
+    assert_eq!(serial.len(), parallel.len());
+    for (index, (serial, parallel)) in serial.iter().zip(&parallel).enumerate() {
+        let same = serial.len() == parallel.len()
+            && serial
+                .iter()
+                .zip(parallel)
+                .all(|(a, b)| a.to_bits() == b.to_bits());
+        assert!(same, "chunk {index}");
+    }
+}
+
+/// Lanes scheduled inside the graph block stream exactly the audio and meter
+/// inputs of one thread: each track mixes its lanes and clips in order, and
+/// each bus gathers its sends in serial routing order.
+#[test]
+fn lanes_scheduled_with_the_graph_stream_the_same_audio_as_one_thread() {
+    let root = clip_temp_dir("scheduled-lanes");
+    clip_media(&root);
+    let project = oc_dsl::parse(
+        r#"@project "Scheduled"
+  tempo: 124
+@preset thump
+  source: builtin
+  plugin: "builtin.open_synth"
+  params: {synth_version: 2, osc.a.waveform: 0, amp.attack: 0s, amp.decay: 0.12s, amp.sustain: 0, amp.release: 0.05s, output.gain: 0.5}
+@preset saw
+  source: builtin
+  plugin: "builtin.open_synth"
+  params: {synth_version: 2, osc.a.waveform: 1, filter.cutoff: 2400Hz, amp.release: 0.2s, output.gain: 0.3}
+@audio_clip hit [1:3 - 3:1] | track: tape
+  file: "clip.wav"
+  gain: -6dB
+@track kick | instrument: synth/virtual_analog, preset: thump
+  mix: output=drums, send(space=20%, pre)
+  @phrase beat [1:1:0 - 4:1:0]
+    C1 q ff
+    rest q
+    C1 q ff
+    C1 q ff
+    |
+    C1 h ff
+    C1 h ff
+@track bass | instrument: synth/virtual_analog, preset: saw
+  effects:
+    - gain: factor=0.7
+  mix: output=music, polarity=invert, vol=-3dB, pan=-0.4
+  @phrase line [1:1:0 - 4:1:0]
+    C2 q f
+    E2 q f
+    G2 q f
+    C3 q f
+    |
+    A1 w f
+@track lead | instrument: synth/virtual_analog, preset: saw
+  mix: send(space=30%), pan=0.5
+  @phrase motif [1:1:0 - 4:1:0]
+    C4 8th f
+    D4 8th f
+    E4 8th f
+    G4 8th f
+    A4 h f
+    |
+    E4 w mf
+@track tape | instrument: audio/clip
+  mix: output=music
+@bus drums
+  routes: [glue]
+  effects:
+    - gain: factor=0.8
+@bus music
+  routes: [glue]
+  effects:
+    - compression: threshold=-20dB, ratio=3:1, attack=5ms, release=80ms, sidechain=kick
+@bus space
+  routes: [glue, master]
+  effects:
+    - gain: factor=0.5
+@bus glue
+  routes: [master]
+  effects:
+    - gain: factor=0.9
+"#,
+    )
+    .unwrap();
+    let project = oc_engine::block_source::prepare_project(&project, Some(&root)).unwrap();
+    let render = |workers: Option<oc_engine::block_workers::BlockWorkers>| {
+        let mut state = RenderState::new(48_000);
+        state.meter_hub = Some(Arc::new(MeterHub::new()));
+        state.block_workers = workers;
+        state.root = Some(root.clone());
+        state.load_project(&project, PathBuf::new()).unwrap();
+        state.prepare_streaming().unwrap();
+        let scheduled = state
+            .graph
+            .as_ref()
+            .unwrap()
+            .parallel_shape()
+            .scheduled_sources;
+        state.seek_to(0).unwrap();
+        state.start_playing();
+        let mut chunks = Vec::new();
+        let mut peaks = Vec::new();
+        let mut frames = FIRST_CHUNK_FRAMES;
+        while chunks.len() < 40 {
+            let mut chunk = Vec::with_capacity(CHUNK_FRAMES * 2);
+            let operations =
+                crate::test_alloc::operations(|| state.render_chunk_into(frames, &mut chunk));
+            assert!(state.render_error.is_none(), "{:?}", state.render_error);
+            if chunk.is_empty() {
+                break;
+            }
+            // Past the first blocks, which grow the meter queue, a block
+            // neither allocates nor frees.
+            if chunks.len() >= 4 {
+                assert_eq!(operations, 0, "block {}", chunks.len());
+            }
+            chunks.push(chunk);
+            peaks.push(state.meter_input_peaks.clone());
+            frames = CHUNK_FRAMES;
+        }
+        (scheduled, state.renderers.len(), chunks, peaks)
+    };
+    let (_, _, serial, serial_peaks) = render(None);
+    let workers = oc_engine::block_workers::BlockWorkers::new(4, "ocp-test-block", || {}).unwrap();
+    let (scheduled, lanes, parallel, parallel_peaks) = render(Some(workers));
+    assert!(lanes >= 3);
+    assert_eq!(scheduled, lanes, "every lane joins the graph's schedule");
+    assert!(serial.len() >= 20);
+    assert!(serial.iter().flatten().any(|sample| sample.abs() > 1e-3));
+    assert_eq!(serial.len(), parallel.len());
+    for (index, (serial, parallel)) in serial.iter().zip(&parallel).enumerate() {
+        let same = serial.len() == parallel.len()
+            && serial
+                .iter()
+                .zip(parallel)
+                .all(|(a, b)| a.to_bits() == b.to_bits());
+        assert!(same, "chunk {index}");
+    }
+    assert!(serial_peaks.iter().flatten().any(|peak| *peak > 0.0));
+    assert_eq!(serial_peaks, parallel_peaks);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// After the opening chunk, chunks double up to full size: each is at most
+/// twice the audio rendered before it, and they land on the grid full chunks
+/// would use, so every start splits the timeline the same way.
+#[test]
+fn chunks_grow_from_the_opening_chunk_onto_the_full_chunk_grid() {
+    let mut rendered = 0;
+    let mut sizes = Vec::new();
+    while rendered < 6 * CHUNK_FRAMES {
+        let frames = next_chunk_frames(rendered);
+        assert!(frames <= (rendered * 2).max(FIRST_CHUNK_FRAMES));
+        sizes.push(frames);
+        rendered += frames;
+    }
+    assert_eq!(
+        sizes[..5],
+        [FIRST_CHUNK_FRAMES, 2048, 2048, CHUNK_FRAMES, CHUNK_FRAMES]
+    );
+    assert!(sizes[3..].iter().all(|frames| *frames == CHUNK_FRAMES));
+    // The ramp ends where a full chunk after the opening chunk would.
+    assert_eq!(
+        sizes[..3].iter().sum::<usize>(),
+        FIRST_CHUNK_FRAMES + CHUNK_FRAMES
+    );
+    // Past the ramp chunks are full, wherever a loop or region end cut one
+    // short.
+    assert_eq!(next_chunk_frames(16_000), CHUNK_FRAMES);
 }

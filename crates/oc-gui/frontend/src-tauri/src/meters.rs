@@ -47,20 +47,70 @@ struct Level {
     rms: f32,
 }
 
+/// Independent accumulators per scan, so the per-sample work of a meter scan
+/// stays in vector registers instead of one serial dependency chain.
+const SCAN_LANES: usize = 8;
+
+/// Largest finite magnitude of `buffer`, ignoring non-finite samples.
+///
+/// Every chunk the stream renders scans each track and bus once; a select
+/// instead of a branch lets the scan run as vector code.
+pub(crate) fn finite_peak(buffer: &[f32]) -> f32 {
+    let (chunks, tail) = buffer.as_chunks::<SCAN_LANES>();
+    let mut peaks = [0.0f32; SCAN_LANES];
+    for chunk in chunks {
+        for (peak, &sample) in peaks.iter_mut().zip(chunk) {
+            *peak = peak.max(finite_magnitude(sample));
+        }
+    }
+    tail.iter()
+        .map(|&sample| finite_magnitude(sample))
+        .chain(peaks)
+        .fold(0.0, f32::max)
+}
+
+/// Peak, sum of squares and count of the finite samples of `buffer`.
+fn finite_levels(buffer: &[f32]) -> (f32, f64, usize) {
+    let (chunks, tail) = buffer.as_chunks::<SCAN_LANES>();
+    let mut peaks = [0.0f32; SCAN_LANES];
+    let mut sums = [0.0f64; SCAN_LANES];
+    let mut counts = [0usize; SCAN_LANES];
+    let mut add = |lane: usize, sample: f32| {
+        let magnitude = finite_magnitude(sample);
+        peaks[lane] = peaks[lane].max(magnitude);
+        sums[lane] += f64::from(magnitude) * f64::from(magnitude);
+        counts[lane] += usize::from(sample.is_finite());
+    };
+    for chunk in chunks {
+        for (lane, &sample) in chunk.iter().enumerate() {
+            add(lane, sample);
+        }
+    }
+    for (lane, &sample) in tail.iter().enumerate() {
+        add(lane, sample);
+    }
+    (
+        peaks.into_iter().fold(0.0, f32::max),
+        sums.into_iter().sum(),
+        counts.into_iter().sum(),
+    )
+}
+
+/// `|sample|`, or zero for a non-finite sample.
+fn finite_magnitude(sample: f32) -> f32 {
+    let magnitude = sample.abs();
+    if magnitude < f32::INFINITY {
+        magnitude
+    } else {
+        0.0
+    }
+}
+
 impl Level {
     /// Peak and RMS of an interleaved stereo buffer, ignoring non-finite
     /// samples. Both are capped at 16.0 linear (24 dBFS) before the dB clamp.
     fn of(buffer: &[f32]) -> Self {
-        let mut peak = 0.0f32;
-        let mut sum = 0.0f64;
-        let mut count = 0usize;
-        for &sample in buffer {
-            if sample.is_finite() {
-                peak = peak.max(sample.abs());
-                sum += f64::from(sample) * f64::from(sample);
-                count += 1;
-            }
-        }
+        let (peak, sum, count) = finite_levels(buffer);
         let rms = if count == 0 {
             0.0
         } else {
@@ -1009,6 +1059,50 @@ mod tests {
         assert_eq!(bands[0].len(), BAND_COUNT);
         assert!(bands[0][..BAND_COUNT - 1].iter().all(|&gain| gain == 0.0));
         assert!(bands[0][BAND_COUNT - 1] < -3.0);
+    }
+
+    /// The lane scan reads the same levels as a plain sample-by-sample scan,
+    /// including non-finite samples at every lane and in the tail.
+    #[test]
+    fn lane_scans_match_a_serial_scan_and_skip_non_finite_samples() {
+        let mut seed = 0x9e37_79b9_u32;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            seed
+        };
+        for length in [0, 1, 7, 8, 9, 63, 4_096 * 2 + 5] {
+            let mut buffer: Vec<f32> = (0..length)
+                .map(|_| (next() as f32 / u32::MAX as f32) * 4.0 - 2.0)
+                .collect();
+            for (index, special) in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 40.0]
+                .into_iter()
+                .enumerate()
+            {
+                if length > index * 3 {
+                    buffer[index * 3] = special;
+                }
+            }
+            let mut peak = 0.0f32;
+            let mut sum = 0.0f64;
+            let mut count = 0;
+            for &sample in &buffer {
+                if sample.is_finite() {
+                    peak = peak.max(sample.abs());
+                    sum += f64::from(sample) * f64::from(sample);
+                    count += 1;
+                }
+            }
+            let (lane_peak, lane_sum, lane_count) = finite_levels(&buffer);
+            assert_eq!(lane_peak, peak, "peak of {length}");
+            assert_eq!(finite_peak(&buffer), peak, "peak of {length}");
+            assert_eq!(lane_count, count, "count of {length}");
+            assert!(
+                (lane_sum - sum).abs() <= sum * 1e-12,
+                "sum of {length}: {lane_sum} vs {sum}"
+            );
+        }
     }
 
     #[test]

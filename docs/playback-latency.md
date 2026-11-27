@@ -61,9 +61,16 @@ even when nothing structural changed.
 - Solo resolves to an effective mute in the graph, at build time and when
   patched, so streaming and offline agree.
 - **Short first chunk.** The first chunk of a playback generation is 1024
-  frames (`FIRST_CHUNK_FRAMES`), then steady state is 4096. The producer keeps
-  at most ~250 ms queued (`LOOKAHEAD_FRAMES = 12000`), so a mixer edit is
-  audible within one lookahead window instead of up to 2 s.
+  frames (`FIRST_CHUNK_FRAMES`). The next chunks are 2048, 2048, then the
+  steady 4096 (`next_chunk_frames`): each is at most twice the audio rendered
+  before it, so it renders before the device plays out the chunks ahead of it,
+  where a full chunk right behind the opening one would still be rendering
+  when those 1024 frames ran out. The ramp ends where the first full chunk
+  would, so every start splits the timeline the same way. The producer keeps
+  at most 500 ms queued (`lookahead_frames`, 24 000 frames at 48 kHz), so a
+  mixer edit is audible within one lookahead window instead of up to 2 s, and a
+  plugin that stalls for a few chunks plays out of the queue instead of
+  gapping.
 - **Bounded handshake.** The producer waits at most 250 ms
   (`ACK_TIMEOUT`) for the callback to acknowledge a seek generation, then
   publishes anyway. The callback checks the generation *before* the
@@ -157,7 +164,7 @@ DEVICE_LATENCY_BLOCKS (= 1) * device_buffer_frames + chain_latency_frames
   which point they describe audio the device is playing. The chain latency
   cancels in that condition: the chain shifts the meters and the playhead by the
   same amount.
-- The 250 ms lookahead (`LOOKAHEAD_FRAMES = 12000`) is untouched, and the offline
+- The 500 ms lookahead (`lookahead_frames`) is untouched, and the offline
   renderer is not touched at all: it already aligns sources and trims the master
   head.
 
@@ -282,7 +289,7 @@ for a press the app does not deliver. The warm-up therefore covers four things:
    is audible until a press. A stream that cannot start is logged and the press
    path falls back to starting it on the press.
 2. The worker builds sources and the graph, then writes the opening
-   `LOOKAHEAD_FRAMES` (12 000 frames, ~250 ms at 48 kHz) **into the ring**, one
+   lookahead (500 ms, 24 000 frames at 48 kHz) **into the ring**, one
    chunk per loop iteration. It waits for the consumer to acknowledge the current
    seek generation first; a project change bumps the generation, the callback
    flushes, and the refill starts only after the ack. With no consumer at all
@@ -340,7 +347,7 @@ cargo test -p oc-gui --lib review_open_to_first_sound_latency -- --ignored --noc
 | build sources (4 × instantiate + state) | 274–362 ms |
 | graph build | 0.1–0.3 ms |
 | warm first chunk | 24–27 ms |
-| warm prefill total (~250 ms audio) | 61 ms |
+| warm prefill total (250 ms of audio) | 61 ms |
 | **open → ready** | **0.42–0.47 s** |
 | ring holds audio at press | **yes** |
 | consumer running at press | **yes** |
@@ -413,12 +420,12 @@ identical; 4,248,432 bytes).
   until the finished source is spliced in (debug-build OpenSynth patches that
   import presets can take seconds). Splice time is the bounded graph rebuild a
   structural edit already pays; later mute/unmute cycles are free.
-- The 250 ms lookahead (`LOOKAHEAD_FRAMES = 12000`) is the
+- The 500 ms lookahead (`lookahead_frames`) is the
   accepted mixer-edit bound, not a budget for building instruments.
-- A mixer edit is heard after the current lookahead (≤ 250 ms), because chunks
+- A mixer edit is heard after the current lookahead (≤ 500 ms), because chunks
   already in the ring are committed. The warm ring has the same ordering: a
   mute/volume/pan change made *before* the first play patches the graph, and the
-  prefilled ≤ 250 ms keeps the mix it was rendered with, so the edit lands as the
+  prefilled ≤ 500 ms keeps the mix it was rendered with, so the edit lands as the
   producer continues. It is not re-mixed, because that would need the per-source
   history the warm-up replaced.
 - Structural edits rebuild instruments and preroll to the playhead in the
@@ -466,7 +473,7 @@ The underrun claim is measured, not inferred: `StreamingPlayback::underruns`
 counts callbacks that found the ring empty after audio had started for the
 generation, and the production callback is the only writer. The regression test
 runs that callback against the real ring at realtime, delays the source worker
-by 1.5 s (well past the 250 ms lookahead) and asserts zero new underruns while
+by 1.5 s (well past the 500 ms lookahead) and asserts zero new underruns while
 `active_sources` stays at the pre-unmute count; a build performed on the render
 thread fails the same assertion with tens of underruns. `active_sources`
 tracks spliced lanes so the test can also prove the worker delivered the lane
@@ -855,9 +862,9 @@ path costs.
 - **First block ≤ 50 ms.** The moment a command starts audio (a press, a seek, a
   preview click, a record start, an unmute) to the moment the first block for
   that start leaves the device sink.
-- **A start path streams.** It computes at most the 250 ms lookahead window plus
-  one chunk before that first block: `LOOKAHEAD_FRAMES + CHUNK_FRAMES` =
-  16 096 frames, stated as 16 384. Anything longer means the path rendered a
+- **A start path streams.** It computes at most the 500 ms lookahead window plus
+  one chunk before that first block: `lookahead_frames + CHUNK_FRAMES` =
+  28 096 frames at 48 kHz. Anything longer means the path rendered a
   range first. The transport therefore never renders a window, a section or a
   song before it can sound.
 
@@ -1069,7 +1076,7 @@ The wrap does not wait for the drain. As soon as the last chunk of the pass is
 in the ring, the render thread rebuilds the pass from the region start while the
 callback plays the queued tail. The rebuild — reload the graph, replay the
 history before the region start — runs behind audio that already exists: it has
-up to the 12 000-frame lookahead (250 ms at 48 kHz) of queued audio to finish in.
+up to the 500 ms lookahead (24 000 frames at 48 kHz) of queued audio to finish in.
 
 Two fades keep the seam click-free. The closing chunk fades out over `RESUME_FADE_FRAMES` (96 frames, 2 ms at
 48 kHz), and the chunk that opens the next pass fades in over the same length.

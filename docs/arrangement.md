@@ -129,8 +129,10 @@ Other limits:
 
 Hosted instruments and effects receive one clock context per `process` call,
 offline and in streaming playback. The renderer splits a block at the next
-authored tempo or meter change, and while a map is active also at the 128-frame
-source quantum. No call spans a change, and a split never drops or repeats a
+authored tempo or meter change. While a map is active it also splits
+instruments at the 128-frame source quantum, and effects at every 1024th frame
+of the timeline, so an effect sees the same calls in an offline pass as in
+streaming chunks. No call spans a change, and a split never drops or repeats a
 frame. A change exactly on a block boundary starts the next call. A change on
 the first frame of a block applies to that call.
 

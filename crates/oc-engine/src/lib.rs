@@ -65,6 +65,7 @@ pub mod audio_peaks;
 pub mod automation;
 #[cfg(feature = "plugin-host")]
 pub mod block_source;
+pub mod block_workers;
 pub mod clip_lane;
 mod clip_pcm;
 pub mod control_link;
