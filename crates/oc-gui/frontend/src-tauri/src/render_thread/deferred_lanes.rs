@@ -16,6 +16,8 @@ use std::sync::{Arc, Mutex};
 use oc_dsl::ast::{PresetDef, Project, Track};
 use oc_engine::interpret::{MidiEvent, MidiMessage};
 
+use crate::build_progress::{BuildScope, Stage};
+
 /// Lanes whose first note is this close to the cursor load before playback
 /// starts; later ones load in the background.
 pub(crate) const DEFERRED_LANE_WINDOW_SECONDS: f64 = 2.0;
@@ -144,6 +146,8 @@ pub(crate) struct DeferredLanes {
     pub keys: Vec<u64>,
     /// How many lanes the build deferred, for progress.
     pub total: usize,
+    report: Option<BuildScope>,
+    reported: Option<(Stage, usize)>,
 }
 
 impl DeferredLanes {
@@ -165,7 +169,14 @@ impl DeferredLanes {
             reserve: vec![0; lanes],
             keys: vec![0; lanes],
             total: 0,
+            report: None,
+            reported: None,
         }
+    }
+
+    pub(super) fn attach_progress(&mut self, report: BuildScope) {
+        self.report = Some(report);
+        self.reported = None;
     }
 
     /// Leave `lane` for the background loader, reserving `latency` for it.
@@ -321,24 +332,21 @@ impl super::RenderState {
     /// Tell the panel how many deferred lanes have joined, and whether
     /// playback is waiting for one. Publishes only when that changes.
     pub(super) fn publish_lane_progress(&mut self) {
-        use crate::build_progress::Stage;
-        let now = self.deferred.as_ref().map(|deferred| {
-            let stage = if self.waiting_for_sources {
-                Stage::Waiting
-            } else {
-                Stage::Background
-            };
-            (stage, deferred.total - deferred.remaining(), deferred.total)
-        });
-        if now == self.reported_lane_progress {
+        let Some(deferred) = &mut self.deferred else {
             return;
+        };
+        let stage = if self.waiting_for_sources {
+            Stage::Waiting
+        } else {
+            Stage::Background
+        };
+        let done = deferred.total - deferred.remaining();
+        if deferred.reported != Some((stage, done))
+            && let Some(report) = &deferred.report
+        {
+            report.background(stage, done, deferred.total);
+            deferred.reported = Some((stage, done));
         }
-        let handle = crate::build_progress::handle();
-        match now {
-            Some((stage, done, total)) => handle.background(stage, done, total),
-            None => handle.finish(),
-        }
-        self.reported_lane_progress = now;
     }
 
     /// Put a lane built in the background into the mix at the current DSP

@@ -33,14 +33,20 @@ export function BuildProgressChip(props: { build: BuildSnapshot | null | undefin
       : stage;
   };
 
-  // The fill glides between polls while the load moves forward; a lower value
-  // means a new load began, so the bar starts over at once instead of
-  // visibly draining.
-  const fill = createMemo<{ value: number | null; restart: boolean }>((last) => {
-    const raw = props.build?.progress;
-    const value = typeof raw === "number" ? Math.min(Math.max(raw, 0), 1000) / 1000 : null;
-    const restart = value !== null && last.value !== null && value < last.value;
-    return { value, restart };
+  // The transport and dedicated build polls can arrive out of order. Hold the
+  // furthest fill for this load and restart only when the load identity changes.
+  const fill = createMemo<{ generation?: number; value: number | null; restart: boolean }>((last) => {
+    const { generation, progress } = props.build ?? {};
+    const value = typeof progress === "number" ? Math.min(Math.max(progress, 0), 1000) / 1000 : null;
+    if (generation !== undefined && last.generation !== undefined) {
+      if (generation < last.generation) return last;
+      if (generation === last.generation && last.value !== null) {
+        return { generation, value: Math.max(last.value, value ?? 0), restart: false };
+      }
+    }
+    const restart = generation !== undefined && last.generation !== undefined
+      && generation > last.generation && value !== null && last.value !== null;
+    return { generation, value, restart };
   }, { value: null, restart: false });
 
   return (

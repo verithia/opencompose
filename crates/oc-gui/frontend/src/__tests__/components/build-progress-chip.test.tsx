@@ -70,17 +70,29 @@ describe("build progress chip", () => {
     expect(container.querySelector(".build-progress-sweep")).toBeTruthy();
   });
 
-  it("glides forward and restarts at once when a new load begins", () => {
-    const [build, setBuild] = createSignal<BuildSnapshot>({ ...BUILD, progress: 300 });
+  it("keeps the fill through the handoff, ignores stale progress and restarts on a new load", () => {
+    const [build, setBuild] = createSignal<BuildSnapshot>({ ...BUILD, generation: 4, progress: 300 });
     const { container } = render(() => <BuildProgressChip build={build()} />);
     const fill = () => container.querySelector<HTMLElement>(".build-progress-fill")!;
-    setBuild({ ...BUILD, progress: 650 });
+    setBuild({ ...BUILD, generation: 4, progress: 650 });
     expect(fill().style.transform).toBe("scaleX(0.65)");
     expect(fill().classList.contains("restart")).toBe(false);
-    setBuild({ stage: "background", label: "", done: 1, total: 74, progress: 13 });
-    expect(fill().style.transform).toBe("scaleX(0.013)");
+    const background: BuildSnapshot = { stage: "background", label: "", done: 0, total: 4, generation: 4 };
+    setBuild({ ...background, progress: 650 });
+    expect(fill().style.transform).toBe("scaleX(0.65)");
+    expect(fill().classList.contains("restart")).toBe(false);
+    setBuild({ ...background, done: 1, progress: 730 });
+    setBuild({ ...BUILD, generation: 4, progress: 650 });
+    setBuild({ ...BUILD, stage: "reading", generation: 4, progress: null });
+    expect(fill().style.transform).toBe("scaleX(0.73)");
+    expect(fill().classList.contains("restart")).toBe(false);
+    setBuild({ ...BUILD, generation: 5, progress: 30 });
+    expect(fill().style.transform).toBe("scaleX(0.03)");
     expect(fill().classList.contains("restart")).toBe(true);
-    setBuild({ stage: "background", label: "", done: 2, total: 74, progress: 27 });
+    setBuild({ ...background, done: 2, progress: 850 });
+    expect(fill().style.transform).toBe("scaleX(0.03)");
+    setBuild({ ...BUILD, generation: 5, progress: 200 });
+    expect(fill().style.transform).toBe("scaleX(0.2)");
     expect(fill().classList.contains("restart")).toBe(false);
   });
 

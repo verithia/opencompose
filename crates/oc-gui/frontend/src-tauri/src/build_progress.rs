@@ -5,7 +5,6 @@
 //! thread publishes one snapshot of that work so the panel can name the stage
 //! instead of showing a spinner with no progress.
 
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use serde::Serialize;
@@ -28,8 +27,9 @@ pub fn lane_units(hosted: bool) -> usize {
 
 /// The stage a project load is in. Wire values are stable strings, so the panel
 /// can translate them without tracking enum order.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum Stage {
+    #[default]
     Idle,
     Reading,
     Instruments,
@@ -60,6 +60,8 @@ impl Stage {
 /// One published state of a project build.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct BuildSnapshot {
+    /// Identifies one load across its foreground and background stages.
+    pub generation: u64,
     pub stage: &'static str,
     /// The track or preset being prepared, empty outside a per-instrument stage.
     pub label: String,
@@ -77,224 +79,159 @@ impl BuildSnapshot {
     }
 }
 
+#[derive(Default)]
 struct BuildProgress {
-    stage: Mutex<Stage>,
-    label: Mutex<String>,
-    done: AtomicUsize,
-    total: AtomicUsize,
-    /// Weighted work finished and planned across every stage of the load.
-    units_done: AtomicUsize,
-    units_total: AtomicUsize,
-    /// Bumped whenever a build starts or stops, so a reader can tell a fresh
-    /// build from a snapshot left by the previous one.
-    generation: AtomicU64,
+    generation: u64,
+    stage: Stage,
+    label: String,
+    done: usize,
+    total: usize,
+    lanes: usize,
+    units_done: usize,
+    units_total: usize,
 }
 
 impl BuildProgress {
-    fn new() -> Self {
-        Self {
-            stage: Mutex::new(Stage::Idle),
-            label: Mutex::new(String::new()),
-            done: AtomicUsize::new(0),
-            total: AtomicUsize::new(0),
-            units_done: AtomicUsize::new(0),
-            units_total: AtomicUsize::new(0),
-            generation: AtomicU64::new(0),
-        }
-    }
-
-    fn set(&self, stage: Stage, label: &str, done: usize, total: usize) {
-        *self
-            .stage
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner()) = stage;
-        *self
-            .label
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner()) = label.to_string();
-        self.done.store(done, Ordering::Release);
-        self.total.store(total, Ordering::Release);
-    }
-
-    fn set_units(&self, done: usize, total: usize) {
-        self.units_total.store(total, Ordering::Release);
-        self.units_done.store(done.min(total), Ordering::Release);
+    fn set(&mut self, stage: Stage, label: &str, done: usize, total: usize) {
+        self.stage = stage;
+        self.label.clear();
+        self.label.push_str(label);
+        self.done = done;
+        self.total = total;
     }
 
     fn snapshot(&self) -> BuildSnapshot {
-        let stage = *self
-            .stage
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
         BuildSnapshot {
-            stage: stage.code(),
-            label: self
-                .label
-                .lock()
-                .unwrap_or_else(|poison| poison.into_inner())
-                .clone(),
-            done: self.done.load(Ordering::Acquire),
-            total: self.total.load(Ordering::Acquire),
-            progress: permille(
-                self.units_done.load(Ordering::Acquire),
-                self.units_total.load(Ordering::Acquire),
-            ),
+            generation: self.generation,
+            stage: self.stage.code(),
+            label: self.label.clone(),
+            done: self.done,
+            total: self.total,
+            progress: (self.units_total > 0)
+                .then(|| (self.units_done.min(self.units_total) * 1000 / self.units_total) as u16),
         }
     }
 }
 
-fn permille(done: usize, total: usize) -> Option<u16> {
-    (total > 0).then(|| (done.min(total) * 1000 / total) as u16)
+fn shared() -> &'static Arc<Mutex<BuildProgress>> {
+    static PROGRESS: OnceLock<Arc<Mutex<BuildProgress>>> = OnceLock::new();
+    PROGRESS.get_or_init(|| Arc::new(Mutex::new(BuildProgress::default())))
 }
 
-fn shared() -> &'static Arc<BuildProgress> {
-    static PROGRESS: OnceLock<Arc<BuildProgress>> = OnceLock::new();
-    PROGRESS.get_or_init(|| Arc::new(BuildProgress::new()))
-}
-
-/// The handle the render thread publishes through.
-pub fn handle() -> Handle {
-    Handle {
-        progress: Arc::clone(shared()),
+fn update(report: &Mutex<BuildProgress>, generation: u64, apply: impl FnOnce(&mut BuildProgress)) {
+    let mut state = report.lock().unwrap_or_else(|poison| poison.into_inner());
+    if state.generation == generation && state.stage != Stage::Idle {
+        apply(&mut state);
     }
 }
 
-/// Publication side, held by the render thread for the length of a build.
-pub struct Handle {
-    progress: Arc<BuildProgress>,
-}
-
-impl Handle {
-    /// Start a build over `total` instruments.
-    pub fn begin(&self, total: usize) {
-        self.progress.generation.fetch_add(1, Ordering::AcqRel);
-        self.progress.set_units(0, 0);
-        self.progress.set(Stage::Reading, "", 0, total);
-    }
-
-    /// The load builds `lanes` source lanes and holds `units` of weighted work
-    /// in all; the bar fills against that.
-    pub fn plan(&self, lanes: usize, units: usize) {
-        self.progress.total.store(lanes, Ordering::Release);
-        self.progress.set_units(0, units);
-    }
-
-    /// `units` of the planned work are finished.
-    pub fn advance(&self, units: usize) {
-        let total = self.progress.units_total.load(Ordering::Acquire);
-        self.progress.set_units(units, total);
-    }
-
-    /// A mixer build report that fills the `span` units after `base`, in step
-    /// with the hosted plugins the graph loads.
-    pub fn graph_report(&self, base: usize, span: usize) -> oc_engine::graph::GraphBuildReport {
-        let progress = Arc::clone(&self.progress);
-        Arc::new(move |step: oc_engine::graph::GraphBuildStep| {
-            // A mixer with no hosted plugins has nothing to wait for.
-            let filled = (span * step.done.min(step.total))
-                .checked_div(step.total)
-                .unwrap_or(span);
-            let total = progress.units_total.load(Ordering::Acquire);
-            progress.set_units(base + filled, total);
-        })
-    }
-
-    pub fn stage(&self, stage: Stage) {
-        let total = self.progress.total.load(Ordering::Acquire);
-        let done = self.progress.done.load(Ordering::Acquire);
-        self.progress.set(stage, "", done, total);
-    }
-
-    /// Name one instrument while its lane is being prepared.
-    pub fn lane(&self, done: usize, label: &str) {
-        let total = self.progress.total.load(Ordering::Acquire);
-        self.progress.set(Stage::Instruments, label, done, total);
-    }
-
-    /// A SoundFont stage inside the current build: the engine reports `read`,
-    /// `index` or `decode` while it prepares one bank.
-    pub fn detail(&self, stage: &'static str, done: usize, total: usize) {
-        // Preparation also runs outside a build (the preset browser inspects a
-        // bank); only a running build owns the report.
-        let running = *self
-            .progress
-            .stage
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
-            != Stage::Idle;
-        if !running {
-            return;
-        }
-        self.progress.set(Stage::SoundFont, stage, done, total);
-    }
-
-    /// Instruments still loading after the project was published: `done` of
-    /// `total` have joined, and `stage` says whether playback waits for them.
-    pub fn background(&self, stage: Stage, done: usize, total: usize) {
-        self.progress.set_units(done, total);
-        self.progress.set(stage, "", done, total);
-    }
-
-    /// The build finished or failed; nothing is left to report.
-    pub fn finish(&self) {
-        self.progress.generation.fetch_add(1, Ordering::AcqRel);
-        self.progress.set_units(0, 0);
-        self.progress.set(Stage::Idle, "", 0, 0);
-    }
-}
-
-/// A build in progress. Dropping it publishes `idle`, so an early return or a
-/// failed load cannot leave a stale stage on the panel.
+/// A load owns its report until preparation fails or the final lane joins.
+/// An older load's scope and callbacks cannot change a newer load's report.
 pub struct BuildScope {
-    handle: Handle,
+    report: Arc<Mutex<BuildProgress>>,
+    generation: u64,
 }
 
 impl BuildScope {
+    fn begin(report: &Arc<Mutex<BuildProgress>>, total: usize) -> Self {
+        let mut state = report.lock().unwrap_or_else(|poison| poison.into_inner());
+        let generation = state.generation.wrapping_add(1);
+        *state = BuildProgress {
+            generation,
+            stage: Stage::Reading,
+            total,
+            lanes: total,
+            ..BuildProgress::default()
+        };
+        Self {
+            report: Arc::clone(report),
+            generation,
+        }
+    }
+
+    fn update(&self, apply: impl FnOnce(&mut BuildProgress)) {
+        update(&self.report, self.generation, apply);
+    }
+
     pub fn lane(&self, done: usize, label: &str) {
-        self.handle.lane(done, label);
+        self.update(|state| state.set(Stage::Instruments, label, done, state.lanes));
     }
 
     pub fn stage(&self, stage: Stage) {
-        self.handle.stage(stage);
+        self.update(|state| state.set(stage, "", 0, 0));
     }
 
     pub fn plan(&self, lanes: usize, units: usize) {
-        self.handle.plan(lanes, units);
+        self.update(|state| {
+            state.lanes = lanes;
+            state.total = lanes;
+            state.units_total = units;
+            state.units_done = 0;
+        });
     }
 
     pub fn advance(&self, units: usize) {
-        self.handle.advance(units);
+        self.update(|state| state.units_done = units);
     }
 
     pub fn graph_report(&self, base: usize, span: usize) -> oc_engine::graph::GraphBuildReport {
-        self.handle.graph_report(base, span)
+        let report = Arc::clone(&self.report);
+        let generation = self.generation;
+        Arc::new(move |step: oc_engine::graph::GraphBuildStep| {
+            let filled = (span * step.done.min(step.total))
+                .checked_div(step.total)
+                .unwrap_or(span);
+            update(&report, generation, |state| {
+                state.units_done = base + filled
+            });
+        })
+    }
+
+    /// Deferred lanes are hosted instruments. Only the still-pending ones
+    /// count as outstanding work, including when a rebuild reuses some lanes.
+    pub fn background(&self, stage: Stage, done: usize, total: usize) {
+        self.update(|state| {
+            let pending_units = total.saturating_sub(done) * HOSTED_INSTRUMENT_UNITS;
+            state.units_done = state.units_total.saturating_sub(pending_units);
+            state.set(stage, "", done, total);
+        });
     }
 }
 
 impl Drop for BuildScope {
     fn drop(&mut self) {
-        self.handle.finish();
+        self.update(|state| {
+            *state = BuildProgress {
+                generation: self.generation,
+                ..BuildProgress::default()
+            };
+        });
     }
 }
 
-/// Start reporting a build over `total` tracks; the scope finishes it.
 pub fn scope(total: usize) -> BuildScope {
-    let handle = handle();
-    handle.begin(total);
-    BuildScope { handle }
+    BuildScope::begin(shared(), total)
 }
 
-/// Route SoundFont preparation reports into the current build. Called once at
-/// startup; without it a bank preparation only reaches the log.
+/// Route SoundFont preparation reports into the current foreground build.
 pub fn install_engine_reports() {
     oc_engine::sf2::set_report_sink(Some(Arc::new(|stage, done, total| {
-        handle().detail(stage, done, total);
+        let mut state = shared().lock().unwrap_or_else(|poison| poison.into_inner());
+        if !matches!(
+            state.stage,
+            Stage::Idle | Stage::Background | Stage::Waiting
+        ) {
+            state.set(Stage::SoundFont, stage, done, total);
+        }
     })));
 }
 
 /// What the render thread is doing now; `None` once the build is finished.
 pub fn snapshot() -> Option<BuildSnapshot> {
-    let snapshot = shared().snapshot();
+    let snapshot = shared()
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .snapshot();
     snapshot.is_active().then_some(snapshot)
 }
 
@@ -303,52 +240,65 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_build_names_its_stage_and_each_lane() {
-        let handle = handle();
-        handle.begin(3);
-        let reading = snapshot().expect("a started build is reported");
-        assert_eq!(reading.stage, "reading");
-        assert_eq!(reading.total, 3);
-        assert_eq!(reading.progress, None, "no bar before the load is planned");
+    fn a_build_names_its_stage_and_keeps_its_weighted_progress() {
+        let report = Arc::new(Mutex::new(BuildProgress::default()));
+        let snapshot = || report.lock().unwrap().snapshot();
+        let load = BuildScope::begin(&report, 3);
+        let generation = snapshot().generation;
+        assert_eq!(snapshot().stage, "reading");
+        assert_eq!(snapshot().progress, None);
 
-        handle.plan(3, 100);
-        assert_eq!(snapshot().unwrap().progress, Some(0));
-        handle.advance(40);
-        assert_eq!(snapshot().unwrap().progress, Some(400));
-        // The mixer fills the rest in step with the plugins it loads.
-        let report = handle.graph_report(40, 60);
-        report(oc_engine::graph::GraphBuildStep { done: 1, total: 2 });
-        assert_eq!(snapshot().unwrap().progress, Some(700));
-        report(oc_engine::graph::GraphBuildStep { done: 2, total: 2 });
-        assert_eq!(snapshot().unwrap().progress, Some(1000));
-        handle.advance(40);
-
-        handle.lane(1, "Hosted Instrument");
-        let lane = snapshot().expect("a lane build is reported");
+        let foreground = HOSTED_INSTRUMENT_UNITS;
+        let effects = 2 * HOSTED_EFFECT_UNITS;
+        let planned = 3 * HOSTED_INSTRUMENT_UNITS + effects;
+        load.plan(3, planned);
+        assert_eq!(snapshot().progress, Some(0));
+        load.lane(0, "Hosted Instrument");
+        let lane = snapshot();
         assert_eq!(lane.stage, "instruments");
         assert_eq!(lane.label, "Hosted Instrument");
-        assert_eq!((lane.done, lane.total), (1, 3));
+        assert_eq!((lane.done, lane.total), (0, 3));
 
-        handle.stage(Stage::Effects);
-        assert_eq!(snapshot().expect("effects are reported").stage, "effects");
+        load.advance(foreground);
+        let before_mixer = snapshot().progress;
+        load.stage(Stage::Effects);
+        let mixer = load.graph_report(foreground, effects);
+        mixer(oc_engine::graph::GraphBuildStep { done: 1, total: 2 });
+        assert!(snapshot().progress > before_mixer);
+        mixer(oc_engine::graph::GraphBuildStep { done: 2, total: 2 });
+        let handoff = snapshot().progress;
+        assert_eq!(handoff, Some(365));
 
-        handle.finish();
-        assert!(snapshot().is_none());
+        load.background(Stage::Background, 0, 2);
+        assert_eq!(snapshot().stage, "background");
+        assert_eq!(snapshot().progress, handoff);
+        assert_eq!(snapshot().generation, generation);
+        load.background(Stage::Waiting, 1, 2);
+        assert_eq!(snapshot().stage, "waiting");
+        assert_eq!((snapshot().done, snapshot().total), (1, 2));
+        assert_eq!(snapshot().progress, Some(682));
+        load.background(Stage::Background, 2, 2);
+        assert_eq!(snapshot().progress, Some(1000));
+        drop(load);
+        assert!(!snapshot().is_active());
+    }
 
-        // Instruments loading behind playback are reported until the last
-        // joins. One test owns the process-wide report, so this stays here.
-        handle.background(Stage::Background, 2, 5);
-        let loading = snapshot().expect("background loading is reported");
-        assert_eq!(loading.stage, "background");
-        assert_eq!((loading.done, loading.total), (2, 5));
-        assert_eq!(loading.progress, Some(400));
-        handle.background(Stage::Waiting, 2, 5);
-        assert_eq!(snapshot().expect("a wait is reported").stage, "waiting");
-        handle.finish();
-        assert!(snapshot().is_none());
-        // A new load starts with no bar left from the last one.
-        handle.begin(1);
-        assert_eq!(snapshot().unwrap().progress, None);
-        handle.finish();
+    #[test]
+    fn a_replacement_reports_pending_work_and_ignores_the_old_load() {
+        let report = Arc::new(Mutex::new(BuildProgress::default()));
+        let snapshot = || report.lock().unwrap().snapshot();
+        let old = BuildScope::begin(&report, 3);
+        let old_mixer = old.graph_report(0, 10);
+        let old_generation = snapshot().generation;
+        let load = BuildScope::begin(&report, 3);
+        assert_ne!(snapshot().generation, old_generation);
+        load.plan(3, HOSTED_EFFECT_UNITS + HOSTED_INSTRUMENT_UNITS);
+        load.advance(HOSTED_EFFECT_UNITS);
+        let handoff = snapshot().progress;
+        old_mixer(oc_engine::graph::GraphBuildStep { done: 1, total: 1 });
+        drop(old);
+        load.background(Stage::Background, 1, 2);
+        assert_eq!(handoff, Some(69));
+        assert_eq!(snapshot().progress, handoff);
     }
 }

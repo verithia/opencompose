@@ -1255,8 +1255,6 @@ struct RenderState {
     track_latency_plan: Vec<u32>,
     /// The last block waited for a deferred lane to load.
     waiting_for_sources: bool,
-    /// Background-loading progress last published to the panel.
-    reported_lane_progress: Option<(crate::build_progress::Stage, usize, usize)>,
     /// Latencies deferred lanes reported, kept across this worker's loads.
     lane_latencies: Arc<deferred_lanes::LaneLatencies>,
     /// Live touch overrides; `None` in offline-only states and offline renders.
@@ -1354,7 +1352,6 @@ impl RenderState {
             lane_generation: 0,
             track_latency_plan: Vec::new(),
             waiting_for_sources: false,
-            reported_lane_progress: None,
             lane_latencies: Arc::default(),
             touch: None,
             midi_cc: None,
@@ -1730,7 +1727,6 @@ impl RenderState {
             oc_engine::graph::hosted_effect_count(&oc_engine::graph::graph_document(project))
                 * crate::build_progress::HOSTED_EFFECT_UNITS;
         let mut lane_units_done = 0;
-        progress.plan(source_project.tracks.len(), effect_units);
 
         // Recreate for each project version: changed SoundFonts and residual
         // voices/controllers must not leak across edits with equal track counts.
@@ -1786,9 +1782,7 @@ impl RenderState {
                 .collect();
             let lane_units: usize = lane_presets
                 .iter()
-                .zip(&later)
-                .filter(|(_, later)| !**later)
-                .map(|(preset, _)| {
+                .map(|preset| {
                     crate::build_progress::lane_units(oc_engine::block_source::hosts_plugin(
                         *preset,
                     ))
@@ -1875,6 +1869,12 @@ impl RenderState {
                 Ok(())
             })?;
             self.deferred = (deferred.remaining() > 0).then_some(deferred);
+        } else {
+            let pending = self.deferred.as_ref().map_or(0, |lanes| lanes.remaining());
+            progress.plan(
+                source_project.tracks.len(),
+                effect_units + pending * crate::build_progress::HOSTED_INSTRUMENT_UNITS,
+            );
         }
 
         progress.stage(crate::build_progress::Stage::Effects);
@@ -1915,6 +1915,10 @@ impl RenderState {
         self.render_cursor = 0;
         self.dsp_cursor = 0;
         self.rendered_ahead.clear();
+        if let Some(deferred) = &mut self.deferred {
+            deferred.attach_progress(progress);
+            self.publish_lane_progress();
+        }
         Ok(())
     }
 
@@ -3543,9 +3547,6 @@ fn fail_playback(state: &mut RenderState, playback: &StreamingPlayback, error: S
     // A lane still building for the failed load must not match a later one.
     let lane_generation = state.lane_generation.wrapping_add(1);
     let next_epoch = state.source_epoch.wrapping_add(1);
-    if state.reported_lane_progress.is_some() {
-        crate::build_progress::handle().finish();
-    }
     *state = RenderState::new(state.sample_rate);
     state.source_epoch = next_epoch;
     state.meter_hub = meter_hub;

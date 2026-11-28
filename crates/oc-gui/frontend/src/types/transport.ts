@@ -2,6 +2,8 @@ import type { ProjectSnapshot } from "./project";
 
 /** Chunks of a project rebuild, as the render thread reports them. */
 export interface BuildSnapshot {
+  /** Identifies one load through both foreground and background preparation. */
+  generation?: number;
   stage:
     | "idle"
     | "reading"
