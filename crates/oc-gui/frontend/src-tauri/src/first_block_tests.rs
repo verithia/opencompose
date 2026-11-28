@@ -1054,11 +1054,42 @@ fn review_progressive_load_playback() {
     let mut audio = test_audio(fixture_soundfont());
     audio.resource_root = path.parent().map(std::path::Path::to_path_buf);
     let started = Instant::now();
+    // The panel's bar, sampled as often as the panel polls: the longest time
+    // it stood still before the first block is what reads as a hang.
+    let sampling = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let sampler = {
+        let sampling = Arc::clone(&sampling);
+        std::thread::spawn(move || {
+            let mut last = (None, Instant::now());
+            let mut stall = Duration::ZERO;
+            let mut samples = Vec::new();
+            while sampling.load(Ordering::Acquire) {
+                let build = crate::build_progress::snapshot();
+                let progress = build.as_ref().and_then(|build| build.progress);
+                if progress != last.0 {
+                    if last.0.is_some() {
+                        stall = stall.max(last.1.elapsed());
+                    }
+                    let stage = build.map_or("", |build| build.stage);
+                    samples.push((started.elapsed().as_millis(), stage, progress));
+                    last = (progress, Instant::now());
+                }
+                std::thread::sleep(Duration::from_millis(120));
+            }
+            (stall, samples)
+        })
+    };
     let mut plugins = HashMap::new();
     audio.play(&project, &mut plugins).unwrap();
     let trace = transport_trace(&audio).expect("streaming playback has a trace");
     wait_delivered(&trace);
     let first_ms = started.elapsed().as_secs_f64() * 1_000.0;
+    sampling.store(false, Ordering::Release);
+    let (stall, samples) = sampler.join().unwrap();
+    eprintln!(
+        "[progressive-load] bar_longest_stall_ms={} bar_samples={samples:?}",
+        stall.as_millis()
+    );
     let worker = audio.render_thread.as_ref().unwrap();
     let playback = Arc::clone(&worker.playback);
     let mut joined_ms = None;
