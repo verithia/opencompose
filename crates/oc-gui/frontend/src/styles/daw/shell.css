@@ -197,6 +197,14 @@
   color: var(--text-accent);
 }
 
+/* On a narrow bar the right track keeps its content whole, so the name yields
+   room before the transport state on the left has to. */
+@container status-bar (max-width: 720px) {
+  .status-project {
+    max-width: 20cqi;
+  }
+}
+
 /* ── Frameless window chrome (Windows/Linux) ── */
 .window-controls {
   display: flex;

@@ -33,7 +33,8 @@ describe("build progress while stopped", () => {
     await waitFor(() => {
       const chip = view.container.querySelector(".status-chip.build-progress");
       expect(chip).toBeTruthy();
-      expect(chip!.textContent).toBe("Preparing instruments · Serum 2 (1/3)");
+      expect(chip!.querySelector(".build-progress-text:not(.build-progress-compact)")!.textContent)
+        .toBe("Preparing instruments · Serum 2 (1/3)");
     });
     expect(store.transport().playing).toBe(false);
   });
