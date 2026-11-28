@@ -347,6 +347,45 @@ describe("the Folders preferences page", () => {
     expect(document.querySelector(".preferences-folders-totals")!.textContent).toContain("Plugins 12");
   });
 
+  it("keeps the folders manageable while a scan is stuck on a folder", async () => {
+    // The first-run scan stalls inside the operating system and never answers;
+    // so would any recount, since it walks the same folders.
+    const stalled = () => new Promise<never>(() => {});
+    const listed = summary();
+    const original = invokeMock.getMockImplementation()!;
+    invokeMock.mockImplementation((command: string, ...args: unknown[]) => {
+      if (command === "local_content_scan" || command === "local_content_summary") return stalled();
+      if (command === "local_content_listing") return Promise.resolve(listed);
+      if (command === "sound_folder_remove") {
+        return Promise.resolve(summary({ sounds: [listed.instruments.folders[0]] }));
+      }
+      if (command === "plugin_folder_add") {
+        return Promise.resolve(summary({
+          plugins: [...listed.plugins.folders, { path: "/Volumes/More/Plugins", origin: "user", exists: true, count: 0 }],
+        }));
+      }
+      return original(command, ...args);
+    });
+    void localScan.start();
+    await waitFor(() => expect(invokeMock).toHaveBeenCalledWith("local_content_scan", { rescan: false }));
+    await openFolders();
+
+    // The folders the settings name are listed although no walk has finished.
+    const remove = within(block("sounds")).getByRole("button", { name: "Stop searching /Volumes/Studio/Fonts" });
+    expect(remove).toBeEnabled();
+    fireEvent.click(remove);
+    await waitFor(() => expect(within(block("sounds")).queryByTitle("/Volumes/Studio/Fonts")).toBeNull());
+
+    // Adding answers at once too; the follow-up scan runs in the background.
+    openDialogMock.mockResolvedValueOnce("/Volumes/More/Plugins");
+    const add = within(block("plugins")).getByRole("button", { name: "Add plugin folder…" });
+    fireEvent.click(add);
+    await waitFor(() => expect(within(block("plugins")).getByTitle("/Volumes/More/Plugins")).toBeInTheDocument());
+    await waitFor(() => expect(add).toBeEnabled());
+    expect(localScan.running()).toBe(true);
+    expect(within(group("plugins", "user")).getByRole("button", { name: "Stop searching /Volumes/More/Plugins" })).toBeEnabled();
+  });
+
   it("rescans every plugin and shows the scan's progress while it runs", async () => {
     let emit!: (payload: LocalScanProgress) => void;
     listenMock.mockImplementation(async (event: string, handler: (event: { payload: LocalScanProgress }) => void) => {

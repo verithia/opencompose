@@ -319,6 +319,11 @@ export const LOCAL_SCAN_PROGRESS_EVENT = "local_content_scan_progress";
 export const localContentScan = (rescan = false) =>
   invoke<LocalContentSummary>("local_content_scan", { rescan });
 export const localContentSummary = () => invoke<LocalContentSummary>("local_content_summary");
+/**
+ * The searched folders as the settings name them, with the last finished
+ * walk's counts. It opens no folder, so it answers while a walk is stalled.
+ */
+export const localContentListing = () => invoke<LocalContentSummary>("local_content_listing");
 
 /** Why the backend refused a folder change; matches `FolderErrorCode` in Rust. */
 export type FolderErrorCode =

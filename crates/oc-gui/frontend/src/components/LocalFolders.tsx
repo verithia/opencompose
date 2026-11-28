@@ -113,11 +113,7 @@ export function useFolderEditing(options: { busy: () => boolean; onBusy: (busy: 
     options.onBusy(true);
     setMessage(null);
     try {
-      localScan.update(
-        row.kind === "plugins"
-          ? await api.pluginFolderRemove(row.folder.path)
-          : await api.soundFolderRemove(row.folder.library_id ?? ""),
-      );
+      await localScan.removeFolder(row.kind, row.folder);
     } catch (cause) {
       setMessage(i18n.t("folders.removeFailed", { error: folderErrorText(cause) }));
     } finally {

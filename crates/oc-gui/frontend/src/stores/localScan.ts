@@ -75,9 +75,21 @@ export const localScan = {
   update: (next: LocalContentSummary) => publish(next),
   /**
    * Recount the searched folders without scanning plugins. A scan under way
-   * already produces a fresh result, so nothing is read then.
+   * already produces a fresh result, so nothing is recounted then. With no
+   * result yet, the folders are listed first: a walk can stall inside the
+   * operating system, and the folders must stay manageable meanwhile.
    */
   load: async () => {
+    if (summary() === null) {
+      const id = generation;
+      const seen = revision;
+      try {
+        const listed = await api.localContentListing();
+        if (id === generation && seen === revision && summary() === null) publish(listed ?? null);
+      } catch {
+        // The recount below, or the scan under way, still answers.
+      }
+    }
     if (running()) return;
     const id = generation;
     const seen = revision;
@@ -89,13 +101,24 @@ export const localScan = {
     }
   },
   /**
-   * Search one more folder, show the recount at once, then scan again so
-   * plugins in it are read. Throws a `FolderChangeError` when the backend
-   * refuses the folder.
+   * Search one more folder and list it at once, then scan again in the
+   * background so what it holds is counted and its plugins are read. The
+   * change does not wait for that scan, which can stall on another folder.
+   * Throws a `FolderChangeError` when the backend refuses the folder.
    */
   addFolder: async (kind: "plugins" | "sounds", path: string) => {
     publish(kind === "plugins" ? await api.pluginFolderAdd(path) : await api.soundFolderAdd(path));
-    await run(false);
+    void run(false);
+  },
+  /**
+   * Stop searching a folder and list the rest at once, then recount in the
+   * background; a scan under way recounts when it returns.
+   */
+  removeFolder: async (kind: "plugins" | "sounds", folder: { path: string; library_id?: string | null }) => {
+    publish(kind === "plugins"
+      ? await api.pluginFolderRemove(folder.path)
+      : await api.soundFolderRemove(folder.library_id ?? ""));
+    void localScan.load();
   },
   /** Forget the result; tests and a fresh guide use it. */
   reset: () => {
