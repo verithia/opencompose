@@ -27,6 +27,7 @@ use oc_engine::clip_lane::ClipLanes;
 use oc_engine::control_link::MidiControlInput;
 use oc_engine::graph::{AudioGraph, GraphLiveInputs, PreparedGraphBlock, PresetMacroInput};
 
+mod lane_build;
 mod rack_macro;
 use oc_engine::interpret::{self, InterpretSettings, MidiEvent, MidiMessage};
 use oc_engine::media_cache::MediaKey;
@@ -1655,81 +1656,33 @@ impl RenderState {
                     progress.lane(lane_index, &track.name);
                     #[cfg(test)]
                     let source_start = std::time::Instant::now();
-                    let params = oc_engine::preset::builtin_track_params_at(
-                        project,
-                        preset,
-                        track,
-                        self.root.as_deref(),
-                    );
-                    let mut chain = oc_engine::source_lanes::effect_chain_with_resources(
-                        project,
-                        track,
-                        self.sample_rate,
-                        self.root.as_deref(),
-                    )?;
-                    // Lane effects run on the streaming path, so their hosted
-                    // plugins participate in the idle gate.
-                    chain.set_streaming_idle_gate(true);
-                    self.source_chains.push(chain);
                     let has_musical = track.performance.is_some()
                         || self.events_by_track[lane_index]
                             .iter()
                             .any(|&index| is_musical_event(&self.events[index].event));
-                    let mut source = if clip_only_lane(project, track, has_musical) {
-                        BlockSource::Silent
-                    } else {
-                        self.instrument_instantiations
-                            .fetch_add(1, Ordering::Relaxed);
-                        if track.performance.is_some() {
-                            BlockSource::new_performance(
-                                preset,
-                                &params,
-                                &self.soundfont_path,
-                                self.sample_rate,
-                                project.properties.tempo,
-                                &self.performance_events[lane_index],
-                                self.root.as_deref(),
-                            )
-                        } else {
-                            let events = self.events_by_track[lane_index]
-                                .iter()
-                                .map(|&index| &self.events[index].event)
-                                .collect::<Vec<_>>();
-                            BlockSource::new_streaming(
-                                preset,
-                                &params,
-                                &self.soundfont_path,
-                                self.sample_rate,
-                                project.properties.tempo,
-                                self.root.as_deref(),
-                                oc_engine::block_source::StreamingSourcePreparation {
-                                    events: &events,
-                                    workers: worker_options,
-                                },
-                            )
-                        }
-                        .map_err(|e| format!("Failed to create source for {}: {e}", track.name))?
-                    };
-                    // A full load starts at frame zero; a hot-added lane moves its
-                    // clock when it is spliced in.
-                    source.install_hairpin_layers(
-                        preset,
+                    let events = self.events_by_track[lane_index]
+                        .iter()
+                        .map(|&index| &self.events[index].event)
+                        .collect::<Vec<_>>();
+                    let lane = lane_build::build_lane(lane_build::LaneInput {
                         project,
                         track,
-                        &project.properties,
-                        0,
-                    )?;
-                    self.source_specs.push(LaneSpec {
-                        preset: preset.cloned(),
-                        params: params.clone(),
-                        performance: track.performance.is_some(),
-                        smart_disable: track.mix.smart_disable,
-                    });
-                    self.renderers.push(SmartSource::new(
-                        source,
-                        self.sample_rate,
-                        track.mix.smart_disable,
-                    ));
+                        preset,
+                        soundfont_path: &self.soundfont_path,
+                        sample_rate: self.sample_rate,
+                        root: self.root.as_deref(),
+                        events: &events,
+                        has_musical,
+                        performance: track
+                            .performance
+                            .is_some()
+                            .then_some(self.performance_events[lane_index].as_slice()),
+                        workers: worker_options,
+                        instantiations: &self.instrument_instantiations,
+                    })?;
+                    self.source_chains.push(lane.chain);
+                    self.source_specs.push(lane.spec);
+                    self.renderers.push(lane.source);
                     #[cfg(test)]
                     if std::env::var_os("OCP_STREAM_PROFILE").is_some() {
                         eprintln!(
@@ -3240,46 +3193,26 @@ fn build_lanes(
             .presets
             .iter()
             .find(|p| Some(&p.name) == lane.preset.as_ref());
-        let params = oc_engine::preset::builtin_track_params_at(project, preset, &lane, root);
-        let mut chain = oc_engine::source_lanes::effect_chain_with_resources(
+        let messages = events.iter().map(|event| &event.event).collect::<Vec<_>>();
+        let built = lane_build::build_lane(lane_build::LaneInput {
             project,
-            &lane,
+            track: &lane,
+            preset,
+            soundfont_path,
             sample_rate,
             root,
-        )?;
-        chain.set_streaming_idle_gate(true);
-        let mut source = if clip_only_lane(project, &lane, has_musical) {
-            BlockSource::Silent
-        } else {
-            instrument_instantiations.fetch_add(1, Ordering::Relaxed);
-            let messages = events.iter().map(|event| &event.event).collect::<Vec<_>>();
-            BlockSource::new_streaming(
-                preset,
-                &params,
-                soundfont_path,
-                sample_rate,
-                project.properties.tempo,
-                root,
-                oc_engine::block_source::StreamingSourcePreparation {
-                    events: &messages,
-                    workers: worker_options,
-                },
-            )
-            .map_err(|e| format!("Failed to create source for {}: {e}", lane.name))?
-        };
-        // The splice moves the lane's clock to the position it joins at.
-        source.install_hairpin_layers(preset, project, &lane, &project.properties, 0)?;
+            events: &messages,
+            has_musical,
+            performance: None,
+            workers: worker_options,
+            instantiations: instrument_instantiations,
+        })?;
         lanes.push(BuiltLane {
             target,
-            source: SmartSource::new(source, sample_rate, lane.mix.smart_disable),
-            chain,
+            source: built.source,
+            chain: built.chain,
             events,
-            spec: LaneSpec {
-                preset: preset.cloned(),
-                params: params.clone(),
-                performance: lane.performance.is_some(),
-                smart_disable: lane.mix.smart_disable,
-            },
+            spec: built.spec,
         });
     }
     Ok(lanes)
