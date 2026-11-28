@@ -64,10 +64,13 @@ pub(crate) fn track_chain_tail_seconds_with_resources(
     let chain = super::build_track_chain(
         project,
         track,
-        sample_rate,
-        false,
-        None,
-        resource_root,
+        super::ChainContext {
+            sample_rate,
+            checked: false,
+            touch: None,
+            resource_root,
+            hosted: None,
+        },
         &linked,
     )?;
     let rate = f64::from(sample_rate.max(1));

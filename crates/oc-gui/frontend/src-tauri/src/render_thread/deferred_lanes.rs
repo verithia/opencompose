@@ -390,7 +390,7 @@ impl super::RenderState {
                 "[render_thread] a lane reports {latency} frames of latency, more than the {planned} reserved; rebuilding delay compensation"
             );
             self.sync_aux_plan(&project);
-            self.rebuild_compensation_and_graph(&project)?;
+            self.rebuild_compensation_and_graph(&project, None)?;
             if let Some(graph) = self.graph.as_mut() {
                 graph.apply_mixer_state(&project);
                 graph.apply_send_state(&project);

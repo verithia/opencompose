@@ -1724,6 +1724,14 @@ impl RenderState {
         #[cfg(test)]
         let phase = std::time::Instant::now();
 
+        // The bar weighs hosted plugins by what they cost to prepare; the mixer
+        // carries only each track's own effects (see the graph build below).
+        let effect_units =
+            oc_engine::graph::hosted_effect_count(&oc_engine::graph::graph_document(project))
+                * crate::build_progress::HOSTED_EFFECT_UNITS;
+        let mut lane_units_done = 0;
+        progress.plan(source_project.tracks.len(), effect_units);
+
         // Recreate for each project version: changed SoundFonts and residual
         // voices/controllers must not leak across edits with equal track counts.
         if self.renderers.len() != source_project.tracks.len() {
@@ -1761,6 +1769,32 @@ impl RenderState {
                     if pinned { None } else { *preset }
                 })
                 .collect();
+            let later: Vec<bool> = source_project
+                .tracks
+                .iter()
+                .zip(&lane_presets)
+                .enumerate()
+                .map(|(lane_index, (track, preset))| {
+                    defer_from.is_some_and(|cursor| {
+                        track.performance.is_none()
+                            && oc_engine::block_source::hosts_plugin(*preset)
+                            && deferred.spans[lane_index]
+                                .distance(cursor, None)
+                                .is_none_or(|distance| distance >= defer_window)
+                    })
+                })
+                .collect();
+            let lane_units: usize = lane_presets
+                .iter()
+                .zip(&later)
+                .filter(|(_, later)| !**later)
+                .map(|(preset, _)| {
+                    crate::build_progress::lane_units(oc_engine::block_source::hosts_plugin(
+                        *preset,
+                    ))
+                })
+                .sum();
+            progress.plan(source_project.tracks.len(), lane_units + effect_units);
             std::thread::scope(|scope| -> Result<(), String> {
                 scope.spawn(move || {
                     oc_engine::loudness::prepare_parallel_with_options(
@@ -1772,14 +1806,7 @@ impl RenderState {
                     source_project.tracks.iter().zip(lane_presets).enumerate()
                 {
                     progress.lane(lane_index, &track.name);
-                    let later = defer_from.is_some_and(|cursor| {
-                        track.performance.is_none()
-                            && oc_engine::block_source::hosts_plugin(preset)
-                            && deferred.spans[lane_index]
-                                .distance(cursor, None)
-                                .is_none_or(|distance| distance >= defer_window)
-                    });
-                    if later {
+                    if later[lane_index] {
                         // A silent stand-in holds the lane's place; rendering
                         // waits for the real instrument before its first note.
                         let key = deferred_lanes::latency_key(preset, track, self.sample_rate);
@@ -1832,6 +1859,10 @@ impl RenderState {
                     self.source_chains.push(lane.chain);
                     self.source_specs.push(lane.spec);
                     self.renderers.push(lane.source);
+                    lane_units_done += crate::build_progress::lane_units(
+                        oc_engine::block_source::hosts_plugin(preset),
+                    );
+                    progress.advance(lane_units_done);
                     #[cfg(test)]
                     if std::env::var_os("OCP_STREAM_PROFILE").is_some() {
                         eprintln!(
@@ -1859,7 +1890,10 @@ impl RenderState {
         crate::profile_phase("build_sources", phase);
         #[cfg(test)]
         let phase = std::time::Instant::now();
-        self.rebuild_compensation_and_graph(project)?;
+        self.rebuild_compensation_and_graph(
+            project,
+            Some(progress.graph_report(lane_units_done, effect_units)),
+        )?;
         #[cfg(test)]
         crate::profile_phase("build_graph", phase);
         #[cfg(test)]
@@ -1885,7 +1919,13 @@ impl RenderState {
     }
 
     /// Recompute latency compensation and rebuild the mixer graph for the lanes.
-    fn rebuild_compensation_and_graph(&mut self, project: &Project) -> Result<(), String> {
+    /// `build_report` follows the hosted plugins the mixer loads; only a full
+    /// load reports, so a lane joining in the background keeps its own stage.
+    fn rebuild_compensation_and_graph(
+        &mut self,
+        project: &Project,
+        build_report: Option<oc_engine::graph::GraphBuildReport>,
+    ) -> Result<(), String> {
         let mut track_latencies = vec![0; self.num_tracks];
         let source_latencies = (0..self.renderers.len())
             .map(|lane| self.lane_latency(lane))
@@ -1918,6 +1958,7 @@ impl RenderState {
                 touch: self.touch.clone(),
                 midi_cc: self.midi_cc.clone(),
                 preset_macros: self.preset_macros.clone(),
+                build_report,
             },
         )?);
         if let Some(graph) = &mut self.graph {
@@ -2345,7 +2386,7 @@ impl RenderState {
         }
         self.num_tracks = project.tracks.len();
         self.sync_aux_plan(&project);
-        self.rebuild_compensation_and_graph(&project)?;
+        self.rebuild_compensation_and_graph(&project, None)?;
         if let Some(graph) = self.graph.as_mut() {
             graph.apply_mixer_state(&project);
             graph.apply_send_state(&project);
