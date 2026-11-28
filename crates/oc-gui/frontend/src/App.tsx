@@ -82,7 +82,12 @@ export default function App() {
   const [quitBusy, setQuitBusy] = createSignal(false);
   // Where the request came from: a window close leaves the window, a quit
   // leaves the process.
-  /** What the render thread is preparing, polled independently of playback. */
+  /**
+   * What the render thread is preparing. Two polls report it: the dedicated
+   * one, which runs at all times, and the transport poll during playback. The
+   * newest answer from either wins, so a report the transport carried before
+   * a pause cannot come back after the dedicated poll has seen the load end.
+   */
   const [buildProgress, setBuildProgress] = createSignal<BuildSnapshot | null>(null);
   /** The project name the operator is editing; the webview has no prompt. */
   const [renameProject, setRenameProject] = createSignal<string | null>(null);
@@ -173,6 +178,10 @@ export default function App() {
       buildPollStopped = true;
       if (buildPollTimer !== undefined) window.clearTimeout(buildPollTimer);
     });
+    // Each transport snapshot is a fresh object, while local transport edits
+    // (pause, seek, a new document) copy the previous one: only a snapshot the
+    // backend just sent changes this reference.
+    createEffect(on(() => store.transport().build, (build) => setBuildProgress(build ?? null), { defer: true }));
     // Any document revision may start a build; ask quickly afterwards.
     createEffect(on(() => store.projectRevision, () => {
       buildPollFastUntil = performance.now() + 8000;
@@ -586,7 +595,7 @@ export default function App() {
               <Show when={store.loading()}>
                 <span class="status-chip loading">{i18n.t("status.rendering")}</span>
               </Show>
-              <BuildProgressChip build={buildProgress() ?? store.transport().build} />
+              <BuildProgressChip build={buildProgress()} />
             </div>
           </div>
         </div>
