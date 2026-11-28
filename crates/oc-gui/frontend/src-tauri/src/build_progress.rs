@@ -154,6 +154,7 @@ impl BuildScope {
     }
 
     /// Whether this load still owns the report.
+    #[cfg(test)]
     pub fn is_current(&self) -> bool {
         let state = self
             .report
