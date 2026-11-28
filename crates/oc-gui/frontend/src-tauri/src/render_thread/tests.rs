@@ -2987,6 +2987,8 @@ fn dexed_independent_block_source_smoke() {
 #[test]
 #[ignore = "requires OCP_STREAM_PROJECT; profiles actual source startup"]
 fn review_project_startup_profile() {
+    oc_host::application_main::ApplicationMainExecutor::ensure_test_executor()
+        .expect("test application executor");
     let path = std::path::PathBuf::from(std::env::var("OCP_STREAM_PROJECT").unwrap());
     let project = oc_dsl::parse(&std::fs::read_to_string(&path).unwrap()).unwrap();
     let project = oc_engine::block_source::prepare_project(&project, path.parent()).unwrap();
@@ -2994,8 +2996,13 @@ fn review_project_startup_profile() {
     for trial in 0..3 {
         let mut state = super::RenderState::new(48000);
         let start = std::time::Instant::now();
+        // Load the way the app does: state files and media resolve against
+        // the project's own folder.
+        let soundfont = std::env::var_os("OCP_SOUNDFONT")
+            .map(PathBuf::from)
+            .unwrap_or_default();
         state
-            .load_project(&project, std::path::PathBuf::new())
+            .load_project_from(&project, soundfont, path.parent().map(PathBuf::from), 0)
             .unwrap();
         let loaded = start.elapsed().as_secs_f64();
         let audio = state.render_chunk(super::CHUNK_FRAMES);
