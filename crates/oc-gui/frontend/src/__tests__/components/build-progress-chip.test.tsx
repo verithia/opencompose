@@ -5,6 +5,7 @@
  */
 import { afterEach, describe, expect, it } from "vitest";
 import { cleanup, render } from "@solidjs/testing-library";
+import { createSignal } from "solid-js";
 import { BuildProgressChip } from "../../components/BuildProgressChip";
 import { i18n } from "../../stores/i18n";
 import type { BuildSnapshot } from "../../types/transport";
@@ -51,6 +52,36 @@ describe("build progress chip", () => {
     ));
     expect(waiting.container.querySelector(".status-chip")!.textContent)
       .toBe("Waiting for instruments · 12/61");
+  });
+
+  it("fills a bar with the weighted progress of the whole load", () => {
+    const { container } = render(() => <BuildProgressChip build={{ ...BUILD, progress: 420 }} />);
+    const fill = container.querySelector<HTMLElement>(".build-progress-fill")!;
+    expect(fill).toBeTruthy();
+    expect(fill.getAttribute("aria-hidden")).toBe("true");
+    expect(fill.style.transform).toBe("scaleX(0.42)");
+    // The text still names the work; the bar only shows how far it has got.
+    expect(container.querySelector(".status-chip")!.textContent).toBe("Preparing instruments · Serum 2 (3/22)");
+  });
+
+  it("shows no bar until the load knows how much work it holds", () => {
+    const { container } = render(() => <BuildProgressChip build={{ ...BUILD, progress: null }} />);
+    expect(container.querySelector(".build-progress-fill")).toBeNull();
+    expect(container.querySelector(".build-progress-sweep")).toBeTruthy();
+  });
+
+  it("glides forward and restarts at once when a new load begins", () => {
+    const [build, setBuild] = createSignal<BuildSnapshot>({ ...BUILD, progress: 300 });
+    const { container } = render(() => <BuildProgressChip build={build()} />);
+    const fill = () => container.querySelector<HTMLElement>(".build-progress-fill")!;
+    setBuild({ ...BUILD, progress: 650 });
+    expect(fill().style.transform).toBe("scaleX(0.65)");
+    expect(fill().classList.contains("restart")).toBe(false);
+    setBuild({ stage: "background", label: "", done: 1, total: 74, progress: 13 });
+    expect(fill().style.transform).toBe("scaleX(0.013)");
+    expect(fill().classList.contains("restart")).toBe(true);
+    setBuild({ stage: "background", label: "", done: 2, total: 74, progress: 27 });
+    expect(fill().classList.contains("restart")).toBe(false);
   });
 
   it("renders nothing for an idle or absent build", () => {

@@ -15,6 +15,11 @@ export interface BuildSnapshot {
   label: string;
   done: number;
   total: number;
+  /**
+   * How much of the whole load is done, in thousandths, weighted by what each
+   * item costs to prepare. Absent or null until the load knows its work.
+   */
+  progress?: number | null;
 }
 
 export interface AuditionSnapshot {

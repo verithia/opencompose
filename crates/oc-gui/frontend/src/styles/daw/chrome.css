@@ -223,8 +223,25 @@
 }
 
 .build-progress-text {
+  position: relative;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* The weighted progress of the whole load. Scaling a layer keeps each poll's
+   update on the compositor, and the easing spans more than one 120 ms poll,
+   so the bar glides instead of stepping. */
+.build-progress-fill {
+  position: absolute;
+  inset: 0;
+  background: color-mix(in srgb, var(--accent) 26%, transparent);
+  transform-origin: left center;
+  transition: transform 420ms cubic-bezier(0.22, 0.8, 0.3, 1);
+  pointer-events: none;
+}
+
+.build-progress-fill.restart {
+  transition: none;
 }
 
 .build-progress-sweep {
@@ -249,6 +266,10 @@
   .build-progress-sweep {
     animation: none;
     opacity: 0.35;
+  }
+
+  .build-progress-fill {
+    transition: none;
   }
 }
 

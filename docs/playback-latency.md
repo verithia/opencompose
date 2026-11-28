@@ -115,6 +115,20 @@ after the start, though.
 - The panel reports *Loading instruments* with a count until the last lane
   joins.
 
+### The load bar
+
+The loading chip fills with the progress of the whole load, so a long stage
+keeps moving instead of reading as a hang. Each item is weighted by its usual
+cost (`build_progress.rs`): a hosted instrument counts 80 units, a hosted
+effect 6, and any other lane 1. The plan is fixed before the first lane
+builds, so the bar never runs backwards within a load. The mixer build reports
+each hosted plugin as it loads (`GraphLiveInputs::build_report`), not once per
+chain, so a bus holding many plugins moves the bar plugin by plugin. The chip
+eases the fill over 420 ms, longer than one 120 ms poll, so it glides between
+updates. A fill that drops means a new load has started, so it resets at once
+without animating backwards. With reduced motion, the fill jumps and the sweep
+stops.
+
 ## Live playhead and chain latency
 
 The streaming position is `StreamingPlayback::play_cursor_frames`: the callback
