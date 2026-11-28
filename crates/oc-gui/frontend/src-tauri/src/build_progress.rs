@@ -153,6 +153,15 @@ impl BuildScope {
         update(&self.report, self.generation, apply);
     }
 
+    /// Whether this load still owns the report.
+    pub fn is_current(&self) -> bool {
+        let state = self
+            .report
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        state.generation == self.generation && state.stage != Stage::Idle
+    }
+
     pub fn lane(&self, done: usize, label: &str) {
         self.update(|state| state.set(Stage::Instruments, label, done, state.lanes));
     }
@@ -211,6 +220,22 @@ impl Drop for BuildScope {
 
 pub fn scope(total: usize) -> BuildScope {
     BuildScope::begin(shared(), total)
+}
+
+/// End every load's claim on the report. A new project sent to the worker
+/// makes the load in flight describe a document the user no longer sees, and
+/// the worker may take a while to reach the new one; until its own scope
+/// begins, the panel shows no progress rather than the old load's.
+pub fn retire() {
+    retire_in(shared());
+}
+
+fn retire_in(report: &Mutex<BuildProgress>) {
+    let mut state = report.lock().unwrap_or_else(|poison| poison.into_inner());
+    *state = BuildProgress {
+        generation: state.generation.wrapping_add(1),
+        ..BuildProgress::default()
+    };
 }
 
 /// Route SoundFont preparation reports into the current foreground build.
@@ -300,5 +325,28 @@ mod tests {
         load.background(Stage::Background, 1, 2);
         assert_eq!(handoff, Some(69));
         assert_eq!(snapshot().progress, handoff);
+    }
+
+    #[test]
+    fn a_retired_load_can_no_longer_report() {
+        let report = Arc::new(Mutex::new(BuildProgress::default()));
+        let snapshot = || report.lock().unwrap().snapshot();
+        let old = BuildScope::begin(&report, 54);
+        old.plan(54, 54 * HOSTED_INSTRUMENT_UNITS);
+        old.background(Stage::Background, 21, 54);
+        let mixer = old.graph_report(0, 10);
+        assert!(old.is_current());
+        retire_in(&report);
+        assert!(!old.is_current());
+        assert!(!snapshot().is_active());
+        // Neither the old scope, its mixer callback nor its drop revive it.
+        old.background(Stage::Background, 22, 54);
+        mixer(oc_engine::graph::GraphBuildStep { done: 1, total: 1 });
+        assert!(!snapshot().is_active());
+        let next = BuildScope::begin(&report, 0);
+        drop(old);
+        assert_eq!(snapshot().stage, "reading");
+        drop(next);
+        assert!(!snapshot().is_active());
     }
 }
