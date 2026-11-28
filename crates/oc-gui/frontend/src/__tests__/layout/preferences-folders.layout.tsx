@@ -16,6 +16,7 @@ import { mkdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { chromium, webkit, type Browser } from "@playwright/test";
 import { PreferencesModal } from "../../components/PreferencesModal";
+import { reserveBelow } from "../../components/preferences/FoldersPage";
 import { i18n } from "../../stores/i18n";
 import { localScan } from "../../stores/localScan";
 import type { LocalContentSummary, SearchedFolder } from "../../stores/pluginApi";
@@ -76,17 +77,15 @@ afterEach(() => {
   i18n.setLocale("en");
 });
 
-/** The page at the smallest window, as `reserveBelow` leaves it once mounted. */
+/** Attach the production focus behavior to the smallest real layout. */
 async function openPage(engine: Browser, theme: string) {
   const page = await engine.newPage({ viewport: { width: 960, height: 600 } });
   await page.setContent(`<!doctype html><html data-theme="${theme}"><head>
     <meta charset="utf-8"><style>${stylesheet} html,body{margin:0}
     *,*::before,*::after{animation:none!important;transition:none!important}</style></head>
     <body>${document.body.innerHTML}</body></html>`);
-  await page.evaluate(() => {
-    const strip = document.querySelector<HTMLElement>(".preferences-folder-details")!;
-    strip.closest<HTMLElement>(".preferences-page")!.style.setProperty(
-      "--folder-details-height", `${Math.ceil(strip.getBoundingClientRect().height)}px`);
+  await page.addScriptTag({
+    content: `(${reserveBelow.toString()})(document.querySelector(".preferences-folder-details"))`,
   });
   return page;
 }
@@ -111,7 +110,8 @@ describe("Folders preferences page keyboard focus", () => {
         let rows = 0;
         for (let step = 0; step < 40; step += 1) {
           await page.keyboard.press(key);
-          const state = await page.evaluate(() => {
+          const state = await page.evaluate(async () => {
+            await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
             const focused = document.activeElement as HTMLElement | null;
             if (!focused?.closest(".preferences-folder-panel")) return null;
             const box = focused.getBoundingClientRect();
@@ -124,6 +124,22 @@ describe("Folders preferences page keyboard focus", () => {
         }
         expect(rows).toBeGreaterThan(10);
         expect(hidden).toEqual([]);
+
+        // Exercise the fallback even when native Tab scrolling honors padding.
+        const recovered = await page.evaluate(async () => {
+          const scroller = document.querySelector<HTMLElement>(".preferences-page")!;
+          const strip = document.querySelector(".preferences-folder-details")!;
+          scroller.scrollTop = 0;
+          const occluded = Array.from(document.querySelectorAll<HTMLButtonElement>(".preferences-folder-select"))
+            .find((row) => row.getBoundingClientRect().bottom > strip.getBoundingClientRect().top + 1);
+          if (!occluded) throw new Error("The fixture needs a folder below the details strip");
+          occluded.blur();
+          occluded.focus({ preventScroll: true });
+          await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+          return document.activeElement === occluded
+            && occluded.getBoundingClientRect().bottom <= strip.getBoundingClientRect().top + 1;
+        });
+        expect(recovered).toBe(true);
       } finally {
         await page.close();
       }

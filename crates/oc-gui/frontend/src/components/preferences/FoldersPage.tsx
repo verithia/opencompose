@@ -73,12 +73,7 @@ export function splitPath(path: string): { name: string; parent: string } {
 const rowKey = (row: FolderRow) => `${row.kind}:${row.folder.path}`;
 const groupId = (kind: FolderKind, key: GroupKey) => `${kind}:${key ?? "other"}`;
 
-/**
- * Keep the scrolling page's bottom scroll padding equal to the sticky details
- * strip's height. Keyboard focus and `scrollIntoView` honour scroll padding,
- * so a row reached with Tab stops above the strip instead of behind it. The
- * strip grows and shrinks with the selected folder, so its size is watched.
- */
+/** Keep focused rows visible above the details strip on every webview. */
 export function reserveBelow(strip: HTMLElement): () => void {
   const scroller = strip.closest<HTMLElement>(".preferences-page");
   if (!scroller) return () => {};
@@ -88,7 +83,27 @@ export function reserveBelow(strip: HTMLElement): () => void {
   apply();
   const observer = typeof ResizeObserver === "function" ? new ResizeObserver(apply) : undefined;
   observer?.observe(strip);
+
+  // Some WebKit builds ignore scroll padding when the browser reveals focus.
+  // Check after that native scroll and correct only the amount under the strip.
+  let frame = 0;
+  const revealFocus = ({ target }: FocusEvent) => {
+    if (!(target instanceof HTMLElement) || !target.closest(".preferences-folder-panel")) return;
+    cancelAnimationFrame(frame);
+    frame = requestAnimationFrame(() => {
+      if (strip.ownerDocument.activeElement !== target) return;
+      const viewport = scroller.getBoundingClientRect();
+      const visibleBottom = Math.min(strip.getBoundingClientRect().top, viewport.bottom);
+      const overlap = target.getBoundingClientRect().bottom - visibleBottom;
+      if (overlap > 0 && viewport.height > 0) {
+        scroller.scrollTop += Math.ceil(overlap * scroller.offsetHeight / viewport.height);
+      }
+    });
+  };
+  scroller.addEventListener("focusin", revealFocus);
   return () => {
+    scroller.removeEventListener("focusin", revealFocus);
+    cancelAnimationFrame(frame);
     observer?.disconnect();
     scroller.style.removeProperty("--folder-details-height");
   };
