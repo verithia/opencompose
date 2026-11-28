@@ -817,6 +817,8 @@ export const zhHant = {
   "build.stage.arrangement": "編排軌道",
   "build.stage.effects": "準備效果器",
   "build.stage.soundfont": "準備音色庫",
+  "build.stage.background": "載入樂器",
+  "build.stage.waiting": "等待樂器",
   "build.soundfont.read": "讀取音色庫",
   "build.soundfont.index": "索引取樣",
   "build.soundfont.decode": "解碼取樣",

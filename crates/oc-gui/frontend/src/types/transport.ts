@@ -2,7 +2,15 @@ import type { ProjectSnapshot } from "./project";
 
 /** Chunks of a project rebuild, as the render thread reports them. */
 export interface BuildSnapshot {
-  stage: "idle" | "reading" | "instruments" | "arrangement" | "effects" | "soundfont";
+  stage:
+    | "idle"
+    | "reading"
+    | "instruments"
+    | "arrangement"
+    | "effects"
+    | "soundfont"
+    | "background"
+    | "waiting";
   /** The instrument being prepared, empty outside the per-instrument stage. */
   label: string;
   done: number;

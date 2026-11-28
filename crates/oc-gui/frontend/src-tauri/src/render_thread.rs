@@ -27,6 +27,7 @@ use oc_engine::clip_lane::ClipLanes;
 use oc_engine::control_link::MidiControlInput;
 use oc_engine::graph::{AudioGraph, GraphLiveInputs, PreparedGraphBlock, PresetMacroInput};
 
+mod deferred_lanes;
 mod lane_build;
 mod rack_macro;
 use oc_engine::interpret::{self, InterpretSettings, MidiEvent, MidiMessage};
@@ -211,6 +212,18 @@ pub enum RenderCommand {
     SourcesBuilt { epoch: u64, lanes: Vec<BuiltLane> },
     /// A source worker build failed; the load error is published and playback stops.
     SourceBuildFailed { epoch: u64, error: String },
+    /// A lane deferred by a load finished building in the background.
+    LaneLoaded {
+        generation: u64,
+        lane: usize,
+        built: Box<lane_build::Lane>,
+    },
+    /// A deferred lane failed to build; the load error is published.
+    LaneLoadFailed {
+        generation: u64,
+        lane: usize,
+        error: String,
+    },
     /// Shutdown the render thread.
     Shutdown,
 }
@@ -263,6 +276,57 @@ struct PendingMeters {
     /// into the cursor, when the device plays it.
     due_frame: u64,
     frame: crate::meters::MeterFrame,
+}
+
+/// Work for the source worker.
+enum SourceWork {
+    /// Build the lanes of tracks the mixer made audible.
+    Tracks(Box<SourceBuildRequest>),
+    /// Build one lane a load deferred.
+    Lane(Box<LaneLoadRequest>),
+}
+
+/// One deferred lane to build in the background.
+struct LaneLoadRequest {
+    generation: u64,
+    lane: usize,
+    project: Arc<Project>,
+    tracks: Arc<Vec<oc_dsl::ast::Track>>,
+    events: Vec<MidiMessage>,
+    has_musical: bool,
+    soundfont_path: PathBuf,
+    sample_rate: u32,
+    root: Option<PathBuf>,
+    workers: oc_engine::render_parallel::RenderWorkerOptions,
+    instantiations: Arc<AtomicU64>,
+}
+
+impl LaneLoadRequest {
+    fn build(&self) -> Result<lane_build::Lane, String> {
+        let track = self
+            .tracks
+            .get(self.lane)
+            .ok_or_else(|| format!("Deferred lane {} is not in the project", self.lane))?;
+        let preset = self
+            .project
+            .presets
+            .iter()
+            .find(|preset| Some(&preset.name) == track.preset.as_ref());
+        let events = self.events.iter().collect::<Vec<_>>();
+        lane_build::build_lane(lane_build::LaneInput {
+            project: &self.project,
+            track,
+            preset,
+            soundfont_path: &self.soundfont_path,
+            sample_rate: self.sample_rate,
+            root: self.root.as_deref(),
+            events: &events,
+            has_musical: self.has_musical,
+            performance: None,
+            workers: self.workers,
+            instantiations: &self.instantiations,
+        })
+    }
 }
 
 /// A request for the source worker to build lanes for hot-added tracks.
@@ -1180,6 +1244,21 @@ struct RenderState {
     pending_sources: Vec<usize>,
     /// Bumped on every project load; stale worker results are discarded.
     source_epoch: u64,
+    /// Lanes a load left to build in the background, if any are left.
+    deferred: Option<deferred_lanes::DeferredLanes>,
+    /// Whether a progressive load may defer lanes. Only the render worker,
+    /// which runs the background loader, sets it.
+    defer_lanes: bool,
+    /// Identifies the latest set of deferred lanes; bumped per build.
+    lane_generation: u64,
+    /// Per-track latency the mixer's delay compensation was built with.
+    track_latency_plan: Vec<u32>,
+    /// The last block waited for a deferred lane to load.
+    waiting_for_sources: bool,
+    /// Background-loading progress last published to the panel.
+    reported_lane_progress: Option<(crate::build_progress::Stage, usize, usize)>,
+    /// Latencies deferred lanes reported, kept across this worker's loads.
+    lane_latencies: Arc<deferred_lanes::LaneLatencies>,
     /// Live touch overrides; `None` in offline-only states and offline renders.
     touch: Option<Arc<oc_engine::touch::TouchRegistry>>,
     midi_cc: Option<Arc<MidiControlInput>>,
@@ -1270,6 +1349,13 @@ impl RenderState {
             spectrum_target: None,
             pending_sources: Vec::new(),
             source_epoch: 0,
+            deferred: None,
+            defer_lanes: false,
+            lane_generation: 0,
+            track_latency_plan: Vec::new(),
+            waiting_for_sources: false,
+            reported_lane_progress: None,
+            lane_latencies: Arc::default(),
             touch: None,
             midi_cc: None,
             preset_macros: None,
@@ -1362,8 +1448,13 @@ impl RenderState {
             replacement.source_chains = std::mem::take(&mut self.source_chains);
             replacement.source_specs = std::mem::take(&mut self.source_specs);
             replacement.source_signature = self.source_signature;
+            // Lanes still loading keep loading for the edited project.
+            replacement.deferred = self.deferred.take();
         }
         replacement.source_epoch = self.source_epoch.wrapping_add(1);
+        replacement.lane_generation = self.lane_generation.wrapping_add(1);
+        replacement.defer_lanes = self.defer_lanes;
+        replacement.lane_latencies = Arc::clone(&self.lane_latencies);
         replacement.root.clone_from(&self.root);
         replacement.meter_hub = self.meter_hub.take();
         replacement.meter_input_peaks = std::mem::take(&mut self.meter_input_peaks);
@@ -1390,6 +1481,7 @@ impl RenderState {
                 self.renderers = std::mem::take(&mut replacement.renderers);
                 self.source_chains = std::mem::take(&mut replacement.source_chains);
                 self.source_specs = std::mem::take(&mut replacement.source_specs);
+                self.deferred = replacement.deferred.take();
             }
             return Err(error);
         }
@@ -1607,6 +1699,26 @@ impl RenderState {
 
         // Reset cursors
         self.track_event_cursors = vec![0; source_project.tracks.len()];
+        let spans: Vec<_> = self
+            .events_by_track
+            .iter()
+            .map(|indices| {
+                deferred_lanes::NoteSpans::of(indices.iter().map(|&index| &self.events[index]))
+            })
+            .collect();
+        let lane_project = Arc::new(project.clone());
+        let lane_tracks = Arc::new(source_project.tracks.clone());
+        if let Some(deferred) = self.deferred.as_mut() {
+            // Reused lanes keep loading; the edited score decides their order.
+            deferred.spans = spans.clone();
+            deferred.project = Arc::clone(&lane_project);
+            deferred.tracks = Arc::clone(&lane_tracks);
+        }
+        // A progressive load builds the instruments the cursor needs now and
+        // leaves the rest to the background loader.
+        let defer_from = progressive_cursor.filter(|_| self.defer_lanes);
+        let defer_window =
+            (deferred_lanes::DEFERRED_LANE_WINDOW_SECONDS * f64::from(self.sample_rate)) as u64;
         #[cfg(test)]
         crate::profile_phase("build_split_interpret", phase);
         #[cfg(test)]
@@ -1620,6 +1732,12 @@ impl RenderState {
             self.renderers.clear();
             self.source_chains.clear();
             self.source_specs.clear();
+            let mut deferred = deferred_lanes::DeferredLanes::new(
+                self.lane_generation,
+                Arc::clone(&lane_project),
+                Arc::clone(&lane_tracks),
+                spans,
+            );
             let lane_presets: Vec<_> = source_project
                 .tracks
                 .iter()
@@ -1654,6 +1772,37 @@ impl RenderState {
                     source_project.tracks.iter().zip(lane_presets).enumerate()
                 {
                     progress.lane(lane_index, &track.name);
+                    let later = defer_from.is_some_and(|cursor| {
+                        track.performance.is_none()
+                            && oc_engine::block_source::hosts_plugin(preset)
+                            && deferred.spans[lane_index]
+                                .distance(cursor, None)
+                                .is_none_or(|distance| distance >= defer_window)
+                    });
+                    if later {
+                        // A silent stand-in holds the lane's place; rendering
+                        // waits for the real instrument before its first note.
+                        let key = deferred_lanes::latency_key(preset, track, self.sample_rate);
+                        deferred.defer(
+                            lane_index,
+                            key,
+                            self.lane_latencies.reserve(key, self.sample_rate),
+                        );
+                        self.source_chains
+                            .push(oc_engine::graph::EffectChain::new());
+                        self.source_specs.push(LaneSpec {
+                            preset: preset.cloned(),
+                            params: Vec::new(),
+                            performance: false,
+                            smart_disable: track.mix.smart_disable,
+                        });
+                        self.renderers.push(SmartSource::new(
+                            BlockSource::Silent,
+                            self.sample_rate,
+                            track.mix.smart_disable,
+                        ));
+                        continue;
+                    }
                     #[cfg(test)]
                     let source_start = std::time::Instant::now();
                     let has_musical = track.performance.is_some()
@@ -1694,6 +1843,7 @@ impl RenderState {
                 }
                 Ok(())
             })?;
+            self.deferred = (deferred.remaining() > 0).then_some(deferred);
         }
 
         progress.stage(crate::build_progress::Stage::Effects);
@@ -1737,11 +1887,8 @@ impl RenderState {
     /// Recompute latency compensation and rebuild the mixer graph for the lanes.
     fn rebuild_compensation_and_graph(&mut self, project: &Project) -> Result<(), String> {
         let mut track_latencies = vec![0; self.num_tracks];
-        let source_latencies = self
-            .renderers
-            .iter()
-            .zip(&self.source_chains)
-            .map(|(source, chain)| source.latency_samples() + chain.latency_samples())
+        let source_latencies = (0..self.renderers.len())
+            .map(|lane| self.lane_latency(lane))
             .collect::<Vec<_>>();
         for (&target, &latency) in self.source_tracks.iter().zip(&source_latencies) {
             track_latencies[target] = track_latencies[target].max(latency);
@@ -1758,6 +1905,7 @@ impl RenderState {
                 ])
             })
             .collect();
+        self.track_latency_plan.clone_from(&track_latencies);
         // Preset effects run on the pattern lanes; the graph's chains carry only
         // each track's own effects, exactly as an in-place chain patch does.
         let mixer_project = oc_engine::graph::graph_document(project);
@@ -1792,6 +1940,17 @@ impl RenderState {
             hub.set_available(true);
         }
         Ok(())
+    }
+
+    /// Latency of one lane as delay compensation sees it: what the built lane
+    /// reports, or what the mixer reserved for a lane still loading.
+    fn lane_latency(&self, lane: usize) -> u32 {
+        if let Some(deferred) = &self.deferred
+            && deferred.is_pending(lane)
+        {
+            return deferred.reserve[lane];
+        }
+        self.renderers[lane].latency_samples() + self.source_chains[lane].latency_samples()
     }
 
     fn processing_failed(&self) -> bool {
@@ -2092,11 +2251,8 @@ impl RenderState {
     /// lane's full latency, so the difference is applied here.
     fn rebuild_aux_delays(&mut self) {
         let mut track_latencies = vec![0_u32; self.num_tracks];
-        let lane_latencies: Vec<u32> = self
-            .renderers
-            .iter()
-            .zip(&self.source_chains)
-            .map(|(source, chain)| source.latency_samples() + chain.latency_samples())
+        let lane_latencies: Vec<u32> = (0..self.renderers.len())
+            .map(|lane| self.lane_latency(lane))
             .collect();
         for (&target, &latency) in self.source_tracks.iter().zip(&lane_latencies) {
             track_latencies[target] = track_latencies[target].max(latency);
@@ -2221,6 +2377,7 @@ impl RenderState {
     fn render_chunk_before_into(&mut self, limit: u64, seek_history: bool, output: &mut Vec<f32>) {
         output.clear();
         self.waiting_for_clip = false;
+        self.waiting_for_sources = false;
         let frames = (limit
             .min(self.playback_end())
             .saturating_sub(self.render_cursor))
@@ -2254,6 +2411,7 @@ impl RenderState {
         let chunk_end = (chunk_start + frames.min(CHUNK_FRAMES) as u64).min(self.playback_end());
         let actual_frames = chunk_end.saturating_sub(chunk_start) as usize;
         self.waiting_for_clip = false;
+        self.waiting_for_sources = false;
 
         if actual_frames == 0 {
             return;
@@ -2275,6 +2433,18 @@ impl RenderState {
                 self.render_error = Some(error);
                 return;
             }
+        }
+        // A lane still loading is silent, so a block where it would sound
+        // waits for it. Seek history only rebuilds state: a missing lane
+        // catches up on its channel state when it joins.
+        if !seek_history
+            && self
+                .deferred
+                .as_ref()
+                .is_some_and(|deferred| deferred.blocks(chunk_start, chunk_end))
+        {
+            self.waiting_for_sources = true;
+            return;
         }
 
         // After the program, let delay lines and effects process silence.
@@ -2855,6 +3025,13 @@ impl RenderState {
             if self.renderers[lane].rewind_from(transport.clone()) {
                 continue;
             }
+            if self
+                .deferred
+                .as_ref()
+                .is_some_and(|deferred| deferred.is_pending(lane))
+            {
+                continue;
+            }
             self.rebuild_source(lane)?;
         }
         for chain in &mut self.source_chains {
@@ -3220,7 +3397,7 @@ fn build_lanes(
 
 /// Long-lived worker that builds hot-added lanes without touching the producer.
 struct SourceBuilder {
-    requests: Receiver<SourceBuildRequest>,
+    requests: Receiver<SourceWork>,
     cmd_tx: Sender<RenderCommand>,
     shutdown: Arc<AtomicBool>,
     /// Test-only delay that prices a debug instrument build.
@@ -3233,7 +3410,7 @@ impl SourceBuilder {
         #[cfg(target_os = "macos")]
         let _bridge_scope =
             oc_host::vst2_bridge::BridgeScope::enter(oc_host::vst2_bridge::BridgeMode::Streaming);
-        while let Ok(request) = self.requests.recv() {
+        while let Ok(work) = self.requests.recv() {
             if self.shutdown.load(Ordering::Acquire) {
                 break;
             }
@@ -3243,6 +3420,27 @@ impl SourceBuilder {
             if delay > 0 {
                 std::thread::sleep(std::time::Duration::from_millis(delay));
             }
+            let request = match work {
+                SourceWork::Tracks(request) => request,
+                SourceWork::Lane(request) => {
+                    let command = match request.build() {
+                        Ok(built) => RenderCommand::LaneLoaded {
+                            generation: request.generation,
+                            lane: request.lane,
+                            built: Box::new(built),
+                        },
+                        Err(error) => RenderCommand::LaneLoadFailed {
+                            generation: request.generation,
+                            lane: request.lane,
+                            error,
+                        },
+                    };
+                    if self.cmd_tx.send(command).is_err() {
+                        break;
+                    }
+                    continue;
+                }
+            };
             let result = build_lanes(
                 &request.project,
                 &request.tracks,
@@ -3299,12 +3497,22 @@ fn fail_playback(state: &mut RenderState, playback: &StreamingPlayback, error: S
     let instantiations = Arc::clone(&state.instrument_instantiations);
     let chain_latency = Arc::clone(&state.chain_latency_frames);
     chain_latency.store(0, Ordering::Release);
+    let lane_latencies = Arc::clone(&state.lane_latencies);
+    let defer_lanes = state.defer_lanes;
+    // A lane still building for the failed load must not match a later one.
+    let lane_generation = state.lane_generation.wrapping_add(1);
     let next_epoch = state.source_epoch.wrapping_add(1);
+    if state.reported_lane_progress.is_some() {
+        crate::build_progress::handle().finish();
+    }
     *state = RenderState::new(state.sample_rate);
     state.source_epoch = next_epoch;
     state.meter_hub = meter_hub;
     state.instrument_instantiations = instantiations;
     state.chain_latency_frames = chain_latency;
+    state.lane_latencies = lane_latencies;
+    state.defer_lanes = defer_lanes;
+    state.lane_generation = lane_generation;
     playback.active.store(false, Ordering::Release);
     playback.project_loaded.store(false, Ordering::Release);
     state.publish_ends(playback);
@@ -3323,13 +3531,12 @@ fn invalidate_playback_buffer(playback: &StreamingPlayback) {
 }
 
 fn wait_for_clip(state: &RenderState, playback: &StreamingPlayback) -> bool {
-    playback
-        .waiting_for_clip
-        .store(state.waiting_for_clip, Ordering::Release);
-    if state.waiting_for_clip {
+    let waiting = state.waiting_for_clip || state.waiting_for_sources;
+    playback.waiting_for_clip.store(waiting, Ordering::Release);
+    if waiting {
         std::thread::sleep(std::time::Duration::from_millis(2));
     }
-    state.waiting_for_clip || state.render_error.is_some()
+    waiting || state.render_error.is_some()
 }
 
 /// Copy one interleaved chunk into the ring, tolerating a wrap.
@@ -3382,7 +3589,7 @@ fn render_loop(
     playback: Arc<StreamingPlayback>,
     sample_rate: u32,
     shutdown: Arc<AtomicBool>,
-    build_tx: Sender<SourceBuildRequest>,
+    build_tx: Sender<SourceWork>,
 ) {
     #[cfg(target_os = "macos")]
     let _bridge_scope =
@@ -3399,6 +3606,8 @@ fn render_loop(
     state.touch = Some(Arc::clone(&playback.touch));
     state.midi_cc = playback.midi_cc.clone();
     state.preset_macros = playback.preset_macros.clone();
+    // This worker runs the background loader, so its loads may defer lanes.
+    state.defer_lanes = true;
     // Reset whenever a seek generation has not been acknowledged for this long.
     let mut ack_wait_started: Option<std::time::Instant> = None;
     // Loop generation already applied; a newer one invalidates the queued pass.
@@ -3806,18 +4015,20 @@ fn render_loop(
                                 .begin_at(requested_ns, StartPath::LaneUnmute);
                             state.publish_ends(&playback);
                             if let Some(project) = state.project.clone() {
-                                let _ = build_tx.send(SourceBuildRequest {
-                                    epoch: state.source_epoch,
-                                    worker_options: state.worker_options,
-                                    project,
-                                    tracks,
-                                    soundfont_path: state.soundfont_path.clone(),
-                                    sample_rate,
-                                    instrument_instantiations: Arc::clone(
-                                        &state.instrument_instantiations,
-                                    ),
-                                    root: state.root.clone(),
-                                });
+                                let _ = build_tx.send(SourceWork::Tracks(Box::new(
+                                    SourceBuildRequest {
+                                        epoch: state.source_epoch,
+                                        worker_options: state.worker_options,
+                                        project,
+                                        tracks,
+                                        soundfont_path: state.soundfont_path.clone(),
+                                        sample_rate,
+                                        instrument_instantiations: Arc::clone(
+                                            &state.instrument_instantiations,
+                                        ),
+                                        root: state.root.clone(),
+                                    },
+                                )));
                             }
                         }
                         Err(error) => {
@@ -3890,6 +4101,41 @@ fn render_loop(
                     log::error!("[render_thread] Hot source build failed: {error}");
                     fail_playback(&mut state, &playback, error);
                 }
+                RenderCommand::LaneLoaded {
+                    generation,
+                    lane,
+                    built,
+                } => {
+                    if state
+                        .deferred
+                        .as_ref()
+                        .is_none_or(|deferred| deferred.generation != generation)
+                    {
+                        log::debug!("[render_thread] Dropping a lane built for a replaced load");
+                        continue;
+                    }
+                    if let Err(error) = state.admit_lane(lane, *built) {
+                        log::error!("[render_thread] A background lane failed to join: {error}");
+                        fail_playback(&mut state, &playback, error);
+                        continue;
+                    }
+                    state.publish_ends(&playback);
+                }
+                RenderCommand::LaneLoadFailed {
+                    generation,
+                    lane,
+                    error,
+                } => {
+                    if state
+                        .deferred
+                        .as_ref()
+                        .is_none_or(|deferred| deferred.generation != generation)
+                    {
+                        continue;
+                    }
+                    log::error!("[render_thread] Background lane {lane} failed to load: {error}");
+                    fail_playback(&mut state, &playback, error);
+                }
                 RenderCommand::Spectrum { target } => {
                     state.set_spectrum_target(target);
                     if state.spectrum_target.is_none() {
@@ -3906,6 +4152,14 @@ fn render_loop(
             std::thread::sleep(std::time::Duration::from_millis(1));
             continue;
         }
+        state.request_deferred_lane(
+            &build_tx,
+            playback
+                .loop_region()
+                .filter(|_| playback.loop_enabled())
+                .map(|region| (region.start, region.end)),
+        );
+        state.publish_lane_progress();
 
         if state.warm_fill {
             // Publish the opening lookahead straight into the ring while the
@@ -4152,3 +4406,7 @@ mod source_lane_tests;
 #[cfg(test)]
 #[path = "render_thread/owned_touch_tests.rs"]
 mod owned_touch_tests;
+
+#[cfg(test)]
+#[path = "render_thread/deferred_lane_tests.rs"]
+mod deferred_lane_tests;

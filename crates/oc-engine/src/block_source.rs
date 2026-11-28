@@ -193,6 +193,20 @@ impl SourceOutput {
     }
 }
 
+/// True when a preset's instrument is a hosted plugin instance.
+///
+/// Hosted instruments are the slow ones to build: the plugin loads and restores
+/// its saved state, which can take hundreds of milliseconds each.
+pub fn hosts_plugin(preset: Option<&PresetDef>) -> bool {
+    preset.is_some_and(|preset| {
+        matches!(
+            preset.source.as_deref(),
+            Some("clap" | "vst3" | "vst2" | "au" | "lv2")
+        ) || (preset.source.as_deref() == Some("sample")
+            && preset.plugin.as_deref() == Some("sfizz"))
+    })
+}
+
 /// Immutable control-plane preparation for one streaming score lane.
 #[derive(Clone, Copy)]
 pub struct StreamingSourcePreparation<'a> {
@@ -398,12 +412,7 @@ impl BlockSource {
         root: Option<&Path>,
         preparation: Option<StreamingSourcePreparation<'_>>,
     ) -> Result<Self, String> {
-        if let Some(p) = preset.filter(|p| {
-            matches!(
-                p.source.as_deref(),
-                Some("clap" | "vst3" | "vst2" | "au" | "lv2")
-            ) || (p.source.as_deref() == Some("sample") && p.plugin.as_deref() == Some("sfizz"))
-        }) {
+        if let Some(p) = preset.filter(|p| hosts_plugin(Some(p))) {
             use crate::render_cache::*;
             use oc_host::{PluginFormat, find_plugin_info};
             let id = p

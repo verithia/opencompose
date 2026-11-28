@@ -674,6 +674,8 @@ export const ja = {
   "build.stage.arrangement": "トラックを配置中",
   "build.stage.effects": "エフェクトを準備中",
   "build.stage.soundfont": "SoundFont を準備中",
+  "build.stage.background": "音源を読み込み中",
+  "build.stage.waiting": "音源を待機中",
   "build.soundfont.read": "バンクを読み込み中",
   "build.soundfont.index": "サンプルを索引中",
   "build.soundfont.decode": "サンプルをデコード中",

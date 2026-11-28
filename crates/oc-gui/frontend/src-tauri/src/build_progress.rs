@@ -20,6 +20,10 @@ pub enum Stage {
     Arrangement,
     Effects,
     SoundFont,
+    /// The project plays while later instruments load behind the playhead.
+    Background,
+    /// Playback reached an instrument that has not loaded and waits for it.
+    Waiting,
 }
 
 impl Stage {
@@ -31,6 +35,8 @@ impl Stage {
             Stage::Arrangement => "arrangement",
             Stage::Effects => "effects",
             Stage::SoundFont => "soundfont",
+            Stage::Background => "background",
+            Stage::Waiting => "waiting",
         }
     }
 }
@@ -157,6 +163,12 @@ impl Handle {
         self.progress.set(Stage::SoundFont, stage, done, total);
     }
 
+    /// Instruments still loading after the project was published: `done` of
+    /// `total` have joined, and `stage` says whether playback waits for them.
+    pub fn background(&self, stage: Stage, done: usize, total: usize) {
+        self.progress.set(stage, "", done, total);
+    }
+
     /// The build finished or failed; nothing is left to report.
     pub fn finish(&self) {
         self.progress.generation.fetch_add(1, Ordering::AcqRel);
@@ -228,6 +240,17 @@ mod tests {
         handle.stage(Stage::Effects);
         assert_eq!(snapshot().expect("effects are reported").stage, "effects");
 
+        handle.finish();
+        assert!(snapshot().is_none());
+
+        // Instruments loading behind playback are reported until the last
+        // joins. One test owns the process-wide report, so this stays here.
+        handle.background(Stage::Background, 2, 5);
+        let loading = snapshot().expect("background loading is reported");
+        assert_eq!(loading.stage, "background");
+        assert_eq!((loading.done, loading.total), (2, 5));
+        handle.background(Stage::Waiting, 2, 5);
+        assert_eq!(snapshot().expect("a wait is reported").stage, "waiting");
         handle.finish();
         assert!(snapshot().is_none());
     }

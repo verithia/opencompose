@@ -77,6 +77,44 @@ even when nothing structural changed.
 - VST3 projects preload in the background; only CLAP projects with live
   editor state still defer to `play()`.
 
+## Instruments that load behind the playhead
+
+A large project can hold dozens of hosted instruments, and each one loads its
+plugin and restores its saved state before it can sound. Hosted VST2 and CLAP
+instances load one at a time on the application's UI thread, so that work
+cannot be spread across cores. Most of those instruments are first heard well
+after the start, though.
+
+- **Only what the cursor needs loads before the first block.** A progressive
+  load on the render worker (`load_project_from`) builds every lane at once,
+  except hosted instruments with no note within
+  `DEFERRED_LANE_WINDOW_SECONDS` (2 s) of the cursor. Those lanes get a silent
+  stand-in, and the project is published.
+- **The rest load in the order playback needs them.** The render worker hands
+  the source worker one deferred lane at a time. It picks the lane whose next
+  note is nearest in play order from the current position, following the loop
+  region when one is active. A seek or an edit changes the next pick without
+  any message to the loader (`render_thread/deferred_lanes.rs`).
+- **A stand-in never stands in for audio.** A block in which a pending lane
+  holds a note waits for that lane, the same way a block waits for an audio
+  clip still decoding. The transport reports the wait and the panel shows
+  *Waiting for instruments*. Seek history does not wait: it only rebuilds
+  state.
+- **A lane joins at the DSP position.** It first receives the program,
+  controller, bend and pressure values its score set before that point, then
+  the notes held there. A lane that joins inside a held note therefore starts
+  that note where it joins.
+- **Delay compensation is planned once.** The mixer is built with a latency
+  reserve for each pending lane. The reserve is what that lane reported the
+  last time it loaded on this worker, or a 20 ms allowance. A lane that
+  reports no more than its reserve joins through its own delay line, without
+  touching the graph. A lane that reports more rebuilds compensation once.
+- **Edits keep loading.** A note edit that reuses the built instruments keeps
+  the pending lanes and the lane in flight. A load that replaces the
+  instruments discards results built for the previous one.
+- The panel reports *Loading instruments* with a count until the last lane
+  joins.
+
 ## Live playhead and chain latency
 
 The streaming position is `StreamingPlayback::play_cursor_frames`: the callback

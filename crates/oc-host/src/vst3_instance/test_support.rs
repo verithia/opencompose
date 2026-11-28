@@ -710,10 +710,15 @@ pub const FAKE_EFFECT_ID: &str = "test.fake.effect";
 
 /// Declared stereo output buses for a fake preset id; `None` for real ids.
 pub const FAKE_BLOCK_ORDINAL_ID: &str = "test.fake.block_ordinal";
+/// A one-bus instrument that sounds only while a note is held, the shape of a
+/// hosted synth that is silent before its first note.
+pub const FAKE_NOTE_GATED_ID: &str = "test.fake.note_gated";
 /// Declared output bus count for a fake preset.
 pub fn fake_plugin_bus_count(id: &str) -> Option<usize> {
     match id {
-        FAKE_ONE_BUS_ID | FAKE_BLOCK_ORDINAL_ID | FAKE_UNITY_ONE_BUS_ID => Some(1),
+        FAKE_ONE_BUS_ID | FAKE_BLOCK_ORDINAL_ID | FAKE_UNITY_ONE_BUS_ID | FAKE_NOTE_GATED_ID => {
+            Some(1)
+        }
         FAKE_TWO_BUS_ID | FAKE_UNITY_TWO_BUS_ID => Some(2),
         FAKE_FOUR_BUS_ID => Some(4),
         FAKE_EFFECT_ID => Some(1),
@@ -731,6 +736,9 @@ pub fn fake_instance_for_id(id: &str, max_frames: u32) -> Option<Vst3Instance> {
     control
         .input_bus_count
         .store(usize::from(id == FAKE_EFFECT_ID), Ordering::Relaxed);
+    control
+        .note_gated
+        .store(id == FAKE_NOTE_GATED_ID, Ordering::Relaxed);
     Some(fake_instance(&control, 2, max_frames))
 }
 
@@ -760,6 +768,9 @@ pub fn fake_parameter_instance_for_id(id: &str, max_frames: u32) -> Option<Vst3I
     control
         .input_bus_count
         .store(usize::from(id == FAKE_EFFECT_ID), Ordering::Relaxed);
+    control
+        .note_gated
+        .store(id == FAKE_NOTE_GATED_ID, Ordering::Relaxed);
     Some(fake_effect_instance(&control, 2, max_frames))
 }
 

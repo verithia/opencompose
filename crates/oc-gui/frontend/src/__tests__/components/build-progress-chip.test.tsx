@@ -39,6 +39,20 @@ describe("build progress chip", () => {
       .toBe("Preparing SoundFonts · Decoding samples · 37/120");
   });
 
+  it("counts instruments loading behind playback and says when playback waits", () => {
+    const loading = render(() => (
+      <BuildProgressChip build={{ stage: "background", label: "", done: 12, total: 61 }} />
+    ));
+    expect(loading.container.querySelector(".status-chip")!.textContent)
+      .toBe("Loading instruments · 12/61");
+    cleanup();
+    const waiting = render(() => (
+      <BuildProgressChip build={{ stage: "waiting", label: "", done: 12, total: 61 }} />
+    ));
+    expect(waiting.container.querySelector(".status-chip")!.textContent)
+      .toBe("Waiting for instruments · 12/61");
+  });
+
   it("renders nothing for an idle or absent build", () => {
     const idle = render(() => <BuildProgressChip build={{ stage: "idle", label: "", done: 0, total: 0 }} />);
     expect(idle.container.querySelector(".status-chip")).toBeNull();
