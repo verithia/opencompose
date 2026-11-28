@@ -5,11 +5,15 @@
  */
 import { afterEach, describe, expect, it } from "vitest";
 import { cleanup, render } from "@solidjs/testing-library";
+import { createSignal } from "solid-js";
 import { BuildProgressChip } from "../../components/BuildProgressChip";
 import { i18n } from "../../stores/i18n";
 import type { BuildSnapshot } from "../../types/transport";
 
 afterEach(cleanup);
+
+/** The report assistive technology reads; a narrow bar paints a compact copy. */
+const report = (root: ParentNode) => root.querySelector(".build-progress-text:not(.build-progress-compact)")!.textContent;
 
 const BUILD: BuildSnapshot = { stage: "instruments", label: "Serum 2", done: 2, total: 22 };
 
@@ -19,7 +23,12 @@ describe("build progress chip", () => {
     const chip = container.querySelector(".status-chip.build-progress")!;
     expect(chip).toBeTruthy();
     expect(chip.getAttribute("role")).toBe("status");
-    expect(chip.textContent).toBe("Preparing instruments · Serum 2 (3/22)");
+    expect(report(chip)).toBe("Preparing instruments · Serum 2 (3/22)");
+    // Only the name may give up characters; the stage and count stay whole.
+    expect(chip.querySelector(".build-progress-name")!.textContent).toBe("Serum 2");
+    const compact = chip.querySelector(".build-progress-compact")!;
+    expect(compact.textContent).toBe("Preparing instruments · 3/22");
+    expect(compact.getAttribute("aria-hidden")).toBe("true");
     // The moving band is what tells the operator the build is still running.
     expect(chip.querySelector(".build-progress-sweep")).toBeTruthy();
   });
@@ -29,6 +38,8 @@ describe("build progress chip", () => {
       <BuildProgressChip build={{ stage: "effects", label: "", done: 0, total: 0 }} />
     ));
     expect(container.querySelector(".status-chip")!.textContent).toBe("Preparing effects");
+    // Without a name there is nothing to shorten.
+    expect(container.querySelector(".build-progress-compact")).toBeNull();
   });
 
   it("names the SoundFont stage and its decoded samples", () => {
@@ -37,6 +48,62 @@ describe("build progress chip", () => {
     ));
     expect(container.querySelector(".status-chip")!.textContent)
       .toBe("Preparing SoundFonts · Decoding samples · 37/120");
+  });
+
+  it("counts instruments loading behind playback and says when playback waits", () => {
+    const loading = render(() => (
+      <BuildProgressChip build={{ stage: "background", label: "", done: 12, total: 61 }} />
+    ));
+    expect(loading.container.querySelector(".status-chip")!.textContent)
+      .toBe("Loading instruments · 12/61");
+    cleanup();
+    const waiting = render(() => (
+      <BuildProgressChip build={{ stage: "waiting", label: "", done: 12, total: 61 }} />
+    ));
+    expect(waiting.container.querySelector(".status-chip")!.textContent)
+      .toBe("Waiting for instruments · 12/61");
+  });
+
+  it("fills a bar with the weighted progress of the whole load", () => {
+    const { container } = render(() => <BuildProgressChip build={{ ...BUILD, progress: 420 }} />);
+    const fill = container.querySelector<HTMLElement>(".build-progress-fill")!;
+    expect(fill).toBeTruthy();
+    expect(fill.getAttribute("aria-hidden")).toBe("true");
+    expect(fill.style.transform).toBe("scaleX(0.42)");
+    // The text still names the work; the bar only shows how far it has got.
+    expect(report(container)).toBe("Preparing instruments · Serum 2 (3/22)");
+  });
+
+  it("shows no bar until the load knows how much work it holds", () => {
+    const { container } = render(() => <BuildProgressChip build={{ ...BUILD, progress: null }} />);
+    expect(container.querySelector(".build-progress-fill")).toBeNull();
+    expect(container.querySelector(".build-progress-sweep")).toBeTruthy();
+  });
+
+  it("keeps the fill through the handoff, ignores stale progress and restarts on a new load", () => {
+    const [build, setBuild] = createSignal<BuildSnapshot>({ ...BUILD, generation: 4, progress: 300 });
+    const { container } = render(() => <BuildProgressChip build={build()} />);
+    const fill = () => container.querySelector<HTMLElement>(".build-progress-fill")!;
+    setBuild({ ...BUILD, generation: 4, progress: 650 });
+    expect(fill().style.transform).toBe("scaleX(0.65)");
+    expect(fill().classList.contains("restart")).toBe(false);
+    const background: BuildSnapshot = { stage: "background", label: "", done: 0, total: 4, generation: 4 };
+    setBuild({ ...background, progress: 650 });
+    expect(fill().style.transform).toBe("scaleX(0.65)");
+    expect(fill().classList.contains("restart")).toBe(false);
+    setBuild({ ...background, done: 1, progress: 730 });
+    setBuild({ ...BUILD, generation: 4, progress: 650 });
+    setBuild({ ...BUILD, stage: "reading", generation: 4, progress: null });
+    expect(fill().style.transform).toBe("scaleX(0.73)");
+    expect(fill().classList.contains("restart")).toBe(false);
+    setBuild({ ...BUILD, generation: 5, progress: 30 });
+    expect(fill().style.transform).toBe("scaleX(0.03)");
+    expect(fill().classList.contains("restart")).toBe(true);
+    setBuild({ ...background, done: 2, progress: 850 });
+    expect(fill().style.transform).toBe("scaleX(0.03)");
+    setBuild({ ...BUILD, generation: 5, progress: 200 });
+    expect(fill().style.transform).toBe("scaleX(0.2)");
+    expect(fill().classList.contains("restart")).toBe(false);
   });
 
   it("renders nothing for an idle or absent build", () => {
@@ -50,7 +117,7 @@ describe("build progress chip", () => {
   it("uses the panel's language", () => {
     i18n.setLocale("zh-Hans");
     const { container } = render(() => <BuildProgressChip build={BUILD} />);
-    expect(container.querySelector(".status-chip")!.textContent).toBe("准备乐器 · Serum 2（3/22）");
+    expect(report(container)).toBe("准备乐器 · Serum 2（3/22）");
     i18n.setLocale("en");
   });
 });

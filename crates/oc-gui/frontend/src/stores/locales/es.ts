@@ -668,6 +668,8 @@ export const es = {
   "build.stage.arrangement": "Colocando pistas",
   "build.stage.effects": "Preparando efectos",
   "build.stage.soundfont": "Preparando SoundFonts",
+  "build.stage.background": "Cargando instrumentos",
+  "build.stage.waiting": "Esperando instrumentos",
   "build.soundfont.read": "Leyendo el banco",
   "build.soundfont.index": "Indexando muestras",
   "build.soundfont.decode": "Decodificando muestras",

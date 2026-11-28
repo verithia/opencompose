@@ -331,6 +331,91 @@ describe("transport polling", () => {
     expect(store.transport().duration_seconds).toBe(210.3);
   });
 
+  describe("while the worker prepares another rendition", () => {
+    /** Replies from a worker that has not reached the current document yet. */
+    const behind = (extra: Record<string, unknown>) => ({ ...TRANSPORT_PLAYING(), starting: true, ...extra });
+
+    it("a cold Play shows the opened arrangement, not the previous one or zero", async () => {
+      await store.stop();
+      let ready = false;
+      invokeMock.mockImplementation(async (cmd: string) => {
+        if (cmd === "open_file") return { ...makeSnapshot({ name: "Long" }), duration_seconds: 118.5, file_path: "/tmp/long.ocp" };
+        if (cmd === "transport_play" || cmd === "get_transport_state") {
+          return ready
+            ? { ...TRANSPORT_PLAYING(), position_seconds: 0.4, duration_seconds: 120.5 }
+            : behind({ duration_seconds: 54 });
+        }
+        return TRANSPORT_STOPPED();
+      });
+      await store.openFile("/tmp/long.ocp");
+      await store.play();
+      expect(store.transport().duration_seconds).toBe(118.5);
+      await vi.advanceTimersByTimeAsync(200);
+      expect(store.transport().duration_seconds).toBe(118.5);
+      ready = true;
+      await vi.advanceTimersByTimeAsync(100);
+      // Once the worker holds this document, its own extent applies.
+      expect(store.transport().duration_seconds).toBe(120.5);
+      await store.stop();
+    });
+
+    it("leaving a track preview for the arrangement never shows the preview's length", async () => {
+      await store.stop();
+      let mode: "preview" | "behind" | "ready" = "preview";
+      invokeMock.mockImplementation(async (cmd: string) => {
+        if (cmd === "get_project") return { ...makeSnapshot(), duration_seconds: 52 };
+        if (cmd === "preview_track") return { ...TRANSPORT_PLAYING(), duration_seconds: 34 };
+        if (cmd === "transport_play") mode = mode === "ready" ? "ready" : "behind";
+        if (cmd === "transport_play" || cmd === "get_transport_state") {
+          if (mode === "preview") return { ...TRANSPORT_PLAYING(), duration_seconds: 34 };
+          return mode === "behind"
+            ? behind({ position_seconds: 22.2, duration_seconds: 34 })
+            : { ...TRANSPORT_PLAYING(), position_seconds: 22.4, duration_seconds: 54 };
+        }
+        return { ...TRANSPORT_STOPPED(), position_seconds: 22.2, duration_seconds: 34 };
+      });
+      await store.initProject();
+      await store.previewTrack(0);
+      expect(store.transport().duration_seconds).toBe(34);
+      await store.play();
+      expect(store.previewTrackIndex()).toBeNull();
+      expect(store.transport().duration_seconds).toBe(52);
+      await vi.advanceTimersByTimeAsync(200);
+      expect(store.transport().duration_seconds).toBe(52);
+      mode = "ready";
+      await vi.advanceTimersByTimeAsync(100);
+      expect(store.transport().duration_seconds).toBe(54);
+      await store.stop();
+    });
+
+    it("an applied draft shows its own extent and cursor while the old one still plays", async () => {
+      await store.stop();
+      let worker: Record<string, unknown> = { ...TRANSPORT_PLAYING(), position_seconds: 20, position_beats: 40, duration_seconds: 120.5 };
+      invokeMock.mockImplementation(async (cmd: string) => {
+        if (cmd === "get_project") return { ...makeSnapshot(), duration_seconds: 118.5 };
+        if (cmd === "update_dsl") return { ...makeSnapshot({ tracks: [] }), duration_seconds: 0 };
+        if (cmd === "transport_play" || cmd === "get_transport_state") return { ...worker };
+        return TRANSPORT_STOPPED();
+      });
+      await store.initProject();
+      await store.play();
+      await vi.advanceTimersByTimeAsync(100);
+      expect(store.transport().duration_seconds).toBe(120.5);
+      // The worker keeps playing the previous rendition until it loads the draft.
+      worker = { ...worker, warming: true };
+      await store.updateDsl("@project\n  tempo: 120\n");
+      await vi.advanceTimersByTimeAsync(100);
+      expect(store.transport().duration_seconds).toBe(0);
+      expect(store.transport().position_seconds).toBe(0);
+      expect(store.transport().position_beats).toBe(0);
+      worker = { ...TRANSPORT_STOPPED(), position_seconds: 2, position_beats: 4, duration_seconds: 2 };
+      await vi.advanceTimersByTimeAsync(100);
+      expect(store.transport().duration_seconds).toBe(2);
+      expect(store.transport().position_seconds).toBe(2);
+      await store.stop();
+    });
+  });
+
   it("Stop wins over a late timeline start reply", async () => {
     let finish!: (value: ReturnType<typeof TRANSPORT_PLAYING>) => void;
     invokeMock.mockImplementation(async cmd => {

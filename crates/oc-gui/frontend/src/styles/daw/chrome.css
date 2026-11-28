@@ -119,9 +119,11 @@
 
 .status-bar {
   display: grid;
-  /* Every track is shrinkable: a centred project name must ellipsize, not
-     spill over both edges of a narrow window. */
-  grid-template-columns: minmax(0, 1fr) minmax(0, auto) minmax(0, 1fr);
+  /* The left and centre tracks shrink: a centred project name must
+     ellipsize, not spill over both edges of a narrow window. The right track
+     never goes below its content, so the transport time and the loading
+     chip's stage and count stay readable; the left gives way instead. */
+  grid-template-columns: minmax(0, 1fr) minmax(0, auto) minmax(auto, 1fr);
   align-items: center;
   gap: 8px;
   padding: 0 10px;
@@ -135,6 +137,9 @@
   letter-spacing: 0.2px;
   flex-shrink: 0;
   min-width: 0;
+  /* The loading chip and the project name adapt to the bar, not the window:
+     an open sidebar narrows the bar without narrowing the window. */
+  container: status-bar / inline-size;
 }
 
 .status-error {
@@ -223,8 +228,58 @@
 }
 
 .build-progress-text {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  overflow: hidden;
+  /* The runs around the name keep their edge spaces as separate flex items. */
+  white-space: pre;
+}
+
+/* Only the instrument name gives way, and it shows that it was cut. */
+.build-progress-name {
+  min-width: 0;
+  max-width: 18ch;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.build-progress-compact {
+  display: none;
+}
+
+/* A cut name still takes its whole allowance in the right track, which a
+   narrow bar cannot spare: the transport state on the left would go first.
+   There the chip reports the stage and count alone, and the full report
+   stays readable to assistive technology. */
+@container status-bar (max-width: 720px) {
+  .build-progress-text.named {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+
+  .build-progress-compact {
+    display: flex;
+  }
+}
+
+/* The weighted progress of the whole load. Scaling a layer keeps each poll's
+   update on the compositor, and the easing spans more than one 120 ms poll,
+   so the bar glides instead of stepping. */
+.build-progress-fill {
+  position: absolute;
+  inset: 0;
+  background: color-mix(in srgb, var(--accent) 26%, transparent);
+  transform-origin: left center;
+  transition: transform 420ms cubic-bezier(0.22, 0.8, 0.3, 1);
+  pointer-events: none;
+}
+
+.build-progress-fill.restart {
+  transition: none;
 }
 
 .build-progress-sweep {
@@ -249,6 +304,10 @@
   .build-progress-sweep {
     animation: none;
     opacity: 0.35;
+  }
+
+  .build-progress-fill {
+    transition: none;
   }
 }
 

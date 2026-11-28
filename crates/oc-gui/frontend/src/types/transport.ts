@@ -2,11 +2,26 @@ import type { ProjectSnapshot } from "./project";
 
 /** Chunks of a project rebuild, as the render thread reports them. */
 export interface BuildSnapshot {
-  stage: "idle" | "reading" | "instruments" | "arrangement" | "effects" | "soundfont";
+  /** Identifies one load through both foreground and background preparation. */
+  generation?: number;
+  stage:
+    | "idle"
+    | "reading"
+    | "instruments"
+    | "arrangement"
+    | "effects"
+    | "soundfont"
+    | "background"
+    | "waiting";
   /** The instrument being prepared, empty outside the per-instrument stage. */
   label: string;
   done: number;
   total: number;
+  /**
+   * How much of the whole load is done, in thousandths, weighted by what each
+   * item costs to prepare. Absent or null until the load knows its work.
+   */
+  progress?: number | null;
 }
 
 export interface AuditionSnapshot {

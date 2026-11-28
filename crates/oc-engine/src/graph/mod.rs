@@ -114,6 +114,60 @@ pub struct GraphLiveInputs {
     pub touch: Option<Arc<touch::TouchRegistry>>,
     pub midi_cc: Option<Arc<crate::control_link::MidiControlInput>>,
     pub preset_macros: Option<Arc<PresetMacroInput>>,
+    /// Told how far the build has got through the hosted plugins it loads.
+    pub build_report: Option<GraphBuildReport>,
+}
+
+/// How many of a graph build's hosted plugins have loaded. Hosted plugins are
+/// what makes a mixer slow to build, so they are what a progress display
+/// counts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GraphBuildStep {
+    pub done: usize,
+    pub total: usize,
+}
+
+/// Receives a [`GraphBuildStep`] before the first chain is built and after
+/// each chain that loads a hosted plugin.
+pub type GraphBuildReport = Arc<dyn Fn(GraphBuildStep) + Send + Sync>;
+
+/// The hosted plugins one effect list loads; a bypassed slot never loads its
+/// plugin unless automation can switch it on, and the count only paces a
+/// progress display, so it is left out.
+fn hosted_effects(effects: &[oc_dsl::ast::Effect]) -> usize {
+    effects
+        .iter()
+        .filter(|effect| {
+            !effect.bypass && matches!(effect.effect_type, oc_dsl::ast::EffectType::Plugin(_))
+        })
+        .count()
+}
+
+/// The hosted plugins a track chain loads: its preset's effects, then its own.
+fn track_hosted_effects(project: &Project, track: &oc_dsl::ast::Track) -> usize {
+    let preset = track
+        .preset
+        .as_ref()
+        .and_then(|name| project.presets.iter().find(|p| &p.name == name))
+        .map_or(0, |preset| hosted_effects(&preset.effects));
+    preset + hosted_effects(&track.effects)
+}
+
+/// The hosted plugins a graph build of `project` loads across its track, bus
+/// and master chains.
+pub fn hosted_effect_count(project: &Project) -> usize {
+    project
+        .tracks
+        .iter()
+        .map(|track| track_hosted_effects(project, track))
+        .chain(project.buses.iter().map(|bus| hosted_effects(&bus.effects)))
+        .chain(
+            project
+                .master
+                .iter()
+                .map(|master| hosted_effects(&master.effects)),
+        )
+        .sum()
 }
 
 /// A fully instantiated audio graph ready for rendering.
@@ -563,6 +617,44 @@ struct PreparedMixOptions<'a> {
     samples: usize,
 }
 
+/// Counts hosted plugins as a graph build loads them and reports each one, so
+/// a progress display moves inside a long chain rather than once per chain.
+struct HostedProgress {
+    done: std::cell::Cell<usize>,
+    total: usize,
+    report: GraphBuildReport,
+}
+
+impl HostedProgress {
+    fn start(report: GraphBuildReport, total: usize) -> Self {
+        report(GraphBuildStep { done: 0, total });
+        Self {
+            done: std::cell::Cell::new(0),
+            total,
+            report,
+        }
+    }
+
+    fn loaded(&self) {
+        let done = self.done.get() + 1;
+        self.done.set(done);
+        (self.report)(GraphBuildStep {
+            done,
+            total: self.total,
+        });
+    }
+}
+
+/// What every chain of one graph build shares.
+#[derive(Clone, Copy)]
+struct ChainContext<'a> {
+    sample_rate: u32,
+    checked: bool,
+    touch: Option<&'a Arc<touch::TouchRegistry>>,
+    resource_root: Option<&'a Path>,
+    hosted: Option<&'a HostedProgress>,
+}
+
 struct EffectChainBuild<'a> {
     project: Option<&'a Project>,
     sample_rate: u32,
@@ -573,6 +665,8 @@ struct EffectChainBuild<'a> {
     touch: Option<&'a Arc<touch::TouchRegistry>>,
     resource_root: Option<&'a Path>,
     linked_lanes: &'a [linked_automation::LinkedLane],
+    /// Told about each hosted plugin this chain loads.
+    hosted: Option<&'a HostedProgress>,
 }
 
 impl Default for EffectChain {
@@ -614,6 +708,7 @@ impl EffectChain {
                 touch: None,
                 resource_root,
                 linked_lanes: &[],
+                hosted: None,
             },
         )
     }
@@ -1739,6 +1834,13 @@ impl AudioGraph {
         {
             let document = graph_document(next);
             let root = self.resource_root.as_deref();
+            let context = ChainContext {
+                sample_rate: self.sample_rate,
+                checked: true,
+                touch,
+                resource_root: root,
+                hosted: None,
+            };
             let linked = linked_automation::LinkedAutomation::new(
                 &document,
                 self.sample_rate,
@@ -1755,37 +1857,15 @@ impl AudioGraph {
                 .enumerate()
                 .filter(|(_, plan)| rebuild(plan))
             {
-                let chain = build_track_chain(
-                    &document,
-                    index,
-                    self.sample_rate,
-                    true,
-                    touch,
-                    root,
-                    &linked,
-                )?;
+                let chain = build_track_chain(&document, index, context, &linked)?;
                 track_replacements.insert(index, chain);
             }
             for (index, _) in bus_plans.iter().filter(|(_, plan)| rebuild(plan)) {
-                let chain = build_bus_chain(
-                    &document,
-                    *index,
-                    self.sample_rate,
-                    true,
-                    touch,
-                    root,
-                    &linked,
-                )?;
+                let chain = build_bus_chain(&document, *index, context, &linked)?;
                 bus_replacements.insert(*index, chain);
             }
             if rebuild(&master_plan) {
-                master_replacement = Some(build_master_chain(
-                    &document,
-                    self.sample_rate,
-                    true,
-                    touch,
-                    root,
-                )?);
+                master_replacement = Some(build_master_chain(&document, context)?);
             }
         }
         let rebuilt = !track_replacements.is_empty()
@@ -2028,7 +2108,17 @@ impl AudioGraph {
             touch,
             midi_cc,
             preset_macros,
+            build_report,
         } = live;
+        let hosted =
+            build_report.map(|report| HostedProgress::start(report, hosted_effect_count(project)));
+        let context = ChainContext {
+            sample_rate,
+            checked,
+            touch: touch.as_ref(),
+            resource_root,
+            hosted: hosted.as_ref(),
+        };
         let live_controls = midi_cc
             .map(|input| live_controls::LiveControls::new(input, project))
             .transpose()?;
@@ -2050,15 +2140,7 @@ impl AudioGraph {
 
         for (track_index, track) in project.tracks.iter().enumerate() {
             // Build effect chain for this track
-            track_chains.push(build_track_chain(
-                project,
-                track_index,
-                sample_rate,
-                checked,
-                touch.as_ref(),
-                resource_root,
-                &linked,
-            )?);
+            track_chains.push(build_track_chain(project, track_index, context, &linked)?);
 
             // Build routing
             let (sends, direct_to_master) = track_send_routes(track);
@@ -2107,15 +2189,7 @@ impl AudioGraph {
         // Build bus chains
         let mut bus_chains = HashMap::new();
         for (index, bus) in project.buses.iter().enumerate() {
-            let chain = build_bus_chain(
-                project,
-                index,
-                sample_rate,
-                checked,
-                touch.as_ref(),
-                resource_root,
-                &linked,
-            )?;
+            let chain = build_bus_chain(project, index, context, &linked)?;
             bus_chains.insert(
                 bus.name.clone(),
                 BusNode {
@@ -2130,9 +2204,7 @@ impl AudioGraph {
 
         // Build master chain
         let master_chain = match &project.master {
-            Some(_) => {
-                build_master_chain(project, sample_rate, checked, touch.as_ref(), resource_root)?
-            }
+            Some(_) => build_master_chain(project, context)?,
             None => EffectChain::new(),
         };
 
@@ -4160,12 +4232,16 @@ fn numeric_param(
 fn build_track_chain(
     project: &Project,
     index: usize,
-    sample_rate: u32,
-    checked: bool,
-    touch: Option<&Arc<touch::TouchRegistry>>,
-    resource_root: Option<&Path>,
+    context: ChainContext<'_>,
     linked: &linked_automation::LinkedAutomation<'_>,
 ) -> Result<EffectChain, String> {
+    let ChainContext {
+        sample_rate,
+        checked,
+        touch,
+        resource_root,
+        hosted,
+    } = context;
     let track = project
         .tracks
         .get(index)
@@ -4191,6 +4267,7 @@ fn build_track_chain(
             touch: None,
             resource_root,
             linked_lanes: &[],
+            hosted,
         },
     )?;
     chain.effects.extend(
@@ -4208,6 +4285,7 @@ fn build_track_chain(
                 touch,
                 resource_root,
                 linked_lanes: linked.for_owner(&track.name),
+                hosted,
             },
         )?
         .effects,
@@ -4230,12 +4308,16 @@ fn build_track_chain(
 fn build_bus_chain(
     project: &Project,
     index: usize,
-    sample_rate: u32,
-    checked: bool,
-    touch: Option<&Arc<touch::TouchRegistry>>,
-    resource_root: Option<&Path>,
+    context: ChainContext<'_>,
     linked: &linked_automation::LinkedAutomation<'_>,
 ) -> Result<EffectChain, String> {
+    let ChainContext {
+        sample_rate,
+        checked,
+        touch,
+        resource_root,
+        hosted,
+    } = context;
     let bus = project
         .buses
         .get(index)
@@ -4255,6 +4337,7 @@ fn build_bus_chain(
             touch,
             resource_root,
             linked_lanes: linked.for_owner(&bus.name),
+            hosted,
         },
     )?;
     if !bus.gain_automation.is_empty() {
@@ -4272,13 +4355,14 @@ fn build_bus_chain(
 }
 
 /// The master graph chain; a document without a master section has none.
-fn build_master_chain(
-    project: &Project,
-    sample_rate: u32,
-    checked: bool,
-    touch: Option<&Arc<touch::TouchRegistry>>,
-    resource_root: Option<&Path>,
-) -> Result<EffectChain, String> {
+fn build_master_chain(project: &Project, context: ChainContext<'_>) -> Result<EffectChain, String> {
+    let ChainContext {
+        sample_rate,
+        checked,
+        touch,
+        resource_root,
+        hosted,
+    } = context;
     let master = project
         .master
         .as_ref()
@@ -4297,6 +4381,7 @@ fn build_master_chain(
             touch,
             resource_root,
             linked_lanes: &[],
+            hosted,
         },
     )?;
     if !master.gain_automation.is_empty() {
@@ -4340,6 +4425,7 @@ fn build_effect_chain_selection<'a>(
         touch,
         resource_root,
         linked_lanes,
+        hosted,
     } = context;
     let lanes = effect_lanes_by_index(effects, automation, checked)?;
     let mut linked: HashMap<usize, Vec<&linked_automation::LinkedLane>> = HashMap::new();
@@ -4463,6 +4549,9 @@ fn build_effect_chain_selection<'a>(
         } else {
             dsp::create_effect_with_resources(&effect.effect_type, &params, sample_rate, resources)
         };
+        if !effect.bypass && matches!(effect.effect_type, oc_dsl::ast::EffectType::Plugin(_)) {
+            hosted.inspect(|hosted| hosted.loaded());
+        }
         // Seeded devices take their sequence from where they sit, not from the
         // clock or an address, so the same project renders the same audio.
         fx.set_seed(device_seed(place, index));

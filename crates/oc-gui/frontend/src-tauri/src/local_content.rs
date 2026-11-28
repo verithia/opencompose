@@ -9,6 +9,7 @@
 
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::Duration;
 
 use serde::Serialize;
@@ -310,6 +311,17 @@ struct SoundRoot {
 }
 
 fn sound_roots(instrument_roots: Vec<SearchRoot>, samples: Vec<PathBuf>) -> Vec<SoundRoot> {
+    // `SoundFonts` and `soundfonts` are one folder on a case-insensitive
+    // disk, so existing folders are compared by their canonical path.
+    sound_roots_by(instrument_roots, samples, canonical)
+}
+
+/// The sound folders in walk order, each once by `identity`.
+fn sound_roots_by(
+    instrument_roots: Vec<SearchRoot>,
+    samples: Vec<PathBuf>,
+    identity: impl Fn(PathBuf) -> PathBuf,
+) -> Vec<SoundRoot> {
     let mut roots: Vec<SoundRoot> = Vec::new();
     let instrument = instrument_roots
         .into_iter()
@@ -336,11 +348,9 @@ fn sound_roots(instrument_roots: Vec<SearchRoot>, samples: Vec<PathBuf>) -> Vec<
         origin: FolderOrigin::Convention,
         library_id: None,
     });
-    // `SoundFonts` and `soundfonts` are one folder on a case-insensitive
-    // disk, so existing folders are compared by their canonical path.
     let mut seen = HashSet::new();
     for root in instrument.chain(samples) {
-        if seen.insert(canonical(root.path.clone())) {
+        if seen.insert(identity(root.path.clone())) {
             roots.push(root);
         }
     }
@@ -512,7 +522,7 @@ pub fn summary_with(progress: &dyn Fn(ScanProgressEvent)) -> LocalContentSummary
         sample_folders(),
     );
     let (instruments, samples) = sound_summaries(&roots, &libraries(), progress);
-    LocalContentSummary {
+    let summary = LocalContentSummary {
         plugins: plugin_summary(
             &oc_host::plugin_search_folders(),
             oc_host::published_plugins(),
@@ -520,6 +530,106 @@ pub fn summary_with(progress: &dyn Fn(ScanProgressEvent)) -> LocalContentSummary
         instruments,
         samples,
         scanning: crate::plugin_inventory::refreshing(),
+    };
+    *LAST_SUMMARY
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner()) = Some(summary.clone());
+    summary
+}
+
+/// The result of the last walk that finished, for [`listing`].
+static LAST_SUMMARY: Mutex<Option<LocalContentSummary>> = Mutex::new(None);
+
+/// The searched folders as the settings name them now, with what the last
+/// finished walk counted in each. No searched folder is opened.
+///
+/// A walk can stall inside the operating system, on an unreachable volume or
+/// a folder the system is still asking permission for, and every walk stalls
+/// on the same folder. Adding or removing a folder, which is how the user
+/// gets out of that, therefore answers from the settings alone, and the page
+/// recounts in the background.
+pub fn listing() -> LocalContentSummary {
+    let last = LAST_SUMMARY
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .clone();
+    listing_from(
+        last.as_ref(),
+        &oc_host::plugin_search_folders(),
+        &sound_roots_by(
+            soundfont_store::search_roots(&soundfont_store::dir()),
+            sample_folders(),
+            |path| path,
+        ),
+        crate::plugin_inventory::refreshing(),
+    )
+}
+
+fn listing_from(
+    last: Option<&LocalContentSummary>,
+    plugin_folders: &[oc_host::PluginFolder],
+    sound_roots: &[SoundRoot],
+    scanning: bool,
+) -> LocalContentSummary {
+    // A folder nobody has counted yet is shown as present and empty; the
+    // walk that follows the change fills it in.
+    let fresh = |path: String, origin: FolderOrigin, library_id: Option<String>| SearchedFolder {
+        path,
+        origin,
+        exists: true,
+        count: 0,
+        library_id,
+    };
+    let counted = |folders: Option<&Vec<SearchedFolder>>, path: &str| {
+        folders.and_then(|folders| folders.iter().find(|folder| folder.path == path).cloned())
+    };
+    let plugin_folders = plugin_folders
+        .iter()
+        .map(|folder| {
+            let origin = folder.origin.into();
+            counted(last.map(|last| &last.plugins.folders), &folder.path)
+                .map(|known| SearchedFolder { origin, ..known })
+                .unwrap_or_else(|| fresh(folder.path.clone(), origin, None))
+        })
+        .collect();
+    let mut instrument_folders = Vec::new();
+    let mut sample_folders = Vec::new();
+    for root in sound_roots {
+        let path = root.path.display().to_string();
+        let known = counted(last.map(|last| &last.instruments.folders), &path)
+            .zip(counted(last.map(|last| &last.samples.folders), &path));
+        match known {
+            Some((instruments, samples)) => {
+                instrument_folders.push(instruments);
+                sample_folders.push(samples);
+            }
+            // A walk lists each folder once by its canonical path; without
+            // opening the folder, only one the user just added is known new.
+            None if last.is_some() && root.library_id.is_none() => {}
+            None => {
+                instrument_folders.push(fresh(path.clone(), root.origin, root.library_id.clone()));
+                sample_folders.push(fresh(path, root.origin, root.library_id.clone()));
+            }
+        }
+    }
+    let content = |last: Option<&ContentSummary>, folders| match last {
+        Some(last) => ContentSummary {
+            folders,
+            ..last.clone()
+        },
+        None => ContentSummary {
+            total: 0,
+            formats: Vec::new(),
+            folders,
+            items: Vec::new(),
+            truncated: false,
+        },
+    };
+    LocalContentSummary {
+        plugins: content(last.map(|last| &last.plugins), plugin_folders),
+        instruments: content(last.map(|last| &last.instruments), instrument_folders),
+        samples: content(last.map(|last| &last.samples), sample_folders),
+        scanning,
     }
 }
 
@@ -591,6 +701,12 @@ async fn blocking<T: Send + 'static>(
 #[tauri::command]
 pub async fn local_content_summary() -> Result<LocalContentSummary, String> {
     blocking(|| Ok(summary())).await
+}
+
+/// The searched folders without opening them; see [`listing`].
+#[tauri::command]
+pub async fn local_content_listing() -> Result<LocalContentSummary, String> {
+    blocking(|| Ok(listing())).await
 }
 
 /// Scan plugins and sounds, emitting [`PROGRESS_EVENT`] while it runs.
@@ -672,13 +788,15 @@ impl From<content_library::LibraryError> for FolderChangeError {
     }
 }
 
-/// Run one folder change off the main thread and recount afterwards.
+/// Run one folder change off the main thread and answer with the folders it
+/// leaves; the caller recounts them. See [`listing`] for why it does not wait
+/// for a walk.
 async fn folder_change<E: Into<FolderChangeError>>(
     change: impl FnOnce() -> Result<(), E> + Send + 'static,
 ) -> Result<LocalContentSummary, FolderChangeError> {
     tauri::async_runtime::spawn_blocking(move || {
         change().map_err(Into::into)?;
-        Ok(summary())
+        Ok(listing())
     })
     .await
     .map_err(|error| FolderChangeError {
@@ -988,6 +1106,102 @@ mod tests {
             serde_json::to_value(FolderOrigin::Managed).unwrap(),
             serde_json::json!("managed")
         );
+    }
+
+    #[test]
+    fn a_listing_names_the_configured_folders_without_opening_them() {
+        // Nothing under this root exists: a listing that opened a folder
+        // would find it missing.
+        let root = Path::new("/nonexistent-local-content-listing");
+        let plugins = [
+            folder(&root.join("VST3"), oc_host::FolderOrigin::Standard),
+            folder(&root.join("Mine"), oc_host::FolderOrigin::User),
+        ];
+        let sound = |path: &str, origin, library_id: Option<&str>| SoundRoot {
+            path: root.join(path),
+            origin,
+            library_id: library_id.map(str::to_string),
+        };
+        let roots = [
+            sound("SoundFonts", FolderOrigin::Standard, None),
+            sound("Drums", FolderOrigin::User, Some("lib-drums")),
+        ];
+
+        // Before any walk finished, every folder is listed as present and
+        // not yet counted.
+        let first = listing_from(None, &plugins, &roots, true);
+        assert!(first.scanning);
+        assert_eq!(first.plugins.folders.len(), 2);
+        assert_eq!(first.plugins.folders[1].origin, FolderOrigin::User);
+        let listed: Vec<(&str, bool, usize)> = first
+            .instruments
+            .folders
+            .iter()
+            .map(|folder| (folder.path.as_str(), folder.exists, folder.count))
+            .collect();
+        assert_eq!(
+            listed,
+            [
+                ("/nonexistent-local-content-listing/SoundFonts", true, 0),
+                ("/nonexistent-local-content-listing/Drums", true, 0)
+            ]
+        );
+        assert_eq!(first.samples.folders.len(), 2);
+        assert_eq!(first.instruments.total, 0);
+
+        // After a walk, its counts stay with their folders. The user removed
+        // the drums library and added a pads library; a standard folder the
+        // walk merged into another one stays merged.
+        let mut walked = first.clone();
+        walked.plugins.folders[0].count = 7;
+        walked.plugins.total = 7;
+        walked.instruments.folders[0].count = 3;
+        walked.instruments.total = 3;
+        walked.samples.folders[1].count = 40;
+        walked.samples.total = 40;
+        let roots = [
+            sound("SoundFonts", FolderOrigin::Standard, None),
+            sound("soundfonts", FolderOrigin::Standard, None),
+            sound("Pads", FolderOrigin::User, Some("lib-pads")),
+        ];
+        let next = listing_from(Some(&walked), &plugins[..1], &roots, false);
+        assert_eq!(next.plugins.folders.len(), 1);
+        assert_eq!(next.plugins.folders[0].count, 7);
+        assert_eq!(next.plugins.total, 7);
+        let listed: Vec<(&str, usize, Option<&str>)> = next
+            .instruments
+            .folders
+            .iter()
+            .map(|folder| {
+                (
+                    folder.path.as_str(),
+                    folder.count,
+                    folder.library_id.as_deref(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            listed,
+            [
+                ("/nonexistent-local-content-listing/SoundFonts", 3, None),
+                (
+                    "/nonexistent-local-content-listing/Pads",
+                    0,
+                    Some("lib-pads")
+                )
+            ]
+        );
+        // The two lists stay aligned folder by folder.
+        let paths = |summary: &ContentSummary| -> Vec<String> {
+            summary
+                .folders
+                .iter()
+                .map(|folder| folder.path.clone())
+                .collect()
+        };
+        assert_eq!(paths(&next.instruments), paths(&next.samples));
+        // Totals are the last walk's until the recount.
+        assert_eq!(next.instruments.total, 3);
     }
 
     #[test]

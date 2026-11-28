@@ -146,11 +146,39 @@ export function createPlaybackStore(
   }
 
   function holdPlayhead(state: TransportSnapshot): TransportSnapshot {
-    if (!previewAnchor) return state;
+    if (!previewAnchor) return currentRendition(state);
     return {
       ...state,
       position_beats: previewAnchor.beats,
       position_seconds: previewAnchor.seconds,
+    };
+  }
+
+  // The worker publishes the extent of the rendition it holds, and it reaches
+  // a new one only after the document has moved on: a file opened, a draft
+  // applied, or a track preview handed back. Until a snapshot shows the
+  // worker ready for the current arrangement, its extent and cursor may
+  // describe the previous document or the solo preview, so the arrangement
+  // the snapshot announced stands in for them.
+  let arrangementSeconds = 0;
+  let renditionBehind = true;
+
+  function currentRendition(state: TransportSnapshot): TransportSnapshot {
+    if (!renditionBehind) return state;
+    if (!state.warming && !state.starting && state.duration_seconds > 0) {
+      renditionBehind = false;
+      return state;
+    }
+    if (state.position_seconds <= arrangementSeconds) {
+      return { ...state, duration_seconds: arrangementSeconds };
+    }
+    // The worker clamps its cursor to the new end the same way once it loads.
+    const clock = transportClock();
+    return {
+      ...state,
+      duration_seconds: arrangementSeconds,
+      position_seconds: arrangementSeconds,
+      position_beats: clock ? clock.quarterAtSeconds(arrangementSeconds) : state.position_beats,
     };
   }
 
@@ -279,6 +307,7 @@ export function createPlaybackStore(
         if (epoch !== playbackEpoch) return;
       }
 
+      state = currentRendition(state);
       setTransport(state);
       // Re-anchor interpolation to actual backend state
       lastPollTime = performance.now();
@@ -948,6 +977,8 @@ export function createPlaybackStore(
     previewAnchor = null;
     setPreviewCursorBeats(null);
     stopTransportPoll();
+    // The worker still holds the solo rendition and its extent.
+    renditionBehind = true;
     try {
       await api.transportPause();
       if (epoch !== playbackEpoch) return;
@@ -1171,6 +1202,8 @@ export function createPlaybackStore(
 
   function adoptArrangementDuration(duration: number | undefined) {
     if (typeof duration !== "number") return;
+    if (duration !== arrangementSeconds) renditionBehind = true;
+    arrangementSeconds = duration;
     if (previewAnchor) previewAnchor.duration = duration;
     // Arrangement length arrives with the snapshot, so no render probe is needed.
     setTransport(current => ({ ...current, duration_seconds: duration }));

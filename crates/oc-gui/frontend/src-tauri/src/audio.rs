@@ -1626,17 +1626,12 @@ impl AudioState {
         let load_in_flight = self.load_queued && !loaded;
         let did_render = !load_in_flight && self.render_dirty;
         if did_render {
-            self.render_thread
-                .as_ref()
-                .unwrap()
-                .send(RenderCommand::ProjectChanged {
-                    root: self.resource_root.clone(),
-                    project: Box::new(self.project_for_playback(project)),
-                    soundfont_path,
-                    warm: false,
-                });
-            self.render_dirty = false;
-            self.load_queued = true;
+            self.queue_project_load(RenderCommand::ProjectChanged {
+                root: self.resource_root.clone(),
+                project: Box::new(self.project_for_playback(project)),
+                soundfont_path,
+                warm: false,
+            });
         }
 
         let before_applied = self
@@ -2729,9 +2724,20 @@ impl AudioState {
                 warm,
             }
         };
-        self.render_thread.as_ref().unwrap().send(command);
+        self.queue_project_load(command);
         #[cfg(test)]
         crate::profile_phase("preload_dispatch", phase);
+    }
+
+    /// Hand the document to the playback worker. The load still in flight
+    /// describes the document being replaced, so its progress stops being
+    /// reported now rather than when the worker reaches the new one.
+    fn queue_project_load(&mut self, command: RenderCommand) {
+        crate::build_progress::retire();
+        self.render_thread
+            .as_ref()
+            .expect("a project load needs the playback worker")
+            .send(command);
         self.render_dirty = false;
         self.load_queued = true;
     }

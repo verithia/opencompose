@@ -1405,11 +1405,21 @@ export function Timeline() {
     });
   };
 
+  /**
+   * The ruler's gestures cancel the pointer's default to keep text selection
+   * and native drags out, which also stops the press from moving focus. Focus
+   * moves to the timeline here instead: otherwise a button focused earlier,
+   * such as a track's Preview, would still take the next Space, while the
+   * status bar says Space drives the timeline the user just clicked.
+   */
+  const focusTimeline = () => timelineRef?.focus({ preventScroll: true });
+
   /** Click jumps, drag moves once on release. */
   const startMarkerDrag = (event: PointerEvent, marker: Marker) => {
     if (event.button !== 0) return;
     event.preventDefault();
     event.stopPropagation();
+    focusTimeline();
     const element = event.currentTarget as HTMLElement;
     const pointerId = event.pointerId;
     try { element.setPointerCapture(pointerId); } catch { /* not supported */ }
@@ -1485,6 +1495,7 @@ export function Timeline() {
     if (event.button !== 0) return;
     event.preventDefault();
     event.stopPropagation();
+    focusTimeline();
     const element = event.currentTarget as HTMLElement;
     const pointerId = event.pointerId;
     try { element.setPointerCapture(pointerId); } catch { /* not supported */ }
@@ -2014,6 +2025,7 @@ export function Timeline() {
     }
     e.preventDefault();
     e.stopPropagation();
+    focusTimeline();
     void api.transportMute().catch((error) => store.setError(String(error)));
     store.setScrubPosition(beatFromClientX(e.clientX));
     const epoch = ++rulerScrubEpoch;

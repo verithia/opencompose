@@ -79,6 +79,7 @@ impl MixerChain<'_> {
                     touch,
                     resource_root: graph.resource_root.as_deref(),
                     linked_lanes: self.linked,
+                    hosted: None,
                 },
                 Some(index),
             )
@@ -292,6 +293,7 @@ mod tests {
                 touch: None,
                 resource_root: None,
                 linked_lanes: &[],
+                hosted: None,
             },
             None,
         )
@@ -312,6 +314,7 @@ mod tests {
                 touch: None,
                 resource_root: None,
                 linked_lanes: &[],
+                hosted: None,
             },
             Some(1),
         )

@@ -817,6 +817,8 @@ export const zhHans = {
   "build.stage.arrangement": "编排轨道",
   "build.stage.effects": "准备效果器",
   "build.stage.soundfont": "准备音色库",
+  "build.stage.background": "加载乐器",
+  "build.stage.waiting": "等待乐器",
   "build.soundfont.read": "读取音色库",
   "build.soundfont.index": "索引采样",
   "build.soundfont.decode": "解码采样",

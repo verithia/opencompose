@@ -373,6 +373,50 @@ describe("App keyboard shortcuts", () => {
     await vi.waitFor(() => expectInvoked("transport_play"));
   });
 
+  it("a ruler click takes Space from a paused preview's focused button to the timeline", async () => {
+    let transport = { playing: false, position_beats: 8, position_seconds: 4, duration_seconds: 30 };
+    invokeMock.mockImplementation(async (cmd: string, args?: Record<string, unknown>) => {
+      if (cmd === "take_startup_project") return null;
+      if (cmd === "scan_plugins") return [];
+      if (cmd === "get_transport_state") return { ...transport };
+      if (cmd === "transport_seek") transport = { ...transport, position_beats: Number(args?.beat), position_seconds: Number(args?.beat) / 2 };
+      else if (cmd === "transport_pause") transport = { ...transport, playing: false };
+      else if (cmd === "preview_track") transport = { ...transport, playing: true, position_beats: 0, position_seconds: 0 };
+      else if (cmd === "resume_track_preview" || cmd === "transport_play") transport = { ...transport, playing: true };
+      else if (cmd === "transport_stop") transport = { ...transport, playing: false, position_beats: 0, position_seconds: 0 };
+      else if (cmd === "transport_mute" || cmd === "transport_unmute") return null;
+      else return makeSnapshot({ tracks: [makeTrack("Piano", 0)] });
+      return { ...transport };
+    });
+    await store.initProject();
+    const { container } = render(() => <App />);
+    const preview = () => container.querySelector<HTMLButtonElement>(".track-preview-btn")!;
+    fireEvent.click(preview());
+    await vi.waitFor(() => expect(store.transport().playing).toBe(true));
+    // Let the start settle before the same button pauses it.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    fireEvent.click(preview());
+    await vi.waitFor(() => expect(store.transport().playing).toBe(false));
+    // The native webview leaves focus on the button the pointer pressed.
+    preview().focus();
+    expect(document.activeElement).toBe(preview());
+
+    const ruler = container.querySelector<HTMLElement>(".timeline-ruler")!;
+    fireEvent.pointerDown(ruler, { button: 0, pointerId: 3, clientX: 240 });
+    fireEvent.pointerUp(document, { button: 0, pointerId: 3, clientX: 240 });
+    await vi.waitFor(() => expect(store.previewTrackIndex()).toBeNull());
+    expect(container.querySelector("[data-space-target]")?.textContent).toBe("Space: timeline");
+    // Space goes where the focus is; the status bar's promise must hold there.
+    expect(document.activeElement?.closest(".timeline-panel")).toBeTruthy();
+    const before = invokeMock.mock.calls.length;
+    fireEvent.keyDown(document.activeElement!, { key: " ", code: "Space" });
+    await vi.waitFor(() => expectInvoked("transport_play"));
+    const after = invokeMock.mock.calls.slice(before).map(([cmd]) => cmd);
+    expect(after).not.toContain("preview_track");
+    expect(after).not.toContain("resume_track_preview");
+    await store.stop();
+  });
+
   it("actual App Space immediately after preview cursor release waits for seek then plays from zero", async () => {
     let position = 8;
     let finishSeek!: () => void;

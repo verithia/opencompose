@@ -987,6 +987,9 @@ fn review_fresh_project_first_block() {
     {
         log::set_max_level(log::LevelFilter::Debug);
     }
+    // Plugins that load on the application's UI thread need its executor.
+    oc_host::application_main::ApplicationMainExecutor::ensure_test_executor()
+        .expect("test application executor");
     let path = std::path::PathBuf::from(
         std::env::var_os("OCP_STREAM_PROJECT").expect("set OCP_STREAM_PROJECT to the project path"),
     );
@@ -1029,6 +1032,92 @@ fn review_fresh_project_first_block() {
             audio.simulated_output_heard_peak()
         );
     }
+}
+
+/// Open a project from `OCP_STREAM_PROJECT`, press Play at once and keep the
+/// simulated device running for `OCP_STREAM_SECONDS` (default 40): the time
+/// to the first block, when the last background instrument joins, and how
+/// long playback waited for one.
+#[test]
+#[ignore = "requires OCP_STREAM_PROJECT; run in a fresh process per sample"]
+fn review_progressive_load_playback() {
+    oc_host::application_main::ApplicationMainExecutor::ensure_test_executor()
+        .expect("test application executor");
+    let path = std::path::PathBuf::from(
+        std::env::var_os("OCP_STREAM_PROJECT").expect("set OCP_STREAM_PROJECT to the project path"),
+    );
+    let seconds: f64 = std::env::var("OCP_STREAM_SECONDS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(40.0);
+    let project = oc_dsl::parse(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let mut audio = test_audio(fixture_soundfont());
+    audio.resource_root = path.parent().map(std::path::Path::to_path_buf);
+    let started = Instant::now();
+    // The panel's bar, sampled as often as the panel polls: the longest time
+    // it stood still before the first block is what reads as a hang.
+    let sampling = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let sampler = {
+        let sampling = Arc::clone(&sampling);
+        std::thread::spawn(move || {
+            let mut last = (None, Instant::now());
+            let mut stall = Duration::ZERO;
+            let mut samples = Vec::new();
+            while sampling.load(Ordering::Acquire) {
+                let build = crate::build_progress::snapshot();
+                let progress = build.as_ref().and_then(|build| build.progress);
+                if progress != last.0 {
+                    if last.0.is_some() {
+                        stall = stall.max(last.1.elapsed());
+                    }
+                    let stage = build.map_or("", |build| build.stage);
+                    samples.push((started.elapsed().as_millis(), stage, progress));
+                    last = (progress, Instant::now());
+                }
+                std::thread::sleep(Duration::from_millis(120));
+            }
+            (stall, samples)
+        })
+    };
+    let mut plugins = HashMap::new();
+    audio.play(&project, &mut plugins).unwrap();
+    let trace = transport_trace(&audio).expect("streaming playback has a trace");
+    wait_delivered(&trace);
+    let first_ms = started.elapsed().as_secs_f64() * 1_000.0;
+    sampling.store(false, Ordering::Release);
+    let (stall, samples) = sampler.join().unwrap();
+    eprintln!(
+        "[progressive-load] bar_longest_stall_ms={} bar_samples={samples:?}",
+        stall.as_millis()
+    );
+    let worker = audio.render_thread.as_ref().unwrap();
+    let playback = Arc::clone(&worker.playback);
+    let mut joined_ms = None;
+    let mut waiting = Duration::ZERO;
+    let mut waits = 0;
+    let mut was_waiting = false;
+    let end = Instant::now() + Duration::from_secs_f64(seconds);
+    while Instant::now() < end {
+        assert!(worker.load_error().is_none(), "{:?}", worker.load_error());
+        let now_waiting = playback.waiting_for_clip.load(Ordering::Acquire);
+        if now_waiting {
+            waiting += Duration::from_millis(5);
+            waits += usize::from(!was_waiting);
+        }
+        was_waiting = now_waiting;
+        if joined_ms.is_none() && crate::build_progress::snapshot().is_none() {
+            joined_ms = Some(started.elapsed().as_secs_f64() * 1_000.0);
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    eprintln!(
+        "[progressive-load] first_block_ms={first_ms:.0} all_joined_ms={} waits={waits} waiting_ms={} underruns={} played_s={:.2} instruments={}",
+        joined_ms.map_or("none".to_string(), |ms| format!("{ms:.0}")),
+        waiting.as_millis(),
+        playback.underruns.load(Ordering::Acquire),
+        playback.timeline_frames() as f64 / 48_000.0,
+        playback.instrument_instantiations.load(Ordering::Acquire),
+    );
 }
 
 /// The audit harness: p50/p95 per path with the block size.

@@ -796,6 +796,8 @@ export const en = {
   "build.stage.arrangement": "Arranging tracks",
   "build.stage.effects": "Preparing effects",
   "build.stage.soundfont": "Preparing SoundFonts",
+  "build.stage.background": "Loading instruments",
+  "build.stage.waiting": "Waiting for instruments",
   "build.soundfont.read": "Reading the bank",
   "build.soundfont.index": "Indexing samples",
   "build.soundfont.decode": "Decoding samples",

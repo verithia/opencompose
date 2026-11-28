@@ -29,6 +29,7 @@ fn checked_builtin_sidechain_drives_compressor_and_rejects_ignored_keys() {
             touch: None,
             resource_root: None,
             linked_lanes: &[],
+            hosted: None,
         },
     )
     .unwrap();
@@ -52,6 +53,7 @@ fn checked_builtin_sidechain_drives_compressor_and_rejects_ignored_keys() {
             touch: None,
             resource_root: None,
             linked_lanes: &[],
+            hosted: None,
         },
     )
     .err()
@@ -94,6 +96,7 @@ fn checked_dynamic_eq_sidechain_routes_the_key_into_the_detector() {
             touch: None,
             resource_root: None,
             linked_lanes: &[],
+            hosted: None,
         },
     )
     .unwrap();
@@ -3973,4 +3976,54 @@ fn a_new_track_is_structural() {
         graph.patch_chains(&project, &next, None, true).unwrap(),
         ChainPatch::Structural
     );
+}
+
+#[test]
+fn a_streaming_graph_build_reports_each_hosted_plugin_it_loads() {
+    let project = oc_dsl::parse(
+        r#"@ocp "0.2.0"
+@project "build report"
+  tempo: 120
+  time_signature: 4/4
+@preset tone
+  source: builtin
+  plugin: "builtin.test_tone"
+@track lead | preset: tone, instrument: synth/lead_square
+  mix: send(glue=100%)
+  effects:
+    - plugin:"test.fake.effect"
+    - gain: factor=0.5
+    - plugin:"test.fake.effect"
+@track pad | preset: tone, instrument: synth/pad
+  effects:
+    - plugin:"test.fake.effect": bypass=true
+@bus glue
+  routes: [master]
+  effects:
+    - plugin:"test.fake.effect"
+@master
+  effects:
+    - plugin:"test.fake.effect"
+"#,
+    )
+    .unwrap();
+    assert_eq!(hosted_effect_count(&project), 4);
+    let steps = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&steps);
+    AudioGraph::try_from_project_with_live_inputs(
+        &project,
+        48_000,
+        &[],
+        None,
+        GraphLiveInputs {
+            build_report: Some(Arc::new(move |step| seen.lock().unwrap().push(step))),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let steps = steps.lock().unwrap();
+    let pairs: Vec<_> = steps.iter().map(|step| (step.done, step.total)).collect();
+    // The start, then one report per plugin as it loads, in chain order; the
+    // bypassed slot on `pad` loads nothing and reports nothing.
+    assert_eq!(pairs, [(0, 4), (1, 4), (2, 4), (3, 4), (4, 4)]);
 }

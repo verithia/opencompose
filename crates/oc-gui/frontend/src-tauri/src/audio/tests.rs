@@ -1765,6 +1765,23 @@ fn press_during_warm_up_reuses_the_in_flight_build() {
 }
 
 #[test]
+fn queuing_a_project_retires_the_progress_of_the_load_in_flight() {
+    let mut audio = AudioState::new();
+    audio.simulate_output = true;
+    audio.sample_rate = 8000;
+    // Stands for a load the worker is still running, such as instruments
+    // joining behind the playhead, when the user applies another document.
+    let in_flight = crate::build_progress::scope(54);
+    assert!(in_flight.is_current());
+    audio.preload_project(&native_test_project());
+    assert!(
+        !in_flight.is_current(),
+        "the old load must not report into the new document"
+    );
+    audio.reset_project();
+}
+
+#[test]
 fn opening_another_project_replaces_the_warm_up() {
     let first = native_test_project();
     let second = long_native_project();
